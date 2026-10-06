@@ -2,7 +2,10 @@
 
 The driven ports: one trait per question a consumer can ask a validator,
 declared in `zaino-primitives` vocabulary, each with its own domain error.
-`ZebraRpcAdapter` implements them over the validator's JSON-RPC; blocks come
+`ZebraRpcAdapter::at(address, cookie, user, password, timeouts)` builds one from
+config without contacting the validator (an unreachable validator is the
+caller's retry, never a construction failure; `EndpointError` = a bad address or
+an unreadable cookie). It implements them over the validator's JSON-RPC; blocks come
 from `getblock <id> 0` and are decoded once, from consensus bytes, into
 `zaino_primitives::types::Block`.
 
@@ -104,23 +107,20 @@ gRPC fallback).
 
 ## `BlockFetchPool`: blocks from N validators
 
-`BlockFetchPool::new(sources, route, concurrency)` over one `ValidatorClient`
-per validator (non-empty; a `Primary` index in range).
+`BlockFetchPool::new(sources, concurrency)` over one adapter per validator
+(non-empty).
 
 - `blocks(start, end)` (both inclusive; `start <= end` asserted) → an ordered
   `Stream` of `Result<Block, _>`, ascending. Each height's
   fetch + decode is its own spawned task (decode spreads across cores), at most
   `concurrency` in flight, `buffered` so completion order never shows. The
   first error ends the stream: nothing after it is sent
-- `FetchRoute::Spread` rotates heights over every validator, falling back to
-  the others when one fails (a lagging node lacks the height);
-  `FetchRoute::Primary(i)` pins every height to validator `i`, no fallback
+- heights rotate over every validator, falling back to the others when one
+  fails (a lagging node lacks the height)
 - `among(positions)` is the same pool over only the sources at `positions`
-  (e.g. the validators agreeing on a quorum tip). A `Primary` among them stays
-  primary; otherwise it falls to `Spread` over them, since the primary's chain
-  is not theirs
-- `block_by_hash(hash)` tries every validator, the primary first (a branch tip
-  may be on only some of them); used by `zaino-non-finalized-state` to walk a reorg back
+  (e.g. the validators agreeing on a quorum tip)
+- `block_by_hash(hash)` tries every validator in turn (a branch tip may be on
+  only some of them); used by `zaino-non-finalized-state` to walk a reorg back
 - a validator answering with another height or hash panics: decode derives
   both from the bytes, so that is a broken validator, not a race
 

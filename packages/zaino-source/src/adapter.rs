@@ -7,7 +7,7 @@ use zaino_primitives::types::PeerInfo;
 use zaino_primitives::types::{Block, BlockHash, BlockchainInfo, Height, TransactionId};
 
 use crate::rpc::{
-    auth_from_parts, probe_node, ProbeError, RpcClient, RpcClientConfig, RpcError, Timeouts,
+    auth_from_parts, validator_url, EndpointError, RpcClient, RpcClientConfig, RpcError, Timeouts,
 };
 use crate::{
     decode, parse, BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
@@ -26,23 +26,22 @@ impl ZebraRpcAdapter {
         Self { rpc }
     }
 
-    /// Waits for the validator at `address` to answer (`probe_node` budget), then connects
-    pub async fn connect(
+    /// The validator at `address` (`host:port`), unprobed: whether it answers is the first call's
+    /// question, so a validator down at boot is the caller's retry, never a boot failure
+    pub fn at(
         address: &str,
         cookie_path: Option<&Path>,
         user: Option<String>,
         password: Option<String>,
         timeouts: Timeouts,
-    ) -> Result<Self, ProbeError> {
-        let url =
-            probe_node(address, cookie_path, user.clone(), password.clone(), timeouts).await?;
+    ) -> Result<Self, EndpointError> {
         let rpc = RpcClient::new(RpcClientConfig {
-            url,
+            url: validator_url(address)?,
             auth: auth_from_parts(cookie_path, user, password)?,
             timeouts,
             ..RpcClientConfig::default()
         })
-        .map_err(ProbeError::Client)?;
+        .map_err(EndpointError::Client)?;
         Ok(Self::new(rpc))
     }
 

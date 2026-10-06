@@ -59,9 +59,9 @@ impl Sighting {
         self.ours
     }
 
-    /// Quorum, or ours (§5) — the exception that lets a wallet see its own send.
-    pub(crate) fn servable(&self, quorum: &Quorum) -> bool {
-        self.ours || quorum.met_by(self.seen_at)
+    /// Listed by any trusted validator (each admits only after full validation), or ours
+    pub(crate) fn servable(&self) -> bool {
+        self.ours || !self.seen_at.is_empty()
     }
 
     pub(crate) fn sight(&mut self, endpoint: EndpointIndex) {
@@ -155,8 +155,8 @@ impl ChainViewSnapshot {
 
 /// The servable mempool of a snapshot that has quorum.
 ///
-/// Every method here applies the per-transaction rule — `seen_at.count() >= threshold || ours`
-/// — so nothing below it can leak out.
+/// Every method here applies the per-transaction rule — listed by any validator, or `ours` —
+/// so nothing below it can leak out.
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolView<'a>(&'a ChainViewSnapshot);
 
@@ -166,16 +166,12 @@ impl<'a> MempoolView<'a> {
         Self(snapshot)
     }
 
-    fn servable(&self, sighting: &Sighting) -> bool {
-        sighting.servable(&self.0.quorum)
-    }
-
     /// One servable unconfirmed transaction.
     pub(crate) fn get(&self, txid: &TransactionId) -> Option<MempoolEntry> {
         self.0
             .mempool
             .get(txid)
-            .filter(|sighting| self.servable(sighting))
+            .filter(|sighting| sighting.servable())
             .map(|sighting| sighting.entry(*txid))
     }
 
@@ -184,7 +180,7 @@ impl<'a> MempoolView<'a> {
         self.0
             .mempool
             .iter()
-            .filter(|(_, sighting)| self.servable(sighting))
+            .filter(|(_, sighting)| sighting.servable())
             .map(|(txid, sighting)| sighting.entry(*txid))
     }
 

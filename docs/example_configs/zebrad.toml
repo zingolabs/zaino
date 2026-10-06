@@ -5,9 +5,9 @@
 network = "Testnet"
 
 [rpc]
-# zainod's [source] jsonrpc_address
+# zainod's [[trusted_validators]] jsonrpc_address
 listen_addr = "127.0.0.1:18232"
-# true → zebrad writes <cookie_dir>/.cookie; point zainod's [source] cookie_path at it
+# true → zebrad writes <cookie_dir>/.cookie; point zainod's [[trusted_validators]] cookie_path at it
 enable_cookie_auth = false
 cookie_dir = "<PATH_TO_ZEBRA>"
 

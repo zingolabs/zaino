@@ -15,7 +15,7 @@ mod rpc;
 pub use adapter::ZebraRpcAdapter;
 pub use decode::{decode_transaction, DecodeError};
 pub use error::{FailureMode, NonDomainError, QueryError};
-pub use fetch_pool::{BlockFetchPool, FetchRoute};
+pub use fetch_pool::BlockFetchPool;
 pub use queries::{
     BlockLink, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, GetBlockLink,
     GetBlockLinkError, GetBlockchainInfo, GetChainTip, GetChainTipError, GetMempoolListing,
@@ -24,7 +24,7 @@ pub use queries::{
     SendRawTransaction, SendRawTransactionError, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
-pub use rpc::{ProbeError, RpcClient, RpcClientConfig, RpcError, Timeouts};
+pub use rpc::{EndpointError, RpcClient, RpcClientConfig, RpcError, Timeouts};
 
 /// `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

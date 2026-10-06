@@ -3,8 +3,7 @@
 //! - One spawned task per height = fetch + decode (decode spreads across cores); `concurrency`
 //!   bounds how many are in flight, `buffered` keeps height order
 //! - Per validator: transient failures retried with doubling backoff, then the next validator
-//! - `Spread` rotates heights over every validator (a lagging node's heights fall to the others);
-//!   `Primary` pins every height to one validator
+//! - Heights rotate over every validator (a lagging node's heights fall to the others)
 //!
 //! TODO: data validation lives here, before any index sees a block: read the best chain's hash
 //! set, re-hash each fetched block (header SHA-256d, txids → merkle root) and refuse a mismatch
@@ -23,40 +22,21 @@ use crate::{GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, QueryE
 const ATTEMPTS_PER_VALIDATOR: u32 = 3;
 const FIRST_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FetchRoute {
-    Spread,
-    Primary(usize),
-}
-
 pub struct BlockFetchPool<S> {
     sources: Vec<Arc<S>>,
-    route: FetchRoute,
     concurrency: NonZeroUsize,
 }
 
 impl<S: GetBlock + GetBlockByHash + 'static> BlockFetchPool<S> {
-    pub fn new(sources: Vec<Arc<S>>, route: FetchRoute, concurrency: NonZeroUsize) -> Self {
+    pub fn new(sources: Vec<Arc<S>>, concurrency: NonZeroUsize) -> Self {
         assert!(!sources.is_empty(), "block fetch pool with no validator");
-        if let FetchRoute::Primary(index) = route {
-            assert!(index < sources.len(), "primary validator {index} of {}", sources.len());
-        }
-        Self { sources, route, concurrency }
+        Self { sources, concurrency }
     }
 
     /// Only the sources at `positions` (e.g. validators agreeing on one tip)
-    /// - `Primary` kept when among them, else `Spread` over them (its chain is not theirs)
     pub fn among(&self, positions: impl IntoIterator<Item = usize>) -> Self {
-        let positions: Vec<usize> = positions.into_iter().collect();
-        let sources = positions.iter().map(|&position| Arc::clone(&self.sources[position]));
-        let route = match self.route {
-            FetchRoute::Primary(primary) => positions
-                .iter()
-                .position(|&position| position == primary)
-                .map_or(FetchRoute::Spread, FetchRoute::Primary),
-            FetchRoute::Spread => FetchRoute::Spread,
-        };
-        Self::new(sources.collect(), route, self.concurrency)
+        let sources = positions.into_iter().map(|position| Arc::clone(&self.sources[position]));
+        Self::new(sources.collect(), self.concurrency)
     }
 
     /// Blocks `start` to `end`, both inclusive, ascending
@@ -69,15 +49,11 @@ impl<S: GetBlock + GetBlockByHash + 'static> BlockFetchPool<S> {
     ) -> impl Stream<Item = Result<Block, QueryError<GetBlockError>>> + Send + 'static {
         assert!(start <= end, "empty fetch range {start:?}..={end:?}");
         let sources = self.sources.clone();
-        let route = self.route;
         let mut failed = false;
 
         stream::iter(start.up_to(end))
             .map(move |height| {
-                let candidates = match route {
-                    FetchRoute::Primary(index) => vec![Arc::clone(&sources[index])],
-                    FetchRoute::Spread => rotated(&sources, u32::from(height) as usize),
-                };
+                let candidates = rotated(&sources, u32::from(height) as usize);
                 tokio::spawn(first_answer(candidates, height, move |source| async move {
                     let block = source.get_block(height).await?;
                     match block.header().height == height {
@@ -102,16 +78,12 @@ impl<S: GetBlock + GetBlockByHash + 'static> BlockFetchPool<S> {
             })
     }
 
-    /// Every validator, primary first (a branch tip may be on only some of them)
+    /// Every validator in turn (a branch tip may be on only some of them)
     pub async fn block_by_hash(
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        let first = match self.route {
-            FetchRoute::Primary(index) => index,
-            FetchRoute::Spread => 0,
-        };
-        first_answer(rotated(&self.sources, first), hash, |source| async move {
+        first_answer(rotated(&self.sources, 0), hash, |source| async move {
             let block = source.get_block_by_hash(hash).await?;
             match block.header().hash == hash {
                 true => Ok(block),
@@ -178,10 +150,10 @@ mod tests {
     use crate::FailureMode;
 
     /// Spread over three validators, one lagging at 4: every height arrives in order (the lagging
-    /// node's heights fall back to the others); pinned to the lagging node, the stream ends at its
-    /// first missing height and sends nothing after it
+    /// node's heights fall back to the others); among the lagging node alone, the stream ends at
+    /// its first missing height and sends nothing after it
     #[tokio::test]
-    async fn spread_falls_back_past_a_lagging_validator_and_primary_stops_at_its_gap() {
+    async fn spread_falls_back_past_a_lagging_validator_and_a_lone_one_stops_at_its_gap() {
         let chain =
             |tip: u32| {
                 Arc::new((0..=tip).fold(MockChain::new(), |chain, h| {
@@ -192,14 +164,14 @@ mod tests {
         let concurrency = NonZeroUsize::new(4).expect("nz");
         let height = |h: u32| Height::try_from(h).expect("h");
 
-        let spread = BlockFetchPool::new(sources.clone(), FetchRoute::Spread, concurrency);
+        let spread = BlockFetchPool::new(sources, concurrency);
         let got: Vec<_> = spread.blocks(height(0), height(9)).collect().await;
         let heights: Vec<_> =
             got.iter().map(|b| b.as_ref().map(|b| u32::from(b.header().height)).ok()).collect();
         assert_eq!(heights, (0..=9).map(Some).collect::<Vec<_>>());
 
-        let pinned = BlockFetchPool::new(sources, FetchRoute::Primary(1), concurrency);
-        let got: Vec<_> = pinned.blocks(height(3), height(9)).collect().await;
+        let lone = spread.among([1]);
+        let got: Vec<_> = lone.blocks(height(3), height(9)).collect().await;
         assert_eq!(got.len(), 3, "nothing after the first failure: {got:?}");
         use {GetBlockError::HeightNotFound, QueryError::Domain};
         assert!(matches!(&got[2], Err(Domain(HeightNotFound(h))) if *h == height(5)));
@@ -214,12 +186,12 @@ mod tests {
 
         let flaky =
             MockChain::new().with_block(test_block(0, 1)).fail_next(2, FailureMode::Timeout);
-        let pool = BlockFetchPool::new(vec![Arc::new(flaky)], FetchRoute::Spread, concurrency);
+        let pool = BlockFetchPool::new(vec![Arc::new(flaky)], concurrency);
         let got: Vec<_> = pool.blocks(height, height).collect().await;
         assert!(matches!(&got[..], [Ok(block)] if block.header().height == height), "{got:?}");
 
         let refused = MockChain::new().with_block(test_block(0, 1)).fail_next(1, FailureMode::Auth);
-        let pool = BlockFetchPool::new(vec![Arc::new(refused)], FetchRoute::Spread, concurrency);
+        let pool = BlockFetchPool::new(vec![Arc::new(refused)], concurrency);
         let got: Vec<_> = pool.blocks(height, height).collect().await;
         let [Err(QueryError::NonDomain(e))] = &got[..] else { panic!("{got:?}") };
         assert_eq!(e.mode, FailureMode::Auth);
@@ -246,11 +218,8 @@ mod tests {
             }
         }
 
-        let pool = BlockFetchPool::new(
-            vec![Arc::new(ReverseDelay)],
-            FetchRoute::Spread,
-            NonZeroUsize::new(8).expect("nz"),
-        );
+        let pool =
+            BlockFetchPool::new(vec![Arc::new(ReverseDelay)], NonZeroUsize::new(8).expect("nz"));
         let got: Vec<_> = pool
             .blocks(Height::try_from(0u32).expect("h"), Height::try_from(7u32).expect("h"))
             .map(|b| b.map(|b| u32::from(b.header().height)).ok())

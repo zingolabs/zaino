@@ -22,7 +22,7 @@ use zaino_chainview::{ChainView, Endpoint};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
-use zaino_source::{mock::MockChain, BlockFetchPool, FetchRoute};
+use zaino_source::{mock::MockChain, BlockFetchPool};
 use zaino_sync::{BlockSink, ProduceError, Producer, Step, Subscription, Weight};
 
 const DEPTH: u32 = 4;
@@ -337,7 +337,7 @@ fn start(
         .into_iter()
         .map(|poller| {
             let cancel = cancel.child_token();
-            tokio::spawn(async move { poller.run(cancel).await.expect("a mock never ejects") })
+            tokio::spawn(poller.run(cancel))
         })
         .collect();
     let (mut spawned, mut durable) = (Vec::new(), Vec::new());
@@ -353,7 +353,6 @@ fn start(
     }
     let pool = BlockFetchPool::new(
         validators.order.clone(),
-        FetchRoute::Spread,
         NonZeroUsize::new(concurrency).expect("1..=4"),
     );
     let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);

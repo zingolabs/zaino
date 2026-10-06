@@ -234,7 +234,6 @@ mod tests {
 
     use zaino_primitives::types::{BlockHeader, Transaction};
     use zaino_source::mock::MockChain;
-    use zaino_source::FetchRoute;
 
     use super::*;
 
@@ -278,7 +277,6 @@ mod tests {
                 validator(a[..=4].iter().chain(&b).collect()),
                 validator(a[..=2].iter().chain(&c).collect()),
             ],
-            FetchRoute::Spread,
             NonZeroUsize::new(2).expect("nz"),
         );
         let at = |block: &Arc<Block>| BlockRef {

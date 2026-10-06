@@ -4,12 +4,12 @@
 
 mod client;
 mod emit;
+mod endpoint;
 mod envelope;
 mod error;
-mod probe;
 
 pub use client::{RpcClient, RpcClientConfig, Timeouts};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
+pub use endpoint::EndpointError;
+pub(crate) use endpoint::{auth_from_parts, validator_url};
 pub use error::RpcError;
-pub use probe::ProbeError;
-pub(crate) use probe::{auth_from_parts, probe_node};

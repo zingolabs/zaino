@@ -274,7 +274,7 @@ impl ChainViewCore {
         let epoch = self.epoch.load();
         let mut arrived = false;
         for txid in touched {
-            let was = before.sighting(txid).is_some_and(|sighting| sighting.servable(&self.quorum));
+            let was = before.sighting(txid).is_some_and(|sighting| sighting.servable());
             let now = MempoolView::of(state).get(txid);
             if let (false, Some(entry), Ok(epoch)) = (was, now, epoch.as_ref()) {
                 epoch.append(entry);

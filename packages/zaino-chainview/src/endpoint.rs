@@ -253,27 +253,31 @@ impl<S: EndpointSource> EndpointPoller<S> {
         }
     }
 
-    /// Poll until `cancel`
+    /// Poll until `cancel`; a validator failing never ends it (only quorum loss stops serving)
     ///
     /// - mempool inactive → tip still voted, warned once per `CATCHING_UP_WARN_INTERVAL`
     /// - transport failure → backoff + retry, last observation kept (`EndpointReport::Failed`)
-    /// - failure ceiling / [`EndpointPollError::Unavailable`] → ejected (sightings + vote
-    ///   retracted: fail closed, never vote stale) → `Err`
-    pub async fn run(self, cancel: CancellationToken) -> Result<(), EndpointPollError> {
+    /// - failure ceiling / no mempool → `Down` (sightings + vote retracted: never vote stale),
+    ///   still retried at `MAX_BACKOFF`; the next answer brings it back
+    pub async fn run(self, cancel: CancellationToken) {
         let mut backoff = INITIAL_BACKOFF;
         let mut consecutive_failures = 0u32;
         let mut announced_ready = false;
+        let mut down = false;
         let mut catching_up_warned: Option<Instant> = None;
 
         loop {
             let Some(outcome) = cancel.run_until_cancelled(self.tick()).await else {
-                return Ok(());
+                return;
             };
 
             match outcome {
                 Ok(polled) => {
                     consecutive_failures = 0;
                     backoff = INITIAL_BACKOFF;
+                    if std::mem::take(&mut down) {
+                        info!(endpoint = %self.address, "Validator back");
+                    }
                     match polled {
                         Polled::Listed(size) => {
                             if catching_up_warned.take().is_some() {
@@ -300,33 +304,35 @@ impl<S: EndpointSource> EndpointPoller<S> {
                         Polled::Syncing => {}
                     }
                     if sleep_or_cancel(POLL_INTERVAL, &cancel).await.is_break() {
-                        return Ok(());
+                        return;
                     }
-                }
-                Err(EndpointPollError::Unavailable) => {
-                    warn!(endpoint = %self.address, "Validator has no mempool, ejected");
-                    self.view.apply(self.index, EndpointReport::Down);
-                    return Err(EndpointPollError::Unavailable);
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    let ejected = matches!(error, EndpointPollError::Unavailable)
+                        || consecutive_failures >= MAX_CONSECUTIVE_FAILURES;
+                    if ejected && !down {
                         warn!(
                             endpoint = %self.address,
                             %error,
                             attempts = consecutive_failures,
-                            "Validator ejected after repeated failures",
+                            retry = ?MAX_BACKOFF,
+                            "Validator down, vote withdrawn",
                         );
                         self.view.apply(self.index, EndpointReport::Down);
-                        return Err(error);
+                        // sightings retracted: the next answer must re-report everything listed
+                        self.listed.lock().expect("endpoint listing mutex poisoned").clear();
+                        down = true;
+                    } else if !down {
+                        warn!(endpoint = %self.address, %error, attempts = consecutive_failures, "Validator poll failed");
+                        self.view.apply(
+                            self.index,
+                            EndpointReport::Failed { consecutive: consecutive_failures },
+                        );
                     }
-                    warn!(endpoint = %self.address, %error, attempts = consecutive_failures, "Validator poll failed");
-                    self.view.apply(
-                        self.index,
-                        EndpointReport::Failed { consecutive: consecutive_failures },
-                    );
-                    if sleep_or_cancel(backoff, &cancel).await.is_break() {
-                        return Ok(());
+                    let delay = if down { MAX_BACKOFF } else { backoff };
+                    if sleep_or_cancel(delay, &cancel).await.is_break() {
+                        return;
                     }
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                 }

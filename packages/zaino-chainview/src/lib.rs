@@ -21,7 +21,7 @@ mod tests;
 
 pub use endpoint::EndpointPoller;
 pub use endpoints::{Agreement, EndpointSet, EndpointState, Ewma, ValidatorMetadata};
-pub use error::{BelowQuorum, BroadcastError, ConfigError, EndpointPollError};
+pub use error::{BelowQuorum, BroadcastError, ConfigError};
 pub use feed::{Logged, MempoolTail};
 pub use ports::EndpointSource;
 pub use quorum::{Quorum, QuorumTip};

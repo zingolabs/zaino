@@ -51,7 +51,7 @@ services:
     environment:
       ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS: "0.0.0.0:8137"
     volumes:
-      - ./config:/app/config:ro   # zainod.toml with [source] jsonrpc_address = "zebra:8232"
+      - ./config:/app/config:ro   # zainod.toml with [[trusted_validators]] jsonrpc_address = "zebra:8232"
       - zaino-data:/app/data
     depends_on:
       - zebra

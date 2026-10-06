@@ -28,14 +28,15 @@ let _ = (view, pollers);
 
 ## In `zainod`
 
-Membership is `[source]` followed by `[[chainview_peers]]`, so endpoint 0 is the
-validator the indexes are built from (its adapter is reused, not re-dialled).
+Membership is `[[trusted_validators]]`, in configured order, all equal. One
+adapter (connection pool) per validator is shared by the view, the fetch pool and
+serving.
 
 ```toml
-[source]
+[[trusted_validators]]
 jsonrpc_address = "127.0.0.1:8232"
 
-[[chainview_peers]]
+[[trusted_validators]]
 jsonrpc_address = "10.0.0.7:8232"
 ```
 
@@ -115,8 +116,9 @@ let entries = pinned.mempool()?.excluding(&exclude);
 # }
 ```
 
-`MempoolView` serves only transactions with `seen_at.count() >= threshold` or
-`ours`. `excluding(suffixes)` implements `GetMempoolTx`'s rule: a suffix matches
+`MempoolView` serves a transaction once **any** validator lists it (each admits
+only what it fully validated), or it is `ours`; `seen_at` counts how far it has
+spread. `excluding(suffixes)` implements `GetMempoolTx`'s rule: a suffix matches
 the txid's protocol-order bytes, and a suffix matching two or more entries
 excludes none. Entries carry raw transaction bytes and `fee: Option<Zatoshis>`,
 the first fee a validator listed (a fee is a function of the transaction, so
@@ -202,9 +204,10 @@ validator), its sightings are retracted, and `run` warns every 60 s with its tip
 height and hash until the mempool answers, then logs "Validator caught up".
 A transport failure marks the endpoint `Degraded` and retries on the backoff
 ladder. The failure ceiling, or a validator answering "mempool unavailable",
-ejects the endpoint (`Down`, retracting its sightings and vote) and `run`
-returns `EndpointPollError`, which `zainod` treats as fatal (it exits). A
-cancelled poller returns `Ok(())`.
+marks it `Down`: its sightings and vote are retracted (never a stale vote), and
+the poller keeps retrying every 30 s; its first answer back restores both. A
+validator going away never ends `run`; only cancel does. Below quorum the tip
+and mempool fail closed, which is the only consequence.
 
 ## Validator port
 

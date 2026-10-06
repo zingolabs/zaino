@@ -358,7 +358,7 @@ mod tests {
 
         cancel.cancel();
         for poller in polling {
-            poller.await.expect("poller ran").expect("cancelled = clean stop");
+            poller.await.expect("poller ran to its cancel");
         }
     }
 }

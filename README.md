@@ -74,7 +74,7 @@ CONTRIBUTING.md                    Human-contributor guide
 zainod serves one interface, the gRPC server on `[serve] grpc_listen_address`,
 in plaintext; it links no TLS stack. Expose it beyond a trusted network only
 behind a TLS-terminating proxy. The validator connection is plain HTTP JSON-RPC
-to `[source] jsonrpc_address`.
+to each `[[trusted_validators]] jsonrpc_address`.
 
 The optional admin listener (`[metrics] listen_address`) serves `/metrics`, `/livez`,
 `/readyz` and `/statusz` without authentication or encryption. It publishes the

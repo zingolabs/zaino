@@ -1,9 +1,9 @@
 //! Binds the daemon's validator set to [`zaino_chainview`], and supplies the serving layer's
 //! compact projection.
 //!
-//! Membership = `source` + `chainview_peers`, in that order, so endpoint 0 is the validator the
-//! indexes are built from (`docs/design/chainview.md` §1: operator-configured, never discovered).
-//! A single-endpoint deployment is a threshold-1 quorum, so the wiring is unconditional.
+//! Membership = `[[trusted_validators]]`, in configured order (`docs/design/chainview.md` §1:
+//! voters configured, never discovered). One validator is a threshold-1 quorum, so the wiring is
+//! unconditional.
 
 use std::sync::Arc;
 
@@ -16,29 +16,25 @@ use zaino_primitives::types::{ReorgDepth, Zatoshis};
 use zaino_proto::proto::compact_formats::CompactTx;
 use zaino_source::{decode_transaction, ZebraRpcAdapter};
 
-use crate::config::{DaemonConfig, SourceConfig};
+use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
 
 /// The view's endpoints, paired with the pollers that drive them.
 pub(crate) struct Wiring {
     pub handles: ChainViewHandles,
     pub pollers: Vec<EndpointPoller<ZebraRpcAdapter>>,
-    /// [`DaemonConfig::validators`] order (one connection per validator, shared with fetch)
+    /// Configured order (one connection pool per validator, shared with fetch and serving)
     pub sources: Vec<Arc<ZebraRpcAdapter>>,
 }
 
-/// Dial every configured peer, then build the view over them and the primary.
-///
-/// `primary` is reused rather than re-dialled — it is the same validator, and a second
-/// connection would double the poll load on the node the indexes already depend on.
-pub(crate) async fn connect(
-    primary: Arc<ZebraRpcAdapter>,
-    config: &DaemonConfig,
-) -> Result<Wiring, IndexerError> {
-    let mut endpoints = vec![endpoint(&config.source, primary)];
-    for peer in &config.chainview_peers {
-        endpoints.push(endpoint(peer, Arc::new(dial(peer).await?)));
-    }
+/// One unprobed adapter per trusted validator, and the view over them (a validator down at boot
+/// is its poller's retry, never a boot failure)
+pub(crate) fn connect(config: &DaemonConfig) -> Result<Wiring, IndexerError> {
+    let endpoints = config
+        .trusted_validators
+        .iter()
+        .map(|validator| Ok(endpoint(validator, Arc::new(adapter(validator)?))))
+        .collect::<Result<Vec<_>, IndexerError>>()?;
     let sources = endpoints.iter().map(|e| Arc::clone(&e.source)).collect();
     let (view, pollers) = ChainView::new(endpoints, ReorgDepth::new(config.fetch.finalised_depth))?;
 
@@ -58,21 +54,20 @@ pub(crate) async fn connect(
 }
 
 fn endpoint(
-    config: &SourceConfig,
+    config: &TrustedValidatorConfig,
     source: Arc<ZebraRpcAdapter>,
 ) -> zaino_chainview::Endpoint<ZebraRpcAdapter> {
     zaino_chainview::Endpoint { address: config.jsonrpc_address.clone(), source }
 }
 
-async fn dial(peer: &SourceConfig) -> Result<ZebraRpcAdapter, IndexerError> {
-    ZebraRpcAdapter::connect(
-        &peer.jsonrpc_address,
-        peer.cookie_path.as_deref(),
-        peer.user.clone(),
-        peer.password.clone(),
-        peer.into(),
+fn adapter(validator: &TrustedValidatorConfig) -> Result<ZebraRpcAdapter, IndexerError> {
+    ZebraRpcAdapter::at(
+        &validator.jsonrpc_address,
+        validator.cookie_path.as_deref(),
+        validator.user.clone(),
+        validator.password.clone(),
+        validator.into(),
     )
-    .await
     .map_err(IndexerError::from)
 }
 

@@ -16,14 +16,13 @@ pub enum ConfigError {
 ///
 /// Two classes, split on retryability:
 ///
-/// - [`Unavailable`](Self::Unavailable) — statement about the *node*, so its poller stops rather
-///   than backing off (`GetMempoolTxidsError::Unavailable`)
-/// - [`Source`](Self::Source) — transport, so the poller backs off and retries
+/// - [`Unavailable`](Self::Unavailable) — statement about the *node*: `Down` at once
+/// - [`Source`](Self::Source) — transport: backoff, `Down` at the failure ceiling
 ///
 /// `GetRawMempoolTransactionError::NotFound` is neither: the listing/fetch race is normal, and
 /// the poller skips that txid.
 #[derive(Debug, thiserror::Error)]
-pub enum EndpointPollError {
+pub(crate) enum EndpointPollError {
     #[error("validator exposes no mempool")]
     Unavailable,
 

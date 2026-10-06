@@ -27,16 +27,15 @@ zainod verify [--config FILE] [--rehash]     # read-only index check (see usage.
 Layered, highest priority first:
 
 1. environment variables, prefix `ZAINO_CONFIG_`, `__` for nesting
-   (`ZAINO_CONFIG_SOURCE__JSONRPC_ADDRESS=127.0.0.1:8232`)
+   (`ZAINO_CONFIG_FETCH__CONCURRENCY=64`)
 2. the TOML file
 3. built-in defaults
 
-Unknown keys fail the load. The config has `[source]` (Zebra JSON-RPC address
-and auth), `[[chainview_peers]]` (extra validators: the quorum tip and mempool
-are agreed over `source` + these, and bulk sync spreads its fetches over all of
-them), `[serve]` (gRPC listen address, `max_address_rows`), `[grpc]` (serving
-caps), `[fetch]` (`finalised_depth`, `concurrency`, and `primary_validator` to
-pin bulk sync to one validator), one `[index.<name>]` section per index
+Unknown keys fail the load. The config has `[[trusted_validators]]` (Zebra
+JSON-RPC address and auth, at least one: the quorum tip is a majority of them,
+one listing admits a mempool transaction, and bulk sync spreads its fetches over
+all of them), `[serve]` (gRPC listen address, `max_address_rows`), `[grpc]`
+(serving caps), `[fetch]` (`finalised_depth`, `concurrency`), one `[index.<name>]` section per index
 (`compact_block`, `tree_state`, `transparent_address`, each with `path`,
 `batch`, `queue_mib` and `enabled`), a top-level `network` (`mainnet` /
 `testnet` / `regtest`, default `mainnet`) and an optional `[metrics]` admin

@@ -59,10 +59,11 @@ pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 # For documentation see https://github.com/zingolabs/zaino
 "#;
 
-/// The validator's Zebra JSON-RPC endpoint, the daemon's only block source.
+/// A Zebra JSON-RPC endpoint Zaino trusts: it votes on the tip, admits mempool transactions
+/// (with their fees) and answers mined-transaction lookups. Every entry is equal.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub struct SourceConfig {
+pub struct TrustedValidatorConfig {
     /// The validator's JSON-RPC listen address (`host:port`).
     pub jsonrpc_address: String,
     /// Path to the validator's auth cookie, if it uses cookie auth.
@@ -78,7 +79,7 @@ pub struct SourceConfig {
     pub read_timeout_secs: NonZeroU64,
 }
 
-impl Default for SourceConfig {
+impl Default for TrustedValidatorConfig {
     fn default() -> Self {
         let timeouts = zaino_source::Timeouts::default();
         Self {
@@ -94,8 +95,8 @@ impl Default for SourceConfig {
     }
 }
 
-impl From<&SourceConfig> for zaino_source::Timeouts {
-    fn from(config: &SourceConfig) -> Self {
+impl From<&TrustedValidatorConfig> for zaino_source::Timeouts {
+    fn from(config: &TrustedValidatorConfig) -> Self {
         Self {
             connect: std::time::Duration::from_secs(config.connect_timeout_secs.get()),
             read: std::time::Duration::from_secs(config.read_timeout_secs.get()),
@@ -395,9 +396,6 @@ pub struct FetchConfig {
     pub finalised_depth: NonZeroU32,
     /// Block fetches (and decodes) kept in flight during bulk sync.
     pub concurrency: NonZeroUsize,
-    /// `jsonrpc_address` of the one validator bulk sync fetches from. Unset = spread across
-    /// `source` and every `chainview_peers` entry.
-    pub primary_validator: Option<String>,
 }
 
 impl Default for FetchConfig {
@@ -406,7 +404,6 @@ impl Default for FetchConfig {
             finalised_depth: NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT)
                 .expect("the consensus reorg bound is non-zero"),
             concurrency: NonZeroUsize::new(32).expect("32 is non-zero"),
-            primary_validator: None,
         }
     }
 }
@@ -453,14 +450,10 @@ pub struct DaemonConfig {
     pub network: NetworkType,
     /// The admin listener (`/metrics` and the probes).
     pub metrics: MetricsConfig,
-    /// The validator blocks are sourced from.
-    pub source: SourceConfig,
-    /// Extra validators the mempool view quorates over, beyond [`source`](Self::source).
-    ///
-    /// Empty is a one-validator deployment: the quorum is `source` alone, trivially met. Adding
-    /// endpoints is what makes the view worth more than a wallet's own connection.
-    #[serde(default)]
-    pub chainview_peers: Vec<SourceConfig>,
+    /// The validators Zaino trusts (`[[trusted_validators]]`), at least one. The tip is a
+    /// majority of them; one listing admits a mempool transaction. Three is the first set that
+    /// survives a failure (two is weaker than one: either down = below quorum).
+    pub trusted_validators: Vec<TrustedValidatorConfig>,
     /// The wallet-facing gRPC server.
     pub serve: ServeConfig,
     /// What that server will serve at once.
@@ -479,8 +472,7 @@ impl Default for DaemonConfig {
             // Mainnet = the deployment target; testnet/regtest operators declare theirs
             network: NetworkType::Main,
             metrics: MetricsConfig::default(),
-            source: SourceConfig::default(),
-            chainview_peers: Vec::new(),
+            trusted_validators: vec![TrustedValidatorConfig::default()],
             serve: ServeConfig::default(),
             grpc: GrpcConfig::default(),
             fetch: FetchConfig::default(),
@@ -511,11 +503,17 @@ impl DaemonConfig {
                     .to_string(),
             ));
         }
-        if let Some(primary) = &self.fetch.primary_validator {
-            if self.primary_validator_index().is_none() {
+        if self.trusted_validators.is_empty() {
+            return Err(IndexerError::ConfigError(
+                "no [[trusted_validators]]: at least one validator is needed".to_string(),
+            ));
+        }
+        let mut addresses = std::collections::HashSet::new();
+        for validator in &self.trusted_validators {
+            if !addresses.insert(&validator.jsonrpc_address) {
                 return Err(IndexerError::ConfigError(format!(
-                    "fetch.primary_validator = {primary:?} names neither source nor a \
-                     chainview_peers entry"
+                    "[[trusted_validators]] lists {} twice: one validator, two votes",
+                    validator.jsonrpc_address
                 )));
             }
         }
@@ -559,17 +557,6 @@ impl DaemonConfig {
                  loopback, a private interface, or a network only the scraper reaches."
             );
         }
-    }
-
-    /// Every validator, `source` first (the order chainview and the fetch pool index them by)
-    pub(crate) fn validators(&self) -> impl Iterator<Item = &SourceConfig> {
-        std::iter::once(&self.source).chain(&self.chainview_peers)
-    }
-
-    /// `fetch.primary_validator`'s position in [`validators`](Self::validators)
-    pub(crate) fn primary_validator_index(&self) -> Option<usize> {
-        let primary = self.fetch.primary_validator.as_ref()?;
-        self.validators().position(|validator| &validator.jsonrpc_address == primary)
     }
 }
 
@@ -819,8 +806,8 @@ path = "/tmp/zaino-ta"
     #[test]
     fn serve_tls_parses_and_rejects_unknown_keys() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let base =
-            "network = \"mainnet\"\n[source]\njsonrpc_address = \"127.0.0.1:8232\"\n[serve]\n";
+        let base = "network = \"mainnet\"\n[[trusted_validators]]\n\
+                    jsonrpc_address = \"127.0.0.1:8232\"\n[serve]\n";
         let plain = load_config(&write(&dir, "plain.toml", base)).expect("no tls table");
         assert_eq!(plain.serve.tls, None, "absent = plaintext");
 
@@ -834,40 +821,61 @@ path = "/tmp/zaino-ta"
         assert!(err.to_string().contains("unknown field"), "{err}");
     }
 
+    /// Every entry equal and auth optional; a list empty or naming one validator twice (two
+    /// votes) is refused; every removed key fails loudly rather than being ignored
     #[test]
-    fn source_parses_with_auth_absent_and_removed_fields_are_rejected() {
+    fn trusted_validators_parse_and_removed_keys_are_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
-[source]
+[[trusted_validators]]
 jsonrpc_address = "127.0.0.1:18232"
+
+[[trusted_validators]]
+jsonrpc_address = "zebra-eu:8232"
+user = "zaino"
+password = "secret"
 
 [index.compact_block]
 path = "/tmp/zaino-compact-block"
 "#;
         let config = load_config(&write(&dir, "rpc.toml", toml)).expect("load");
-        let address = "127.0.0.1:18232".to_string();
-        let no_auth = SourceConfig { jsonrpc_address: address, ..SourceConfig::default() };
-        assert_eq!(config.source, no_auth);
-        assert_eq!(config.fetch, FetchConfig::default());
+        let entry = |address: &str| TrustedValidatorConfig {
+            jsonrpc_address: address.to_owned(),
+            ..TrustedValidatorConfig::default()
+        };
+        let eu = TrustedValidatorConfig {
+            user: Some("zaino".to_owned()),
+            password: Some("secret".to_owned()),
+            ..entry("zebra-eu:8232")
+        };
+        assert_eq!(config.trusted_validators, [entry("127.0.0.1:18232"), eu]);
+        assert!(config.validate().is_ok());
 
-        for (name, stale_line) in [
-            ("mode.toml", r#"mode = "direct""#),
-            ("cache.toml", r#"zebra_cache_dir = "/var/lib/zebra""#),
+        let refused = |config: DaemonConfig| config.validate().expect_err("refused").to_string();
+        let none = DaemonConfig { trusted_validators: Vec::new(), ..config.clone() };
+        assert!(refused(none).contains("no [[trusted_validators]]"));
+        let twice = vec![entry("zebra-eu:8232"), entry("zebra-eu:8232")];
+        let twice = DaemonConfig { trusted_validators: twice, ..config };
+        assert!(refused(twice).contains("twice"));
+
+        for (name, removed) in [
+            ("source.toml", "[source]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
+            ("peers.toml", "[[chainview_peers]]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
+            ("primary.toml", "[fetch]\nprimary_validator = \"127.0.0.1:18232\"\n"),
+            ("mode.toml", "[[trusted_validators]]\nmode = \"direct\"\n"),
+            ("noderpc.toml", "[serve]\njsonrpc_listen_address = \"0.0.0.0:8232\"\n"),
         ] {
-            let stale = toml.replace("[source]\n", &format!("[source]\n{stale_line}\n"));
-            let err = load_config(&write(&dir, name, &stale)).expect_err(stale_line);
-            assert!(err.to_string().contains("unknown field"), "{stale_line}: {err}");
+            let stale = format!("{toml}\n{removed}");
+            let err = load_config(&write(&dir, name, &stale)).expect_err(name);
+            assert!(err.to_string().contains("unknown field"), "{name}: {err}");
         }
-        let noderpc = format!("{toml}\n[serve]\njsonrpc_listen_address = \"0.0.0.0:8232\"\n");
-        let err = load_config(&write(&dir, "noderpc.toml", &noderpc)).expect_err("noderpc");
-        assert!(err.to_string().contains("unknown field"), "{err}");
     }
 
     #[test]
     fn env_overrides_a_scalar_field() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
-[source]
+[[trusted_validators]]
 jsonrpc_address = "127.0.0.1:8232"
 
 [index.compact_block]

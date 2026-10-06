@@ -34,6 +34,8 @@ struct FakeState {
     tip: Option<BlockRef>,
     branch: BTreeMap<Height, BlockHash>,
     not_ready: bool,
+    /// Every poll fails in transport (the node is gone)
+    unreachable: bool,
     mempool_inactive: bool,
     /// `None` = at the tip it reports
     network_tip: Option<Height>,
@@ -97,6 +99,10 @@ impl GetBlockLink for FakeValidator {
 impl GetChainTip for FakeValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let fake = self.0.lock().expect("fake validator mutex poisoned");
+        if fake.unreachable {
+            let gone = NonDomainError::new(FailureMode::Connection, "fake validator unreachable");
+            return Err(QueryError::NonDomain(gone));
+        }
         if fake.not_ready {
             return Err(QueryError::Domain(GetChainTipError::NotReady));
         }
@@ -399,9 +405,10 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let below = BelowQuorum { agreeing: 1, threshold: 2, configured: 3 };
     assert_eq!(estimate(&pinned), Err(below), "no chain description below quorum either");
     let sighting = pinned.sighting(&tx7).expect("endpoint a reported it");
-    assert_eq!(sighting.seen_at().count(), 1, "sighting recorded, just not servable");
+    assert_eq!(sighting.seen_at().count(), 1, "sighting recorded, held until there is a tip");
 
-    // Two agreeing by hash = quorum met; the tx only endpoint a lists is still not servable
+    // Two agreeing by hash = quorum met; one validator's listing makes tx 7 servable (each
+    // validator admits only what it fully validated)
     pollers[1].tick().await.expect("endpoint b polls");
     let pinned = reader.current();
     let tip = pinned.tip().expect("two of three agree");
@@ -409,10 +416,11 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let a_and_b = [0, 1].map(|index| EndpointIndex::new(index).expect("index is in range"));
     assert_eq!(tip.agreed_by, a_and_b.into_iter().collect());
     let mempool = pinned.mempool().expect("quorum met");
-    assert!(mempool.get(&tx7).is_none(), "1 of 3 sightings < the per-transaction threshold");
+    assert!(mempool.get(&tx7).is_some(), "listed by one validator = servable");
     assert_eq!(estimate(&pinned), Ok(105), "first agreer in configured order");
     let mut tail = reader.tail().expect("quorum met");
-    assert!(tail.opening().is_empty(), "tx 7 held, not servable");
+    let opened: Vec<_> = tail.opening().iter().map(|entry| entry.txid).collect();
+    assert_eq!(opened, [tx7], "in the opening of the first block with a tip");
 
     // Endpoint c alone claims a far higher tip — agrees with nobody, so it moves nothing
     validators[2].edit(|fake| {
@@ -428,8 +436,8 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let tip = pinned.tip().expect("a and b still agree");
     assert_eq!(tip.block, agreed, "quorum tip = highest *agreed* block, never highest claimed");
     assert_eq!(estimate(&pinned), Ok(105), "never the outlier's");
-    let mempool = pinned.mempool().expect("quorum met");
-    assert!(mempool.get(&tx7).is_some(), "a and c both report it = the threshold");
+    let seen_by = pinned.sighting(&tx7).map(|sighting| sighting.seen_at().count());
+    assert_eq!(seen_by, Some(2), "propagation counted: a and c list it");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
         .endpoints()
         .iter()
@@ -440,10 +448,8 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
             .map(|(address, peer)| (address, vec![outbound(peer)]));
     assert_eq!(peers, expected, "each validator's peers, keyed by its configured address");
 
-    let crossed = tail.next().await.map(|logged| logged.entry.txid);
-    assert_eq!(crossed, Some(tx7), "threshold crossing logged at the crossing");
-    let once = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
-    assert!(once.is_err(), "and exactly once");
+    let again = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
+    assert!(again.is_err(), "a second sighting spreads it, never re-sends it");
 }
 
 /// A broadcast one node rejects and another cannot answer still succeeds on the third, marks
@@ -712,4 +718,55 @@ async fn a_failed_peer_read_keeps_the_endpoint_live_and_its_last_peers() {
     tokio::time::advance(crate::config::PEER_REFRESH).await;
     pollers[0].tick().await.expect("third poll");
     assert_eq!(peers(), [], "a fresh answer replaces it (isolated = empty, not an error)");
+}
+
+/// A validator that goes away is `Down` after the failure ceiling: its vote and sightings are
+/// withdrawn (fail closed, never a stale vote) but its poller keeps running and retrying, and its
+/// first answer back restores both; only cancel ends the poller
+#[tokio::test(start_paused = true)]
+async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_its_vote() {
+    let validator = Arc::new(FakeValidator::default());
+    let tx1 = TransactionId::from([1u8; 32]);
+    validator.edit(|fake| {
+        fake.tip = Some(BlockRef { hash: trunk(Height::GENESIS), height: Height::GENESIS });
+        fake.listed = [tx1].into_iter().collect();
+        fake.bytes = [(tx1, vec![1u8; 8])].into_iter().collect();
+    });
+    let (view, mut pollers) = ChainView::new(
+        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
+        depth(),
+    )
+    .expect("one endpoint is a valid set");
+    let reader = view.subscriber();
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let polling = tokio::spawn(pollers.remove(0).run(cancel.clone()));
+    let state = || reader.current().endpoints()[0].state;
+    async fn until(what: &str, done: impl Fn() -> bool) {
+        for _ in 0..600 {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        panic!("never {what}");
+    }
+    let serves_tx1 = || reader.current().mempool().is_ok_and(|mempool| mempool.get(&tx1).is_some());
+
+    until("live", serves_tx1).await;
+
+    validator.edit(|fake| fake.unreachable = true);
+    until("down", || state() == EndpointState::Down).await;
+    let pinned = reader.current();
+    assert_eq!(pinned.tip(), None, "vote withdrawn");
+    assert!(pinned.mempool().is_err(), "fail closed: no validator, no mempool answer");
+    let seen = pinned.sighting(&tx1).map(|sighting| sighting.seen_at().count());
+    assert_eq!(seen.unwrap_or(0), 0, "sightings retracted");
+    assert!(!polling.is_finished(), "a validator going away never ends its poller");
+
+    validator.edit(|fake| fake.unreachable = false);
+    until("back", serves_tx1).await;
+    assert_eq!(state(), EndpointState::Live);
+
+    cancel.cancel();
+    polling.await.expect("only cancel ends the poller");
 }

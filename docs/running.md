@@ -40,11 +40,10 @@ its default. In outline:
 |---|---|
 | `network` | `mainnet` (default), `testnet` or `regtest`. It is declared rather than read off the validator, because Zebra on regtest reports its chain as `"test"`. |
 | `[metrics]` | The admin listener serving Prometheus `/metrics`, `/livez`, `/readyz` and `/statusz`: `listen_address` (unset by default, which disables it; `0.0.0.0` = every interface, so restrict who reaches it with the host firewall). |
-| `[source]` | The validator's `jsonrpc_address` (default `127.0.0.1:8232`) and its credentials, either `cookie_path` or `user` and `password`. A cookie path takes precedence. `connect_timeout_secs` (2) and `read_timeout_secs` (30): the read timeout counts silence, not total duration, so a large block over a slow link completes. |
-| `[[chainview_peers]]` | Extra validators, in the same shape as `[source]`, that the mempool view takes a quorum over. |
+| `[[trusted_validators]]` | The validators zainod trusts, at least one, all equal. Each: `jsonrpc_address` (default `127.0.0.1:8232`) and credentials, either `cookie_path` or `user` and `password` (a cookie path takes precedence); `connect_timeout_secs` (2) and `read_timeout_secs` (30), the read timeout counting silence, not total duration, so a large block over a slow link completes. The tip is what a majority of them hold; one listing admits a mempool transaction; bulk sync spreads over all of them. Three is the first set that survives a failure: two is weaker than one, since either being down leaves no majority. A validator down at boot or later is retried, never fatal. |
 | `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`) and `max_address_rows` (100000). |
 | `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). `[grpc.shutdown]`: `enabled` (false), `delay_secs` (0) and `timeout_secs` (10), see [Stopping and restarts](#stopping-and-restarts). |
-| `[fetch]` | `finalised_depth` (1000), `concurrency` (32) and `primary_validator`, which pins bulk sync to one validator instead of spreading it across all of them. |
+| `[fetch]` | `finalised_depth` (1000) and `concurrency` (32). |
 | `[index.*]` | One table per index, each with `enabled`, `path`, `batch_mib` (64) and `queue_mib` (256). |
 | `[snapshot]` | Optional, `snapshot` builds only: `manifest` (URL) and `connections` (8, at most 16). Empty indexes are filled from that snapshot before boot; see [zainod: Index snapshot](../packages/zainod/usage.md#index-snapshot). |
 
@@ -59,7 +58,7 @@ accepts could then reach blocks zainod has already written. Only regtest may set
 
 [`example_configs/`](./example_configs/) holds a zebrad config and a zainod config set
 up against each other: zebrad serves JSON-RPC on `127.0.0.1:18232`, which is zainod's
-`[source] jsonrpc_address`.
+`[[trusted_validators]] jsonrpc_address`.
 
 1. Install zebrad with `cargo install zebrad --locked`.
 2. Replace `<PATH_TO_ZEBRA>` in `zebrad.toml` and `<ZAINO_DATA>` in `zainod.toml` with
@@ -107,9 +106,9 @@ page fails its checksum.
 
 Once booted, each stage (the index writers, the block producer, the chainview pollers
 and the gRPC server) runs as its own task. SIGINT or SIGTERM cancels them all and
-waits for each index to write what is final before exiting 0. If the producer, a
-chainview poller or the gRPC server stops on its own, for example because a chainview
-endpoint was ejected, it stops the rest the same way and zainod exits 1.
+waits for each index to write what is final before exiting 0. If the producer or the
+gRPC server stops on its own, it stops the rest the same way and zainod exits 1. A
+trusted validator going away never stops zainod: its poller retries until it answers.
 
 Behind a load balancer that routes by polling `/readyz`, turn on `[grpc.shutdown]`.
 From the signal on, `/readyz` fails with `draining` while zainod keeps serving for

@@ -406,7 +406,6 @@ mod tests {
     use zaino_chainview::EndpointSet;
     use zaino_primitives::types::{BlockHeader, Transaction};
     use zaino_source::mock::MockChain;
-    use zaino_source::FetchRoute;
 
     use super::*;
     use crate::Step;
@@ -443,7 +442,6 @@ mod tests {
         };
         let pool = BlockFetchPool::new(
             vec![validator(a.iter().collect()), validator(a[..=6].iter().chain(&b).collect())],
-            FetchRoute::Spread,
             NonZeroUsize::new(4).expect("nz"),
         );
         let quorum = |block: &Block, agreed_by: &[usize]| {
@@ -523,11 +521,7 @@ mod tests {
         let chain = Arc::new(
             a[..=8].iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone())),
         );
-        let pool = BlockFetchPool::new(
-            vec![Arc::clone(&chain)],
-            FetchRoute::Spread,
-            NonZeroUsize::new(4).expect("nz"),
-        );
+        let pool = BlockFetchPool::new(vec![Arc::clone(&chain)], NonZeroUsize::new(4).expect("nz"));
         let at = |height: u32, hash: BlockHash| BlockRef {
             hash,
             height: Height::try_from(height).expect("h"),
@@ -613,11 +607,8 @@ mod tests {
         for (durable, want) in cases {
             let chain =
                 a.iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone()));
-            let pool = BlockFetchPool::new(
-                vec![Arc::new(chain)],
-                FetchRoute::Spread,
-                NonZeroUsize::new(4).expect("nz"),
-            );
+            let pool =
+                BlockFetchPool::new(vec![Arc::new(chain)], NonZeroUsize::new(4).expect("nz"));
             let quorum = QuorumTip {
                 block: BlockRef { hash: ours(8), height: Height::try_from(8u32).expect("h") },
                 agreed_by: EndpointSet::at([0]),

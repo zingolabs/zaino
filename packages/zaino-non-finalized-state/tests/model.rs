@@ -14,7 +14,7 @@ use zaino_non_finalized_state::{Advance, AdvanceError, ChainHead};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
 };
-use zaino_source::{mock::MockChain, BlockFetchPool, FetchRoute};
+use zaino_source::{mock::MockChain, BlockFetchPool};
 
 const DEPTH: u32 = 4;
 /// Head anchored here, then advanced onto `ANCHOR + DEPTH` (a full window before the first move)
@@ -106,7 +106,7 @@ async fn run(moves: Vec<Move>, lagging_first: bool, concurrency: usize) {
         false => vec![Arc::clone(&current), Arc::clone(&lagging)],
     };
     let concurrency = NonZeroUsize::new(concurrency).expect("1..=4");
-    let pool = BlockFetchPool::new(sources, FetchRoute::Spread, concurrency);
+    let pool = BlockFetchPool::new(sources, concurrency);
 
     let anchor = Arc::new(blocks[&best[ANCHOR as usize]].clone());
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));

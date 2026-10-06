@@ -1,17 +1,14 @@
-//! Resolving and reaching a validator's JSON-RPC endpoint.
+//! A validator's JSON-RPC endpoint from config: its URL and the credentials it expects
 //!
-//! Two things every caller of this crate needs before it can make a request:
-//! the credentials the validator expects, and confidence that the validator is
-//! actually answering.
+//! - no probe: reachability = the caller's retry loop (a validator down at boot is not fatal)
 
 use std::path::Path;
-use std::time::Duration;
 
-use super::{RpcClient, RpcClientConfig, RpcError, Timeouts};
+use super::RpcError;
 
-/// Why a validator endpoint could not be reached.
+/// Why a configured validator endpoint is unusable.
 #[derive(Debug, thiserror::Error)]
-pub enum ProbeError {
+pub enum EndpointError {
     /// The configured address is not a `host:port`.
     #[error("validator address {address} is not host:port: {reason}")]
     Address {
@@ -33,17 +30,6 @@ pub enum ProbeError {
     /// The client could not be constructed.
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
-
-    /// The validator did not answer within the attempt budget.
-    #[error("validator at {url} did not answer after {attempts} attempts: {last_error}")]
-    Unreachable {
-        /// The endpoint that was probed.
-        url: String,
-        /// How many attempts were made.
-        attempts: u32,
-        /// The failure from the final attempt.
-        last_error: String,
-    },
 }
 
 /// Reads the credentials a validator expects from the configured parts.
@@ -56,12 +42,11 @@ pub(crate) fn auth_from_parts(
     cookie_path: Option<&Path>,
     user: Option<String>,
     password: Option<String>,
-) -> Result<Option<(String, String)>, ProbeError> {
+) -> Result<Option<(String, String)>, EndpointError> {
     match cookie_path {
         Some(path) => {
-            let contents = std::fs::read_to_string(path).map_err(|source| ProbeError::Cookie {
-                path: path.display().to_string(),
-                source,
+            let contents = std::fs::read_to_string(path).map_err(|source| {
+                EndpointError::Cookie { path: path.display().to_string(), source }
             })?;
             let token = contents.trim();
             let token = token.strip_prefix("__cookie__:").unwrap_or(token);
@@ -76,8 +61,8 @@ pub(crate) fn auth_from_parts(
 
 /// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection → follows a
 /// validator whose IP changes, e.g. a restarted pod)
-fn validator_url(address: &str) -> Result<String, ProbeError> {
-    let invalid = |reason: &str| ProbeError::Address {
+pub(crate) fn validator_url(address: &str) -> Result<String, EndpointError> {
+    let invalid = |reason: &str| EndpointError::Address {
         address: address.to_string(),
         reason: reason.to_string(),
     };
@@ -91,51 +76,6 @@ fn validator_url(address: &str) -> Result<String, ProbeError> {
         return Err(invalid("unexpected path or query"));
     }
     Ok(url.as_str().trim_end_matches('/').to_string())
-}
-
-/// How many times [`probe_node`] asks before giving up.
-const PROBE_ATTEMPTS: u32 = 6;
-
-/// Delay between probe attempts.
-const PROBE_INTERVAL: Duration = Duration::from_secs(3);
-
-/// Waits for the validator at `address` to answer, and returns its URL.
-///
-/// A validator started alongside Zaino is not answering yet, so this retries
-/// rather than failing on the first refusal. `getinfo` is the probe: every
-/// supported validator implements it, and a successful response proves both
-/// reachability and that the credentials are accepted.
-pub(crate) async fn probe_node(
-    address: &str,
-    cookie_path: Option<&Path>,
-    user: Option<String>,
-    password: Option<String>,
-    timeouts: Timeouts,
-) -> Result<String, ProbeError> {
-    let url = validator_url(address)?;
-
-    let client = RpcClient::new(RpcClientConfig {
-        url: url.clone(),
-        auth: auth_from_parts(cookie_path, user, password)?,
-        timeouts,
-        ..Default::default()
-    })
-    .map_err(ProbeError::Client)?;
-
-    let mut last_error = String::new();
-    for attempt in 0..PROBE_ATTEMPTS {
-        match client.call("getinfo", Vec::new()).await {
-            Ok(_) => return Ok(url),
-            Err(error) => {
-                last_error = error.to_string();
-                if attempt + 1 < PROBE_ATTEMPTS {
-                    tokio::time::sleep(PROBE_INTERVAL).await;
-                }
-            }
-        }
-    }
-
-    Err(ProbeError::Unreachable { url, attempts: PROBE_ATTEMPTS, last_error })
 }
 
 #[cfg(test)]
@@ -190,7 +130,7 @@ mod tests {
     #[test]
     fn a_missing_cookie_file_is_reported() {
         let missing = auth_from_parts(Some(Path::new("/nonexistent/cookie")), None, None);
-        assert!(matches!(missing, Err(ProbeError::Cookie { .. })));
+        assert!(matches!(missing, Err(EndpointError::Cookie { .. })));
     }
 
     #[test]
@@ -203,7 +143,7 @@ mod tests {
             assert_eq!(validator_url(address).expect(address), url);
         }
         for address in ["zebrad", "zebrad:", "zebrad:port", "not a host:8232", "zebrad:8232/path"] {
-            let refused = matches!(validator_url(address), Err(ProbeError::Address { .. }));
+            let refused = matches!(validator_url(address), Err(EndpointError::Address { .. }));
             assert!(refused, "{address} accepted");
         }
     }

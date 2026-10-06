@@ -25,12 +25,13 @@ of primary consensus objects are forwarded to the validator.
 | `GetTransaction`                                         | validator                                                                     |
 | `SendTransaction`                                        | relayed to every validator in the [chain view](./design/chainview.md)         |
 | `GetMempoolTx`, `GetMempoolStream`                       | chain view (quorum mempool)                                                   |
-| `GetLightdInfo`                                          | validator for the network view, compact-block index for the served height     |
+| `GetLightdInfo`                                          | chain view (validators' last poll) + compact-block index for the served height |
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*   | compact-block index, re-projected to nullifiers                               |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)*          | as `GetTaddressTransactions`                                                  |
 
-"The validator" here is `[source]`. Only `SendTransaction` and the mempool
-methods use the other configured validators. The two deprecated rows are served
+"The validator" here is the first `[[trusted_validators]]` entry, until routing
+picks per request; `SendTransaction` and the mempool methods use every trusted
+validator. The two deprecated rows are served
 only because pepper-sync calls them (see
 [client-requirements.md](./client-requirements.md)).
 

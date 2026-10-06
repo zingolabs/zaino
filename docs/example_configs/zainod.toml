@@ -13,8 +13,11 @@ network = "testnet"
 # [metrics]
 # listen_address = "127.0.0.1:9999"
 
-# Validator blocks are fetched from (Zebra JSON-RPC)
-[source]
+# Validators Zaino trusts (Zebra JSON-RPC), at least one, all equal
+# - tip = a majority of them; one listing admits a mempool transaction
+# - 3 = the first set that survives a failure (2 is weaker than 1: either down = below quorum)
+# - down at boot or later = retried, never fatal
+[[trusted_validators]]
 jsonrpc_address = "127.0.0.1:18232"
 # zebrad enable_cookie_auth = true
 # cookie_path = "<PATH_TO_ZEBRA>/.cookie"
@@ -25,8 +28,7 @@ jsonrpc_address = "127.0.0.1:18232"
 # Silence before a request fails, never total duration (raise for a slow or lossy link)
 # read_timeout_secs = 30
 
-# Extra validators the mempool view quorates over (absent = [source] alone, quorum trivially met)
-# [[chainview_peers]]
+# [[trusted_validators]]
 # jsonrpc_address = "127.0.0.1:18242"
 
 [serve]

@@ -44,12 +44,12 @@ use zaino_index_tree_state::{
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_primitives::types::{Block, ReorgDepth};
-use zaino_source::{BlockFetchPool, FetchRoute, GetBlockchainInfo as _, ZebraRpcAdapter};
+use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
+use zaino_source::{BlockFetchPool, GetBlockchainInfo as _, ZebraRpcAdapter};
 use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::config::{DaemonConfig, ShutdownConfig, SourceConfig, ZainoIndexConfig};
+use crate::config::{DaemonConfig, ShutdownConfig, ZainoIndexConfig};
 use crate::error::IndexerError;
 use crate::index_report::Watched;
 
@@ -67,48 +67,44 @@ pub async fn start_indexer(
     spawn_indexer(config).await
 }
 
-/// Wait for the validator's JSON-RPC to answer, build the source over it, then boot the runtime.
+/// Validate the config, then boot the runtime (no validator needs to answer first).
 pub async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     config.validate()?;
     crate::fd_limit::raise_for(config.grpc.max_connections)?;
-    let validator = Arc::new(
-        connect_validator(&config.source)
-            .instrument(crate::logging::component("ChainView"))
-            .await?,
-    );
-    boot(validator, config).await
+    boot(config).await
 }
 
-async fn connect_validator(source: &SourceConfig) -> Result<ZebraRpcAdapter, IndexerError> {
-    let adapter = ZebraRpcAdapter::connect(
-        &source.jsonrpc_address,
-        source.cookie_path.as_deref(),
-        source.user.clone(),
-        source.password.clone(),
-        source.into(),
-    )
-    .await?;
-    info!(endpoint = %source.jsonrpc_address, "Validator reachable");
-    Ok(adapter)
-}
-
-/// Compose the pipeline over the shared `validator`, then spawn every stage.
+/// The upgrade schedule from whichever trusted validator answers first, asking until one does
 ///
-/// - One `Arc<ZebraRpcAdapter>` per validator, shared by the fetch pool, chainview and the gRPC
-///   fallback
-async fn boot(
-    validator: Arc<ZebraRpcAdapter>,
-    config: DaemonConfig,
-) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+/// - the one boot-time validator read (tree-state pool activations; never a compiled-in table)
+async fn upgrade_schedule(validators: &[Arc<ZebraRpcAdapter>]) -> BlockchainInfo {
+    let mut delay = std::time::Duration::from_secs(1);
+    loop {
+        for validator in validators {
+            match validator.get_blockchain_info().await {
+                Ok(info) => return info,
+                Err(error) => debug!(%error, "Validator not answering for the upgrade schedule"),
+            }
+        }
+        warn!(retry = ?delay, "No trusted validator answering yet, waiting to read the upgrade schedule");
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(std::time::Duration::from_secs(30));
+    }
+}
+
+/// Compose the pipeline over the trusted validators, then spawn every stage.
+///
+/// - One `Arc<ZebraRpcAdapter>` per validator, shared by the fetch pool, chainview and serving
+async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
     // --- the chain view: quorum tip, mempool and broadcast fan-out, over every validator
     let chainview_span = crate::logging::component("ChainView");
-    let chainview = crate::chainview::connect(Arc::clone(&validator), &config)
-        .instrument(chainview_span.clone())
-        .await?;
+    let chainview = chainview_span.in_scope(|| crate::chainview::connect(&config))?;
     let tips = chainview.handles.view.subscribe_tip();
+    // serving's point lookups (`GetTransaction`) until routing picks per request
+    let validator = Arc::clone(&chainview.sources[0]);
 
     // --- the indexes: each its own files, its own finalised height, its own sink subscription
     //
@@ -160,10 +156,10 @@ async fn boot(
     let compact_block_service = CompactBlockService::new(compact_block.published().served());
     let block_hash_service =
         block_hash.as_ref().map(|(_, index)| BlockHashService::new(index.published().served()));
-    // pool activations = the validator's schedule, read once (never a compiled-in table)
     let tree_state_service = match &tree_state {
         Some((_, index)) => {
-            let schedule = validator.get_blockchain_info().await?;
+            let schedule =
+                upgrade_schedule(&chainview.sources).instrument(chainview_span.clone()).await;
             let activations = PoolActivations::from_validator(&schedule);
             Some(TreeStateService::new(index.published().served(), network, activations))
         }
@@ -174,12 +170,8 @@ async fn boot(
             .with_max_rows(config.serve.max_address_rows)
     });
 
-    // --- the producer: bulk over every validator (or the primary), then chainview's quorum tip
-    let pool = BlockFetchPool::new(
-        chainview.sources.clone(),
-        config.primary_validator_index().map_or(FetchRoute::Spread, FetchRoute::Primary),
-        config.fetch.concurrency,
-    );
+    // --- the producer: bulk spread over every validator, then chainview's quorum tip
+    let pool = BlockFetchPool::new(chainview.sources.clone(), config.fetch.concurrency);
     let durable = durable.into_iter().flatten();
     let producer = Producer::new(block_sink, pool, tips.clone(), depth, durable)
         .with_live_span(crate::logging::component("ZainoNFS"));
@@ -274,7 +266,12 @@ async fn boot(
         spawn_index(&mut tasks, "transparent-address", span, index.run(blocks));
     }
     for poller in chainview.pollers {
-        spawn(&mut tasks, "chainview", chainview_span.clone(), poller.run(cancel.child_token()));
+        let token = cancel.child_token();
+        let run = async move {
+            poller.run(token).await;
+            Ok::<_, IndexerError>(())
+        };
+        spawn(&mut tasks, "chainview", chainview_span.clone(), run);
     }
     let source_span = crate::logging::component("ZainoSource");
     spawn(&mut tasks, "producer", source_span, producer.run(cancel.child_token()));
