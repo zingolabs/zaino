@@ -15,6 +15,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// Emit env-wide LMDB stats once every this many commits (under
+/// `sync-profile`). A coarse cadence keeps the extra read off the per-batch
+/// hot path while still tracking B-tree growth over a long sync.
+#[cfg(feature = "sync-profile")]
+const STATS_EVERY_N_COMMITS: u64 = 50;
+
 use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags,
 };
@@ -59,6 +65,11 @@ impl Default for LmdbConfig {
 pub struct LmdbBackend {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    /// Commits so far, shared across the writers this backend hands out, so
+    /// the periodic env-stats cadence holds across the fresh writer each batch
+    /// opens. Present only under `sync-profile`.
+    #[cfg(feature = "sync-profile")]
+    commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LmdbBackend {
@@ -93,6 +104,8 @@ impl LmdbBackend {
         Ok(Self {
             env: Arc::new(env),
             dbs,
+            #[cfg(feature = "sync-profile")]
+            commit_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 }
@@ -162,6 +175,8 @@ impl Backend for LmdbBackend {
         Ok(LmdbWriter {
             env: Arc::clone(&self.env),
             dbs: self.dbs.clone(),
+            #[cfg(feature = "sync-profile")]
+            commit_counter: Arc::clone(&self.commit_counter),
         })
     }
 
@@ -288,6 +303,8 @@ impl BackendReader for LmdbReader {
 pub struct LmdbWriter {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    #[cfg(feature = "sync-profile")]
+    commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LmdbWriter {
@@ -297,10 +314,44 @@ impl LmdbWriter {
             .copied()
             .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
     }
+
+    /// Emit env-wide LMDB B-tree stats once every [`STATS_EVERY_N_COMMITS`]
+    /// commits, read after the write txn has committed (never inside it).
+    ///
+    /// The `lmdb` crate exposes only `Environment::stat` (the environment's
+    /// main database), not per-named-database stats — those would need the raw
+    /// `mdb_stat` ffi on each db handle, which this crate cannot reach without
+    /// `unsafe`. The figures are therefore env-wide, not per-index.
+    #[cfg(feature = "sync-profile")]
+    fn maybe_emit_env_stats(&self) {
+        use std::sync::atomic::Ordering;
+        let commits = self.commit_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        if !commits.is_multiple_of(STATS_EVERY_N_COMMITS) {
+            return;
+        }
+        match self.env.stat() {
+            Ok(stat) => tracing::info!(
+                commits,
+                page_size = stat.page_size(),
+                depth = stat.depth(),
+                branch_pages = stat.branch_pages(),
+                leaf_pages = stat.leaf_pages(),
+                overflow_pages = stat.overflow_pages(),
+                entries = stat.entries(),
+                "lmdb env stats"
+            ),
+            Err(error) => tracing::debug!(%error, "lmdb env stats unavailable"),
+        }
+    }
 }
 
 impl BackendWriter for LmdbWriter {
     fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+        #[cfg(feature = "sync-profile")]
+        let op_count = ops.len();
+        #[cfg(feature = "sync-profile")]
+        let put_start = std::time::Instant::now();
+
         let mut txn = self
             .env
             .begin_rw_txn()
@@ -329,7 +380,24 @@ impl BackendWriter for LmdbWriter {
             }
         }
 
+        // The put loop (building the write txn in memory) is measured
+        // separately from `txn.commit()` (the flush), because the I/O cost the
+        // profiling exists to attribute lives in the flush, not the puts.
+        #[cfg(feature = "sync-profile")]
+        let put_ms = put_start.elapsed().as_secs_f64() * 1000.0;
+        #[cfg(feature = "sync-profile")]
+        let flush_start = std::time::Instant::now();
+
         txn.commit().map_err(|e| commit_error("commit", e))?;
+
+        #[cfg(feature = "sync-profile")]
+        {
+            let flush_ms = flush_start.elapsed().as_secs_f64() * 1000.0;
+            // Emitted inside the engine's `sync_commit` span, so Loki carries
+            // this split alongside that span's batch and committed_height.
+            tracing::info!(put_ms, flush_ms, op_count, "lmdb commit split");
+            self.maybe_emit_env_stats();
+        }
 
         Ok(())
     }

@@ -8,10 +8,18 @@ homepage.workspace = true
 license.workspace = true
 description = "LMDB backend adapter implementing zaino-persistence traits."
 
+[features]
+# Feature-gated commit instrumentation: per-commit put/flush split and
+# periodic env-wide LMDB stats, emitted as structured `tracing` events. Pairs
+# with `zaino-sync/sync-profile`, which opens the correlating span. Off by
+# default; compiled out entirely otherwise.
+sync-profile = ["dep:tracing"]
+
 [dependencies]
 zaino-persistence = { path = "../zaino-persistence" }
 lmdb.workspace = true
 lmdb-sys.workspace = true
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

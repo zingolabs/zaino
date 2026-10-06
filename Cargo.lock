@@ -5898,6 +5898,7 @@ dependencies = [
  "lmdb",
  "lmdb-sys",
  "tempfile",
+ "tracing",
  "zaino-persistence",
 ]
 
