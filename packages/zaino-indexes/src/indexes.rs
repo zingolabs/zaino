@@ -32,10 +32,6 @@ mod key_order_tests {
         );
         assert_eq!(super::txids::TxidsIndex::KEY_ORDER, KeyOrder::WalkOrdered);
         assert_eq!(
-            super::hash_to_height::HashToHeightIndex::KEY_ORDER,
-            KeyOrder::WalkOrdered
-        );
-        assert_eq!(
             super::transparent_data::TransparentDataIndex::KEY_ORDER,
             KeyOrder::WalkOrdered
         );
@@ -59,6 +55,10 @@ mod key_order_tests {
 
     #[test]
     fn scattered_indexes() {
+        assert_eq!(
+            super::hash_to_height::HashToHeightIndex::KEY_ORDER,
+            KeyOrder::Scattered
+        );
         assert_eq!(
             super::address_history::AddressHistoryIndex::KEY_ORDER,
             KeyOrder::Scattered

@@ -71,7 +71,8 @@ impl EntryCodec for HashToHeightIndex {
     type PersistentKey = HashKey<BlockHash>;
     type PersistentValue = HeightKey<BlockHeight>;
 
-    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
+    // Keyed by block hash, not height: the key does not order by the chain walk.
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(BlockHash, BlockHeight)> {
         vec![(BlockHash::from([1u8; 32]), BlockHeight::new(2))]
