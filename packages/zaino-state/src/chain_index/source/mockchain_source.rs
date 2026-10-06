@@ -1571,6 +1571,16 @@ impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     }
 }
 
+impl zaino_source::OneShotGetStandardFee for MockchainSource {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<domain::rpc::StandardFee, PortError<zaino_source::GetStandardFeeError>> {
+        unimplemented!(
+            "MockchainSource cannot serve get_standard_fee until test vectors are extended"
+        )
+    }
+}
+
 impl zaino_source::OneShotGetNetworkSolPs for MockchainSource {
     async fn get_network_sol_ps(
         &self,

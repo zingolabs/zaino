@@ -428,6 +428,12 @@ impl OneShotGetBlockDeltas for ZebraValidator {
     }
 }
 
+impl OneShotGetStandardFee for ZebraValidator {
+    async fn get_standard_fee(&self) -> Result<rpc::StandardFee, QueryError<GetStandardFeeError>> {
+        self.rpc.get_standard_fee().await
+    }
+}
+
 impl OneShotGetBlockSubsidy for ZebraValidator {
     async fn get_block_subsidy(
         &self,

@@ -12,7 +12,7 @@ use tracing::warn;
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -227,6 +227,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
     fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<BlockSubsidy, Self::Error>>;
+
+    /// Returns the fee per logical action wallets should pay for a transaction mined in the next block.
+    ///
+    /// Zebra RPC reference: `getstandardfee`
+    /// method: post
+    /// tags: blockchain
+    fn get_standard_fee(&self) -> impl SendFut<Result<StandardFee, Self::Error>>;
 
     /// Returns details on the active state of the TX memory pool.
     ///

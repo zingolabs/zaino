@@ -69,7 +69,7 @@ use crate::chain_index::{
 use crate::SendFut;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_state::HashOrHeight;
@@ -245,6 +245,9 @@ pub trait BlockchainSource:
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(&self, height: u32) -> impl SendFut<BlockchainSourceResult<BlockSubsidy>>;
+
+    /// Returns the `getstandardfee` response.
+    fn get_standard_fee(&self) -> impl SendFut<BlockchainSourceResult<StandardFee>>;
 
     /// Returns the `getmininginfo` response.
     fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<MiningInfo>>;

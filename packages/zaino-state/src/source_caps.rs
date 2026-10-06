@@ -120,6 +120,7 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetRawBlockHeader
     + OneShotGetBlockDeltas
     + OneShotGetBlockSubsidy
+    + OneShotGetStandardFee
     + OneShotGetBlockchainInfo
     + OneShotGetDifficulty
     + OneShotGetNodeInfo
@@ -151,6 +152,7 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetRawBlockHeader
         + OneShotGetBlockDeltas
         + OneShotGetBlockSubsidy
+        + OneShotGetStandardFee
         + OneShotGetBlockchainInfo
         + OneShotGetDifficulty
         + OneShotGetNodeInfo

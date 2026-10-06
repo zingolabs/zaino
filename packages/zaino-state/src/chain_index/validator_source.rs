@@ -973,6 +973,12 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .map_err(err)
     }
 
+    async fn get_standard_fee(
+        &self,
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::StandardFee> {
+        self.validator.get_standard_fee().await.map_err(err)
+    }
+
     async fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,

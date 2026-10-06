@@ -1888,6 +1888,17 @@ impl zaino_source::OneShotGetBlockSubsidy for ProptestMockchain {
     }
 }
 
+impl zaino_source::OneShotGetStandardFee for ProptestMockchain {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::StandardFee,
+        PortError<zaino_source::GetStandardFeeError>,
+    > {
+        unimplemented!()
+    }
+}
+
 impl zaino_source::OneShotGetMiningInfo for ProptestMockchain {
     async fn get_mining_info(
         &self,

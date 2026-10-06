@@ -931,6 +931,18 @@ impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::OneShotGetStandardFee for ZebraRpcAdapter {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::StandardFee,
+        QueryError<zaino_source::GetStandardFeeError>,
+    > {
+        self.call_parsed("getstandardfee", vec![], parse::parse_standard_fee)
+            .await
+    }
+}
+
 impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     async fn get_block_subsidy(
         &self,

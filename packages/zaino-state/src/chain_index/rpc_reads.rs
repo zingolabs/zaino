@@ -8,7 +8,7 @@ use zaino_chain_store_zainodb::conversion::{compact_block_to_wire, pool_filter_f
 use zaino_consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 use zaino_primitives::types::{MempoolInfo, TxOutSetInfo};
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -162,6 +162,10 @@ impl<
 
     async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         validator(self.source().get_block_subsidy(height).await)
+    }
+
+    async fn get_standard_fee(&self) -> Result<StandardFee, Self::Error> {
+        validator(self.source().get_standard_fee().await)
     }
 
     async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {

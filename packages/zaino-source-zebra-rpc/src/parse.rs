@@ -29,7 +29,7 @@ use zaino_primitives::types::{
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, ChainTip, ChainTipStatus,
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
-        ScriptPubKey, SpentInfo, TxOut,
+        ScriptPubKey, SpentInfo, StandardFee, TxOut,
     },
     AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
@@ -543,6 +543,15 @@ pub(crate) fn as_array(value: &serde_json::Value) -> Result<&Vec<serde_json::Val
     value
         .as_array()
         .ok_or_else(|| ParseError::unexpected("array", value))
+}
+
+/// Parse a `getstandardfee` response.
+pub(crate) fn parse_standard_fee(value: &serde_json::Value) -> Result<StandardFee, ParseError> {
+    Ok(StandardFee {
+        fee_per_action: Zatoshis::new(as_u64(field(value, "standard_fee")?)?)
+            .map_err(|e| ParseError::Amount(e.to_string()))?,
+        version: as_u32(field(value, "version")?)?,
+    })
 }
 
 /// Parse a `getblocksubsidy` response.
@@ -1143,6 +1152,22 @@ pub(crate) fn parse_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Pins zebrad's `getstandardfee` shape: integer zatoshis under
+    /// `standard_fee`, and the estimator `version`.
+    #[test]
+    fn standard_fee_parses_zebrad_shape() {
+        let value = json!({ "standard_fee": 1000, "version": 0 });
+
+        assert_eq!(
+            parse_standard_fee(&value).expect("zebrad shape parses"),
+            StandardFee {
+                fee_per_action: Zatoshis::new(1000).expect("in range"),
+                version: 0,
+            }
+        );
+        assert!(parse_standard_fee(&json!({ "version": 0 })).is_err());
+    }
 
     /// A value whose reversal is unmistakable: it reads one way forwards and
     /// another backwards, so a mirrored decode cannot pass by coincidence.
