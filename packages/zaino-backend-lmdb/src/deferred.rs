@@ -23,13 +23,17 @@
 //!
 //! A `Scattered` namespace's put is deferred to its run log when **either** the
 //! namespace already has a run log (a manifest entry — pending from this run or a
-//! previous one) **or** bulk mode is active with deferral enabled. Otherwise the
-//! put goes straight to the tree, exactly as today. The manifest-entry arm makes
-//! the decision per namespace and independent of the current policy, so a store
-//! left pending by a crash keeps routing that namespace to its log even under a
+//! previous one) **or** bulk mode is active with deferral enabled *and the
+//! namespace's tree was empty at [`Deferral::begin_bulk`]*. Otherwise the put goes
+//! straight to the tree, exactly as today. The manifest-entry arm makes the
+//! decision per namespace and independent of the current policy, so a store left
+//! pending by a crash keeps routing that namespace to its log even under a
 //! disabled policy — a split between log and tree, which `finish_bulk`'s
-//! append-into-empty-tree pass cannot reconcile, can never form. `WalkOrdered`
-//! and `Meta` namespaces are never deferred.
+//! append-into-empty-tree pass cannot reconcile, can never form. The empty-tree
+//! condition keeps a namespace a prior run built *directly* (a policy flip from
+//! `off` to `auto`, say) on the direct path, where `finish_bulk`'s empty-target
+//! precondition still holds. `WalkOrdered` and `Meta` namespaces are never
+//! deferred.
 //!
 //! # Disk budget
 //!
@@ -43,7 +47,7 @@ pub(crate) mod log;
 pub(crate) mod manifest;
 pub(crate) mod merge;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -78,6 +82,15 @@ struct State {
     active: bool,
     /// The policy's `enabled` flag from the most recent `begin_bulk`.
     enabled: bool,
+    /// The `Scattered` namespaces this bulk load may *start* deferring: those
+    /// whose tree was empty at [`begin_bulk`](Deferral::begin_bulk). A namespace
+    /// that already holds direct entries (a prior run built it without deferral)
+    /// is absent, so it stays on the direct path — `finish_bulk` appends into an
+    /// empty tree, and deferring onto a populated one would abort the merge. A
+    /// namespace with a run log defers regardless (the manifest arm of
+    /// [`is_deferred`]), since splitting its keys between log and tree can never
+    /// be reconciled.
+    deferrable: HashSet<Namespace>,
     /// Open run logs, keyed by namespace: every namespace with a manifest entry,
     /// loaded on open and as puts are deferred.
     runs: HashMap<Namespace, RunLog>,
@@ -229,23 +242,43 @@ impl Deferral {
             state: Mutex::new(State {
                 active: false,
                 enabled: false,
+                deferrable: HashSet::new(),
                 runs,
             }),
         })
     }
 
-    /// Enter bulk mode with `policy`.
+    /// Enter bulk mode with `policy`, deferring only the `Scattered` namespaces
+    /// `scattered_empty` reports empty.
     ///
-    /// Idempotent in effect: it only records the policy and marks the load active.
-    /// Run logs pending from a previous run are already loaded (by [`open`](Self::open)),
-    /// so this re-enters bulk mode on them rather than starting fresh. With
-    /// `enabled == false`, no *new* namespace starts deferring, but a namespace
-    /// already pending keeps routing to its log (see the module routing rule).
-    pub(crate) fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+    /// Idempotent in effect: it records the policy, marks the load active, and
+    /// recomputes which namespaces may start deferring. Run logs pending from a
+    /// previous run are already loaded (by [`open`](Self::open)), so this re-enters
+    /// bulk mode on them rather than starting fresh. With `enabled == false`, no
+    /// *new* namespace starts deferring, but a namespace already pending keeps
+    /// routing to its log (see the module routing rule).
+    ///
+    /// `scattered_empty` maps each `Scattered` namespace to whether its tree is
+    /// empty. A namespace that already holds direct entries stays on the direct
+    /// path for this bulk, logged once: deferring onto a populated tree would make
+    /// `finish_bulk`'s empty-target precondition fail. A pending namespace (one
+    /// with a run log) keeps deferring regardless.
+    pub(crate) fn begin_bulk(&self, policy: BulkPolicy, scattered_empty: HashMap<Namespace, bool>) {
         let mut state = self.state.lock().expect("deferral state mutex poisoned");
         state.active = true;
         state.enabled = policy.enabled;
-        Ok(())
+        state.deferrable.clear();
+        for (ns, empty) in scattered_empty {
+            if empty {
+                state.deferrable.insert(ns);
+            } else if !state.runs.contains_key(&ns) {
+                tracing::info!(
+                    namespace = ns.as_str(),
+                    "scattered namespace already holds direct entries; not deferring it this bulk \
+                     load"
+                );
+            }
+        }
     }
 
     /// Partition `ops` for a commit: direct ops (applied in the transaction) and
@@ -437,12 +470,16 @@ impl Deferral {
 }
 
 /// Whether a namespace's writes are deferred right now: it already has a run log,
-/// or bulk mode is active, deferral enabled, and the namespace is `Scattered`.
+/// or bulk mode is active with deferral enabled and the namespace is a `Scattered`
+/// one this bulk may defer (empty at `begin_bulk`, so `state.deferrable` holds it).
 fn is_deferred(ns: Namespace, state: &State, key_orders: &HashMap<Namespace, KeyOrder>) -> bool {
     if state.runs.contains_key(&ns) {
         return true;
     }
-    state.active && state.enabled && matches!(key_orders.get(&ns), Some(KeyOrder::Scattered))
+    state.active
+        && state.enabled
+        && matches!(key_orders.get(&ns), Some(KeyOrder::Scattered))
+        && state.deferrable.contains(&ns)
 }
 
 /// `<dir>/<ns>.log`.
@@ -948,5 +985,68 @@ mod tests {
         );
         backend.finish_bulk().expect("finish_bulk");
         assert_eq!(scan(&backend, SCAT), vec![(vec![0x11], b"a".to_vec())]);
+    }
+
+    #[test]
+    fn off_then_auto_on_a_direct_built_scattered_tree_finishes_and_matches_direct() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // Phase 1 (policy off): build the scattered namespace directly — no
+        // begin_bulk, so the puts land straight in the tree.
+        {
+            let backend = open(tmp.path());
+            let mut writer = backend.writer().expect("writer");
+            writer
+                .commit(vec![
+                    put(SCAT, vec![0x01], b"a1"),
+                    put(SCAT, vec![0x03], b"a3"),
+                ])
+                .expect("direct commit");
+            drop(writer);
+            backend.flush().expect("flush");
+        }
+
+        // Phase 2: reopen and flip to auto (enabled). The tree already holds
+        // entries, so this bulk must leave SCAT on the direct path rather than
+        // defer onto a populated tree — which would abort finish_bulk's
+        // empty-target merge and strand the component short of Ready.
+        let backend = open(tmp.path());
+        backend
+            .begin_bulk(BulkPolicy { enabled: true })
+            .expect("begin_bulk");
+        let mut writer = backend.writer().expect("writer");
+        writer
+            .commit(vec![put(SCAT, vec![0x02], b"a2")])
+            .expect("commit under auto");
+        drop(writer);
+
+        // The namespace stayed direct: the new entry is immediately readable, it
+        // is complete throughout, and no run log was created.
+        let reader = backend.reader().expect("reader");
+        assert_eq!(
+            reader.get(SCAT, &[0x02]).expect("get"),
+            Some(b"a2".to_vec())
+        );
+        assert!(reader.is_complete(SCAT).expect("is_complete"));
+        drop(reader);
+        assert!(
+            !log_path(tmp.path(), SCAT).exists(),
+            "no run log is created for a non-empty scattered tree"
+        );
+
+        // finish_bulk completes rather than aborting on a non-empty target, and
+        // the result equals a direct build of every entry.
+        backend
+            .finish_bulk()
+            .expect("finish_bulk completes on a direct-built tree");
+        assert_eq!(
+            scan(&backend, SCAT),
+            vec![
+                (vec![0x01], b"a1".to_vec()),
+                (vec![0x02], b"a2".to_vec()),
+                (vec![0x03], b"a3".to_vec()),
+            ],
+            "the off-then-auto build equals a direct build"
+        );
     }
 }

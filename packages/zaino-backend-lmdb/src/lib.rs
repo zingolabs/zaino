@@ -154,6 +154,41 @@ impl LmdbBackend {
             commit_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
+
+    /// Whether each `Scattered` namespace's tree is currently empty.
+    ///
+    /// Read at [`begin_bulk`](Backend::begin_bulk) to decide which namespaces may
+    /// start deferring: a namespace already holding direct entries (a prior run
+    /// built it without deferral) must stay on the direct path, because
+    /// `finish_bulk` appends into an empty tree. One read transaction, one
+    /// first-key probe per namespace; the result never outlives the call.
+    fn scattered_emptiness(&self) -> Result<HashMap<Namespace, bool>, CommitError> {
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| commit_error("begin emptiness txn", e))?;
+        let mut emptiness = HashMap::new();
+        for (namespace, order) in &self.key_orders {
+            if !matches!(order, KeyOrder::Scattered) {
+                continue;
+            }
+            let db = self
+                .dbs
+                .get(namespace)
+                .copied()
+                .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))?;
+            let cursor = txn
+                .open_ro_cursor(db)
+                .map_err(|e| commit_error("open emptiness cursor", e))?;
+            let empty = match cursor.get(None, None, MDB_FIRST) {
+                Ok((Some(_), _)) => false,
+                Ok((None, _)) | Err(lmdb::Error::NotFound) => true,
+                Err(e) => return Err(commit_error("probe namespace emptiness", e)),
+            };
+            emptiness.insert(*namespace, empty);
+        }
+        Ok(emptiness)
+    }
 }
 
 /// Translate an LMDB write error into a [`CommitError`].
@@ -235,7 +270,16 @@ impl Backend for LmdbBackend {
     }
 
     fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
-        self.deferral.begin_bulk(policy)
+        // Which `Scattered` namespaces may *start* deferring: only those whose
+        // tree is empty, so `finish_bulk`'s append-into-empty-tree pass holds.
+        // Probed only when deferral is enabled (otherwise nothing new defers).
+        let scattered_empty = if policy.enabled {
+            self.scattered_emptiness()?
+        } else {
+            HashMap::new()
+        };
+        self.deferral.begin_bulk(policy, scattered_empty);
+        Ok(())
     }
 
     fn finish_bulk(&self) -> Result<(), CommitError> {

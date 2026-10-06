@@ -31,7 +31,17 @@ policy) this backend defers those namespaces: each commit sorts the batch,
 appends one framed segment to a per-namespace run log under `<store>/deferred/`,
 fsyncs it, and records the committed length in a manifest entry written *in the
 same transaction as the watermark*. `finish_bulk` then k-way merges the segments
-and loads them with one ordered `APPEND` pass. The mechanism — the routing rule,
+and loads them with one ordered `APPEND` pass.
+
+A bulk load only *starts* deferring a scattered namespace whose tree is empty at
+`begin_bulk` (or that already has a run log from an earlier run). A namespace a
+previous run built directly — a policy flipped from `off` to `auto`, say — stays
+on the direct path for this bulk, logged once, because `finish_bulk` appends into
+an empty tree and deferring onto a populated one would abort the merge. So every
+policy-flip and restart combination converges to a complete store without an
+operator having to start from an empty data directory.
+
+The mechanism — the routing rule,
 the segment format, the manifest and the resumable merge — is specified in the
 `deferred` module's documentation; this guide states only the operator-facing
 contract.
