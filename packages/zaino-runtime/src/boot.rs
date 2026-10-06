@@ -146,7 +146,8 @@ where
                 |compact_block| context_from_pre_index_compact_block(&compact_block),
                 tuning,
             )
-            .map_err(DeployError::Indexer)?;
+            .map_err(DeployError::Indexer)?
+            .with_deferral(config.store.deferred_writes);
             assemble::<D, A, C, _, _>(source, store_reader, driver, serve).await
         }
         FetchStrategy::Full => {
@@ -157,7 +158,8 @@ where
                 |block| context_from_block(&block),
                 tuning,
             )
-            .map_err(DeployError::Indexer)?;
+            .map_err(DeployError::Indexer)?
+            .with_deferral(config.store.deferred_writes);
             assemble::<D, A, C, _, _>(source, store_reader, driver, serve).await
         }
     }

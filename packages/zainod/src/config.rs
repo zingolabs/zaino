@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 pub use zaino_common::Network;
-pub use zaino_runtime::config::{FetchStrategy, IndexerConfig, StoreConfig};
+pub use zaino_runtime::config::{DeferralPolicy, FetchStrategy, IndexerConfig, StoreConfig};
 
 use crate::error::IndexerError;
 
@@ -196,6 +196,7 @@ impl Default for DaemonConfig {
             store: StoreConfig {
                 path: zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zaino/store"),
                 map_size_gb: StoreConfig::default_map_size_gb(),
+                deferred_writes: DeferralPolicy::default(),
             },
             serve: ServeConfig::default(),
             indexer: IndexerConfig::default(),
@@ -237,8 +238,9 @@ mod fixture;
 
 #[cfg(feature = "ztest-fixture")]
 pub use fixture::{
-    fixture_deployment, mainnet_direct_state_fixture, mainnet_rpc_fixture, regtest_direct_fixture,
-    FIXTURE_DEPLOYMENT_ENV, MAINNET_RPC_FIXTURE_ENV, MAINNET_STATE_FIXTURE_ENV, TEST_FIXTURE_ENV,
+    fixture_deferred_writes, fixture_deployment, mainnet_direct_state_fixture, mainnet_rpc_fixture,
+    regtest_direct_fixture, FIXTURE_DEPLOYMENT_ENV, MAINNET_RPC_FIXTURE_ENV,
+    MAINNET_STATE_FIXTURE_ENV, TEST_FIXTURE_DEFERRED_WRITES_ENV, TEST_FIXTURE_ENV,
     TEST_FIXTURE_FETCH_ENV, TEST_FIXTURE_JSONRPC_ENV, TEST_FIXTURE_MAP_SIZE_ENV,
     TEST_FIXTURE_STORE_ENV, TEST_FIXTURE_ZEBRA_ENV,
 };
@@ -474,6 +476,34 @@ path = "/tmp/zaino-store"
             config.serve.grpc_listen_address,
             ServeConfig::default().grpc_listen_address,
         );
+    }
+
+    #[test]
+    fn deferred_writes_knob_parses_defaults_and_rejects_junk() {
+        // Absent: the store defers on `auto`, the default.
+        let base = r#"
+[store]
+path = "/tmp/zaino-store"
+"#;
+        let config: DaemonConfig = toml::from_str(base).expect("defaults parse");
+        assert_eq!(config.store.deferred_writes, DeferralPolicy::Auto);
+
+        // `off` is honoured (the lowercase serde name).
+        let off = r#"
+[store]
+path = "/tmp/zaino-store"
+deferred_writes = "off"
+"#;
+        let config: DaemonConfig = toml::from_str(off).expect("off parses");
+        assert_eq!(config.store.deferred_writes, DeferralPolicy::Off);
+
+        // An unknown value is rejected at parse time, never coerced to a default.
+        let junk = r#"
+[store]
+path = "/tmp/zaino-store"
+deferred_writes = "sometimes"
+"#;
+        assert!(toml::from_str::<DaemonConfig>(junk).is_err());
     }
 
     #[test]

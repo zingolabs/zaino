@@ -1,0 +1,14 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a11312-2a5b-7542-b497-e2249dd46af9"
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+A new `store.deferred_writes` config knob (`auto` the default, or `off`) lets a \
+deployment control whether the initial index catch-up defers its scattered \
+(hash-keyed) writes to sorted run logs and bulk-loads them in key order, \
+trading peak disk for a far faster first sync; `off` reproduces the direct \
+write path exactly. Under the `ztest-fixture` feature the same choice is \
+available to cluster deploys through the `ZAINO_TEST_DEFERRED_WRITES` env var.
+"""

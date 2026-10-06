@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use super::{
-    DaemonConfig, DeploymentKind, FetchStrategy, IndexerConfig, Network, ServeConfig, SourceMode,
-    StoreConfig,
+    DaemonConfig, DeferralPolicy, DeploymentKind, FetchStrategy, IndexerConfig, Network,
+    ServeConfig, SourceMode, StoreConfig,
 };
 use crate::error::IndexerError;
 
@@ -67,6 +67,7 @@ fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
         store: StoreConfig {
             path: store_path,
             map_size_gb: 4,
+            deferred_writes: DeferralPolicy::default(),
         },
         serve: ServeConfig {
             grpc_listen_address,
@@ -215,6 +216,7 @@ pub fn mainnet_direct_state_fixture() -> DaemonConfig {
         store: StoreConfig {
             path: store_path,
             map_size_gb,
+            deferred_writes: DeferralPolicy::default(),
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
@@ -276,6 +278,7 @@ pub fn mainnet_rpc_fixture() -> DaemonConfig {
         store: StoreConfig {
             path: store_path,
             map_size_gb,
+            deferred_writes: DeferralPolicy::default(),
         },
         serve: ServeConfig {
             grpc_listen_address: "0.0.0.0:8137".parse().expect("valid fixture addr"),
@@ -323,6 +326,42 @@ fn deployment_from_env_value(
         value.as_str().into_deserializer();
     DeploymentKind::deserialize(deserializer)
         .map_err(|source| IndexerError::FixtureDeployment { value, source })
+}
+
+/// Env var selecting the fixture's deferred-writes policy — `auto` (the default
+/// when unset) or `off` — so a cluster A/B can toggle the scattered-write
+/// deferral without a rebuild. An unrecognised value is a typed error, not a
+/// silent default: the A/B must not silently run the wrong arm.
+pub const TEST_FIXTURE_DEFERRED_WRITES_ENV: &str = "ZAINO_TEST_DEFERRED_WRITES";
+
+/// The deferral policy a fixture runs: [`TEST_FIXTURE_DEFERRED_WRITES_ENV`] read
+/// with the config's own lowercase names, or the default when unset.
+///
+/// A fixture builds its whole config from env and bypasses the layered loader,
+/// so without this the policy would be fixed to the default no matter what the
+/// deploy asked for.
+pub fn fixture_deferred_writes() -> Result<DeferralPolicy, IndexerError> {
+    deferred_writes_from_env_value(std::env::var(TEST_FIXTURE_DEFERRED_WRITES_ENV))
+}
+
+/// [`fixture_deferred_writes`]'s parse, separated from the process environment so
+/// it is testable without mutating shared env state.
+fn deferred_writes_from_env_value(
+    read: Result<String, std::env::VarError>,
+) -> Result<DeferralPolicy, IndexerError> {
+    use serde::de::IntoDeserializer as _;
+
+    let value = match read {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(DeferralPolicy::default()),
+        Err(source @ std::env::VarError::NotUnicode(_)) => {
+            return Err(IndexerError::FixtureDeferredWritesEnv(source))
+        }
+    };
+    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+        value.as_str().into_deserializer();
+    DeferralPolicy::deserialize(deserializer)
+        .map_err(|source| IndexerError::FixtureDeferredWrites { value, source })
 }
 
 #[cfg(test)]
@@ -421,6 +460,37 @@ mod tests {
             expected
         );
         assert_eq!(mainnet_rpc_fixture().serve.jsonrpc_listen_address, expected);
+    }
+
+    /// The deferred-writes fixture env reads the config's lowercase names; unset
+    /// is the default (`auto`), and an unknown name or a non-Unicode value is a
+    /// typed error rather than a silent default — the A/B must not run the wrong
+    /// arm unflagged.
+    #[test]
+    fn fixture_deferred_writes_reads_the_config_names() {
+        assert_eq!(
+            deferred_writes_from_env_value(Err(std::env::VarError::NotPresent))
+                .expect("unset selects the default"),
+            DeferralPolicy::default(),
+        );
+        assert_eq!(
+            deferred_writes_from_env_value(Ok("auto".to_owned())).expect("auto parses"),
+            DeferralPolicy::Auto,
+        );
+        assert_eq!(
+            deferred_writes_from_env_value(Ok("off".to_owned())).expect("off parses"),
+            DeferralPolicy::Off,
+        );
+        assert!(matches!(
+            deferred_writes_from_env_value(Ok("sometimes".to_owned())),
+            Err(IndexerError::FixtureDeferredWrites { value, .. }) if value == "sometimes"
+        ));
+        assert!(matches!(
+            deferred_writes_from_env_value(Err(std::env::VarError::NotUnicode(
+                std::ffi::OsString::from("x")
+            ))),
+            Err(IndexerError::FixtureDeferredWritesEnv(_))
+        ));
     }
 
     /// The endpoint env override reaches the Rpc fixture.
