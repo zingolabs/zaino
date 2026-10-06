@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::TransactionId;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetRawMempoolTransaction`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -32,10 +32,12 @@ pub enum GetRawMempoolTransactionError {
 /// reconstructing the mempool would be assembling bytes from one source against
 /// a listing from another.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetRawMempoolTransaction: Send + Sync {
+pub trait OneShotGetRawMempoolTransaction: ValidatorSource + Send + Sync {
     /// Fetch one mempool transaction's raw bytes.
     fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<u8>, QueryError<GetRawMempoolTransactionError, Self::NonDomain>>,
+    > + Send;
 }

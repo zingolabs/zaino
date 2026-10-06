@@ -1,6 +1,6 @@
 //! What can go wrong asking a chain view a question.
 
-use zaino_source::FetchError;
+use zaino_source::NonDomainError;
 
 /// A chain view could not answer.
 ///
@@ -29,12 +29,12 @@ pub enum ChainViewError {
 
     /// The validator could not be reached. A retry may succeed.
     ///
-    /// Carries the transport [`FetchError`] as its `#[source]`, so
+    /// Carries the transport [`NonDomainError`] as its `#[source]`, so
     /// [`Error::source`](std::error::Error::source) yields the underlying cause
     /// — and with it the machine-readable [`FailureMode`](zaino_source::FailureMode)
     /// — rather than a flattened string.
     #[error("validator unavailable: {0}")]
-    SourceUnavailable(#[source] FetchError),
+    SourceUnavailable(#[source] NonDomainError),
 
     /// A retry may succeed: a tier was briefly between states.
     ///

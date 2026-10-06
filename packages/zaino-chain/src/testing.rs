@@ -60,12 +60,12 @@ use zaino_source::{
     GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError, GetAddressUtxosError,
     GetBlockByHashError, GetBlockError, GetBlockHeaderError, GetBlockVerboseError,
     GetCommitmentTreeRootsError, GetSubtreeRootsError, GetTransactionError,
-    GetTreestateByHashError, GetTreestateError, OneShotGetAddressBalance, OneShotGetAddressDeltas,
-    OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock, OneShotGetBlockByHash,
-    OneShotGetBlockHeader, OneShotGetBlockVerbose, OneShotGetCommitmentTreeRoots,
-    OneShotGetPreIndexCompactBlock, OneShotGetRawBlock, OneShotGetRawBlockByHash,
-    OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate, OneShotGetTreestateByHash,
-    QueryError, TransactionResponse,
+    GetTreestateByHashError, GetTreestateError, NonDomainError, OneShotGetAddressBalance,
+    OneShotGetAddressDeltas, OneShotGetAddressTxids, OneShotGetAddressUtxos, OneShotGetBlock,
+    OneShotGetBlockByHash, OneShotGetBlockHeader, OneShotGetBlockVerbose,
+    OneShotGetCommitmentTreeRoots, OneShotGetPreIndexCompactBlock, OneShotGetRawBlock,
+    OneShotGetRawBlockByHash, OneShotGetSubtreeRoots, OneShotGetTransaction, OneShotGetTreestate,
+    OneShotGetTreestateByHash, QueryError, TransactionResponse, ValidatorSource,
 };
 
 // ***** The chain everything draws from *****
@@ -1290,6 +1290,10 @@ impl FakeSource {
     fn height_of(&self, hash: BlockHash) -> Option<u32> {
         (0..=self.chain.tip()).find(|h| hash_of(*h) == hash)
     }
+}
+
+impl ValidatorSource for FakeSource {
+    type NonDomain = NonDomainError;
 }
 
 impl OneShotGetBlock for FakeSource {
