@@ -3184,14 +3184,26 @@ mod tests {
         }
     }
 
-    impl zaino_source::GetMempoolSourceTip for FakeNode {
-        async fn get_mempool_source_tip(
+    /// Tip + hash; empty schedule, branch 0
+    impl zaino_source::GetBlockchainInfo for FakeNode {
+        async fn get_blockchain_info(
             &self,
-        ) -> Result<zaino_source::SourceTip, zaino_source::QueryError<std::convert::Infallible>>
-        {
+        ) -> Result<
+            zaino_primitives::types::BlockchainInfo,
+            zaino_source::QueryError<std::convert::Infallible>,
+        > {
+            use zaino_primitives::types::{ConsensusBranchId, ConsensusBranchIds};
             let tip = self.0.lock().expect("fake node").tip;
             let height = Height::try_from(u32::from(tip)).expect("small");
-            Ok(zaino_source::SourceTip { hash: [tip; 32].into(), height, estimated_height: height })
+            let branch = ConsensusBranchId::new(0);
+            Ok(zaino_primitives::types::BlockchainInfo {
+                blocks: height,
+                estimated_height: height,
+                best_block_hash: [tip; 32].into(),
+                sapling_activation: Height::GENESIS,
+                upgrades: Vec::new(),
+                consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+            })
         }
     }
 

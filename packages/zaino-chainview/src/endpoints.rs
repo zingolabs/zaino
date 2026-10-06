@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use zaino_primitives::types::{BlockRef, Height, PeerInfo};
+use zaino_primitives::types::{BlockRef, BlockchainInfo, PeerInfo};
 
 use crate::chain::EndpointChain;
 
@@ -179,9 +179,9 @@ impl Ewma {
 }
 
 /// One configured validator as last observed: the quorum reads `chain` + `state`; `peers` =
-/// telemetry only, never a vote (§1)
+/// telemetry only, never a vote (§11)
 ///
-/// - `estimated_height` = the validator's clock-based estimate (tip time + target spacing)
+/// - `info` = its last `getblockchaininfo` (clock-based tip estimate, upgrade schedule, branch)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorMetadata {
     pub address: String,
@@ -191,7 +191,7 @@ pub struct ValidatorMetadata {
     pub latency: Ewma,
     pub failures: u32,
     pub peers: imbl::Vector<PeerInfo>,
-    pub(crate) estimated_height: Option<Height>,
+    pub(crate) info: Option<BlockchainInfo>,
     pub(crate) chain: Option<EndpointChain>,
 }
 
@@ -205,7 +205,7 @@ impl ValidatorMetadata {
             latency: Ewma::default(),
             failures: 0,
             peers: imbl::Vector::new(),
-            estimated_height: None,
+            info: None,
             chain: None,
         }
     }
@@ -217,7 +217,7 @@ impl ValidatorMetadata {
 
     /// Blocks its tip trails its own clock estimate by (an eclipsed or stalled node's tell)
     pub fn stale_blocks(&self) -> Option<u32> {
-        let (tip, estimated) = (self.tip()?, self.estimated_height?);
-        Some(u32::from(estimated).saturating_sub(u32::from(tip.height)))
+        let (tip, info) = (self.tip()?, self.info.as_ref()?);
+        Some(u32::from(info.estimated_height).saturating_sub(u32::from(tip.height)))
     }
 }

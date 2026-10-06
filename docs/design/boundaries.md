@@ -37,7 +37,8 @@ holds for consensus reasons.
 | `GetLightdInfo`                                         | validator + index | node and network state, plus our served height     |
 
 The code enforces the split. `ValidatorPorts` in `zaino-grpc/src/validator.rs` gives the
-single-validator handler only `SendRawTransaction`, `GetTransaction` and `GetBlockchainInfo`, so an
+single-validator handler only `SendRawTransaction` and `GetTransaction` (`GetLightdInfo` reads the
+chain view's copy of each validator's `getblockchaininfo`), so an
 index-backed method has no validator port it could forward to. If an operator disables an index,
 its methods answer UNIMPLEMENTED instead.
 

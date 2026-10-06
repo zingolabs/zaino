@@ -18,10 +18,10 @@ pub use error::{FailureMode, NonDomainError, QueryError};
 pub use fetch_pool::{BlockFetchPool, FetchRoute};
 pub use queries::{
     BlockLink, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, GetBlockLink,
-    GetBlockLinkError, GetBlockchainInfo, GetBlockchainInfoError, GetChainTip, GetChainTipError,
-    GetMempoolListing, GetMempoolListingError, GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError,
-    GetRawMempoolTransaction, GetRawMempoolTransactionError, GetTransaction, GetTransactionError,
-    MempoolListed, SendRawTransaction, SendRawTransactionError, SourceTip, TransactionResponse,
+    GetBlockLinkError, GetBlockchainInfo, GetChainTip, GetChainTipError, GetMempoolListing,
+    GetMempoolListingError, GetPeerInfo, GetPeerInfoError, GetRawMempoolTransaction,
+    GetRawMempoolTransactionError, GetTransaction, GetTransactionError, MempoolListed,
+    SendRawTransaction, SendRawTransactionError, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{ProbeError, RpcClient, RpcClientConfig, RpcError, Timeouts};

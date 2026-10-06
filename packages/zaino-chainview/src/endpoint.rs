@@ -104,8 +104,8 @@ impl<S: EndpointSource> EndpointPoller<S> {
     #[instrument(name = "EndpointPoller::tick", skip_all, fields(endpoint = %self.address))]
     pub(crate) async fn tick(&self) -> Result<Polled, EndpointPollError> {
         let started = Instant::now();
-        // Readiness only (vote = the tip coherent with the listing, so it comes from
-        // get_mempool_source_tip; that port is Infallible, so it cannot report NotReady)
+        // Readiness only (vote = the tip coherent with the listing = get_blockchain_info, whose
+        // Infallible domain cannot report NotReady)
         match self.source.get_chain_tip().await {
             Ok(_) => {}
             Err(QueryError::Domain(GetChainTipError::NotReady)) => {
@@ -117,21 +117,16 @@ impl<S: EndpointSource> EndpointPoller<S> {
             Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
         }
 
-        let source = match self.source.get_mempool_source_tip().await {
-            Ok(source) => source,
-            // `GetMempoolSourceTip` is typed `Infallible`: no domain rejection exists.
+        let info = match self.source.get_blockchain_info().await {
+            Ok(info) => info,
             Err(QueryError::Domain(never)) => match never {},
             Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
         };
-        let tip = BlockRef { hash: source.hash, height: source.height };
+        let tip = BlockRef { hash: info.best_block_hash, height: info.blocks };
+        let network = info.estimated_height;
         let chain = self.follow(tip).await?;
         let peers = self.read_peers().await;
-        let reading = |started: Instant| Reading {
-            chain,
-            estimated_height: source.estimated_height,
-            latency: started.elapsed(),
-            peers,
-        };
+        let reading = |started: Instant| Reading { chain, info, latency: started.elapsed(), peers };
 
         let listing: BTreeMap<TransactionId, Zatoshis> =
             match self.source.get_mempool_listing().await {
@@ -142,7 +137,7 @@ impl<S: EndpointSource> EndpointPoller<S> {
                 Err(QueryError::Domain(GetMempoolListingError::Inactive)) => {
                     self.view.apply(self.index, EndpointReport::CatchingUp(reading(started)));
                     self.listed.lock().expect("endpoint listing mutex poisoned").clear();
-                    return Ok(Polled::CatchingUp { tip, network: source.estimated_height });
+                    return Ok(Polled::CatchingUp { tip, network });
                 }
                 Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
             };

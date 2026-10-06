@@ -8,7 +8,7 @@
 
 use bytes::Bytes;
 use imbl::{OrdMap, Vector};
-use zaino_primitives::types::{TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockchainInfo, TransactionId, Zatoshis};
 
 use crate::endpoints::{EndpointIndex, EndpointSet, ValidatorMetadata};
 use crate::error::BelowQuorum;
@@ -144,6 +144,18 @@ impl ChainViewSnapshot {
     /// Per-endpoint metadata, in configured order
     pub fn endpoints(&self) -> &Vector<ValidatorMetadata> {
         &self.endpoints
+    }
+
+    /// `getblockchaininfo` of the first validator holding the quorum tip (`BelowQuorum` = none)
+    ///
+    /// - agreers share the tip block → one schedule, one branch; every voter has stored one
+    pub fn validator_info(&self) -> Result<&BlockchainInfo, BelowQuorum> {
+        let shortfall = || self.quorum.shortfall(self.agreeing);
+        let tip = self.tip.ok_or_else(shortfall)?;
+        tip.agreed_by
+            .positions()
+            .find_map(|position| self.endpoints.get(position)?.info.as_ref())
+            .ok_or_else(shortfall)
     }
 
     /// Where one transaction has been seen, regardless of whether it is servable.

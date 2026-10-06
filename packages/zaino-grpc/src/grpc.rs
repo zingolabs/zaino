@@ -71,7 +71,7 @@ impl<S: ValidatorPorts> CompactTxStreamer for GrpcService<S> {
     }
 
     async fn get_lightd_info(&self, _r: Request<Empty>) -> Result<Response<LightdInfo>, Status> {
-        self.handler.lightd_info().await.map(Response::new)
+        self.handler.lightd_info().map(Response::new)
     }
 
     // --- the compact_block index's, when it is enabled ---

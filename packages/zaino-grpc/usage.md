@@ -13,12 +13,11 @@ path:
 
 - a path claimed by a wired index or the chain view is answered there;
 - everything else falls through to [`GrpcService`], the generated server, which
-  answers `GetTransaction` and `GetLightdInfo` off the validator and
-  `UNIMPLEMENTED` for the rest.
+  answers `GetTransaction` off the validator, `GetLightdInfo` off the chain
+  view, and `UNIMPLEMENTED` for the rest.
 
 `ValidatorPorts` is the validator's whole surface here:
-`OneShotSendRawTransaction + OneShotGetTransaction + OneShotGetBlockchainInfo`
-(from `zaino-source`). Derived answers have no port to forward to, so they
+`SendRawTransaction + GetTransaction` (from `zaino-source`). Derived answers have no port to forward to, so they
 cannot silently fall back to the validator — see
 [`docs/design/boundaries.md`](../../docs/design/boundaries.md).
 
@@ -30,7 +29,7 @@ the bytes. `GrpcServer::new` wires the validator half automatically.
 
 ```rust
 let serve = GrpcServer::new(
-    ValidatorHandler::new(Arc::clone(&validator), compact_block_service.clone(), network),
+    ValidatorHandler::new(Arc::clone(&validator), compact_block_service.clone(), view, network),
     grpc_listen_address,
     limits,
 )
@@ -44,9 +43,11 @@ tokio::spawn(serve.run(cancel.child_token()));
 ```
 
 - `ValidatorHandler::new(source: Arc<S>, served: CompactBlockService,
-  network: NetworkType)` — `served` gives `LightdInfo.block_height` (the
-  compact-block index's tip); `network` is the configured network, never read
-  off the validator.
+  view: ChainViewSubscriber, network: NetworkType)` — `served` gives
+  `LightdInfo.block_height` (the compact-block index's tip); `view` gives the
+  rest of `LightdInfo` (`ChainViewSnapshot::validator_info`, read from one
+  pinned snapshot, no validator call; below quorum = `UNAVAILABLE`); `network`
+  is the configured network, never read off the validator.
 - `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
   its `[grpc]` config section.
 - Every `with_*` is optional. An omitted index leaves its paths with
@@ -121,8 +122,8 @@ Every cap refuses; none queues except the read lanes:
 - Request bodies are capped before decode: 64 KiB, or 2 MB + 1 KiB for
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
-- `GetLightdInfo` reuses one `getblockchaininfo` for up to 1 s. Concurrent
-  callers share the one in flight, and a failure is never kept.
+- `GetLightdInfo` never waits on a validator: its validator half is the chain
+  view's last poll tick (≈1 s old at most while polling succeeds).
 - **Stalls.** A body that handed hyper a frame and is not polled again, because
   flow control stalled on a client that stopped reading, owes that frame. Once
   any stream on a connection has owed for `stall_timeout`, the connection is

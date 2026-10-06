@@ -210,12 +210,15 @@ cancelled poller returns `Ok(())`.
 
 `EndpointSource` is blanket-implemented over `zaino-source` queries:
 `GetChainTip`, `GetBlockLink`, `GetMempoolListing`, `GetRawMempoolTransaction`,
-`GetMempoolSourceTip`, `SendRawTransaction`, `GetPeerInfo`.
+`GetBlockchainInfo`, `SendRawTransaction`, `GetPeerInfo`.
 
 - `GetChainTip` is the readiness probe only: `NotReady` marks the endpoint
   `Syncing`; its value is discarded
-- the top of the vote is `GetMempoolSourceTip`, the tip coherent with the
-  listing; `GetBlockLink` (`getblockheader <h> false`) supplies its ancestry
+- the top of the vote is `GetBlockchainInfo`'s tip, coherent with the listing;
+  `GetBlockLink` (`getblockheader <h> false`) supplies its ancestry
+- the whole `BlockchainInfo` is kept per endpoint: `ChainViewSnapshot::
+  validator_info()` = the first quorum-tip agreer's (`Err(BelowQuorum)` below
+  quorum), which `GetLightdInfo` serves without a validator call
 - retry is this crate's own per-endpoint ladder
 
 ## Telemetry

@@ -160,7 +160,7 @@ pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
     for index in (0..snapshot.endpoints.len()).filter_map(EndpointIndex::new) {
         let Some(meta) = snapshot.endpoints.get(index.get()) else { continue };
         let tip = meta.tip().map(|tip| u32::from(tip.height));
-        let estimated = meta.estimated_height.map(u32::from);
+        let estimated = meta.info.as_ref().map(|info| u32::from(info.estimated_height));
         match (previous.stale.contains(index), now.stale.contains(index)) {
             (false, true) => warn!(
                 endpoint = %meta.address, ?tip, ?estimated,
@@ -187,7 +187,9 @@ pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::types::{BlockHash, Height, PeerInfo};
+    use zaino_primitives::types::{
+        BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, PeerInfo,
+    };
 
     use super::*;
     use crate::chain::EndpointChain;
@@ -224,7 +226,15 @@ mod tests {
                     let mut meta = ValidatorMetadata::new(format!("v{index}:8232"));
                     meta.state = *state;
                     meta.chain = Some(EndpointChain::of(height(*tip), [BlockHash::ZERO]));
-                    meta.estimated_height = Some(height(*estimated));
+                    let branch = ConsensusBranchId::new(0);
+                    meta.info = Some(BlockchainInfo {
+                        blocks: height(*tip),
+                        estimated_height: height(*estimated),
+                        best_block_hash: BlockHash::ZERO,
+                        sapling_activation: Height::GENESIS,
+                        upgrades: Vec::new(),
+                        consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+                    });
                     meta.peers = outbound
                         .iter()
                         .map(peer(false))

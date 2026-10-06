@@ -77,7 +77,7 @@ GetSpentInfoError::{ NotSpent, Unsupported }
 ```
 
 A variant earns its place by being producible by some adapter. When a method
-has no domain answer, type it `Infallible` (`OneShotGetMempoolSourceTip` does).
+has no domain answer, type it `Infallible` (`GetBlockchainInfo` does).
 
 ## `ValidatorClient` and `RetryPolicy`
 
@@ -142,7 +142,7 @@ per header. `zaino-chainview` walks each endpoint's ancestry with it.
 
 ## Mempool ports
 
-Four separate ports, all answered from the same source:
+Three ports, all answered from the same source:
 
 - `GetMempoolListing` (`getrawmempool true`): every entry's txid and fee
   (`MempoolListed`), polled every tick. The fee is the validator's: it resolved
@@ -151,10 +151,11 @@ Four separate ports, all answered from the same source:
   in-supply count is below 2^53)
 - `GetRawMempoolTransaction`: bytes of one listed transaction, `NotFound` when
   it left the mempool between listing and fetch (a normal race)
-- `GetMempoolSourceTip`: a `SourceTip`, the tip the listing was read against
-  (so a consumer can tag each published set with a tip coherent with it) plus
-  the validator's `estimated_height` of the network tip (telemetry, never a
-  vote); typed `QueryError<Infallible>` (no domain answer exists)
+- `GetBlockchainInfo` (`getblockchaininfo`): the tip the listing was read
+  against, hash and height in one round trip (so a consumer can tag each
+  published set with a tip coherent with it), plus the validator's
+  `estimated_height` of the network tip and its upgrade schedule; typed
+  `QueryError<Infallible>` (no domain answer exists)
 
 The two listing ports carry `Unavailable` (the validator exposes no mempool):
 retrying cannot change it, so a consumer stops asking. `GetMempoolListing` also

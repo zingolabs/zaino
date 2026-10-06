@@ -22,18 +22,16 @@
 //! would have it request blocks that are not there yet. `estimated_height` is the validator's
 //! estimate of the network tip, which is exactly the "how far behind am I" signal.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc};
 
-use tokio::time::Instant;
 use tonic::Status;
+use zaino_chainview::ChainViewSubscriber;
 use zaino_index_compact_block::CompactBlockService;
 use zaino_primitives::types::{
     BlockchainInfo, NetworkUpgradeStatus, TransactionId, TransactionLocation,
 };
 use zaino_proto::proto::service::{LightdInfo, RawTransaction, SendResponse};
-use zaino_source::{
-    GetBlockchainInfo, GetTransaction, GetTransactionError, QueryError, SendRawTransaction,
-};
+use zaino_source::{GetTransaction, GetTransactionError, QueryError, SendRawTransaction};
 use zcash_protocol::consensus::NetworkType;
 
 /// Lowercase hex, so a domain id can ride out on a wire string field without a hex dependency.
@@ -111,30 +109,20 @@ pub trait ProjectCompact: Send + Sync + 'static {
 }
 
 /// What a validator must answer for the methods no index backs.
-pub trait ValidatorPorts:
-    SendRawTransaction + GetTransaction + GetBlockchainInfo + Send + Sync + 'static
-{
-}
+pub trait ValidatorPorts: SendRawTransaction + GetTransaction + Send + Sync + 'static {}
 
-impl<T> ValidatorPorts for T where
-    T: SendRawTransaction + GetTransaction + GetBlockchainInfo + Send + Sync + 'static
-{
-}
+impl<T> ValidatorPorts for T where T: SendRawTransaction + GetTransaction + Send + Sync + 'static {}
 
-/// How long one `getblockchaininfo` answers `GetLightdInfo` (wallets poll it every few seconds;
-/// its fields move once a block at most)
-const CHAIN_INFO_TTL: Duration = Duration::from_secs(1);
-
-/// Serves `SendTransaction`, `GetTransaction` & `GetLightdInfo` over one validator
+/// Serves `SendTransaction`, `GetTransaction` & `GetLightdInfo`
 ///
-/// `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
+/// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
+/// - `view` = the validators' chain description (`GetLightdInfo` never calls one)
 pub struct ValidatorHandler<S> {
     source: Arc<S>,
     /// What `GetLatestBlock` serves (`LightdInfo.blockHeight` must agree with it)
     served: CompactBlockService,
+    view: ChainViewSubscriber,
     network: NetworkType,
-    /// Last `getblockchaininfo` + when (shared by clones; a failure is never kept)
-    chain: Arc<tokio::sync::Mutex<Option<(Instant, BlockchainInfo)>>>,
 }
 
 /// Hand-written because the source is held behind an `Arc`: deriving would demand `S: Clone`,
@@ -144,35 +132,20 @@ impl<S> Clone for ValidatorHandler<S> {
         Self {
             source: Arc::clone(&self.source),
             served: self.served.clone(),
+            view: self.view.clone(),
             network: self.network,
-            chain: Arc::clone(&self.chain),
         }
     }
 }
 
 impl<S: ValidatorPorts> ValidatorHandler<S> {
-    pub fn new(source: Arc<S>, served: CompactBlockService, network: NetworkType) -> Self {
-        Self { source, served, network, chain: Arc::default() }
-    }
-
-    /// The validator's chain view, at most [`CHAIN_INFO_TTL`] old
-    ///
-    /// - refresh under the lock = one RPC in flight however many wallets ask at once
-    async fn chain_info(&self) -> Result<BlockchainInfo, Status> {
-        let mut cached = self.chain.lock().await;
-        if let Some((at, info)) = cached.as_ref() {
-            if at.elapsed() < CHAIN_INFO_TTL {
-                return Ok(info.clone());
-            }
-        }
-
-        let info = self
-            .source
-            .get_blockchain_info()
-            .await
-            .map_err(|error| Status::unavailable(format!("validator: {error}")))?;
-        *cached = Some((Instant::now(), info.clone()));
-        Ok(info)
+    pub fn new(
+        source: Arc<S>,
+        served: CompactBlockService,
+        view: ChainViewSubscriber,
+        network: NetworkType,
+    ) -> Self {
+        Self { source, served, view, network }
     }
 
     /// Relays raw bytes.
@@ -209,14 +182,16 @@ impl<S: ValidatorPorts> ValidatorHandler<S> {
         Ok(RawTransaction { data: found.bytes.into(), height })
     }
 
-    /// Serving metadata, the served height, and the validator's view of the network
+    /// Serving metadata, the served height, and the validators' view of the network
     ///
-    /// - validator unreachable = `UNAVAILABLE` (no stand-in branch, schedule or tip)
-    /// - validator half ≤ [`CHAIN_INFO_TTL`] old; `block_height` always current
+    /// - one pinned view, no validator call (validator half = as of its last poll tick)
+    /// - below quorum = `UNAVAILABLE` (no stand-in branch, schedule or tip)
     /// - TODO: populate `lightwalletProtocolVersion`, pending ZIP updates to the light client
     ///   protocol (unset pins spec-following clients to the shielded-only `GetBlockRange` default)
-    pub async fn lightd_info(&self) -> Result<LightdInfo, Status> {
-        let chain = self.chain_info().await?;
+    pub fn lightd_info(&self) -> Result<LightdInfo, Status> {
+        let pinned = self.view.current();
+        let chain =
+            pinned.validator_info().map_err(|below| Status::unavailable(below.to_string()))?;
         // empty index: 0 (the proto has no "none")
         let block_height = self.served.tip().map_or(0, u64::from);
 
@@ -229,7 +204,7 @@ impl<S: ValidatorPorts> ValidatorHandler<S> {
                 block_height,
                 ..Default::default()
             },
-            &chain,
+            chain,
         ))
     }
 }
@@ -330,64 +305,21 @@ mod tests {
         assert_eq!(networks.map(chain_name), ["main", "test", "regtest"]);
     }
 
-    /// Counts `getblockchaininfo` calls; `failing` = answers unreachable
-    #[derive(Default)]
-    struct CountingValidator {
-        calls: std::sync::atomic::AtomicUsize,
-        failing: std::sync::atomic::AtomicBool,
-    }
-
-    impl GetBlockchainInfo for CountingValidator {
-        async fn get_blockchain_info(
-            &self,
-        ) -> Result<BlockchainInfo, QueryError<zaino_source::GetBlockchainInfoError>> {
-            use std::sync::atomic::Ordering::SeqCst;
-            let call = self.calls.fetch_add(1, SeqCst) + 1;
-            tokio::task::yield_now().await;
-            if self.failing.load(SeqCst) {
-                return Err(QueryError::NonDomain(zaino_source::NonDomainError::new(
-                    zaino_source::FailureMode::Connection,
-                    "validator down",
-                )));
-            }
-            let at = Height::try_from(1_000 + call as u32).expect("in range");
-            let branch = ConsensusBranchId::new(0xc2d6_d0b4);
-            Ok(BlockchainInfo {
-                blocks: at,
-                estimated_height: at,
-                best_block_hash: [7u8; 32].into(),
-                sapling_activation: Height::try_from(1).expect("in range"),
-                upgrades: Vec::new(),
-                consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
-            })
-        }
-    }
-
-    impl SendRawTransaction for CountingValidator {
-        async fn send_raw_transaction(
-            &self,
-            _: Vec<u8>,
-        ) -> Result<TransactionId, QueryError<zaino_source::SendRawTransactionError>> {
-            unreachable!("LightdInfo relays nothing")
-        }
-    }
-
-    impl GetTransaction for CountingValidator {
-        async fn get_transaction(
-            &self,
-            _: TransactionId,
-        ) -> Result<zaino_source::TransactionResponse, QueryError<GetTransactionError>> {
-            unreachable!("LightdInfo reads no transaction")
-        }
-    }
-
-    /// A poll storm costs one validator RPC per TTL: concurrent askers share the one in flight,
-    /// an expired answer refreshes, and a failure is answered UNAVAILABLE but never kept
-    #[tokio::test(start_paused = true)]
-    async fn lightd_info_asks_the_validator_at_most_once_per_ttl_and_never_caches_a_failure() {
-        use std::sync::atomic::Ordering::SeqCst;
-
-        let validator = Arc::new(CountingValidator::default());
+    /// Before the view's first poll: UNAVAILABLE naming the shortfall (no stand-in tip); after
+    /// it: the poller's `getblockchaininfo` + the served height (sync fn = no validator call)
+    #[tokio::test]
+    async fn lightd_info_refuses_below_quorum_then_answers_from_the_polled_view() {
+        let validator = Arc::new((0..=7).fold(zaino_source::mock::MockChain::new(), |chain, h| {
+            chain.with_block(zaino_source::mock::test_block(h, h as u8 + 1))
+        }));
+        let depth = zaino_primitives::types::ReorgDepth::new(
+            std::num::NonZeroU32::new(3).expect("non-zero"),
+        );
+        let endpoint = zaino_chainview::Endpoint {
+            address: "one:8232".to_owned(),
+            source: Arc::clone(&validator),
+        };
+        let (view, pollers) = zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one");
         let served = CompactBlockService::new(zaino_sync::Served::fixed(
             zaino_index_compact_block::CompactBlockStore::open(
                 zaino_persistence::fs::SimFs::new(),
@@ -398,32 +330,35 @@ mod tests {
             .reader()
             .pin(),
         ));
-        let handler = ValidatorHandler::new(Arc::clone(&validator), served, NetworkType::Main);
-        let estimated =
-            |info: Result<LightdInfo, Status>| info.ok().map(|info| info.estimated_height);
+        let handler =
+            ValidatorHandler::new(validator, served, view.subscriber(), NetworkType::Main);
 
-        let storm = futures::future::join_all((0..8).map(|_| handler.clone().lightd_info_owned()));
-        let answers: Vec<_> = storm.await.into_iter().map(estimated).collect();
-        assert_eq!(answers, [Some(1_001); 8]);
-        assert_eq!(validator.calls.load(SeqCst), 1, "eight concurrent askers, one RPC");
+        let refused = handler.lightd_info().expect_err("nothing polled yet");
+        let shortfall = (refused.code(), refused.message());
+        let expected = "0 of 1 validators agree on a tip; 1 required";
+        assert_eq!(shortfall, (tonic::Code::Unavailable, expected));
 
-        tokio::time::advance(CHAIN_INFO_TTL - Duration::from_millis(1)).await;
-        assert_eq!(estimated(handler.lightd_info().await), Some(1_001), "still fresh");
-        assert_eq!(validator.calls.load(SeqCst), 1);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let polling = pollers.into_iter().map(|poller| tokio::spawn(poller.run(cancel.clone())));
+        let polling: Vec<_> = polling.collect();
+        let mut tip = view.subscriber().subscribe_tip();
+        tip.wait_for(Option::is_some).await.expect("view alive");
 
-        tokio::time::advance(Duration::from_millis(1)).await;
-        validator.failing.store(true, SeqCst);
-        let down = handler.lightd_info().await.expect_err("validator down");
-        assert_eq!(down.code(), tonic::Code::Unavailable, "{down:?}");
-        validator.failing.store(false, SeqCst);
-        let recovered = estimated(handler.lightd_info().await);
-        assert_eq!(recovered, Some(1_003), "the failure was not kept");
-        assert_eq!(validator.calls.load(SeqCst), 3);
-    }
+        let expected = LightdInfo {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            vendor: "zaino".to_owned(),
+            taddr_support: true,
+            chain_name: "main".to_owned(),
+            consensus_branch_id: "00000000".to_owned(),
+            estimated_height: 7,
+            block_height: 0,
+            ..Default::default()
+        };
+        assert_eq!(handler.lightd_info().expect("quorum met"), expected, "mock: tip 7, no index");
 
-    impl<S: ValidatorPorts> ValidatorHandler<S> {
-        async fn lightd_info_owned(self) -> Result<LightdInfo, Status> {
-            self.lightd_info().await
+        cancel.cancel();
+        for poller in polling {
+            poller.await.expect("poller ran").expect("cancelled = clean stop");
         }
     }
 }

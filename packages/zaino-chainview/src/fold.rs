@@ -9,7 +9,7 @@ use arc_swap::ArcSwap;
 use bytes::Bytes;
 use imbl::Vector;
 use tokio::sync::watch;
-use zaino_primitives::types::{Height, PeerInfo, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockchainInfo, PeerInfo, TransactionId, Zatoshis};
 
 use crate::chain::EndpointChain;
 use crate::endpoints::{Agreement, EndpointIndex, EndpointState, ValidatorMetadata};
@@ -20,7 +20,7 @@ use crate::telemetry;
 /// One txid a poller listed, with bytes iff this poller had to fetch them.
 ///
 /// `raw` is `None` when the view already held the transaction — bytes cost a round trip and
-/// paying it per endpoint per transaction would be N× waste (§3).
+/// paying it per endpoint per transaction would be N× waste (§5).
 #[derive(Debug, Clone)]
 pub(crate) struct Sighted {
     pub(crate) txid: TransactionId,
@@ -33,7 +33,7 @@ pub(crate) struct Sighted {
 pub(crate) struct Reading {
     /// Poller's held chain after this tick's walk (`None` until one completes)
     pub(crate) chain: Option<EndpointChain>,
-    pub(crate) estimated_height: Height,
+    pub(crate) info: BlockchainInfo,
     pub(crate) latency: Duration,
     /// `Some` only on a peer-refresh tick the validator answered
     pub(crate) peers: Option<Vec<PeerInfo>>,
@@ -305,7 +305,7 @@ impl std::fmt::Debug for ChainViewCore {
 fn read(meta: &mut ValidatorMetadata, reading: Reading) {
     meta.failures = 0;
     meta.chain = reading.chain;
-    meta.estimated_height = Some(reading.estimated_height);
+    meta.info = Some(reading.info);
     meta.observed_at = Some(Instant::now());
     meta.latency.observe(reading.latency);
     if let Some(peers) = reading.peers {

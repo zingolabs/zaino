@@ -11,9 +11,9 @@ use crate::rpc::{
 };
 use crate::{
     decode, parse, BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
-    GetBlockchainInfoError, GetChainTipError, GetMempoolListingError, GetPeerInfoError,
-    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, QueryError,
-    SendRawTransactionError, SourceTip, TransactionResponse,
+    GetChainTipError, GetMempoolListingError, GetPeerInfoError, GetRawMempoolTransactionError,
+    GetTransactionError, MempoolListed, NonDomainError, QueryError, SendRawTransactionError,
+    TransactionResponse,
 };
 
 /// Single attempt per call (callers own their retry)
@@ -194,9 +194,7 @@ impl crate::GetChainTip for ZebraRpcAdapter {
 }
 
 impl crate::GetBlockchainInfo for ZebraRpcAdapter {
-    async fn get_blockchain_info(
-        &self,
-    ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
+    async fn get_blockchain_info(&self) -> Result<BlockchainInfo, QueryError<Infallible>> {
         self.call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info, fetch_failure)
             .await
     }
@@ -226,20 +224,6 @@ impl crate::GetRawMempoolTransaction for ZebraRpcAdapter {
             absent_or_fetch(error, || GetRawMempoolTransactionError::NotFound(txid))
         })
         .await
-    }
-}
-
-impl crate::GetMempoolSourceTip for ZebraRpcAdapter {
-    /// `getblockchaininfo`: hash + height in one round trip (two calls could straddle a block)
-    async fn get_mempool_source_tip(&self) -> Result<SourceTip, QueryError<Infallible>> {
-        let info = self
-            .call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info, fetch_failure)
-            .await?;
-        Ok(SourceTip {
-            hash: info.best_block_hash,
-            height: info.blocks,
-            estimated_height: info.estimated_height,
-        })
     }
 }
 

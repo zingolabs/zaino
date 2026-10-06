@@ -10,14 +10,15 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::RwLock;
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, Height, PeerInfo, TransactionId, TransactionLocation,
+    Block, BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, PeerInfo,
+    TransactionId, TransactionLocation,
 };
 
 use crate::{
     BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
-    GetBlockchainInfoError, GetChainTipError, GetMempoolListingError, GetPeerInfoError,
-    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, QueryError,
-    SendRawTransactionError, SourceTip, TransactionResponse,
+    GetChainTipError, GetMempoolListingError, GetPeerInfoError, GetRawMempoolTransactionError,
+    GetTransactionError, MempoolListed, NonDomainError, QueryError, SendRawTransactionError,
+    TransactionResponse,
 };
 
 pub struct MockChain {
@@ -168,11 +169,21 @@ impl crate::GetBlockByHash for MockChain {
 }
 
 impl crate::GetBlockchainInfo for MockChain {
-    /// Never a fabricated chain description (a test would pass on numbers no node produced)
-    async fn get_blockchain_info(
-        &self,
-    ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
-        Err(QueryError::Domain(GetBlockchainInfoError::NotReady))
+    /// Tip + hash only; estimate = the tip (no clock); no tip = genesis, as zebrad's own fallback
+    ///
+    /// - Schedule empty, branch 0, Sapling at genesis (no fabricated upgrade a test could pass on)
+    async fn get_blockchain_info(&self) -> Result<BlockchainInfo, QueryError<Infallible>> {
+        self.injected()?;
+        let (hash, height) = self.tip().unwrap_or((BlockHash::ZERO, Height::GENESIS));
+        let sprout = ConsensusBranchId::new(0);
+        Ok(BlockchainInfo {
+            blocks: height,
+            estimated_height: height,
+            best_block_hash: hash,
+            sapling_activation: Height::GENESIS,
+            upgrades: Vec::new(),
+            consensus: ConsensusBranchIds { chain_tip: sprout, next_block: sprout },
+        })
     }
 }
 
@@ -212,15 +223,6 @@ impl crate::GetChainTip for MockChain {
         self.injected()?;
         let ready = self.ready.load(Ordering::SeqCst);
         self.tip().filter(|_| ready).ok_or(QueryError::Domain(GetChainTipError::NotReady))
-    }
-}
-
-impl crate::GetMempoolSourceTip for MockChain {
-    /// Estimate = the tip (no clock); no tip = genesis, as zebrad's own fallback
-    async fn get_mempool_source_tip(&self) -> Result<SourceTip, QueryError<Infallible>> {
-        self.injected()?;
-        let (hash, height) = self.tip().unwrap_or((BlockHash::ZERO, Height::GENESIS));
-        Ok(SourceTip { hash, height, estimated_height: height })
     }
 }
 

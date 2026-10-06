@@ -32,6 +32,17 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
                 .reader()
                 .pin(),
             )),
+            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
+            zaino_chainview::ChainView::new(
+                vec![zaino_chainview::Endpoint {
+                    address: "unpolled:18232".to_owned(),
+                    source: Arc::new(zaino_source::mock::MockChain::new()),
+                }],
+                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
+            )
+            .expect("one endpoint")
+            .0
+            .subscriber(),
             zcash_protocol::consensus::NetworkType::Test,
         ),
         bind,
@@ -61,13 +72,13 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     .await
     .expect("the server binds and accepts");
 
-    // Mock validator answers `getblockchaininfo` NotReady → UNAVAILABLE (no stand-in branch or
-    // tip), decoded over h2 as a status rather than a dropped stream
+    // Unpolled view = below quorum → UNAVAILABLE (no stand-in branch or tip), decoded over h2 as
+    // a status rather than a dropped stream
     let refusal = wallet
         .get_lightd_info(zaino_proto::proto::service::Empty {})
         .await
-        .expect_err("validator not ready");
-    let named = refusal.message().starts_with("validator: ");
+        .expect_err("below quorum");
+    let named = refusal.message().ends_with("validators agree on a tip; 1 required");
     assert_eq!((refusal.code(), named), (tonic::Code::Unavailable, true), "{refusal:?}");
 
     // The wallet holds the one per-address slot, so the next connection is closed unserved:
@@ -109,6 +120,17 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
                 .reader()
                 .pin(),
             )),
+            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
+            zaino_chainview::ChainView::new(
+                vec![zaino_chainview::Endpoint {
+                    address: "unpolled:18232".to_owned(),
+                    source: Arc::new(zaino_source::mock::MockChain::new()),
+                }],
+                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
+            )
+            .expect("one endpoint")
+            .0
+            .subscriber(),
             zcash_protocol::consensus::NetworkType::Test,
         ),
         bind,
@@ -208,6 +230,19 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
                     .reader()
                     .pin(),
                 )),
+                // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
+                zaino_chainview::ChainView::new(
+                    vec![zaino_chainview::Endpoint {
+                        address: "unpolled:18232".to_owned(),
+                        source: Arc::new(zaino_source::mock::MockChain::new()),
+                    }],
+                    zaino_primitives::types::ReorgDepth::new(
+                        std::num::NonZeroU32::new(3).expect("non-zero"),
+                    ),
+                )
+                .expect("one endpoint")
+                .0
+                .subscriber(),
                 zcash_protocol::consensus::NetworkType::Test,
             ),
             bind,
@@ -242,7 +277,7 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         assert_eq!(
             answered.err(),
             Some(tonic::Code::Unavailable),
-            "{case}: served (mock: not ready)"
+            "{case}: served (unpolled view: below quorum)"
         );
 
         let cancelled = std::time::Instant::now();
@@ -276,6 +311,17 @@ async fn binding_a_held_port_fails_before_anything_is_served() {
                 .reader()
                 .pin(),
             )),
+            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
+            zaino_chainview::ChainView::new(
+                vec![zaino_chainview::Endpoint {
+                    address: "unpolled:18232".to_owned(),
+                    source: Arc::new(zaino_source::mock::MockChain::new()),
+                }],
+                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
+            )
+            .expect("one endpoint")
+            .0
+            .subscriber(),
             zcash_protocol::consensus::NetworkType::Test,
         ),
         bind,

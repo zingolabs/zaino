@@ -4,9 +4,10 @@
 //! - `getrawmempool true` — the listing the diff runs over, each entry's fee included (the
 //!   validator resolved its prevouts admitting it)
 //! - `getrawtransaction(txid, 0)` — bytes for what the diff added, fetched once per txid
-//! - the tip *of the mempool's own source* — the top of this endpoint's quorum vote
+//! - `getblockchaininfo` — the top of this endpoint's quorum vote (same source as the listing) +
+//!   the estimate and upgrade schedule `GetLightdInfo` serves
 //! - `getblockheader <h> false` — the vote's ancestry, walked down by `prev_hash`
-//! - `sendrawtransaction` — the broadcast fan-out (§5)
+//! - `sendrawtransaction` — the broadcast fan-out (§6)
 //! - `getpeerinfo` — each validator's peers (partition / eclipse telemetry, never a vote)
 //!
 //! - Retry = this crate's own per-endpoint ladder (`config.rs`)
@@ -21,7 +22,7 @@ pub trait EndpointSource:
     + zaino_source::GetBlockLink
     + zaino_source::GetMempoolListing
     + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetMempoolSourceTip
+    + zaino_source::GetBlockchainInfo
     + zaino_source::SendRawTransaction
     + zaino_source::GetPeerInfo
     + Send
@@ -35,7 +36,7 @@ impl<T> EndpointSource for T where
         + zaino_source::GetBlockLink
         + zaino_source::GetMempoolListing
         + zaino_source::GetRawMempoolTransaction
-        + zaino_source::GetMempoolSourceTip
+        + zaino_source::GetBlockchainInfo
         + zaino_source::SendRawTransaction
         + zaino_source::GetPeerInfo
         + Send

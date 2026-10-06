@@ -189,6 +189,7 @@ async fn boot(
         ValidatorHandler::new(
             Arc::clone(&validator),
             compact_block_service.clone(),
+            chainview.handles.view.clone(),
             config.network,
         ),
         config.serve.grpc_listen_address,

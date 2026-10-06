@@ -76,17 +76,14 @@ pub trait GetChainTip: Send + Sync {
     ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<GetChainTipError>>> + Send;
 }
 
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetBlockchainInfoError {
-    #[error("validator not ready")]
-    NotReady,
-}
-
-/// `getblockchaininfo`, incl. the upgrade schedule (a consensus input, not telemetry)
+/// `getblockchaininfo`: tip + hash in one round trip, the network estimate, the upgrade schedule
+///
+/// - Same source as [`GetMempoolListing`] = the tip a listing is tagged with
+/// - `Infallible` domain: answers with a tip or fails in transport
 pub trait GetBlockchainInfo: Send + Sync {
     fn get_blockchain_info(
         &self,
-    ) -> impl Future<Output = Result<BlockchainInfo, QueryError<GetBlockchainInfoError>>> + Send;
+    ) -> impl Future<Output = Result<BlockchainInfo, QueryError<Infallible>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -111,25 +108,6 @@ pub trait GetMempoolListing: Send + Sync {
     fn get_mempool_listing(
         &self,
     ) -> impl Future<Output = Result<Vec<MempoolListed>, QueryError<GetMempoolListingError>>> + Send;
-}
-
-/// Source's own tip + its estimate of the network's (`estimated_height` = an estimate even when
-/// synced: telemetry, never a vote)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SourceTip {
-    pub hash: BlockHash,
-    pub height: Height,
-    pub estimated_height: Height,
-}
-
-/// Tip of the source that served the mempool listing (tags a listing coherently)
-///
-/// - Same source as [`GetMempoolListing`], never a cheaper tip elsewhere
-/// - `Infallible` domain: `getblockchaininfo` returns a tip or fails in transport
-pub trait GetMempoolSourceTip: Send + Sync {
-    fn get_mempool_source_tip(
-        &self,
-    ) -> impl Future<Output = Result<SourceTip, QueryError<Infallible>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]

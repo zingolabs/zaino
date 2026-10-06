@@ -8,12 +8,15 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use zaino_primitives::types::PeerInfo;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, ReorgDepth,
+    TransactionId, Zatoshis,
+};
 use zaino_source::{
-    BlockLink, FailureMode, GetBlockLink, GetBlockLinkError, GetChainTip, GetChainTipError,
-    GetMempoolListing, GetMempoolListingError, GetMempoolSourceTip, GetPeerInfo, GetPeerInfoError,
+    BlockLink, FailureMode, GetBlockLink, GetBlockLinkError, GetBlockchainInfo, GetChainTip,
+    GetChainTipError, GetMempoolListing, GetMempoolListingError, GetPeerInfo, GetPeerInfoError,
     GetRawMempoolTransaction, GetRawMempoolTransactionError, MempoolListed, NonDomainError,
-    QueryError, SendRawTransaction, SendRawTransactionError, SourceTip,
+    QueryError, SendRawTransaction, SendRawTransactionError,
 };
 
 use crate::endpoint::Polled;
@@ -102,12 +105,20 @@ impl GetChainTip for FakeValidator {
     }
 }
 
-impl GetMempoolSourceTip for FakeValidator {
-    async fn get_mempool_source_tip(&self) -> Result<SourceTip, QueryError<Infallible>> {
+/// Tip + estimate only; empty schedule, branch 0
+impl GetBlockchainInfo for FakeValidator {
+    async fn get_blockchain_info(&self) -> Result<BlockchainInfo, QueryError<Infallible>> {
         let fake = self.0.lock().expect("fake validator mutex poisoned");
         let tip = fake.tip.unwrap_or(BlockRef { hash: BlockHash::ZERO, height: Height::GENESIS });
-        let estimated_height = fake.network_tip.unwrap_or(tip.height);
-        Ok(SourceTip { hash: tip.hash, height: tip.height, estimated_height })
+        let branch = ConsensusBranchId::new(0);
+        Ok(BlockchainInfo {
+            blocks: tip.height,
+            estimated_height: fake.network_tip.unwrap_or(tip.height),
+            best_block_hash: tip.hash,
+            sapling_activation: Height::GENESIS,
+            upgrades: Vec::new(),
+            consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+        })
     }
 }
 
@@ -336,7 +347,7 @@ async fn a_catching_up_validator_votes_its_tip_with_no_mempool() {
 }
 
 /// Quorum is over the configured set: one of three answering is not a majority, two agreeing is,
-/// and a third claiming a lone higher tip moves nothing.
+/// and a third claiming a lone higher tip moves nothing, nor the chain description served.
 #[tokio::test]
 async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let validators: Vec<Arc<FakeValidator>> =
@@ -346,13 +357,17 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
         height: Height::try_from(100).expect("100 is in range"),
     };
     let tx7 = TransactionId::from([7u8; 32]);
-    for validator in &validators {
+    for (validator, estimate) in validators.iter().zip([105, 106, 107]) {
         validator.edit(|fake| {
             fake.tip = Some(agreed);
+            fake.network_tip = Some(Height::try_from(estimate).expect("in range"));
             fake.bytes = [(tx7, vec![7u8; 8])].into_iter().collect();
             fake.peers = vec![outbound("seed-a:8233")];
         });
     }
+    let estimate = |pinned: &crate::ChainViewSnapshot| {
+        pinned.validator_info().map(|info| u32::from(info.estimated_height))
+    };
     validators[0].edit(|fake| fake.listed = [tx7].into_iter().collect());
 
     let (view, pollers) = ChainView::new(
@@ -376,6 +391,8 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let pinned = reader.current();
     assert_eq!(pinned.tip(), None, "one of three configured is not a quorum");
     assert!(pinned.mempool().is_err(), "fail closed below threshold");
+    let below = BelowQuorum { agreeing: 1, threshold: 2, configured: 3 };
+    assert_eq!(estimate(&pinned), Err(below), "no chain description below quorum either");
     let sighting = pinned.sighting(&tx7).expect("endpoint a reported it");
     assert_eq!(sighting.seen_at().count(), 1, "sighting recorded, just not servable");
 
@@ -388,6 +405,7 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     assert_eq!(tip.agreed_by, a_and_b.into_iter().collect());
     let mempool = pinned.mempool().expect("quorum met");
     assert!(mempool.get(&tx7).is_none(), "1 of 3 sightings < the per-transaction threshold");
+    assert_eq!(estimate(&pinned), Ok(105), "first agreer in configured order");
 
     // Endpoint c alone claims a far higher tip — agrees with nobody, so it moves nothing
     validators[2].edit(|fake| {
@@ -402,6 +420,7 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let pinned = reader.current();
     let tip = pinned.tip().expect("a and b still agree");
     assert_eq!(tip.block, agreed, "quorum tip = highest *agreed* block, never highest claimed");
+    assert_eq!(estimate(&pinned), Ok(105), "never the outlier's");
     let mempool = pinned.mempool().expect("quorum met");
     assert!(mempool.get(&tx7).is_some(), "a and c both report it = the threshold");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
