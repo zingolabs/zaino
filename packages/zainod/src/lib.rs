@@ -40,7 +40,9 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
             crate::config::TEST_FIXTURE_ENV,
             config_path.display(),
         );
-        crate::config::regtest_direct_fixture()
+        let mut config = crate::config::regtest_direct_fixture();
+        config.store.deferred_writes = crate::config::fixture_deferred_writes()?;
+        config
     } else if std::env::var_os(crate::config::MAINNET_STATE_FIXTURE_ENV).is_some() {
         warn!(
             "MAINNET DIRECT/STATE FIXTURE CONFIG active ({}) — NOT FOR PRODUCTION; ignoring --config {}",
