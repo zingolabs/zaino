@@ -59,6 +59,14 @@ writes directly and every namespace stays complete throughout; `BulkPolicy {
 enabled: false }` reproduces the direct path exactly on a backend that can
 defer.
 
+[`bulk_pending`](Backend::bulk_pending) reports whether a bulk load is still
+outstanding — a namespace a previous run left deferred because a crash
+interrupted the load or the `finish_bulk` merge. A durable backend answers it
+from its own persisted state, so a caller resuming after a restart can re-enter
+bulk mode and complete the load however small the remaining work is, rather than
+leave the namespace unreadable. It defaults to `false` — a backend that never
+defers has nothing pending.
+
 ## Errors
 
 One error type per operation — [`OpenError`], [`CommitError`], [`ReadError`],

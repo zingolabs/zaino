@@ -72,6 +72,33 @@ stepped over rather than deserialised. `compact` needs a validator serving
 zaino's pre-index compact read, i.e. the zebra fork over either transport. The
 mainnet RPC fixture takes the same choice from `ZAINO_TEST_FETCH`.
 
+## Deferred writes
+
+`[store] deferred_writes` controls how the initial index catch-up writes its
+scattered (hash-keyed) namespaces — address history, transparent spends,
+transaction location:
+
+```toml
+[store]
+deferred_writes = "auto"   # the default
+# deferred_writes = "off"  # write directly, as without the feature
+```
+
+`auto` lets the store defer those writes to sorted run logs during a large
+catch-up and bulk-load them in key order at the end, which removes the random
+B-tree inserts that otherwise dominate a first mainnet sync of the
+`TransparentHistory` set. The run logs need temporary disk roughly the raw size
+of those three namespaces, released as each finishes (see the backend's guide).
+`off` reproduces the direct write path exactly, for a deployment that would
+rather climb to reach incrementally than spend that disk. Either way, address
+and spend reads are refused as not-yet-serviceable until the load completes, and
+compact-block reads serve throughout; a load left unfinished by a crash is
+completed on the next boot before the indexer reports Ready.
+
+The ztest/deploy fixtures take the same choice from `ZAINO_TEST_DEFERRED_WRITES`
+(`auto` or `off`), so a cluster A/B can toggle it without a rebuild; an
+unrecognised value fails to boot rather than guessing.
+
 ## Boot-time checks
 
 Two things happen before the indexer resumes, both loud when they fire:
