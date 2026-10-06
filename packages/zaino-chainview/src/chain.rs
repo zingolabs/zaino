@@ -1,4 +1,4 @@
-//! One endpoint's best chain: its tip + `depth` ancestors, hash-linked (its vote, §4)
+//! One endpoint's best chain: its tip + `depth` ancestors, hash-linked (its vote until phase 5, Status)
 //!
 //! - Built by [`Walk`]: down from a reported tip by `prev_hash` until it joins the held chain or
 //!   reaches the floor (steady state = one `getblockheader` per new block)

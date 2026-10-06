@@ -93,8 +93,9 @@ non-zero) plus the target's work fitting 128 bits, and reports each rejection
 as its own `CompactDifficultyError` variant. The work
 (`floor(2^256 / (target + 1))`) is computed for that check only and never
 exposed. Zaino holds no chain-work type and does no work-based fork choice:
-the tip is agreement by hash across the configured validators
-([chainview §4](../../docs/design/chainview.md#4-quorum)).
+the tip is agreement by hash across the configured validators, until the
+header chain's most-work rule replaces it
+([chainview §2](../../docs/design/chainview.md#2-the-best-chain-proof-of-work)).
 
 ## Byte order
 

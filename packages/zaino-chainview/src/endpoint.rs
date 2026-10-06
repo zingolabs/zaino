@@ -6,7 +6,7 @@
 //! whole mempool per endpoint per tick.
 //!
 //! Each poller owns its interval, backoff and failure count, so a slow or dead validator
-//! degrades alone (`docs/design/chainview.md` §2).
+//! degrades alone (`docs/design/chainview.md` §7).
 //!
 //! # A transaction leaves one endpoint by exactly one route
 //!
@@ -150,7 +150,7 @@ impl<S: EndpointSource> EndpointPoller<S> {
         let mut admitted: BTreeSet<TransactionId> =
             listing.keys().filter(|txid| previous.contains(txid)).copied().collect();
         for (txid, fee) in listing.iter().filter(|(txid, _)| !previous.contains(txid)) {
-            // Fetch-once: bytes = a round trip, paid only by the first endpoint to report (§3)
+            // Fetch-once: bytes = a round trip, paid only by the first endpoint to report (§5)
             if self.view.holds(txid) {
                 added.push(Sighted { txid: *txid, raw: None, fee: *fee });
                 admitted.insert(*txid);

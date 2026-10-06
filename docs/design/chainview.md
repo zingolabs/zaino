@@ -1,255 +1,402 @@
-# zaino-chainview: one view over many validators
+# Chainview: the best chain and the mempool, from many sources
 
-`zaino-chainview` is Zaino's view of the chain tip and the mempool across every
-validator the operator configures. A wallet talking to one node cannot tell "my
-transaction is stuck" from "my transaction has propagated", or "I am behind"
-from "the chain forked". By polling N validators and folding their answers
-together, every answer the view gives carries how many nodes agree, which is the
-one thing a client cannot compute for itself.
+Chainview is how Zaino knows what the chain is and what is waiting to get into it. It answers
+three questions for the rest of the system:
 
-Membership is `[source]` followed by every `[[chainview_peers]]` entry. With no
-peers configured the view is a single validator with a threshold of one, so the
-wiring is the same in every deployment.
+- **Which chain is best?** Block sync follows it; every index is built from it.
+- **What is in the mempool?** `GetMempoolTx` and `GetMempoolStream` serve it.
+- **How far has a transaction spread?** Every transaction carries `peers: x/y, trusted: x/y`.
 
-The view has three consumers. Its quorum tip is what block sync follows: the
-producer bulk-fetches up to the finalized boundary below it (spread across every
-configured validator unless `fetch.primary_validator` names one), then advances
-the non-finalized state each time the quorum tip moves. Its mempool answers `GetMempoolTx` and
-`GetMempoolStream`. Its broadcast answers `SendTransaction`. `GetTransaction` and
-`GetLightdInfo` do not go through the view; they read `[source]` alone. The view
-speaks JSON-RPC only (§6). Cadence constants and the Rust API are in the crate's
-[usage guide](../../packages/zaino-chainview/usage.md).
+The principle behind every rule below: **verify what Zaino can, trust validators for as little
+as possible, and take everything else from as many peers as possible.** Zaino verifies proof of
+work on block headers itself. It does not validate transactions, so it leans on a small set of
+validators it trusts for exactly that, and nothing more.
 
-## 1. Membership is configured, never discovered
+## Status
 
-The operator supplies the endpoint set, as an explicit list or from service
-discovery inside a trust domain they control. We never derive it from the chain,
-because **a quorum over a discovered set is not a quorum**. Quorum security rests
-on the set being curated, and an adversary who can inject endpoints outvotes the
-honest ones. The Zcash p2p network is not Sybil-resistant (proof-of-work protects
-the chain, not a peer table), so `getpeerinfo` is the wrong source for
-membership.
+| Part                                                                                       | State                                       |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| Mempool view, broadcast fan-out, telemetry (§5, §6, §11)                                   | built, over a vote of configured validators |
+| `GetMempoolStream` on a write-once log (§5)                                                | built                                       |
+| `GetLightdInfo` from the view (§12)                                                        | built                                       |
+| `[[trusted_validators]]`, any-trusted admission, non-fatal validator failure (§5, §7, §10) | built                                       |
+| `peers/trusted` counts on the extension service (§5)                                       | planned, phase 2                            |
+| Trusted-validator links: lanes, budgets, batches, routing (§7, §9)                         | planned, phases 2–3                         |
+| Push streams (§7)                                                                          | planned, phase 4                            |
+| Header chain: proof of work, most-work tip, finality (§2–§4)                               | planned, phase 5; replaces the vote         |
+| Peers (§8)                                                                                 | planned, phase 6                            |
 
-It is a good source of telemetry. Each poller reads its validator's
-`getpeerinfo` every 60 seconds into `ValidatorMetadata::peers` (while the
-validator is `Live` or `CatchingUp`), and the fold cross-references the live
-endpoints' *outbound* peers after every report:
+Until phase 5, the tip is a majority vote of the configured validators by hash, which is what
+`QuorumTip` and the code comments citing this document still describe.
 
-- **Partition**: two live validators share no outbound peer.
-- **Eclipse**: the live validators together reach at most
-  `ECLIPSE_OUTBOUND_MAX` distinct outbound peers (an isolated node, such as a
-  regtest validator with no peers at all, raises nothing).
-- **Stale tip**: a live validator's tip trails its own `estimatedheight` by at
-  least `STALE_TIP_BLOCKS`. Zebra estimates that height from the tip block's
-  time and the target spacing, not from its peers, so the gap says "this node
-  stopped advancing", which is what an eclipsed or stalled node looks like.
-
-Inbound peers are left out of the comparison because their addresses carry
-ephemeral ports. Each condition is logged once when it rises and once when it
-clears, and the raw inputs are exported as `zaino.chainview.*` gauges. None of
-it decides membership, a vote, or whether anything is served, so a false alarm
-(or an adversary provoking one) costs a log line and nothing in trust. A failed
-`getpeerinfo` keeps the last answer and never fails the poll.
-
-## 2. Two layers
+## 1. Sources
 
 ```text
-  EndpointPoller × N          one validator each: poll, diff, report a delta
-        │
-        ▼
-  ChainViewCore               folds deltas into one ChainViewSnapshot, published via ArcSwap
-        │
-        ▼
-  ChainViewSubscriber         readers pin one snapshot per request or stream
+     peers (discovered, many)                    trusted validators (configured, 1–2)
+     open p2p protocol                           JSON-RPC (+ zebrad's push streams)
+        │                                           │
+        │ headers · blocks · mempool ids/bytes      │ headers · blocks · mempool listing + fees
+        │ broadcast                                 │ mined tx by id · broadcast
+        ▼                                           ▼
+   ┌──────────────┐                          ┌──────────────────┐
+   │   PeerSet    │                          │ ValidatorLink ×N │  lanes, budgets, batches
+   └──────┬───────┘                          └────────┬─────────┘
+          └──────────────────┬────────────────────────┘
+                             ▼
+              verify everything that can be verified
+                             │
+          ┌──────────────────┴───────────────────┐
+          ▼                                      ▼
+   HeaderChain (best chain)               MempoolView (sightings)
 ```
 
-Each validator gets its own `EndpointPoller`, which owns its interval, backoff
-and failure count. A slow or flaky validator therefore degrades alone: while it
-is on its backoff ladder it stops voting, and the rest of the view carries on.
-The poller diffs each listing against its own previous one and reports only the
-change (added, removed, and its chain), so folding a report costs `O(change)`
-rather than `O(endpoints × mempool)` per tick.
+A **peer** is any node on the Zcash p2p network. Peers are discovered, unauthenticated and cheap
+to create, so nothing a peer says counts until Zaino has checked it. A **trusted validator** is a
+zebrad the operator configured: ours, or a partner's with their consent and credentials.
 
-The chain is the validator's tip plus `finalised_depth` ancestors, read with
-`getblockheader <height> false` and checked link by link against each child's
-`prev_hash` (the hash is recomputed from the header bytes, never taken on
-trust). Each walk starts at the reported tip and descends until it joins the
-chain held from the previous tick, so steady state costs one header per new
-block and the first poll costs `finalised_depth` headers once. A validator that
-reorgs between reporting its tip and answering for its headers keeps last
-tick's chain: that is a race, not a failure.
+What each source is used for, and what makes it safe:
 
-The fold publishes a new snapshot after every report, cheaply because the
-collections are `imbl`. A reader pins one snapshot per request or stream, so a
-fold that lands mid-response cannot splice two views into one answer.
+| Need                    | Peers          | Trusted           | Check                                                      |
+| ----------------------- | -------------- | ----------------- | ---------------------------------------------------------- |
+| Headers / best tip      | ✓ preferred    | ✓                 | proof of work, difficulty, time, linkage (§2)              |
+| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle and auth-data roots against the header chain |
+| Mempool bytes           | ✓ first        | on miss           | txid recomputed from the bytes                             |
+| Mempool admission + fee | —              | ✓ **only source** | zebrad admitted it after full validation                   |
+| Mined transaction by id | —              | ✓ **only source** | peers serve mempool transactions only                      |
+| Finality confirmation   | —              | ✓ **only source** | §4                                                         |
+| Broadcast               | ✓              | ✓                 | success = any trusted validator accepts                    |
+| Propagation             | ✓ count        | ✓ count           | telemetry, never a vote                                    |
 
-Giving up is different from degrading. Ten consecutive failures, or a validator
-that reports it has no mempool at all, ejects the endpoint: its sightings and its
-vote are retracted and its poller returns an error. `zainod` treats that error
-as fatal and exits, so a validator that stays unreachable through the whole
-backoff ladder stops the daemon.
+The trusted validators' responsibility is the right-hand column's "only source" rows, and the
+design keeps shrinking it: anything a peer can supply verifiably comes from peers.
 
-## 3. The snapshot
+**Why peers cannot vote.** A peer is an IP address that completed a handshake. Anyone can run
+nine of them, or ninety, and the reachable mainnet network is small (21 nodes on the current
+protocol in a 2026-10-06 crawl). A count of peers proves nothing an attacker cannot buy. Proof of
+work is different: a heavier chain costs real mining however many peers present it. So peers are
+safe sources of headers and of anything checkable against them, and unsafe sources of claims.
 
-```rust
-pub struct ChainViewSnapshot {
-    tip: Option<QuorumTip>,               // None below quorum
-    agreeing: EndpointSet,                // largest group holding one common block
-    epoch: u64,                           // bumped when the tip *block* changes
-    mempool: OrdMap<TransactionId, Sighting>,
-    arrivals: Vector<TransactionId>,      // became servable this epoch, in order
-    endpoints: Vector<ValidatorMetadata>,
-    alarms: Alarms,                       // partition / eclipse / stale, edge-logged
-    quorum: Quorum,
-}
+**Why Zaino does not validate transactions.** It would need proof verification, a nullifier-set
+index, an outpoint index, script verification and mempool conflict tracking: a second
+implementation of zebrad's mempool verifier, kept in lockstep with every network upgrade. Proofs
+alone are not enough (a re-spent note carries valid proofs and fails only against the nullifier
+set). A trusted validator answers the question; Zaino asks it.
 
-struct Sighting {
-    seen_at: EndpointSet,                 // bitset over `endpoints`
-    ours: bool,                           // relayed by us
-    raw: Bytes,
-    fee: Option<Zatoshis>,
-}
+## 2. The best chain: proof of work
+
+The best chain is the valid header chain with the most cumulative work. Headers come from every
+source; how one was received never changes how it is checked.
+
+| Rule          | Check                                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Proof of work | Equihash (n = 200, k = 9) solution valid, and the header hash ≤ its target                                                                                   |
+| Difficulty    | `nBits` = what the adjustment rule expects: 17-block averaging window, median time of 11, damping 4, clamps +16 % / −32 %, testnet's minimum-difficulty rule |
+| Time          | later than the median of the previous 11; at most 2 h ahead of the local clock                                                                               |
+| Linkage       | `prev_hash` = the parent's hash, recomputed from its bytes                                                                                                   |
+| Work          | `2^256 / (target + 1)` per header, summed from genesis                                                                                                       |
+
+Equihash costs 156 µs per header on one core (200 mainnet headers, 2026-10-06). One header every
+75 s at the tip is free, and verifying all ~3.5 M mainnet headers takes about nine minutes on one
+core, a fraction of that across cores, since each solution is independent. The difficulty rule is
+a port of zebra-state's `AdjustedDifficulty` (zebra-state itself brings RocksDB); its test oracle
+is the real chain, every mainnet header's `nBits` reproduced.
+
+On regtest zebrad disables proof of work, and so does Zaino: a property of the declared network,
+like the reorg bound.
+
+Headers are verified **from genesis, once**. The verified chain is persisted (§3), and that record
+is the checkpoint every restart resumes from: never a height a validator or a compiled-in list
+supplied.
+
+Above the final boundary the chain is a tree: every valid branch is kept, and the best tip is the
+leaf with the most work.
+
+```text
+  final boundary (tip − 1000)
+        │
+  ──────●──●──●──●──●──●──●──●──●──●──●  A   work 1000.7  ◀── best tip
+                          │
+                          └──●──●──●      B   work 1000.2  (kept: may still win)
+
+  B gains two blocks → work 1000.9 → best tip moves to B: a reorg at the fork
 ```
 
-`seen_at` is a **bitset, not a count**. It costs the same and it answers *which*
-nodes have the transaction, which is what makes partition and eclipse analysis
-possible. `QuorumTip::agreed_by` is the same bitset for the tip. Its width caps
-the configured set at 64 endpoints.
+## 3. Where it sits in sync
 
-The fee is the first one any validator listed through `getrawmempool true`
-(every validator lists the same one), and it is `None` only for our own
-broadcast before any validator has listed it.
+Sync is headers-first: the header chain decides the chain, and block sync fills it in.
 
-`ValidatorMetadata` carries what a decision about one endpoint needs:
+```text
+  peers ─┐
+         ├─ headers ─▶ HeaderChain ── best tip (watch) ───────────▶ Producer ──▶ BlockSink ──▶ indexes
+trusted ─┘              │    │                                       ▲  │
+                        │    └─ hash_at(h) ── is this block on it? ──┘  │
+                        │                                               │
+                        └─ header store (final records, own files)      │
+                                                                        │
+  peers ─┐                                                              │
+         ├─ blocks by height or hash ─▶ BlockFetchPool ─────────────────┘
+trusted ─┘
+```
 
-| Field                     | Decision it enables                                     |
-| ------------------------- | ------------------------------------------------------- |
-| chain (`tip()`)           | its vote: the tip and every ancestor in its window      |
-| `observed_at`             | staleness of the observation                            |
-| `estimated_height`        | stale-tip telemetry                                     |
-| `latency` (EWMA)          | routing                                                 |
-| `failures`, `state`       | eject and back off                                      |
-| `agreement`               | `Agreed`, `Ahead`, `Behind`, `Diverged` or `Unknown`    |
-| `peers`                   | partition and eclipse telemetry                         |
+`HeaderChain` lives in its own crate, `zaino-header-chain`: the verification rules as pure
+functions, the branch tree in memory, and a store on `zaino-persistence`. It publishes the best
+tip on a `watch` channel and answers `hash_at(height)` on the best chain.
 
-Raw bytes are fetched **once**. `getrawmempool` returns ids and bytes cost a
-round trip, so a poller that lists a txid the view already holds reports it
-without fetching. Paying that round trip per endpoint per transaction would be N
-times the work for the same bytes.
+The **producer** changes in one place. Today it follows the quorum tip and fetches only from the
+validators that voted for it, because a validator outside that set may serve a stale branch. Under
+the header chain, any source may serve any block: the producer checks each fetched block's hash
+against `hash_at(height)` and refuses one that differs. `ChainHead`, the non-final window, the
+reorg path and the `BlockSink` steps are unchanged; they already handle a tip that moves to
+another branch.
 
-## 4. Quorum
+The **header store** follows the same two watermarks as every index
+([non-finalized-state.md](./non-finalized-state.md)): the tree above the final boundary is
+memory, and a header is written once it is final. One fixed-size record per height (hash, time,
+`nBits`, cumulative work: ~80 B, ~280 MB for mainnet), encoded by named functions next to a golden
+test, as every disk layout is.
 
-The threshold is `⌊N/2⌋ + 1` over the **configured** set, not the responding
-set. Majority-of-responding is trivially subvertible: DoS three of five
-validators and the remaining two become a "quorum".
+**Existing indexes are checked by their tip alone.** Every block hash commits to its parent's, so
+an index whose durable tip hash equals the verified chain's hash at that height holds exactly the
+verified chain below it. The producer already compares each index's durable tip against the
+chain it follows; under the header chain that comparison is against verified work.
 
-An endpoint's **vote is its chain**: its tip and every ancestor in its window.
-The **tip** is the highest block that at least threshold endpoints' chains hold
-*by hash*, never the maximum height, or one node claiming height 999,999 would
-move it. Two blocks at one height cannot both reach a majority, so that block is
-unique, and `QuorumTip::agreed_by` is every voter holding it, whether as its own
-tip or as an ancestor of it.
+## 4. Finality
 
-Voting on the exact tip instead would split the vote every time a block
-propagates: with two validators one block apart, neither tip has a majority even
-though both hold the parent. Counting ancestors makes the quorum tip the highest
-block a majority can vouch for, so it never drops out mid-propagation.
+```text
+  height ─▶     ... ─────────────────────────┬──────────────────────────────────┐
+                    final (on disk)          │       non-final (memory)          │ best tip
+                                             │◀────────── 1000 blocks ──────────▶│
+                                     final boundary
+                                             ▲
+                     a block crosses only if a trusted validator holds it
+```
 
-It also means the tip can **retreat**. If the validator that was ahead stops
-voting and the rest lag, the highest block a majority holds is an ancestor of
-the old tip, and the view reports that. Block sync sees a retreat inside its
-non-final window as a reorg (reset, then replay), which is the honest reading of
-"a majority no longer vouches for those blocks". A retreat below the window
-cannot be a legal fork (on mainnet and testnet the window is at least the
-consensus reorg bound), so the producer waits it out instead of halting, unless
-the tip contradicts a block an index committed, which stops it as a divergence.
+A header proves work, not that its block's transactions are valid. Someone who spends a whole
+block's mining on an invalid block can make it the best tip briefly; honest validators reject it,
+the network outmines it, and Zaino reorgs away. To keep such a block out of the durable indexes,
+**a block is written as final only once a trusted validator holds it** on its own chain.
 
-Chainwork plays no part. The heaviest-chain rule is only sound once proof of
-work is verified (the Equihash solution, hash below target, the difficulty
-adjustment), which is consensus code Zaino does not hold
-([boundaries.md](./boundaries.md)); without those checks a header's work is a
-claim, and one lying validator would win. Over an operator-curated set, agreement
-by hash is the rule that needs no consensus code.
+This costs no latency: the boundary is 1,000 blocks behind the tip, and a trusted validator has
+held a block for an hour or more by then. With every trusted validator down that long,
+finalization pauses and alarms; serving continues from the non-final window.
 
-An endpoint votes while it is `Live`, and also while it is `CatchingUp`: a
-validator behind the network tip reports its mempool as inactive, so its
-sightings are retracted, but its chain still counts so block sync can follow it.
-An endpoint that is `Pending`, `Degraded`, `Down`, or `Syncing` (the node says it
-is not ready) does not vote. Chains are `finalised_depth + 1` blocks deep, the
-same span as the sync window, so a split deeper than that has no common block and
-the view goes below quorum rather than guess.
+## 5. The mempool view
 
-**Fail closed.** Below threshold, `tip` is `None`. The mempool RPCs refuse with
-gRPC `UNAVAILABLE`, the same rule as a syncing index, and block sync waits for
-quorum to return. The refusal reports the largest group of voters that hold one
-common block. Mempool membership requires quorum too, with one exception (§5).
+Every transaction the view knows is a **sighting**:
 
-## 5. Downstream
+```text
+  Sighting
+  ├─ raw        bytes, fetched once (peers first; txid recomputed)
+  ├─ fee        a trusted validator's listing (it resolved the prevouts)
+  ├─ trusted    bitset over configured trusted validators    → trusted: 1/2
+  ├─ peers      set of connected peers that announced it     → peers: 7/9
+  └─ ours       broadcast by this Zaino
+```
 
-### Broadcast (`SendTransaction`)
+- **Servable** = listed by **any** trusted validator, or `ours`. Each trusted validator is trusted,
+  so one admission proves a transaction valid, and serving it then gets an incoming payment to a
+  wallet as early as possible. A wallet's own send is servable the moment we relay it.
+- **Peer-only sightings** (no trusted listing yet) are held: their bytes are ready the moment a
+  trusted validator lists them, and they are streamed, labeled unverified, through a Zaino
+  extension service for wallets that opt in. `GetMempoolTx` and `GetMempoolStream` never serve
+  them: a peer's listing is a free claim, and a forged shielded "pending payment" needs no valid
+  proof if nobody checks one.
+- **`peers: x/y, trusted: x/y`** is tracked for every sighting and exposed through the same
+  extension service, next to `zaino.index.v1.IndexedTipService`; lightwalletd's `RawTransaction`
+  has no field for it, so the protocol stays unchanged.
+- A transaction leaves the view when no source lists it anymore. An unmined transaction survives a
+  block that did not include it; an `ours` nobody lists is dropped at the next tip move.
+- With no trusted validator live, `GetMempoolTx` / `GetMempoolStream` refuse with `UNAVAILABLE`
+  rather than serving an unverified mempool. The extension's unverified stream keeps going.
 
-We fan every broadcast out to **every** endpoint. N entry points propagate
-faster than one, and one dead node cannot block a send.
+### `GetMempoolStream`
 
-The send succeeds if **any** endpoint accepts. A node rejecting what another
-accepted usually has a stricter local policy (a fee filter), not a different
-idea of validity. Only a unanimous rejection is reported to the wallet as a
-rejection, and then it is the real one. If nothing accepted and at least one
-endpoint was unreachable, we cannot say the transaction was rejected, so the
-call fails with `UNAVAILABLE`.
+```text
+  subscribe ──▶ every tx currently in the mempool ──▶ each new tx, once, as it arrives ──▶ closes on a new block
+                                                                                              │
+                wallet resubscribes ◀─────────────────────────────────────────────────────────┘
+```
 
-On acceptance the transaction is marked `ours`.
+The protocol defines it this way ("a stream of current Mempool transactions … close the returned
+stream when a new block is mined", `service.proto`), and lightwalletd does the same. Sending the
+current transactions first is what lets a wallet that resubscribes after each block see a
+transaction that arrived while it was reconnecting. The stream closes when the best tip **block**
+changes, never when the mempool empties: an empty mempool with no new block is a live, silent
+stream.
 
-### Mempool RPCs
+**Written once, read by cursors.** Each tip block gets one append-only log: the mempool at the
+block, then every transaction that becomes servable, each encoded once and shared by refcount.
+A subscriber is a pointer to that log and a cursor into it, so per-transaction work never scales
+with subscribers and per-subscriber state never grows with arrivals. The mechanism is documented
+where it lives, `zaino-chainview/src/feed.rs`.
 
-`GetMempoolTx` and `GetMempoolStream` serve a transaction when
-`seen_at.count() >= threshold` **or** it is `ours`. Without the `ours` exception
-a wallet's own transaction would be hidden for the seconds it takes to
-propagate, which is the one case wallets care most about, and `SendTransaction`
-is the one place that can know it. An `ours` transaction that no validator lists
-is dropped the next time the quorum tip moves. Any other transaction leaves the
-view only when every endpoint stops listing it, since an unmined transaction
-survives the block that did not include it.
+Measured (2026-10-06, one core for the server, real HTTP/2 over loopback, 2,000–5,000
+subscribers, 2 KB transactions): each arrival costs the server ~2–3 µs per subscriber (1.9 µs in
+bursts, which coalesce into one write per connection), essentially h2 framing and the socket
+write. The zaino part is ~0.1 µs. Opening costs are bound by bytes: the protocol resends the whole
+mempool to every subscriber on every block. A resumable extension stream (subscribe from a
+cursor, never closed by a block) is what removes that, and is the planned answer.
 
-`GetMempoolStream` sends a snapshot of the servable mempool and then tails it,
-matching lightwalletd. It ends when the quorum tip moves or quorum is lost,
-never when the mempool empties, so an empty mempool with no block being mined is
-a live, silent stream, not a hang. The snapshot is not optional: pepper-sync
-reopens this stream in a loop and has no other way to learn of a transaction
-that arrived while it was reconnecting.
+## 6. Broadcast
 
-### Tails at scale
+`SendTransaction` goes to **every** trusted validator and to connected peers at once: more entry
+points propagate faster, and one dead node cannot block a send.
 
-Every connected pepper-sync wallet holds one mempool stream and reopens it on
-every block, so the cost of a tail is multiplied by the number of wallets. We
-keep that cost small in three ways.
+| Trusted validators answer      | Result                                                             |
+| ------------------------------ | ------------------------------------------------------------------ |
+| any accepts                    | success; the transaction is marked `ours`                          |
+| some accept, some reject       | success (a rejecting node usually has a stricter local fee filter) |
+| all reject                     | the rejection, as the wallet sees it                               |
+| none accepts, some unreachable | `UNAVAILABLE`: we cannot say it was rejected                       |
 
-Each published snapshot carries an **epoch**, bumped whenever the tip *block*
-changes (a change in `agreed_by` alone moves the tip watch that fetch routing
-reads, but leaves the epoch and every open stream alone), and
-the epoch's **arrivals**, the txids that became servable during it, in order. A
-tail pins the snapshot it opened on and keeps a cursor into the arrivals. It
-wakes only when an arrival lands or the epoch moves, never on propagation churn,
-and the only state it owns is the set of txids it delivered after its snapshot.
-Finally, the serving layer renders a snapshot once per published view and shares
-the bytes across every tail anchored there, so a block that reconnects every
-wallet at once costs one render.
+Peers never decide the outcome: relaying to a peer carries no answer.
 
-### Propagation data
+## 7. Talking to a trusted validator
 
-`RawTransaction` is `{ data, height }`, with nowhere to put propagation data.
-Each `Sighting` records *which* endpoints list the transaction. A wallet
-watching its transaction go from 1/5 to 4/5 would know it is propagating, and
-one watching 1/5 hold still would know it is not. Neither is observable from a
-single node. No RPC exposes this yet, because the gRPC surface has no field for
-it.
+Each trusted validator gets one `ValidatorLink`, which owns everything Zaino sends it. A zebrad
+JSON-RPC server admits 100 connections in total; before links, Zaino's pool per validator was
+unbounded and wallet traffic went straight through it (`GetTaddressTransactions` fans one call
+out into one `getrawtransaction` per txid).
 
-## 6. Why not p2p
+```text
+                     ┌─ Control  (tip, listing, headers)   cap 2 ─┐
+  ValidatorLink ─────┼─ Sync     (block fetch)              cap 4 ─┼──▶ ≤ 8 connections ──▶ zebrad
+                     └─ Serve    (GetTransaction, sends)    cap 2 ─┘
+                                 + request-rate and byte-rate limits (GCRA)
+```
 
-A p2p connection sees transactions earlier and gives propagation topology
-natively, but its transactions are **unvalidated**. An `inv` means "a peer
-relayed this", where `getrawmempool` means "this node validated and accepted
-it", and serving wire sightings would show a wallet transactions no validator
-accepted. Add the cost of pulling Zcash's network stack into an indexer that
-holds no consensus code ([boundaries.md](./boundaries.md)), and it is not worth
-the roughly one second of poll lag it saves.
+- **Lanes do not borrow**, so a bulk-sync burst or a wallet storm never delays the listing the
+  mempool depends on. Each in-flight request holds one HTTP/1.1 connection, so the caps bound the
+  connections, and defaults keep `zaino nodes × cap` well under 100.
+- **Bytes are charged per body chunk as it is read** (the `governor` crate): an exhausted budget
+  stops reading, and TCP backpressure slows the validator's send.
+- **Batches.** JSON-RPC batch requests (zebrad accepts them; verified on 6.3.0) carry N calls in
+  one round trip and one permit: one poll tick is one batch, and header walks and byte fetches
+  batch.
+- **Push streams.** zebrad's `Indexer` gRPC streams `ChainTipChange` and `MempoolChange`. When a
+  validator's config names an `indexer_address` and the stream is up, events wake its poller at
+  once and the reconcile interval lengthens; absent or broken, the poller runs on its short
+  interval. The listing stays the one source of truth (an event only decides when to read it),
+  which is safe because zebrad ends the stream on lag rather than dropping events, and every
+  (re)connect starts with a full listing.
+- A failing trusted validator degrades and re-probes on a capped backoff ladder; it never ends
+  the process, and boot does not wait for it.
+
+## 8. Talking to peers
+
+The p2p layer is `zebra-network`: handshake, address book, crawler, per-peer limits, and a peer
+set exposed as a load-balanced tower service. Zaino embeds it with an inbound service that answers
+nothing, and binds its listener to loopback: Zaino serves no peer. It brings `zebra-chain`, whose
+crypto crates match the forks Zaino already patches in, and whose difficulty and work types the
+header chain reuses.
+
+| Request                                      | Used for                                        |
+| -------------------------------------------- | ----------------------------------------------- |
+| `FindHeaders`                                | headers past our best tip, from many peers (§2) |
+| `BlocksByHash`                               | blocks near the tip and on failover             |
+| `MempoolTransactionIds`, `TransactionsById`  | mempool sightings and bytes (§5)                |
+| `AdvertiseTransactionIds`, `PushTransaction` | broadcast (§6)                                  |
+
+Not bulk sync: zebrad answers one block per request with one request in flight per peer, so p2p
+block fetch is latency-bound; bulk throughput comes from trusted validators, or from bootstrapping the indexes off a published
+index archive (`[snapshot]` in zainod's config).
+
+Etiquette: mainnet peers keep one connection per IPv4 address, and the network is small. The peer
+target stays modest, and a host that also runs a zebrad competes with it for the same slot on
+every peer.
+
+## 9. Routing
+
+A request any of several sources may answer goes to the less loaded of two picked at random,
+load = peak-EWMA latency × requests in flight (power-of-two-choices, as in Finagle, linkerd and
+zebra-network's own peer set). A nearby source wins until it has hundreds of requests in flight,
+and a distant one becomes failover without anyone configuring a primary.
+
+| Request             | Candidates                                     |
+| ------------------- | ---------------------------------------------- |
+| block, near the tip | peers, then trusted                            |
+| block, bulk         | trusted and peers (trusted wins on throughput) |
+| mined transaction   | trusted                                        |
+| mempool bytes       | peers, then trusted                            |
+
+## 10. When things fail
+
+| Down                    | Chain + index-backed methods            | Default mempool | Unverified stream | Finality       |
+| ----------------------- | --------------------------------------- | --------------- | ----------------- | -------------- |
+| one trusted validator   | ✓                                       | ✓               | ✓                 | ✓              |
+| every trusted validator | ✓ (headers + blocks from peers, slower) | `UNAVAILABLE`   | ✓                 | pauses, alarms |
+| every peer              | ✓ (headers + blocks from trusted)       | ✓               | —                 | ✓              |
+| everything              | tip stops; stale-tip alarm              | `UNAVAILABLE`   | —                 | pauses         |
+
+## 11. Telemetry
+
+Observation only: none of it changes a tip, a sighting's servability, or what is served. Each
+condition logs once when it rises and once when it clears, with raw inputs as
+`zaino.chainview.*` gauges.
+
+- **Stale tip:** the best tip's time trails the clock by ≥ 24 blocks' worth (the chance of a
+  natural 30-minute gap is ≈ e^-24): stalled, or eclipsed.
+- **Trusted validator diverged:** its chain does not hold the best tip and is not behind it. The
+  node is broken, or the network is feeding a chain the validators reject.
+- **Finality paused:** no trusted validator holds the block at the final boundary.
+- **Thin network:** few distinct peers, or trusted validators sharing no outbound peer.
+
+Per trusted validator: state, agreement with the best tip (`Agreed`, `Ahead`, `Behind`,
+`Diverged`), latency, failures. Per transaction: `peers: x/y, trusted: x/y` as it moves.
+
+## 12. `GetLightdInfo`
+
+The most frequent wallet call (50× any other on the mainnet fleet) never waits on a validator. It
+renders from one pinned view plus the compact-block index's served height: the network estimate,
+upgrade schedule and branch come from the last `getblockchaininfo` of a trusted validator holding
+the best tip, read by its poller. Below that, `UNAVAILABLE`.
+
+## Configuration
+
+```toml
+[[trusted_validators]]
+jsonrpc_address = "golden-mainnet-zebra.vaquita-altair.ts.net:8232"
+indexer_address = "golden-mainnet-zebra.vaquita-altair.ts.net:8230"  # push streams; absent = poll
+
+[[trusted_validators]]
+jsonrpc_address = "eu-zebra.example:8232"
+
+[p2p]
+enabled = true
+max_peers = 16
+```
+
+`[[trusted_validators]]` replaces `[source]` and `[[chainview_peers]]`, with no compatibility
+shim; routing replaces `fetch.primary_validator`.
+
+## Phases
+
+1. `GetLightdInfo` from the view (§12): **done**
+1. `ValidatorLink`, `[[trusted_validators]]`, non-fatal failure, any-trusted admission,
+   `peers/trusted` counts and the extension service (§5, §7, §10)
+1. Batched ticks, routing (§7, §9)
+1. Push streams (§7)
+1. Header chain: verification from genesis, header store, most-work tip driving sync, block
+   checks, finality gate (§2–§4)
+1. Peers: headers, blocks, mempool sightings, broadcast, the unverified stream (§5, §8)
+
+Phase 5 takes headers from trusted validators' RPC. The source carries no trust (every header is
+verified the same way); it lets the verifier be proven against mainnet before the p2p transport
+adds failure modes of its own.
+
+## Measurements behind this design
+
+Mainnet fleet, 2026-10-06, Prometheus, 24 h: four Hetzner nodes, one validator on tekau over the
+tailnet.
+
+| Signal                                    | Value                                                 |
+| ----------------------------------------- | ----------------------------------------------------- |
+| `GetLightdInfo` mean / p99 before §12     | 146–354 ms / 1.0–4.9 s (`GetLatestBlock`: 0.5 ms p50) |
+| trivial validator call mean / p99         | 157–364 ms / 0.9–2.6 s                                |
+| `getblock` p99, timeouts                  | 20–25 s, 86–221 per node per day                      |
+| `GetTransaction` p50 / p99                | 0.57 s / 8 s                                          |
+| golden's outbound peers exposing JSON-RPC | 4 of 69                                               |
+| Equihash verification                     | 156 µs per header, one core                           |
+
+The cost was the path to one distant validator, not its work; and with one validator, the fleet's
+chain was that validator.

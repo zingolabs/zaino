@@ -124,7 +124,7 @@ How it is built, and why:
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
 - [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.
-- [One view over many validators](./docs/design/chainview.md): quorum tip, quorum mempool, configured membership.
+- [Chainview](./docs/design/chainview.md): the best chain by verified proof of work, the mempool from trusted validators and peers, and how much each source is trusted for.
 - [What the clients actually call](./docs/client-requirements.md): an audit of the two wallet sync engines.
 - [Ironwood activation](./docs/notes/ironwood-activation.md): NU6.3 domain facts the indexes and live suite rely on.
 

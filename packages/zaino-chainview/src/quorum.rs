@@ -12,7 +12,8 @@ use crate::error::BelowQuorum;
 /// `⌊N/2⌋ + 1` over the configured endpoints.
 ///
 /// Configured, not responding: majority-of-responding is trivially subvertible by DoSing the
-/// honest nodes (`docs/design/chainview.md` §4). N=1 gives threshold 1 — quorum trivially met.
+/// honest nodes. N=1 gives threshold 1 — quorum trivially met. Until phase 5
+/// (`docs/design/chainview.md` Status).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Quorum {
     configured: NonZeroUsize,

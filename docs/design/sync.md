@@ -21,12 +21,12 @@ chainview (quorum tip) ──▶ ChainHead (non-final window, hash-linked) ─�
 
 The `BlockFetchPool` in `zaino-source` turns a height range into an ordered stream of decoded
 blocks. Each height is fetched and decoded in its own task, with at most `concurrency` in flight,
-and heights are spread round-robin across the configured validators. Setting `primary_validator`
-pins bulk fetching to one of them.
+and heights are spread round-robin across the trusted validators.
 
 `zaino-chainview` provides the quorum tip: the highest block a majority of the validators hold on
 their best chains, by hash rather than by highest height (each validator's vote counts its tip and
-its ancestors, [chainview §4](./chainview.md#4-quorum)). The producer follows that tip, and each
+its ancestors; phase 5 replaces this vote with the most-work header chain, see
+[chainview §2–§3](./chainview.md#2-the-best-chain-proof-of-work)). The producer follows that tip, and each
 index's serving gate (a small task of its own, beside the index's loop) reads it to decide when
 that index is serving. Blocks are only ever fetched from the validators listed in the tip's
 `agreed_by`. Each of them holds the tip on its best chain, some possibly a block or two past it,
