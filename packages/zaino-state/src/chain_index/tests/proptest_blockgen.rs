@@ -1509,7 +1509,7 @@ fn relink_chain(genesis_segment: &mut ChainSegment, branching_segments: &mut [Ch
 
 /// Replaces an empty-but-present transparent bundle with an absent one.
 ///
-/// Workaround for zebra-chain 13.0.1: `Transaction::with_transparent_inputs` keeps
+/// Workaround for zebra-chain 13.0.1 and 14.0.0: `Transaction::with_transparent_inputs` keeps
 /// `Some(empty)` when the generator drops every input, and ZIP-244 hashes that
 /// differently from the `None` its bytes deserialize to. Remove once fixed upstream.
 fn without_empty_transparent_bundle(

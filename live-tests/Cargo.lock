@@ -3810,15 +3810,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rlimit"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f35ee2729c56bb610f6dba436bf78135f728b7373bdffae2ec815b2d3eb98cc3"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "rstest"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6355,14 +6346,12 @@ dependencies = [
 [[package]]
 name = "ztest"
 version = "0.1.29"
+source = "git+https://github.com/zingolabs/ztest.git?branch=feat%2Fnu7-0.1.29#28ac20359bb9608eb6f96fddf27239665c24488f"
 dependencies = [
- "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bip0039",
  "blake3",
- "bs58",
- "bytes",
  "bytesize",
  "chrono",
  "console",
@@ -6370,7 +6359,6 @@ dependencies = [
  "directories",
  "futures",
  "globset",
- "h2",
  "hdrhistogram",
  "hex",
  "http",
@@ -6388,7 +6376,6 @@ dependencies = [
  "prost",
  "rand 0.10.2",
  "reqwest",
- "rlimit",
  "rusqlite",
  "rustls",
  "sapling-crypto",
@@ -6405,7 +6392,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tinyvec",
  "tokio",
- "tokio-util",
  "toml 0.8.23",
  "tonic",
  "tonic-prost",
@@ -6427,6 +6413,7 @@ dependencies = [
 [[package]]
 name = "ztest_attr"
 version = "0.1.29"
+source = "git+https://github.com/zingolabs/ztest.git?branch=feat%2Fnu7-0.1.29#28ac20359bb9608eb6f96fddf27239665c24488f"
 dependencies = [
  "proc-macro2",
  "syn 2.0.119",
@@ -6435,6 +6422,7 @@ dependencies = [
 [[package]]
 name = "ztest_macros"
 version = "0.1.29"
+source = "git+https://github.com/zingolabs/ztest.git?branch=feat%2Fnu7-0.1.29#28ac20359bb9608eb6f96fddf27239665c24488f"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -33,7 +33,6 @@ thiserror = "2.0"
 wire_serialized_transaction_test_data = "1.0.0"
 
 # TEMPORARY: ztest on the NU7 librustzcash line (zcash_client_backend 0.25-pre) is
-# unreleased; the local sibling checkout stands in until its branch is pushed.
-# Replace with a `git = ..., branch = ...` patch before this lands.
+# unreleased. Drop this patch once that ztest is published.
 [patch.crates-io]
-ztest = { path = "../../ztest" }
+ztest = { git = "https://github.com/zingolabs/ztest.git", branch = "feat/nu7-0.1.29" }

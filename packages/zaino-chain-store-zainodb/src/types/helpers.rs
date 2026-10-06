@@ -249,7 +249,7 @@ impl<'a> BlockWithMetadata<'a> {
                         action.nullifier().to_bytes(),
                         action.cmx().to_bytes(),
                         note.epk_bytes,
-                        Self::compact_ciphertext_prefix(&note.enc_ciphertext),
+                        Self::compact_ciphertext_prefix(&note.enc_ciphertext.0),
                     )
                 })
                 .collect(),

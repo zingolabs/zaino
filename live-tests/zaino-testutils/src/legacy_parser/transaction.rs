@@ -45,7 +45,7 @@ fn actions_to_byte_tuples<'a>(
                 action.nullifier().to_bytes().to_vec(),
                 action.cmx().to_bytes().to_vec(),
                 note.epk_bytes.to_vec(),
-                note.enc_ciphertext.to_vec(),
+                note.enc_ciphertext.0.to_vec(),
             )
         })
         .collect()

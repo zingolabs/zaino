@@ -245,7 +245,7 @@ fn orchard_shaped_from_zebra<'a>(
                     nullifier: Nullifier::from(act.nullifier().to_bytes()),
                     cmx: NoteCommitment::from(act.cmx().to_bytes()),
                     ephemeral_key: EphemeralKey::from(note.epk_bytes),
-                    enc_ciphertext: compact_prefix(&note.enc_ciphertext)?,
+                    enc_ciphertext: compact_prefix(&note.enc_ciphertext.0)?,
                 })
             })
             .collect::<Result<Vec<_>, ConvertError>>()?,
