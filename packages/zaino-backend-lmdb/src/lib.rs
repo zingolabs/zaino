@@ -16,7 +16,7 @@
 
 mod deferred;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -449,23 +449,106 @@ impl LmdbWriter {
             .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
     }
 
-    /// The write flags for a put into `namespace`.
-    ///
-    /// [`WalkOrdered`](KeyOrder::WalkOrdered) namespaces take
-    /// [`WriteFlags::APPEND`]: their keys lead with the big-endian height and so
-    /// arrive strictly ascending, which lets LMDB skip the B-tree search and fill
-    /// pages sequentially. The append also *enforces* the order — a key that is
-    /// not strictly greater than the current last key is rejected
-    /// ([`CommitError::OutOfOrderAppend`]), so a mis-stated key order fails loudly
-    /// rather than mis-ordering silently. Every other namespace
-    /// ([`Scattered`](KeyOrder::Scattered), [`Meta`](KeyOrder::Meta), and an
-    /// unknown namespace that `resolve_db` will reject anyway) takes a plain
-    /// overwriting put.
-    fn write_flags(&self, namespace: Namespace) -> WriteFlags {
-        match self.key_orders.get(&namespace) {
-            Some(KeyOrder::WalkOrdered) => WriteFlags::APPEND,
-            _ => WriteFlags::empty(),
+    /// Apply one op with a plain overwriting put (or a delete): the path for
+    /// meta and scattered namespaces, and the per-commit fallback for a
+    /// walk-ordered namespace whose ops cannot be safely reordered. Overwrite
+    /// and delete semantics follow the order ops are applied in.
+    fn apply_plain(&self, txn: &mut lmdb::RwTransaction, op: WriteOp) -> Result<(), CommitError> {
+        match op {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } => {
+                let db = self.resolve_db(namespace)?;
+                txn.put(db, &key, &value, WriteFlags::empty())
+                    .map_err(|e| commit_error("put", e))
+            }
+            WriteOp::Delete { namespace, key } => {
+                let db = self.resolve_db(namespace)?;
+                match txn.del(db, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => Ok(()),
+                    Err(e) => Err(commit_error("delete", e)),
+                }
+            }
         }
+    }
+
+    /// Apply one walk-ordered namespace's ops from a single commit as a sorted
+    /// append.
+    ///
+    /// The engine extracts in parallel, so `ops` are in completion order, not
+    /// key order. Deduplicate puts keeping the last value for a repeated key
+    /// (matching a plain put's last-write-wins), sort by key, and `APPEND` the
+    /// result; `OutOfOrderAppend` then fires only when a key is not strictly
+    /// greater than the namespace's existing max from *prior* commits.
+    ///
+    /// Deletes and puts in the same commit: when no key is both deleted and put,
+    /// the deletes are applied first and the sorted puts appended after — which
+    /// equals applying the ops in sequence, because the two key sets are
+    /// disjoint. When a key is both deleted and put (e.g. a delete then a re-put
+    /// of the same height), the reorder would not match sequential application,
+    /// so the whole namespace falls back to a sequential plain put/delete for
+    /// this commit — correct, only without the append's speed. This case does
+    /// not arise on the engine's append-only catch-up; it is here for
+    /// correctness under arbitrary commits.
+    fn apply_walk_ordered(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        db: Database,
+        namespace: Namespace,
+        ops: Vec<WriteOp>,
+    ) -> Result<(), CommitError> {
+        let conflict = {
+            let deleted: HashSet<&[u8]> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    WriteOp::Delete { key, .. } => Some(key.as_slice()),
+                    WriteOp::Put { .. } => None,
+                })
+                .collect();
+            !deleted.is_empty()
+                && ops.iter().any(
+                    |op| matches!(op, WriteOp::Put { key, .. } if deleted.contains(key.as_slice())),
+                )
+        };
+
+        if conflict {
+            for op in ops {
+                self.apply_plain(txn, op)?;
+            }
+            return Ok(());
+        }
+
+        // Disjoint delete/put key sets: deletes first (so the append sees the
+        // post-delete max), then the deduplicated, sorted puts. A `BTreeMap`
+        // sorts by key and, inserting in arrival order, keeps the last value for
+        // a repeated key — it also moves values in rather than copying them.
+        let mut puts: BTreeMap<RawKey, RawValue> = BTreeMap::new();
+        for op in ops {
+            match op {
+                WriteOp::Delete { key, .. } => match txn.del(db, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(e) => return Err(commit_error("delete", e)),
+                },
+                WriteOp::Put { key, value, .. } => {
+                    puts.insert(key, value);
+                }
+            }
+        }
+        for (key, value) in puts {
+            match txn.put(db, &key, &value, WriteFlags::APPEND) {
+                Ok(()) => {}
+                Err(e @ lmdb::Error::KeyExist) => {
+                    return Err(CommitError::OutOfOrderAppend {
+                        namespace: namespace.to_string(),
+                        source: Box::new(e),
+                    });
+                }
+                Err(e) => return Err(commit_error("put", e)),
+            }
+        }
+        Ok(())
     }
 
     /// Emit env-wide LMDB B-tree stats once every [`STATS_EVERY_N_COMMITS`]
@@ -514,41 +597,28 @@ impl LmdbWriter {
             .begin_rw_txn()
             .map_err(|e| commit_error("begin rw txn", e))?;
 
+        // A walk-ordered namespace is written with `MDB_APPEND`, which demands
+        // every put be strictly greater than the current last key — including
+        // keys put earlier in the *same* transaction. But the engine extracts a
+        // batch's blocks in parallel (rayon), so a batch's puts for one namespace
+        // arrive in completion order, not key order. Group each walk-ordered
+        // namespace's ops, sort its puts, and append them in order; everything
+        // else (meta, scattered) keeps the arrival order its overwrite/delete
+        // semantics depend on.
+        let mut walk: HashMap<Namespace, Vec<WriteOp>> = HashMap::new();
         for op in direct {
-            match op {
-                WriteOp::Put {
-                    namespace,
-                    key,
-                    value,
-                } => {
-                    let db = self.resolve_db(namespace)?;
-                    let flags = self.write_flags(namespace);
-                    match txn.put(db, &key, &value, flags) {
-                        Ok(()) => {}
-                        // An append rejects a key that is not strictly greater
-                        // than the current last one with `MDB_KEYEXIST`. Only an
-                        // append can produce it here (a plain put overwrites), so
-                        // guarding on the flag keeps a plain-put `KeyExist` — were
-                        // one ever to arise — on the generic write-failure path.
-                        Err(e @ lmdb::Error::KeyExist) if flags.contains(WriteFlags::APPEND) => {
-                            return Err(CommitError::OutOfOrderAppend {
-                                namespace: namespace.to_string(),
-                                source: Box::new(e),
-                            });
-                        }
-                        Err(e) => return Err(commit_error("put", e)),
-                    }
-                }
-                WriteOp::Delete { namespace, key } => {
-                    let db = self.resolve_db(namespace)?;
-                    match txn.del(db, &key, None) {
-                        Ok(()) | Err(lmdb::Error::NotFound) => {}
-                        Err(e) => {
-                            return Err(commit_error("delete", e));
-                        }
-                    }
-                }
+            let namespace = match &op {
+                WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => *namespace,
+            };
+            if matches!(self.key_orders.get(&namespace), Some(KeyOrder::WalkOrdered)) {
+                walk.entry(namespace).or_default().push(op);
+            } else {
+                self.apply_plain(&mut txn, op)?;
             }
+        }
+        for (namespace, ops) in walk {
+            let db = self.resolve_db(namespace)?;
+            self.apply_walk_ordered(&mut txn, db, namespace, ops)?;
         }
 
         // The put loop (building the write txn in memory) is measured
@@ -1116,6 +1186,11 @@ mod conformance_tests {
     #[test]
     fn walk_ordered_rejects_or_stores_non_ascending_put() {
         conformance::walk_ordered_rejects_or_stores_non_ascending_put(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn walk_ordered_accepts_shuffled_batch_with_last_write_wins() {
+        conformance::walk_ordered_accepts_shuffled_batch_with_last_write_wins(&LmdbFactory::new());
     }
 
     #[test]

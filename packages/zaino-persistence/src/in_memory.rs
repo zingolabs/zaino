@@ -380,6 +380,11 @@ mod conformance_tests {
     }
 
     #[test]
+    fn walk_ordered_accepts_shuffled_batch_with_last_write_wins() {
+        conformance::walk_ordered_accepts_shuffled_batch_with_last_write_wins(&InMemoryFactory);
+    }
+
+    #[test]
     fn reopen_persists_committed_data() {
         conformance::reopen_persists_committed_data(&InMemoryFactory);
     }

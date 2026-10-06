@@ -30,6 +30,12 @@ tempfile = "3"
 # `testing` feature; enable it for tests so this backend runs the same contract
 # the in-memory backend does.
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+# The engine-level regression test drives the real sync engine (parallel
+# extraction) over this backend with the toy indexes behind `zaino-sync`'s
+# `testing` feature; the codec supplies the reserved namespaces to declare.
+# Both are dev-only and acyclic — neither depends on this crate.
+zaino-persistence-codec = { path = "../zaino-persistence-codec" }
+zaino-sync = { path = "../zaino-sync", features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"

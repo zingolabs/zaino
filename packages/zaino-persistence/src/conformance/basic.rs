@@ -308,6 +308,53 @@ pub fn walk_ordered_rejects_or_stores_non_ascending_put<F: BackendFactory>(facto
     }
 }
 
+/// Within a single commit, a [`WalkOrdered`](crate::KeyOrder::WalkOrdered)
+/// namespace accepts its keys in any order — the engine extracts a batch's
+/// blocks in parallel, so one namespace's puts arrive unsorted — as long as
+/// every key is above the namespace's prior max. The commit succeeds, the scan
+/// is ascending, and a key repeated within the commit holds the last value
+/// written (plain-put last-write-wins).
+///
+/// This pins the contract an append-ordering backend must meet: it may not
+/// require the caller to pre-sort a commit's ops, only that the keys advance
+/// the namespace. An order-agnostic backend meets it trivially. Complements
+/// [`walk_ordered_rejects_or_stores_non_ascending_put`], which covers a key at
+/// or below the prior max *across* commits.
+pub fn walk_ordered_accepts_shuffled_batch_with_last_write_wins<F: BackendFactory>(factory: &F) {
+    let specs = support::specs();
+    let backend = factory.fresh(&specs);
+    let mut writer = backend.writer().expect("writer");
+
+    // Heights in neither ascending nor numeric order, all above the empty
+    // namespace's (absent) prior max, with height 7 written twice — the later
+    // value must win.
+    writer
+        .commit(vec![
+            support::put(WALK_NS, support::height_key(5), b"h5".to_vec()),
+            support::put(WALK_NS, support::height_key(9), b"h9".to_vec()),
+            support::put(WALK_NS, support::height_key(7), b"h7-first".to_vec()),
+            support::put(WALK_NS, support::height_key(2), b"h2".to_vec()),
+            support::put(WALK_NS, support::height_key(7), b"h7-last".to_vec()),
+        ])
+        .expect("a shuffled walk-ordered batch, all keys above the prior max, commits");
+
+    let got = backend
+        .reader()
+        .expect("reader")
+        .scan(WALK_NS)
+        .expect("scan");
+    assert_eq!(
+        got,
+        vec![
+            (support::height_key(2), b"h2".to_vec()),
+            (support::height_key(5), b"h5".to_vec()),
+            (support::height_key(7), b"h7-last".to_vec()),
+            (support::height_key(9), b"h9".to_vec()),
+        ],
+        "scan is ascending and the key repeated in the commit holds the last value"
+    );
+}
+
 /// Commit one batch, asserting nothing about return other than success.
 fn commit<B: Backend>(backend: &B, ops: Vec<crate::backend::WriteOp>) {
     let mut writer = backend.writer().expect("writer");
