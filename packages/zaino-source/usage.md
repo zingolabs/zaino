@@ -23,9 +23,9 @@ function needs eleven ports, it is probably doing eleven things.
 ## The error model, which is the point
 
 ```rust
-pub enum QueryError<E> {
-    Domain(E),          // the validator answered, and this is the answer
-    Fetch(FetchError),  // the validator could not be reached, or failed
+pub enum QueryError<E, N = NonDomainError> {
+    Domain(E),        // the validator answered, and this is the answer
+    NonDomain(N),     // it did not yield a domain answer (unreachable/timeout/parse/…)
 }
 ```
 
@@ -33,11 +33,11 @@ This distinction is **load-bearing, not cosmetic**:
 
 - `Domain(E)` is returned to the caller immediately. It is not retried, because
   asking again produces the same answer.
-- `Fetch(FetchError)` is retried by [`ValidatorClient`](#validatorclient) according to its
+- `NonDomain(N)` is retried by [`ValidatorClient`](#validatorclient) according to its
   `FailureMode`, and escalated by consumers when retries are exhausted.
 
 Getting this backwards has a specific, observed failure mode: an adapter that
-reported "no block at that height" as a `Fetch` error stalled the ChainIndex
+reported "no block at that height" as a `NonDomain` error stalled the ChainIndex
 sync loop against a *healthy* validator, because the sync loop asks that
 question on every iteration and the retry ladder treated each answer as an
 outage.
@@ -45,7 +45,21 @@ outage.
 **When implementing an adapter method, decide explicitly which one you are
 returning.** If the validator replied at all, it is almost certainly `Domain`.
 
-`FetchError` carries a machine-readable kind:
+The non-domain payload `N` is the adapter's **own** error type, declared through
+the `ValidatorSource` contract:
+
+```rust
+pub trait ValidatorSource: Send + Sync {
+    // Maps deterministically into the seam `NonDomainError`. An adapter with no
+    // distinct vocabulary sets `type NonDomain = NonDomainError` (identity).
+    type NonDomain: std::error::Error + Send + Sync + 'static + Into<NonDomainError>;
+}
+```
+
+Every `OneShot*` port has `ValidatorSource` as a supertrait and returns
+`QueryError<E, Self::NonDomain>`. `ValidatorClient::with_retry` erases `N` to the
+seam once, so the consumer-facing `SourceError<E>` is unchanged — the parameter
+never reaches consumers. The seam `NonDomainError` carries a machine-readable kind:
 
 ```rust
 pub enum FailureMode {
