@@ -147,6 +147,20 @@ pub enum WriteOp {
     },
 }
 
+/// Policy handed to [`Backend::begin_bulk`]: whether, and later how, the backend
+/// may defer [`Scattered`](KeyOrder::Scattered) namespaces during a bulk load.
+///
+/// A struct rather than a bare `bool` so the policy can grow — a deferral
+/// threshold, a disk budget — without changing the method signature or breaking
+/// callers. A backend that never defers ignores it entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BulkPolicy {
+    /// Whether deferral is permitted at all. `false` reproduces the direct write
+    /// path exactly: the backend must not defer, every commit is immediately
+    /// visible, and [`is_complete`](BackendReader::is_complete) stays `true`.
+    pub enabled: bool,
+}
+
 /// The storage backend.
 ///
 /// Generic — no blockchain or storage-technology knowledge.
@@ -166,6 +180,39 @@ pub trait Backend: Send + Sync {
 
     /// Force durability of all committed data.
     fn flush(&self) -> Result<(), FlushError>;
+
+    /// Enter bulk mode: the backend MAY defer [`Scattered`](KeyOrder::Scattered)
+    /// namespaces' writes to a cheaper append path while the bulk load runs.
+    ///
+    /// `commit` keeps its whole contract while deferred: when it returns, every
+    /// op is durable and the watermark it carries is truthful. Deferral changes
+    /// only *where* a scattered op becomes durable (a run log, not the tree), not
+    /// *whether*. A deferred namespace reads as incomplete
+    /// ([`is_complete`](BackendReader::is_complete) returns `false`) until
+    /// [`finish_bulk`](Self::finish_bulk) completes it.
+    ///
+    /// The default is a no-op: a backend with no cheaper bulk path (the in-memory
+    /// backend, an LSM backend) ignores bulk mode and writes directly, so
+    /// `is_complete` stays `true` throughout.
+    ///
+    /// Bulk state is durable where the backend is durable: calling this again
+    /// after a restart re-enters bulk mode on the existing deferral state rather
+    /// than starting a fresh one.
+    fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+        let _ = policy;
+        Ok(())
+    }
+
+    /// Leave bulk mode: make every deferred namespace complete and readable.
+    ///
+    /// Resumable and idempotent: calling it again after a crash continues where
+    /// it stopped, and calling it when nothing is deferred (including the default
+    /// no-op) succeeds without effect. After it returns, every namespace's
+    /// [`is_complete`](BackendReader::is_complete) is `true` and holds every
+    /// committed entry.
+    fn finish_bulk(&self) -> Result<(), CommitError> {
+        Ok(())
+    }
 }
 
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.
@@ -179,7 +226,9 @@ pub trait BackendReader: Send {
     /// Read a single key from the given namespace.
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
 
-    /// Return all entries for a namespace as raw key-value byte pairs.
+    /// Return all entries for a namespace as raw key-value byte pairs, in
+    /// ascending bytewise key order (the same order [`scan_range`](Self::scan_range)
+    /// visits).
     ///
     /// Materialises the whole namespace onto the heap. Use only for a bounded,
     /// one-shot full load (state rebuild); a per-key or per-range query must use
@@ -217,4 +266,18 @@ pub trait BackendReader: Send {
     /// where [`scan`](Self::scan) would copy every entry out only to test the
     /// length.
     fn first_key(&self, namespace: Namespace) -> Result<Option<RawKey>, ReadError>;
+
+    /// Whether `namespace` holds every committed entry — `false` only while the
+    /// backend is deferring this namespace's writes in bulk mode
+    /// ([`Backend::begin_bulk`]).
+    ///
+    /// Always `true` for a backend that does not defer, `true` for every
+    /// namespace outside bulk mode, and `true` again for every namespace once
+    /// [`Backend::finish_bulk`] returns. The serving layer maps `false` to
+    /// "not yet serviceable" rather than serving a partial namespace as if
+    /// complete. The default is `true`, matching a backend that never defers.
+    fn is_complete(&self, namespace: Namespace) -> Result<bool, ReadError> {
+        let _ = namespace;
+        Ok(true)
+    }
 }

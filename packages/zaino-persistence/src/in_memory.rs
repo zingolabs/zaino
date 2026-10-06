@@ -6,7 +6,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::backend::{
-    Backend, BackendReader, BackendWriter, Namespace, RangeVisitor, RawKey, RawValue, WriteOp,
+    Backend, BackendReader, BackendWriter, BulkPolicy, Namespace, RangeVisitor, RawKey, RawValue,
+    WriteOp,
 };
 use crate::error::{CommitError, FlushError, OpenError, ReadError};
 
@@ -80,10 +81,14 @@ impl BackendReader for InMemoryReader {
 
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
         let guard = self.data.lock().expect("mutex poisoned");
-        Ok(guard
+        // The map is unordered; sort by key to return the ascending bytewise
+        // order the contract guarantees (and that the LMDB cursor returns).
+        let mut entries: Vec<(RawKey, RawValue)> = guard
             .get(&namespace)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default())
+            .unwrap_or_default();
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        Ok(entries)
     }
 
     fn scan_range(
@@ -187,6 +192,14 @@ impl<B: Backend> Backend for SlowBackend<B> {
 
     fn flush(&self) -> Result<(), FlushError> {
         self.inner.flush()
+    }
+
+    fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+        self.inner.begin_bulk(policy)
+    }
+
+    fn finish_bulk(&self) -> Result<(), CommitError> {
+        self.inner.finish_bulk()
     }
 }
 
@@ -301,5 +314,103 @@ mod tests {
                 .expect("first_key"),
             None
         );
+    }
+}
+
+/// The generic backend conformance suite, run against the in-memory backend.
+///
+/// In-memory ignores bulk mode (default no-op methods) and is not persistent, so
+/// `reopen` returns `None` and the persistence and restart properties skip
+/// themselves. One `#[test]` per property gives a precise failure site.
+#[cfg(test)]
+mod conformance_tests {
+    use super::InMemoryBackend;
+    use crate::backend::NamespaceSpec;
+    use crate::conformance::{self, BackendFactory};
+
+    /// A fresh in-memory backend per `fresh`; never persistent. The namespace
+    /// list is ignored: the in-memory backend creates maps lazily on first put.
+    struct InMemoryFactory;
+
+    impl BackendFactory for InMemoryFactory {
+        type B = InMemoryBackend;
+
+        fn fresh(&self, _namespaces: &[NamespaceSpec]) -> Self::B {
+            InMemoryBackend::new()
+        }
+
+        fn reopen(&self, _namespaces: &[NamespaceSpec]) -> Option<Self::B> {
+            None
+        }
+    }
+
+    #[test]
+    fn get_put_delete_round_trip() {
+        conformance::get_put_delete_round_trip(&InMemoryFactory);
+    }
+
+    #[test]
+    fn commit_is_atomic_across_namespaces() {
+        conformance::commit_is_atomic_across_namespaces(&InMemoryFactory);
+    }
+
+    #[test]
+    fn scan_returns_bytewise_key_order() {
+        conformance::scan_returns_bytewise_key_order(&InMemoryFactory);
+    }
+
+    #[test]
+    fn scan_range_is_ascending_and_half_open() {
+        conformance::scan_range_is_ascending_and_half_open(&InMemoryFactory);
+    }
+
+    #[test]
+    fn first_key_is_smallest_or_none() {
+        conformance::first_key_is_smallest_or_none(&InMemoryFactory);
+    }
+
+    #[test]
+    fn namespaces_are_isolated() {
+        conformance::namespaces_are_isolated(&InMemoryFactory);
+    }
+
+    #[test]
+    fn reopen_persists_committed_data() {
+        conformance::reopen_persists_committed_data(&InMemoryFactory);
+    }
+
+    #[test]
+    fn bulk_disabled_matches_direct() {
+        conformance::bulk_disabled_matches_direct(&InMemoryFactory);
+    }
+
+    #[test]
+    fn bulk_enabled_after_finish_matches_direct() {
+        conformance::bulk_enabled_after_finish_matches_direct(&InMemoryFactory);
+    }
+
+    #[test]
+    fn is_complete_true_outside_bulk_mode() {
+        conformance::is_complete_true_outside_bulk_mode(&InMemoryFactory);
+    }
+
+    #[test]
+    fn is_complete_inside_bulk_mode() {
+        conformance::is_complete_inside_bulk_mode(&InMemoryFactory);
+    }
+
+    #[test]
+    fn finish_bulk_is_idempotent() {
+        conformance::finish_bulk_is_idempotent(&InMemoryFactory);
+    }
+
+    #[test]
+    fn restart_in_bulk_mode_matches_direct() {
+        conformance::restart_in_bulk_mode_matches_direct(&InMemoryFactory);
+    }
+
+    #[test]
+    fn run_all_aggregate() {
+        conformance::run_all(&InMemoryFactory);
     }
 }
