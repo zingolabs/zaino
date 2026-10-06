@@ -695,7 +695,17 @@ where
         // merge can run for minutes on mainnet — the backend logs its per-
         // namespace progress at `info`.
         if bulk {
-            info!("finalising deferred indexes");
+            // Announce finalisation only when a namespace is actually deferred:
+            // `bulk` can be true with nothing deferred — a scattered tree a prior
+            // direct run already built, which the backend keeps on the direct
+            // path, leaves no run log. `finish_bulk` is a safe no-op either way.
+            if self
+                .backend
+                .bulk_pending()
+                .map_err(IndexerError::BulkProbe)?
+            {
+                info!("finalising deferred indexes");
+            }
             self.backend.finish_bulk().map_err(IndexerError::Bulk)?;
         }
         reporter.ready();
@@ -769,14 +779,16 @@ mod bulk_tests {
     //! `begin_bulk`/`finish_bulk` calls.
 
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Condvar, Mutex};
 
-    use zaino_component::{ComponentName, Lifecycle, Managed, StatusWatch};
+    use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
     use zaino_primitives::types::{Block, Height};
     use zaino_runtime::RunComponent;
     use zaino_source::mock::{test_block, MockChain};
     use zaino_source::{RetryPolicy, ValidatorClient};
-    use zaino_sync::backend::{Backend, BulkPolicy, CommitError, FlushError, OpenError, ReadError};
+    use zaino_sync::backend::{
+        Backend, BackendWriter, BulkPolicy, CommitError, FlushError, OpenError, ReadError, WriteOp,
+    };
     use zaino_sync::engine::{EngineConfig, SyncEngine};
     use zaino_sync::primitives::BlockHeight;
     use zaino_sync::testing::{toy_pipelines, InMemoryBackend, TestBlockContext};
@@ -804,21 +816,56 @@ mod bulk_tests {
         assert!(enters_bulk(DeferralPolicy::Off, true, 0, 50_000));
     }
 
-    /// What the catch-up called on the backend.
+    /// What the catch-up did to the backend, in the order it happened.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum BulkCall {
         Begin,
+        Commit,
         Finish,
     }
 
-    /// An [`InMemoryBackend`] that records its bulk calls and reports a
-    /// configurable pending state, so a test can assert the indexer's bracket
-    /// without a durable store. Clones share the record and the inner store.
+    /// A blocking one-shot gate: `finish_bulk` (synchronous — not an `async` fn)
+    /// waits on it so a test can observe the state *during* finalisation before
+    /// releasing it.
+    struct Gate {
+        released: Mutex<bool>,
+        ready: Condvar,
+    }
+
+    impl Gate {
+        fn new() -> Self {
+            Self {
+                released: Mutex::new(false),
+                ready: Condvar::new(),
+            }
+        }
+
+        fn wait(&self) {
+            let mut released = self.released.lock().expect("gate mutex poisoned");
+            while !*released {
+                released = self.ready.wait(released).expect("gate mutex poisoned");
+            }
+        }
+
+        fn release(&self) {
+            *self.released.lock().expect("gate mutex poisoned") = true;
+            self.ready.notify_all();
+        }
+    }
+
+    /// An [`InMemoryBackend`] that records `begin_bulk`, each `commit`, and
+    /// `finish_bulk` in one ordered log, so a test can assert the bracket is
+    /// exactly `Begin`, one-or-more `Commit`, `Finish` — catching a `begin` that
+    /// slips after the first commit or a `finish` before the last. An optional
+    /// gate blocks `finish_bulk` mid-flight. Clones share the log, the pending
+    /// flag, the entered flag and the gate.
     #[derive(Clone)]
     struct RecordingBackend {
         inner: InMemoryBackend,
         calls: Arc<Mutex<Vec<BulkCall>>>,
         pending: Arc<AtomicBool>,
+        finish_entered: Arc<AtomicBool>,
+        gate: Option<Arc<Gate>>,
     }
 
     impl RecordingBackend {
@@ -827,24 +874,42 @@ mod bulk_tests {
                 inner: InMemoryBackend::new(),
                 calls: Arc::new(Mutex::new(Vec::new())),
                 pending: Arc::new(AtomicBool::new(pending)),
+                finish_entered: Arc::new(AtomicBool::new(false)),
+                gate: None,
+            }
+        }
+
+        /// A backend whose `finish_bulk` blocks on `gate` until released.
+        fn gated(gate: Arc<Gate>) -> Self {
+            Self {
+                gate: Some(gate),
+                ..Self::new(false)
             }
         }
 
         fn calls(&self) -> Vec<BulkCall> {
             self.calls.lock().expect("calls mutex poisoned").clone()
         }
+
+        /// Whether `finish_bulk` has been entered (set before it blocks on the gate).
+        fn finish_entered(&self) -> bool {
+            self.finish_entered.load(Ordering::SeqCst)
+        }
     }
 
     impl Backend for RecordingBackend {
         type Reader = <InMemoryBackend as Backend>::Reader;
-        type Writer = <InMemoryBackend as Backend>::Writer;
+        type Writer = RecordingWriter;
 
         fn reader(&self) -> Result<Self::Reader, OpenError> {
             self.inner.reader()
         }
 
         fn writer(&self) -> Result<Self::Writer, OpenError> {
-            self.inner.writer()
+            Ok(RecordingWriter {
+                inner: self.inner.writer()?,
+                calls: Arc::clone(&self.calls),
+            })
         }
 
         fn flush(&self) -> Result<(), FlushError> {
@@ -860,6 +925,10 @@ mod bulk_tests {
         }
 
         fn finish_bulk(&self) -> Result<(), CommitError> {
+            self.finish_entered.store(true, Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                gate.wait();
+            }
             self.calls
                 .lock()
                 .expect("calls mutex poisoned")
@@ -872,6 +941,67 @@ mod bulk_tests {
         }
     }
 
+    /// Records each atomic batch commit onto the shared log, then delegates.
+    struct RecordingWriter {
+        inner: <InMemoryBackend as Backend>::Writer,
+        calls: Arc<Mutex<Vec<BulkCall>>>,
+    }
+
+    impl BackendWriter for RecordingWriter {
+        fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+            self.calls
+                .lock()
+                .expect("calls mutex poisoned")
+                .push(BulkCall::Commit);
+            self.inner.commit(ops)
+        }
+    }
+
+    /// Assert the recorded sequence is a well-formed bracket: `Begin`, then one or
+    /// more `Commit`, then `Finish`, each marker once and in that order.
+    fn assert_bracketed(calls: &[BulkCall]) {
+        assert_eq!(
+            calls.first(),
+            Some(&BulkCall::Begin),
+            "begins before the first commit: {calls:?}"
+        );
+        assert_eq!(
+            calls.last(),
+            Some(&BulkCall::Finish),
+            "finishes after the last commit: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| **c == BulkCall::Begin).count(),
+            1,
+            "exactly one begin: {calls:?}"
+        );
+        assert_eq!(
+            calls.iter().filter(|c| **c == BulkCall::Finish).count(),
+            1,
+            "exactly one finish: {calls:?}"
+        );
+        assert!(
+            calls[1..calls.len() - 1]
+                .iter()
+                .all(|c| *c == BulkCall::Commit),
+            "only commits between begin and finish: {calls:?}"
+        );
+        assert!(
+            calls.len() >= 3,
+            "at least one commit inside the bracket: {calls:?}"
+        );
+    }
+
+    /// Assert no bulk bracket was opened — the direct path. Commits are expected.
+    fn assert_no_bracket(calls: &[BulkCall]) {
+        assert!(
+            !calls
+                .iter()
+                .any(|c| matches!(c, BulkCall::Begin | BulkCall::Finish)),
+            "no bulk bracket on the direct path: {calls:?}"
+        );
+    }
+
     /// Project a fetched block into the toy set's context (height only).
     fn to_context(block: Block) -> TestBlockContext {
         TestBlockContext {
@@ -880,23 +1010,24 @@ mod bulk_tests {
         }
     }
 
-    /// Drive a catch-up over `blocks` heights (0..=blocks) to Ready, with the
-    /// given policy, threshold and backend pending state, and return the bulk
-    /// calls the backend recorded. `begin_bulk`/`finish_bulk` are no-ops on the
-    /// in-memory store, so this exercises the indexer's decision and ordering,
-    /// not the LMDB mechanics (those are the backend's own tests).
-    async fn record_catchup(
+    /// Build a driver over a mock chain of `0..=blocks`, a toy index set, and
+    /// `backend`, with the given policy and threshold.
+    fn build_driver(
+        backend: RecordingBackend,
         deferral: DeferralPolicy,
         threshold: u32,
-        pending: bool,
         blocks: u32,
-    ) -> Vec<BulkCall> {
+    ) -> SourceSyncDriver<
+        ValidatorClient<MockChain>,
+        RecordingBackend,
+        TestBlockContext,
+        impl Fn(Block) -> TestBlockContext + Send + Sync + 'static,
+        FullBlocks,
+    > {
         let mut chain = MockChain::new();
         for h in 0..=blocks {
             chain = chain.with_block(test_block(h, u8::try_from(h % 256).expect("byte")));
         }
-
-        let backend = RecordingBackend::new(pending);
         let engine = SyncEngine::from_pipelines(
             toy_pipelines(),
             backend.clone(),
@@ -906,7 +1037,6 @@ mod bulk_tests {
             },
         )
         .expect("valid index set");
-
         let source = ValidatorClient::new(chain, RetryPolicy::default());
         let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
             Arc::new(source),
@@ -919,15 +1049,16 @@ mod bulk_tests {
             Height::try_from(0).expect("valid height"),
             0, // finalised_depth: non-reorging mock, index right to the tip
             16,
-            backend.clone(),
+            backend,
         )
         .with_deferral(deferral);
         driver.defer_threshold = threshold;
+        driver
+    }
 
-        let indexer = RunComponent::new(ComponentName("indexer"), driver);
-        indexer.spawn().await.expect("spawn");
-
-        let mut status = indexer.subscribe();
+    /// Wait up to five seconds for `component` to report `Ready`.
+    async fn await_ready<R: Send + Sync + 'static>(component: &RunComponent<R>) {
+        let mut status = component.subscribe();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 if status.borrow_and_update().lifecycle == Lifecycle::Ready {
@@ -938,7 +1069,23 @@ mod bulk_tests {
         })
         .await
         .expect("indexer reached Ready");
+    }
 
+    /// Drive a catch-up over `0..=blocks` to Ready and return the recorded
+    /// sequence. `begin_bulk`/`finish_bulk` are no-ops on the in-memory store, so
+    /// this exercises the indexer's decision and ordering, not the LMDB mechanics
+    /// (those are the backend's own tests).
+    async fn record_catchup(
+        deferral: DeferralPolicy,
+        threshold: u32,
+        pending: bool,
+        blocks: u32,
+    ) -> Vec<BulkCall> {
+        let backend = RecordingBackend::new(pending);
+        let driver = build_driver(backend.clone(), deferral, threshold, blocks);
+        let indexer = RunComponent::new(ComponentName("indexer"), driver);
+        indexer.spawn().await.expect("spawn");
+        await_ready(&indexer).await;
         // Ready is reported only after `finish_bulk` returns, so whatever the
         // bracket called is already recorded by the time we observe Ready.
         let calls = backend.calls();
@@ -947,38 +1094,76 @@ mod bulk_tests {
     }
 
     #[tokio::test]
-    async fn enabled_above_threshold_brackets_catch_up_once_before_ready() {
-        // Gap of 7 (heights 0..=7) over a threshold of 2: bulk mode is entered
-        // before the catch-up and finished before Ready, each exactly once.
-        let calls = record_catchup(DeferralPolicy::Auto, 2, false, 7).await;
-        assert_eq!(calls, vec![BulkCall::Begin, BulkCall::Finish]);
-    }
-
-    #[tokio::test]
     async fn off_never_enters_bulk() {
         let calls = record_catchup(DeferralPolicy::Off, 2, false, 7).await;
-        assert!(
-            calls.is_empty(),
-            "off must reproduce the direct path: {calls:?}"
-        );
+        assert_no_bracket(&calls);
     }
 
     #[tokio::test]
     async fn below_threshold_does_not_enter_bulk() {
         // Gap of 7 under a threshold of 1000: too small to defer.
         let calls = record_catchup(DeferralPolicy::Auto, 1000, false, 7).await;
-        assert!(
-            calls.is_empty(),
-            "a small gap stays on the direct path: {calls:?}"
-        );
+        assert_no_bracket(&calls);
     }
 
     #[tokio::test]
     async fn a_pending_bulk_is_completed_even_below_threshold() {
         // The backend reports a bulk left pending by a crash; the indexer
         // re-enters and finishes it though the gap is far below the threshold,
-        // and even under `off`.
+        // and even under `off`. The bracket wraps the whole catch-up.
         let calls = record_catchup(DeferralPolicy::Off, 1000, true, 7).await;
-        assert_eq!(calls, vec![BulkCall::Begin, BulkCall::Finish]);
+        assert_bracketed(&calls);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn bracket_is_begin_commits_finish_and_ready_follows_finish() {
+        // multi_thread required: `finish_bulk` blocks a runtime worker on the gate
+        // while this task checks readiness is still withheld, then releases it — a
+        // current-thread runtime would deadlock on the blocked worker.
+        let gate = Arc::new(Gate::new());
+        let backend = RecordingBackend::gated(Arc::clone(&gate));
+        // Gap of 7 over a threshold of 2: bulk is entered and finalised.
+        let driver = build_driver(backend.clone(), DeferralPolicy::Auto, 2, 7);
+        let indexer = RunComponent::new(ComponentName("indexer"), driver);
+        indexer.spawn().await.expect("spawn");
+
+        // Wait until finish_bulk is entered and now blocked on the gate.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !backend.finish_entered() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("finish_bulk entered");
+
+        // Begin and the catch-up commits are recorded, Finish is not yet, and the
+        // component is not Ready while finish is in flight — so Ready cannot be
+        // reported before finish_bulk completes.
+        let mid = backend.calls();
+        assert_eq!(
+            mid.first(),
+            Some(&BulkCall::Begin),
+            "begin precedes the commits: {mid:?}"
+        );
+        assert!(
+            mid.contains(&BulkCall::Commit),
+            "commits recorded before finish: {mid:?}"
+        );
+        assert!(
+            !mid.contains(&BulkCall::Finish),
+            "finish not recorded while gated: {mid:?}"
+        );
+        assert_ne!(
+            indexer.status().lifecycle,
+            Lifecycle::Ready,
+            "not Ready while finish is in flight"
+        );
+
+        // Release finish; the component then reaches Ready and the full sequence
+        // is begin, one-or-more commits, finish.
+        gate.release();
+        await_ready(&indexer).await;
+        assert_bracketed(&backend.calls());
+        indexer.stop().await.expect("stop");
     }
 }
