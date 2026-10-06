@@ -123,20 +123,25 @@ fn expand(input: &DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
         }
     };
 
+    // The generated bodies bind the writer and the cursor as locals in the same
+    // scope as one local per field, and a derive's locals are not hygienic: a
+    // field named `writer` or `cursor` would shadow them and the author would
+    // see a type error inside generated code they never wrote. The `__zp_`
+    // prefix is reserved, so no field name can reach it.
     Ok(quote! {
         impl ::zaino_persistence_codec::RecordLayout for #ident {
             fn encode(&self) -> ::std::vec::Vec<u8> {
-                let mut writer = ::zaino_persistence_codec::layout::Writer::new();
+                let mut __zp_writer = ::zaino_persistence_codec::layout::Writer::new();
                 #(#encodes)*
-                writer.into_bytes()
+                __zp_writer.into_bytes()
             }
 
             fn decode(
                 bytes: &[u8],
             ) -> ::core::result::Result<Self, ::zaino_persistence_codec::DecodeError> {
-                let mut cursor = ::zaino_persistence_codec::layout::Cursor::new(bytes);
+                let mut __zp_cursor = ::zaino_persistence_codec::layout::Cursor::new(bytes);
                 #(#decodes)*
-                cursor.finish()?;
+                __zp_cursor.finish()?;
                 ::core::result::Result::Ok(#ctor)
             }
         }
@@ -171,14 +176,14 @@ fn field_codec(
             }
         };
         return Ok((
-            quote! { <#wrapper as #layout::LayoutAtom>::encode(&#wrapper(#access), &mut writer); },
-            quote! { let #bind = <#wrapper as #layout::LayoutAtom>::decode(&mut cursor)?.0; },
+            quote! { <#wrapper as #layout::LayoutAtom>::encode(&#wrapper(#access), &mut __zp_writer); },
+            quote! { let #bind = <#wrapper as #layout::LayoutAtom>::decode(&mut __zp_cursor)?.0; },
         ));
     }
 
     Ok((
-        quote! { <#ty as #layout::LayoutAtom>::encode(&#access, &mut writer); },
-        quote! { let #bind = <#ty as #layout::LayoutAtom>::decode(&mut cursor)?; },
+        quote! { <#ty as #layout::LayoutAtom>::encode(&#access, &mut __zp_writer); },
+        quote! { let #bind = <#ty as #layout::LayoutAtom>::decode(&mut __zp_cursor)?; },
     ))
 }
 
