@@ -476,7 +476,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{CompositionType, Descriptor, InputScope, SourceAccess};
+    use crate::descriptor::{CompositionType, Descriptor, InputScope, KeyOrder, SourceAccess};
 
     fn desc(name: &'static str, deps: &'static [IndexId]) -> Descriptor {
         Descriptor {
@@ -485,6 +485,7 @@ mod tests {
             composition: CompositionType::Append,
             dependencies: deps,
             source_access: SourceAccess::None,
+            key_order: KeyOrder::WalkOrdered,
         }
     }
 

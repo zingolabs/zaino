@@ -1,7 +1,7 @@
 //! HashToHeightIndex (BlockLocal × Append): block hash → height.
 
 use zaino_persistence_codec::keys::{HashKey, HeightKey};
-use zaino_persistence_codec::EntryCodec;
+use zaino_persistence_codec::{EntryCodec, KeyOrder};
 use zaino_primitives::types::BlockHash;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -70,6 +70,8 @@ impl EntryCodec for HashToHeightIndex {
     // reuse the shared key records rather than re-deriving a layout.
     type PersistentKey = HashKey<BlockHash>;
     type PersistentValue = HeightKey<BlockHeight>;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHash, BlockHeight)> {
         vec![(BlockHash::from([1u8; 32]), BlockHeight::new(2))]

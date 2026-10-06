@@ -50,6 +50,61 @@ impl From<zaino_primitives::types::IndexId> for Namespace {
     }
 }
 
+/// How a namespace's keys order relative to the chain walk.
+///
+/// A **storage fact**, not a policy: it describes the bytes a namespace receives,
+/// and the backend is free to ignore it. It is stated by each index's key codec
+/// ([`EntryCodec::KEY_ORDER`](../zaino_persistence_codec/trait.EntryCodec.html))
+/// and carried to the backend on the namespace list ([`NamespaceSpec`]). It
+/// enables deferral of scattered writes; it never forces it.
+///
+/// Defined here, in the low KV crate, rather than in `zaino-persistence-codec`
+/// (where the codec states it) because [`NamespaceSpec`] lives here and that
+/// crate already depends on this one — the reverse dependency would cycle. The
+/// codec crate re-exports it, so `zaino_persistence_codec::KeyOrder` names this
+/// same type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KeyOrder {
+    /// Keys for later blocks sort strictly after keys for earlier blocks (the
+    /// key leads with the height, big-endian). Safe to write with a sorted
+    /// append.
+    WalkOrdered,
+    /// Keys are not ordered by the chain walk (hash-led keys). The conservative
+    /// claim: a namespace stated `Scattered` is never append-ordered, so a
+    /// mis-statement costs only speed, never correctness.
+    Scattered,
+    /// Not an index namespace: engine bookkeeping (the watermark, format-version
+    /// stamps, future manifests) the backend writes directly. Never deferred,
+    /// never appended. No codec ever states this — it is attached to the
+    /// reserved namespaces when the namespace list is assembled.
+    Meta,
+}
+
+/// A namespace paired with its [`KeyOrder`] — one entry of the namespace list a
+/// backend is opened with.
+///
+/// Replaces a bare [`Namespace`] in the list so the backend learns each
+/// namespace's key order up front, uniformly, including the reserved meta
+/// namespaces (tagged [`KeyOrder::Meta`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NamespaceSpec {
+    /// The namespace to open.
+    pub namespace: Namespace,
+    /// How this namespace's keys order relative to the chain walk.
+    pub key_order: KeyOrder,
+}
+
+impl NamespaceSpec {
+    /// A spec for a reserved engine-bookkeeping namespace — tagged
+    /// [`KeyOrder::Meta`].
+    pub const fn meta(namespace: Namespace) -> Self {
+        Self {
+            namespace,
+            key_order: KeyOrder::Meta,
+        }
+    }
+}
+
 /// Encoded key bytes, as produced by the index's schema encoding.
 ///
 /// Opaque to the backend — it stores and retrieves these without

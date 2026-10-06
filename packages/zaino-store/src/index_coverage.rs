@@ -169,7 +169,7 @@ mod tests {
     use zaino_indexes::indexes::txids::{self, TxidsIndex};
     use zaino_indexes::sets::compact_blocks::CompactBlocks;
     use zaino_indexes::sets::transparent_history::TransparentHistory;
-    use zaino_persistence::{Backend, BackendWriter, Namespace, WriteOp};
+    use zaino_persistence::{Backend, BackendWriter, NamespaceSpec, WriteOp};
     use zaino_persistence_codec::{reserved_namespaces, version_stamp, watermark};
     use zaino_primitives::types::Height;
 
@@ -183,12 +183,11 @@ mod tests {
     /// writes, plus the reserved watermark / version namespaces — the same set
     /// the runtime's `open_store` declares.
     fn open_at<M: IndexSet>(path: &Path) -> LmdbBackend {
-        let mut namespaces: Vec<Namespace> = M::pipelines()
-            .index_ids()
+        let namespaces: Vec<NamespaceSpec> = M::pipelines()
+            .namespace_specs()
             .into_iter()
-            .map(Namespace::from)
+            .chain(reserved_namespaces().map(NamespaceSpec::meta))
             .collect();
-        namespaces.extend(reserved_namespaces());
         LmdbBackend::open(LmdbConfig {
             path: path.to_path_buf(),
             map_size_bytes: 16 << 20,

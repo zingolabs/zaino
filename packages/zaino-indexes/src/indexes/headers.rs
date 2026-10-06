@@ -1,7 +1,7 @@
 //! HeadersIndex (BlockLocal × Append): height → (hash, prev_hash, time, bits).
 
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord};
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -93,6 +93,8 @@ impl EntryCodec for HeadersIndex {
     type Value = HeaderValue;
     type PersistentKey = HeightKey<BlockHeight>;
     type PersistentValue = PersistentHeaderValue;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, HeaderValue)> {
         vec![(

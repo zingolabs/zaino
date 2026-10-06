@@ -335,10 +335,13 @@ pub(crate) struct LocalBridge<I: IndexDef, S: MergeStrategy<I>> {
     _phantom: PhantomData<(I, S)>,
 }
 
-impl<I: IndexDef, S: MergeStrategy<I>> LocalBridge<I, S> {
+impl<I, S: MergeStrategy<I>> LocalBridge<I, S>
+where
+    I: IndexDef + zaino_persistence_codec::EntryCodec,
+{
     fn new() -> Self {
         Self {
-            descriptor: I::descriptor(),
+            descriptor: I::descriptor(<I as zaino_persistence_codec::EntryCodec>::KEY_ORDER),
             deltas: Mutex::new(Vec::new()),
             merged: Mutex::new(None),
             _phantom: PhantomData,
@@ -415,13 +418,16 @@ pub(crate) struct CumulativeBridge<I: IndexDef, S: MergeStrategy<I>> {
     _phantom: PhantomData<(I, S)>,
 }
 
-impl<I: IndexDef, S: MergeStrategy<I>> CumulativeBridge<I, S> {
+impl<I, S: MergeStrategy<I>> CumulativeBridge<I, S>
+where
+    I: IndexDef + zaino_persistence_codec::EntryCodec,
+{
     fn new() -> Self
     where
         S::MergedState: Clone,
     {
         Self {
-            descriptor: I::descriptor(),
+            descriptor: I::descriptor(<I as zaino_persistence_codec::EntryCodec>::KEY_ORDER),
             running_state: Mutex::new(S::initial_state()),
             merged: Mutex::new(None),
             _phantom: PhantomData,
@@ -522,7 +528,7 @@ pub(crate) struct CumulativeAppendBridge<I: CumulativeAppend> {
 impl<I: CumulativeAppend> CumulativeAppendBridge<I> {
     fn new() -> Self {
         Self {
-            descriptor: I::descriptor(),
+            descriptor: I::descriptor(<I as zaino_persistence_codec::EntryCodec>::KEY_ORDER),
             carry: Mutex::new(I::initial_carry()),
             deltas: Mutex::new(Vec::new()),
             merged: Mutex::new(None),

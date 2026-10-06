@@ -4,7 +4,9 @@ use crate::descriptor::{Append, BlockLocal};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractLocal, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, KeyOrder, PersistentRecord,
+};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -88,6 +90,8 @@ impl EntryCodec for ValueIndex {
     // The key is a plain block height — reuse the shared height record.
     type PersistentKey = HeightKey<BlockHeight>;
     type PersistentValue = PersistentBlockValue;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, BlockValue)> {
         vec![(BlockHeight::new(1), BlockValue(2))]

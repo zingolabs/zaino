@@ -7,7 +7,10 @@
 //! let backend = LmdbBackend::open(LmdbConfig {
 //!     path: "/tmp/zaino-db".into(),
 //!     map_size_bytes: 1 << 30, // 1 GB
-//!     namespaces: &["headers", "tx_count", "_engine_meta"],
+//!     namespaces: vec![
+//!         NamespaceSpec { namespace: Namespace::new("headers"), key_order: KeyOrder::WalkOrdered },
+//!         NamespaceSpec::meta(Namespace::new("_watermark")),
+//!     ],
 //! })?;
 //! ```
 
@@ -26,8 +29,8 @@ use lmdb::{
 };
 use lmdb_sys::{MDB_FIRST, MDB_NEXT, MDB_SET_RANGE};
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError,
-    RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, NamespaceSpec,
+    OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
 };
 
 /// Configuration for [`LmdbBackend`].
@@ -37,8 +40,10 @@ pub struct LmdbConfig {
     /// Maximum database size in bytes. LMDB requires this upfront.
     /// Defaults to 1 GB if not set.
     pub map_size_bytes: usize,
-    /// Namespaces to create (one LMDB named database each).
-    pub namespaces: Vec<Namespace>,
+    /// Namespaces to create (one LMDB named database each), each paired with its
+    /// [`KeyOrder`](zaino_persistence::KeyOrder). The order is carried for the
+    /// deferral machinery; opening a database does not yet depend on it.
+    pub namespaces: Vec<NamespaceSpec>,
 }
 
 impl Default for LmdbConfig {
@@ -95,10 +100,10 @@ impl LmdbBackend {
             .map_err(|e| open_error("open environment", e))?;
 
         let mut dbs = HashMap::new();
-        for ns in &config.namespaces {
-            let db = open_or_create_db(&env, ns.as_str())
+        for spec in &config.namespaces {
+            let db = open_or_create_db(&env, spec.namespace.as_str())
                 .map_err(|e| open_error("create database", e))?;
-            dbs.insert(*ns, db);
+            dbs.insert(spec.namespace, db);
         }
 
         Ok(Self {
@@ -412,7 +417,16 @@ mod tests {
         LmdbConfig {
             path: dir.to_path_buf(),
             map_size_bytes: 1 << 20, // 1 MB for tests
-            namespaces,
+            namespaces: namespaces.into_iter().map(spec).collect(),
+        }
+    }
+
+    /// A namespace spec for these raw-KV tests. The key order is inert here (no
+    /// behaviour keys off it yet); `WalkOrdered` is an arbitrary neutral choice.
+    fn spec(namespace: Namespace) -> NamespaceSpec {
+        NamespaceSpec {
+            namespace,
+            key_order: zaino_persistence::KeyOrder::WalkOrdered,
         }
     }
 
@@ -673,7 +687,7 @@ mod tests {
         let config = LmdbConfig {
             path: tmp.path().to_path_buf(),
             map_size_bytes: 64 << 10, // 64 KiB
-            namespaces: vec![ns],
+            namespaces: vec![spec(ns)],
         };
         let backend = LmdbBackend::open(config).expect("open");
         let mut writer = backend.writer().expect("writer");

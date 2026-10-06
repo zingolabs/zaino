@@ -68,6 +68,14 @@ pub mod watermark;
 
 use zaino_persistence::{BackendReader, Namespace, ReadError, WriteOp};
 
+/// How an index's keys order relative to the chain walk — stated by each codec
+/// on [`EntryCodec::KEY_ORDER`].
+///
+/// Defined in [`zaino_persistence`] (the low KV crate) so the backend's
+/// namespace list can carry it without a dependency cycle; re-exported here
+/// because the codec is where an index *states* it.
+pub use zaino_persistence::KeyOrder;
+
 /// Derive the [`RecordLayout`] half of a [`PersistentRecord`] — the mechanical
 /// `encode`/`decode` — for a DTO struct whose fields are layout atoms in
 /// declaration order. The domain-crossing half (`from_domain`/`into_domain`)
@@ -182,6 +190,18 @@ pub trait EntryCodec {
     type PersistentKey: PersistentRecord<Domain = Self::Key>;
     /// The on-disk record for the value.
     type PersistentValue: PersistentRecord<Domain = Self::Value>;
+
+    /// How this codec's keys order relative to the chain walk.
+    ///
+    /// No default: every codec states it, so the fact is a deliberate claim per
+    /// index rather than an inherited accident. A codec only ever states
+    /// [`KeyOrder::WalkOrdered`] or [`KeyOrder::Scattered`] — [`KeyOrder::Meta`]
+    /// is for engine bookkeeping namespaces, which have no codec. The claim is
+    /// checked against the bytes downstream (a `WalkOrdered` namespace is written
+    /// with a sorted append, which fails loudly on an out-of-order key), so a
+    /// wrong `WalkOrdered` cannot silently mis-order; `Scattered` is the
+    /// conservative claim and costs only speed if over-stated.
+    const KEY_ORDER: KeyOrder;
 
     /// Canonical sample entries that characterise this codec's on-disk format.
     ///
@@ -440,6 +460,8 @@ mod tests {
         type PersistentKey = KeyLe;
         type PersistentValue = ValueLe;
 
+        const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
+
         fn fingerprint_samples() -> Vec<(u32, u64)> {
             vec![(1, 1), (u32::MAX, u64::MAX)]
         }
@@ -454,6 +476,8 @@ mod tests {
         type Value = u64;
         type PersistentKey = KeyLe;
         type PersistentValue = ValueBe;
+
+        const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
         fn fingerprint_samples() -> Vec<(u32, u64)> {
             vec![(1, 1), (u32::MAX, u64::MAX)]
@@ -498,6 +522,8 @@ mod tests {
         type Value = u64;
         type PersistentKey = EvolvedKey;
         type PersistentValue = ValueLe;
+
+        const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
         fn fingerprint_samples() -> Vec<(Evolved, u64)> {
             vec![

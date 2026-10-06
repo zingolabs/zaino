@@ -1,7 +1,7 @@
 //! TxidLocationIndex (BlockLocal × Append): txid → (height, tx_index).
 
 use zaino_persistence_codec::keys::HashKey;
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord};
 use zaino_primitives::types::TransactionId;
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -86,6 +86,8 @@ impl EntryCodec for TxidLocationIndex {
     type Value = TxLocation;
     type PersistentKey = HashKey<TransactionId>;
     type PersistentValue = PersistentTxLocation;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(TransactionId, TxLocation)> {
         vec![(

@@ -99,14 +99,19 @@ pub trait IndexDef: Send + Sync + 'static {
 
     /// The full declarative descriptor, derived from type-level markers.
     ///
-    /// Provided — implementors do not override this.
-    fn descriptor() -> Descriptor {
+    /// Provided — implementors do not override this. The `key_order` is **not** a
+    /// type-level marker on this trait (an index's byte layout is its codec's
+    /// concern, not `IndexDef`'s); the bridge constructor passes it in from the
+    /// index's [`EntryCodec::KEY_ORDER`](zaino_persistence_codec::EntryCodec::KEY_ORDER),
+    /// where the codec bound is in scope.
+    fn descriptor(key_order: crate::descriptor::KeyOrder) -> Descriptor {
         Descriptor {
             name: Self::NAME,
             scope: Self::Scope::VALUE,
             composition: Self::Composition::VALUE,
             dependencies: Self::DEPENDENCIES,
             source_access: Self::SOURCE_ACCESS,
+            key_order,
         }
     }
 }

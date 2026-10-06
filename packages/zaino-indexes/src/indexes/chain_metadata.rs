@@ -15,7 +15,7 @@
 //! orchard's action shape), and each accumulates into its own cumulative size.
 
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord};
 use zaino_primitives::types::{ChainMetadata, TreeSize, TreeSizeOutOfRange};
 use zaino_sync::descriptor::{Append, SelfCumulative};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -110,6 +110,8 @@ impl EntryCodec for ChainMetadataIndex {
     type Value = ChainMetadata;
     type PersistentKey = HeightKey<BlockHeight>;
     type PersistentValue = PersistentChainMetadata;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, ChainMetadata)> {
         vec![(

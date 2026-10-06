@@ -28,7 +28,7 @@ use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{
     context_from_block, context_from_pre_index_compact_block, CurrentZainoContext,
 };
-use zaino_persistence::{Namespace, OpenError};
+use zaino_persistence::{NamespaceSpec, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
@@ -250,11 +250,10 @@ where
 fn open_store<D: RuntimePlan>(
     config: &crate::config::StoreConfig,
 ) -> Result<LmdbBackend, DeployError> {
-    let namespaces: Vec<Namespace> = D::Indexes::pipelines()
-        .index_ids()
+    let namespaces: Vec<NamespaceSpec> = D::Indexes::pipelines()
+        .namespace_specs()
         .into_iter()
-        .map(Namespace::from)
-        .chain(reserved_namespaces())
+        .chain(reserved_namespaces().map(NamespaceSpec::meta))
         .collect();
     LmdbBackend::open(LmdbConfig {
         path: config.path.clone(),

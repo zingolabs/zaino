@@ -3,7 +3,9 @@
 use crate::descriptor::{BlockLocal, Monoidal};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, KeyOrder, PersistentRecord,
+};
 
 /// Block context for this index: nothing needed.
 ///
@@ -85,6 +87,10 @@ impl EntryCodec for CountIndex {
     type Value = BlockCount;
     type PersistentKey = PersistentTotalKey;
     type PersistentValue = PersistentBlockCount;
+
+    // Collapses onto one fixed key (a running tip count), so its key is not
+    // append-ordered by the chain walk.
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(TotalKey, BlockCount)> {
         vec![(TotalKey, BlockCount(1))]

@@ -2,6 +2,11 @@
 
 use crate::primitives::IndexId;
 
+/// Re-exported so [`Descriptor::key_order`] and its construction sites can name
+/// the storage fact without reaching across crates. The canonical definition is
+/// in [`zaino_persistence`]; each index *states* it on its codec.
+pub use zaino_persistence_codec::KeyOrder;
+
 // ---------------------------------------------------------------------------
 // Sealed marker traits — one per axis.
 // Implementors live only in this module; downstream code selects but cannot
@@ -146,6 +151,14 @@ pub struct Descriptor {
     pub dependencies: &'static [IndexId],
     /// Whether extraction may reach the source for non-local data.
     pub source_access: SourceAccess,
+    /// How this index's keys order relative to the chain walk — a storage fact
+    /// taken from the index's codec ([`EntryCodec::KEY_ORDER`]), not a type-level
+    /// marker. Filled in the bridge constructor, which has the codec bound; it is
+    /// deliberately not declared on [`IndexDef`](super::traits::IndexDef), which
+    /// knows nothing of the byte layout.
+    ///
+    /// [`EntryCodec::KEY_ORDER`]: zaino_persistence_codec::EntryCodec::KEY_ORDER
+    pub key_order: KeyOrder,
 }
 
 impl core::fmt::Display for Descriptor {

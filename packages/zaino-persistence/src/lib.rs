@@ -4,7 +4,8 @@ mod backend;
 mod error;
 
 pub use backend::{
-    Backend, BackendReader, BackendWriter, Namespace, RangeVisitor, RawKey, RawValue, WriteOp,
+    Backend, BackendReader, BackendWriter, KeyOrder, Namespace, NamespaceSpec, RangeVisitor,
+    RawKey, RawValue, WriteOp,
 };
 pub use error::{CommitError, FlushError, OpenError, ReadError};
 
