@@ -1023,20 +1023,60 @@ fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
 
 /// The most recently activated network upgrade the validator reported.
 ///
-/// The domain preserves the validator's ordering, so the last entry is the
-/// newest. An empty list is a failure rather than a default: `getlightdinfo`
-/// reports the upgrade name and height to wallets, and inventing either would
-/// have them believe they are on a chain they are not.
+/// The domain preserves the validator's ordering, so the last *active* entry
+/// is the newest in force; a scheduled-but-pending upgrade (NU7 before its
+/// activation height) is not yet the chain's upgrade. No active entry is a
+/// failure rather than a default: `getlightdinfo` reports the upgrade name
+/// and height to wallets, and inventing either would have them believe they
+/// are on a chain they are not.
 fn latest_network_upgrade(
     upgrades: &[zaino_primitives::types::NetworkUpgradeInfo],
 ) -> Result<&zaino_primitives::types::NetworkUpgradeInfo, tonic::Status> {
-    upgrades.last().ok_or_else(|| {
-        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
-    })
+    upgrades
+        .iter()
+        .rev()
+        .find(|upgrade| upgrade.status == zaino_primitives::types::NetworkUpgradeStatus::Active)
+        .ok_or_else(|| {
+            tonic::Status::failed_precondition("validator returned no network upgrade metadata")
+        })
 }
 
 #[cfg(test)]
 mod tests {
+    use zaino_primitives::types::{
+        ConsensusBranchId, Height, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    };
+
+    fn upgrade(name: &str, status: NetworkUpgradeStatus) -> NetworkUpgradeInfo {
+        NetworkUpgradeInfo {
+            branch_id: ConsensusBranchId::new(0),
+            name: name.to_string(),
+            activation_height: Height::try_from(1).expect("height within range"),
+            status,
+        }
+    }
+
+    /// A scheduled upgrade the chain has not reached is not yet its upgrade:
+    /// the last *active* entry wins, not the last listed.
+    #[test]
+    fn latest_network_upgrade_skips_pending_entries() {
+        let upgrades = [
+            upgrade("NU6.3", NetworkUpgradeStatus::Active),
+            upgrade("NU7", NetworkUpgradeStatus::Pending),
+        ];
+
+        let latest = super::latest_network_upgrade(&upgrades).expect("an active upgrade exists");
+        assert_eq!(latest.name, "NU6.3");
+    }
+
+    #[test]
+    fn latest_network_upgrade_rejects_no_active_entry() {
+        let upgrades = [upgrade("NU7", NetworkUpgradeStatus::Pending)];
+
+        let err = super::latest_network_upgrade(&upgrades).expect_err("pending only must fail");
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    }
+
     #[test]
     fn latest_network_upgrade_rejects_empty_metadata() {
         let err = super::latest_network_upgrade(&[]).expect_err("empty upgrades must fail");

@@ -1094,6 +1094,8 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
         // Every pool the interface has a slot for, in its order. Omitting one
         // reports it as zero, which is indistinguishable from an empty pool —
         // that is how ironwood read as empty across NU6.3 activation.
+        // The NU7 NSM reserve (`nsm_amount`) is deliberately absent: it is not
+        // issued supply, and zebra's own `getblockchaininfo` omits it too.
         let pools = [
             ("transparent", balance.transparent_amount()),
             ("sprout", balance.sprout_amount()),
