@@ -179,7 +179,8 @@ mod tests {
             .entries(cumulative_series_index::ID.into())
             .into_iter()
             .map(|(k, v)| {
-                let height = u64::from_le_bytes(k.as_slice().try_into().expect("8-byte key"));
+                // The key is a `HeightKey`, which is big-endian (byte order == chain order).
+                let height = u64::from_be_bytes(k.as_slice().try_into().expect("8-byte key"));
                 let total = u64::from_le_bytes(v.as_slice().try_into().expect("8-byte value"));
                 (height, total)
             })
@@ -202,7 +203,8 @@ mod tests {
         let values = backend.entries(value_index::ID.into());
         assert_eq!(values.len(), 5);
         for h in 0u64..=4 {
-            let stored = values.get(h.to_le_bytes().as_slice()).expect("key exists");
+            // `HeightKey` encodes the height big-endian.
+            let stored = values.get(h.to_be_bytes().as_slice()).expect("key exists");
             let val = u32::from_le_bytes(stored.as_slice().try_into().expect("4 bytes"));
             assert_eq!(val, h as u32);
         }
