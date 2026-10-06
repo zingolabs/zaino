@@ -52,6 +52,41 @@ pub enum CommitError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+    /// A [`Delete`](crate::WriteOp::Delete) targeted a namespace the backend was
+    /// deferring in bulk mode ([`Backend::begin_bulk`](crate::Backend::begin_bulk)).
+    ///
+    /// A deferred namespace collects only appends into a sorted run log: the bulk
+    /// load builds the append-only finalised range, which never deletes. A delete
+    /// there means the caller mixed a mutation into a bulk build — a contract
+    /// violation surfaced loudly on the offending commit rather than silently
+    /// dropped (the log has no delete record) or silently applied to an empty
+    /// tree. The namespace is named so the offending op is traceable. A backend
+    /// that does not defer never raises this.
+    #[error(
+        "delete on deferred namespace {namespace} during bulk mode: a deferred namespace takes only appends"
+    )]
+    DeferredNamespaceDelete {
+        /// The deferred namespace the delete targeted.
+        namespace: String,
+    },
+    /// A deferred namespace's run log could not be decoded while completing bulk
+    /// mode ([`Backend::finish_bulk`](crate::Backend::finish_bulk)): a bad segment
+    /// magic or version, a checksum mismatch, or a length that runs past the
+    /// committed bytes.
+    ///
+    /// The run-log length committed with the watermark is authoritative, so a
+    /// well-formed log is never short; this variant means on-disk corruption (or a
+    /// manifest/log mismatch), not a torn tail from a crash — those bytes are
+    /// truncated on reopen before any read. The namespace is named and the decode
+    /// error is preserved as the cause.
+    #[error("corrupt deferred run log for namespace {namespace}")]
+    DeferredLogCorrupt {
+        /// The namespace whose run log failed to decode.
+        namespace: String,
+        /// The decode failure, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// The write failed (IO, transaction conflict, etc.). `operation` names the
     /// write step that failed.
     #[error("write failed during {operation}")]
