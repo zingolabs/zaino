@@ -6,11 +6,48 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
+use zaino_primitives::types::{
+    BlockchainInfo, ConsensusBranchId, Height, ShieldedPool, SubtreeRoot, Treestate,
+};
 use zaino_sync::Served;
-use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::consensus::{BranchId, NetworkType};
 
 use crate::ReadView;
+
+/// Height each pool's tree begins, from the validator's schedule (`None` = unscheduled)
+///
+/// - zebra's `z_gettreestate` omits a pool below its upgrade, lightwalletd then answers `""`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolActivations {
+    pub sapling: Height,
+    pub orchard: Option<Height>,
+    pub ironwood: Option<Height>,
+}
+
+impl PoolActivations {
+    /// Keyed by branch id: Sapling, NU5 (orchard), NU6.3 (ironwood)
+    pub fn from_validator(info: &BlockchainInfo) -> Self {
+        let activation = |branch: BranchId| {
+            let id = ConsensusBranchId::new(u32::from(branch));
+            info.upgrades.iter().find(|upgrade| upgrade.branch_id == id)
+        };
+        Self {
+            sapling: info.sapling_activation,
+            orchard: activation(BranchId::Nu5).map(|upgrade| upgrade.activation_height),
+            ironwood: activation(BranchId::Nu6_3).map(|upgrade| upgrade.activation_height),
+        }
+    }
+
+    /// `pool` has a tree at `at`
+    pub fn active(&self, pool: ShieldedPool, at: Height) -> bool {
+        let from = match pool {
+            ShieldedPool::Sapling => Some(self.sapling),
+            ShieldedPool::Orchard => self.orchard,
+            ShieldedPool::Ironwood => self.ironwood,
+        };
+        from.is_some_and(|from| from <= at)
+    }
+}
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -21,6 +58,10 @@ pub enum ServeError {
 
     #[error("no tree state at height {height}")]
     NotFound { height: Height },
+
+    /// lightwalletd: no tree state before any shielded pool exists (a bad request, not a miss)
+    #[error("no tree state at height {height}, below Sapling activation {sapling}")]
+    BeforeSapling { height: Height, sapling: Height },
 
     /// Stored nodes that will not rebuild a frontier (a fold bug, not a bad request)
     #[error("stored tree state at height {height} is inconsistent")]
@@ -34,18 +75,42 @@ pub enum ServeError {
 pub struct TreeStateService {
     served: Served<ReadView>,
     network: NetworkType,
+    activations: PoolActivations,
 }
 
 impl TreeStateService {
     /// - unsynced → every method [`ServeError::Syncing`] (committed heights excepted)
     /// - `network` = operator-declared (regtest reports as `"test"` over the validator's RPC)
-    pub fn new(served: Served<ReadView>, network: NetworkType) -> Self {
-        Self { served, network }
+    pub fn new(
+        served: Served<ReadView>,
+        network: NetworkType,
+        activations: PoolActivations,
+    ) -> Self {
+        Self { served, network, activations }
     }
 
     /// Chain this index was built against (`TreeState.network`)
     pub fn network(&self) -> NetworkType {
         self.network
+    }
+
+    /// Which pools a tree state at a height carries (a transport's wire shape)
+    pub fn activations(&self) -> PoolActivations {
+        self.activations
+    }
+
+    /// Tree state at `at` from one pinned `view` (a transport memoizing per publication)
+    pub fn treestate_in(&self, view: &ReadView, at: Height) -> Result<Treestate, ServeError> {
+        let sapling = self.activations.sapling;
+        match at < sapling {
+            true => Err(ServeError::BeforeSapling { height: at, sapling }),
+            false => view.treestate(at),
+        }
+    }
+
+    /// Tree state at `view`'s tip
+    pub fn latest_in(&self, view: &ReadView) -> Result<Treestate, ServeError> {
+        self.treestate_in(view, view.tip().ok_or(ServeError::Empty)?)
     }
 
     /// The latest publication, synced only (one load; every tree state it answers comes from it)
@@ -60,14 +125,14 @@ impl TreeStateService {
     pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
         let view = self.served.pin_any();
         match Some(at) <= view.finalized() || self.served.synced() {
-            true => view.treestate(at),
+            true => self.treestate_in(&view, at),
             false => Err(ServeError::Syncing),
         }
     }
 
     /// `GetLatestTreeState`, non-finalized included (tracks the tip, not the fsync)
     pub fn latest(&self) -> Result<Treestate, ServeError> {
-        self.pin()?.latest()
+        self.latest_in(&*self.pin()?)
     }
 
     /// `GetSubtreeRoots` (a `Vec`, not a stream: ≤ 2^16 subtrees, the whole file is ~2.6 MB)
@@ -97,6 +162,57 @@ mod tests {
         Transaction, TransactionId,
     };
     use zaino_sync::{BlockSink, Step};
+
+    /// Keyed by branch id, not list order or name: Sapling, NU5 (orchard), NU6.3 (ironwood);
+    /// absent upgrade = `None`; pending = still its scheduled height
+    #[test]
+    fn pool_activations_come_from_the_validators_upgrade_schedule() {
+        use zaino_primitives::types::{
+            BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo,
+            NetworkUpgradeStatus,
+        };
+
+        let h = |n: u32| Height::try_from(n).expect("h");
+        let upgrade = |branch: u32, height: u32, status| NetworkUpgradeInfo {
+            branch_id: ConsensusBranchId::new(branch),
+            name: "label only".to_owned(),
+            activation_height: h(height),
+            status,
+        };
+        let info = |upgrades| BlockchainInfo {
+            blocks: h(3_500_000),
+            estimated_height: h(3_500_000),
+            best_block_hash: BlockHash::from([0u8; 32]),
+            sapling_activation: h(419_200),
+            upgrades,
+            consensus: ConsensusBranchIds {
+                chain_tip: ConsensusBranchId::new(0x37a5_165b),
+                next_block: ConsensusBranchId::new(0x37a5_165b),
+            },
+        };
+        let active = NetworkUpgradeStatus::Active;
+
+        let mainnet = info(vec![
+            upgrade(0x37a5_165b, 3_428_143, active),
+            upgrade(0xc8e7_1055, 2_726_400, active),
+            upgrade(0x76b8_09bb, 419_200, active),
+            upgrade(0xc2d6_d0b4, 1_687_104, active),
+        ]);
+        let expected = PoolActivations {
+            sapling: h(419_200),
+            orchard: Some(h(1_687_104)),
+            ironwood: Some(h(3_428_143)),
+        };
+        assert_eq!(PoolActivations::from_validator(&mainnet), expected);
+
+        let pending = info(vec![
+            upgrade(0x76b8_09bb, 419_200, active),
+            upgrade(0x37a5_165b, 4_000_000, NetworkUpgradeStatus::Pending),
+        ]);
+        let expected =
+            PoolActivations { sapling: h(419_200), orchard: None, ironwood: Some(h(4_000_000)) };
+        assert_eq!(PoolActivations::from_validator(&pending), expected, "no NU5 = never orchard");
+    }
 
     /// Block 0 final, block 1 at the tip, sent through the sink. Syncing (chainview's tip ahead):
     /// a committed height answers (final); a non-finalized height, the tip and a pool scan refused
@@ -148,7 +264,10 @@ mod tests {
         let depth = ReorgDepth::new(std::num::NonZeroU32::new(10).expect("non-zero"));
         let cancel = CancellationToken::new();
         let published = index.published();
-        let service = TreeStateService::new(published.served(), NetworkType::Regtest);
+        let genesis = Height::GENESIS;
+        let activations =
+            PoolActivations { sapling: genesis, orchard: Some(genesis), ironwood: Some(genesis) };
+        let service = TreeStateService::new(published.served(), NetworkType::Regtest, activations);
         let (mut applied, mut synced) =
             (published.subscribe_applied(), published.subscribe_synced());
         let gate = tokio::spawn(published.gate(tip, depth, cancel.clone()));

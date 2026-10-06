@@ -9,12 +9,15 @@ is described in
 ## Wiring
 
 ```rust
-use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
+use zaino_index_tree_state::{
+    PoolActivations, TreeStateIndexWriter, TreeStateService, TreeStateStore,
+};
 
 let store = TreeStateStore::open(fs, &path, network)?;
 let index = TreeStateIndexWriter::new(store, batch_bytes)?;
 let blocks = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
-let service = TreeStateService::new(index.published().served(), network);
+let activations = PoolActivations::from_validator(&validator.get_blockchain_info().await?);
+let service = TreeStateService::new(index.published().served(), network, activations);
 tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
 tokio::spawn(index.run(blocks));
 ```
@@ -32,9 +35,14 @@ tokio::spawn(index.run(blocks));
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - `ReadView` binds the non-finalized tier and the committed snapshot into one publication:
   a request loads it once, so the seam between them cannot move under it.
-  `treestate(height)`, `latest()` and `subtree_roots(..)` answer from it, with no
-  `synced` gate; `TreeStateService` adds the gate. The index's `Published`
+  `subtree_roots(..)` answers from it with no `synced` gate; tree states are
+  read only through `TreeStateService` (`treestate_in` / `latest_in` on a pinned
+  view), which adds the gate and the Sapling floor. The index's `Published`
   (`index.published()`) is the only way to get one.
+- `activations` = each pool's first height, from the validator's
+  `getblockchaininfo` schedule keyed by branch id: Sapling, NU5 (Orchard),
+  NU6.3 (Ironwood); an unscheduled upgrade = `None`. zainod reads it once at
+  boot (Zaino carries no compiled-in schedule).
 - Tests drive it as production does: steps sent into a `BlockSink`, `run`
   spawned over its subscription, state read back through `published()`.
 - `network` is the operator-declared network, returned by `service.network()`
@@ -47,8 +55,9 @@ tokio::spawn(index.run(blocks));
 
 | Method | Returns |
 |---|---|
-| `treestate(height)` | `Treestate` with all three pools |
+| `treestate(height)` | `Treestate` with all three pools (`BeforeSapling` below Sapling activation) |
 | `latest()` | `treestate` at the highest applied height (non-finalized included) |
+| `activations()` | `PoolActivations`, for the transport's wire shape |
 | `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>` |
 
 - While `synced` reads `false`, `treestate(height)` still answers any committed
@@ -58,10 +67,15 @@ tokio::spawn(index.run(blocks));
   `Empty` (also `UNAVAILABLE`). A height with no record is `NotFound`; stored
   nodes that will not rebuild are `Inconsistent` (a fold bug).
 - Heights arrive as `Height` (range-checked by the caller).
-- Every pool is emitted at every height as
+- Below Sapling activation there is no tree state: `BeforeSapling` (gRPC
+  `INVALID_ARGUMENT`, as lightwalletd: zebra's `z_gettreestate` returns no
+  Sapling tree there).
+- `Treestate` carries every pool as
   `zcash_primitives::merkle_tree::write_commitment_tree` of the real tree
-  (`000000` when empty), never an empty field: clients map an absent field onto
-  an empty tree silently. `final_root` stays unset.
+  (`000000` when empty). `zaino-grpc` writes a pool's field only from its
+  activation height (`PoolActivations::active`), and `""` below it, matching
+  zebra + lightwalletd. An active pool is never `""`: clients map an absent
+  field onto an empty tree silently. `final_root` stays unset.
 - `subtree_roots`: `max_entries == 0` = to the end; `start_index == count` =
   `Ok(vec![])`. Each root carries its completing block (`BlockRef`: height from
   the subtree entry, hash from that height's record).
@@ -71,7 +85,7 @@ tokio::spawn(index.run(blocks));
   (`zaino-internal-block-hash-to-height`) in `zaino-grpc`; this index answers by
   height and the router confirms the hash it holds there.
 - `pin()` → the latest synced publication (`Arc<ReadView>`, one per
-  publication), with the same `treestate`, `latest` and `subtree_roots` on it.
+  publication); `treestate_in(&view, h)` / `latest_in(&view)` answer from it.
   `is_non_finalized(h)` names the ~1000 heights every synced wallet asks about.
   `zaino-grpc` keys its per-publication memos on the `Arc`: tip tree states and
   whole root lists are framed once per block, not once per wallet.

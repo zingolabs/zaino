@@ -235,4 +235,114 @@ mod tests {
         assert!(tx.vin.is_empty());
         assert_eq!(tx.txid, full.vtx[0].txid, "identity survives every selection");
     }
+
+    /// lightwalletd `FilterTxPool`: a tx left with no component after projection is dropped, for
+    /// every pool selection (`ALL` included); the block stays, even with no tx left; the stored
+    /// record (`GetBlock`) keeps every tx
+    #[test]
+    fn projection_drops_transactions_left_with_no_component() {
+        use zaino_primitives::types::{
+            BlockHeader, OrchardData, OutPoint, SaplingData, SaplingOutput, Script,
+            TransparentData, TransparentOutput, TreeSize,
+        };
+
+        use crate::{project::project, Pools};
+
+        let out = |value| TransparentOutput {
+            value: Zatoshis::new(value).expect("in range"),
+            script: Script::new(vec![0x76, 0xa9, 0x14]),
+        };
+        let action = OrchardAction {
+            nullifier: [0x77; HASH].into(),
+            cmx: [0x78; HASH].into(),
+            ephemeral_key: [0x79; HASH].into(),
+            enc_ciphertext: [0x7a; CompactCiphertext::LENGTH].into(),
+        };
+        let tx = |seed: u8| Transaction {
+            txid: [seed; HASH].into(),
+            transparent: Default::default(),
+            sprout: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        };
+        let coinbase = Transaction {
+            transparent: TransparentData {
+                coinbase: true,
+                inputs: vec![],
+                outputs: vec![out(625)],
+            },
+            ..tx(0)
+        };
+        let componentless = tx(1);
+        let sapling_only = Transaction {
+            sapling: SaplingData {
+                outputs: vec![SaplingOutput {
+                    cmu: [0x44; HASH].into(),
+                    ephemeral_key: [0x55; HASH].into(),
+                    enc_ciphertext: [0x66; CompactCiphertext::LENGTH].into(),
+                }],
+                ..Default::default()
+            },
+            ..tx(2)
+        };
+        let orchard_only = Transaction {
+            orchard: OrchardData { actions: vec![action], ..Default::default() },
+            ..tx(3)
+        };
+        let transparent_only = Transaction {
+            transparent: TransparentData {
+                coinbase: false,
+                inputs: vec![OutPoint { txid: [0x22; HASH].into(), vout: 1 }],
+                outputs: vec![out(100)],
+            },
+            ..tx(4)
+        };
+        let block = Block::new(
+            BlockHeader::for_tests(9, [9; HASH], [8; HASH], 1_700_000_009),
+            vec![coinbase.clone(), componentless, sapling_only, orchard_only, transparent_only],
+        );
+        let paid = Fee::Paid(Zatoshis::new(1_000).expect("in range"));
+        let fees = BlockFees {
+            height: block.header().height,
+            hash: block.header().hash,
+            fees: vec![Fee::Coinbase, paid, paid, paid, paid],
+        };
+        let sizes = TreeSizes {
+            sapling: TreeSize::from(1),
+            orchard: TreeSize::from(1),
+            ironwood: TreeSize::from(0),
+        };
+        let stored = encode_compact_block(&block, &fees, &sizes);
+        let indices = |pools| {
+            let projected = project(&stored, pools).expect("walks");
+            let decoded = cf::CompactBlock::decode(&projected[FRAME_HEADER..]).expect("decodes");
+            decoded.vtx.iter().map(|tx| tx.index).collect::<Vec<_>>()
+        };
+        let transparent =
+            Pools { sapling: false, orchard: false, ironwood: false, transparent: true };
+        let orchard = Pools { sapling: false, orchard: true, ironwood: false, transparent: false };
+
+        let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
+        assert_eq!(full.vtx.len(), 5, "stored record (GetBlock) keeps every tx");
+        assert_eq!(indices(Pools::default()), [2, 3], "shielded: coinbase + transparent-only gone");
+        assert_eq!(indices(Pools::ALL), [0, 2, 3, 4], "all: only the component-less tx gone");
+        assert_eq!(indices(transparent), [0, 4]);
+        assert_eq!(indices(orchard), [3]);
+
+        let coinbase_only = Block::new(
+            BlockHeader::for_tests(10, [10; HASH], [9; HASH], 1_700_000_010),
+            vec![coinbase],
+        );
+        let fees = BlockFees {
+            height: coinbase_only.header().height,
+            hash: coinbase_only.header().hash,
+            fees: vec![Fee::Coinbase],
+        };
+        let stored = encode_compact_block(&coinbase_only, &fees, &sizes);
+        let shielded = project(&stored, Pools::default()).expect("walks");
+        let decoded = cf::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
+        let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
+        assert_eq!(decoded, cf::CompactBlock { vtx: vec![], ..full }, "block kept, no tx left");
+    }
 }

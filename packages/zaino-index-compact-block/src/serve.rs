@@ -11,7 +11,11 @@ use bytes::Bytes;
 use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
-use crate::{project::project, project::record_hash, view::ReadView, Pools, HASH};
+use crate::{
+    project::{project, project_reversed, record_hash},
+    view::ReadView,
+    Pools, HASH,
+};
 
 /// Ceiling on one range window (one readahead + one slice handed to the socket)
 ///
@@ -114,10 +118,10 @@ impl CompactBlockService {
 
     /// `GetBlockRange` of heights `start` to `end`, both inclusive, as a cursor over both tiers
     ///
-    /// - `start <= end` (callers refuse a reversed request)
+    /// - `start > end` = descending, top down (proto: "decreasing height order")
     /// - no length cap (pepper-sync asks a whole shard, unbounded in blocks; work bounded per window)
     /// - no read here (the first file window = the cursor's first blocking step)
-    /// - syncing: served only if `end` (as asked, before the clamp) is committed (a range cut at
+    /// - syncing: served only if the top (as asked, before the clamp) is committed (a range cut at
     ///   the durable tip = a wallet reading it as the chain tip)
     pub fn range(
         &self,
@@ -136,69 +140,81 @@ impl CompactBlockService {
         pools: Pools,
         budget: usize,
     ) -> Result<RangeCursor, ServeError> {
-        assert!(start <= end, "reversed range {start:?}..={end:?} past the request boundary");
-        let view = self.pin_through(end)?;
-        let Some(tip) = view.tip().filter(|&tip| start <= tip) else {
-            return Err(ServeError::NotFound { height: start });
+        let descending = start > end;
+        let (low, high) = if descending { (end, start) } else { (start, end) };
+        let view = self.pin_through(high)?;
+        let Some(tip) = view.tip().filter(|&tip| low <= tip) else {
+            return Err(ServeError::NotFound { height: low });
         };
 
         // clamp, never refuse (a wallet asking past the tip wants what exists)
-        let served_end = end.min(tip);
+        let high = high.min(tip);
+        let (next, last) = if descending { (high, low) } else { (low, high) };
 
-        Ok(RangeCursor {
-            finalized_tip: view.finalized_tip().min(Some(served_end)),
-            view,
-            budget,
-            pools,
-            served: start.checked_sub(1),
-            end: served_end,
-        })
+        Ok(RangeCursor { view, budget, pools, descending, next: Some(next), last })
     }
 }
 
 /// `GetBlockRange` walked one chunk at a time: a file window below the seam, one non-finalized
-/// record above it
+/// record above it; either direction
 ///
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `view` pinned for the whole stream: every tier + the seam between them frozen
-/// - `served`, `finalized_tip`, `end` = last heights, inclusive (`served` `None` = nothing yet;
-///   `finalized_tip` `None` = no file heights in range)
+/// - `next` `None` = spent; `last` = final height served, inclusive
 #[derive(Debug)]
 pub struct RangeCursor {
     view: Arc<ReadView>,
     budget: usize,
     pools: Pools,
-    served: Option<Height>,
-    finalized_tip: Option<Height>,
-    end: Height,
+    descending: bool,
+    next: Option<Height>,
+    last: Height,
 }
 
 impl RangeCursor {
     /// Next chunk reads the files (a cold window faults: the blocking pool's step)
     pub fn next_touches_disk(&self) -> bool {
-        self.served < self.finalized_tip
+        self.next.is_some_and(|next| Some(next) <= self.view.finalized_tip())
     }
 
-    /// Next wire chunk (framed records back to back, projected to the cursor's pools), `None`
-    /// once the range is spent
+    /// Next wire chunk (framed records back to back, in walk order, projected to the cursor's
+    /// pools), `None` once the range is spent
     pub fn next_chunk(&mut self) -> Option<Result<Bytes, ServeError>> {
-        if self.served >= Some(self.end) {
-            return None;
-        }
-
-        let height = self.served.map_or(Height::GENESIS, Height::next);
-        let Some(last) = self.finalized_tip.filter(|_| self.next_touches_disk()) else {
+        let height = self.next?;
+        if !self.next_touches_disk() {
             // non-finalized: projected at apply for the default pools (every synced wallet's ask)
-            self.served = Some(height);
+            self.step_past(height);
             let projected = self.view.resident_projected(height, self.pools);
             return Some(projected.ok_or(ServeError::NotFound { height }));
+        }
+
+        let window = match self.descending {
+            false => {
+                let files_end =
+                    self.view.finalized_tip().map_or(self.last, |tip| tip.min(self.last));
+                self.view.span_from(height, files_end, self.budget)
+            }
+            true => self.view.span_to(self.last, height, self.budget),
         };
-        let Some((records, reached)) = self.view.span_from(height, last, self.budget) else {
+        let Some((records, reached)) = window else {
             return Some(Err(ServeError::NotFound { height }));
         };
-        self.served = Some(reached);
+        self.step_past(reached);
 
-        Some(project(&records, self.pools).ok_or(ServeError::Malformed { height }))
+        let projected = match self.descending {
+            false => project(&records, self.pools),
+            true => project_reversed(&records, self.pools),
+        };
+        Some(projected.ok_or(ServeError::Malformed { height }))
+    }
+
+    /// `next` = one past `reached` in walk order (`None` once `last` is served)
+    fn step_past(&mut self, reached: Height) {
+        self.next = match (reached == self.last, self.descending) {
+            (true, _) => None,
+            (false, false) => Some(reached.next()),
+            (false, true) => reached.checked_sub(1),
+        };
     }
 }
 
@@ -362,6 +378,51 @@ mod tests {
         assert_eq!(service.block(h(4)), gone, "every non-finalized block gone, not only a fork's");
     }
 
+    /// `start > end` = lightwalletd's descending range: the ascending range's records, top down,
+    /// across the seam (non-finalized first), clamped at the tip like the ascending one
+    #[test]
+    fn a_descending_range_serves_the_ascending_records_top_down_across_the_seam() {
+        // finalized 0 to 3 (both inclusive), non-finalized from 4
+        let reader = committed(4);
+        let mut non_finalized = NonFinalizedState::default();
+        for height in 4..7u32 {
+            let (block, balances, sizes) = block(height);
+            non_finalized.apply(
+                h(height),
+                [height as u8; HASH],
+                encode_compact_block(&block, &balances, &sizes),
+                sizes,
+            );
+        }
+        let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
+        let (_follower, synced) = tokio::sync::watch::channel(true);
+        let service = CompactBlockService::new(Served::new(window, synced));
+
+        let ascending = drain(service.range(h(1), h(6), Pools::ALL).expect("ascending"));
+        let descending = drain(service.range(h(6), h(1), Pools::ALL).expect("descending"));
+        let mut reversed = decode(&ascending.concat());
+        reversed.reverse();
+        assert_eq!(decode(&descending.concat()), reversed, "6..=1 = 1..=6 reversed");
+        let per_chunk: Vec<usize> = descending.iter().map(|chunk| decode(chunk).len()).collect();
+        assert_eq!(per_chunk, [1, 1, 1, 3], "non-finalized per block, then one file window");
+
+        // budget under one record: one record per file window, still top down
+        let narrow = service.range_with_budget(h(6), h(1), Pools::ALL, 1).expect("narrow");
+        assert_eq!(heights(&drain(narrow)), [6, 5, 4, 3, 2, 1]);
+
+        let clamped = drain(service.range(h(99), h(4), Pools::ALL).expect("clamped"));
+        assert_eq!(heights(&clamped), [6, 5, 4], "top past the tip = from the tip down");
+        let past_tip = service.range(h(99), h(7), Pools::ALL).err();
+        assert_eq!(past_tip, Some(ServeError::NotFound { height: h(7) }), "bottom past the tip");
+
+        let shielded = drain(service.range(h(6), h(1), Pools::default()).expect("shielded"));
+        let projected: Vec<Bytes> = descending
+            .iter()
+            .map(|chunk| project(chunk, Pools::default()).expect("walks"))
+            .collect();
+        assert_eq!(shielded, projected, "projected chunk for chunk, order kept");
+    }
+
     /// Syncing: committed heights final → answered; anything reaching past them = `Syncing`, never
     /// a cut or a miss (either reads as the chain's end)
     #[test]
@@ -395,10 +456,12 @@ mod tests {
         assert_eq!(service.resident_block(h(5)), Err(ServeError::Syncing), "resident, not final");
         assert_eq!(service.block_at_hash(h(5), &[5u8; HASH]), syncing);
         assert_eq!(service.latest_id(), Err(ServeError::Syncing), "tip mid-sync != chain tip");
-        for (start, end) in [(2, 4), (3, 99), (4, 6)] {
+        for (start, end) in [(2, 4), (3, 99), (4, 6), (4, 2), (99, 3)] {
             let refused = service.range(h(start), h(end), Pools::ALL).err();
             assert_eq!(refused, Some(ServeError::Syncing), "range {start}..={end}: no cut at 3");
         }
+        let committed_down = drain(service.range(h(3), h(1), Pools::ALL).expect("committed, down"));
+        assert_eq!(heights(&committed_down), [3, 2, 1], "descending within the files");
 
         synced.send(true).expect("service holds the receiver");
         assert_eq!(decode(&service.block(h(5)).expect("synced"))[0].height, 5);

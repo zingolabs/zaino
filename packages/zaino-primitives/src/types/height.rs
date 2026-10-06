@@ -54,6 +54,11 @@ impl Height {
     pub fn up_to(self, end: Height) -> impl Iterator<Item = Height> + Send + 'static {
         (self.0..=end.0).map(Self)
     }
+
+    /// `self` to `end`, both inclusive, descending (empty when `end > self`)
+    pub fn down_to(self, end: Height) -> impl Iterator<Item = Height> + Send + 'static {
+        (end.0..=self.0).rev().map(Self)
+    }
 }
 
 impl TryFrom<u32> for Height {

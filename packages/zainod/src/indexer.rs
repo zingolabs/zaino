@@ -38,12 +38,14 @@ use zaino_chainview::QuorumTip;
 use zaino_grpc::{GrpcLimits, GrpcServer, Tls, TlsFiles, TrustedProxies, ValidatorHandler};
 use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockService, CompactBlockStore};
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
-use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService, TreeStateStore};
+use zaino_index_tree_state::{
+    PoolActivations, TreeStateIndexWriter, TreeStateService, TreeStateStore,
+};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService, BlockHashStore};
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_primitives::types::{Block, ReorgDepth};
-use zaino_source::{BlockFetchPool, FetchRoute, ZebraRpcAdapter};
+use zaino_source::{BlockFetchPool, FetchRoute, GetBlockchainInfo as _, ZebraRpcAdapter};
 use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
 use zcash_protocol::consensus::NetworkType;
 
@@ -158,9 +160,15 @@ async fn boot(
     let compact_block_service = CompactBlockService::new(compact_block.published().served());
     let block_hash_service =
         block_hash.as_ref().map(|(_, index)| BlockHashService::new(index.published().served()));
-    let tree_state_service = tree_state
-        .as_ref()
-        .map(|(_, index)| TreeStateService::new(index.published().served(), network));
+    // pool activations = the validator's schedule, read once (never a compiled-in table)
+    let tree_state_service = match &tree_state {
+        Some((_, index)) => {
+            let schedule = validator.get_blockchain_info().await?;
+            let activations = PoolActivations::from_validator(&schedule);
+            Some(TreeStateService::new(index.published().served(), network, activations))
+        }
+        None => None,
+    };
     let transparent_service = transparent.as_ref().map(|(_, index)| {
         TransparentAddressService::new(index.published().served(), network)
             .with_max_rows(config.serve.max_address_rows)

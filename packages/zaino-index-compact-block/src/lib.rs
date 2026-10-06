@@ -209,6 +209,33 @@ impl Snapshot {
         self.blocks.will_need(byte_start..byte_end);
         Some((self.blocks.bytes(byte_start..byte_end), last))
     }
+
+    /// [`span_from`](Self::span_from) mirrored: record-aligned suffix ending at `end`, grown down
+    /// toward `start`, plus the lowest height it reaches (records still ascending in the bytes)
+    pub(crate) fn span_to(
+        &self,
+        start: Height,
+        end: Height,
+        budget: usize,
+    ) -> Option<(Bytes, Height)> {
+        assert!(start <= end, "span {start}..={end} reversed");
+        let Range { start: mut byte_start, end: byte_end } = self.record(end)?;
+        let mut first = end;
+
+        for next in end.checked_sub(1).into_iter().flat_map(|below| below.down_to(start)) {
+            let Some(record) = self.record(next) else {
+                break;
+            };
+            if byte_end - record.start > budget {
+                break;
+            }
+            byte_start = record.start;
+            first = next;
+        }
+
+        self.blocks.will_need(byte_start..byte_end);
+        Some((self.blocks.bytes(byte_start..byte_end), first))
+    }
 }
 
 /// Append-only, single-writer store

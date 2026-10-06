@@ -17,6 +17,9 @@ pub enum IndexerError {
     OpenTreeStateIndex(#[from] zaino_index_tree_state::IndexWriterError),
     #[error(transparent)]
     OpenValueBalanceIndex(#[from] zaino_internal_value_balance::IndexWriterError),
+    /// The validator's upgrade schedule (tree-state pool activations) was unreadable at boot.
+    #[error("validator upgrade schedule: {0}")]
+    UpgradeSchedule(#[from] zaino_source::QueryError<zaino_source::GetBlockchainInfoError>),
     /// The configured validator set is empty or beyond the endpoint-set bound.
     #[error(transparent)]
     ChainView(#[from] zaino_chainview::ConfigError),

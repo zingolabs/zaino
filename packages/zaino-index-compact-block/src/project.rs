@@ -1,6 +1,7 @@
 //! Pool pruning by walking protobuf framing (no decode)
 //!
-//! - record stored with every pool; `BlockRange.poolTypes` asks for a subset
+//! - record stored with every pool + every tx; `BlockRange.poolTypes` asks for a subset
+//! - tx left with no pool component dropped, every selection (lightwalletd `FilterTxPool`)
 //! - copies retained spans, skips dropped ones: each byte touched at most once (a decode +
 //!   re-encode = a `Vec` per field, every struct rebuilt)
 //! - two nesting levels only: the block's `vtx` entries, the per-pool fields inside each tx
@@ -46,34 +47,49 @@ impl Pools {
     /// Every pool (= what the record holds: projection a no-op)
     pub const ALL: Self = Self { sapling: true, orchard: true, ironwood: true, transparent: true };
 
-    fn keeps(&self, field: u64) -> bool {
+    /// `Some(kept)` for a pool component field, `None` for the rest (identity, fee: always kept)
+    fn component(&self, field: u64) -> Option<bool> {
         match field {
-            TX_SAPLING_SPENDS | TX_SAPLING_OUTPUTS => self.sapling,
-            TX_ORCHARD_ACTIONS => self.orchard,
-            TX_IRONWOOD_ACTIONS => self.ironwood,
-            TX_VIN | TX_VOUT => self.transparent,
-            _ => true,
+            TX_SAPLING_SPENDS | TX_SAPLING_OUTPUTS => Some(self.sapling),
+            TX_ORCHARD_ACTIONS => Some(self.orchard),
+            TX_IRONWOOD_ACTIONS => Some(self.ironwood),
+            TX_VIN | TX_VOUT => Some(self.transparent),
+            _ => None,
         }
     }
 }
 
 /// Framed records, back to back, each rewritten to carry only `pools`
 ///
-/// - [`Pools::ALL`] = `records` itself (refcount bump, no copy)
 /// - `None` on a malformed record, never a partial span (a record that will not walk = corruption)
-pub(crate) fn project(records: &Bytes, pools: Pools) -> Option<Bytes> {
-    if pools == Pools::ALL {
-        return Some(records.clone());
-    }
+pub(crate) fn project(records: &[u8], pools: Pools) -> Option<Bytes> {
+    project_frames(frames(records)?, pools)
+}
 
-    let mut out = Vec::with_capacity(records.len());
-    let mut rest = &records[..];
-    while !rest.is_empty() {
-        let (record, after) = rest.split_at_checked(framed_len(rest)?)?;
+/// [`project`], records in reverse order (a descending range's file window)
+pub(crate) fn project_reversed(records: &[u8], pools: Pools) -> Option<Bytes> {
+    let mut frames = frames(records)?;
+    frames.reverse();
+    project_frames(frames, pools)
+}
+
+fn project_frames(frames: Vec<&[u8]>, pools: Pools) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(frames.iter().map(|frame| frame.len()).sum());
+    for record in frames {
         frame_into(&mut out, |out| project_block(&record[FRAME_HEADER..], pools, out))?;
-        rest = after;
     }
     Some(Bytes::from(out))
+}
+
+/// Each framed record of `records`, header included (`None` = a torn frame)
+fn frames(mut records: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut frames = Vec::new();
+    while !records.is_empty() {
+        let (record, rest) = records.split_at_checked(framed_len(records)?)?;
+        frames.push(record);
+        records = rest;
+    }
+    Some(frames)
 }
 
 /// One framed record's `CompactBlock.hash` (`None` = absent, not 32 bytes, or unwalkable)
@@ -93,7 +109,7 @@ pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
     None
 }
 
-/// `CompactBlock` copied, each `vtx` entry rewritten
+/// `CompactBlock` copied, each `vtx` entry rewritten (dropped once no component is left)
 fn project_block(block: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
     let mut cursor = 0usize;
 
@@ -103,11 +119,11 @@ fn project_block(block: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
 
         if key >> 3 == BLOCK_VTX {
             let mut tx = Vec::with_capacity(value.len());
-            project_tx(value, pools, &mut tx)?;
-
-            put_varint(key, out);
-            put_varint(tx.len() as u64, out);
-            out.extend_from_slice(&tx);
+            if project_tx(value, pools, &mut tx)? {
+                put_varint(key, out);
+                put_varint(tx.len() as u64, out);
+                out.extend_from_slice(&tx);
+            }
         } else {
             copy_field(block, cursor, after, out)?;
         }
@@ -118,22 +134,26 @@ fn project_block(block: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
     Some(())
 }
 
-/// `CompactTx` copied, fields of unrequested pools dropped
-fn project_tx(tx: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<()> {
+/// `CompactTx` copied, fields of unrequested pools dropped; `true` = >= 1 component kept
+/// (repeated field on the wire = non-empty)
+fn project_tx(tx: &[u8], pools: Pools, out: &mut Vec<u8>) -> Option<bool> {
     let mut cursor = 0usize;
+    let mut has_component = false;
 
     while cursor < tx.len() {
         let (key, next) = varint(tx, cursor)?;
         let (_, after) = field_value(tx, next, key)?;
 
-        if pools.keeps(key >> 3) {
+        let component = pools.component(key >> 3);
+        has_component |= component == Some(true);
+        if component != Some(false) {
             copy_field(tx, cursor, after, out)?;
         }
 
         cursor = after;
     }
 
-    Some(())
+    Some(has_component)
 }
 
 /// One whole field (key + value) copied verbatim: bytes `start` inclusive to `end` exclusive

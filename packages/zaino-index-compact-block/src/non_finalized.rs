@@ -60,7 +60,6 @@ impl NonFinalizedState {
     pub(crate) fn projected(&self, height: Height, pools: Pools) -> Option<Bytes> {
         let held = self.blocks.get(&height)?;
         Some(match pools {
-            Pools::ALL => held.record.clone(),
             shielded if shielded == Pools::default() => held.shielded.clone(),
             other => project(&held.record, other).expect("a held record walked at apply"),
         })

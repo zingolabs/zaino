@@ -79,6 +79,17 @@ impl ReadView {
     ) -> Option<(Bytes, Height)> {
         self.durable.span_from(start, end, budget)
     }
+
+    /// Record-aligned suffix of heights `start` to `end`, both inclusive, from the files, plus the
+    /// lowest height it reaches (inclusive)
+    pub(crate) fn span_to(
+        &self,
+        start: Height,
+        end: Height,
+        budget: usize,
+    ) -> Option<(Bytes, Height)> {
+        self.durable.span_to(start, end, budget)
+    }
 }
 
 impl std::fmt::Debug for ReadView {

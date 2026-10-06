@@ -65,7 +65,7 @@ mod subtrees;
 mod view;
 
 pub use index_writer::TreeStateIndexWriter;
-pub use serve::{ServeError, TreeStateService};
+pub use serve::{PoolActivations, ServeError, TreeStateService};
 pub use view::{NonFinalizedTrees, ReadView};
 
 use heights::{TreeStateHeight, RECORD};

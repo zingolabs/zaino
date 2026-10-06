@@ -806,8 +806,8 @@ mod compact_block {
             .as_ref()
             .map(|id| id.height)
             .ok_or_else(|| Status::invalid_argument("range has no end"))?;
-        let (start, end) =
-            super::ordered(super::height(start, "range start")?, super::height(end, "range end")?)?;
+        // start > end = descending (the service walks it top down)
+        let (start, end) = (super::height(start, "range start")?, super::height(end, "range end")?);
 
         service.range(start, end, pools).map_err(to_status)
     }
@@ -900,7 +900,9 @@ mod tree_state {
     use bytes::Bytes;
     use zaino_index_tree_state::{ReadView, ServeError, TreeStateService};
     use zaino_internal_block_hash_to_height::BlockHashService;
-    use zaino_primitives::types::{BlockHash, Height, ShieldedPool, SubtreeRoot, Treestate};
+    use zaino_primitives::types::{
+        BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
+    };
     use zaino_proto::proto::service as proto;
     use zcash_protocol::consensus::NetworkType;
 
@@ -994,6 +996,8 @@ mod tree_state {
         match &error {
             ServeError::Syncing | ServeError::Empty => Status::unavailable(error.to_string()),
             ServeError::NotFound { .. } => Status::not_found(error.to_string()),
+            // lightwalletd: "z_gettreestate did not return treestate"
+            ServeError::BeforeSapling { .. } => Status::invalid_argument(error.to_string()),
             ServeError::Inconsistent { .. } => Status::internal(error.to_string()),
         }
     }
@@ -1021,13 +1025,15 @@ mod tree_state {
 
     async fn latest(answering: &Answering) -> Result<Bytes, Status> {
         let view = answering.service.pin().map_err(to_status)?;
-        let network = answering.service.network();
+        let service = answering.service.clone();
         once(
             |memos| &memos.states,
             answering,
             view,
             State::Latest,
-            move |view| view.latest().map(|state| reply(&state, network)).map_err(to_status),
+            move |view| {
+                service.latest_in(view).map(|state| reply(&state, &service)).map_err(to_status)
+            },
         )
         .await?
     }
@@ -1047,15 +1053,16 @@ mod tree_state {
             let height = super::height(id.height, "height")?;
             if let Ok(view) = answering.service.pin() {
                 if view.is_non_finalized(height) {
-                    let network = answering.service.network();
+                    let service = answering.service.clone();
                     return once(
                         |memos| &memos.states,
                         &answering,
                         view,
                         State::At(height),
                         move |view| {
-                            view.treestate(height)
-                                .map(|state| reply(&state, network))
+                            service
+                                .treestate_in(view, height)
+                                .map(|state| reply(&state, &service))
                                 .map_err(to_status)
                         },
                     )
@@ -1076,7 +1083,7 @@ mod tree_state {
         if id.hash.is_empty() {
             let state =
                 service.treestate(super::height(id.height, "height")?).map_err(to_status)?;
-            return Ok(reply(&state, service.network()));
+            return Ok(reply(&state, service));
         }
 
         let (height, hash) = super::locate(locator, &id.hash, "GetTreeState")?;
@@ -1087,7 +1094,7 @@ mod tree_state {
                 BlockHash::from(hash)
             )));
         }
-        Ok(reply(&state, service.network()))
+        Ok(reply(&state, service))
     }
 
     /// Domain treestate → wire: trees hex, hash in display order.
@@ -1102,15 +1109,21 @@ mod tree_state {
         }
     }
 
-    fn reply(state: &Treestate, network: NetworkType) -> Bytes {
+    /// Pool below its upgrade = `""` (zebra's `z_gettreestate` omits it; lightwalletd copies that)
+    fn reply(state: &Treestate, service: &TreeStateService) -> Bytes {
+        let activations = service.activations();
+        let tree = |pool, tree: &CommitmentTreeBytes| match activations.active(pool, state.height) {
+            true => hex::encode(tree.as_bytes()),
+            false => String::new(),
+        };
         super::frame(&proto::TreeState {
-            network: network_name(network).to_owned(),
+            network: network_name(service.network()).to_owned(),
             height: u64::from(state.height),
             hash: state.block_hash.to_string(),
             time: state.time,
-            sapling_tree: hex::encode(state.sapling.as_bytes()),
-            orchard_tree: hex::encode(state.orchard.as_bytes()),
-            ironwood_tree: hex::encode(state.ironwood.as_bytes()),
+            sapling_tree: tree(ShieldedPool::Sapling, &state.sapling),
+            orchard_tree: tree(ShieldedPool::Orchard, &state.orchard),
+            ironwood_tree: tree(ShieldedPool::Ironwood, &state.ironwood),
         })
     }
 
@@ -2178,6 +2191,27 @@ mod tests {
         let carried = actions.any(|a| !a.nullifier.is_empty());
         assert!(carried, "fixture carries nullifiers (projection not vacuously empty)");
 
+        // start > end = descending (proto: "decreasing height order"), same records reversed
+        let (descending, trailing) = drained(
+            router
+                .call(framed_request(
+                    path::GET_BLOCK_RANGE,
+                    proto::BlockRange {
+                        start: Some(proto::BlockId { height: 4, hash: Vec::new() }),
+                        end: Some(proto::BlockId { height: 1, hash: Vec::new() }),
+                        pool_types: Vec::new(),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ))
+                .await
+                .expect("router answers"),
+        )
+        .await;
+        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
+        let reversed: Vec<cf::CompactBlock> = full.iter().rev().cloned().collect();
+        assert_eq!(decoded_all(descending.concat().into()), reversed, "4..=1 = 1..=4 reversed");
+
         // Malformed ranges are refused at the boundary, never reaching the index's asserts.
         // grpc-message = percent-encoded
         let invalid = HeaderValue::from_static("3");
@@ -2187,7 +2221,6 @@ mod tests {
         };
         for (start, end, message) in [
             (None, at(1), "range%20has%20no%20start".to_owned()),
-            (at(3), at(1), "range%20start%203%20is%20above%20end%201".to_owned()),
             (at(1), at(1 << 31), above_ceiling("end", 1 << 31)),
             (at(u64::MAX), at(1), above_ceiling("start", u64::MAX)),
         ] {
@@ -2244,6 +2277,11 @@ mod tests {
                 tree_state_synced_rx,
             ),
             net,
+            zaino_index_tree_state::PoolActivations {
+                sapling: zaino_primitives::types::Height::GENESIS,
+                orchard: Some(zaino_primitives::types::Height::GENESIS),
+                ironwood: Some(zaino_primitives::types::Height::GENESIS),
+            },
         );
         let transparent_index = TransparentAddressIndexWriter::open(
             fs,
@@ -2818,6 +2856,101 @@ mod tests {
         }
     }
 
+    /// lightwalletd over zebra's `z_gettreestate`: a pool below its upgrade = `""`, from it = its
+    /// tree (`000000` while empty); below Sapling = no tree state at all (`InvalidArgument`)
+    #[tokio::test]
+    async fn tree_state_fields_follow_the_validators_activation_schedule() {
+        use prost::Message as _;
+        use tower::Service as _;
+        use zaino_index_tree_state::{
+            PoolActivations, TreeStateIndexWriter, TreeStateService, TreeStateStore,
+        };
+        use zaino_primitives::types::{
+            Block, BlockHeader, CompactCiphertext, Height, SaplingData, SaplingOutput, Transaction,
+            TransactionId,
+        };
+        use zaino_proto::proto::service as proto;
+
+        let index = TreeStateIndexWriter::new(
+            TreeStateStore::open(
+                zaino_persistence::fs::SimFs::new(),
+                std::path::Path::new("/ts"),
+                zcash_protocol::consensus::NetworkType::Regtest,
+            )
+            .expect("open"),
+            std::num::NonZeroUsize::MIN,
+        )
+        .expect("new");
+        let served = index.published().served();
+        let mut cmu = [0u8; 32];
+        cmu[0] = 7;
+        let blocks: Vec<_> = (0..4u32)
+            .map(|height| {
+                std::sync::Arc::new(Block::new(
+                    BlockHeader::for_tests(
+                        height,
+                        [height as u8; 32],
+                        [height.wrapping_sub(1) as u8; 32],
+                        1_700_000_000 + height,
+                    ),
+                    vec![Transaction {
+                        txid: TransactionId::from([0x40 + height as u8; 32]),
+                        transparent: Default::default(),
+                        sprout: Default::default(),
+                        sapling: SaplingData {
+                            outputs: vec![SaplingOutput {
+                                cmu: cmu.into(),
+                                ephemeral_key: [2u8; 32].into(),
+                                enc_ciphertext: [3u8; CompactCiphertext::LENGTH].into(),
+                            }],
+                            ..Default::default()
+                        },
+                        orchard: Default::default(),
+                        ironwood: Default::default(),
+                    }],
+                ))
+            })
+            .collect();
+        indexed(&blocks, TreeStateIndexWriter::NAME, |queue| index.run(queue)).await;
+
+        let h = |n: u32| Height::try_from(n).expect("h");
+        let activations =
+            PoolActivations { sapling: h(1), orchard: Some(h(2)), ironwood: Some(h(3)) };
+        let service = TreeStateService::new(
+            Served::fixed((*served.pin_any()).clone()),
+            zcash_protocol::consensus::NetworkType::Regtest,
+            activations,
+        );
+        let mut router = unwired(SpyInner::default()).with_tree_state(service);
+
+        let mut ask = |path: &'static str, body: Vec<u8>| {
+            let request = framed_request(path, body.into());
+            let call = router.call(request);
+            async move {
+                use http_body_util::BodyExt as _;
+                let response = call.await.expect("router answers");
+                let code = Status::from_header_map(response.headers())
+                    .map(|status| status.code())
+                    .unwrap_or(tonic::Code::Ok);
+                let body = response.into_body().collect().await.expect("body").to_bytes();
+                let state = (code == tonic::Code::Ok).then(|| {
+                    proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
+                });
+                (code, state.map(|s| (s.sapling_tree.is_empty(), s.orchard_tree, s.ironwood_tree)))
+            }
+        };
+        let at = |height| proto::BlockId { height, hash: Vec::new() }.encode_to_vec();
+
+        let empty = || "000000".to_owned();
+        let ok =
+            |orchard: String, ironwood: String| (tonic::Code::Ok, Some((false, orchard, ironwood)));
+        assert_eq!(ask(path::GET_TREE_STATE, at(0)).await, (tonic::Code::InvalidArgument, None));
+        assert_eq!(ask(path::GET_TREE_STATE, at(1)).await, ok(String::new(), String::new()));
+        assert_eq!(ask(path::GET_TREE_STATE, at(2)).await, ok(empty(), String::new()));
+        assert_eq!(ask(path::GET_TREE_STATE, at(3)).await, ok(empty(), empty()));
+        assert_eq!(ask(path::GET_LATEST_TREE_STATE, Vec::new()).await, ok(empty(), empty()));
+    }
+
     /// By height, at the tip, and by hash through the compact locator; every pool its own hex tree
     /// (an absent field would read as `CommitmentTree::empty()`)
     #[tokio::test]
@@ -2869,9 +3002,15 @@ mod tests {
         let blocks = [std::sync::Arc::new(block)];
         indexed(&blocks, name, |queue| index.run(queue)).await;
 
+        let genesis = zaino_primitives::types::Height::GENESIS;
         let service = TreeStateService::new(
             Served::fixed((*served.pin_any()).clone()),
             zcash_protocol::consensus::NetworkType::Regtest,
+            zaino_index_tree_state::PoolActivations {
+                sapling: genesis,
+                orchard: Some(genesis),
+                ironwood: Some(genesis),
+            },
         );
         let mut router = unwired(SpyInner::default()).with_tree_state(service);
 

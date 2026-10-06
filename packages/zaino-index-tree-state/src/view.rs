@@ -143,8 +143,9 @@ impl ReadView {
     ///
     /// - `000000` when empty: both clients map an empty *field* onto `CommitmentTree::empty()`
     ///   (`zcash_client_backend/src/proto.rs:404,420-444`), so `""` post-activation is wrong
+    /// - served through `TreeStateService::treestate_in` (Sapling floor, activation schedule)
     /// - reads mmapped nodes: run off async workers
-    pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
+    pub(crate) fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
         let record = self.record(at)?;
         let sizes = record.positions();
         let nodes = |pool| self.non_finalized.nodes(&self.durable, pool, *sizes.get(pool));
@@ -161,11 +162,6 @@ impl ReadView {
             ironwood: pool_tree::<MerkleHashOrchard>(nodes(ShieldedPool::Ironwood))
                 .ok_or(inconsistent)?,
         })
-    }
-
-    /// Tree state at the highest height either tier holds
-    pub fn latest(&self) -> Result<Treestate, ServeError> {
-        self.treestate(self.tip().ok_or(ServeError::Empty)?)
     }
 
     /// `at`'s height record, non-finalized first

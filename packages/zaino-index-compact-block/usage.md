@@ -89,8 +89,9 @@ let service = CompactBlockService::new(index.published().served());
   reaches the tip, `block`, `resident_block`, `block_at_hash` and `range`
   answer heights at or below the durable tip (final: the producer stops on a
   contradiction and never rewrites one) and return `ServeError::Syncing` for
-  anything above it. A range is judged by the `end` it asked for, so it is
-  refused rather than cut at the durable tip. `latest_id` stays `Syncing`.
+  anything above it. A range is judged by the top it asked for (`end`, or
+  `start` when descending), so it is refused rather than cut at the durable
+  tip. `latest_id` stays `Syncing`.
 - A test with no loop serves the files alone with
   `Served::fixed(store.reader().pin())` (the committed-only `ReadView`).
 - `block(h)` returns one framed record with every pool; `latest_id()` = the
@@ -103,24 +104,29 @@ let service = CompactBlockService::new(index.published().served());
   index. It serves the record only if that record's own `hash` field is `hash`,
   and otherwise returns `HashNotFound`. The two indexes publish independently,
   so a reorg can land between the locate and the read.
-- `range(start, end, pools)` (heights, both inclusive) returns a `RangeCursor`:
-  `start <= end` is asserted (the caller orders; `zaino-grpc` parses client
-  heights into `Height` at the router), `end` is clamped to the tip, and there is no length cap: pepper-sync asks
-  for a whole shard in one call, and a shard (2^16 notes) spans any number of
-  blocks. The work is bounded per window instead (below).
+- `range(start, end, pools)` (heights, both inclusive) returns a `RangeCursor`.
+  `start > end` walks it top down (the proto's "decreasing height order":
+  non-finalized blocks first, then file windows downward, records reversed in
+  each). The top is clamped to the tip; a bottom past the tip is `NotFound`.
+  There is no length cap: pepper-sync asks for a whole shard in one call, and a
+  shard (2^16 notes) spans any number of blocks. The work is bounded per window
+  instead (below).
 - `Pools::default()` = the shielded set (no transparent), matching an empty
   `poolTypes`; `Pools::ALL` = every pool. Pruning walks each record's framing,
-  without a decode; `Pools::ALL` serves the stored bytes untouched.
+  without a decode. A transaction left with no pool component (no spends,
+  outputs, actions, `vin` or `vout`) is dropped, for every selection including
+  `Pools::ALL` (lightwalletd's `FilterTxPool`); the block itself is always
+  served. `block(h)` is never filtered.
 
 Each request pins one `ReadView` (non-finalized tier + durable mapping) for its
 whole life, so a commit landing mid-stream cannot move the non-finalized/file seam.
 A record's `hash` field is read by walking its framing; the walk stops before
 `vtx`, so it never touches the transactions.
 
-Reads are zero-copy: a served record or unprojected range window is a
-refcounted `Bytes` slice of the mmap. `RangeCursor::next_chunk()` yields one
-file window (projected as a whole) below the seam, and one non-finalized record
-above it. `next_touches_disk()` says whether the next chunk reads the files;
+A served record (`block`) is zero-copy: a refcounted `Bytes` slice of the mmap.
+A range window is read the same way, then projected into one buffer.
+`RangeCursor::next_chunk()` yields one file window (projected as a whole) below
+the seam, and one non-finalized record above it. `next_touches_disk()` says whether the next chunk reads the files;
 only that step belongs on the blocking pool (behind a range-lane permit). Each
 window is at most 1 MiB and is preceded by `MADV_WILLNEED`. There is no RAM
 cache for the files; the page cache is the cache.
