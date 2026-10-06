@@ -14,8 +14,8 @@
 mod source_provisioner;
 pub use source_provisioner::CompactSource;
 pub use source_provisioner::{
-    CompactBlocks, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner, SourceSyncDriver,
-    SyncTuning,
+    CompactBlocks, DeferralPolicy, FetchConcurrency, FullBlocks, SourceFetch, SourceProvisioner,
+    SourceSyncDriver, SyncTuning, DEFER_THRESHOLD_BLOCKS,
 };
 
 use std::sync::{Arc, Mutex};
@@ -54,12 +54,21 @@ pub enum IndexerError {
     /// The engine failed to build the index.
     #[error(transparent)]
     Sync(#[from] zaino_sync::engine::SyncError),
+    /// Entering or finishing the backend's bulk-load mode around the initial
+    /// catch-up failed. The deferred namespaces are not serviceable, so the
+    /// component fails loudly rather than report Ready over an incomplete store.
+    #[error("bracketing the initial catch-up in bulk mode failed")]
+    Bulk(#[source] zaino_sync::backend::CommitError),
+    /// Probing the backend for an unfinished bulk load (left by a crashed run)
+    /// failed, so the indexer cannot tell whether it must re-enter bulk mode.
+    #[error("checking for a pending bulk load failed")]
+    BulkProbe(#[source] zaino_sync::backend::ReadError),
     /// A worker task the indexer spawned terminated **unexpectedly** — it
     /// panicked or was aborted, rather than returning a value. This is the
     /// internal-fault channel (distinct from the actionable source/sync errors
     /// above): a bug or a forced abort, not a defined indexing failure — which is
     /// why the name states the epistemic outright rather than only the mechanism.
-    /// The [`TaskError`] names the worker (our name, not tokio's runtime id) and
+    /// The [`TaskError`](zaino_async::TaskError) names the worker (our name, not tokio's runtime id) and
     /// keeps a panic's message, so a health `reason` still says *what* failed;
     /// the panic's origin is separately logged by the panic hook the moment it
     /// happens (see `zaino_logging`).

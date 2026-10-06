@@ -21,14 +21,14 @@ use tokio::sync::mpsc;
 
 use tokio::sync::watch;
 
-use tracing::warn;
+use tracing::{info, warn};
 use zaino_async::{panic_message, Task, TaskError, TaskName};
 use zaino_component::{CancellationToken, Lifecycle, RunLoop, RunReporter};
 use zaino_primitives::types::{Block, Height, PreIndexCompactBlock};
 use zaino_source::{
     GetBlock, GetChainTip, GetPreIndexCompactBlock, SourceError, SubscribeChainTip, TipObservation,
 };
-use zaino_sync::backend::Backend;
+use zaino_sync::backend::{Backend, BulkPolicy};
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::index_pipelines::IndexPipelines;
 use zaino_sync::primitives::BlockHeight;
@@ -84,6 +84,57 @@ impl std::str::FromStr for FetchConcurrency {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.parse::<NonZeroUsize>().map(Self)
     }
+}
+
+/// How large the initial catch-up gap must be before an `auto` policy brackets
+/// it in the backend's bulk mode.
+///
+/// Below this many blocks the scattered indexes fit their B-trees cheaply and a
+/// run-log round trip would cost more than it saves; above it the random-insert
+/// write amplification dominates (see the design note "deferred scattered
+/// writes"). The value is a measured-pending guess — the spec flags it as such —
+/// kept in one place so a cluster A/B can move it deliberately.
+pub const DEFER_THRESHOLD_BLOCKS: u32 = 50_000;
+
+/// Whether the indexer may bracket its initial catch-up in the backend's bulk
+/// mode, deferring scattered-key writes to sorted run logs for a faster first
+/// sync.
+///
+/// A deployment policy, distinct from the storage *fact* a codec states
+/// ([`KeyOrder`](zaino_sync::backend::KeyOrder)) and from the backend's own
+/// decision to honour it: the fact enables deferral, the backend may ignore it,
+/// and this says whether the deployment wants it at all. `Off` reproduces the
+/// direct write path exactly. An already-pending bulk load (a previous run
+/// crashed mid-catch-up) is always completed, whatever this says — leaving a
+/// namespace unreadable is never a policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DeferralPolicy {
+    /// Defer scattered writes when the catch-up gap is large enough to pay off
+    /// (at least [`DEFER_THRESHOLD_BLOCKS`]). The default.
+    #[default]
+    Auto,
+    /// Never defer: every commit lands directly, exactly as without this feature.
+    Off,
+}
+
+impl DeferralPolicy {
+    /// Whether this policy permits deferral at all (ignoring the gap threshold).
+    pub const fn enabled(self) -> bool {
+        matches!(self, DeferralPolicy::Auto)
+    }
+}
+
+/// Whether the initial catch-up should run inside the backend's bulk mode.
+///
+/// Bulk mode is entered when a previous run left an unfinished bulk load
+/// (`pending`) — re-entered regardless of the gap, so the deferred namespaces
+/// are completed even when nothing remains to sync — or when the policy permits
+/// deferral and the catch-up `gap` is at least `threshold`. An `Off` policy with
+/// nothing pending never enters bulk, so the write path is byte-for-byte the
+/// direct one.
+fn enters_bulk(policy: DeferralPolicy, pending: bool, gap: u32, threshold: u32) -> bool {
+    pending || (policy.enabled() && gap >= threshold)
 }
 
 /// The run-tuning knobs for a [`SourceSyncDriver`]: how it batches, where the
@@ -318,6 +369,14 @@ pub struct SourceSyncDriver<S, B: Backend, Ctx, F, Fetch> {
     /// (confirm-before-trim). Exposed via
     /// [`subscribe_confirmed_watermark`](Self::subscribe_confirmed_watermark).
     confirmed_watermark: watch::Receiver<Option<Height>>,
+    /// Whether the initial catch-up may be bracketed in the backend's bulk mode.
+    /// Defaults to [`DeferralPolicy::Auto`]; a composition root overrides it from
+    /// config via [`with_deferral`](Self::with_deferral).
+    deferral: DeferralPolicy,
+    /// The catch-up gap, in blocks, at or above which an `auto` policy enters
+    /// bulk mode. Defaults to [`DEFER_THRESHOLD_BLOCKS`]; carried as a field so a
+    /// test can drive the trigger over a small range.
+    defer_threshold: u32,
 }
 
 impl<S, B: Backend, Ctx: Send + Sync + 'static, F, Fetch> SourceSyncDriver<S, B, Ctx, F, Fetch> {
@@ -357,7 +416,22 @@ impl<S, B: Backend, Ctx: Send + Sync + 'static, F, Fetch> SourceSyncDriver<S, B,
             channel_capacity,
             backend,
             confirmed_watermark,
+            deferral: DeferralPolicy::default(),
+            defer_threshold: DEFER_THRESHOLD_BLOCKS,
         }
+    }
+
+    /// Set the deferral policy for the initial catch-up (default
+    /// [`DeferralPolicy::Auto`]).
+    ///
+    /// A consuming builder so a composition root threads the configured policy
+    /// onto the driver it has just built — `resuming(..)?.with_deferral(policy)`
+    /// — without widening the resume constructors, whose other callers keep the
+    /// default.
+    #[must_use]
+    pub fn with_deferral(mut self, policy: DeferralPolicy) -> Self {
+        self.deferral = policy;
+        self
     }
 
     /// A receiver onto the engine's confirmed watermark — the highest height the
@@ -591,8 +665,38 @@ where
         // the append-only finalised range is built; the volatile window above it
         // is the chain-head's concern.
         let mut synced = self.finalised(self.provisioner.current_tip().await?);
-        if u32::from(synced) >= u32::from(self.start) {
+        let need_catchup = u32::from(synced) >= u32::from(self.start);
+        let gap = u32::from(synced).saturating_sub(u32::from(self.start));
+
+        // Bulk-mode bracket. A previous run that crashed mid-catch-up or
+        // mid-finish leaves a namespace deferred; that must be completed on this
+        // start whatever the policy or the remaining gap. Otherwise the policy
+        // and the gap decide. `begin_bulk` is a no-op on a backend that does not
+        // defer, so the non-LMDB path is unaffected. Errors here fail the
+        // component loudly, typed — a half-entered bulk must not serve.
+        let pending = self
+            .backend
+            .bulk_pending()
+            .map_err(IndexerError::BulkProbe)?;
+        let bulk = enters_bulk(self.deferral, pending, gap, self.defer_threshold);
+        if bulk {
+            self.backend
+                .begin_bulk(BulkPolicy { enabled: true })
+                .map_err(IndexerError::Bulk)?;
+        }
+
+        if need_catchup {
             self.sync_to(&mut engine, self.start, synced).await?;
+        }
+
+        // Finish the bulk load before reporting Ready: the deferred namespaces
+        // read as `NotServiceable` until their run logs merge in, so the
+        // component must not claim Ready while they are still incomplete. The
+        // merge can run for minutes on mainnet — the backend logs its per-
+        // namespace progress at `info`.
+        if bulk {
+            info!("finalising deferred indexes");
+            self.backend.finish_bulk().map_err(IndexerError::Bulk)?;
         }
         reporter.ready();
 
@@ -655,5 +759,226 @@ where
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    //! The deferral trigger: the policy/gap/pending decision in isolation, and
+    //! the bracket wired through a real catch-up with a backend that records its
+    //! `begin_bulk`/`finish_bulk` calls.
+
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use zaino_component::{ComponentName, Lifecycle, Managed, StatusWatch};
+    use zaino_primitives::types::{Block, Height};
+    use zaino_runtime::RunComponent;
+    use zaino_source::mock::{test_block, MockChain};
+    use zaino_source::{RetryPolicy, ValidatorClient};
+    use zaino_sync::backend::{Backend, BulkPolicy, CommitError, FlushError, OpenError, ReadError};
+    use zaino_sync::engine::{EngineConfig, SyncEngine};
+    use zaino_sync::primitives::BlockHeight;
+    use zaino_sync::testing::{toy_pipelines, InMemoryBackend, TestBlockContext};
+
+    use super::{
+        enters_bulk, DeferralPolicy, FetchConcurrency, FullBlocks, SourceProvisioner,
+        SourceSyncDriver,
+    };
+
+    #[test]
+    fn enters_bulk_requires_policy_and_threshold() {
+        // Auto: enter only once the gap reaches the threshold.
+        assert!(enters_bulk(DeferralPolicy::Auto, false, 50_000, 50_000));
+        assert!(enters_bulk(DeferralPolicy::Auto, false, 50_001, 50_000));
+        assert!(!enters_bulk(DeferralPolicy::Auto, false, 49_999, 50_000));
+        // Off never enters on the threshold, whatever the gap.
+        assert!(!enters_bulk(DeferralPolicy::Off, false, 1_000_000, 50_000));
+    }
+
+    #[test]
+    fn a_pending_bulk_is_entered_regardless_of_policy_or_gap() {
+        // A crash left a namespace deferred: complete it even below the threshold
+        // and even under `off` — leaving it unreadable is never a policy.
+        assert!(enters_bulk(DeferralPolicy::Auto, true, 0, 50_000));
+        assert!(enters_bulk(DeferralPolicy::Off, true, 0, 50_000));
+    }
+
+    /// What the catch-up called on the backend.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum BulkCall {
+        Begin,
+        Finish,
+    }
+
+    /// An [`InMemoryBackend`] that records its bulk calls and reports a
+    /// configurable pending state, so a test can assert the indexer's bracket
+    /// without a durable store. Clones share the record and the inner store.
+    #[derive(Clone)]
+    struct RecordingBackend {
+        inner: InMemoryBackend,
+        calls: Arc<Mutex<Vec<BulkCall>>>,
+        pending: Arc<AtomicBool>,
+    }
+
+    impl RecordingBackend {
+        fn new(pending: bool) -> Self {
+            Self {
+                inner: InMemoryBackend::new(),
+                calls: Arc::new(Mutex::new(Vec::new())),
+                pending: Arc::new(AtomicBool::new(pending)),
+            }
+        }
+
+        fn calls(&self) -> Vec<BulkCall> {
+            self.calls.lock().expect("calls mutex poisoned").clone()
+        }
+    }
+
+    impl Backend for RecordingBackend {
+        type Reader = <InMemoryBackend as Backend>::Reader;
+        type Writer = <InMemoryBackend as Backend>::Writer;
+
+        fn reader(&self) -> Result<Self::Reader, OpenError> {
+            self.inner.reader()
+        }
+
+        fn writer(&self) -> Result<Self::Writer, OpenError> {
+            self.inner.writer()
+        }
+
+        fn flush(&self) -> Result<(), FlushError> {
+            self.inner.flush()
+        }
+
+        fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+            self.calls
+                .lock()
+                .expect("calls mutex poisoned")
+                .push(BulkCall::Begin);
+            self.inner.begin_bulk(policy)
+        }
+
+        fn finish_bulk(&self) -> Result<(), CommitError> {
+            self.calls
+                .lock()
+                .expect("calls mutex poisoned")
+                .push(BulkCall::Finish);
+            self.inner.finish_bulk()
+        }
+
+        fn bulk_pending(&self) -> Result<bool, ReadError> {
+            Ok(self.pending.load(Ordering::SeqCst))
+        }
+    }
+
+    /// Project a fetched block into the toy set's context (height only).
+    fn to_context(block: Block) -> TestBlockContext {
+        TestBlockContext {
+            height: u64::from(block.header.height),
+            value: u32::from(block.header.height),
+        }
+    }
+
+    /// Drive a catch-up over `blocks` heights (0..=blocks) to Ready, with the
+    /// given policy, threshold and backend pending state, and return the bulk
+    /// calls the backend recorded. `begin_bulk`/`finish_bulk` are no-ops on the
+    /// in-memory store, so this exercises the indexer's decision and ordering,
+    /// not the LMDB mechanics (those are the backend's own tests).
+    async fn record_catchup(
+        deferral: DeferralPolicy,
+        threshold: u32,
+        pending: bool,
+        blocks: u32,
+    ) -> Vec<BulkCall> {
+        let mut chain = MockChain::new();
+        for h in 0..=blocks {
+            chain = chain.with_block(test_block(h, u8::try_from(h % 256).expect("byte")));
+        }
+
+        let backend = RecordingBackend::new(pending);
+        let engine = SyncEngine::from_pipelines(
+            toy_pipelines(),
+            backend.clone(),
+            EngineConfig {
+                batch_size: 4,
+                start_height: BlockHeight::new(0),
+            },
+        )
+        .expect("valid index set");
+
+        let source = ValidatorClient::new(chain, RetryPolicy::default());
+        let provisioner = Arc::new(SourceProvisioner::<_, _, _, FullBlocks>::new(
+            Arc::new(source),
+            to_context,
+            FetchConcurrency::SERIAL,
+        ));
+        let mut driver = SourceSyncDriver::new(
+            engine,
+            provisioner,
+            Height::try_from(0).expect("valid height"),
+            0, // finalised_depth: non-reorging mock, index right to the tip
+            16,
+            backend.clone(),
+        )
+        .with_deferral(deferral);
+        driver.defer_threshold = threshold;
+
+        let indexer = RunComponent::new(ComponentName("indexer"), driver);
+        indexer.spawn().await.expect("spawn");
+
+        let mut status = indexer.subscribe();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if status.borrow_and_update().lifecycle == Lifecycle::Ready {
+                    return;
+                }
+                status.changed().await.expect("status stream open");
+            }
+        })
+        .await
+        .expect("indexer reached Ready");
+
+        // Ready is reported only after `finish_bulk` returns, so whatever the
+        // bracket called is already recorded by the time we observe Ready.
+        let calls = backend.calls();
+        indexer.stop().await.expect("stop");
+        calls
+    }
+
+    #[tokio::test]
+    async fn enabled_above_threshold_brackets_catch_up_once_before_ready() {
+        // Gap of 7 (heights 0..=7) over a threshold of 2: bulk mode is entered
+        // before the catch-up and finished before Ready, each exactly once.
+        let calls = record_catchup(DeferralPolicy::Auto, 2, false, 7).await;
+        assert_eq!(calls, vec![BulkCall::Begin, BulkCall::Finish]);
+    }
+
+    #[tokio::test]
+    async fn off_never_enters_bulk() {
+        let calls = record_catchup(DeferralPolicy::Off, 2, false, 7).await;
+        assert!(
+            calls.is_empty(),
+            "off must reproduce the direct path: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn below_threshold_does_not_enter_bulk() {
+        // Gap of 7 under a threshold of 1000: too small to defer.
+        let calls = record_catchup(DeferralPolicy::Auto, 1000, false, 7).await;
+        assert!(
+            calls.is_empty(),
+            "a small gap stays on the direct path: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pending_bulk_is_completed_even_below_threshold() {
+        // The backend reports a bulk left pending by a crash; the indexer
+        // re-enters and finishes it though the gap is far below the threshold,
+        // and even under `off`.
+        let calls = record_catchup(DeferralPolicy::Off, 1000, true, 7).await;
+        assert_eq!(calls, vec![BulkCall::Begin, BulkCall::Finish]);
     }
 }
