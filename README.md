@@ -211,6 +211,7 @@ mistakes its design is trying to prevent.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
 - [`zaino-runtime`](./packages/zaino-runtime/usage.md): deployments — how each use case is served, as types checked where the engine is composed — and the supervision they run under.
 - [`zaino-service`](./packages/zaino-service/usage.md): the inner driving surface — use cases as demand, read-sets as capability bundles, and the three layers of availability.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): the DAG-driven parallel sync engine, and its `sync-profile` feature for in-process batch/phase timing attribution.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.
 - [`zaino-store`](./packages/zaino-store/usage.md): the finalised tier as a provider — reads composed on read from the index set, present only where the set builds them, and the watermark repair.
 - [`zaino-store-service`](./packages/zaino-store-service/usage.md): the runtime half of the store tandem — presents the store reader to the Orchestra as a supervised component.

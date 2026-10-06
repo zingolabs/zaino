@@ -11,6 +11,11 @@ description = "DAG-driven parallel sync engine for blockchain index building."
 [features]
 tracing = ["dep:tracing"]
 testing = ["zaino-persistence/testing"]
+# In-process batch/phase sync profiling. Pulls in `tracing` for its structured
+# events but deliberately does NOT enable the `tracing` feature above, so the
+# existing per-dispatch trace/debug events stay off — profiling emits only its
+# own per-batch events.
+sync-profile = ["dep:tracing"]
 
 [dependencies]
 zaino-persistence = { path = "../zaino-persistence" }

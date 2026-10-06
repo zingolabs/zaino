@@ -313,6 +313,87 @@ mod tests {
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
     }
 
+    /// Under `sync-profile`, a streamed multi-batch sync emits exactly one
+    /// per-batch profile per committed batch, and the per-index op counts
+    /// recorded match what each batch actually committed.
+    #[cfg(feature = "sync-profile")]
+    #[tokio::test]
+    async fn sync_profile_records_one_entry_per_committed_batch() {
+        let backend = InMemoryBackend::new();
+        // Batch size 3 over heights 0..=9: batches [0,1,2] [3,4,5] [6,7,8] [9].
+        let mut engine = build_engine(backend.clone(), 3);
+
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        tokio::spawn(async move {
+            for h in 0u64..=9 {
+                tx.send(TestBlockContext {
+                    height: h,
+                    value: h as u32,
+                })
+                .await
+                .expect("channel open");
+            }
+        });
+
+        engine.sync_channel(rx).await.expect("sync succeeds");
+
+        /// The op count recorded for `id` in a batch's per-index samples.
+        fn ops_for(
+            record: &crate::profile::BatchProfileRecord,
+            id: crate::primitives::IndexId,
+        ) -> usize {
+            record
+                .merge_persist
+                .iter()
+                .find(|(index, _, _)| *index == id)
+                .map(|(_, _, ops)| *ops)
+                .unwrap_or_else(|| panic!("batch {} has no sample for {id}", record.batch))
+        }
+
+        let records = engine.profile_records();
+
+        // One profile per committed batch — four batches, in order.
+        let batches: Vec<u32> = records.iter().map(|r| r.batch).collect();
+        assert_eq!(batches, vec![0, 1, 2, 3], "one entry per committed batch");
+
+        // Block counts and watermarks of each batch.
+        let blocks: Vec<u64> = records.iter().map(|r| r.blocks).collect();
+        assert_eq!(blocks, vec![3, 3, 3, 1]);
+        let heights: Vec<u64> = records.iter().map(|r| r.committed_height).collect();
+        assert_eq!(heights, vec![2, 5, 8, 9]);
+
+        // Per-index op counts match what each batch committed. Every batch's
+        // persist prepends one per-namespace version stamp, then the data
+        // entries: ValueIndex appends one entry per block; the Monoidal count
+        // and Fold sum each collapse to a single entry.
+        for record in records {
+            let blocks = usize::try_from(record.blocks).expect("block count fits usize");
+            assert_eq!(
+                ops_for(record, value_index::ID),
+                blocks + 1,
+                "value index writes a stamp + one op per block in batch {}",
+                record.batch
+            );
+            assert_eq!(ops_for(record, count_index::ID), 2);
+            assert_eq!(ops_for(record, running_sum_index::ID), 2);
+            assert_eq!(
+                record.merge_persist.len(),
+                3,
+                "all three indexes sampled for batch {}",
+                record.batch
+            );
+            // Every timing field is populated and sane; the residual can be
+            // slightly negative (merge work for a later batch lands in the
+            // window) but must be finite.
+            assert!(record.committed_height >= u64::from(record.batch));
+            assert!(record.wait_ms >= 0.0);
+            assert!(record.extract_ms >= 0.0);
+            assert!(record.commit_ms >= 0.0);
+            assert!(record.window_ms >= 0.0);
+            assert!(record.residual_ms.is_finite());
+        }
+    }
+
     #[test]
     fn buffer_evicted_during_multi_batch_sync() {
         let provisioner = MockProvisioner::identity();

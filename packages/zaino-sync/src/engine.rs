@@ -102,6 +102,10 @@ pub struct SyncEngine<Ctx, B: Backend> {
     /// write — the finalised store's confirmed watermark, which the
     /// non-finalised chain-head consumes to gate trimming (confirm-before-trim).
     confirmed_watermark: watch::Sender<Option<Height>>,
+    /// Batch/phase timing accumulator. Present only under `sync-profile`;
+    /// the whole profiling path compiles out otherwise.
+    #[cfg(feature = "sync-profile")]
+    profile: crate::profile::SyncProfile,
 }
 
 impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
@@ -151,6 +155,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             pending_ops: HashMap::new(),
             evicted_through: None,
             confirmed_watermark,
+            #[cfg(feature = "sync-profile")]
+            profile: crate::profile::SyncProfile::new(config.start_height.value()),
         })
     }
 
@@ -279,7 +285,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 if provisioner_done {
                     break;
                 }
+                let wait_timer = crate::profile::PhaseTimer::start();
                 provisioner_done = self.await_block(&mut rx).await;
+                let wait = wait_timer.stop();
+                #[cfg(feature = "sync-profile")]
+                self.profile.add_wait(wait);
+                #[cfg(not(feature = "sync-profile"))]
+                let _: () = wait;
                 continue;
             }
 
@@ -357,7 +369,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         }
 
         let jobs = self.flush_batch_completions(tasks)?;
+        let extract_timer = crate::profile::PhaseTimer::start();
         self.run_extractions_parallel(&jobs)?;
+        let extract = extract_timer.stop();
+        #[cfg(feature = "sync-profile")]
+        self.profile.add_extract(extract);
+        #[cfg(not(feature = "sync-profile"))]
+        let _: () = extract;
         self.report_extractions(jobs)
     }
 
@@ -460,8 +478,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     .pipelines
                     .get(&handle.index)
                     .expect("scheduler only emits registered indexes");
+                let timer = crate::profile::PhaseTimer::start();
                 pipeline.merge()?;
                 let ops = pipeline.persist()?;
+                let merge_persist = timer.stop();
                 #[cfg(feature = "tracing")]
                 tracing::debug!(
                     index = %handle.index,
@@ -469,11 +489,16 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     op_count = ops.len(),
                     "merge+persist complete"
                 );
-                Ok((handle.index, handle.batch, ops))
+                Ok((handle.index, handle.batch, ops, merge_persist))
             })
             .collect::<Result<Vec<_>, SyncError>>()?;
 
-        for (index_id, batch, ops) in merge_results {
+        for (index_id, batch, ops, merge_persist) in merge_results {
+            #[cfg(feature = "sync-profile")]
+            self.profile
+                .add_merge_persist(index_id, batch, merge_persist, ops.len());
+            #[cfg(not(feature = "sync-profile"))]
+            let _: () = merge_persist;
             self.pending_ops.entry(batch).or_default().extend(ops);
             let handle = self
                 .scheduler
@@ -541,12 +566,32 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 self.evicted_through.map(|b| b.value()),
             );
 
+            // Time the atomic commit, and open a span carrying this batch's
+            // identity so the backend's own put/flush split event (emitted
+            // inside `commit`) is correlated to the engine's batch and height.
+            let commit_timer = crate::profile::PhaseTimer::start();
+            #[cfg(feature = "sync-profile")]
+            let commit_span = tracing::info_span!(
+                "sync_commit",
+                batch = candidate.value(),
+                committed_height = committed_height.value()
+            )
+            .entered();
             let mut writer = self.backend.writer()?;
             writer.commit(ops)?;
+            #[cfg(feature = "sync-profile")]
+            drop(commit_span);
+            let commit = commit_timer.stop();
 
             // The batch — including the watermark stamp — is now durable, so the
             // confirmed watermark can be published: it never leads its data.
             self.confirmed_watermark.send_replace(Some(watermark));
+
+            #[cfg(feature = "sync-profile")]
+            self.profile
+                .record_commit(candidate, committed_height.value(), commit);
+            #[cfg(not(feature = "sync-profile"))]
+            let _: () = commit;
 
             self.try_evict(candidate);
         }
@@ -617,5 +662,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
     pub(crate) fn evicted_through(&self) -> Option<BatchIndex> {
         self.evicted_through
+    }
+}
+
+#[cfg(all(test, feature = "sync-profile"))]
+impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
+    /// The per-batch profiles emitted during this sync run.
+    pub(crate) fn profile_records(&self) -> &[crate::profile::BatchProfileRecord] {
+        self.profile.records()
     }
 }

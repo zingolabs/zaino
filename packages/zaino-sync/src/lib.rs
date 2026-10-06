@@ -15,6 +15,7 @@ pub mod engine;
 pub mod index_pipelines;
 pub mod pipeline;
 pub mod primitives;
+mod profile;
 pub mod progress;
 pub mod provisioner;
 pub mod scheduler;
