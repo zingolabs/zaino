@@ -79,8 +79,16 @@ fn merge_namespace(
     segment_count: u64,
     log_len: u64,
 ) -> Result<(), CommitError> {
-    #[cfg(feature = "sync-profile")]
     let start = std::time::Instant::now();
+    // A mainnet merge moves tens of GB and can run for minutes; log its start and
+    // end at `info` on every build (not only under `sync-profile`), so an operator
+    // sees the readiness-gating work progress. One line each, never per chunk.
+    tracing::info!(
+        namespace = ns.as_str(),
+        segments = segment_count,
+        log_bytes = log_len,
+        "deferred finish_bulk: merging namespace"
+    );
 
     let loaded_through = read_loaded_through(env, meta_db, ns)?;
     verify_target(env, db, ns, loaded_through.as_deref())?;
@@ -100,7 +108,6 @@ fn merge_namespace(
     let chunk_cap = chunk_size();
     let mut chunk: Vec<(RawKey, RawValue)> = Vec::new();
     let mut chunks_done = 0u64;
-    #[cfg(feature = "sync-profile")]
     let mut entries_loaded = 0u64;
 
     // `peek().map(clone)` takes an owned key and releases the heap borrow before
@@ -141,10 +148,7 @@ fn merge_namespace(
         chunk.push((key, value));
         if chunk.len() >= chunk_cap {
             flush_chunk(env, db, meta_db, ns, &chunk)?;
-            #[cfg(feature = "sync-profile")]
-            {
-                entries_loaded += u64::try_from(chunk.len()).expect("chunk length fits u64");
-            }
+            entries_loaded += u64::try_from(chunk.len()).expect("chunk length fits u64");
             chunk.clear();
             chunks_done += 1;
             #[cfg(test)]
@@ -155,10 +159,7 @@ fn merge_namespace(
     }
     if !chunk.is_empty() {
         flush_chunk(env, db, meta_db, ns, &chunk)?;
-        #[cfg(feature = "sync-profile")]
-        {
-            entries_loaded += u64::try_from(chunk.len()).expect("chunk length fits u64");
-        }
+        entries_loaded += u64::try_from(chunk.len()).expect("chunk length fits u64");
         chunks_done += 1;
     }
 
@@ -179,20 +180,18 @@ fn merge_namespace(
     // entry points at it).
     let _ = std::fs::remove_file(&path);
 
-    #[cfg(feature = "sync-profile")]
-    {
-        let merge_ms = start.elapsed().as_secs_f64() * 1000.0;
-        tracing::info!(
-            namespace = ns.as_str(),
-            merge_ms,
-            entries = entries_loaded,
-            chunks = chunks_done,
-            "deferred finish_bulk merge"
-        );
-    }
-    // Read in the test (fault injection) and feature (profiling) builds; this
-    // keeps the counter from tripping an unused-assignment lint otherwise.
-    let _ = chunks_done;
+    // The always-on end line: the per-namespace entry count, chunk count and
+    // wall time. This is the merge timing event the `sync-profile` build used to
+    // gate; it is unconditional now because a long bulk merge is worth seeing on
+    // any build, and it carries no query-level data.
+    let merge_ms = start.elapsed().as_secs_f64() * 1000.0;
+    tracing::info!(
+        namespace = ns.as_str(),
+        merge_ms,
+        entries = entries_loaded,
+        chunks = chunks_done,
+        "deferred finish_bulk: merged namespace"
+    );
     Ok(())
 }
 

@@ -241,6 +241,15 @@ impl Backend for LmdbBackend {
     fn finish_bulk(&self) -> Result<(), CommitError> {
         deferred::merge::finish_bulk(&self.deferral, &self.env, &self.dbs)
     }
+
+    /// A bulk load is pending exactly when a run log is still open — a namespace
+    /// with a manifest entry, loaded at [`open`](Self::open) and kept until
+    /// [`finish_bulk`](Self::finish_bulk) clears it. A clean store has none, so a
+    /// freshly opened backend reports `true` only after a crash that left a
+    /// deferred namespace unmerged.
+    fn bulk_pending(&self) -> Result<bool, ReadError> {
+        Ok(self.deferral.bulk_pending())
+    }
 }
 
 /// LMDB read handle.

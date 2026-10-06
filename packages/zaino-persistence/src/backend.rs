@@ -213,6 +213,21 @@ pub trait Backend: Send + Sync {
     fn finish_bulk(&self) -> Result<(), CommitError> {
         Ok(())
     }
+
+    /// Whether a previous run left an unfinished bulk load — some namespace is
+    /// still deferred, because a crash interrupted the catch-up (between a
+    /// deferred commit and its watermark) or [`finish_bulk`](Self::finish_bulk)
+    /// itself (a partly-merged run log).
+    ///
+    /// A freshly opened durable backend answers this from its own persisted
+    /// deferral state, so a resuming caller can re-enter bulk mode
+    /// ([`begin_bulk`](Self::begin_bulk)) and complete the load regardless of how
+    /// small the remaining gap is, rather than leaving the deferred namespaces
+    /// unreadable. The default is `false`: a backend that never defers has
+    /// nothing pending.
+    fn bulk_pending(&self) -> Result<bool, ReadError> {
+        Ok(false)
+    }
 }
 
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.

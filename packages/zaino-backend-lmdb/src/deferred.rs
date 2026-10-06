@@ -401,6 +401,14 @@ impl Deferral {
         }
     }
 
+    /// Whether any namespace is still deferred — an open run log remains. Loaded
+    /// from the manifest at [`open`](Self::open), so a freshly opened backend
+    /// reports a bulk load left unfinished by a previous run's crash.
+    pub(crate) fn bulk_pending(&self) -> bool {
+        let state = self.state.lock().expect("deferral state mutex poisoned");
+        !state.runs.is_empty()
+    }
+
     /// A snapshot of the deferred namespaces and their committed segment count and
     /// length, for [`merge::finish_bulk`].
     fn pending(&self) -> Vec<(Namespace, u64, u64)> {
