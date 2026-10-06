@@ -10,6 +10,19 @@
 //!     namespaces: &["headers", "tx_count", "_engine_meta"],
 //! })?;
 //! ```
+//!
+//! # Every method here blocks
+//!
+//! There is no async in this crate and none of it is cheap:
+//!
+//! - `get` and `scan` fault pages in from disk.
+//! - `commit` waits on LMDB's single-writer lock, then on page writes.
+//! - `flush` waits on `fsync`.
+//!
+//! None of that may run on an async runtime's worker. A caller inside a task
+//! places the call itself — `tokio::task::spawn_blocking` for one commit batch
+//! or one scan, never once per key, and not `block_in_place`, which panics on a
+//! current-thread runtime.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -72,21 +85,58 @@ pub struct LmdbBackend {
     commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
 
+/// More namespaces than LMDB can be told to hold: the count plus the root
+/// database does not fit the `u32` [`Environment::set_max_dbs`] takes.
+///
+/// Unreachable for any real index set, which is the point of naming it — the
+/// alternative is a cast that would wrap and quietly configure a smaller limit
+/// than the caller asked for.
+#[derive(Debug, thiserror::Error)]
+#[error("{count} namespaces exceeds the maximum database count LMDB accepts")]
+struct TooManyNamespaces {
+    count: usize,
+}
+
 impl LmdbBackend {
     /// Open or create an LMDB environment with the given namespaces.
     pub fn open(config: LmdbConfig) -> Result<Self, OpenError> {
         std::fs::create_dir_all(&config.path).map_err(|e| open_error("create directory", e))?;
 
+        // One database per namespace, plus LMDB's unnamed root database, which
+        // holds the names of the rest.
+        let max_dbs = u32::try_from(config.namespaces.len())
+            .ok()
+            .and_then(|count| count.checked_add(1))
+            .ok_or(TooManyNamespaces {
+                count: config.namespaces.len(),
+            })
+            .map_err(|e| open_error("count namespaces", e))?;
+
         let env = Environment::new()
-            .set_max_dbs(config.namespaces.len() as u32 + 1)
+            .set_max_dbs(max_dbs)
             .set_map_size(config.map_size_bytes)
             .set_flags(
                 // NO_TLS: allows sharing read transactions across threads.
                 // NO_READAHEAD: better for random-access patterns.
-                // NO_SYNC: skip fsync per commit — we flush explicitly at
-                // batch boundaries via Backend::flush(). Much faster for
-                // batch writes; crash between flushes loses at most one batch
-                // (the watermark ensures clean resume).
+                // NO_SYNC: no fsync per commit. Durability is the caller's to
+                // force, through `Backend::flush`.
+                //
+                // What this costs, precisely: LMDB documents that under
+                // NO_SYNC "a system crash can corrupt the database or lose the
+                // last transactions", and the integrity half of that is
+                // conditional — transactions keep atomicity, consistency and
+                // isolation (losing only durability) *if the filesystem
+                // preserves write order* and WRITE_MAP is unused. The second
+                // condition holds here; the first is a property of the
+                // deployment's filesystem, not something this crate can
+                // assert.
+                //
+                // So a crash can lose every commit since the last `flush`, not
+                // one batch, and on a filesystem that reorders writes it can
+                // leave an environment that will not open. The watermark keeps
+                // a *recoverable* store honest — it is written in the same
+                // transaction as the data it vouches for, so it can never lead
+                // it — but it cannot help an environment that fails to open.
                 EnvironmentFlags::NO_TLS
                     | EnvironmentFlags::NO_READAHEAD
                     | EnvironmentFlags::NO_SYNC,
@@ -160,6 +210,7 @@ fn open_or_create_db(env: &Environment, name: &str) -> Result<Database, lmdb::Er
     }
 }
 
+/// Blocking: `flush` waits on `fsync`. See the crate docs.
 impl Backend for LmdbBackend {
     type Reader = LmdbReader;
     type Writer = LmdbWriter;
@@ -202,6 +253,7 @@ impl LmdbReader {
     }
 }
 
+/// Blocking: both methods fault pages in from disk. See the crate docs.
 impl BackendReader for LmdbReader {
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
         let db = self.resolve_db(namespace)?;
@@ -364,6 +416,8 @@ impl LmdbWriter {
     }
 }
 
+/// Blocking: `commit` waits on LMDB's single-writer lock, then on page writes.
+/// See the crate docs.
 impl BackendWriter for LmdbWriter {
     fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
         #[cfg(feature = "sync-profile")]
