@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
+#[cfg(feature = "tip_aware_mempool")]
 use zaino_primitives::types::ChainStateEpoch;
 
 use crate::snapshot::MempoolSnapshot;

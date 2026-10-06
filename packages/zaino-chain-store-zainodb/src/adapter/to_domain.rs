@@ -14,21 +14,22 @@ use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
     ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
     SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
-    StoredAddress, StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut,
-    TransactionIndexCapability, TxOutSetIndexCapability,
+    StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut, TransactionIndexCapability,
+    TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition, CompactCiphertext,
     Height as DomainHeight, Nullifier, OrchardAction, Outpoint as DomainOutpoint,
     PreIndexCompactTx, SaplingOutput, Script, ScriptType, SignedZatoshis, TransactionId,
-    TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex, Zatoshis,
+    TransparentAddressKey, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots, TxIndex,
+    Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::types::{
-    BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock, Outpoint, TransactionHash,
-    TransparentCompactTx, TxLocation, TxOutCompact,
+    AbsoluteChainWork, BlockHash, CommitmentTreeData, CompactTxData, Height, IndexedBlock,
+    Outpoint, TransactionHash, TransparentCompactTx, TxLocation, TxOutCompact,
 };
 
 /// This crate's height, as the domain names it.
@@ -114,7 +115,7 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
                 error,
             )
         })?,
-        address: StoredAddress {
+        address: TransparentAddressKey {
             hash: *output.script_hash(),
             script_type,
         },
@@ -134,7 +135,9 @@ pub(super) fn stored_tx_outs(
 /// the identity an index reads (hash, parent, height), and the data, which
 /// carries the consensus fields. They are separate on disk because they are
 /// written to separate tables; nothing above this cares.
-pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStoreError> {
+pub(super) fn stored_block(
+    block: IndexedBlock<AbsoluteChainWork>,
+) -> Result<StoredBlock, ChainStoreError> {
     let context = &block.context;
     let data = &block.data;
 
@@ -171,7 +174,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
             .map(stored_compact_tx)
             .collect::<Result<Vec<_>, _>>()?,
         tree_roots: tree_roots(&block.commitment_tree_data),
-        chainwork: context.chainwork(),
+        chainwork: context.chainwork,
     })
 }
 

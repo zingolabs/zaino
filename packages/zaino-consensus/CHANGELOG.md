@@ -8,6 +8,29 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-09-26
+### Changed
+- `work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline.
+  _Migration:_ Compute work through `zaino_primitives`' `CompactDifficulty`.
+
+## [0.1.1] - 2026-09-11
+
+### Added
+### Changed
+- Documentation no longer refers to zcashd, whose support was removed from
+  Zaino. No code change.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-19
+
+### Added
 - New crate. Zcash consensus constants and the protocol-limit validation built
   on them: `COINBASE_MATURITY`, `MAX_BLOCK_REORG_HEIGHT`,
   `MAX_NONFINALISED_DEPTH`, `MAX_BLOCK_BYTES`. Nothing else in the workspace

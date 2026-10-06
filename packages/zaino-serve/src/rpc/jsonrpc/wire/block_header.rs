@@ -125,7 +125,7 @@ impl VerboseBlockHeader {
     pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
         Self {
             hash: zebra_chain::block::Hash(header.hash.into()),
-            confirmations: header.confirmations,
+            confirmations: header.confirmations.to_rpc_i64(),
             height: header.height.into(),
             version: header.version,
             merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
@@ -147,8 +147,13 @@ impl VerboseBlockHeader {
 
 #[cfg(test)]
 mod from_domain_tests {
+    use core::num::NonZeroU128;
+
     use super::*;
     use zaino_primitives::types::{self as domain, Height};
+
+    const CHAINWORK: NonZeroU128 =
+        NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff).expect("nonzero literal");
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -160,7 +165,9 @@ mod from_domain_tests {
     fn sample() -> domain::rpc::BlockHeaderVerbose {
         domain::rpc::BlockHeaderVerbose {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 10,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(10).expect("non-zero"),
+            ),
             height: Height::try_from(123_456u32).unwrap(),
             version: 4,
             merkle_root: domain::MerkleRoot::from([0xaa; 32]),
@@ -171,10 +178,7 @@ mod from_domain_tests {
             difficulty: 1.0,
             block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
             final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
-            chainwork: Some(domain::AbsoluteChainWork::new(
-                core::num::NonZeroU128::new(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff)
-                    .expect("nonzero"),
-            )),
+            chainwork: Some(domain::AbsoluteChainWork::new(CHAINWORK)),
             previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
             next_block_hash: None,
         }

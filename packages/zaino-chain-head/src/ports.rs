@@ -17,9 +17,9 @@
 //! runtime, not the domain: they are inherent methods on the concrete service,
 //! and their absence here is what stops a read handle from shutting ChainHead
 //! down. Status is a runtime property too — reported through
-//! `zaino_status::Status` like every other Zaino subsystem — but it is readable
-//! from *both* concrete handles, because observing how a runtime is faring is
-//! not the same as sequencing it. A consumer holding only a read handle still
+//! `zaino_component::StatusSource` like every other Zaino subsystem — but it is
+//! readable from *both* concrete handles, because observing how a runtime is
+//! faring is not the same as sequencing it. A consumer holding only a read handle still
 //! has to be able to say whether the tip it is being served is fresh.
 //!
 //! Nor is there a `sync`, `sync_to_height`, `reconcile` or `reconcile_once`.
@@ -44,7 +44,7 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 /// type answering all of them, so production composites and test mocks earn the
 /// bound the same way.
 ///
-/// Five questions, and deliberately no `GetChainTips`. ChainHead learns of a
+/// Six questions, and deliberately no `GetChainTips`. ChainHead learns of a
 /// competing branch only by living through the reorg that created it — walking
 /// back by hash from a block whose parent it does not hold — so it never asks a
 /// validator to enumerate tips. A bound naming a question nothing asks would
@@ -64,6 +64,7 @@ pub trait ChainHeadBlockSource:
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
     + zaino_source::OneShotGetCommitmentTreeRoots
+    + zaino_source::OneShotGetCommitmentTreeRootsByHeight
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -76,6 +77,7 @@ impl<T> ChainHeadBlockSource for T where
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
         + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetCommitmentTreeRootsByHeight
         + zaino_source::SubscribeBlocks
         + Send
         + Sync

@@ -64,9 +64,15 @@ embedding process no say in its own shutdown.
 
 ## Metrics
 
-`metric_names` holds the outbound RPC metric names, moved here from `zainod`
-because this crate is what emits them. Registration (and the descriptions) stay
-with the daemon.
+| Metric                                           | Meaning                                                   |
+| ------------------------------------------------ | --------------------------------------------------------- |
+| `zaino.rpc.outbound.duration_seconds{method}`    | one attempt that got a response (retry sleeps excluded)   |
+| `zaino.rpc.outbound.errors_total{method,outcome}`| `transport_error` unreachable / `rpc_error` refused / `retried` saturated |
+
+- Attempt volume = `duration_seconds` `_count` (no success counter)
+- Rising `retried` share = validator queue filling (a refusal is fast → latency drops, share rises)
+- `method` = a label → `call` takes `&'static str` (cardinality capped at compile time; the
+  recorder never evicts)
 
 ## Related
 

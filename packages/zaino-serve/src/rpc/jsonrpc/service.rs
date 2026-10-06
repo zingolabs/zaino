@@ -931,9 +931,10 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         &self,
         params: GetAddressDeltasParams,
     ) -> Result<GetAddressDeltasResponse, ErrorObjectOwned> {
+        let request = params.into_domain().map_err(invalid_params_error_object)?;
         self.service_subscriber
             .inner_ref()
-            .get_address_deltas(params.into_domain())
+            .get_address_deltas(request)
             .await
             .map(GetAddressDeltasResponse::from_domain)
             .map_err(invalid_params_error_object)

@@ -150,17 +150,25 @@ where
             None => None,
         };
 
-        let routes = grpc_routes(service.inner_ref().get_subscriber());
         let grpc_config = GrpcServerConfig {
             listen_address: indexer_config.grpc_settings.listen_address,
             tls: indexer_config.grpc_settings.tls,
         };
         let grpc_server = match grpc_listener {
             #[cfg(feature = "test_dependencies")]
-            Some(listener) => TonicServer::spawn_from_listener(routes, grpc_config, listener)
-                .await
-                .unwrap(),
-            _ => TonicServer::spawn(routes, grpc_config).await.unwrap(),
+            Some(listener) => TonicServer::spawn_from_listener_with_routes(
+                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                grpc_config,
+                listener,
+            )
+            .await
+            .unwrap(),
+            _ => TonicServer::spawn_with_routes(
+                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                grpc_config,
+            )
+            .await
+            .unwrap(),
         };
 
         let mut indexer = Self {
@@ -174,7 +182,13 @@ where
         let log_interval = tokio::time::Duration::from_secs(10);
 
         let serve_task = tokio::task::spawn(async move {
+            let shutdown = shutdown_signal();
+            tokio::pin!(shutdown);
             loop {
+                // Every tick (100ms): the heartbeat `/livez` answers from
+                #[cfg(feature = "prometheus")]
+                crate::admin::heartbeat();
+
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
                     indexer.log_status();
@@ -193,7 +207,16 @@ where
                     return Ok(());
                 }
 
-                server_interval.tick().await;
+                tokio::select! {
+                    _ = server_interval.tick() => {}
+                    // Pod teardown = SIGTERM; same graceful close, so the db and
+                    // mempool are not killed mid-write
+                    _ = &mut shutdown => {
+                        info!("received shutdown signal; closing Zaino gracefully");
+                        indexer.close().await;
+                        return Ok(());
+                    }
+                }
             }
         });
 
@@ -314,6 +337,30 @@ where
             grpc = %grpc_server_status,
             "Zaino status check"
         );
+    }
+}
+
+/// Resolves on SIGTERM (pod teardown) or ctrl-c; ctrl-c only off unix
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "could not install SIGTERM handler; falling back to ctrl-c only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

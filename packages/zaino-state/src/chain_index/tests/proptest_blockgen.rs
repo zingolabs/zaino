@@ -1,9 +1,10 @@
+use crate::chain_index::chain_view::BestTip as _;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain::ChainViewSnapshot as _;
 
 use futures::stream::FuturesUnordered;
 use proptest::{
@@ -35,14 +36,14 @@ use crate::{
 
 use zaino_proto::proto::utils::PoolTypeFilter;
 
-/// Chain length per generated segment in the passthrough harness — long enough to
+/// Chain length per generated segment in the synced-index harness — long enough to
 /// have some finalised blocks to play with. The best chain is twice this (genesis
 /// segment plus one branch), so its expected tip height is
-/// `2 * PASSTHROUGH_SEGMENT_LENGTH - 1`.
-const PASSTHROUGH_SEGMENT_LENGTH: usize = OPERATIONAL_NFS_DEPTH as usize + 20;
+/// `2 * SEGMENT_LENGTH - 1`.
+const SEGMENT_LENGTH: usize = OPERATIONAL_NFS_DEPTH as usize + 20;
 
-/// Handle all the boilerplate for a passthrough
-fn passthrough_test(
+/// Handle all the boilerplate for a synced index over a generated chain.
+fn synced_index_test(
     // The actual assertions. Takes as args:
     test: impl AsyncFn(
         // The mockchain, to use a a source of truth
@@ -50,48 +51,41 @@ fn passthrough_test(
         // The subscriber to test against
         NodeBackedChainIndexSubscriber<ValidatorSource<ProptestMockchain>>,
         // A snapshot, which will have only the genesis block
-        &std::sync::Arc<crate::MapBackedSnapshot>,
+        &crate::chain_index::chain_view::ChainIndexSnapshot<ValidatorSource<ProptestMockchain>>,
     ),
 ) {
-    passthrough_test_on(
+    synced_index_test_on(
         ActivationHeights::default().to_regtest_network(),
         // A small delay keeps source calls genuinely asynchronous, so the
         // concurrency in the paths under test is exercised rather than
-        // collapsed into immediate returns.
-        //
-        // It used to be 100ms, chosen to hold the indexer in passthrough while
-        // the assertions ran. There is no passthrough state to hold it in any
-        // more — the chain head is populated from the moment the index exists —
-        // and at that magnitude the delay simply multiplied by the number of
-        // blocks the chain head walks, costing tens of seconds per case for no
-        // assertion.
+        // collapsed into immediate returns. A larger one would multiply by
+        // every block the finalised build and the chain head walk.
         Some(Duration::from_millis(2)),
         |_| {},
         test,
     )
 }
 
-/// [`passthrough_test`] on an explicit network, with a per-segment chain mutator.
+/// [`synced_index_test`] on an explicit network, with a per-segment chain mutator.
 ///
 /// The mutator exists because zebra's stock `Transaction` strategy generates V6
 /// transactions only probabilistically (its NU6.3/NU7 arm picks one of v4/v5/v6 per
 /// transaction), so deterministic ironwood-era content must be injected after
-/// generation. Mutating a block's transactions is safe here: the
-/// block hash covers only the header, so parent-hash continuity is untouched, and the
-/// header's merkle root is already arbitrary — the passthrough path tolerates that by
-/// construction.
-fn passthrough_test_on(
+/// generation. The mutated chain is then relinked (see [`relink_chain`]): the
+/// finalised state checks each block's merkle root and parent hash on write, and
+/// a generated header satisfies neither.
+fn synced_index_test_on(
     network: zebra_chain::parameters::Network,
     source_delay: Option<Duration>,
     mutate_segment: impl Fn(&mut Vec<Arc<zebra_chain::block::Block>>),
     test: impl AsyncFn(
         &ValidatorSource<ProptestMockchain>,
         NodeBackedChainIndexSubscriber<ValidatorSource<ProptestMockchain>>,
-        &std::sync::Arc<crate::MapBackedSnapshot>,
+        &crate::chain_index::chain_view::ChainIndexSnapshot<ValidatorSource<ProptestMockchain>>,
     ),
 ) {
     init_tracing();
-    let segment_length = PASSTHROUGH_SEGMENT_LENGTH;
+    let segment_length = SEGMENT_LENGTH;
     // No need to worry about non-best chains for this test
     let branch_count = 1;
 
@@ -105,6 +99,7 @@ fn passthrough_test_on(
             for segment in &mut branching_segments {
                 mutate_segment(&mut segment.0);
             }
+            relink_chain(&mut genesis_segment, &mut branching_segments);
             let mockchain = wrap_proptest_mockchain(ProptestMockchain {
                 genesis_segment,
                 branching_segments,
@@ -124,7 +119,7 @@ fn passthrough_test_on(
                     },
                     ..Default::default()
                 },
-                ephemeral: true,
+                ephemeral: false,
                 mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
@@ -138,25 +133,20 @@ fn passthrough_test_on(
             // The best chain is `2 * segment_length` blocks (genesis segment +
             // one branch), so its tip height is `2 * segment_length - 1`.
             //
-            // These cases used to wait for the *finalised floor*, because a
-            // still-syncing snapshot reported that as the highest height it
-            // could serve and everything above it went to the validator by
-            // passthrough. The chain head serves to the chain tip from the
-            // moment the index exists, so the tip is what to wait for — and
-            // what these queries now exercise is the chain head rather than the
-            // passthrough that used to answer them.
+            // Both halves must be in place before the assertions run: the chain
+            // head at the source's tip, and the finalised state built and
+            // serving in place of the syncing passthrough, which answers a
+            // finalised read with `NotReady` that the index reports as absence.
             let tip_height = (2 * segment_length - 1) as u32;
-            // Poll rather than sleeping a fixed 5 s: with a 1 s per-block
-            // source delay (above) the chain head reaches the tip well inside
-            // that, but it can be longer under parallel-suite scheduler
-            // pressure.
             poll_until(
-                "chain head to reach the source's chain tip",
-                Duration::from_secs(30),
+                "chain head to reach the source's tip and the finalised state to finish building",
+                Duration::from_secs(60),
                 Duration::from_millis(50),
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state();
-                    (u32::from(snapshot.best_tip().height) == tip_height).then_some(())
+                    (u32::from(snapshot.best_tip().height) == tip_height
+                        && indexer.finalised_state_mode() == crate::FinalisedStateMode::Persistent)
+                        .then_some(())
                 },
             )
             .await;
@@ -173,11 +163,11 @@ fn passthrough_test_on(
 }
 
 #[test]
-fn passthrough_find_fork_point() {
-    // TODO: passthrough_test handles a good chunck of boilerplate, but there's
-    // still a lot more inside of the closures being passed to passthrough_test.
+fn synced_index_find_fork_point() {
+    // TODO: synced_index_test handles a good chunck of boilerplate, but there's
+    // still a lot more inside of the closures being passed to synced_index_test.
     // Can we DRY out more of it?
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         // We use a futures-unordered instead of only a for loop
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
@@ -199,8 +189,7 @@ fn passthrough_find_fork_point() {
                     .unwrap();
 
                 if height <= crate::Height(u32::from(snapshot.best_tip().height)) {
-                    // passthrough fork point can only ever be the requested block
-                    // as we don't passthrough to nonfinalized state
+                    // a finalised block is its own fork point
                     assert_eq!(hash, fork_point.unwrap().0);
                     assert_eq!(height, fork_point.unwrap().1);
                 } else {
@@ -213,8 +202,8 @@ fn passthrough_find_fork_point() {
 }
 
 #[test]
-fn passthrough_get_transaction_status() {
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+fn synced_index_get_transaction_status() {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         // We use a futures-unordered instead of only a for loop
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
@@ -242,8 +231,7 @@ fn passthrough_get_transaction_status() {
                     .unwrap();
 
                 if height <= crate::Height(u32::from(snapshot.best_tip().height)) {
-                    // passthrough transaction status can only ever be on the best
-                    // chain as we don't passthrough to nonfinalized state
+                    // a finalised block is on the best chain by definition
                     let Some(BestChainLocation::Block(_block_hash, transaction_height)) =
                         transaction_status.0
                     else {
@@ -261,8 +249,8 @@ fn passthrough_get_transaction_status() {
 }
 
 #[test]
-fn passthrough_get_raw_transaction() {
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+fn synced_index_get_raw_transaction() {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         // We use a futures-unordered instead of only a for loop
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
@@ -304,15 +292,10 @@ fn passthrough_get_raw_transaction() {
     });
 }
 
-/// The reported tip is the source's own tip.
-///
-/// This used to expect the *finalised floor*: with no non-finalised state yet,
-/// the highest height the index would admit to was the seam, and everything
-/// above it was passthrough. The chain head tracks the source's tip directly,
-/// so that is what the index now reports.
+/// The reported tip is the source's own tip, which the chain head tracks directly.
 #[test]
-fn passthrough_best_chaintip() {
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+fn synced_index_best_chaintip() {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         let tip = index_reader.best_chaintip(snapshot).await.unwrap();
         assert_eq!(
             tip.height.0,
@@ -329,8 +312,8 @@ fn passthrough_best_chaintip() {
 }
 
 #[test]
-fn passthrough_get_block_height() {
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+fn synced_index_get_block_height() {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         // We use a futures-unordered instead of only a for loop
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
@@ -362,8 +345,8 @@ fn passthrough_get_block_height() {
 }
 
 #[test]
-fn passthrough_get_block_range() {
-    passthrough_test(async |mockchain, index_reader, snapshot| {
+fn synced_index_get_block_range() {
+    synced_index_test(async |mockchain, index_reader, snapshot| {
         // We use a futures-unordered instead of only a for loop
         // as this lets us call all the get_raw_transaction requests
         // at the same time and wait for them in parallel
@@ -376,49 +359,49 @@ fn passthrough_get_block_range() {
             .all_blocks_arb_branch_order()
             .map(|block| block.coinbase_height().unwrap())
         {
-            let expected_end_height = (expected_start_height + 9).unwrap();
-            if expected_end_height.0 as usize
-                <= mockchain.source().all_blocks_arb_branch_order().count()
-            {
-                let index_reader = index_reader.clone();
-                let snapshot = snapshot.clone();
-                parallel.push(async move {
-                    let block_range_stream = index_reader.get_block_range(
-                        &snapshot,
-                        expected_start_height.into(),
-                        Some(expected_end_height.into()),
-                    );
-                    if expected_start_height <= crate::Height(u32::from(snapshot.best_tip().height))
-                    {
-                        let mut block_range_stream = Box::pin(block_range_stream.unwrap());
-                        let mut num_blocks_in_stream = 0;
-                        while let Some(block) = block_range_stream.next().await {
+            let low = expected_start_height.0;
+            let high = low + 9;
+            if high as usize <= mockchain.source().all_blocks_arb_branch_order().count() {
+                for (start, end) in [(low, high), (high, low)] {
+                    let index_reader = index_reader.clone();
+                    let snapshot = snapshot.clone();
+                    parallel.push(async move {
+                        let blocks: Vec<_> = index_reader
+                            .get_block_range(
+                                &snapshot,
+                                crate::Height(start),
+                                Some(crate::Height(end)),
+                            )
+                            .expect("a range always yields a stream")
+                            .collect()
+                            .await;
+
+                        if high > u32::from(snapshot.best_tip().height) {
+                            assert!(
+                                matches!(blocks.as_slice(), [Err(_)]),
+                                "a range above the tip yields one error",
+                            );
+                            return;
+                        }
+
+                        let heights: Vec<u32> = if start <= end {
+                            (start..=end).collect()
+                        } else {
+                            (end..=start).rev().collect()
+                        };
+                        assert_eq!(blocks.len(), heights.len(), "every height is served");
+                        for (block, height) in blocks.into_iter().zip(heights) {
                             let expected_block = mockchain
                                 .source()
                                 .all_blocks_arb_branch_order()
-                                .nth(expected_start_height.0 as usize + num_blocks_in_stream)
+                                .nth(height as usize)
                                 .unwrap()
                                 .zcash_serialize_to_vec()
                                 .unwrap();
-                            assert_eq!(block.unwrap(), expected_block);
-                            num_blocks_in_stream += 1;
+                            assert_eq!(block.unwrap(), expected_block, "height {height}");
                         }
-                        assert_eq!(
-                            num_blocks_in_stream,
-                            // expect 10 blocks
-                            10.min(
-                                // unless the provided range overlaps the finalized boundary.
-                                // in that case, expect all blocks between start height
-                                // and finalized height, (+1 for inclusive range)
-                                u32::from(snapshot.best_tip().height)
-                                    .saturating_sub(expected_start_height.0)
-                                    + 1
-                            ) as usize
-                        );
-                    } else {
-                        assert!(block_range_stream.is_none())
-                    }
-                });
+                    });
+                }
             }
         }
         while let Some(_success) = parallel.next().await {}
@@ -432,7 +415,7 @@ fn passthrough_get_block_range() {
 /// and this test was a `should_panic` canary tracking the gap; the gap is now closed.
 ///
 /// V6 generation is nonetheless *probabilistic* — one arm of three per transaction — so
-/// the `passthrough_metadata_consistency_*` walks still inject `fake_v6_transaction`
+/// the `synced_index_metadata_consistency_*` walks still inject `fake_v6_transaction`
 /// ironwood content rather than relying on generation. Those walks assert their own
 /// non-vacuity (`above > 0`), which probabilistic content would turn into a flake rather
 /// than a silent pass.
@@ -505,7 +488,7 @@ const IRONWOOD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
 /// explicit all-pools filter, and cross-checks served counts against the mockchain
 /// source of truth.
 #[test]
-fn passthrough_metadata_consistency_ironwood_only() {
+fn synced_index_metadata_consistency_ironwood_only() {
     metadata_consistency_for_era(IRONWOOD_ONLY_HEIGHTS, Some(2), false)
 }
 
@@ -531,7 +514,7 @@ const ORCHARD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
 /// which `nu6_3: None` never produces — ironwood provably never appears anywhere in the
 /// chain or the served form.
 #[test]
-fn passthrough_metadata_consistency_orchard_only() {
+fn synced_index_metadata_consistency_orchard_only() {
     metadata_consistency_for_era(ORCHARD_ONLY_HEIGHTS, None, false)
 }
 
@@ -539,8 +522,8 @@ fn passthrough_metadata_consistency_orchard_only() {
 /// content from it. The boundary is placed inside the walked non-finalised window so
 /// both eras are actually observed by the walk.
 #[test]
-fn passthrough_metadata_consistency_orchard_to_ironwood_transition() {
-    let expected_tip = (2 * PASSTHROUGH_SEGMENT_LENGTH - 1) as u32;
+fn synced_index_metadata_consistency_orchard_to_ironwood_transition() {
+    let expected_tip = (2 * SEGMENT_LENGTH - 1) as u32;
     let boundary = expected_tip - (OPERATIONAL_NFS_DEPTH / 2);
     metadata_consistency_for_era(
         ActivationHeights {
@@ -631,7 +614,7 @@ fn metadata_consistency_for_era(
         }
     };
 
-    passthrough_test_on(
+    synced_index_test_on(
         heights.to_regtest_network(),
         // No artificial source delay: this test waits for the indexer to finish
         // syncing, because compact blocks are not served while the finalised state
@@ -721,7 +704,11 @@ fn metadata_consistency_for_era(
                     let snapshot = index_reader.snapshot_nonfinalized_state();
                     // The chain head is always populated; what this waits for
                     // is the finalised state catching up beneath it.
-                    (snapshot.retained_block_count() > 0).then_some(snapshot)
+                    snapshot
+                        .serviceable_range()
+                        .gap_from
+                        .is_none()
+                        .then_some(snapshot)
                 },
             )
             .await;
@@ -807,15 +794,6 @@ fn metadata_consistency_for_era(
     )
 }
 
-// Ignored: this drives the full indexer over `partial_chain_strategy` blocks, whose headers carry
-// arbitrary (invalid) merkle roots. The finalised state now validates blocks on the write path
-// (cheap merkle + parent-continuity checks), so it correctly rejects these blocks once the indexer's
-// finalised-sync reaches them. These proptest chains are not a valid input for the finalised state;
-// MockSource-backed tests (chain_index::tests::finalised_state::v1 + migrations) cover the
-// finalised state with valid blocks. Re-enable once the optional-db PR lands, which lets these
-// passthrough proptests run without engaging the finalised state.
-#[ignore = "proptest blocks have invalid merkle roots; finalised state rejects them. \
-            Re-enable when the optional db PR lands. Covered by MockSource finalised_state tests."]
 #[test]
 fn make_chain() {
     init_tracing();
@@ -829,7 +807,8 @@ fn make_chain() {
     proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network.clone()))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
-            let (genesis_segment, branching_segments) = segments;
+            let (mut genesis_segment, mut branching_segments) = segments;
+            relink_chain(&mut genesis_segment, &mut branching_segments);
             let mockchain = wrap_proptest_mockchain(ProptestMockchain {
                 genesis_segment,
                 branching_segments,
@@ -849,7 +828,7 @@ fn make_chain() {
                     },
                     ..Default::default()
                 },
-                ephemeral: true,
+                ephemeral: false,
                 mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
@@ -860,29 +839,31 @@ fn make_chain() {
                 .await
                 .unwrap();
             let index_reader = indexer.subscriber();
-            let expected_block_count = segment_length * (branch_count + 1);
+            // The chain head retains the whole best chain; how much of the
+            // competing branch it keeps is its retention rule's business, and
+            // it trims that branch below its depth as the tip moves.
+            let best_chain_length = segment_length * 2;
             let snapshot = poll_until(
-                "indexer to ingest the full proptest chain",
-                Duration::from_secs(10),
+                "indexer to ingest the best chain of the proptest chain",
+                Duration::from_secs(60),
                 Duration::from_millis(25),
                 || async {
                     let snapshot = index_reader.snapshot_nonfinalized_state();
-                    (snapshot.retained_block_count() == expected_block_count)
+                    (u32::from(snapshot.best_tip().height) as usize + 1 == best_chain_length
+                        && indexer.finalised_state_mode() == crate::FinalisedStateMode::Persistent)
                         .then_some(snapshot)
                 },
             )
             .await;
-            let best_tip = snapshot.best_tip();
-            let best_tip_block = snapshot
-                .block_by_hash(&best_tip.hash)
-                .expect("the tip is retained");
 
-            // A canonical block is its own fork point; a competing one resolves
-            // to an ancestor. Both are answerable, which is what says the
-            // branch is connected to the canonical chain rather than dangling.
-            for block in snapshot.best_chain() {
-                assert!(block.work <= best_tip_block.work);
-                let hash = crate::BlockHash(block.hash().into());
+            // A canonical block is its own fork point, which is what says the
+            // best chain is connected rather than dangling.
+            for height in 0..best_chain_length as u32 {
+                let hash = index_reader
+                    .get_block_hash(&snapshot, crate::Height(height))
+                    .await
+                    .unwrap()
+                    .expect("every best-chain height has a block");
                 assert_eq!(
                     index_reader
                         .find_fork_point(&snapshot, &hash)
@@ -894,7 +875,10 @@ fn make_chain() {
                 );
             }
 
-            assert_eq!(snapshot.best_chain().count(), segment_length * 2);
+            assert_eq!(
+                u32::from(snapshot.best_tip().height) as usize + 1,
+                segment_length * 2
+            );
         });
     });
 }
@@ -922,7 +906,7 @@ struct ProptestMockchain {
     /// Cached txid → (tx, location) index. Built lazily on first `get_transaction`
     /// call. Replaces the O(N_blocks × M_txs) linear scan that recomputed
     /// `transaction.hash()` on every iteration — the dominant cost in the
-    /// tx-iterating passthrough tests.
+    /// tx-iterating tests.
     #[allow(clippy::type_complexity)]
     tx_index: Arc<
         std::sync::OnceLock<
@@ -1084,6 +1068,65 @@ impl ProptestMockchain {
             .zcash_serialize_to_vec()
             .map_err(|error| format!("proptest block did not serialize: {error}"))
     }
+
+    /// The block at `height`, from an arbitrary branch rather than the best
+    /// one: a reader walking by height must cope with the answer changing
+    /// under it, which is the reorg these tests are about.
+    fn block_at_height(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Option<Arc<zebra_chain::block::Block>> {
+        let wanted = zebra_chain::block::Height(u32::from(height));
+        self.genesis_segment
+            .iter()
+            .find(|block| block.coinbase_height() == Some(wanted))
+            .cloned()
+            .or_else(|| {
+                self.branching_segments
+                    .choose(&mut rand::rng())?
+                    .iter()
+                    .find(|block| block.coinbase_height() == Some(wanted))
+                    .cloned()
+            })
+    }
+
+    /// A block's confirmations and successor, as the best branch places it.
+    fn best_chain_placement(
+        &self,
+        block: &zebra_chain::block::Block,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockConfirmations,
+            Option<zaino_primitives::types::BlockHash>,
+        ),
+        String,
+    > {
+        let best = self.best_branch();
+        let Some(position) = best.iter().position(|held| held.hash() == block.hash()) else {
+            return Ok((
+                zaino_primitives::types::BlockConfirmations::NotInBestChain,
+                None,
+            ));
+        };
+        let height = |block: &zebra_chain::block::Block| {
+            block
+                .coinbase_height()
+                .map(|height| height.0)
+                .ok_or_else(|| "proptest block has no coinbase height".to_string())
+        };
+        let tip = best
+            .last()
+            .ok_or_else(|| "proptest chain is empty".to_string())?;
+        let confirmations = crate::chain_index::source::mockchain_source::block_confirmations(
+            height(tip)?,
+            height(block)?,
+        )
+        .map_err(|e| e.to_string())?;
+        let next = best
+            .get(position + 1)
+            .map(|next| zaino_primitives::types::BlockHash::from(next.hash().0));
+        Ok((confirmations, next))
+    }
 }
 
 impl zaino_source::ValidatorSource for ProptestMockchain {
@@ -1096,26 +1139,9 @@ impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
         height: zaino_primitives::types::Height,
     ) -> Result<Vec<u8>, PortError<zaino_source::GetBlockError>> {
         self.settle().await;
-        let wanted = zebra_chain::block::Height(u32::from(height));
-
-        // Deliberately an arbitrary branch rather than the best one: a reader
-        // walking by height must cope with the answer changing under it, which
-        // is the reorg these tests are about.
-        let block = self
-            .genesis_segment
-            .iter()
-            .find(|block| block.coinbase_height() == Some(wanted))
-            .cloned()
-            .or_else(|| {
-                self.branching_segments
-                    .choose(&mut rand::rng())?
-                    .iter()
-                    .find(|block| block.coinbase_height() == Some(wanted))
-                    .cloned()
-            })
-            .ok_or(PortError::Domain(
-                zaino_source::GetBlockError::HeightNotFound(height),
-            ))?;
+        let block = self.block_at_height(height).ok_or(PortError::Domain(
+            zaino_source::GetBlockError::HeightNotFound(height),
+        ))?;
 
         Self::serialize(&block).map_err(port_fault)
     }
@@ -1312,6 +1338,44 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
     }
 }
 
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::TreeRoots,
+        ),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let block = zaino_source::OneShotGetBlock::get_block(self, height)
+            .await
+            .map_err(|error| match error {
+                PortError::Domain(zaino_source::GetBlockError::HeightNotFound(height)) => {
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                    )
+                }
+                PortError::NonDomain(non_domain) => PortError::NonDomain(non_domain),
+            })?;
+        let hash = block.header.hash;
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash-addressed mock answers every hash, known or not.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => super::super::source::mockchain_source::port_fault(format!(
+                        "proptest mockchain lost block {hash} it just served"
+                    )),
+                    PortError::NonDomain(non_domain) => PortError::NonDomain(non_domain),
+                })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
     async fn get_commitment_tree_roots(
         &self,
@@ -1406,9 +1470,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
 
         // An empty pool reports the empty-tree root, not an absent one. A
         // validator answers that way for any activated pool, and the finalised
-        // state's passthrough requires it — previously unnoticed here because
-        // these queries were short-circuited before the finalised state saw
-        // them.
+        // state's build requires it.
         let sapling_front =
             sapling.unwrap_or_else(incrementalmerkletree::frontier::Frontier::<_, 32>::empty);
         let orchard_front =
@@ -1433,6 +1495,38 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
 }
 
 type ChainSegment = SummaryDebug<Vec<Arc<zebra_chain::block::Block>>>;
+
+/// Gives every generated block the merkle root of its transactions and the hash of its relinked parent, so the finalised state's write-path checks accept the chain.
+fn relink_chain(genesis_segment: &mut ChainSegment, branching_segments: &mut [ChainSegment]) {
+    let branch_point = relink_segment(genesis_segment, None);
+    for segment in branching_segments {
+        relink_segment(segment, branch_point);
+    }
+}
+
+/// [`relink_chain`] over one segment, whose first block's parent becomes `parent` when given, yielding the relinked tip's hash.
+fn relink_segment(
+    segment: &mut ChainSegment,
+    parent: Option<zebra_chain::block::Hash>,
+) -> Option<zebra_chain::block::Hash> {
+    let mut parent = parent;
+    for block in segment.0.iter_mut() {
+        let mut relinked = (**block).clone();
+        let mut header = *relinked.header;
+        header.merkle_root = relinked
+            .transactions
+            .iter()
+            .map(|transaction| transaction.hash())
+            .collect();
+        if let Some(parent) = parent {
+            header.previous_block_hash = parent;
+        }
+        relinked.header = Arc::new(header);
+        *block = Arc::new(relinked);
+        parent = Some(block.hash());
+    }
+    parent
+}
 
 /// Sapling, Orchard and Ironwood frontiers as of one block.
 type CachedFrontiers = (
@@ -1543,6 +1637,92 @@ mod proptest_helpers {
     }
 }
 
+impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
+    async fn get_block_header(
+        &self,
+        hash: zaino_primitives::types::BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockHeaderVerbose,
+        PortError<zaino_source::GetBlockHeaderError>,
+    > {
+        self.settle().await;
+        let wanted = zebra_chain::block::Hash(<[u8; 32]>::from(hash));
+        let block = self
+            .all_blocks_arb_branch_order()
+            .find(|block| block.hash() == wanted)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+            ))?;
+        let (confirmations, next_block_hash) =
+            self.best_chain_placement(block).map_err(port_fault)?;
+
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|e| port_fault(e.to_string()))?;
+
+        crate::chain_index::source::mockchain_source::verbose_header(
+            block,
+            confirmations,
+            roots.sapling.map(|info| info.root),
+            next_block_hash,
+        )
+        .map_err(port_fault)
+    }
+}
+
+impl zaino_source::OneShotGetPreIndexCompactBlock for ProptestMockchain {
+    async fn get_pre_index_compact_block(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<zaino_primitives::types::PreIndexCompactBlock, PortError<zaino_source::GetBlockError>>
+    {
+        let block = zaino_source::OneShotGetBlock::get_block(self, height).await?;
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerbose for ProptestMockchain {
+    async fn get_block_verbose(
+        &self,
+        height: zaino_primitives::types::Height,
+    ) -> Result<zaino_primitives::types::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>>
+    {
+        self.settle().await;
+        let block = self.block_at_height(height).ok_or(PortError::Domain(
+            zaino_source::GetBlockVerboseError::HeightNotFound(height),
+        ))?;
+        let (confirmations, next_block_hash) =
+            self.best_chain_placement(&block).map_err(port_fault)?;
+        let roots = zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(
+            self,
+            zaino_primitives::types::BlockHash::from(block.hash().0),
+        )
+        .await
+        .map_err(|e| port_fault(e.to_string()))?;
+        let size = |root: Option<zaino_primitives::types::TreeRootInfo>| {
+            root.map_or(zaino_primitives::types::TreeSize::ZERO, |info| info.size)
+        };
+
+        Ok(zaino_primitives::types::BlockVerbose {
+            confirmations,
+            difficulty: block.header.difficulty_threshold.relative_to_network(
+                &crate::chain_index::source::mockchain_source::mockchain_network(),
+            ),
+            // The generated chains carry no cumulative chain state.
+            chainwork: None,
+            chain_supply: None,
+            value_pools: Vec::new(),
+            tree_sizes: zaino_primitives::types::BlockTreeSizes {
+                sapling: size(roots.sapling),
+                orchard: size(roots.orchard),
+                ironwood: size(roots.ironwood),
+            },
+            next_block_hash,
+        })
+    }
+}
+
 // ***** Questions a generated chain does not answer *****
 //
 // This fixture exercises sync and reorg handling. Everything below carried
@@ -1557,18 +1737,6 @@ impl zaino_source::OneShotGetBlockVerboseByHash for ProptestMockchain {
     ) -> Result<zaino_primitives::types::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>>
     {
         unimplemented!("ProptestMockchain exercises sync/reorg, not the verbose getblock RPC")
-    }
-}
-
-impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
-    async fn get_block_header(
-        &self,
-        _hash: zaino_primitives::types::BlockHash,
-    ) -> Result<
-        zaino_primitives::types::rpc::BlockHeaderVerbose,
-        PortError<zaino_source::GetBlockHeaderError>,
-    > {
-        unimplemented!("ProptestMockchain exercises sync/reorg, not the getblockheader RPC")
     }
 }
 

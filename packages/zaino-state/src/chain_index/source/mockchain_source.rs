@@ -416,13 +416,23 @@ impl MockchainSource {
 // build.
 // ---------------------------------------------------------------------------
 
-/// Confirmations are one more than the depth, or -1 when the block is not on the best
-/// chain. Depth is limited by height, so it never overflows an `i64`.
-fn confirmations_from_depth(depth: Option<u32>) -> i64 {
-    const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
-    depth
-        .map(|depth| i64::from(depth) + 1)
-        .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS)
+/// Tip-relative confirmation state of the block at `height` against the mock's
+/// active chain height.
+///
+/// The mock's best chain is its vector up to the active height, so a block is
+/// on the best chain exactly when it has a depth below that tip; above it, the
+/// block exists in the vector but is not active. Errs only on a height past
+/// the protocol maximum, which the mock's vectors never carry.
+pub(crate) fn block_confirmations(
+    active_height: u32,
+    height: u32,
+) -> Result<domain::BlockConfirmations, domain::HeightOverflow> {
+    let tip = domain::Height::try_from(active_height)?;
+    let height = domain::Height::try_from(height)?;
+    Ok(match height.depth_from(tip) {
+        Some(_) => domain::BlockConfirmations::of_best_chain_block(height, tip),
+        None => domain::BlockConfirmations::NotInBestChain,
+    })
 }
 
 // ***** zaino-source port implementations *****
@@ -797,14 +807,44 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
-    async fn get_block_verbose_by_hash(
+impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for MockchainSource {
+    async fn get_commitment_tree_roots_by_height(
         &self,
-        hash: domain::BlockHash,
+        height: domain::Height,
+    ) -> Result<
+        (domain::BlockHash, domain::TreeRoots),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let Some(index) = self.served_index_at_height(height) else {
+            return Err(PortError::Domain(
+                zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+            ));
+        };
+        let hash = domain::BlockHash::from(self.blocks[index].hash().0);
+        let roots =
+            zaino_source::OneShotGetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+                .await
+                .map_err(|error| match error {
+                    // The hash was just resolved from this same chain, so a
+                    // missing block is the mock's own fault, not an answer.
+                    PortError::Domain(
+                        zaino_source::GetCommitmentTreeRootsError::BlockNotFound(hash),
+                    ) => port_fault(format!("mockchain lost block {hash} it just indexed")),
+                    PortError::NonDomain(non_domain) => PortError::NonDomain(non_domain),
+                })?;
+        Ok((hash, roots))
+    }
+}
+
+impl MockchainSource {
+    /// The cumulative chain state at a served block, by position.
+    ///
+    /// Shared by the by-height and by-hash verbose ports: they differ only in
+    /// how they resolve a block, so the body that builds the answer lives once.
+    fn verbose_at(
+        &self,
+        index: usize,
     ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
-        let index = self
-            .served_index_at_hash(hash)
-            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
         let block = &self.blocks[index];
         let height = block.coinbase_height().ok_or_else(|| {
             port_fault::<zaino_source::GetBlockVerboseError>("block missing coinbase height")
@@ -822,7 +862,8 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
         );
 
         Ok(domain::BlockVerbose {
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             difficulty: block
                 .header
                 .difficulty_threshold
@@ -840,6 +881,50 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
                 .next_block_hash(index)
                 .map(|hash| domain::BlockHash::from(hash.0)),
         })
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: domain::BlockHash,
+    ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
+        let index = self
+            .served_index_at_hash(hash)
+            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
+        self.verbose_at(index)
+    }
+}
+
+impl zaino_source::OneShotGetBlockVerbose for MockchainSource {
+    async fn get_block_verbose(
+        &self,
+        height: domain::Height,
+    ) -> Result<domain::BlockVerbose, PortError<zaino_source::GetBlockVerboseError>> {
+        let index = self
+            .served_index_at_height(height)
+            .ok_or_else(|| port_fault::<zaino_source::GetBlockVerboseError>("block not found"))?;
+        self.verbose_at(index)
+    }
+}
+
+impl zaino_source::OneShotGetPreIndexCompactBlock for MockchainSource {
+    /// The compact projection of a served block.
+    ///
+    /// Derived from the parsed block rather than stored separately: the mock
+    /// holds one representation of the chain, so a second would be a second
+    /// thing to keep in step.
+    async fn get_pre_index_compact_block(
+        &self,
+        height: domain::Height,
+    ) -> Result<domain::PreIndexCompactBlock, PortError<zaino_source::GetBlockError>> {
+        let index = self
+            .served_index_at_height(height)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(height),
+            ))?;
+        let block = self.domain_block_at(index).map_err(port_fault)?;
+        Ok(domain::PreIndexCompactBlock::from(&block))
     }
 }
 
@@ -982,42 +1067,25 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
         &self,
         hash: domain::BlockHash,
     ) -> Result<domain::rpc::BlockHeaderVerbose, PortError<zaino_source::GetBlockHeaderError>> {
-        let index = self.served_index_at_hash(hash).ok_or_else(|| {
-            port_fault::<zaino_source::GetBlockHeaderError>("block height not in best chain")
-        })?;
+        let index = self.served_index_at_hash(hash).ok_or(PortError::Domain(
+            zaino_source::GetBlockHeaderError::BlockNotFound(hash),
+        ))?;
         let block = &self.blocks[index];
-        let header = &block.header;
         let height = block.coinbase_height().ok_or_else(|| {
             port_fault::<zaino_source::GetBlockHeaderError>("block missing coinbase height")
         })?;
-        let network = mockchain_network();
 
-        Ok(domain::rpc::BlockHeaderVerbose {
-            hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
-            height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
-            version: header.version,
-            merkle_root: domain::MerkleRoot::from(header.merkle_root.0),
-            time: header.time.timestamp() as u32,
-            nonce: *header.nonce,
-            solution: equihash_solution_bytes(&header.solution)
-                .map_err(port_fault::<zaino_source::GetBlockHeaderError>)?,
-            bits: domain::CompactDifficulty::try_from_be_bytes(
-                header.difficulty_threshold.bytes_in_display_order(),
-            )
-            .map_err(|e| port_fault(e.to_string()))?,
-            difficulty: header.difficulty_threshold.relative_to_network(&network),
-            block_commitments: Some(domain::BlockCommitments::from(*header.commitment_bytes)),
-            final_sapling_root: self.roots[index]
+        verbose_header(
+            block,
+            block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
+            self.roots[index]
                 .0
                 .map(|(root, _)| domain::TreeRoot::from(<[u8; 32]>::from(root))),
-            // The vectors carry no cumulative work.
-            chainwork: None,
-            previous_block_hash: Some(domain::BlockHash::from(header.previous_block_hash.0)),
-            next_block_hash: self
-                .next_block_hash(index)
+            self.next_block_hash(index)
                 .map(|hash| domain::BlockHash::from(hash.0)),
-        })
+        )
+        .map_err(port_fault)
     }
 }
 
@@ -1172,7 +1240,8 @@ impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
             .into_iter()
             .map(|(_, output)| {
                 Ok(domain::Utxo {
-                    address: domain::TransparentAddress::new(output.address.to_string()),
+                    address: domain::TransparentAddress::try_new(output.address.to_string())
+                        .map_err(|e| port_fault(e.to_string()))?,
                     txid: domain::TransactionId::from(output.transaction_hash.0),
                     output_index: output.output_index,
                     script: domain::Script::new(output.output.lock_script.as_raw_bytes().to_vec()),
@@ -1211,6 +1280,43 @@ fn equihash_solution_bytes(
     Ok(encoded[prefix..].to_vec())
 }
 
+/// A block's verbose header, with the chain facts only the caller knows.
+pub(crate) fn verbose_header(
+    block: &Block,
+    confirmations: domain::BlockConfirmations,
+    final_sapling_root: Option<domain::TreeRoot>,
+    next_block_hash: Option<domain::BlockHash>,
+) -> Result<domain::rpc::BlockHeaderVerbose, String> {
+    let header = &block.header;
+    let height = block
+        .coinbase_height()
+        .ok_or_else(|| "block missing coinbase height".to_string())?;
+
+    Ok(domain::rpc::BlockHeaderVerbose {
+        hash: domain::BlockHash::from(block.hash().0),
+        confirmations,
+        height: domain::Height::try_from(height.0).map_err(|e| e.to_string())?,
+        version: header.version,
+        merkle_root: domain::MerkleRoot::from(header.merkle_root.0),
+        time: header.time.timestamp() as u32,
+        nonce: *header.nonce,
+        solution: equihash_solution_bytes(&header.solution)?,
+        bits: domain::CompactDifficulty::try_from_be_bytes(
+            header.difficulty_threshold.bytes_in_display_order(),
+        )
+        .map_err(|e| e.to_string())?,
+        difficulty: header
+            .difficulty_threshold
+            .relative_to_network(&mockchain_network()),
+        block_commitments: Some(domain::BlockCommitments::from(*header.commitment_bytes)),
+        final_sapling_root,
+        // The vectors carry no cumulative work.
+        chainwork: None,
+        previous_block_hash: Some(domain::BlockHash::from(header.previous_block_hash.0)),
+        next_block_hash,
+    })
+}
+
 impl MockchainSource {
     /// Median time over the 11-block window ending at `index`, which is what
     /// `getblockdeltas` reports as `mediantime`.
@@ -1237,7 +1343,8 @@ impl MockchainSource {
         let output = prev.outputs().get(outpoint.index as usize)?;
         let address = output.address(network)?;
         Some((
-            domain::TransparentAddress::new(address.to_string()),
+            domain::TransparentAddress::try_new(address.to_string())
+                .expect("zebra derived this address from the output, so it is well-formed"),
             u64::from(output.value()),
         ))
     }
@@ -1287,7 +1394,8 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
                     continue;
                 };
                 outputs.push(domain::rpc::OutputDelta {
-                    address: domain::TransparentAddress::new(address.to_string()),
+                    address: domain::TransparentAddress::try_new(address.to_string())
+                        .map_err(|e| port_fault(e.to_string()))?,
                     satoshis: domain::Zatoshis::new(u64::from(output.value()))
                         .map_err(|e| port_fault(e.to_string()))?,
                     index: output_index as u32,
@@ -1309,7 +1417,8 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
 
         Ok(domain::rpc::BlockDeltas {
             hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             size,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             version: header.version,
@@ -1384,7 +1493,8 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
                     index: output_index as u32,
                     height: domain::Height::try_from(height.0)
                         .map_err(|e| port_fault(e.to_string()))?,
-                    address: domain::TransparentAddress::new(address),
+                    address: domain::TransparentAddress::try_new(address)
+                        .map_err(|e| port_fault(e.to_string()))?,
                     block_index: Some(*block_index as u32),
                 });
             }

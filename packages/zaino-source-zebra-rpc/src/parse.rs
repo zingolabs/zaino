@@ -31,11 +31,12 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
+    AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
     MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
-    TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
-    TreeSize, TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    TransactionId, TransactionLocation, TransparentAddress, TransparentAddressError, TreeRoot,
+    TreeRootInfo, TreeRoots, TreeSize, TreeSizeOutOfRange, Treestate, TxConfirmations, Utxo,
+    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -102,6 +103,22 @@ pub(crate) fn as_bool(value: &serde_json::Value) -> Result<bool, ParseError> {
 pub(crate) fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
     let h = as_u32(value)?;
     Height::try_from(h).map_err(|e| ParseError::Height(e.to_string()))
+}
+
+/// Parse a `confirmations` field reported for a block.
+///
+/// The primitives door is the validation: an integer that encodes no block
+/// state — `0` (the mempool state, which a block does not have), anything
+/// below `-1`, a count past `u32` — fails the parse rather than flowing
+/// through as a number downstream code would misread.
+fn as_block_confirmations(value: &serde_json::Value) -> Result<BlockConfirmations, ParseError> {
+    BlockConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
+}
+
+/// Parse a `confirmations` field reported for a transaction or its outputs,
+/// where `0` is the mempool. Same discipline as [`as_block_confirmations`].
+fn as_tx_confirmations(value: &serde_json::Value) -> Result<TxConfirmations, ParseError> {
+    TxConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
 }
 
 // ---------------------------------------------------------------------------
@@ -293,10 +310,6 @@ pub(crate) enum ParseError {
     #[error("value {0} overflows target type")]
     Overflow(u64),
 
-    /// Reported chainwork does not fit the domain's recorded width.
-    #[error("chainwork: {0}")]
-    AbsoluteChainWork(zaino_primitives::types::ChainWorkOverWidth),
-
     /// Reported nBits is not a valid compact difficulty encoding.
     #[error("nBits: {0}")]
     CompactDifficulty(zaino_primitives::types::CompactDifficultyError),
@@ -304,6 +317,10 @@ pub(crate) enum ParseError {
     /// A reported commitment tree size does not fit a [`TreeSize`].
     #[error("tree size: {0}")]
     TreeSize(#[from] TreeSizeOutOfRange),
+
+    /// A reported `confirmations` integer encodes no state in the wire scheme.
+    #[error("confirmations: {0}")]
+    Confirmations(zaino_primitives::types::ConfirmationsCodecError),
 
     /// Height validation failed.
     #[error("invalid height: {0}")]
@@ -316,6 +333,11 @@ pub(crate) enum ParseError {
     /// A monetary amount was invalid or out of range.
     #[error("invalid amount: {0}")]
     Amount(String),
+
+    /// A transparent address string was rejected. The validator is expected to
+    /// send valid addresses, so this is corrupt source data.
+    #[error("invalid transparent address: {0}")]
+    Address(#[from] TransparentAddressError),
 
     /// Block deserialization failed.
     #[error("deserialize: {0}")]
@@ -385,7 +407,7 @@ pub(crate) fn parse_block_header_verbose(
 ) -> Result<BlockHeaderVerbose, ParseError> {
     Ok(BlockHeaderVerbose {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
         merkle_root: as_merkle_root(field(value, "merkleroot")?)?,
@@ -403,10 +425,9 @@ pub(crate) fn parse_block_header_verbose(
         final_sapling_root: opt_field(value, "finalsaplingroot")
             .map(as_tree_root)
             .transpose()?,
-        chainwork: opt_field(value, "chainwork")
-            .map(parse_reported_chain_work)
-            .transpose()?
-            .flatten(),
+        // Not read: Zebra omits `chainwork` from `getblockheader` and does not
+        // plan to track it (ZcashFoundation/zebra#7109).
+        chainwork: None,
         previous_block_hash: opt_field(value, "previousblockhash")
             .map(parse_block_hash)
             .transpose()?,
@@ -584,7 +605,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
     let script = field(value, "scriptPubKey")?;
     Ok(Some(TxOut {
         best_block: parse_block_hash(field(value, "bestblock")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_tx_confirmations(field(value, "confirmations")?)?,
         value: zatoshis_field(value, "valueZat", "value")?,
         coinbase: opt_field(value, "coinbase")
             .map(as_bool)
@@ -602,8 +623,8 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
                 .map(|v| as_str(v).map(str::to_owned))
                 .transpose()?,
             required_signatures: opt_field(script, "reqSigs").map(as_u32).transpose()?,
-            addresses: parse_optional_list(script, "addresses", |a| {
-                Ok(TransparentAddress::new(as_str(a)?.to_owned()))
+            addresses: parse_optional_list(script, "addresses", |v| {
+                Ok(TransparentAddress::try_new(as_str(v)?)?)
             })?,
         },
     }))
@@ -653,7 +674,7 @@ pub(crate) fn parse_address_deltas(
                 txid: as_txid(field(d, "txid")?)?,
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
-                address: TransparentAddress::new(as_str(field(d, "address")?)?.to_owned()),
+                address: TransparentAddress::try_new(as_str(field(d, "address")?)?)?,
                 // the legacy full node emits `blockindex`; a validator that does not is
                 // reported as not knowing it rather than as position zero.
                 block_index: match opt_field(d, "blockindex") {
@@ -671,7 +692,7 @@ pub(crate) fn parse_address_utxos(value: &serde_json::Value) -> Result<Vec<Utxo>
         .iter()
         .map(|u| {
             Ok(Utxo {
-                address: TransparentAddress::new(as_str(field(u, "address")?)?.to_owned()),
+                address: TransparentAddress::try_new(as_str(field(u, "address")?)?)?,
                 txid: as_txid(field(u, "txid")?)?,
                 output_index: as_u32(field(u, "outputIndex")?)?,
                 script: Script::new(
@@ -810,6 +831,16 @@ pub(crate) fn parse_tree_roots(value: &serde_json::Value) -> Result<TreeRoots, P
     parse_tree_roots_inner(value)
 }
 
+/// Parse a `z_gettreestate` response into tree roots plus the answering block's hash.
+pub(crate) fn parse_tree_roots_with_hash(
+    value: &serde_json::Value,
+) -> Result<(BlockHash, TreeRoots), ParseError> {
+    Ok((
+        parse_block_hash(field(value, "hash")?)?,
+        parse_tree_roots_inner(value)?,
+    ))
+}
+
 /// The serialised tree for one pool, if the response carries that pool at all.
 fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>, ParseError> {
     let Some(pool) = pool else { return Ok(None) };
@@ -878,7 +909,10 @@ pub(crate) fn parse_blockchain_info(
         best_block_hash: parse_block_hash(field(value, "bestblockhash")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         verification_progress: as_f64(field(value, "verificationprogress")?)?,
-        chain_work: parse_reported_chain_work(field(value, "chainwork")?)?,
+        // Not read: Zebra hardcodes `chainwork` to zero in `getblockchaininfo`
+        // and does not plan to track it (ZcashFoundation/zebra#7109). A reply
+        // without the key parses too, since the value is never consulted.
+        chain_work: None,
         pruned: opt_field(value, "pruned")
             .map(as_bool)
             .transpose()?
@@ -899,47 +933,6 @@ pub(crate) fn parse_blockchain_info(
             next_block: parse_branch_id(field(consensus, "nextblock")?)?,
         },
     })
-}
-
-/// Parse chainwork as a validator reports it, where the two validators
-/// disagree on both the encoding and whether they track it at all.
-///
-/// The legacy full node sends a hex string. Zebra types the field as a 64-bit
-/// integer, so it arrives as a JSON number, and hardcodes it to zero because
-/// it does not store cumulative work per height. Both encodings land on the
-/// same door, [`AbsoluteChainWork::try_from_reported`], which owns the reported-value
-/// semantics: all-zero reads as `None` — "not reported", never a zero a
-/// consumer could compare — and a value past the domain's 128-bit width is
-/// refused rather than truncated.
-fn parse_reported_chain_work(
-    value: &serde_json::Value,
-) -> Result<Option<AbsoluteChainWork>, ParseError> {
-    let be = if let Some(number) = value.as_u64() {
-        let mut be = [0u8; 32];
-        be[24..].copy_from_slice(&number.to_be_bytes());
-        be
-    } else {
-        chain_work_be_bytes(value)?
-    };
-    AbsoluteChainWork::try_from_reported(be).map_err(ParseError::AbsoluteChainWork)
-}
-
-/// Cumulative chainwork as a hex string, decoded to the wire's 32 big-endian
-/// bytes. Natural order, and left-padded rather than fixed width: it is a
-/// big-endian integer, so validators trim leading zeroes and an early-chain
-/// response is genuinely short rather than malformed. Anything longer than 32
-/// bytes is out of range for the protocol and is rejected.
-fn chain_work_be_bytes(value: &serde_json::Value) -> Result<[u8; 32], ParseError> {
-    let s = as_str(value)?;
-    let s = s.strip_prefix("0x").unwrap_or(s);
-    let padded = format!("{s:0>64}");
-    let bytes = hex::decode(&padded).map_err(|e| ParseError::Hex(e.to_string()))?;
-    bytes
-        .try_into()
-        .map_err(|b: Vec<u8>| ParseError::WrongLength {
-            expected: 32,
-            got: b.len(),
-        })
 }
 
 fn parse_branch_id(value: &serde_json::Value) -> Result<ConsensusBranchId, ParseError> {
@@ -1016,12 +1009,11 @@ fn parse_upgrades(
 pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
     let trees = opt_field(value, "trees");
     Ok(BlockVerbose {
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
-        chainwork: opt_field(value, "chainwork")
-            .map(parse_reported_chain_work)
-            .transpose()?
-            .flatten(),
+        // Not read: Zebra omits `chainwork` from `getblock` and does not plan
+        // to track it (ZcashFoundation/zebra#7109).
+        chainwork: None,
         chain_supply: opt_field(value, "chainSupply")
             .map(parse_value_pool)
             .transpose()?,
@@ -1062,7 +1054,7 @@ fn tree_size(count: usize) -> Result<TreeSize, ParseError> {
 pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDeltas, ParseError> {
     Ok(BlockDeltas {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         size: as_u64(field(value, "size")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
@@ -1084,7 +1076,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 index: as_u32(field(d, "index")?)?,
                 inputs: parse_optional_list(d, "inputs", |i| {
                     Ok(InputDelta {
-                        address: TransparentAddress::new(as_str(field(i, "address")?)?.to_owned()),
+                        address: TransparentAddress::try_new(as_str(field(i, "address")?)?)?,
                         satoshis: SignedZatoshis::try_new(as_i64(field(i, "satoshis")?)?)
                             .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(i, "index")?)?,
@@ -1094,7 +1086,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 })?,
                 outputs: parse_optional_list(d, "outputs", |o| {
                     Ok(OutputDelta {
-                        address: TransparentAddress::new(as_str(field(o, "address")?)?.to_owned()),
+                        address: TransparentAddress::try_new(as_str(field(o, "address")?)?)?,
                         satoshis: Zatoshis::new(as_u64(field(o, "satoshis")?)?)
                             .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(o, "index")?)?,
@@ -1207,43 +1199,6 @@ mod tests {
             TreeRoot::new(asymmetric_bytes())
         );
         assert_eq!(as_nonce(&value).expect("nonce"), asymmetric_bytes());
-    }
-
-    /// Chainwork is a big-endian integer, so validators trim leading zeroes.
-    /// A short value must left-pad to the same number, not be rejected or
-    /// right-aligned into a different one.
-    #[test]
-    fn chainwork_left_pads_a_trimmed_value() {
-        let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
-
-        assert_eq!(
-            trimmed,
-            Some(AbsoluteChainWork::new(
-                core::num::NonZeroU128::new(0xff).expect("nonzero")
-            ))
-        );
-    }
-
-    /// Zero off the wire — either validator's encoding — is "not reported",
-    /// not a comparable amount of work.
-    #[test]
-    fn chainwork_zero_reads_as_not_reported() {
-        assert_eq!(
-            parse_reported_chain_work(&json!("00")).expect("valid"),
-            None
-        );
-        assert_eq!(parse_reported_chain_work(&json!(0)).expect("valid"), None);
-    }
-
-    /// Chainwork past the domain's 128-bit width is refused at parse rather
-    /// than truncated into a lower — and wrongly ordered — value.
-    #[test]
-    fn chainwork_over_width_is_refused() {
-        let over = format!("01{}", "00".repeat(31));
-        assert!(matches!(
-            parse_reported_chain_work(&json!(over)),
-            Err(ParseError::AbsoluteChainWork(_))
-        ));
     }
 
     /// A reported tree size is accepted up to `u32::MAX` and a full depth-32

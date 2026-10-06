@@ -1,0 +1,34 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0db8a-f899-7831-be51-440f79b3b031"
+consumed_in = "zainod-0-10-1"
+
+[[changes]]
+crate = "zaino-serve"
+kind = "fix"
+description = """
+`z_gettreestate` writes the Orchard and Ironwood `finalRoot` in display order. Only \
+the Sapling root is byte-reversed for display, so both pools previously named a \
+root no chain ever had."""
+
+[[changes]]
+crate = "zaino-serve"
+kind = "fix"
+description = "`getblockchaininfo` renders `chainSupply` with its value; every backend previously reported it as zero."
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = "`getrawtransaction` in verbose mode reports `time` and `blocktime` from the containing block's header."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "fix"
+description = """
+`getblockchaininfo` reports the `transparent`, `lockbox` and `ironwood` pools, so \
+the Ironwood pool no longer reads as empty across NU6.3 activation. `chainSupply` is \
+the total over every pool, not the transparent balance."""
+
+[[changes]]
+crate = "zaino-source-zebra-rpc"
+kind = "fix"
+description = "The unnamed `chainSupply` total in a `getblockchaininfo` reply keeps its value."

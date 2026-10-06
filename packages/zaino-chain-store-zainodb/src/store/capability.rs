@@ -80,10 +80,10 @@ use crate::error::StoreError;
 use crate::stream::CompactBlockStream;
 use crate::support::SendFut;
 use crate::types::{
-    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, BlockHeaderData, CommitmentTreeData,
-    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
-    TxOutCompact, TxidList,
+    db::metadata::FinalisedTxOutSetInfoAccumulator, AbsoluteChainWork, BlockHash, BlockHeaderData,
+    CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
+    TxLocation, TxOutCompact, TxidList,
 };
 use zaino_encoding::{
     read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
@@ -779,7 +779,10 @@ pub trait DbWrite: Send + Sync {
     /// Appends a fully-validated block to the database.
     ///
     /// Invariant: `block` must be the next height after the current tip (no gaps, no rewrites).
-    fn write_block(&self, block: IndexedBlock) -> impl SendFut<Result<(), StoreError>>;
+    fn write_block(
+        &self,
+        block: IndexedBlock<AbsoluteChainWork>,
+    ) -> impl SendFut<Result<(), StoreError>>;
 
     /// Ingests blocks from `source`, writing every height from the current tip up to and including
     /// `height` in order.

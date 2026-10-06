@@ -288,8 +288,29 @@ async fn ephemeral_routing_transitions_are_visible_in_mode() {
 
     assert_eq!(
         finalised_state.finalised_state_mode(),
-        FinalisedStateMode::EphemeralRouted,
+        FinalisedStateMode::EphemeralSyncing,
         "an installed passthrough must be reported as ephemeral, not persistent"
+    );
+
+    let migration = router
+        .init_or_take_ephemeral(
+            source.clone(),
+            ActivationHeights::default().to_regtest_network(),
+            crate::store::router::EphemeralMode::Full,
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        finalised_state.finalised_state_mode(),
+        FinalisedStateMode::EphemeralMigrating,
+        "a full-routing holder is a migration, whatever else holds the passthrough"
+    );
+    drop(migration);
+    assert_eq!(
+        finalised_state.finalised_state_mode(),
+        FinalisedStateMode::EphemeralSyncing,
+        "a migration finishing under a sync narrows routing back to syncing"
     );
 
     // Dropping the last reference restores primary routing.

@@ -153,11 +153,11 @@ against the port rather than the concrete type.
 
 ## Routing summary (as wired in `zaino-state`)
 
-| RPC / read | Layer |
-|---|---|
-| `getrawmempool`, `getmempoolinfo`, `GetMempoolTx` | core (`MempoolSubscriber`) |
-| `get_raw_transaction`, `get_transaction_status` | coherence (`CoherentSnapshot`) |
-| `get_mempool_stream` | coherence (`stream_transactions_until_tip_change`) |
+| RPC / read                                        | Layer                                              |
+| ------------------------------------------------- | -------------------------------------------------- |
+| `getrawmempool`, `getmempoolinfo`, `GetMempoolTx` | core (`MempoolSubscriber`)                         |
+| `get_raw_transaction`, `get_transaction_status`   | coherence (`CoherentSnapshot`)                     |
+| `get_mempool_stream`                              | coherence (`stream_transactions_until_tip_change`) |
 
 ## Observing it
 
@@ -176,7 +176,8 @@ is serving:
   at `debug` rather than `info` on purpose: every block freezes coherence
   briefly, so at the default level a healthy node would log one line per block.
   Turn them up when you want to know *why* a freeze happened; the escalation
-  `warn` (and the `zaino.mempool.coherence_frozen_seconds` gauge) is what tells
+  `warn`, logged once when a freeze passes 120 s (and the
+  `zaino.mempool.coherence_frozen_seconds` gauge, set every poll), is what tells
   you a freeze has outlasted normal thaw.
 
 Nothing is logged per poll or per reconcile. At a sub-second cadence that would
@@ -189,3 +190,17 @@ The two loops each run inside one long-lived span — `mempool_poll_loop` and
 For alerting rather than reading, prefer the status and the freeze clock:
 `MempoolSubscriber::status()`, `CoherentSubscriber::frozen_for()`, and the
 `zaino.mempool.coherence_frozen_seconds` gauge `zainod` exports.
+
+### Metrics
+
+Sampled per poll by a `Drop` guard (early returns included).
+
+| Metric                                    | Meaning                                     |
+| ----------------------------------------- | ------------------------------------------- |
+| `zaino.mempool.transactions`              | entries in the published set                |
+| `zaino.mempool.bytes{kind="raw"\|"cost"}` | serialized size / ZIP-401 cost              |
+| `zaino.mempool.unadmitted`                | refused by the capacity backstop            |
+| `zaino.mempool.poll_seconds`              | poll duration (`_count` = writer heartbeat) |
+
+- Flat `poll_seconds` `_count` = writer wedged, whatever `transactions` says
+- Completeness = a mode, not a metric (→ `zainod` `/readyz`, TODO)

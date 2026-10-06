@@ -4,7 +4,7 @@ use zaino_primitives::types::Height;
 
 /// A ChainHead query could not be answered.
 ///
-/// One variant, because one question can be asked wrongly. Every other query on
+/// A range asked for wrongly is the only failure. Every other query on
 /// [`ChainHeadSnapshot`](crate::ChainHeadSnapshot) is a total function of a
 /// graph the caller is already holding: a hash that is not retained, a height
 /// outside the window and a transaction that appears nowhere are all *absence*,
@@ -25,5 +25,13 @@ pub enum ChainHeadError {
         start: Height,
         /// The requested end.
         end: Height,
+    },
+    /// A range starting below the retained window, whose blocks are not held.
+    #[error("range start {start} is below the retained window's floor {floor}")]
+    BelowWindow {
+        /// The requested start.
+        start: Height,
+        /// The lowest canonical height retained.
+        floor: Height,
     },
 }
