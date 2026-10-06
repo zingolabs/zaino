@@ -165,8 +165,8 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// A single on-disk layout atom: how one field of a [`PersistentRecord`]
-/// (crate::PersistentRecord) crosses to and from bytes.
+/// A single on-disk layout atom: how one field of a
+/// [`PersistentRecord`](crate::PersistentRecord) crosses to and from bytes.
 ///
 /// A DTO's `encode`/`decode` is one call per field in declaration order, so the
 /// per-type byte logic lives here — one small, unit-testable impl per atom —
