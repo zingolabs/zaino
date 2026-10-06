@@ -15,6 +15,8 @@ use crate::emit;
 ///
 /// - `stall_timeout`: a stream holding data its client has not pulled for this long closes
 ///   its connection (a live peer that never reads would keep every permit it holds)
+/// - `drain_timeout`: after `run`'s cancel, how long open connections get to finish their
+///   in-flight streams (GOAWAY sent) before `run` returns and they are dropped (zero = at once)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrpcLimits {
     pub max_connections: NonZeroUsize,
@@ -26,6 +28,7 @@ pub struct GrpcLimits {
     pub max_range_reads: NonZeroUsize,
     pub max_scan_reads: NonZeroUsize,
     pub stall_timeout: Duration,
+    pub drain_timeout: Duration,
 }
 
 impl Default for GrpcLimits {
@@ -47,6 +50,8 @@ impl Default for GrpcLimits {
             max_scan_reads: non_zero(4),
             // past pepper-sync's longest legitimate backpressure (scanning a fetched batch)
             stall_timeout: Duration::from_secs(300),
+            // opt-in (zainod `[grpc.shutdown]`)
+            drain_timeout: Duration::ZERO,
         }
     }
 }

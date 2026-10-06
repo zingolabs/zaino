@@ -26,7 +26,8 @@ use tokio::io::AsyncReadExt as _;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn, Instrument as _, Span};
+use tokio_util::task::TaskTracker;
+use tracing::{debug, info, warn, Instrument as _, Span};
 use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
 
 use crate::admission::{Admission, Class, Permits};
@@ -219,11 +220,29 @@ impl<S> Shared<S> {
 }
 
 impl<S: ValidatorPorts> BoundGrpcServer<S> {
-    /// Accept + serve until `cancel` (open connections then shut down gracefully)
+    /// Accept + serve until `cancel`, then drain: listener closed, every connection GOAWAY'd,
+    /// returns once they all finish or `drain_timeout` passes (the rest dropped)
     ///
     /// - never ends on an accept error: a resource error (fd limit, memory) backs off and
     ///   retries, the listener recovering as connections close
     pub async fn run(self, cancel: CancellationToken) -> Result<(), GrpcServeError> {
+        let drain_timeout = self.server.limits.drain_timeout;
+        let connections = TaskTracker::new();
+        self.accept(&cancel, &connections).await;
+        connections.close();
+        let open = connections.len();
+        if open == 0 || drain_timeout.is_zero() {
+            return Ok(());
+        }
+        info!(open, timeout = ?drain_timeout, "Draining connections");
+        if tokio::time::timeout(drain_timeout, connections.wait()).await.is_err() {
+            warn!(open = connections.len(), timeout = ?drain_timeout, "Drain timed out, dropping");
+        }
+        Ok(())
+    }
+
+    /// Until `cancel`, each connection on `connections`; returning drops the listener
+    async fn accept(self, cancel: &CancellationToken, connections: &TaskTracker) {
         let Self { server, listener } = self;
         if let Some(tls) = &server.tls {
             tokio::spawn(tls.reload(cancel.clone()).instrument(Span::current()));
@@ -245,7 +264,7 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
 
         loop {
             let accepted = tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
+                _ = cancel.cancelled() => return,
                 accepted = listener.accept() => accepted,
                 now = summaries.tick() => {
                     report::summarise(now - window_opened, shared.held());
@@ -264,7 +283,7 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
                     emit::accept_failed();
                     warn!(%error, retry_in = ?backoff, "Accept failed");
                     tokio::select! {
-                        _ = cancel.cancelled() => return Ok(()),
+                        _ = cancel.cancelled() => return,
                         _ = tokio::time::sleep(backoff) => {}
                     }
                     backoff = (backoff * 2).min(ACCEPT_BACKOFF_MAX);
@@ -282,7 +301,7 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
             }
 
             let connection = Arc::clone(&shared).connection(socket, peer, reserved);
-            tokio::spawn(connection.instrument(Span::current()));
+            connections.spawn(connection.instrument(Span::current()));
         }
     }
 }

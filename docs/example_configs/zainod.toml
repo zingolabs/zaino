@@ -62,15 +62,21 @@ stall_timeout_secs = 300
 # proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
 trusted_proxies = []
 
+# Graceful shutdown on SIGTERM/SIGINT, for a load balancer polling /readyz (defaults shown)
+[grpc.shutdown]
+# off = the listener closes on the signal; open connections drop once the indexes flush
+enabled = false
+# /readyz fails with "draining" while still serving: >= the balancer's down detection + DNS TTL
+delay_secs = 0
+# then the listener closes; open connections get this long to finish (GOAWAY sent)
+timeout_secs = 10
+
 # One block-fetch pipeline, shared by every index (defaults shown)
 [fetch]
 # Blocks below the tip kept reorg-able (in memory, served, written once buried); non-zero
 finalised_depth = 1000
-# Bulk-sync fetches (and decodes) in flight; non-zero
+# Bulk-sync fetches (and decodes) in flight, spread over every trusted validator; non-zero
 concurrency = 32
-# jsonrpc_address of the one validator bulk sync fetches from; unset = spread over
-# [source] + every [[chainview_peers]]
-# primary_validator = "127.0.0.1:8232"
 
 # One directory per index; an omitted table takes its defaults (path under the XDG cache dir)
 [index.compact_block]

@@ -63,9 +63,12 @@ tokio::spawn(serve.run(cancel.child_token()));
   `CompactTx`; zainod supplies the implementation.
 - `GrpcServer::bind().await` takes the socket and returns a
   `BoundGrpcServer`; await it at boot so a bind failure is a boot failure
-  (`GrpcServeError::Serve`), then `tokio::spawn(bound.run(cancel))`. `run`
-  returns `Ok(())` once `cancel` fires, open connections shutting down
-  gracefully.
+  (`GrpcServeError::Serve`), then `tokio::spawn(bound.run(cancel))`. Once
+  `cancel` fires, `run` closes the listener, sends every open connection an
+  HTTP/2 GOAWAY, and returns `Ok(())` when they have all closed or
+  `GrpcLimits::drain_timeout` has passed, whichever is first. Connections still
+  open then are dropped with the runtime. The default `drain_timeout` is zero:
+  return at once.
 
 ## Features
 
@@ -100,6 +103,7 @@ Every cap refuses; none queues except the read lanes:
 | `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
 | `max_scan_reads` | 4 | one address-history scan | bounded wait |
 | `stall_timeout` | 300 s | per connection | connection closed |
+| `drain_timeout` | 0 s | `run`, after `cancel` | still-open connections dropped |
 
 - A stream permit is owned by the response body, so it returns when the stream
   ends or the client disconnects.

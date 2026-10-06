@@ -61,6 +61,11 @@ fn is_fresh(heartbeat: Option<Instant>) -> bool {
     heartbeat.is_none_or(|at| at.elapsed() < HEARTBEAT_MAX_AGE)
 }
 
+/// Serving runtime still scheduling (`/livez`, and the `heartbeat_stale` readiness reason)
+pub(crate) fn live() -> bool {
+    is_fresh(last_heartbeat())
+}
+
 /// Binds the admin endpoint, which `metrics::init` calls before it installs the recorder so that no sample is ever recorded without a listener to drain it.
 pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
     let listener = std::net::TcpListener::bind(endpoint).map_err(|e| {
@@ -159,22 +164,18 @@ async fn route(
                 }
             }
         }
-        "/livez" => match is_fresh(last_heartbeat()) {
+        "/livez" => match live() {
             true => body(StatusCode::OK, PLAIN_CONTENT_TYPE, "ok".to_string()),
             false => {
                 body(StatusCode::SERVICE_UNAVAILABLE, PLAIN_CONTENT_TYPE, "unavailable".to_string())
             }
         },
         "/readyz" => {
-            let (ready, json) = crate::status::readiness_json(is_fresh(last_heartbeat()));
+            let (ready, json) = crate::status::readiness_json(live());
             let status = if ready { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
             body(status, JSON_CONTENT_TYPE, json)
         }
-        "/statusz" => body(
-            StatusCode::OK,
-            JSON_CONTENT_TYPE,
-            crate::status::status_json(is_fresh(last_heartbeat())),
-        ),
+        "/statusz" => body(StatusCode::OK, JSON_CONTENT_TYPE, crate::status::status_json(live())),
         _ => body(StatusCode::NOT_FOUND, PLAIN_CONTENT_TYPE, String::new()),
     }
 }

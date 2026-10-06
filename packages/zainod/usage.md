@@ -16,7 +16,8 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 | `/readyz`  | `{"ready", "reasons"}`                 | any reason below (`503`)       |
 | `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
-`/readyz` reasons: `starting` (indexer not booted), `heartbeat_stale`, `no_quorum_tip`,
+`/readyz` reasons: `draining` (a shutdown signal arrived; listed first, see
+[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, `no_quorum_tip`,
 `<index>_syncing` (an enabled index's serving gate is closed).
 
 `/statusz` = version, network, uptime, readiness, the quorum tip (`agreed` of `configured`,
@@ -38,6 +39,43 @@ Request counts make it traffic data: keep the listener private.
 - A non-private `listen_address` logs a warning at startup, because `/metrics` is
   unauthenticated.
 - The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
+
+## systemd
+
+Run under `Type=notify` and zainod reports its own startup and shutdown to systemd. Without
+`NOTIFY_SOCKET` (any other service manager, a container, a shell) nothing is sent.
+
+```ini
+[Service]
+Type=notify
+ExecStart=/usr/bin/zainod start --config /etc/zaino/zainod.toml
+Restart=always
+# Budget for a start that is not moving (opening indexes, reaching the validator)
+TimeoutStartSec=15min
+```
+
+| Message | When |
+|---|---|
+| `READY=1` | the first time `/readyz` passes: serving, every enabled index at the quorum tip |
+| `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height or an index height moved |
+| `STATUS=` | the readiness reasons (`ready` once ready), whenever they change |
+| `STOPPING=1` + `EXTEND_TIMEOUT_USEC` | on the shutdown signal, covering `[grpc.shutdown]`'s delay and timeout plus 30 s for the index flush |
+
+- `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
+  that restarts it (`nixos-rebuild switch`, deploy-rs) sees an upgrade that cannot catch up as
+  a failed unit.
+- A fresh sync or snapshot bootstrap keeps extending its start for as long as it moves, so
+  `TimeoutStartSec` bounds only a stalled start (5 minutes without progress, once past it).
+  Units ordered after zainod, and `multi-user.target` at boot, wait for that start; use
+  `systemctl start --no-block` to return at once.
+- One extension is at most 71 minutes (a 32-bit µs count): a longer shutdown drain still needs
+  that much `TimeoutStopSec`.
+- `NOTIFY_SOCKET` must be a filesystem path (systemd's default), not an abstract `@` socket.
+
+With `[grpc.shutdown]` on, a `systemctl stop` or `restart` drains: `/readyz` reports
+`draining` for `delay_secs` while gRPC keeps serving, then the listener closes and open
+connections get `timeout_secs` (see [Stopping and restarts](../../docs/running.md#stopping-and-restarts)).
+A crash restart skips the drain (no signal arrives).
 
 ## Index snapshot
 

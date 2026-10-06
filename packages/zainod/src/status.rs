@@ -3,7 +3,14 @@
 //! - Sources filled once by `indexer::boot` (admin thread starts first → `starting` until then)
 //! - Render = watch borrows + one chainview `ArcSwap` load (no disk, no locks across awaits)
 
-use std::{collections::BTreeMap, sync::OnceLock, time::Instant};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
+    time::Instant,
+};
 
 use serde::Serialize;
 use tokio::sync::watch;
@@ -14,6 +21,18 @@ use zaino_sync::Reads;
 use crate::index_report::Usage;
 
 static SOURCES: OnceLock<Sources> = OnceLock::new();
+
+/// Set once on the shutdown signal, never cleared (the process is exiting)
+static DRAINING: AtomicBool = AtomicBool::new(false);
+
+/// From here on `/readyz` fails with `draining` (first reason)
+pub(crate) fn drain() {
+    DRAINING.store(true, Ordering::Relaxed);
+}
+
+pub(crate) fn draining() -> bool {
+    DRAINING.load(Ordering::Relaxed)
+}
 
 pub(crate) struct Sources {
     pub(crate) network: &'static str,
@@ -215,7 +234,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
     });
     let indexes: Vec<Index> = enabled.chain(disabled).collect();
 
-    let reasons = reasons(live, tip.is_some(), &indexes);
+    let reasons = reasons(draining(), live, tip.is_some(), &indexes);
     Some(Status {
         version: env!("CARGO_PKG_VERSION"),
         network: sources.network,
@@ -255,6 +274,34 @@ pub(crate) fn readiness_json(live: bool) -> (bool, String) {
     (ready, serde_json::json!({ "ready": ready, "reasons": reasons }).to_string())
 }
 
+/// Readiness + a progress fingerprint for [`crate::notify`] (fingerprint moved = startup advanced)
+pub(crate) struct Startup {
+    pub(crate) ready: bool,
+    pub(crate) reasons: Vec<String>,
+    pub(crate) progress: Vec<Option<u64>>,
+}
+
+/// Booted: fetch height + every index's three heights; before: snapshot phase + bytes done
+pub(crate) fn startup(live: bool) -> Startup {
+    let Some(status) = current(live) else {
+        return Startup { ready: false, reasons: not_booted().0, progress: snapshot_progress() };
+    };
+    let heights =
+        status.indexes.iter().flat_map(|index| [index.durable, index.merged, index.applied]);
+    let progress = std::iter::once(status.fetch_height).chain(heights).map(|h| h.map(u64::from));
+    Startup { ready: status.ready, reasons: status.reasons, progress: progress.collect() }
+}
+
+fn snapshot_progress() -> Vec<Option<u64>> {
+    #[cfg(feature = "snapshot")]
+    if let Some(snapshot) =
+        SNAPSHOT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
+    {
+        return vec![Some(snapshot.phase as u64), Some(snapshot.done)];
+    }
+    Vec::new()
+}
+
 /// `/statusz`: everything (`starting` / snapshot stub until boot publishes)
 pub(crate) fn status_json(live: bool) -> String {
     match current(live) {
@@ -270,9 +317,12 @@ pub(crate) fn status_json(live: bool) -> String {
     }
 }
 
-/// Ready = runtime live + a quorum tip + every enabled index serving
-fn reasons(live: bool, quorum_tip: bool, indexes: &[Index]) -> Vec<String> {
+/// Ready = not draining + runtime live + a quorum tip + every enabled index serving
+fn reasons(draining: bool, live: bool, quorum_tip: bool, indexes: &[Index]) -> Vec<String> {
     let mut reasons = Vec::new();
+    if draining {
+        reasons.push("draining".to_owned());
+    }
     if !live {
         reasons.push("heartbeat_stale".to_owned());
     }
@@ -292,7 +342,8 @@ fn reasons(live: bool, quorum_tip: bool, indexes: &[Index]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Every not-ready cause named; disabled indexes never block; all clear = ready
+    /// Every not-ready cause named (draining first); disabled indexes never block; all clear =
+    /// ready
     #[test]
     fn readiness_names_each_blocker() {
         let index = |name, enabled, synced| Index {
@@ -312,10 +363,12 @@ mod tests {
             index("transparent_address", false, false),
         ];
         assert_eq!(
-            reasons(false, false, &indexes),
-            ["heartbeat_stale", "no_quorum_tip", "tree_state_syncing"]
+            reasons(true, false, false, &indexes),
+            ["draining", "heartbeat_stale", "no_quorum_tip", "tree_state_syncing"]
         );
-        assert_eq!(reasons(true, true, &indexes), ["tree_state_syncing"]);
-        assert!(reasons(true, true, &[indexes[0].clone(), indexes[2].clone()]).is_empty());
+        assert_eq!(reasons(false, true, true, &indexes), ["tree_state_syncing"]);
+        let serving = [indexes[0].clone(), indexes[2].clone()];
+        assert!(reasons(false, true, true, &serving).is_empty());
+        assert_eq!(reasons(true, true, true, &serving), ["draining"], "healthy but draining");
     }
 }

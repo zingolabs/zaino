@@ -304,6 +304,48 @@ pub struct GrpcConfig {
     /// protocol header (v1 or v2) naming the real client. A connection from one of them without
     /// a header is closed. Empty = no proxy: the peer address is the client.
     pub trusted_proxies: Vec<ipnet::IpNet>,
+    /// What SIGTERM / SIGINT does to the server (`[grpc.shutdown]`).
+    pub shutdown: ShutdownConfig,
+}
+
+/// Graceful shutdown, for a load balancer that routes by polling `/readyz`.
+///
+/// Off: the listener closes on the signal, and open connections drop once the indexes have
+/// flushed. On: `/readyz` fails with `draining` while gRPC keeps serving for `delay_secs`, then
+/// the listener closes and open connections get `timeout_secs` to finish their streams.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ShutdownConfig {
+    /// Drain before exiting. `false` ignores both durations.
+    pub enabled: bool,
+    /// Seconds still serving while `/readyz` reports `draining`: at least the time the load
+    /// balancer takes to mark this server down, plus its DNS TTL.
+    pub delay_secs: u64,
+    /// Seconds open connections get to finish once the listener closes (an idle
+    /// `GetMempoolStream` never does, so it is dropped at the deadline).
+    pub timeout_secs: u64,
+}
+
+impl Default for ShutdownConfig {
+    fn default() -> Self {
+        Self { enabled: false, delay_secs: 0, timeout_secs: 10 }
+    }
+}
+
+impl ShutdownConfig {
+    /// Serving after the signal, before the listener closes (zero when disabled)
+    pub(crate) fn delay(&self) -> std::time::Duration {
+        self.when_enabled(self.delay_secs)
+    }
+
+    /// Open connections' grace once the listener closes (zero when disabled)
+    pub(crate) fn timeout(&self) -> std::time::Duration {
+        self.when_enabled(self.timeout_secs)
+    }
+
+    fn when_enabled(&self, secs: u64) -> std::time::Duration {
+        std::time::Duration::from_secs(if self.enabled { secs } else { 0 })
+    }
 }
 
 impl Default for GrpcConfig {
@@ -321,6 +363,7 @@ impl Default for GrpcConfig {
             stall_timeout_secs: NonZeroU64::new(limits.stall_timeout.as_secs())
                 .expect("the default stall timeout is whole, non-zero seconds"),
             trusted_proxies: Vec::new(),
+            shutdown: ShutdownConfig::default(),
         }
     }
 }
@@ -337,6 +380,7 @@ impl From<&GrpcConfig> for GrpcLimits {
             max_range_reads: config.max_range_reads,
             max_scan_reads: config.max_scan_reads,
             stall_timeout: std::time::Duration::from_secs(config.stall_timeout_secs.get()),
+            drain_timeout: config.shutdown.timeout(),
         }
     }
 }
@@ -660,6 +704,31 @@ path = "/tmp/zaino-compact-block"
             let parsed = toml::from_str::<DaemonConfig>(&format!("[grpc]\n{zeroed} = 0\n"));
             assert!(parsed.is_err(), "{zeroed} = 0 serves nothing");
         }
+    }
+
+    /// `[grpc.shutdown]` is opt-in: off (the default, or `enabled = false` beside durations)
+    /// exits without a readiness window or a connection grace; on carries both durations to the
+    /// daemon and the server, and a misspelt key is refused rather than silently ignored.
+    #[test]
+    fn grpc_shutdown_is_off_unless_enabled_and_then_carries_both_durations() {
+        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).grpc;
+        let zero = std::time::Duration::ZERO;
+
+        for off in ["", "[grpc.shutdown]\ndelay_secs = 155\ntimeout_secs = 600\n"] {
+            let grpc = parse(off);
+            assert_eq!((grpc.shutdown.delay(), grpc.shutdown.timeout()), (zero, zero), "{off:?}");
+            assert_eq!(GrpcLimits::from(&grpc).drain_timeout, zero, "{off:?}");
+        }
+
+        let on = parse("[grpc.shutdown]\nenabled = true\ndelay_secs = 155\ntimeout_secs = 600\n");
+        let secs = std::time::Duration::from_secs;
+        assert_eq!((on.shutdown.delay(), on.shutdown.timeout()), (secs(155), secs(600)));
+        assert_eq!(GrpcLimits::from(&on).drain_timeout, secs(600));
+        let defaults = parse("[grpc.shutdown]\nenabled = true\n");
+        assert_eq!((defaults.shutdown.delay(), defaults.shutdown.timeout()), (zero, secs(10)));
+
+        let misspelt = toml::from_str::<DaemonConfig>("[grpc.shutdown]\nshutdown_delay_secs = 1\n");
+        assert!(misspelt.is_err(), "unknown [grpc.shutdown] key accepted");
     }
 
     /// Chain identity is declared, never derived: every spelling round-trips, the default is

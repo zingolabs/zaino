@@ -43,7 +43,7 @@ its default. In outline:
 | `[source]` | The validator's `jsonrpc_address` (default `127.0.0.1:8232`) and its credentials, either `cookie_path` or `user` and `password`. A cookie path takes precedence. `connect_timeout_secs` (2) and `read_timeout_secs` (30): the read timeout counts silence, not total duration, so a large block over a slow link completes. |
 | `[[chainview_peers]]` | Extra validators, in the same shape as `[source]`, that the mempool view takes a quorum over. |
 | `[serve]` | `grpc_listen_address` (default `127.0.0.1:8137`) and `max_address_rows` (100000). |
-| `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). |
+| `[grpc]` | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). `[grpc.shutdown]`: `enabled` (false), `delay_secs` (0) and `timeout_secs` (10), see [Stopping and restarts](#stopping-and-restarts). |
 | `[fetch]` | `finalised_depth` (1000), `concurrency` (32) and `primary_validator`, which pins bulk sync to one validator instead of spreading it across all of them. |
 | `[index.*]` | One table per index, each with `enabled`, `path`, `batch_mib` (64) and `queue_mib` (256). |
 | `[snapshot]` | Optional, `snapshot` builds only: `manifest` (URL) and `connections` (8, at most 16). Empty indexes are filled from that snapshot before boot; see [zainod: Index snapshot](../packages/zainod/usage.md#index-snapshot). |
@@ -110,6 +110,16 @@ and the gRPC server) runs as its own task. SIGINT or SIGTERM cancels them all an
 waits for each index to write what is final before exiting 0. If the producer, a
 chainview poller or the gRPC server stops on its own, for example because a chainview
 endpoint was ejected, it stops the rest the same way and zainod exits 1.
+
+Behind a load balancer that routes by polling `/readyz`, turn on `[grpc.shutdown]`.
+From the signal on, `/readyz` fails with `draining` while zainod keeps serving for
+`delay_secs`, so the balancer stops sending clients before the listener closes. The
+listener then closes, every open connection is sent an HTTP/2 GOAWAY, and zainod waits
+up to `timeout_secs` for their in-flight streams before it exits. A second signal
+during the delay skips the rest of it. Set `delay_secs` to at least the time your
+balancer takes to mark a server down, plus its DNS TTL. Under systemd, see
+[zainod: systemd](../packages/zainod/usage.md#systemd) for `Type=notify`, which makes a
+restart wait until zainod is serving again.
 
 An index writer never stops with an error. A failure panics and aborts the process at
 once, and so does a page checksum mismatch. A failed write names the index and its

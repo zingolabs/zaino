@@ -19,6 +19,7 @@ mod index_report;
 pub mod indexer;
 pub mod logging;
 mod metrics;
+mod notify;
 pub mod paths;
 #[cfg(feature = "snapshot")]
 mod snapshot;
@@ -42,6 +43,8 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     // Before any startup work (a bad `[snapshot]` must fail before it downloads)
     config.validate()?;
     config.warn_about_metrics_listener();
+    // Before the snapshot bootstrap (its progress extends systemd's start timeout)
+    crate::notify::spawn();
 
     if let Some(endpoint) = config.metrics.listen_address {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;

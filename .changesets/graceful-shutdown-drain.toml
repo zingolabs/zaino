@@ -1,0 +1,31 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`[grpc.shutdown]` (`enabled`, default false; `delay_secs`, 0; `timeout_secs`, 10): on \
+SIGTERM/SIGINT, `/readyz` fails with the new `draining` reason while gRPC keeps serving \
+for `delay_secs`, so a load balancer polling readiness stops routing first. The listener \
+then closes and open connections get `timeout_secs` to finish. A second signal skips the \
+rest of the delay. Off keeps the previous shutdown.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+systemd `Type=notify` support: `READY=1` once `/readyz` first passes, `STATUS=` with the \
+readiness reasons, start-timeout extensions while a sync or snapshot bootstrap makes \
+progress, and `STOPPING=1` with a stop-timeout extension covering the shutdown drain. \
+Nothing is sent without `NOTIFY_SOCKET`.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+description = """
+`GrpcLimits` gains `drain_timeout` (default zero). After cancel, `BoundGrpcServer::run` \
+closes the listener, sends every connection a GOAWAY and waits up to `drain_timeout` for \
+them before returning. A struct literal without `..GrpcLimits::default()` must now set it.
+"""

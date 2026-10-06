@@ -168,6 +168,95 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
 }
 
+/// Cancel closes the listener at once, then `run` drains: an idle served wallet's connection
+/// closes on its GOAWAY (no wait for the deadline), and a connection that never finishes (a
+/// trusted peer silent inside the 5 s PROXY-header read) holds `run` exactly `drain_timeout`.
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_drain_timeout() {
+    use tokio::io::AsyncWriteExt as _;
+
+    // case, a silent connection open, drain_timeout, run returns within
+    let cases = [
+        (
+            "idle wallet only",
+            false,
+            Duration::from_secs(30),
+            Duration::ZERO..Duration::from_secs(2),
+        ),
+        (
+            "silent peer",
+            true,
+            Duration::from_secs(1),
+            Duration::from_secs(1)..Duration::from_secs(3),
+        ),
+    ];
+    for (case, silent, drain_timeout, returns) in cases {
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+        let bind = probe.local_addr().expect("local addr");
+        drop(probe);
+
+        let server = GrpcServer::new(
+            ValidatorHandler::new(
+                Arc::new(zaino_source::mock::MockChain::new()),
+                zaino_index_compact_block::CompactBlockService::new(zaino_sync::Served::fixed(
+                    zaino_index_compact_block::CompactBlockStore::open(
+                        zaino_persistence::fs::SimFs::new(),
+                        std::path::Path::new("/cb"),
+                        zcash_protocol::consensus::NetworkType::Test,
+                    )
+                    .expect("open")
+                    .reader()
+                    .pin(),
+                )),
+                zcash_protocol::consensus::NetworkType::Test,
+            ),
+            bind,
+            GrpcLimits { drain_timeout, ..GrpcLimits::default() },
+        )
+        .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
+            .parse()
+            .expect("loopback net")]))
+        .bind()
+        .await
+        .expect("the freed port binds");
+
+        let cancel = CancellationToken::new();
+        let serving = tokio::spawn(server.run(cancel.clone()));
+
+        // Before the wallet: accept is FIFO, so the wallet's answer proves this one accepted
+        let _silent = match silent {
+            true => Some(tokio::net::TcpStream::connect(bind).await.expect("accepting")),
+            false => None,
+        };
+        let channel = tonic::transport::Endpoint::from_static("http://proxied")
+            .connect_with_connector(tower::service_fn(move |_| async move {
+                let mut stream = tokio::net::TcpStream::connect(bind).await?;
+                stream.write_all(b"PROXY TCP4 203.0.113.1 127.0.0.1 40000 8137\r\n").await?;
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(stream))
+            }))
+            .await
+            .expect("the wallet connects");
+        let mut wallet = CompactTxStreamerClient::new(channel);
+        let empty = zaino_proto::proto::service::Empty {};
+        let answered = wallet.get_lightd_info(empty).await.map_err(|status| status.code());
+        assert_eq!(
+            answered.err(),
+            Some(tonic::Code::Unavailable),
+            "{case}: served (mock: not ready)"
+        );
+
+        let cancelled = std::time::Instant::now();
+        cancel.cancel();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let refused = tokio::net::TcpStream::connect(bind).await;
+        assert!(refused.is_err(), "{case}: still accepting after cancel");
+        serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
+        let took = cancelled.elapsed();
+        assert!(returns.contains(&took), "{case}: run returned after {took:?}, not in {returns:?}");
+        assert!(wallet.get_lightd_info(empty).await.is_err(), "{case}: wallet connection survived");
+    }
+}
+
 /// Held port → `bind()` errs at boot (EADDRINUSE never reaches a spawned serve loop)
 #[tokio::test]
 async fn binding_a_held_port_fails_before_anything_is_served() {

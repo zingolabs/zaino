@@ -81,7 +81,11 @@ tar = { version = "0.4.46", optional = true }
 tempfile = { workspace = true }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 # `[snapshot]` bootstrap: an empty index downloads a published snapshot (needs `aria2c` on PATH)
 snapshot = ["dep:reqwest", "dep:sha2", "dep:zstd", "dep:tar"]
+
+[target."cfg(unix)".dependencies]
+sd-notify = "0.5"

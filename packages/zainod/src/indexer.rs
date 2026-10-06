@@ -29,7 +29,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
@@ -49,7 +49,7 @@ use zaino_source::{BlockFetchPool, FetchRoute, GetBlockchainInfo as _, ZebraRpcA
 use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::config::{DaemonConfig, SourceConfig, ZainoIndexConfig};
+use crate::config::{DaemonConfig, ShutdownConfig, SourceConfig, ZainoIndexConfig};
 use crate::error::IndexerError;
 use crate::index_report::Watched;
 
@@ -285,20 +285,23 @@ async fn boot(
         crate::admin::beat(cancel.child_token()),
     );
 
-    Ok(tokio::spawn(supervise(tasks, cancel)))
+    let shutdown = config.grpc.shutdown.clone();
+    Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals(), shutdown)))
 }
 
-/// Signal → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
+/// Signal → drain → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
 ///
 /// - Either way: cancel the rest, then wait for them (followers flush what is final)
 async fn supervise(
     mut tasks: JoinSet<TaskExit>,
     cancel: CancellationToken,
+    mut signals: mpsc::Receiver<&'static str>,
+    shutdown: ShutdownConfig,
 ) -> Result<(), IndexerError> {
     let mut failure = tokio::select! {
-        signal = shutdown_signal() => {
+        Some(signal) = signals.recv() => {
             info!(signal, "Shutdown signal received");
-            None
+            drain(&mut tasks, &mut signals, &shutdown).await
         }
         () = cancel.cancelled() => None,
         Some(exit) = tasks.join_next() => Some(first_failure(exit)),
@@ -320,7 +323,33 @@ async fn supervise(
     failure.map_or(Ok(()), Err)
 }
 
-/// A task ended before any shutdown signal: always a fault
+/// `/readyz` fails with `draining` while everything keeps serving for `shutdown.delay()` (a
+/// load balancer polling readiness stops routing here before the listener closes)
+///
+/// - cut short by a second signal; a task ending meanwhile = the failure it always was
+async fn drain(
+    tasks: &mut JoinSet<TaskExit>,
+    signals: &mut mpsc::Receiver<&'static str>,
+    shutdown: &ShutdownConfig,
+) -> Option<IndexerError> {
+    let delay = shutdown.delay();
+    crate::status::drain();
+    crate::notify::stopping(delay + shutdown.timeout());
+    if delay.is_zero() {
+        return None;
+    }
+    info!(?delay, "Draining, still serving");
+    tokio::select! {
+        () = tokio::time::sleep(delay) => None,
+        Some(signal) = signals.recv() => {
+            info!(signal, "Second signal, drain cut short");
+            None
+        }
+        Some(exit) = tasks.join_next() => Some(first_failure(exit)),
+    }
+}
+
+/// A task ended before shutdown (or during its drain): always a fault
 fn first_failure(exit: Result<TaskExit, tokio::task::JoinError>) -> IndexerError {
     match exit {
         Ok((task, Ok(()))) => IndexerError::TaskEnded { task },
@@ -474,24 +503,39 @@ impl Watchers<'_> {
     }
 }
 
-/// Wait for a process shutdown signal, returning which one arrived.
-async fn shutdown_signal() -> &'static str {
+/// Every shutdown signal, named (the first starts the drain, a second cuts it short)
+///
+/// - Handlers registered here, before boot returns (from then on SIGTERM never kills outright)
+fn shutdown_signals() -> mpsc::Receiver<&'static str> {
+    let (sender, receiver) = mpsc::channel(1);
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
         // Registering a signal handler only fails on a broken runtime/OS, which
         // is an unrecoverable process-level invariant, not a runtime condition.
         let mut terminate = signal(SignalKind::terminate()).expect("register SIGTERM handler");
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => "SIGINT",
-            _ = terminate.recv() => "SIGTERM",
-        }
+        let mut interrupt = signal(SignalKind::interrupt()).expect("register SIGINT handler");
+        tokio::spawn(async move {
+            loop {
+                let signal = tokio::select! {
+                    _ = interrupt.recv() => "SIGINT",
+                    _ = terminate.recv() => "SIGTERM",
+                };
+                if sender.send(signal).await.is_err() {
+                    return;
+                }
+            }
+        });
     }
     #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
-        "ctrl-c"
-    }
+    tokio::spawn(async move {
+        while tokio::signal::ctrl_c().await.is_ok() {
+            if sender.send("ctrl-c").await.is_err() {
+                return;
+            }
+        }
+    });
+    receiver
 }
 
 #[cfg(test)]
@@ -525,7 +569,9 @@ mod tests {
             });
             spawn(&mut tasks, "early", Span::none(), run);
 
-            let outcome = supervise(tasks, cancel.clone()).await;
+            let (_no_signal, signals) = mpsc::channel(1);
+            let outcome =
+                supervise(tasks, cancel.clone(), signals, ShutdownConfig::default()).await;
 
             let named = match case {
                 "ends ok" => matches!(outcome, Err(IndexerError::TaskEnded { task: "early" })),
@@ -539,6 +585,55 @@ mod tests {
             assert!(named, "{case}: {outcome:?}");
             assert!(cancel.is_cancelled(), "{case}: rest not cancelled");
             assert!(drained.load(Ordering::SeqCst), "{case}: returned before the drain");
+        }
+    }
+
+    /// A signal with `[grpc.shutdown]` on fails readiness at once while every task keeps
+    /// serving, until the delay runs out, a second signal cuts it short, or a task ending
+    /// meanwhile fails the daemon; only then is the rest cancelled
+    #[tokio::test(start_paused = true)]
+    async fn a_signal_drains_while_serving_until_the_delay_a_second_signal_or_a_failure() {
+        let secs = std::time::Duration::from_secs;
+        let shutdown = ShutdownConfig { enabled: true, delay_secs: 60, timeout_secs: 0 };
+        // case, second signal at, a task ending at, supervise returns at, Ok
+        let cases = [
+            ("delay runs out", None, None, secs(60), true),
+            ("second signal", Some(secs(15)), None, secs(15), true),
+            ("task ends", None, Some(secs(20)), secs(20), false),
+        ];
+
+        for (case, second, ends, returns, ok) in cases {
+            let cancel = CancellationToken::new();
+            let mut tasks = JoinSet::new();
+            let token = cancel.child_token();
+            spawn(&mut tasks, "serving", Span::none(), async move {
+                token.cancelled().await;
+                Ok::<_, IndexerError>(())
+            });
+            if let Some(at) = ends {
+                spawn(&mut tasks, "early", Span::none(), async move {
+                    tokio::time::sleep(at).await;
+                    Ok::<_, IndexerError>(())
+                });
+            }
+            let (signal, signals) = mpsc::channel(1);
+            let started = tokio::time::Instant::now();
+            let supervising =
+                tokio::spawn(supervise(tasks, cancel.clone(), signals, shutdown.clone()));
+
+            signal.send("SIGTERM").await.expect("supervise receives");
+            tokio::time::sleep(secs(5)).await;
+            assert!(crate::status::draining(), "{case}: readiness still passing");
+            assert!(!cancel.is_cancelled(), "{case}: stopped serving inside the drain");
+            if let Some(at) = second {
+                tokio::time::sleep(at - secs(5)).await;
+                signal.send("SIGINT").await.expect("supervise receives");
+            }
+
+            let outcome = supervising.await.expect("supervise ran");
+            assert_eq!(started.elapsed(), returns, "{case}");
+            assert_eq!(outcome.is_ok(), ok, "{case}: {outcome:?}");
+            assert!(cancel.is_cancelled(), "{case}: rest not cancelled");
         }
     }
 

@@ -37,7 +37,7 @@ http-body = "1.1.0"
 zaino-source = { version = "0.2.0", path = "../zaino-source" }
 metrics = { workspace = true }
 zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 ppp = "2.3"
 ipnet = "2.12"
 socket2 = { version = "0.6", features = ["all"] }
