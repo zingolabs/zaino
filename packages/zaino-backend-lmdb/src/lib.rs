@@ -14,6 +14,8 @@
 //! })?;
 //! ```
 
+mod deferred;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,9 +31,12 @@ use lmdb::{
 };
 use lmdb_sys::{MDB_FIRST, MDB_NEXT, MDB_SET_RANGE};
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, KeyOrder, Namespace,
-    NamespaceSpec, OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, BulkPolicy, CommitError, FlushError, KeyOrder,
+    Namespace, NamespaceSpec, OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
 };
+
+use deferred::manifest::MANIFEST_NAMESPACE;
+use deferred::{Deferral, Prepared};
 
 /// Configuration for [`LmdbBackend`].
 pub struct LmdbConfig {
@@ -74,6 +79,9 @@ pub struct LmdbBackend {
     /// [`WriteFlags::APPEND`] for the [`WalkOrdered`](KeyOrder::WalkOrdered)
     /// ones. Holds `Copy` entries; cloning per handle is cheap.
     key_orders: HashMap<Namespace, KeyOrder>,
+    /// The shared deferral controller: bulk-mode state and the open run logs,
+    /// shared (`Arc`) across every writer and the backend's bulk methods.
+    deferral: Arc<Deferral>,
     /// Commits so far, shared across the writers this backend hands out, so
     /// the periodic env-stats cadence holds across the fresh writer each batch
     /// opens. Present only under `sync-profile`.
@@ -86,8 +94,24 @@ impl LmdbBackend {
     pub fn open(config: LmdbConfig) -> Result<Self, OpenError> {
         std::fs::create_dir_all(&config.path).map_err(|e| open_error("create directory", e))?;
 
+        // One extra named database for the reserved deferral manifest (see
+        // [`MANIFEST_NAMESPACE`]), plus one of slack, beyond the caller's
+        // namespaces. `try_from` keeps the count within LMDB's `u32` without an
+        // `as` cast; a namespace list that large is not representable in memory.
+        let max_dbs = u32::try_from(config.namespaces.len())
+            .ok()
+            .and_then(|n| n.checked_add(2))
+            .ok_or_else(|| {
+                open_error(
+                    "configure max dbs",
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "too many namespaces for one environment",
+                    ),
+                )
+            })?;
         let env = Environment::new()
-            .set_max_dbs(config.namespaces.len() as u32 + 1)
+            .set_max_dbs(max_dbs)
             .set_map_size(config.map_size_bytes)
             .set_flags(
                 // NO_TLS: allows sharing read transactions across threads.
@@ -105,17 +129,27 @@ impl LmdbBackend {
 
         let mut dbs = HashMap::new();
         let mut key_orders = HashMap::new();
-        for spec in &config.namespaces {
+        // The reserved deferral manifest namespace is registered here, not by
+        // callers: it is backend bookkeeping, tagged `Meta`.
+        for spec in config
+            .namespaces
+            .iter()
+            .copied()
+            .chain(std::iter::once(NamespaceSpec::meta(MANIFEST_NAMESPACE)))
+        {
             let db = open_or_create_db(&env, spec.namespace.as_str())
                 .map_err(|e| open_error("create database", e))?;
             dbs.insert(spec.namespace, db);
             key_orders.insert(spec.namespace, spec.key_order);
         }
 
+        let deferral = Deferral::open(&env, &dbs, config.path.join("deferred"))?;
+
         Ok(Self {
             env: Arc::new(env),
             dbs,
             key_orders,
+            deferral: Arc::new(deferral),
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
@@ -131,7 +165,7 @@ impl LmdbBackend {
 /// `lmdb::Error`), never stringified — so the cause chain stays inspectable.
 /// `matches!` keeps this to the one variant we distinguish without a catch-all
 /// match over LMDB's error enum.
-fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
+pub(crate) fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
     if matches!(error, lmdb::Error::MapFull) {
         CommitError::OutOfSpace
     } else {
@@ -145,7 +179,7 @@ fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
 /// Build an [`OpenError`] that keeps the underlying error as a typed source
 /// (boxed at the port boundary), rather than stringifying it. Generic over the
 /// cause so it serves both the filesystem (`io::Error`) and LMDB open steps.
-fn open_error(
+pub(crate) fn open_error(
     operation: &'static str,
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> OpenError {
@@ -188,6 +222,7 @@ impl Backend for LmdbBackend {
             env: Arc::clone(&self.env),
             dbs: self.dbs.clone(),
             key_orders: self.key_orders.clone(),
+            deferral: Arc::clone(&self.deferral),
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::clone(&self.commit_counter),
         })
@@ -197,6 +232,14 @@ impl Backend for LmdbBackend {
         self.env
             .sync(true)
             .map_err(|e| FlushError::IoError(Box::new(e)))
+    }
+
+    fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+        self.deferral.begin_bulk(policy)
+    }
+
+    fn finish_bulk(&self) -> Result<(), CommitError> {
+        deferred::merge::finish_bulk(&self.deferral, &self.env, &self.dbs)
     }
 }
 
@@ -310,6 +353,27 @@ impl BackendReader for LmdbReader {
             Err(e) => Err(read_error("first key", e)),
         }
     }
+
+    /// A namespace is incomplete exactly while it has a deferral manifest entry:
+    /// its writes are in the run log, not yet merged into the tree. The manifest
+    /// is the single source of truth, so this is one point lookup in the reserved
+    /// manifest namespace — no shared in-memory state to consult.
+    ///
+    /// `WalkOrdered` and `Meta` namespaces never get a manifest entry, so they
+    /// read complete throughout; a deferred `Scattered` namespace reads complete
+    /// again once [`finish_bulk`](LmdbBackend::finish_bulk) clears its entry.
+    fn is_complete(&self, namespace: Namespace) -> Result<bool, ReadError> {
+        let meta_db = self.resolve_db(MANIFEST_NAMESPACE)?;
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| read_error("begin read transaction", e))?;
+        match txn.get(meta_db, &deferred::manifest::run_key(namespace)) {
+            Ok(_) => Ok(false),
+            Err(lmdb::Error::NotFound) => Ok(true),
+            Err(e) => Err(read_error("is_complete", e)),
+        }
+    }
 }
 
 /// LMDB write handle.
@@ -317,6 +381,9 @@ pub struct LmdbWriter {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
     key_orders: HashMap<Namespace, KeyOrder>,
+    /// The shared deferral controller: routes `Scattered` puts to run logs while
+    /// bulk mode is active and holds the open log handles.
+    deferral: Arc<Deferral>,
     #[cfg(feature = "sync-profile")]
     commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -378,10 +445,14 @@ impl LmdbWriter {
     }
 }
 
-impl BackendWriter for LmdbWriter {
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+impl LmdbWriter {
+    /// Apply the transaction ops of a commit — the batch's direct ops plus the
+    /// deferral manifest puts [`prepare`](Deferral::prepare) folded in — and
+    /// commit the transaction. The deferral segment appends are finalised by the
+    /// caller against this result.
+    fn commit_direct(&self, direct: Vec<WriteOp>) -> Result<(), CommitError> {
         #[cfg(feature = "sync-profile")]
-        let op_count = ops.len();
+        let op_count = direct.len();
         #[cfg(feature = "sync-profile")]
         let put_start = std::time::Instant::now();
 
@@ -390,7 +461,7 @@ impl BackendWriter for LmdbWriter {
             .begin_rw_txn()
             .map_err(|e| commit_error("begin rw txn", e))?;
 
-        for op in ops {
+        for op in direct {
             match op {
                 WriteOp::Put {
                     namespace,
@@ -447,6 +518,40 @@ impl BackendWriter for LmdbWriter {
         }
 
         Ok(())
+    }
+}
+
+impl BackendWriter for LmdbWriter {
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+        // Deferral partitions the batch: `Scattered` puts for deferred namespaces
+        // are sorted, appended to their run logs and fsynced here; everything else
+        // (plus a manifest run-entry put per deferred namespace) comes back as
+        // direct ops for the transaction. Outside bulk mode nothing is deferred
+        // and `direct` is the batch unchanged, so the path matches today's.
+        let Prepared { direct, actions } = self.deferral.prepare(&self.key_orders, ops)?;
+
+        // Fault injection: model a crash in the window after the segment fsyncs
+        // and before the transaction commits. The watermark/manifest transaction
+        // is skipped, leaving the fsynced bytes orphaned for the reopen to
+        // truncate — the crash the review focuses on.
+        #[cfg(test)]
+        if deferred::fault::take_stop_after_fsync() {
+            return Ok(());
+        }
+
+        match self.commit_direct(direct) {
+            Ok(()) => {
+                self.deferral.finalize_committed(actions);
+                Ok(())
+            }
+            Err(error) => {
+                // The transaction did not commit, so the appended segments are
+                // uncommitted: roll the run logs back to their committed length,
+                // keeping disk consistent with the manifest without a restart.
+                self.deferral.finalize_aborted(actions);
+                Err(error)
+            }
+        }
     }
 }
 
