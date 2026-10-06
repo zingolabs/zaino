@@ -375,6 +375,11 @@ mod conformance_tests {
     }
 
     #[test]
+    fn walk_ordered_rejects_or_stores_non_ascending_put() {
+        conformance::walk_ordered_rejects_or_stores_non_ascending_put(&InMemoryFactory);
+    }
+
+    #[test]
     fn reopen_persists_committed_data() {
         conformance::reopen_persists_committed_data(&InMemoryFactory);
     }

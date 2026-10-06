@@ -39,7 +39,7 @@ mod support;
 pub use basic::{
     commit_is_atomic_across_namespaces, first_key_is_smallest_or_none, get_put_delete_round_trip,
     namespaces_are_isolated, reopen_persists_committed_data, scan_range_is_ascending_and_half_open,
-    scan_returns_bytewise_key_order,
+    scan_returns_bytewise_key_order, walk_ordered_rejects_or_stores_non_ascending_put,
 };
 pub use bulk::{
     bulk_disabled_matches_direct, bulk_enabled_after_finish_matches_direct,
@@ -81,6 +81,7 @@ pub fn run_all<F: BackendFactory>(factory: &F) {
     scan_range_is_ascending_and_half_open(factory);
     first_key_is_smallest_or_none(factory);
     namespaces_are_isolated(factory);
+    walk_ordered_rejects_or_stores_non_ascending_put(factory);
     reopen_persists_committed_data(factory);
 
     bulk_disabled_matches_direct(factory);

@@ -4,6 +4,7 @@
 use super::support::{self, META_NS, SCATTERED_KEYS, SCATTERED_NS, SCATTERED_NS_2, WALK_NS};
 use super::BackendFactory;
 use crate::backend::{Backend, BackendReader, BackendWriter, RawKey, RawValue};
+use crate::error::CommitError;
 
 /// A committed put is readable; an overwrite replaces it; a delete removes it;
 /// and a get of an absent key is `None`, not an error.
@@ -259,6 +260,52 @@ pub fn reopen_persists_committed_data<F: BackendFactory>(factory: &F) {
         return;
     };
     support::assert_matches_oracle(&backend, &specs, &expected);
+}
+
+/// A non-ascending put on a [`WalkOrdered`](crate::KeyOrder::WalkOrdered)
+/// namespace is handled one of two contract-legal ways, and the suite accepts
+/// either: a backend that append-orders walk-ordered writes MAY reject it with
+/// [`CommitError::OutOfOrderAppend`] naming the namespace; a backend that does
+/// not (it writes every namespace the same way) accepts it, and then the value
+/// must be stored and readable like any other put.
+///
+/// This pins the [`KEY_ORDER`](crate::KeyOrder) contract from outside: the fact
+/// enables append-ordering, it never forces it, so both the appending backend
+/// (LMDB) and the order-agnostic one (in-memory) conform. A key that regresses
+/// is the shape a mis-stated `WalkOrdered` codec would produce.
+pub fn walk_ordered_rejects_or_stores_non_ascending_put<F: BackendFactory>(factory: &F) {
+    let specs = support::specs();
+    let backend = factory.fresh(&specs);
+    let mut writer = backend.writer().expect("writer");
+
+    // Establish a high walk-ordered key, then commit a lower one on its own: a
+    // key that regresses relative to what the namespace already holds.
+    writer
+        .commit(vec![support::put(
+            WALK_NS,
+            support::height_key(5),
+            b"h5".to_vec(),
+        )])
+        .expect("an ascending walk-ordered put commits");
+    let regressed = writer.commit(vec![support::put(
+        WALK_NS,
+        support::height_key(3),
+        b"h3".to_vec(),
+    )]);
+
+    match regressed {
+        Err(CommitError::OutOfOrderAppend { namespace, .. }) => assert_eq!(
+            namespace,
+            WALK_NS.to_string(),
+            "the rejection names the walk-ordered namespace that regressed"
+        ),
+        Ok(()) => assert_eq!(
+            get(&backend, WALK_NS, &support::height_key(3)),
+            Some(b"h3".to_vec()),
+            "a backend that accepts the non-ascending put must store its value"
+        ),
+        Err(other) => panic!("unexpected commit error for a non-ascending walk put: {other:?}"),
+    }
 }
 
 /// Commit one batch, asserting nothing about return other than success.

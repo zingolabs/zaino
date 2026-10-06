@@ -29,8 +29,8 @@ use lmdb::{
 };
 use lmdb_sys::{MDB_FIRST, MDB_NEXT, MDB_SET_RANGE};
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, NamespaceSpec,
-    OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, CommitError, FlushError, KeyOrder, Namespace,
+    NamespaceSpec, OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
 };
 
 /// Configuration for [`LmdbBackend`].
@@ -41,7 +41,7 @@ pub struct LmdbConfig {
     /// Defaults to 1 GB if not set.
     pub map_size_bytes: usize,
     /// Namespaces to create (one LMDB named database each), each paired with its
-    /// [`KeyOrder`](zaino_persistence::KeyOrder). The order is carried for the
+    /// [`KeyOrder`]. The order is carried for the
     /// deferral machinery; opening a database does not yet depend on it.
     pub namespaces: Vec<NamespaceSpec>,
 }
@@ -70,6 +70,10 @@ impl Default for LmdbConfig {
 pub struct LmdbBackend {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    /// Each namespace's [`KeyOrder`], so a writer selects
+    /// [`WriteFlags::APPEND`] for the [`WalkOrdered`](KeyOrder::WalkOrdered)
+    /// ones. Holds `Copy` entries; cloning per handle is cheap.
+    key_orders: HashMap<Namespace, KeyOrder>,
     /// Commits so far, shared across the writers this backend hands out, so
     /// the periodic env-stats cadence holds across the fresh writer each batch
     /// opens. Present only under `sync-profile`.
@@ -100,15 +104,18 @@ impl LmdbBackend {
             .map_err(|e| open_error("open environment", e))?;
 
         let mut dbs = HashMap::new();
+        let mut key_orders = HashMap::new();
         for spec in &config.namespaces {
             let db = open_or_create_db(&env, spec.namespace.as_str())
                 .map_err(|e| open_error("create database", e))?;
             dbs.insert(spec.namespace, db);
+            key_orders.insert(spec.namespace, spec.key_order);
         }
 
         Ok(Self {
             env: Arc::new(env),
             dbs,
+            key_orders,
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
@@ -180,6 +187,7 @@ impl Backend for LmdbBackend {
         Ok(LmdbWriter {
             env: Arc::clone(&self.env),
             dbs: self.dbs.clone(),
+            key_orders: self.key_orders.clone(),
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::clone(&self.commit_counter),
         })
@@ -308,6 +316,7 @@ impl BackendReader for LmdbReader {
 pub struct LmdbWriter {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    key_orders: HashMap<Namespace, KeyOrder>,
     #[cfg(feature = "sync-profile")]
     commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -318,6 +327,25 @@ impl LmdbWriter {
             .get(&namespace)
             .copied()
             .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
+    }
+
+    /// The write flags for a put into `namespace`.
+    ///
+    /// [`WalkOrdered`](KeyOrder::WalkOrdered) namespaces take
+    /// [`WriteFlags::APPEND`]: their keys lead with the big-endian height and so
+    /// arrive strictly ascending, which lets LMDB skip the B-tree search and fill
+    /// pages sequentially. The append also *enforces* the order — a key that is
+    /// not strictly greater than the current last key is rejected
+    /// ([`CommitError::OutOfOrderAppend`]), so a mis-stated key order fails loudly
+    /// rather than mis-ordering silently. Every other namespace
+    /// ([`Scattered`](KeyOrder::Scattered), [`Meta`](KeyOrder::Meta), and an
+    /// unknown namespace that `resolve_db` will reject anyway) takes a plain
+    /// overwriting put.
+    fn write_flags(&self, namespace: Namespace) -> WriteFlags {
+        match self.key_orders.get(&namespace) {
+            Some(KeyOrder::WalkOrdered) => WriteFlags::APPEND,
+            _ => WriteFlags::empty(),
+        }
     }
 
     /// Emit env-wide LMDB B-tree stats once every [`STATS_EVERY_N_COMMITS`]
@@ -370,8 +398,22 @@ impl BackendWriter for LmdbWriter {
                     value,
                 } => {
                     let db = self.resolve_db(namespace)?;
-                    txn.put(db, &key, &value, WriteFlags::empty())
-                        .map_err(|e| commit_error("put", e))?;
+                    let flags = self.write_flags(namespace);
+                    match txn.put(db, &key, &value, flags) {
+                        Ok(()) => {}
+                        // An append rejects a key that is not strictly greater
+                        // than the current last one with `MDB_KEYEXIST`. Only an
+                        // append can produce it here (a plain put overwrites), so
+                        // guarding on the flag keeps a plain-put `KeyExist` — were
+                        // one ever to arise — on the generic write-failure path.
+                        Err(e @ lmdb::Error::KeyExist) if flags.contains(WriteFlags::APPEND) => {
+                            return Err(CommitError::OutOfOrderAppend {
+                                namespace: namespace.to_string(),
+                                source: Box::new(e),
+                            });
+                        }
+                        Err(e) => return Err(commit_error("put", e)),
+                    }
                 }
                 WriteOp::Delete { namespace, key } => {
                     let db = self.resolve_db(namespace)?;
@@ -421,12 +463,15 @@ mod tests {
         }
     }
 
-    /// A namespace spec for these raw-KV tests. The key order is inert here (no
-    /// behaviour keys off it yet); `WalkOrdered` is an arbitrary neutral choice.
+    /// A namespace spec for these raw-KV tests. They exercise the generic
+    /// put/scan/delete/range path, not key ordering, so `Scattered` — the plain
+    /// overwriting put, with no append-order constraint — is the neutral choice.
+    /// Append enforcement for `WalkOrdered` namespaces is covered by
+    /// [`walk_ordered_rejects_descending_key`] and the conformance suite.
     fn spec(namespace: Namespace) -> NamespaceSpec {
         NamespaceSpec {
             namespace,
-            key_order: zaino_persistence::KeyOrder::WalkOrdered,
+            key_order: KeyOrder::Scattered,
         }
     }
 
@@ -733,6 +778,77 @@ mod tests {
             assert_eq!(val, b"yes");
         }
     }
+
+    /// A `WalkOrdered` namespace rejects a key that is not strictly greater than
+    /// its last — both a lower key and a repeat — with the typed
+    /// `OutOfOrderAppend` naming it; a `Scattered` namespace accepts the same
+    /// descending sequence. This is the append enforcement the spec relies on to
+    /// fail a mis-stated key order loudly.
+    #[test]
+    fn walk_ordered_rejects_descending_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let walk = Namespace::new("walk");
+        let scattered = Namespace::new("scattered");
+        let config = LmdbConfig {
+            path: tmp.path().to_path_buf(),
+            map_size_bytes: 1 << 20,
+            namespaces: vec![
+                NamespaceSpec {
+                    namespace: walk,
+                    key_order: KeyOrder::WalkOrdered,
+                },
+                NamespaceSpec {
+                    namespace: scattered,
+                    key_order: KeyOrder::Scattered,
+                },
+            ],
+        };
+        let backend = LmdbBackend::open(config).expect("open");
+        let mut writer = backend.writer().expect("writer");
+
+        let height_key = |height: u32| height.to_be_bytes().to_vec();
+        // The value echoes the key; its exact bytes are immaterial to the test.
+        let put = |namespace, height: u32| WriteOp::Put {
+            namespace,
+            key: height_key(height),
+            value: height_key(height),
+        };
+
+        // Walk-ordered: an ascending append is fine; a lower key, then a repeat
+        // of the last key, each fail with OutOfOrderAppend naming the namespace.
+        writer.commit(vec![put(walk, 5)]).expect("ascending append");
+        for regress in [3u32, 5u32] {
+            let err = writer
+                .commit(vec![put(walk, regress)])
+                .expect_err("a non-ascending key must be rejected");
+            assert!(
+                matches!(&err, CommitError::OutOfOrderAppend { namespace, .. } if namespace == walk.as_str()),
+                "expected OutOfOrderAppend naming {walk}, got: {err:?}"
+            );
+        }
+
+        // Scattered: the same descending sequence is accepted and stored.
+        writer.commit(vec![put(scattered, 5)]).expect("scattered 5");
+        writer
+            .commit(vec![put(scattered, 3)])
+            .expect("scattered accepts a descending key");
+
+        let reader = backend.reader().expect("reader");
+        assert_eq!(
+            reader.get(scattered, &height_key(3)).expect("get"),
+            Some(height_key(3))
+        );
+        assert_eq!(
+            reader.get(scattered, &height_key(5)).expect("get"),
+            Some(height_key(5))
+        );
+        // The rejected walk puts left nothing behind: only the one accepted key.
+        assert_eq!(reader.get(walk, &height_key(3)).expect("get"), None);
+        assert_eq!(
+            reader.get(walk, &height_key(5)).expect("get"),
+            Some(height_key(5))
+        );
+    }
 }
 
 /// The generic backend conformance suite ([`zaino_persistence::conformance`]),
@@ -837,6 +953,11 @@ mod conformance_tests {
     #[test]
     fn namespaces_are_isolated() {
         conformance::namespaces_are_isolated(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn walk_ordered_rejects_or_stores_non_ascending_put() {
+        conformance::walk_ordered_rejects_or_stores_non_ascending_put(&LmdbFactory::new());
     }
 
     #[test]

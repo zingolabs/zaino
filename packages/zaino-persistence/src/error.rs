@@ -33,6 +33,25 @@ pub enum CommitError {
     /// (backed by enough disk); retrying without that fails identically.
     #[error("database out of space: the reserved storage is full; reopen the backend with a larger map size (and enough disk to back it)")]
     OutOfSpace,
+    /// A put into a [`WalkOrdered`](crate::KeyOrder::WalkOrdered) namespace
+    /// carried a key that is not strictly greater than the namespace's current
+    /// last key.
+    ///
+    /// Walk-ordered namespaces are written with a sorted append, so their keys
+    /// must arrive strictly ascending. A key that repeats or regresses means the
+    /// index's [`KEY_ORDER`](crate::KeyOrder) claim does not match the bytes its
+    /// codec produced — a codec bug, surfaced loudly on the offending commit
+    /// rather than silently mis-ordering the namespace. The namespace is named so
+    /// the bug is traceable to one index. A backend that does not append-order
+    /// its writes never raises this.
+    #[error("out-of-order key for walk-ordered namespace {namespace}: a walk-ordered namespace takes strictly ascending keys")]
+    OutOfOrderAppend {
+        /// The walk-ordered namespace that received the out-of-order key.
+        namespace: String,
+        /// The backend's underlying append rejection, preserved as the cause.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
     /// The write failed (IO, transaction conflict, etc.). `operation` names the
     /// write step that failed.
     #[error("write failed during {operation}")]
