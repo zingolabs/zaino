@@ -189,7 +189,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let reader = view.subscriber();
     let threshold = reader.quorum().threshold();
     let mut seen: Vec<Option<Seen>> = vec![None; n];
-    let (mut tip_was, mut epoch_was) = (None, reader.current().epoch());
+    let (mut tip_was, mut epoch_was) = (None, reader.tail().ok());
 
     for (step, next) in moves.into_iter().enumerate() {
         match next {
@@ -241,17 +241,23 @@ async fn run(n: usize, moves: Vec<Move>) {
                     );
                 }
                 let block = tip.map(|(block, _)| block);
-                let moved = pinned.epoch() != epoch_was;
+                let epoch = reader.tail();
+                let moved = match (&epoch_was, &epoch) {
+                    (Some(was), Ok(now)) => !was.same_epoch(now),
+                    (None, Err(_)) => false,
+                    _ => true,
+                };
                 assert_eq!(
                     moved,
                     block != tip_was,
-                    "{context}: epoch moves iff the tip block does"
+                    "{context}: the feed opens a new epoch iff the tip block moves"
                 );
                 if expected.is_none() {
                     let refused = BelowQuorum { agreeing: largest, threshold, configured: n };
                     assert_eq!(pinned.mempool().err(), Some(refused), "{context}");
+                    assert_eq!(epoch.as_ref().err(), Some(&refused), "{context}: feed refuses too");
                 }
-                (tip_was, epoch_was) = (block, pinned.epoch());
+                (tip_was, epoch_was) = (block, epoch.ok());
             }
         }
     }

@@ -13,8 +13,10 @@ use zaino_primitives::types::{BlockchainInfo, PeerInfo, TransactionId, Zatoshis}
 
 use crate::chain::EndpointChain;
 use crate::endpoints::{Agreement, EndpointIndex, EndpointState, ValidatorMetadata};
+use crate::error::BelowQuorum;
+use crate::feed::Epoch;
 use crate::quorum::{tally, Quorum, QuorumTip};
-use crate::snapshot::{ChainViewSnapshot, Sighting};
+use crate::snapshot::{ChainViewSnapshot, MempoolView, Sighting};
 use crate::telemetry;
 
 /// One txid a poller listed, with bytes iff this poller had to fetch them.
@@ -74,17 +76,21 @@ pub(crate) struct ChainViewCore {
     tip: watch::Sender<Option<QuorumTip>>,
     /// Sent iff the epoch moved or an arrival landed (tails sleep through every other fold)
     tails: watch::Sender<()>,
+    /// Feed for the current tip block, or why there is none; written only under `state`'s lock
+    epoch: ArcSwap<Result<Arc<Epoch>, BelowQuorum>>,
     quorum: Quorum,
 }
 
 impl ChainViewCore {
     pub(crate) fn new(endpoints: Vector<ValidatorMetadata>, quorum: Quorum) -> Self {
         let empty = ChainViewSnapshot::empty(endpoints, quorum);
+        let below = empty.mempool().expect_err("an empty view has no tip");
         Self {
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
             tip: watch::Sender::new(None),
             tails: watch::Sender::new(()),
+            epoch: ArcSwap::from_pointee(Err(below)),
             quorum,
         }
     }
@@ -124,7 +130,6 @@ impl ChainViewCore {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let mut touched: Vec<TransactionId> = Vec::new();
         let mut unadmitted: Vec<TransactionId> = Vec::new();
-        let was_servable = servable_set(&guard, &self.quorum);
         let (previous_tip, previous_alarms) = (guard.tip, guard.alarms);
 
         let state = &mut *guard;
@@ -222,20 +227,22 @@ impl ChainViewCore {
         }
 
         if tip_moved {
-            state.tip_moved();
+            self.rotate(state);
+        } else if let Err(below) = state.mempool() {
+            // the refusal stays current as voters come and go
+            self.epoch.store(Arc::new(Err(below)));
         }
         let new_tip = state.tip;
-        let arrived = self.record_arrivals(state, &touched, &was_servable);
+        let arrived = self.record_arrivals(state, &touched);
         let published = self.publish(guard, tip_changed.then_some(new_tip), tip_moved || arrived);
         telemetry::emit(&published, previous_alarms);
 
         unadmitted
     }
 
-    /// Mark a transaction as relayed by us, admitting it before it has propagated (§5).
+    /// Mark a transaction as relayed by us, admitting it before it has propagated (§6).
     pub(crate) fn mark_ours(&self, txid: TransactionId, raw: Bytes) {
         let mut state = self.state.lock().expect("chainview fold mutex poisoned");
-        let was_servable = servable_set(&state, &self.quorum);
 
         match state.mempool.get_mut(&txid) {
             Some(sighting) => sighting.mark_ours(),
@@ -244,29 +251,42 @@ impl ChainViewCore {
             }
         }
 
-        let arrived = self.record_arrivals(&mut state, &[txid], &was_servable);
+        let arrived = self.record_arrivals(&mut state, &[txid]);
         self.publish(state, None, arrived);
     }
 
-    /// Appends every touched txid that crossed into servable; `true` = any did
-    fn record_arrivals(
-        &self,
-        state: &mut ChainViewSnapshot,
-        touched: &[TransactionId],
-        was_servable: &imbl::OrdSet<TransactionId>,
-    ) -> bool {
-        let crossed: Vec<TransactionId> = touched
-            .iter()
-            .filter(|txid| {
-                !was_servable.contains(*txid)
-                    && state.sighting(txid).is_some_and(|sighting| sighting.servable(&self.quorum))
-            })
-            .copied()
-            .collect();
-        for txid in &crossed {
-            state.arrived(*txid);
+    /// New tip block: the old epoch sealed (its tails drain, then end), a new one opened on the
+    /// servable mempool (none below quorum)
+    fn rotate(&self, state: &ChainViewSnapshot) {
+        let opened =
+            state.mempool().map(|mempool| Arc::new(Epoch::open(mempool.entries().collect())));
+        if let Ok(sealed) = self.epoch.swap(Arc::new(opened)).as_ref() {
+            sealed.seal();
         }
-        !crossed.is_empty()
+    }
+
+    /// Logs every touched txid that crossed into servable; `true` = any did
+    ///
+    /// - before = the last published view (every fold publishes under this lock): a point
+    ///   lookup per touched txid, never a pass over the mempool
+    fn record_arrivals(&self, state: &mut ChainViewSnapshot, touched: &[TransactionId]) -> bool {
+        let before = self.published.load();
+        let epoch = self.epoch.load();
+        let mut arrived = false;
+        for txid in touched {
+            let was = before.sighting(txid).is_some_and(|sighting| sighting.servable(&self.quorum));
+            let now = MempoolView::of(state).get(txid);
+            if let (false, Some(entry), Ok(epoch)) = (was, now, epoch.as_ref()) {
+                epoch.append(entry);
+                arrived = true;
+            }
+        }
+        arrived
+    }
+
+    /// Feed for the current tip block, or the shortfall below quorum
+    pub(crate) fn epoch(&self) -> Result<Arc<Epoch>, BelowQuorum> {
+        self.epoch.load().as_ref().clone()
     }
 
     /// Store, then signal (a woken reader must find what woke it)
@@ -329,12 +349,4 @@ fn retract(
         }
     }
     held
-}
-
-fn servable_set(state: &ChainViewSnapshot, quorum: &Quorum) -> imbl::OrdSet<TransactionId> {
-    state
-        .sightings()
-        .filter(|(_, sighting)| sighting.servable(quorum))
-        .map(|(txid, _)| *txid)
-        .collect()
 }

@@ -197,10 +197,11 @@ impl SendRawTransaction for FakeValidator {
     }
 }
 
-/// N=1: quorum trivially met. A tail = its anchor's snapshot, then each later crossing once
-/// (never one the snapshot carried), silent on an empty mempool, ended by a mined block.
+/// N=1: quorum trivially met. A tail = the servable mempool at its tip block, then each later
+/// crossing once (never one the opening carried), silent on an empty mempool, ended by a mined
+/// block; a late subscriber gets the same opening + every arrival since (one log per block)
 #[tokio::test]
-async fn a_single_endpoint_tail_sends_its_snapshot_then_each_arrival_once_until_a_block() {
+async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival_once() {
     let validator = Arc::new(FakeValidator::default());
     validator.edit(|fake| {
         fake.tip = Some(BlockRef {
@@ -242,11 +243,10 @@ async fn a_single_endpoint_tail_sends_its_snapshot_then_each_arrival_once_until_
     assert_eq!(entries, [entry(1, 1_000), entry(2, 2_000)], "each entry: its validator's fee");
 
     let mut tail = reader.tail().expect("quorum met");
-    let snapshot: Vec<_> = tail.snapshot().entries().collect();
-    assert_eq!(snapshot, [entry(1, 1_000), entry(2, 2_000)], "the whole servable mempool");
+    assert_eq!(tail.opening(), [entry(1, 1_000), entry(2, 2_000)], "the whole servable mempool");
 
-    // tx 2 flaps out and back: it rode the snapshot, so its re-crossing is not re-sent
-    // tx 1 is dropped (propagation churn): nothing to send, no entry
+    // tx 2 flaps out and back: it rode the opening, so its re-crossing is not logged
+    // tx 1 is dropped (propagation churn): nothing to send
     // tx 3 arrives, and ours (tx 9) is servable before any listing
     validator.edit(|fake| fake.listed.retain(|txid| *txid != TransactionId::from([2u8; 32])));
     pollers[0].tick().await.expect("second poll succeeds");
@@ -256,21 +256,23 @@ async fn a_single_endpoint_tail_sends_its_snapshot_then_each_arrival_once_until_
     });
     pollers[0].tick().await.expect("third poll succeeds");
     let ours = view.broadcast(vec![9u8; 8]).await.expect("accepted");
-    let arrivals: Vec<_> = reader.current().arrivals().iter().copied().collect();
-    let crossings = [1u8, 2, 2, 3].map(|seed| TransactionId::from([seed; 32]));
-    let expected = [&crossings[..], &[ours]].concat();
-    assert_eq!(arrivals, expected, "every crossing this epoch, in order, a re-crossing again");
 
-    assert_eq!(tail.next().await, Some(entry(3, 3_000)), "tx 2 was in the snapshot: skipped");
+    async fn next(tail: &mut crate::MempoolTail) -> Option<MempoolEntry> {
+        tail.next().await.map(|logged| logged.entry.clone())
+    }
     let unpriced = MempoolEntry { txid: ours, raw: Bytes::from(vec![9u8; 8]), fee: None };
-    assert_eq!(tail.next().await, Some(unpriced), "our own send, before any validator lists it");
+    assert_eq!(next(&mut tail).await, Some(entry(3, 3_000)), "tx 2 rode the opening: skipped");
+    assert_eq!(next(&mut tail).await, Some(unpriced.clone()), "our own send, before any listing");
     let silent = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
     assert!(silent.is_err(), "nothing new, no block mined: a live, silent stream");
 
-    // A late subscriber's snapshot already holds all three: its tail starts past them
+    // A late subscriber: the same opening (tx 1 included: the stream never un-sends within a
+    // block) + every arrival since, from the same log
     let mut late = reader.tail().expect("quorum met");
-    let late_snapshot: Vec<_> = late.snapshot().entries().map(|entry| entry.txid).collect();
-    assert_eq!(late_snapshot, [crossings[1], crossings[3], ours]);
+    assert!(late.same_epoch(&tail), "one log per tip block");
+    assert_eq!(late.opening(), [entry(1, 1_000), entry(2, 2_000)]);
+    assert_eq!(next(&mut late).await, Some(entry(3, 3_000)));
+    assert_eq!(next(&mut late).await, Some(unpriced));
 
     // Block 11: the one thing that ends a stream, for every tail on the old tip
     validator.edit(|fake| {
@@ -280,10 +282,13 @@ async fn a_single_endpoint_tail_sends_its_snapshot_then_each_arrival_once_until_
         })
     });
     pollers[0].tick().await.expect("fourth poll succeeds");
-    assert_eq!(tail.next().await, None, "the stream ends on a mined block");
-    assert_eq!(late.next().await, None, "late subscriber too");
-    assert_eq!(tail.next().await, None, "and stays ended");
-    assert!(reader.current().arrivals().is_empty(), "the new tip starts a fresh log");
+    assert!(tail.next().await.is_none(), "the stream ends on a mined block");
+    assert!(late.next().await.is_none(), "late subscriber too");
+    assert!(tail.next().await.is_none(), "and stays ended");
+    let fresh = reader.tail().expect("quorum met");
+    let opened: Vec<_> = fresh.opening().iter().map(|entry| entry.txid).collect();
+    let current = [2u8, 3].map(|seed| TransactionId::from([seed; 32]));
+    assert_eq!(opened, current, "the new tip opens on the mempool as it now stands");
 }
 
 /// A validator whose mempool is off below the network tip still votes its tip (the sync
@@ -406,6 +411,8 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
     let mempool = pinned.mempool().expect("quorum met");
     assert!(mempool.get(&tx7).is_none(), "1 of 3 sightings < the per-transaction threshold");
     assert_eq!(estimate(&pinned), Ok(105), "first agreer in configured order");
+    let mut tail = reader.tail().expect("quorum met");
+    assert!(tail.opening().is_empty(), "tx 7 held, not servable");
 
     // Endpoint c alone claims a far higher tip — agrees with nobody, so it moves nothing
     validators[2].edit(|fake| {
@@ -433,8 +440,10 @@ async fn a_lone_higher_tip_does_not_move_a_quorum_of_three() {
             .map(|(address, peer)| (address, vec![outbound(peer)]));
     assert_eq!(peers, expected, "each validator's peers, keyed by its configured address");
 
-    let arrivals: Vec<TransactionId> = pinned.arrivals().iter().copied().collect();
-    assert_eq!(arrivals, [tx7], "threshold crossing logged exactly once, at the crossing");
+    let crossed = tail.next().await.map(|logged| logged.entry.txid);
+    assert_eq!(crossed, Some(tx7), "threshold crossing logged at the crossing");
+    let once = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
+    assert!(once.is_err(), "and exactly once");
 }
 
 /// A broadcast one node rejects and another cannot answer still succeeds on the third, marks
@@ -575,7 +584,7 @@ async fn ancestry_votes_ride_a_propagation_race_and_retreat_onto_a_lagging_major
     let moved = reader.current().tip().expect("two of three hold 101");
     assert_eq!((moved.block, moved.agreed_by), (at(101), agreed_by(&[0, 1])));
     assert_eq!(agreements(), [Agreement::Agreed, Agreement::Agreed, Agreement::Behind]);
-    assert_eq!(first.next().await, None, "a new block ends the stream");
+    assert!(first.next().await.is_none(), "a new block ends the stream");
     let mut second = reader.tail().expect("quorum met");
 
     // a stops voting: 101 is held by b alone, so the tip retreats onto the common ancestor
@@ -584,7 +593,7 @@ async fn ancestry_votes_ride_a_propagation_race_and_retreat_onto_a_lagging_major
     let retreat = reader.current().tip().expect("b and c share 100");
     assert_eq!((retreat.block, retreat.agreed_by), (at(100), agreed_by(&[1, 2])));
     assert_eq!(agreements(), [Agreement::Ahead, Agreement::Ahead, Agreement::Agreed]);
-    assert_eq!(second.next().await, None, "a retreat is a tip move too");
+    assert!(second.next().await.is_none(), "a retreat is a tip move too");
 
     // c catches up, then a returns: the second change is agreers-only
     validators[2].edit(|fake| fake.tip = Some(at(101)));

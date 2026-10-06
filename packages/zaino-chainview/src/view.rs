@@ -1,6 +1,5 @@
 //! The aggregate: the write handle that fans a broadcast out, and the read handles.
 
-use std::collections::{HashSet, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -13,10 +12,11 @@ use zaino_source::{NonDomainError, QueryError, SendRawTransactionError};
 use crate::endpoint::EndpointPoller;
 use crate::endpoints::{EndpointIndex, ValidatorMetadata};
 use crate::error::{BelowQuorum, BroadcastError, ConfigError};
+use crate::feed::MempoolTail;
 use crate::fold::ChainViewCore;
 use crate::ports::EndpointSource;
 use crate::quorum::{Quorum, QuorumTip};
-use crate::snapshot::{ChainViewSnapshot, MempoolEntry, MempoolView};
+use crate::snapshot::ChainViewSnapshot;
 
 /// One operator-configured validator (membership is never discovered: a quorum over a
 /// discovered set is not a quorum)
@@ -84,7 +84,7 @@ impl<S: EndpointSource> ChainView<S> {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
 
-    /// Relay a transaction to **every** endpoint (§5).
+    /// Relay a transaction to **every** endpoint (§6).
     ///
     /// - any accept ⇒ success, and the transaction is marked `ours`
     /// - mixed accept/reject ⇒ success (a rejecting node usually has a stricter local fee
@@ -166,123 +166,13 @@ impl ChainViewSubscriber {
         self.core.subscribe_tip()
     }
 
-    /// A snapshot-then-tail feed, backing `GetMempoolStream` (below quorum = the refusal)
+    /// One `GetMempoolStream`: the servable mempool at the current tip block, then each
+    /// arrival, until the block moves (below quorum = the refusal)
     ///
-    /// - wake subscribed **before** the anchor is pinned (a fold landing between = one spurious
+    /// - wake subscribed **before** the epoch is read (a fold landing between = one spurious
     ///   wake, never a missed arrival)
     pub fn tail(&self) -> Result<MempoolTail, BelowQuorum> {
         let wake = self.core.subscribe_tails();
-        let anchor = self.core.current();
-        anchor.mempool()?;
-
-        Ok(MempoolTail {
-            core: Arc::clone(&self.core),
-            wake,
-            walked: anchor.arrivals().len(),
-            anchor,
-            delivered: HashSet::new(),
-            pending: VecDeque::new(),
-            closed: false,
-        })
-    }
-}
-
-/// One client's `GetMempoolStream`: [`snapshot`](Self::snapshot), then
-/// [`next`](Self::next) until a block ends it.
-///
-/// # Snapshot-then-tail, and when it ends
-///
-/// A subscriber gets the whole servable mempool first, then the tail. Tail-only would be wrong
-/// for the one caller that exists: pepper-sync restarts this stream in a loop and has no other
-/// way to learn about a transaction that arrived while it was reconnecting.
-///
-/// The stream ends when a **new block is mined** (`service.proto:308-309`, here the *quorum* tip
-/// moving), not when the mempool empties. An empty mempool with no block mined is a live,
-/// silent stream; lightwalletd does the same.
-///
-/// Losing quorum ends it too (fail closed). Either way the client reconnects.
-///
-/// # Cost per subscriber
-///
-/// - Shared: the anchor snapshot and the epoch's arrivals log (`imbl`, `O(1)` to pin)
-/// - Own: the txids delivered after the snapshot
-/// - Woken only by an arrival or a tip move, never by propagation churn
-pub struct MempoolTail {
-    core: Arc<ChainViewCore>,
-    wake: tokio::sync::watch::Receiver<()>,
-    /// View the snapshot was taken from (its epoch bounds the stream)
-    anchor: Arc<ChainViewSnapshot>,
-    /// Prefix of the epoch's arrivals already considered
-    walked: usize,
-    delivered: HashSet<TransactionId>,
-    pending: VecDeque<MempoolEntry>,
-    closed: bool,
-}
-
-impl std::fmt::Debug for MempoolTail {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MempoolTail")
-            .field("anchor", &self.anchor.tip())
-            .field("walked", &self.walked)
-            .field("pending", &self.pending.len())
-            .field("closed", &self.closed)
-            .finish_non_exhaustive()
-    }
-}
-
-impl MempoolTail {
-    /// The servable mempool the stream opens with (checked at [`ChainViewSubscriber::tail`])
-    pub fn snapshot(&self) -> MempoolView<'_> {
-        MempoolView::of(&self.anchor)
-    }
-
-    /// Identity of [`snapshot`](Self::snapshot): one published view = one answer, so a
-    /// serving layer may render it once and share it across every tail anchored there
-    pub fn anchor(&self) -> &Arc<ChainViewSnapshot> {
-        &self.anchor
-    }
-
-    /// Next transaction turned servable after the snapshot, or `None` once the stream ended
-    ///
-    /// - cancel-safe: state moves only after the wake, and the wake is level-triggered
-    pub async fn next(&mut self) -> Option<MempoolEntry> {
-        loop {
-            if let Some(entry) = self.pending.pop_front() {
-                return Some(entry);
-            }
-            if self.closed {
-                return None;
-            }
-            // Sender lives in `core`, which this tail holds: `Err` is unreachable
-            if self.wake.changed().await.is_err() {
-                self.closed = true;
-                continue;
-            }
-            self.walk(self.core.current());
-        }
-    }
-
-    /// Queues arrivals past `walked` that the snapshot or an earlier `next` did not carry
-    fn walk(&mut self, pinned: Arc<ChainViewSnapshot>) {
-        if pinned.epoch() != self.anchor.epoch() {
-            self.closed = true;
-            return;
-        }
-        let (Ok(now), anchored) = (pinned.mempool(), MempoolView::of(&self.anchor)) else {
-            self.closed = true;
-            return;
-        };
-        let fresh = pinned.arrivals().iter().skip(self.walked);
-        for txid in fresh {
-            if anchored.serves(txid) || self.delivered.contains(txid) {
-                continue;
-            }
-            // Flapped out since: its next crossing re-appends it
-            if let Some(entry) = now.get(txid) {
-                self.delivered.insert(*txid);
-                self.pending.push_back(entry);
-            }
-        }
-        self.walked = pinned.arrivals().len();
+        Ok(MempoolTail::new(self.core.epoch()?, wake))
     }
 }

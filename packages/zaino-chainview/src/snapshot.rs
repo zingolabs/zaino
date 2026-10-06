@@ -82,18 +82,13 @@ impl Sighting {
 /// [`tip`](Self::tip) is `None` below quorum — no answer rather than a weak one — and
 /// [`mempool`](Self::mempool) refuses on the same condition.
 ///
-/// - `epoch` bumps on every tip *block* change (incl. to/from `None`): `A → B → A` between two
-///   reads still reads as moved; an `agreed_by`-only change does not bump it
-/// - `arrivals` = txids turned servable this epoch, in order (repeats on a re-admission)
 /// - `agreeing` = largest group holding one common block (= `tip.agreed_by` at quorum)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainViewSnapshot {
     pub(crate) tip: Option<QuorumTip>,
     pub(crate) agreeing: EndpointSet,
-    epoch: u64,
     /// Ordered, so two readers of one view walk the mempool identically.
     pub(crate) mempool: OrdMap<TransactionId, Sighting>,
-    arrivals: Vector<TransactionId>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
     pub(crate) alarms: Alarms,
     quorum: Quorum,
@@ -104,31 +99,11 @@ impl ChainViewSnapshot {
         Self {
             tip: None,
             agreeing: EndpointSet::default(),
-            epoch: 0,
             mempool: OrdMap::new(),
-            arrivals: Vector::new(),
             endpoints,
             alarms: Alarms::default(),
             quorum,
         }
-    }
-
-    /// New epoch: arrivals restart (the tails of the old one close on it)
-    pub(crate) fn tip_moved(&mut self) {
-        self.epoch += 1;
-        self.arrivals = Vector::new();
-    }
-
-    pub(crate) fn arrived(&mut self, txid: TransactionId) {
-        self.arrivals.push_back(txid);
-    }
-
-    pub(crate) fn epoch(&self) -> u64 {
-        self.epoch
-    }
-
-    pub(crate) fn arrivals(&self) -> &Vector<TransactionId> {
-        &self.arrivals
     }
 
     /// Highest block ≥threshold voters' chains hold. `None` below quorum.
@@ -166,15 +141,10 @@ impl ChainViewSnapshot {
         self.mempool.get(txid)
     }
 
-    /// Every transaction the view knows of, servable or not, in txid order.
-    pub(crate) fn sightings(&self) -> impl Iterator<Item = (&TransactionId, &Sighting)> + '_ {
-        self.mempool.iter()
-    }
-
     /// The mempool, or the refusal that stands in for it below quorum.
     ///
     /// A `Result` rather than an empty answer: below quorum there is no honest answer to give,
-    /// and a caller must not be able to forget that (§4, fail closed).
+    /// and a caller must not be able to forget that (§5, fail closed).
     pub fn mempool(&self) -> Result<MempoolView<'_>, BelowQuorum> {
         match self.tip {
             Some(_) => Ok(MempoolView(self)),
@@ -207,10 +177,6 @@ impl<'a> MempoolView<'a> {
             .get(txid)
             .filter(|sighting| self.servable(sighting))
             .map(|sighting| sighting.entry(*txid))
-    }
-
-    pub(crate) fn serves(&self, txid: &TransactionId) -> bool {
-        self.0.mempool.get(txid).is_some_and(|sighting| self.servable(sighting))
     }
 
     /// Every servable unconfirmed transaction, in txid order.

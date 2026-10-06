@@ -1,0 +1,31 @@
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetMempoolStream`'s source is one append-only log per tip block, written once and read by \
+cursors. `MempoolTail::opening()` is the servable mempool at the tip block; `next()` yields an \
+`Arc<Logged>` per arrival; `Logged::rendered` and `MempoolTail::opening_rendered` cache the \
+serving layer's encoding, so each transaction is encoded once however many subscribers read \
+it. A subscriber holds an `Arc` and a cursor; per arrival it costs one read lock and one `Arc` \
+clone, and nothing grows with the number of arrivals. A late subscriber gets the same opening \
+and every arrival since: the stream never un-sends within a block. The fold no longer rebuilds \
+the whole servable set on every report. `ChainViewSnapshot`'s arrivals log and epoch counter \
+are removed.
+"""
+migration = """
+Read `tail.opening()` instead of `tail.snapshot().entries()`, and `logged.entry` from each \
+`next()`. Drop `anchor()`: render through `opening_rendered` / `rendered` instead of a \
+per-view memo.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Changed"
+description = """
+`GetMempoolStream` serves thousands of subscribers at the transport floor: one encode per \
+transaction shared by every subscriber, ~2–3 µs of server CPU per subscriber per arrival over \
+HTTP/2 (measured on one core with 2,000–5,000 subscribers), down from per-subscriber \
+re-encoding and bookkeeping that grew with every arrival in a block.
+"""

@@ -146,40 +146,40 @@ node can report. Nothing streams it yet.
 position in the configured list (the same order as the fetch pool's sources),
 and `EndpointSet::at(positions)` builds one from positions.
 
-## `GetMempoolStream`: snapshot, then tail, ending on a block
+## `GetMempoolStream`: the mempool at the block, then each arrival, ending on a block
+
+One append-only log per tip block, written once and read by cursors (design:
+`src/feed.rs`).
 
 ```rust
 # use zaino_chainview::ChainViewSubscriber;
+# fn frame(_: &[u8]) -> bytes::Bytes { bytes::Bytes::new() }
 # async fn stream(view: &ChainViewSubscriber) -> Result<(), zaino_chainview::BelowQuorum> {
 let mut tail = view.tail()?; // below quorum: refuse the stream (UNAVAILABLE)
-for entry in tail.snapshot().entries() {
-    // send RawTransaction { data: entry.raw, height: 0 }
-}
-while let Some(entry) = tail.next().await {
-    // same, one per arrival
+let opening = tail.opening_rendered(|entries| frame(&entries[0].raw)); // once per block
+while let Some(logged) = tail.next().await {
+    let record = logged.rendered(|entry| frame(&entry.raw)); // once per transaction
 }
 // `None` = quorum tip moved or quorum lost: end the stream
 # Ok(())
 # }
 ```
 
-- `snapshot()` is the whole servable mempool at the anchor. Clients reconnect in
-  a loop and learn of in-between arrivals only this way.
-- `next()` yields each transaction that crossed into servable after the
-  snapshot, once. One the snapshot carried is never repeated, even if it drops
-  out and back.
-- It ends when the **quorum tip block changes** (any change, including
-  `A → B → A` between two reads, and a retreat onto an ancestor), not when the
-  mempool empties and not when only `agreed_by` changes. An empty mempool with no
-  new block is a live, silent stream, and a test waiting for it to close must
-  mine a block.
-- It never un-sends; a mined or evicted transaction reaches the client only as
-  the block that closes the stream.
-- `anchor()` identifies the snapshot. Tails opened on one published view hold
-  the same `Arc`, so a serving layer may render it once and share the result.
-- Cost per tail: one wake per arrival or tip move (never per propagation
-  change), a cursor into the view's shared arrivals log, and the txids it
-  delivered after its snapshot.
+- `opening()` is the servable mempool at the tip block. Clients resubscribe on
+  every block and learn of in-between arrivals only this way.
+- `next()` yields each transaction that crossed into servable after it, once. One
+  the opening carried is never repeated, even if it drops out and back.
+- Every tail on a block reads the same log: a late subscriber gets the same
+  opening and every arrival since. The stream never un-sends within a block; a
+  transaction gone mid-block reaches a client only as the block that ends it.
+- It ends when the **quorum tip block changes** (including a retreat onto an
+  ancestor), not when the mempool empties and not when only `agreed_by`
+  changes. An empty mempool with no new block is a live, silent stream.
+- `rendered` / `opening_rendered` cache the serving layer's wire bytes: the first
+  caller encodes, every other subscriber shares them by refcount. One serving
+  layer = one wire form.
+- Cost per tail: an `Arc` and a cursor; per arrival, one read lock and one `Arc`
+  clone. Nothing grows with the number of arrivals.
 
 A transaction leaves the view only when every endpoint stops listing it. A new
 tip does not clear the view.
