@@ -1,7 +1,7 @@
 //! Shared [`PersistentRecord`] records for the key shapes many indexes share.
 //!
 //! Most indexes key on one of two primitive shapes: a block **height** (an
-//! 8-byte little-endian integer) or a 32-byte **hash**. Rather than each index
+//! 8-byte big-endian integer) or a 32-byte **hash**. Rather than each index
 //! re-deriving that layout, it names the shared record here and gets the bytes —
 //! and the [`format_version`](crate::format_version) fingerprint over it — for
 //! free.
@@ -12,12 +12,20 @@
 //! newtype that already converts to and from `u64` / `[u8; 32]` reuses the
 //! record without extra glue.
 
-use crate::layout::{Cursor, Writer};
+use crate::layout::{BeU64, Cursor, LayoutAtom, Writer};
 use crate::{DecodeError, PersistentRecord, RecordLayout};
 
-/// The on-disk record for a `u64`-valued domain key: 8 bytes, little-endian.
+/// The on-disk record for a `u64`-valued domain key: 8 bytes, big-endian.
 ///
 /// Reused for any key or value that is exactly a block height.
+///
+/// Big-endian because a height is a **key**, and a key's byte order is its sort
+/// order: a backend that compares keys byte-lexicographically orders
+/// big-endian heights numerically, so a cursor walks them in chain order and an
+/// in-order append lands at the end of the key space rather than in its middle.
+/// The same reason the derive offers
+/// [`#[persistent(be)]`](macro@crate::PersistentRecord) — this record is that
+/// attribute's shape, named once.
 pub struct HeightKey<K>(pub K);
 
 impl<K> RecordLayout for HeightKey<K>
@@ -26,13 +34,13 @@ where
 {
     fn encode(&self) -> Vec<u8> {
         let mut writer = Writer::with_capacity(8);
-        writer.u64(self.0.into());
+        BeU64(self.0.into()).encode(&mut writer);
         writer.into_bytes()
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut cursor = Cursor::new(bytes);
-        let raw = cursor.u64()?;
+        let raw = BeU64::decode(&mut cursor)?.0;
         cursor.finish()?;
         Ok(Self(K::from(raw)))
     }
@@ -108,14 +116,32 @@ mod tests {
     }
 
     #[test]
-    fn height_key_is_eight_little_endian_bytes() {
+    fn height_key_is_eight_big_endian_bytes() {
         let record = HeightKey::from_domain(&Height(0x0102_0304_0506_0708));
-        assert_eq!(record.encode(), vec![8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(record.encode(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let back = HeightKey::<Height>::decode(&record.encode())
             .expect("decode")
             .into_domain()
             .expect("into_domain");
         assert_eq!(back, Height(0x0102_0304_0506_0708));
+    }
+
+    /// The property the big-endian choice exists for: byte order *is* numeric
+    /// order, so a byte-comparing backend walks heights in chain order.
+    #[test]
+    fn height_key_bytes_sort_in_numeric_order() {
+        let heights = [0u64, 1, 2, 255, 256, 257, 65_535, 65_536, u32::MAX.into()];
+        let encoded: Vec<Vec<u8>> = heights
+            .iter()
+            .map(|h| HeightKey::from_domain(&Height(*h)).encode())
+            .collect();
+
+        let mut sorted = encoded.clone();
+        sorted.sort();
+        assert_eq!(
+            encoded, sorted,
+            "encoded heights must already be in byte-lexicographic order"
+        );
     }
 
     #[test]
