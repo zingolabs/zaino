@@ -112,7 +112,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     );
     let core = Core::new(Some(Arc::new(indexed)), Arc::new(view), DEPTH);
     let snap = core.handle().load();
-    let handed = Some(Height::try_from(5).expect("h"));
+    let handed = Some(Height::try_from(5u32).expect("h"));
 
     let block = |block: &Block| {
         let at = at(block);
