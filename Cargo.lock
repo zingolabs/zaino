@@ -5197,6 +5197,7 @@ dependencies = [
  "tower 0.4.13",
  "tracing",
  "zaino-primitives",
+ "zaino-source",
  "zcash_primitives",
  "zcash_protocol",
  "zebra-chain",

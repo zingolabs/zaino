@@ -10,7 +10,7 @@ use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use zaino_primitives::types::BlockHash;
-use zcash_protocol::consensus::{BranchId, NetworkType};
+use zcash_protocol::consensus::NetworkType;
 use zebra_chain::block::{Block, CountedHeader};
 use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
@@ -18,28 +18,10 @@ use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::UnminedTx;
 use zebra_network::{BoxError, InventoryResponse, Request, Response};
 
+use zaino_source::testing::raw_transaction;
+
 use crate::wire;
 use crate::{Announced, PeerConfig, PeerNetwork, PeerTxId, PushError};
-
-/// Real empty v4 transaction, distinct per `lock_time`
-fn transaction(lock_time: u32) -> Vec<u8> {
-    use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
-    let tx = TransactionData::<Authorized>::from_parts(
-        TxVersion::V4,
-        BranchId::Canopy,
-        lock_time,
-        0.into(),
-        None,
-        None,
-        None,
-        None,
-    )
-    .freeze()
-    .expect("v4 freezes");
-    let mut raw = Vec::new();
-    tx.write(&mut raw).expect("writes");
-    raw
-}
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 
@@ -94,7 +76,7 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     ]
     .map(|bytes| Arc::new(Block::zcash_deserialize(bytes).expect("mainnet vector")))
     .to_vec();
-    let raws = [transaction(1), transaction(2), transaction(3)];
+    let raws = [1, 2, 3].map(|lock_time| raw_transaction(lock_time, 0).1);
     let txs: Vec<UnminedTx> =
         raws.iter().map(|raw| wire::unmined_tx(raw).expect("real tx")).collect();
     let (a, b, c) = (txs[0].clone(), txs[1].clone(), txs[2].clone());
@@ -210,9 +192,10 @@ async fn an_isolated_push_delivers_the_exact_bytes_to_the_chosen_address() {
     config.request_timeout = Duration::from_secs(10);
     let peers = PeerNetwork::start(config).await;
 
-    let raw = transaction(42);
+    let (expected, raw) = raw_transaction(42, 0);
     let txid = peers.push_isolated(entry, &raw).await.expect("pushed");
     assert_eq!(txid, wire::peer_tx_id(wire::unmined_tx(&raw).expect("real tx").id).txid);
+    assert_eq!(txid, expected, "zcash_primitives' txid of the same bytes");
     until("the push lands", || !pushed.lock().expect("pushed").is_empty()).await;
     assert_eq!(*pushed.lock().expect("pushed"), std::slice::from_ref(&raw));
 

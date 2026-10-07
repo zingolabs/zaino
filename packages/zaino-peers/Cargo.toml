@@ -24,6 +24,7 @@ zebra-network.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+zaino-source = { workspace = true, features = ["testing"] }
 zebra-network = { workspace = true, features = ["proptest-impl"] }
 zebra-test.workspace = true
 
