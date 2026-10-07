@@ -697,7 +697,7 @@ crate = "zainod"
 kind = "feature"
 section = "Added"
 description = """
-`[index.block_hash]` (enabled by default, `<data>/block-hash`) backs `GetBlock` \
+`[index.block_hash]` (enabled by default, `<data>/block_hash`) backs `GetBlock` \
 and `GetTreeState` by hash, and `zainod verify` scrubs it.
 """
 

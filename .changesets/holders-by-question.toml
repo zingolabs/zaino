@@ -1,0 +1,37 @@
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+Holding is a question, not a walk: a trusted validator holds a verified block iff its \
+`getblockhash` at that height answers that hash. Each poll asks it at the final boundary and at \
+the best (in the poll batch, no header reads), header sync adds the last header of each run it \
+reads, and one answer on the verified chain holds every verified block below it. Each poll \
+replaces the last one's answers and a failed poll forgets them, so a validator that reorged away \
+stops holding at its next poll. The tip's holders, `Agreement` and finality all read this one \
+`Holders` core; the per-validator window walks, the `vouched` set and their 16-header descent \
+step are removed. `Agreement` follows its claim and answers (`Diverged` where a window could \
+not place it). `ChainView::set_best` is replaced by `ChainView::set_verified` (feature \
+`testing`).
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`ChainDataSource::get_poll_reading(metadata, holds)` also asks `getblockhash` at each height in \
+`holds`, in the same batch: `PollReading::held` has one answer per height (the best-chain hash, \
+`HeightNotFound` above the tip, zebrad's `-32602` and zcashd's `-8` included, or that item's own \
+failure).
+"""
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "feature"
+section = "Added"
+description = """
+For consumers' tests (feature `testing`): `HeaderChain::regtest_in_memory`, \
+`HeaderChain::insert_blocks` and `VerifiedChain::regtest`, a `testing::Chain` path verified \
+through stage A and B over a fresh `SimFs` store.
+"""

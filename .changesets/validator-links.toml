@@ -1,0 +1,44 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+Each `[[trusted_validators]]` entry is a link budget Zaino never exceeds: `max_connections` \
+(default 32, at least 4) split into lanes that never borrow (2 for the chain view, a quarter for \
+wallet lookups, the rest for block sync), plus optional `max_requests_per_sec` and \
+`max_mib_per_sec`. A sync burst or a wallet storm no longer delays the tip poll, and a shared \
+validator can be given a fair share of its 100 RPC connections.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+A poller fetches the bytes of every newly listed mempool transaction in one batched call, not \
+one round trip each. `MempoolEntry` gains `projection`, the serving layer's encoding of the \
+entry, rendered once and shared by every snapshot holding it; `GetMempoolTx` parses each \
+transaction once instead of once per request.
+"""
+migration = """
+Construct `MempoolEntry` with `projection: Projection::default()`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`ZebraRpcAdapter::at` takes `LinkLimits`; `ZebraRpcAdapter::on(Lane)` gives a handle on the same \
+link in another lane, and `RpcClient::call`/`call_as` take the lane. `RpcClient::call_batch` \
+sends N calls in one JSON-RPC batch, re-sending only work-queue-full items. \
+`GetRawMempoolTransaction` is replaced by `GetRawMempoolTransactions`, which fetches listed \
+entries in batches bounded by `MempoolListed::encoded_len` (new, from the listing's `size`). \
+Per-validator metrics carry a `validator` label, with new permit-wait, in-flight and \
+received-bytes series.
+"""
+migration = """
+Pass `LinkLimits::default()` (or configured limits) to `ZebraRpcAdapter::at`; pass a `Lane` to \
+`RpcClient::call`; implement `get_raw_mempool_transactions(&[MempoolListed])` in place of \
+`get_raw_mempool_transaction(txid)`.
+"""

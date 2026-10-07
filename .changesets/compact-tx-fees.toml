@@ -76,7 +76,7 @@ crate = "zainod"
 kind = "breaking"
 section = "Added"
 description = """
-`[index.value_balance]` (`<data>/value-balance`) stores every transparent \
+`[index.value_balance]` (`<data>/value_balance`) stores every transparent \
 output's value so `CompactTx.fee` is filled; it cannot be disabled, and \
 `zainod verify` scrubs it. Mempool fees (`GetMempoolTx`) come from the \
 validator's `getrawmempool true`.

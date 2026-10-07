@@ -1,0 +1,56 @@
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+The tip is proof of work, not a vote. `HeaderSync` (from `ChainView::header_sync`) fetches every \
+trusted validator's headers into a `zaino-header-chain` and publishes its most-work block; the \
+view serves from `ChainTip { block, held_by }`, where `held_by` is every reporting validator whose \
+window holds that block (or that just served it during bulk sync). A validator claiming a higher \
+tip moves nothing until its headers verify. With no verified block or no holder the view fails \
+closed with `Unserved::NoBestTip` / `Unserved::NotHeld`. Finality moves only past a block held by \
+a trusted validator. `Quorum`, `QuorumTip`, `BelowQuorum` and the `agreeing` gauge are gone; \
+`best_height` and `tip_holders` gauges are new.
+"""
+migration = """
+Spawn `view.header_sync(chain, sources).run(cancel)` next to the pollers, or the view never has a \
+tip. Read `ChainTip::held_by` for `agreed_by`, match `Unserved` for `BelowQuorum`, and drop \
+`ChainViewSubscriber::quorum()`. Tests stand in for header sync with `ChainView::set_best` \
+(feature `testing`).
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+`ChainView::submit` replaces `broadcast`: the bytes are prechecked (decode, ZIP-203 expiry against \
+the next block, a v5+ branch id against the next block's), then each attempt goes to one trusted \
+validator drawn at random. The wallet is answered at the first acceptance; the job then waits \
+`propagation_threshold` for the transaction to appear at a validator that was never an entry and \
+otherwise resubmits through a fresh one, up to `max_attempts` (`SubmitPolicy`, default 15 s and \
+4; `with_submit_policy`). `submissions_total` and `submission_attempts` record how each ended \
+(`spread`, `unconfirmed`, `rejected`, `unreachable`).
+"""
+migration = """
+Call `submit(raw)` where you called `broadcast(raw)`. A rejection now means no attempt was \
+accepted and at least one was rejected, not that every validator rejected it.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+zainod keeps a proof-of-work verified header chain under `[index.header_chain] path` (default \
+`<cache>/zaino/indexes/header_chain`, about 200 MB on mainnet, verified from genesis and never \
+taken from a snapshot) and serves only from its tip. `/readyz` reasons `headers_syncing` and \
+`tip_not_held` replace `no_quorum_tip`; `/statusz` reports `tip` (`height`, `hash`, `held_by`, \
+`configured`) and `best_height` in place of the quorum tip. `[submission]` sets \
+`propagation_threshold_secs` (15) and `max_attempts` (4) for `SendTransaction`.
+"""
+migration = """
+Give the header chain a path on the same disk as the indexes. A first start verifies every header \
+from genesis before it serves. Alert on `tip_not_held` rather than `no_quorum_tip`, and read \
+`tip.held_by` where you read `tip.agreed`.
+"""

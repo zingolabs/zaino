@@ -1,0 +1,39 @@
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`BlockLink` is the raw header bytes only (`BlockLink { header }`): its `hash` and `prev_hash` \
+fields are removed and the source no longer parses or hashes a header. Consumers decode each \
+link once on receipt with `zaino_header_chain::decode_header`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`mock::MockChain` (feature `testing`) serves only real chains built with \
+`zaino_primitives::testing::Chain`: links carry each block's header bytes, and it holds a \
+mempool (`mempool_insert`; a sent transaction is listed from the next poll, a mined one leaves). \
+`MockChain::serving(blocks)` replaces `with_block`, and `mock::test_block` is removed.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "Changed"
+description = """
+Feature `testing` now provides `testing::Chain`, a regtest block-tree builder with real header \
+bytes (hash = SHA-256d of the header, linked parents, merkle root of the txids, a branch at any \
+height), plus `encode_header`, `header_hash` and `merkle_root`. `BlockHeader::for_tests` is \
+removed.
+"""
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "breaking"
+section = "Removed"
+description = """
+`testing::regtest_header` is removed; tests build headers with `zaino_primitives::testing`.
+"""

@@ -1,0 +1,49 @@
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "Added"
+description = """
+`/statusz` reports each validator's release (build, user agent, protocol) and end of service \
+(`getdeprecationinfo`: the height past which zebrad halts, its time estimate and blocks left), \
+an `ending` alarm when a release halts within a week, and the mempool's spread (`verified`, \
+`ours_unverified`, `fully_spread`, `trusted_readers`). `GetTransaction` goes to the \
+least-loaded trusted validator, the others its failover, instead of always the first.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "Changed"
+description = """
+Every held transaction tracks `trusted: x/y` and its timeline (first seen, first trusted listing, \
+every reading validator listing it): `ChainViewSnapshot::spread`, `spreads`, `mempool_readers`, \
+with `first_trusted_seconds`, `all_trusted_seconds` and `residence_seconds` histograms \
+(`METRIC_BUCKETS`). `ValidatorMetadata` carries `release` and `blocks_to_end_of_service()`, \
+`Alarms::ending` raises a week before a halt, and `release` / `end_of_service_height` gauges \
+report both. A poll tick is at most three JSON-RPC batches (tip + listing + metadata, headers, \
+bytes). `EndpointState::Syncing` is removed: zebrad answers `getblockchaininfo` on an empty \
+state, which reads as `CatchingUp` at genesis.
+"""
+migration = """
+Drop matches on `EndpointState::Syncing`. Implement `GetPollReading` and `GetBlockLinks` for an \
+`EndpointSource` in place of `GetChainTip`, `GetBlockLink`, `GetMempoolListing`, \
+`GetBlockchainInfo` and `GetPeerInfo`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Changed"
+description = """
+`GetPollReading` (one batch: `getblockchaininfo`, `getrawmempool true`, and on metadata ticks \
+`getpeerinfo`, `getinfo`, `getdeprecationinfo`) and `GetBlockLinks` (batched \
+`getblockheader`) replace `GetChainTip`, `GetBlockLink`, `GetMempoolListing` and \
+`GetPeerInfo`. `RpcClient::call_batch` takes mixed `Call`s. `Balanced` routes per request by \
+power of two choices over peak-EWMA load; `BlockFetchPool` dispatches each height through it, \
+and it answers `GetTransaction` with failover. `MockChain::set_ready` is replaced by \
+`set_reachable`.
+"""
+migration = """
+Use `get_poll_reading` / `get_block_links`; pass `Vec<Call>` to `call_batch`; replace \
+`set_ready(false)` with `set_reachable(false)` in tests.
+"""
