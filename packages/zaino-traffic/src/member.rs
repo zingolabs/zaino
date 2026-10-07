@@ -62,6 +62,19 @@ pub enum Health {
     Down,
 }
 
+impl Health {
+    /// Metric label + status text
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Live => "live",
+            Self::CatchingUp => "catching_up",
+            Self::Degraded => "degraded",
+            Self::Down => "down",
+        }
+    }
+}
+
 /// Every member as the balancer sees it (/statusz, metrics)
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberTable {
@@ -72,6 +85,7 @@ pub struct MemberTable {
 pub struct MemberRow {
     pub id: MemberId,
     pub health: Health,
+    pub failures: u32,
     pub benched_until: Option<Instant>,
     pub latency: Duration,
     pub in_flight: u32,

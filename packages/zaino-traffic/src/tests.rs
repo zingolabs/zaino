@@ -244,16 +244,20 @@ async fn pushes_wake_the_poll_heights_ride_it_and_failures_walk_the_health_ladde
     mock.set_reachable(false);
     tokio::time::sleep(Duration::from_secs(16)).await;
     assert_eq!(health(&balancer), Health::Degraded);
-    let failed = observed
-        .borrow_and_update()
-        .as_ref()
-        .map(|o| o.polled.as_ref().err().map(|e| e.mode.clone()));
-    assert_eq!(failed, Some(Some(FailureMode::Connection)));
+    type Observed = tokio::sync::watch::Receiver<Option<Arc<crate::Observation>>>;
+    let observed_health = |observed: &mut Observed| {
+        let observation = observed.borrow_and_update().clone();
+        observation.map(|o| (o.polled.as_ref().err().map(|e| e.mode.clone()), o.health))
+    };
+    let failed = Some((Some(FailureMode::Connection), Health::Degraded));
+    assert_eq!(observed_health(&mut observed), failed, "the health it left the member in");
     tokio::time::sleep(Duration::from_secs(180)).await;
     assert_eq!(health(&balancer), Health::Down);
+    assert_eq!(observed_health(&mut observed), Some((Some(FailureMode::Connection), Health::Down)));
     mock.set_reachable(true);
     tokio::time::sleep(Duration::from_secs(31)).await;
     assert_eq!(health(&balancer), Health::Live, "the probe brings it back");
+    assert_eq!(observed_health(&mut observed), Some((None, Health::Live)));
     cancel.cancel();
 }
 

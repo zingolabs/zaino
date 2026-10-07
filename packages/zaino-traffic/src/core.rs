@@ -442,10 +442,16 @@ impl TrafficCore {
         .collect()
     }
 
+    pub(crate) fn health(&self, member: ValidatorId) -> Health {
+        let member = self.members.get(&MemberId::Trusted(member));
+        member.expect("a configured validator").health()
+    }
+
     pub(crate) fn table(&self) -> crate::MemberTable {
         let rows = self.members.iter().map(|(id, member)| crate::MemberRow {
             id: *id,
             health: member.health(),
+            failures: member.failures,
             benched_until: member.bench.filter(|_| member.benched(self.now)).map(|b| b.until),
             latency: Duration::from_nanos(member.latency.estimate(self.now) as u64),
             in_flight: member.in_flight.iter().sum(),

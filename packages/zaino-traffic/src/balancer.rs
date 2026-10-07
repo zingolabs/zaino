@@ -25,7 +25,7 @@ use zaino_source::{
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
-use crate::member::{Limits, MemberId, MemberTable, PeerId, Synced, ValidatorId};
+use crate::member::{Health, Limits, MemberId, MemberTable, PeerId, Synced, ValidatorId};
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …)
 pub struct Trusted<S> {
@@ -90,7 +90,7 @@ pub trait PeerTransport: Send + Sync + 'static {
     fn joined_left(&self) -> BoxStream<'static, Membership>;
 }
 
-/// One trusted member's latest poll (raw reading, latest only)
+/// One trusted member's latest poll (raw reading, latest only); `health` = right after it
 #[derive(Debug)]
 pub struct Observation {
     pub member: ValidatorId,
@@ -98,6 +98,7 @@ pub struct Observation {
     pub asked: Vec<Height>,
     pub polled: Result<PollReading, NonDomainError>,
     pub streaming: bool,
+    pub health: Health,
 }
 
 pub struct TrafficBalancer<S> {
@@ -529,9 +530,14 @@ impl<S: ChainDataSource> Shared<S> {
             Ok(_) => Synced::Live,
             Err(_) => Synced::CatchingUp,
         });
-        self.step(Input::Polled { member: order.member, read });
+        let mut state = self.lock();
+        self.step_locked(&mut state, Input::Polled { member: order.member, read });
+        let health = state.core.health(order.member);
+        drop(state);
+        self.changed.notify_one();
         let PollOrder { member, asked, streaming, .. } = order;
-        let observation = Observation { member, at: Instant::now(), asked, polled, streaming };
+        let at = Instant::now();
+        let observation = Observation { member, at, asked, polled, streaming, health };
         self.observations[member.get()].send_replace(Some(Arc::new(observation)));
     }
 }
