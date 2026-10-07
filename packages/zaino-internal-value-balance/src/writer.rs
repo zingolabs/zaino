@@ -68,17 +68,13 @@ mod tests {
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View,
     };
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{Block, Height, TransactionId};
+    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::{Block, ShieldedPool, TransactionId};
     use zaino_sync::{Folds, IndexerDataSink, Subscription};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{
-        fold,
-        fold::tests::{coinbase, fees, tx},
-        schema, FoldError,
-    };
+    use crate::{fold, schema, FoldError};
 
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
 
@@ -106,16 +102,17 @@ mod tests {
         (sink, committed, consumer, running)
     }
 
-    fn step(block: &Block, folds: Option<Arc<Folds>>) -> Step<Final> {
-        let (height, block) = (block.header().height, Arc::new(block.clone()));
+    fn step(block: &Arc<Block>, folds: Option<Arc<Folds>>) -> Step<Final> {
+        let (height, block) = (block.header().height, Arc::clone(block));
         Step::Apply { height, data: Arc::new(Final { block, folds }) }
     }
 
-    /// Every fee step through `Shutdown`: `(height, fees per tx)`
-    async fn drained(consumer: &mut Subscription<BlockFees>) -> Vec<(u32, Vec<Option<u64>>)> {
+    /// Every fee step through `Shutdown`
+    async fn drained(consumer: &mut Subscription<BlockFees>) -> Vec<BlockFees> {
         let mut out = Vec::new();
         while let Step::Apply { height, data } = consumer.next().await {
-            out.push((u32::from(height), fees(&data)));
+            assert_eq!(height, data.height, "step height = its fees' height");
+            out.push(BlockFees::clone(&data));
         }
         out
     }
@@ -127,21 +124,33 @@ mod tests {
     async fn every_crash_state_reopens_to_a_committed_prefix_whose_outputs_still_resolve() {
         // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
         // recovered output
-        let chain = linked(vec![
-            vec![coinbase(0x10, 100_000)],
-            vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])],
-            vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])],
-            vec![coinbase(0x13, 50_000), tx(0x22, &[(0x11, 0)], &[40_000], [0; 4])],
-            vec![coinbase(0x14, 50_000), tx(0x23, &[(0x21, 0)], &[70_000], [0; 4])],
-        ]);
-        let paid = vec![None, Some(10_000)];
-        let expected = [vec![None], paid.clone(), paid.clone(), paid.clone(), paid];
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        // (coinbase txid, txid, spends vout 0 of, pays), each coinbase 50 000
+        #[rustfmt::skip]
+        let spends = [
+            (0x11, 0x20, 0x10, 90_000),
+            (0x12, 0x21, 0x20, 80_000),
+            (0x13, 0x22, 0x11, 40_000),
+            (0x14, 0x23, 0x21, 70_000),
+        ];
+        for (coinbase, txid, spent, paid) in spends {
+            chain.mine(|b| {
+                b.coinbase(|c| c.txid([coinbase; 32]).pay(&alice, 50_000)).tx(|t| {
+                    t.txid([txid; 32]).spend(outpoint([spent; 32], 0)).pay(&alice, paid).fee(10_000)
+                })
+            });
+        }
+        let blocks = chain.blocks(chain.tip());
+        let expected: Vec<BlockFees> =
+            blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
         let tip_of = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height));
 
         // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
         let fs = SimFs::recording();
         let (sink, mut committed, mut consumer, running) = start(open(&fs), NonZeroUsize::MIN);
-        for (acked, block) in (1u64..).zip(&chain[..4]) {
+        for (acked, block) in (1u64..).zip(&blocks[..4]) {
             sink.send(step(block, None)).await;
             let height = Some(u32::from(block.header().height));
             committed.wait_for(|view| tip_of(view) == height).await.expect("writer alive");
@@ -149,7 +158,7 @@ mod tests {
         }
         sink.shutdown();
         running.await.expect("clean stop");
-        let first: Vec<_> = (0..4).zip(expected[..4].iter().cloned()).collect();
+        let first = &expected[..4];
         assert_eq!(drained(&mut consumer).await, first, "one fee step per block, Shutdown last");
         let tip_after = |commits: u64| (commits > 0).then(|| (commits - 1).min(3) as u32);
 
@@ -164,63 +173,83 @@ mod tests {
 
             let next = tip.map_or(0, |tip| tip + 1);
             let (sink, committed, mut consumer, running) = start(store, QUEUE);
-            sink.send(step(&chain[next as usize], None)).await;
+            sink.send(step(&blocks[next as usize], None)).await;
             sink.shutdown();
             running
                 .await
                 .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
-            assert_eq!(resolved, [(next, expected[next as usize].clone())], "{crashed}");
+            assert_eq!(resolved, [expected[next as usize].clone()], "{crashed}");
             assert_eq!(tip_of(&committed.borrow()), Some(next), "{crashed}: committed");
         }
     }
 
     /// Every prevout resolves wherever it lives (committed, buffered, earlier in its own run)
     /// - 1: spends 0's output and one from earlier in its own block
-    /// - 3: spends 1's outputs with value leaving sprout; 4: spends 3's and enters ironwood
+    /// - 2: enters orchard and sprout; 3: spends 1's outputs with value leaving sprout; 4: spends
+    ///   3's and enters ironwood
     ///
     /// - Boot 1: 0..=2 unfolded (fees out), 3, 4 folded (no fees: the NFS folded compact-block)
     /// - Boot 2, compact-block durable at 0: 1..=4 resent unfolded, all held → re-folded, fees
     ///   out again, identical
     /// - Both batch sizes: 1 byte = one block per run, 1 MiB = one run
     #[tokio::test(start_paused = true)]
-    #[rustfmt::skip]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_held_heights_republish_them() {
-        //      tx(tag,  spends (tag, vout),      outputs,           shielded balances
-        let chain = linked(vec![
-            vec![
-                coinbase(0x10, 100_000),
-            ],
-            vec![
-                coinbase(0x11, 625_000_000),
-                tx(0x21, &[(0x10, 0)],            &[60_000, 39_000], [0; 4]),
-                tx(0x22, &[(0x21, 1)],            &[30_000],         [0, -8_000, 0, 0]),
-            ],
-            vec![
-                coinbase(0x12, 625_000_000),
-                tx(0x23, &[(0x21, 0)],            &[],               [0, 0, -59_000, 0]),
-            ],
-            vec![
-                coinbase(0x13, 625_000_000),
-                tx(0x24, &[(0x22, 0), (0x11, 0)], &[625_029_500],    [500, 0, 0, 0]),
-            ],
-            vec![
-                coinbase(0x14, 625_000_000),
-                tx(0x25, &[(0x24, 0)],            &[625_000_000],    [0, 0, 0, -29_000]),
-            ],
-        ]);
-        // per block, per tx (None = coinbase)
-        let expected: Vec<(u32, Vec<Option<u64>>)> = (0..).zip([
-            vec![None],
-            vec![None, Some(1_000), Some(1_000)],
-            vec![None, Some(1_000)],
-            vec![None, Some(1_000)],
-            vec![None, Some(500)],
-        ]).collect();
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 625_000_000))
+                .tx(|t| {
+                    t.txid([0x21; 32])
+                        .spend(outpoint([0x10; 32], 0))
+                        .pay(&alice, 60_000)
+                        .pay(&alice, 39_000)
+                        .fee(1_000)
+                })
+                .tx(|t| {
+                    t.txid([0x22; 32])
+                        .spend(outpoint([0x21; 32], 1))
+                        .pay(&alice, 30_000)
+                        .value_balance(ShieldedPool::Sapling, -8_000)
+                        .fee(1_000)
+                })
+        });
+        chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 625_000_000)).tx(|t| {
+                t.txid([0x23; 32])
+                    .spend(outpoint([0x21; 32], 0))
+                    .value_balance(ShieldedPool::Orchard, -58_500)
+                    .sprout_balance(-500)
+                    .fee(1_000)
+            })
+        });
+        chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x13; 32]).pay(&alice, 625_000_000)).tx(|t| {
+                t.txid([0x24; 32])
+                    .spend(outpoint([0x22; 32], 0))
+                    .spend(outpoint([0x11; 32], 0))
+                    .pay(&alice, 625_029_500)
+                    .sprout_balance(500)
+                    .fee(1_000)
+            })
+        });
+        let tip = chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x14; 32]).pay(&alice, 625_000_000)).tx(|t| {
+                t.txid([0x25; 32])
+                    .spend(outpoint([0x24; 32], 0))
+                    .pay(&alice, 625_000_000)
+                    .value_balance(ShieldedPool::Ironwood, -29_000)
+                    .fee(500)
+            })
+        });
+        let blocks = chain.blocks(tip);
+        let expected: Vec<BlockFees> =
+            blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
         // 3 and 4 as the NFS folds them: onto everything below them
         let mut scratch = open(&SimFs::new());
         let mut folded = Vec::new();
-        for block in chain.iter() {
+        for block in blocks.iter() {
             let parent = ValueBalanceReader::new(scratch.staged(), NetworkType::Regtest);
             let (changes, _) = fold(&parent, block).expect("every prevout held");
             let mut folds = Folds::default();
@@ -232,20 +261,23 @@ mod tests {
         for batch in [NonZeroUsize::MIN, QUEUE] {
             let fs = SimFs::new();
             let (sink, mut committed, mut consumer, running) = start(open(&fs), batch);
-            for block in &chain[..3] {
+            for block in &blocks[..3] {
                 sink.send(step(block, None)).await;
             }
-            for (block, folds) in chain[3..].iter().zip(&folded[3..]) {
+            for (block, folds) in blocks[3..].iter().zip(&folded[3..]) {
                 sink.send(step(block, Some(Arc::clone(folds)))).await;
             }
-            let four = Some(Height::try_from(4u32).expect("h"));
-            committed.wait_for(|view| view.tip().map(|tip| tip.height) == four).await.expect("alive");
+            let four = Some(h(4));
+            committed
+                .wait_for(|view| view.tip().map(|tip| tip.height) == four)
+                .await
+                .expect("alive");
             sink.shutdown();
             running.await.expect("clean stop");
             assert_eq!(drained(&mut consumer).await, expected[..3], "batch {batch}: unfolded only");
 
             let (sink, committed, mut consumer, running) = start(open(&fs), batch);
-            for block in &chain[1..] {
+            for block in &blocks[1..] {
                 sink.send(step(block, None)).await;
             }
             sink.shutdown();
@@ -261,9 +293,17 @@ mod tests {
     async fn a_fold_error_panics_the_writer_and_its_consumer() {
         let (sink, _committed, mut consumer, running) = start(open(&SimFs::new()), QUEUE);
         let downstream = tokio::spawn(async move { consumer.next().await });
-        let unrecorded = tx(0x20, &[(0x99, 3)], &[1], [0; 4]);
-        let chain = linked(vec![vec![coinbase(0x10, 100_000), unrecorded]]);
-        sink.send(step(&chain[0], None)).await;
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        let one = chain
+            .mine(|b| b.tx(|t| t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 1)));
+        // lie: 0x20 spends an output never mined
+        let mut txs = chain.block(one.hash).transactions().to_vec();
+        txs[1].transparent.inputs[0] = outpoint([0x99; 32], 3);
+        let unrecorded = Arc::new(Block::new(chain.block(one.hash).header().clone(), txs));
+        sink.send(step(chain.block(chain.genesis().hash), None)).await;
+        sink.send(step(&unrecorded, None)).await;
 
         let message = |joined: Result<_, tokio::task::JoinError>| {
             let payload = joined.expect_err("panicked").into_panic();
@@ -273,9 +313,8 @@ mod tests {
                 .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
         };
         let id = |byte| TransactionId::from([byte; 32]);
-        let h0 = Height::GENESIS;
         let expected =
-            FoldError::MissingPrevout { height: h0, txid: id(0x20), spent: id(0x99), vout: 3 };
+            FoldError::MissingPrevout { height: h(1), txid: id(0x20), spent: id(0x99), vout: 3 };
         assert_eq!(message(running.await), Some(format!("value_balance index: {expected}")));
         let consumer = message(downstream.await.map(drop));
         assert_eq!(consumer.as_deref(), Some("sink dropped without Shutdown"));

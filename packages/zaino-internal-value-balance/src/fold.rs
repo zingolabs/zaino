@@ -118,162 +118,150 @@ fn fee(
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::path::Path;
+    use std::sync::Arc;
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        OrchardData, SaplingData, Script, SignedZatoshis, SproutData, TransparentData,
-        TransparentOutput,
-    };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::{ShieldedPool, SignedZatoshis};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
 
-    /// `(txid tag, spends (tag, vout), outputs, [sprout, sapling, orchard, ironwood] balances)`
-    pub(crate) fn tx(
-        tag: u8,
-        spends: &[(u8, u32)],
-        outputs: &[u64],
-        shielded: [i64; 4],
-    ) -> Transaction {
-        let signed = |value| SignedZatoshis::new(value).expect("in supply");
-        Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: spends
-                    .iter()
-                    .map(|&(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
-                    .collect(),
-                outputs: outputs
-                    .iter()
-                    .map(|&value| TransparentOutput {
-                        value: Zatoshis::new(value).expect("in supply"),
-                        script: Script::new(vec![0x51]),
-                    })
-                    .collect(),
-            },
-            sprout: SproutData { value_balance: signed(shielded[0]) },
-            sapling: SaplingData { value_balance: signed(shielded[1]), ..Default::default() },
-            orchard: OrchardData { value_balance: signed(shielded[2]), ..Default::default() },
-            ironwood: OrchardData { value_balance: signed(shielded[3]), ..Default::default() },
-        }
-    }
-
-    pub(crate) fn coinbase(tag: u8, value: u64) -> Transaction {
-        let mut tx = tx(tag, &[], &[value], [0; 4]);
-        tx.transparent.coinbase = true;
-        tx
-    }
-
-    /// Per tx fee, in zats (`None` = coinbase)
-    pub(crate) fn fees(block_fees: &BlockFees) -> Vec<Option<u64>> {
-        let paid = |fee: &Fee| match fee {
-            Fee::Coinbase => None,
-            Fee::Paid(fee) => Some(fee.as_u64()),
-        };
-        block_fees.fees.iter().map(paid).collect()
-    }
-
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
-    /// the parent, its own block or an earlier run block; rows = golden bytes; the run = the
-    /// same blocks folded one at a time
+    /// the parent, its own block or an earlier run block; fees = the stated ones; rows = golden
+    /// bytes; the run = the same blocks folded one at a time
     #[test]
-    #[rustfmt::skip]
     fn fees_resolve_through_the_parent_and_the_run_and_a_run_folds_like_single_blocks() {
         let network = NetworkType::Regtest;
-        //      tx(tag,  spends (tag, vout), outputs,          shielded balances
-        let chain = linked(vec![
-            vec![coinbase(0x10, 100_000)],
-            vec![
-                coinbase(0x11, 50_000),
-                tx(0x21, &[(0x10, 0)],       &[60_000, 39_000], [0; 4]),
-                tx(0x22, &[(0x21, 1)],       &[30_000],         [0, -8_000, 0, 0]),
-            ],
-            vec![
-                coinbase(0x12, 50_000),
-                tx(0x23, &[(0x21, 0)],       &[],               [0, 0, -59_000, 0]),
-            ],
-        ]);
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000))
+                .tx(|t| {
+                    t.txid([0x21; 32])
+                        .spend(outpoint([0x10; 32], 0))
+                        .pay(&alice, 60_000)
+                        .pay(&alice, 39_000)
+                        .fee(1_000)
+                })
+                .tx(|t| {
+                    t.txid([0x22; 32])
+                        .spend(outpoint([0x21; 32], 1))
+                        .pay(&alice, 30_000)
+                        .value_balance(ShieldedPool::Sapling, -8_000)
+                        .fee(1_000)
+                })
+        });
+        let two = chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)).tx(|t| {
+                t.txid([0x23; 32])
+                    .spend(outpoint([0x21; 32], 0))
+                    .value_balance(ShieldedPool::Orchard, -59_000)
+                    .fee(1_000)
+            })
+        });
+        let chain_fees = |block: &Arc<Block>| chain.fees(block.header().hash);
+        let blocks = chain.blocks(two);
         let store = DiskEngine::new(SimFs::new()).open(Path::new("/vb"), &schema(network));
         let mut store = store.expect("open");
-        let (genesis, genesis_fees) = fold(&ValueBalanceReader::new(store.staged(), network), &chain[0]).expect("coinbase only");
-        assert_eq!(fees(&genesis_fees), [None]);
+        let (genesis, genesis_fees) =
+            fold(&ValueBalanceReader::new(store.staged(), network), &blocks[0])
+                .expect("coinbase only");
+        assert_eq!(genesis_fees.fees, [Fee::Coinbase]);
         store.apply(genesis);
 
         let parent = ValueBalanceReader::new(store.staged(), network);
-        let run = fold_run(&parent, [&*chain[1], &*chain[2]]).expect("every prevout held");
-        let run_fees: Vec<_> = run.iter().map(|(_, block_fees)| fees(block_fees)).collect();
-        assert_eq!(run_fees, [vec![None, Some(1_000), Some(1_000)], vec![None, Some(1_000)]]);
+        let run = fold_run(&parent, [&*blocks[1], &*blocks[2]]).expect("every prevout held");
+        let run_fees: Vec<BlockFees> =
+            run.iter().map(|(_, block_fees)| block_fees.clone()).collect();
+        assert_eq!(run_fees, [chain_fees(&blocks[1]), chain_fees(&blocks[2])]);
         let rows: Vec<(&[u8], &[u8])> = run[0].0.inserts(OUTPUTS).collect();
-        let row = |tag: u8, vout: u8, value: [u8; 8]| ([[tag; 32].as_slice(), &[0, 0, 0, vout]].concat(), value);
+        let row = |tag: u8, vout: u8, value: [u8; 8]| {
+            ([[tag; 32].as_slice(), &[0, 0, 0, vout]].concat(), value)
+        };
         let golden = [
             row(0x11, 0, [0, 0, 0, 0, 0, 0, 0xc3, 0x50]),
             row(0x21, 0, [0, 0, 0, 0, 0, 0, 0xea, 0x60]),
             row(0x21, 1, [0, 0, 0, 0, 0, 0, 0x98, 0x58]),
             row(0x22, 0, [0, 0, 0, 0, 0, 0, 0x75, 0x30]),
         ];
-        let golden: Vec<(&[u8], &[u8])> = golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
+        let golden: Vec<(&[u8], &[u8])> =
+            golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
         assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value BE, block order");
 
-        for (block, (run_changes, run_fees)) in chain[1..].iter().zip(&run) {
-            let (changes, block_fees) = fold(&ValueBalanceReader::new(store.staged(), network), block).expect("held");
+        for (block, (run_changes, run_fees)) in blocks[1..].iter().zip(&run) {
+            let (changes, block_fees) =
+                fold(&ValueBalanceReader::new(store.staged(), network), block).expect("held");
             assert_eq!(&block_fees, run_fees, "{:?}", block.header().height);
-            assert_eq!(changes.inserts(OUTPUTS).collect::<Vec<_>>(), run_changes.inserts(OUTPUTS).collect::<Vec<_>>());
+            assert_eq!(
+                changes.inserts(OUTPUTS).collect::<Vec<_>>(),
+                run_changes.inserts(OUTPUTS).collect::<Vec<_>>()
+            );
             assert_eq!(changes.tip(), run_changes.tip());
             store.apply(changes);
         }
     }
 
     /// Every rejection names its block and tx; a run never lets a block spend a later one's output
+    ///
+    /// - valid blocks out of order: 2 onto a parent missing 1, then 2 before 1 in one run
+    /// - lies (one field of a mined tx edited): outputs past the inputs, sapling past the inputs
     #[test]
     fn an_unrecorded_prevout_a_forward_spend_or_a_negative_fee_is_a_named_error() {
         let network = NetworkType::Regtest;
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        let two = chain.mine(|b| {
+            b.tx(|t| {
+                t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 99_000).fee(1_000)
+            })
+        });
+        let three = chain.mine(|b| {
+            b.tx(|t| {
+                t.txid([0x30; 32])
+                    .spend(outpoint([0x20; 32], 0))
+                    .value_balance(ShieldedPool::Sapling, -99_000)
+                    .fee(0)
+            })
+        });
+        let block = |at: BlockRef| Arc::clone(chain.block(at.hash));
+        let lie = |at: BlockRef, edit: fn(&mut Transaction)| {
+            let mut txs = chain.block(at.hash).transactions().to_vec();
+            edit(&mut txs[1]);
+            Arc::new(Block::new(chain.block(at.hash).header().clone(), txs))
+        };
+        let overpaid = lie(two, |tx| {
+            tx.transparent.outputs[0].value = Zatoshis::new(100_001).expect("in supply");
+        });
+        let overshielded = lie(three, |tx| {
+            tx.sapling.value_balance = SignedZatoshis::new(-99_001).expect("in supply");
+        });
         let id = |byte| TransactionId::from([byte; 32]);
-        let h = |n: u32| Height::try_from(n).expect("h");
+        let unrecorded =
+            || FoldError::MissingPrevout { height: h(2), txid: id(0x20), spent: id(0x10), vout: 0 };
         let cases = [
-            (
-                "never recorded",
-                vec![vec![coinbase(0x10, 100_000), tx(0x20, &[(0x99, 3)], &[1], [0; 4])]],
-                FoldError::MissingPrevout {
-                    height: h(0),
-                    txid: id(0x20),
-                    spent: id(0x99),
-                    vout: 3,
-                },
-            ),
-            (
-                "spends the next block's output",
-                vec![
-                    vec![coinbase(0x10, 100_000), tx(0x20, &[(0x31, 0)], &[1], [0; 4])],
-                    vec![coinbase(0x11, 100_000), tx(0x31, &[(0x10, 0)], &[1], [0; 4])],
-                ],
-                FoldError::MissingPrevout {
-                    height: h(0),
-                    txid: id(0x20),
-                    spent: id(0x31),
-                    vout: 0,
-                },
-            ),
+            ("never recorded", vec![block(two)], unrecorded()),
+            ("spends a later run block's output", vec![block(two), block(one)], unrecorded()),
             (
                 "transparent outputs > inputs",
-                vec![vec![coinbase(0x10, 100_000), tx(0x20, &[(0x10, 0)], &[100_001], [0; 4])]],
-                FoldError::NegativeFee { height: h(0), txid: id(0x20) },
+                vec![block(one), overpaid],
+                FoldError::NegativeFee { height: h(2), txid: id(0x20) },
             ),
             (
-                "value into sapling from nothing",
-                vec![vec![coinbase(0x10, 100_000), tx(0x20, &[], &[], [0, -1, 0, 0])]],
-                FoldError::NegativeFee { height: h(0), txid: id(0x20) },
+                "value into sapling past the inputs",
+                vec![block(one), block(two), overshielded],
+                FoldError::NegativeFee { height: h(3), txid: id(0x30) },
             ),
         ];
 
         for (case, blocks, expected) in cases {
             let store = DiskEngine::new(SimFs::new()).open(Path::new("/vb"), &schema(network));
             let parent = ValueBalanceReader::new(store.expect("open").staged(), network);
-            let chain = linked(blocks);
-            let folded = fold_run(&parent, chain.iter().map(|block| &**block)).err();
+            let folded = fold_run(&parent, blocks.iter().map(|block| &**block)).err();
             assert_eq!(folded, Some(expected), "{case}");
         }
     }
