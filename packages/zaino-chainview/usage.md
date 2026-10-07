@@ -150,8 +150,13 @@ Cheap to clone; cannot drive polling or submit.
   It changes when the tip block changes and when `held_by` alone changes
   (fetch routing reads it)
 - `tail()` → `Result<MempoolTail, Unserved>` for one `GetMempoolStream` client
+- `subscribe_published()` → `watch::Receiver<()>`, changed on every publish (every fold):
+  `zaino-snapshot`'s publisher reads `current()` on each
 
-`ChainViewSnapshot` exposes `tip()`, `best()` (verified, held or not),
+`ChainViewSnapshot` exposes `chain()` (the `VerifiedChain` every standing was judged under),
+`arrivals(since)` (transactions servable in it but not in `since`, `None` = every servable one;
+an `imbl` diff, so consecutive publishes cost what changed), `tip()`, `best()` (verified, held or
+not),
 `unserved()`, `mempool()` (below), `validator_info()` (the first holder's
 `BlockchainInfo`, `Err(Unserved)` without a tip; `GetLightdInfo` serves it with
 no validator call), and `endpoints()`: per-endpoint `ValidatorMetadata` in
@@ -168,6 +173,8 @@ or `Unknown` (nothing verified yet, or no answer since its last failure).
 Tests standing in for header sync (feature `testing`) hand the view a chain with
 `ChainView::set_verified(Some(chain.verified(tip)))` (`zaino-header-chain`'s
 `testing::HeaderViews` verifies a `MockChain` path's real headers).
+`ChainViewSnapshot::fixed(chain, held_by, addresses, ours, unlisted)` builds one view without a
+`ChainView`: consumers' tests of what reads it.
 
 Feature `testing` also carries `testing::MockPeers`, the p2p layer as a script
 (`ValidatorP2pSource`), beside `zaino_source::testing::MockValidator` for the

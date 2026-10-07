@@ -10,8 +10,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
+use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis};
 
 use crate::endpoints::{EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
@@ -231,6 +233,30 @@ impl ChainViewSnapshot {
         }
     }
 
+    /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
+    /// endpoint per address; `ours` servable (our relay), `unlisted` held, not servable
+    #[cfg(any(test, feature = "testing"))]
+    pub fn fixed(
+        chain: Option<Arc<VerifiedChain>>,
+        held_by: EndpointSet,
+        addresses: &[&str],
+        ours: &[(TransactionId, Bytes)],
+        unlisted: &[(TransactionId, Bytes)],
+    ) -> Self {
+        let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
+        let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
+        view.holders.verified(chain);
+        let held = view.best().filter(|_| !held_by.is_empty());
+        view.tip = held.map(|block| ChainTip { block, held_by });
+        for (sightings, servable) in [(ours, true), (unlisted, false)] {
+            for (txid, raw) in sightings {
+                let sighting = Sighting::new(raw.clone(), None, servable, None);
+                view.mempool.insert(*txid, sighting);
+            }
+        }
+        view
+    }
+
     /// Peers that announced `txid`, held or only overheard (submission's watch)
     pub(crate) fn announcers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
         match (self.mempool.get(txid), self.overheard.get(txid)) {
@@ -248,6 +274,28 @@ impl ChainViewSnapshot {
     /// The header chain's best block, whether or not a trusted validator holds it
     pub fn best(&self) -> Option<BlockRef> {
         self.holders.best()
+    }
+
+    /// Header sync's word every standing was judged against (`None` = nothing verified yet)
+    pub fn chain(&self) -> Option<&Arc<VerifiedChain>> {
+        self.holders.chain()
+    }
+
+    /// Servable here, not servable (or absent) in `since`, txid order (`None` = every servable)
+    ///
+    /// - `imbl` diff: shared subtrees skipped (O(changes) between consecutive publishes)
+    pub fn arrivals(&self, since: Option<&ChainViewSnapshot>) -> Vec<MempoolEntry> {
+        let empty = OrdMap::new();
+        let before = since.map_or(&empty, |since| &since.mempool);
+        let added = before.diff(&self.mempool).filter_map(|change| match change {
+            DiffItem::Add(txid, now) => Some((*txid, now)),
+            DiffItem::Update { old: (_, was), new: (txid, now) } => {
+                (!was.servable()).then_some((*txid, now))
+            }
+            DiffItem::Remove(..) => None,
+        });
+        let servable = added.filter(|(_, sighting)| sighting.servable());
+        servable.map(|(txid, sighting)| sighting.entry(txid)).collect()
     }
 
     /// Why there is no tip (`None` = there is one)

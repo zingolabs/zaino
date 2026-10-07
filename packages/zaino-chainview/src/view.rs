@@ -315,6 +315,11 @@ impl ChainViewSubscriber {
         self.core.current()
     }
 
+    /// Every publish (one per fold): [`current`](Self::current) has moved
+    pub fn subscribe_published(&self) -> tokio::sync::watch::Receiver<()> {
+        self.core.subscribe_published()
+    }
+
     /// Latest tip, level-triggered (`None` = unserved): what block sync follows
     pub fn subscribe_tip(&self) -> tokio::sync::watch::Receiver<Option<ChainTip>> {
         self.core.subscribe_tip()

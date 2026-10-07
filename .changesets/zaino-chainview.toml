@@ -12,6 +12,10 @@ validator holds it, and finality moves only past a held block. A mempool transac
 once any validator lists it, with its fee, its spread across validators and peers, and a shared \
 per-tip `MempoolTail` feed for `GetMempoolStream`. `submit` prechecks a transaction and sends it \
 to one random entry per attempt, resubmitting until it is seen spreading (`SubmitPolicy`). \
-Peers join through `ValidatorP2pSource` (`with_peers`, `PeerWatch`). Telemetry: \
-`describe_metrics` gauges and `Alarms` (stale, ending, partitioned, eclipsed, finality paused).
+Peers join through `ValidatorP2pSource` (`with_peers`, `PeerWatch`). A published \
+`ChainViewSnapshot` names the `VerifiedChain` it was judged under (`chain`) and the transactions \
+turned servable since another (`arrivals`); `ChainViewSubscriber::subscribe_published` wakes on \
+every publish. Telemetry: `describe_metrics` gauges and `Alarms` (stale, ending, partitioned, \
+eclipsed, finality paused). Feature `testing`: `ChainView::set_verified`, \
+`ChainViewSnapshot::fixed`.
 """

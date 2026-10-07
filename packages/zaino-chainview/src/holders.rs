@@ -68,6 +68,10 @@ impl Holders {
         self.chain.as_ref().map(|chain| chain.best())
     }
 
+    pub(crate) fn chain(&self) -> Option<&Arc<VerifiedChain>> {
+        self.chain.as_ref()
+    }
+
     /// Next poll's `getblockhash` heights, ascending: the final boundary (`depth` below), the best
     pub(crate) fn asked(&self) -> Vec<Height> {
         let Some(best) = self.best() else { return Vec::new() };
