@@ -1,7 +1,14 @@
 [package]
 name = "zaino-grpc"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Lightwalletd-compatible gRPC (CompactTxStreamer) server routing each method to an index, the chain view or the validator."
 
 [dependencies]
