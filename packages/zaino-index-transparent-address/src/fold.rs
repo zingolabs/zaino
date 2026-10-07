@@ -41,10 +41,8 @@ mod tests {
     use std::path::Path;
 
     use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, PersistenceEngine, Store};
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        OutPoint, Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
-    };
+    use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::{Script, TransactionId, Zatoshis};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -55,33 +53,20 @@ mod tests {
     /// spent by block 1, bob's two unspent, the opaque output kept
     #[test]
     fn a_spend_folded_on_its_parent_retires_the_receive_the_parent_holds() {
-        let p2pkh =
-            |tag: u8| Script::new([&[0x76, 0xa9, 0x14][..], &[tag; 20], &[0x88, 0xac]].concat());
         let zat = |n: u64| Zatoshis::new(n).expect("in supply");
-        let tx = |tag: u8, inputs: Vec<OutPoint>, outputs: Vec<(Script, u64)>| Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs,
-                outputs: outputs
-                    .into_iter()
-                    .map(|(script, value)| TransparentOutput { value: zat(value), script })
-                    .collect(),
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let paid = OutPoint { txid: TransactionId::from([0x10; 32]), vout: 0 };
-        let chain = linked(vec![
-            vec![tx(
-                0x10,
-                vec![],
-                vec![(p2pkh(0xa1), 500), (p2pkh(0xb0), 70), (Script::new(vec![0x6a]), 1)],
-            )],
-            vec![tx(0x20, vec![paid], vec![(p2pkh(0xb0), 490)])],
-        ]);
+        let opaque = Script::new(vec![0x6a]);
+        let mut chain = MockChain::regtest().genesis_with(|b| {
+            b.coinbase(|c| {
+                c.txid([0x10; 32])
+                    .pay(&p2pkh([0xa1; 20]), 500)
+                    .pay(&p2pkh([0xb0; 20]), 70)
+                    .pay(&opaque, 1)
+            })
+        });
+        let paid = outpoint([0x10; 32], 0);
+        let one =
+            chain.mine(|b| b.tx(|t| t.txid([0x20; 32]).spend(paid).pay(&p2pkh([0xb0; 20]), 490)));
+        let blocks = chain.blocks(one);
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
         let schema = schema(NetworkType::Regtest);
@@ -89,8 +74,8 @@ mod tests {
         let mut store = store.expect("empty store");
         let reader =
             |store: &DiskStore| TransparentAddressReader::new(store.staged(), NetworkType::Regtest);
-        store.apply(fold(&reader(&store), &chain[0]));
-        let changes = fold(&reader(&store), &chain[1]);
+        store.apply(fold(&reader(&store), &blocks[0]));
+        let changes = fold(&reader(&store), &blocks[1]);
 
         let spender = TransactionId::from([0x20; 32]);
         let rows = |table| {

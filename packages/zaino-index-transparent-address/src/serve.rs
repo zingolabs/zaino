@@ -163,49 +163,12 @@ mod tests {
     use std::path::Path;
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        OutPoint, Script, Transaction, TransparentData, TransparentOutput,
-    };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::OutPoint;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::{fold, schema};
-
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
-    }
-
-    fn zat(n: u64) -> Zatoshis {
-        Zatoshis::new(n).expect("in supply")
-    }
-
-    /// One transparent tx: `inputs` spend `(txid tag, vout)`, `outputs` pay `(p2pkh tag, zats)`
-    fn tx(tag: u8, inputs: &[(u8, u32)], outputs: &[(u8, u64)]) -> Transaction {
-        let p2pkh =
-            |hash: u8| Script::new([&[0x76, 0xa9, 0x14][..], &[hash; 20], &[0x88, 0xac]].concat());
-        Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: inputs
-                    .iter()
-                    .map(|&(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
-                    .collect(),
-                outputs: outputs
-                    .iter()
-                    .map(|&(hash, zats)| TransparentOutput {
-                        value: zat(zats),
-                        script: p2pkh(hash),
-                    })
-                    .collect(),
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }
-    }
 
     /// - 0, 1 committed, 2 buffered (committed view + layer): 1 pays `paid` 42, 2 spends it
     /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
@@ -214,16 +177,16 @@ mod tests {
     fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
         let network = NetworkType::Regtest;
         let (paid, stranger) = ([0x01; 20], [0xff; 20]);
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| b.coinbase(|c| c.txid([0x77; 32]).pay(&p2pkh(paid), 42)));
+        let two = chain.mine(|b| {
+            b.tx(|t| t.txid([0x78; 32]).spend(outpoint([0x77; 32], 0)).pay(&p2pkh([0x02; 20]), 41))
+        });
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
-        let chain = linked([
-            vec![tx(0xc0, &[], &[])],
-            vec![tx(0x77, &[], &[(0x01, 42)])],
-            vec![tx(0x78, &[(0x77, 0)], &[(0x02, 41)])],
-        ]);
         let mut store =
             DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
-        for (height, block) in chain.iter().enumerate() {
+        for (height, block) in chain.blocks(two).iter().enumerate() {
             let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
             store.apply(changes);
             if height == 1 {
@@ -235,7 +198,7 @@ mod tests {
         let received = AddressUtxo {
             outpoint: OutPoint { txid: TransactionId::from([0x77; 32]), vout: 0 },
             height: h(1),
-            value: zat(42),
+            value: Zatoshis::new(42).expect("in supply"),
         };
         let paying = TransactionRef { height: h(1), txid: TransactionId::from([0x77; 32]) };
         let spending = TransactionRef { height: h(2), txid: TransactionId::from([0x78; 32]) };
@@ -243,7 +206,8 @@ mod tests {
         assert_eq!(at_two.balance(&paid), Ok(Zatoshis::ZERO), "spent at 2");
         assert_eq!(at_two.utxos(&paid, h(0)), Ok(Vec::new()));
         assert_eq!(at_two.transactions(&paid, h(0), h(2)), Ok(vec![paying, spending]));
-        assert_eq!(at_one.balance(&paid), Ok(zat(42)), "2's spend past the tip");
+        let at_one_balance = at_one.balance(&paid).map(Zatoshis::as_u64);
+        assert_eq!(at_one_balance, Ok(42), "2's spend past the tip");
         assert_eq!(at_one.utxos(&paid, h(0)), Ok(vec![received]));
         assert_eq!(at_one.transactions(&paid, h(0), h(2)), Ok(vec![paying]));
         let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
@@ -269,15 +233,14 @@ mod tests {
             TransparentAddress::PublicKeyHash([0x02; 20]),
         );
         // `first` paid at 1, 2 and 3, `second` at 2; 0..=2 committed, 3 buffered
-        let chain = linked([
-            vec![tx(0x70, &[], &[])],
-            vec![tx(0x71, &[], &[(0x01, 10)])],
-            vec![tx(0x72, &[], &[(0x01, 10), (0x02, 10)])],
-            vec![tx(0x73, &[], &[(0x01, 10)])],
-        ]);
+        let (pays_first, pays_second) = (p2pkh([0x01; 20]), p2pkh([0x02; 20]));
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
+        chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10).pay(&pays_second, 10)));
+        let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         let mut store =
             DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
-        for (height, block) in chain.iter().enumerate() {
+        for (height, block) in chain.blocks(three).iter().enumerate() {
             let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
             store.apply(changes);
             if height == 2 {
@@ -293,7 +256,7 @@ mod tests {
 
         // `first` alone = 3 rows (2 committed + 1 buffered); both = 4
         let at = budget(3);
-        assert_eq!(at.balance(&first), Ok(zat(30)));
+        assert_eq!(at.balance(&first).map(Zatoshis::as_u64), Ok(30));
         assert_eq!(at.utxos(&first, h(0)).map(|rows| rows.len()), Ok(3));
         assert_eq!(at.transactions(&first, h(0), h(3)).map(|found| found.len()), Ok(3));
         assert_eq!(at.balances(&both).err(), over(3), "3 + 1 across the request's addresses");
@@ -306,6 +269,8 @@ mod tests {
         assert_eq!(under.utxos(&first, h(2)).map(|rows| rows.len()), Ok(2), "from 2: 2 rows");
 
         let roomy = budget(4);
-        assert_eq!(roomy.balances(&both), Ok(vec![zat(30), zat(10)]));
+        let balances = roomy.balances(&both).map(|all| all.into_iter().map(Zatoshis::as_u64));
+        let balances = balances.map(Vec::from_iter);
+        assert_eq!(balances, Ok(vec![30, 10]));
     }
 }

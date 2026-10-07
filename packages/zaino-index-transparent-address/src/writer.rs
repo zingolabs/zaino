@@ -46,11 +46,8 @@ mod tests {
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View,
     };
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        Block, Height, OutPoint, Script, Transaction, TransactionId, TransparentData,
-        TransparentOutput, Zatoshis,
-    };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
+    use zaino_primitives::types::{Block, OutPoint, Script, TransactionId, Zatoshis};
     use zaino_sync::{Folds, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
     use zcash_transparent::address::TransparentAddress;
@@ -79,7 +76,7 @@ mod tests {
     }
 
     /// `block` as the NFS sends it: unfolded, or folded (its `Changes` = this index's own fold)
-    fn step(block: &Block, folded: bool) -> Step<Final> {
+    fn step(block: &Arc<Block>, folded: bool) -> Step<Final> {
         let folds = folded.then(|| {
             let mut folds = Folds::default();
             let view = DiskEngine::new(SimFs::new()).open(Path::new("/x"), &schema(NETWORK));
@@ -87,7 +84,7 @@ mod tests {
             folds.insert(IndexKind::TransparentAddress, fold(&parent, block));
             Arc::new(folds)
         });
-        let (height, block) = (block.header().height, Arc::new(block.clone()));
+        let (height, block) = (block.header().height, Arc::clone(block));
         Step::Apply { height, data: Arc::new(Final { block, folds }) }
     }
 
@@ -97,66 +94,29 @@ mod tests {
         committed.wait_for(at).await.expect("writer alive");
     }
 
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
-    }
-
-    fn zat(n: u64) -> Zatoshis {
-        Zatoshis::new(n).expect("in supply")
-    }
-
-    fn txid(tag: u8) -> TransactionId {
-        TransactionId::from([tag; 32])
-    }
-
-    fn p2pkh(tag: u8) -> Vec<u8> {
-        [&[0x76, 0xa9, 0x14][..], &[tag; 20], &[0x88, 0xac]].concat()
-    }
-
-    fn tx(tag: u8, inputs: Vec<(u8, u32)>, outputs: Vec<(Vec<u8>, u64)>) -> Transaction {
-        Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: inputs
-                    .into_iter()
-                    .map(|(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
-                    .collect(),
-                outputs: outputs
-                    .into_iter()
-                    .map(|(script, value)| TransparentOutput {
-                        value: Zatoshis::new(value).expect("in supply"),
-                        script: Script::new(script),
-                    })
-                    .collect(),
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }
-    }
-
     /// Ten one-block commits (batch = 1 byte: each block commits as it arrives; the 9th launches
     /// a background merge), crashed at every persistence point: each state reopens to a committed
     /// prefix with its one unspent output and balance exact, takes the next block
     ///
-    /// - block `h` pays alice `h + 1` zats (vout 0) and spends block `h - 1`'s payment
+    /// - block `h`'s coinbase pays alice `h + 1` zats (vout 0); its tx spends block `h - 1`'s
     #[tokio::test]
     async fn every_crash_state_of_commits_and_a_merge_reopens_to_a_committed_prefix() {
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
-        let chain: Vec<Arc<Block>> = linked((0u32..11).map(|height| {
-            let spends = match height {
-                0 => Vec::new(),
-                _ => vec![(height as u8, 0)],
-            };
-            let paid = vec![(p2pkh(0xa1), u64::from(height) + 1)];
-            vec![tx(height as u8 + 1, spends, paid)]
-        }));
+        let pays_alice = p2pkh([0xa1; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([1; 32]).pay(&pays_alice, 1)));
+        for height in 1u8..=10 {
+            let paid = u64::from(height) + 1;
+            chain.mine(|b| {
+                b.coinbase(|c| c.txid([height + 1; 32]).pay(&pays_alice, paid))
+                    .tx(|t| t.spend(outpoint([height; 32], 0)))
+            });
+        }
+        let blocks = chain.blocks(chain.tip());
         let fs = SimFs::recording();
         {
             let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
-            for (acked, block) in (1u64..).zip(&chain[..10]) {
+            for (acked, block) in (1u64..).zip(&blocks[..10]) {
                 sink.send(step(block, false)).await;
                 reached(&mut committed, Some(u32::from(block.header().height))).await;
                 fs.set_tag(acked);
@@ -166,14 +126,14 @@ mod tests {
         }
 
         let expected = |count: u64| match count {
-            0 => (Vec::new(), Zatoshis::ZERO),
-            count => (vec![(h(count as u32 - 1), count)], zat(count)),
+            0 => (Vec::new(), 0),
+            count => (vec![(h(count as u32 - 1), count)], count),
         };
         let observed = |view: DiskView| {
             let reader = TransparentAddressReader::new(view, NETWORK);
             let utxos = reader.utxos(&alice, h(0)).expect("utxos");
             let utxos = utxos.into_iter().map(|utxo| (utxo.height, utxo.value.as_u64()));
-            (utxos.collect::<Vec<_>>(), reader.balance(&alice).expect("balance"))
+            (utxos.collect::<Vec<_>>(), reader.balance(&alice).expect("balance").as_u64())
         };
         let states = fs.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
@@ -187,7 +147,7 @@ mod tests {
             assert_eq!(observed(store.view()), expected(count), "{label}");
 
             let (sink, _committed, running) = start(store, QUEUE);
-            sink.send(step(&chain[count as usize], false)).await;
+            sink.send(step(&blocks[count as usize], false)).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let after = observed(open(&state.fs).view());
@@ -204,49 +164,66 @@ mod tests {
         let fs = SimFs::new();
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
         let bob = TransparentAddress::PublicKeyHash([0xb0; 20]);
-        let blocks = linked(vec![
-            vec![tx(0x10, vec![], vec![(p2pkh(0xa1), 500), (p2pkh(0xb0), 70), (vec![0x6a, 1], 1)])],
-            vec![tx(0x11, vec![], vec![(p2pkh(0xa1), 300)])],
-            vec![tx(0x20, vec![(0x10, 0)], vec![(p2pkh(0xb0), 490)])],
-            vec![tx(0x30, vec![(0x11, 0)], vec![(p2pkh(0xa1), 290)])],
-        ]);
+        let (pays_alice, pays_bob) = (p2pkh([0xa1; 20]), p2pkh([0xb0; 20]));
+        let mut chain = MockChain::regtest().genesis_with(|b| {
+            b.coinbase(|c| {
+                c.txid([0x10; 32])
+                    .pay(&pays_alice, 500)
+                    .pay(&pays_bob, 70)
+                    .pay(&Script::new(vec![0x6a, 1]), 1)
+            })
+        });
+        chain.mine(|b| b.coinbase(|c| c.txid([0x11; 32]).pay(&pays_alice, 300)));
+        chain.mine(|b| {
+            b.tx(|t| t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&pays_bob, 490))
+        });
+        let tip = chain.mine(|b| {
+            b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
+        });
+        let blocks = chain.blocks(tip);
         let reader = |committed: &watch::Receiver<DiskView>| {
             TransparentAddressReader::new(committed.borrow().clone(), NETWORK)
         };
+        let zats = |balance: Result<Zatoshis, _>| balance.map(Zatoshis::as_u64);
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
         for block in &blocks[..2] {
             sink.send(step(block, false)).await;
         }
         reached(&mut committed, Some(1)).await;
-        assert_eq!(reader(&committed).balance(&alice), Ok(zat(800)), "both receives unspent");
+        assert_eq!(zats(reader(&committed).balance(&alice)), Ok(800), "both receives unspent");
         sink.send(step(&blocks[2], true)).await;
         reached(&mut committed, Some(2)).await;
         let at_two = reader(&committed);
-        assert_eq!(at_two.balance(&alice), Ok(zat(300)), "2's spend retires 0's receive");
+        assert_eq!(zats(at_two.balance(&alice)), Ok(300), "2's spend retires 0's receive");
         let utxos = at_two.utxos(&alice, h(0)).expect("utxos");
-        let utxos: Vec<_> =
-            utxos.iter().map(|utxo| (utxo.height, utxo.outpoint.txid, utxo.value)).collect();
-        assert_eq!(utxos, [(h(1), txid(0x11), zat(300))], "only the unspent receive");
+        let utxos: Vec<_> = utxos
+            .iter()
+            .map(|utxo| (utxo.height, utxo.outpoint.txid, utxo.value.as_u64()))
+            .collect();
+        let received = TransactionId::from([0x11; 32]);
+        assert_eq!(utxos, [(h(1), received, 300)], "only the unspent receive");
         // paying and spending transactions both alice's, each once
         let touching = at_two.transactions(&alice, h(0), h(2)).expect("transactions");
-        let expected = [(0, 0x10), (1, 0x11), (2, 0x20)]
-            .map(|(height, tag)| TransactionRef { height: h(height), txid: txid(tag) });
+        let expected = [(0, 0x10), (1, 0x11), (2, 0x20)].map(|(height, tag)| TransactionRef {
+            height: h(height),
+            txid: TransactionId::from([tag; 32]),
+        });
         assert_eq!(touching, expected);
         // opaque outputs stored, not dropped (same fold answers for them)
-        assert_eq!(at_two.balance_of(AddressKey::opaque()), Ok(zat(1)));
+        assert_eq!(zats(at_two.balance_of(AddressKey::opaque())), Ok(1));
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
-        assert_eq!(reader(&committed).balance(&bob), Ok(zat(560)), "resumed at 2, no replay");
+        assert_eq!(zats(reader(&committed).balance(&bob)), Ok(560), "resumed at 2, no replay");
         for (block, folded) in [(&blocks[1], false), (&blocks[2], true), (&blocks[3], true)] {
             sink.send(step(block, folded)).await;
         }
         reached(&mut committed, Some(3)).await;
         let at_three = reader(&committed);
-        assert_eq!(at_three.balance(&alice), Ok(zat(290)), "pre-restart receive spent after it");
-        assert_eq!(at_three.balance(&bob), Ok(zat(560)), "resent 2 not applied twice");
+        assert_eq!(zats(at_three.balance(&alice)), Ok(290), "pre-restart receive spent after it");
+        assert_eq!(zats(at_three.balance(&bob)), Ok(560), "resent 2 not applied twice");
         let recent = at_three.utxos(&alice, h(3)).expect("utxos").len();
         assert_eq!(recent, 1, "start_height filters the reply, not the spend resolution");
         sink.shutdown();
@@ -304,6 +281,9 @@ mod tests {
     /// Outpoint → (address, zats, height received, height spent)
     type Ledger = Vec<((TransactionId, u32), (u8, u64, u32, Option<(u32, TransactionId)>))>;
 
+    /// One block's tx: spends, pays `(address, zats)`
+    type Planned = (Vec<OutPoint>, Vec<(u8, u64)>);
+
     async fn random_history(plans: Vec<BlockPlan>, moves: Vec<Move>) {
         let txid = |height: u32| {
             let mut bytes = [0u8; 32];
@@ -312,42 +292,48 @@ mod tests {
         };
         let address = |tag: u8| TransparentAddress::PublicKeyHash([0xa0 + tag; 20]);
 
-        // build the chain and its ledger together (spends pick from what is unspent then)
+        // ledger first (spends pick from what is unspent then); block h = one tx `txid(h)`, its
+        // inputs + outputs, value balanced through a faucet output (untracked address 3, vout last)
+        const FAUCET: u8 = 3;
+        let scripts = [0u8, 1, 2, 0x5f].map(|tag| p2pkh([0xa0 + tag; 20]));
         let mut ledger: Ledger = Vec::new();
-        let mut planned = Vec::new();
+        let mut planned: Vec<Planned> = Vec::new();
+        let mut faucet = (outpoint([0xfa; 32], 0), 1_000_000_000u64);
         for (height, (outputs, picks)) in (0u32..).zip(&plans) {
-            let mut inputs = Vec::new();
+            let mut spends = vec![faucet.0];
+            let mut change = faucet.1;
             for pick in picks {
                 let unspent: Vec<usize> =
                     (0..ledger.len()).filter(|&at| ledger[at].1 .3.is_none()).collect();
                 if let Some(&at) = unspent.get(pick % unspent.len().max(1)) {
                     ledger[at].1 .3 = Some((height, txid(height)));
-                    inputs.push(ledger[at].0);
+                    let (txid, vout) = ledger[at].0;
+                    spends.push(OutPoint { txid, vout });
+                    change += ledger[at].1 .1;
                 }
             }
             for (vout, &(tag, zats)) in (0u32..).zip(outputs) {
                 ledger.push(((txid(height), vout), (tag, zats, height, None)));
+                change -= zats;
             }
-            planned.push(vec![Transaction {
-                txid: txid(height),
-                transparent: TransparentData {
-                    coinbase: false,
-                    inputs: inputs.iter().map(|&(txid, vout)| OutPoint { txid, vout }).collect(),
-                    outputs: outputs
-                        .iter()
-                        .map(|&(tag, zats)| TransparentOutput {
-                            value: Zatoshis::new(zats).expect("in supply"),
-                            script: Script::new(p2pkh(0xa0 + tag)),
-                        })
-                        .collect(),
-                },
-                sprout: Default::default(),
-                sapling: Default::default(),
-                orchard: Default::default(),
-                ironwood: Default::default(),
-            }]);
+            faucet = (OutPoint { txid: txid(height), vout: outputs.len() as u32 }, change);
+            planned.push((spends, [&outputs[..], &[(FAUCET, change)]].concat()));
         }
-        let chain = linked(planned);
+        let block = |b: BlockBuilder, height: u32, (spends, pays): &Planned| {
+            b.tx(|t| {
+                let t = t.txid(<[u8; 32]>::from(txid(height)));
+                let t = spends.iter().fold(t, |t, prevout| t.spend(*prevout));
+                pays.iter().fold(t, |t, &(tag, zats)| t.pay(&scripts[usize::from(tag)], zats))
+            })
+        };
+        let mut chain = MockChain::regtest().genesis_with(|b| {
+            let b = b.coinbase(|c| c.txid([0xfa; 32]).pay(&scripts[3], 1_000_000_000));
+            block(b, 0, &planned[0])
+        });
+        for (height, plan) in (1u32..).zip(&planned[1..]) {
+            chain.mine(|b| block(b, height, plan));
+        }
+        let blocks = chain.blocks(chain.tip());
 
         // the model's answers once `held` blocks are indexed
         let expected = |tag: u8, held: u32| {
@@ -378,7 +364,7 @@ mod tests {
         for (at, next) in moves.iter().enumerate() {
             match *next {
                 Move::Send(count) => {
-                    for block in chain.iter().skip(sent).take(count) {
+                    for block in blocks.iter().skip(sent).take(count) {
                         sink.send(step(block, folding)).await;
                         sent += 1;
                     }
@@ -390,7 +376,7 @@ mod tests {
                     (sink, committed, running) = start(open(&fs), NonZeroUsize::MIN);
                     folding = false;
                     if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&chain[held], false)).await;
+                        sink.send(step(&blocks[held], false)).await;
                     }
                 }
             }
