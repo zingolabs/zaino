@@ -226,7 +226,7 @@ mod tests {
         let store = open(&bh, zaino_internal_block_hash_to_height::schema(net));
         let hashes = BlockHashIndexWriter::new(store, batch);
         let store = open(&ts, zaino_index_tree_state::schema(net));
-        let trees = TreeStateIndexWriter::new(store, batch).expect("ts writer");
+        let trees = TreeStateIndexWriter::new(store, batch);
         let store = open(&ta, zaino_index_transparent_address::schema(net));
         let transparent = TransparentAddressIndexWriter::new(store, batch);
 

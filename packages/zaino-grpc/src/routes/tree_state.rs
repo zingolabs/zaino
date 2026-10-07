@@ -6,9 +6,9 @@ use std::sync::Arc;
 use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
-use zaino_index_tree_state::{ReadView, ServeError, TreeStateService};
+use zaino_index_tree_state::{ServeError, TreeStateReader, TreeStateService};
 use zaino_internal_block_hash_to_height::BlockHashService;
-use zaino_persistence::{MapRead, SequenceRead};
+use zaino_persistence::{MapRead, SequenceRead, TieredView};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
@@ -28,7 +28,9 @@ pub(crate) struct Memos<V> {
 }
 
 /// One answer kind, keyed by `K`, per published tree-state view
-type ViewMemo<V, K, T> = PerView<ReadView<V>, K, T>;
+type ViewMemo<V, K, T> = PerView<Pinned<V>, K, T>;
+
+type Pinned<V> = TreeStateReader<TieredView<V>>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {
@@ -54,9 +56,9 @@ pub(crate) struct Answering<V> {
 async fn once<V, K, T>(
     memo: fn(&Memos<V>) -> &ViewMemo<V, K, T>,
     answering: &Answering<V>,
-    view: Arc<ReadView<V>>,
+    view: Arc<Pinned<V>>,
     key: K,
-    compute: impl FnOnce(&ReadView<V>) -> T + Send + 'static,
+    compute: impl FnOnce(&Pinned<V>) -> T + Send + 'static,
 ) -> Result<T, Status>
 where
     V: SequenceRead,
@@ -360,7 +362,7 @@ mod tests {
 
         let net = zcash_protocol::consensus::NetworkType::Regtest;
         let store = store("/ts", &zaino_index_tree_state::schema(net));
-        let index = TreeStateIndexWriter::new(store, std::num::NonZeroUsize::MIN).expect("new");
+        let index = TreeStateIndexWriter::new(store, std::num::NonZeroUsize::MIN);
         let served = index.published().served();
         let mut cmu = [0u8; 32];
         cmu[0] = 7;
@@ -443,7 +445,7 @@ mod tests {
 
         let net = zcash_protocol::consensus::NetworkType::Regtest;
         let trees = store("/ts", &zaino_index_tree_state::schema(net));
-        let index = TreeStateIndexWriter::new(trees, NonZeroUsize::MIN).expect("new");
+        let index = TreeStateIndexWriter::new(trees, NonZeroUsize::MIN);
         let served = index.published().served();
 
         let chain = Chain::with_genesis(vec![Transaction {

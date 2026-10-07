@@ -12,9 +12,6 @@ pub enum IndexerError {
     /// Opening an index directory failed.
     #[error(transparent)]
     OpenIndex(#[from] zaino_persistence::StoreError),
-    /// The tree-state index's carries would not reseed off disk.
-    #[error(transparent)]
-    OpenTreeStateIndex(#[from] zaino_index_tree_state::IndexWriterError),
     /// The configured validator set is empty or beyond the endpoint-set bound.
     #[error(transparent)]
     ChainView(#[from] zaino_chainview::ConfigError),

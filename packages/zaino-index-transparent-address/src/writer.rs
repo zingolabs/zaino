@@ -1,44 +1,17 @@
-//! transparent_address index: one block in, two projections out, kept by its own loop
-//!
-//! - one block = its receives + spends rows; storage tiers = `zaino_persistence::Tiered`
-//! - Spend recorded under its outpoint (already in the block): `outpoint → address` never resolved
+//! transparent_address index: each block → one [`fold`] on the parent read off the held view,
+//! kept by its own loop (storage tiers = `zaino_persistence::Tiered`)
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{Changes, MapRead, Store, Tiered};
+use zaino_persistence::{MapRead, Store, Tiered, TieredView};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{
-    address::address_key,
-    key::{encode_receive, encode_spend, ReceiveKey, ReceiveRow, Spend},
-    view::ReadView,
-    RECEIVES, SPENT,
-};
+use crate::{fold, TransparentAddressReader};
 
 pub struct TransparentAddressIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    published: Published<ReadView<S::View>>,
-}
-
-/// One block projected onto both maps (= everything this index derives)
-fn project(block: &Block, mut changes: Changes) -> Changes {
-    let height = u32::from(block.header().height);
-    for tx in block.transactions() {
-        // coinbase inputs elided upstream (`zaino-source` decode.rs)
-        for input in &tx.transparent.inputs {
-            let spend = Spend { height, spender: tx.txid };
-            changes.insert(SPENT, &input.encode(), &encode_spend(&spend));
-        }
-
-        for (vout, output) in (0u32..).zip(&tx.transparent.outputs) {
-            let address = address_key(output.script.as_bytes());
-            let key = ReceiveKey { address, height, txid: tx.txid, vout };
-            let (key, value) = encode_receive(&ReceiveRow { key, value: output.value });
-            changes.insert(RECEIVES, &key, &value);
-        }
-    }
-    changes
+    published: Published<TransparentAddressReader<TieredView<S::View>>>,
 }
 
 impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
@@ -46,7 +19,8 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         let tiered = Tiered::new(store, batch_bytes);
-        let published = Published::new(ReadView::new(tiered.view()), tiered.durable_tip());
+        let reader = TransparentAddressReader::new(tiered.view(), tiered.schema().network);
+        let published = Published::new(reader, tiered.durable_tip());
         Self { tiered: Offloaded::new(tiered), published }
     }
 
@@ -56,7 +30,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
     }
 
     /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<ReadView<S::View>> {
+    pub fn published(&self) -> &Published<TransparentAddressReader<TieredView<S::View>>> {
         &self.published
     }
 
@@ -81,7 +55,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
         if Some(height) <= self.durable_tip().map(|tip| tip.height) {
             return;
         }
-        let changes = self.changes(block);
+        let changes = fold(&self.reader(), block);
         let full = self.tiered.get_mut().stage(changes, block.weight());
         self.published.merged(height);
         if full {
@@ -91,7 +65,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
 
     async fn apply_tip(&mut self, block: &Block) {
         self.finalize_staged().await;
-        let changes = self.changes(block);
+        let changes = fold(&self.reader(), block);
         self.tiered.get_mut().apply(changes);
         self.publish();
     }
@@ -118,15 +92,13 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
         self.published.durable(self.durable_tip().map(|tip| tip.height));
     }
 
-    fn changes(&self, block: &Block) -> Changes {
-        let header = block.header();
-        let tip = BlockRef { hash: header.hash, height: header.height };
-        project(block, Changes::new(tip, self.tiered.get().schema()))
+    fn publish(&self) {
+        self.published.view(self.reader(), self.tiered.get().applied());
     }
 
-    fn publish(&self) {
+    fn reader(&self) -> TransparentAddressReader<TieredView<S::View>> {
         let tiered = self.tiered.get();
-        self.published.view(ReadView::new(tiered.view()), tiered.applied());
+        TransparentAddressReader::new(tiered.view(), tiered.schema().network)
     }
 }
 
@@ -163,7 +135,9 @@ mod tests {
     }
 
     /// Service over the view the index last published
-    fn service(served: &Served<ReadView<DiskView>>) -> TransparentAddressService<DiskView> {
+    fn service(
+        served: &Served<TransparentAddressReader<TieredView<DiskView>>>,
+    ) -> TransparentAddressService<DiskView> {
         let view = (*served.pin_any()).clone();
         TransparentAddressService::new(Served::fixed(view), NetworkType::Regtest)
     }

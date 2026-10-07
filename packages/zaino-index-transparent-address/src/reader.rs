@@ -1,9 +1,8 @@
-//! [`ReadView`]: both maps over every tier, pinned once per request
-//!
-//! - held blocks keyed exactly as the maps (`zaino_persistence::TieredView` merges the two)
+//! [`TransparentAddressReader`]: typed reads of both maps over any view of them
 
-use zaino_persistence::{MapRead, TieredView, View};
+use zaino_persistence::{MapRead, View};
 use zaino_primitives::types::{Height, OutPoint};
+use zcash_protocol::consensus::NetworkType;
 
 use crate::{
     key::{
@@ -12,23 +11,32 @@ use crate::{
     RECEIVES, SPENT,
 };
 
-/// Held blocks + the committed store (one publication: a row in exactly one tier)
+/// One state of both maps, never moving while held (one pin per request, one parent per fold)
 #[derive(Clone)]
-pub struct ReadView<V> {
-    view: TieredView<V>,
+pub struct TransparentAddressReader<V> {
+    view: V,
+    network: NetworkType,
 }
 
-impl<V: View> std::fmt::Debug for ReadView<V> {
+impl<V: View> std::fmt::Debug for TransparentAddressReader<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReadView").field("view", &self.view).finish()
+        let tip = self.view.tip();
+        f.debug_struct("TransparentAddressReader").field("tip", &tip).finish_non_exhaustive()
     }
 }
 
-impl<V: MapRead> ReadView<V> {
-    pub(crate) fn new(view: TieredView<V>) -> Self {
-        Self { view }
+impl<V: View> TransparentAddressReader<V> {
+    /// `view` of a store opened with [`schema`](crate::schema)`(network)`
+    pub fn new(view: V, network: NetworkType) -> Self {
+        Self { view, network }
     }
 
+    pub(crate) fn network(&self) -> NetworkType {
+        self.network
+    }
+}
+
+impl<V: MapRead> TransparentAddressReader<V> {
     /// Receives of `address` from height `start` to the tip, both inclusive, ascending; `None` =
     /// more than `limit` (the walk stops there, never truncates)
     pub(crate) fn receives(

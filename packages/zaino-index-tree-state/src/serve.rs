@@ -1,19 +1,19 @@
 //! RPC surface: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots`
 //!
-//! - one `ArcSwap` load per request pins a [`ReadView`] (held blocks + committed files)
+//! - one `ArcSwap` load per request pins a [`TreeStateReader`] (held blocks + committed files)
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
 use std::sync::Arc;
 
-use zaino_persistence::SequenceRead;
+use zaino_persistence::{SequenceRead, TieredView};
 use zaino_primitives::types::{
     BlockchainInfo, ConsensusBranchId, Height, ShieldedPool, SubtreeRoot, Treestate,
 };
 use zaino_sync::Served;
 use zcash_protocol::consensus::{BranchId, NetworkType};
 
-use crate::ReadView;
+use crate::TreeStateReader;
 
 /// Height each pool's tree begins, from the validator's schedule (`None` = unscheduled)
 ///
@@ -74,7 +74,7 @@ pub enum ServeError {
 
 #[derive(Debug, Clone)]
 pub struct TreeStateService<V> {
-    served: Served<ReadView<V>>,
+    served: Served<TreeStateReader<TieredView<V>>>,
     network: NetworkType,
     activations: PoolActivations,
 }
@@ -83,7 +83,7 @@ impl<V: SequenceRead> TreeStateService<V> {
     /// - unsynced → every method [`ServeError::Syncing`] (committed heights excepted)
     /// - `network` = operator-declared (regtest reports as `"test"` over the validator's RPC)
     pub fn new(
-        served: Served<ReadView<V>>,
+        served: Served<TreeStateReader<TieredView<V>>>,
         network: NetworkType,
         activations: PoolActivations,
     ) -> Self {
@@ -101,7 +101,11 @@ impl<V: SequenceRead> TreeStateService<V> {
     }
 
     /// Tree state at `at` from one pinned `view` (a transport memoizing per publication)
-    pub fn treestate_in(&self, view: &ReadView<V>, at: Height) -> Result<Treestate, ServeError> {
+    pub fn treestate_in(
+        &self,
+        view: &TreeStateReader<TieredView<V>>,
+        at: Height,
+    ) -> Result<Treestate, ServeError> {
         let sapling = self.activations.sapling;
         match at < sapling {
             true => Err(ServeError::BeforeSapling { height: at, sapling }),
@@ -110,14 +114,17 @@ impl<V: SequenceRead> TreeStateService<V> {
     }
 
     /// Tree state at `view`'s tip
-    pub fn latest_in(&self, view: &ReadView<V>) -> Result<Treestate, ServeError> {
+    pub fn latest_in(
+        &self,
+        view: &TreeStateReader<TieredView<V>>,
+    ) -> Result<Treestate, ServeError> {
         self.treestate_in(view, view.tip().ok_or(ServeError::Empty)?)
     }
 
     /// The latest publication, synced only (one load; every tree state it answers comes from it)
     ///
     /// - one `Arc` per publication: a transport may key per-publication memos on it
-    pub fn pin(&self) -> Result<Arc<ReadView<V>>, ServeError> {
+    pub fn pin(&self) -> Result<Arc<TreeStateReader<TieredView<V>>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 
@@ -223,8 +230,7 @@ mod tests {
     async fn an_unsynced_index_serves_committed_heights_only_and_everything_once_synced() {
         let store =
             DiskEngine::new(SimFs::new()).open(Path::new("/ts"), &schema(NetworkType::Regtest));
-        let index =
-            TreeStateIndexWriter::new(store.expect("open"), NonZeroUsize::MIN).expect("new");
+        let index = TreeStateIndexWriter::new(store.expect("open"), NonZeroUsize::MIN);
 
         let mut cmu = [0u8; 32];
         cmu[..4].copy_from_slice(&7u32.to_le_bytes());

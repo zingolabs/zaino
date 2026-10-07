@@ -243,10 +243,9 @@ impl<S: Store> Tiered<S> {
 - **`finalize`** merges the held blocks through `through` into one `Changes` and commits it (one
   fsync). A failed commit panics naming the index and its directory: the store is poisoned and a
   restart recovers.
-- **Restart and reorg leave the same state**: nothing held. An index with a carry re-reads it off
-  the view's tip record (tree-state's frontiers), so the rare path is the boot path. A folded
-  index (compact-block's tree sizes) carries nothing: its `fold` reads the parent tip record
-  through a reader over the view ([nfs.md](nfs.md) §5).
+- **Restart and reorg leave the same state**: nothing held. A fold reads its parent's state off
+  the view (compact-block's tree sizes, tree-state's frontiers) instead of carrying it, so neither
+  needs a step of its own ([nfs.md](nfs.md) §5).
 
 Preconditions panic at the top of the call, naming the index, before any state moves:
 
@@ -258,14 +257,13 @@ Preconditions panic at the top of the call, naming the index, before any state m
 | `finalize`       | `through` at or below durable, or above the last held; splitting the staged |
 | `reorg`          | staged blocks held (final never rolls back)                                 |
 
-An index writer is then its schema, its per-block encoding (`block → Changes`, a pure `fold` over a
-reader of the held view where the index has one) and any carry it derives; its own `run` loop maps
-the sink's steps (`docs/design/data-sink.md`) onto `Tiered`:
+An index writer is then its schema and its fold (`parent reader, block → Changes`); its own `run`
+loop maps the sink's steps (`docs/design/data-sink.md`) onto `Tiered`:
 
 | Step              | Writer                                                                    |
 | ----------------- | ------------------------------------------------------------------------- |
-| `Apply` final     | at or below durable = replay, skipped; else encode, `stage`; full → `finalize` |
-| `Apply`           | `finalize` the staged, encode, `apply`, publish                           |
+| `Apply` final     | at or below durable = replay, skipped; else fold, `stage`; full → `finalize` |
+| `Apply`           | `finalize` the staged, fold, `apply`, publish                             |
 | `Finalized { h }` | `finalize(h)`, publish the view, then the durable tip                     |
-| `Reorg`           | `reorg`, re-read the carry, publish, mark the gate                        |
+| `Reorg`           | `reorg`, publish, mark the gate                                           |
 | `Shutdown`        | `finalize` the staged                                                     |

@@ -184,17 +184,19 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 | compact-block       | encode record + tree sizes    | `BlockFees` | `Changes`              | `tip`, `block`, `range`                           |
 | block-hash          | hash → height row (no parent) | `network`   | `Changes`              | `height_of(&BlockHash)`                           |
 | tree-state          | append commitments, frontiers | —           | `Changes`              | `treestate(h)`, `subtree_roots(pool, start, max)` |
-| transparent-address | receives, spends, unspent     | —           | `Changes`              | `utxos`, `balance(s)`, `transactions`             |
+| transparent-address | receives, spends (outpoint)   | —           | `Changes`              | `utxos`, `balance(s)`, `transactions`             |
 
 - **Fold order = the dependency graph**, written once in `zaino-nfs::fold_block`: value-balance
   first (its fees feed compact-block), then the rest.
 - Fallible folds return `Result`: value-balance `FoldError` (missing prevout, negative fee,
-  overflow), compact-block `TreeSizeOutOfRange` (#549). A compact-block fold onto a non-parent
-  panics (value-balance's parent may be any later state: insert only).
-- value-balance also has a crate-internal `fold_run(parent, blocks)`: one prevout probe per run
-  (its writer's bulk path); `fold` = a run of one.
-- tree-state also exports `fold_run(parent, blocks) -> Vec<Changes>` (one batched Merkle hashing
-  per run, split per block); `fold` = a run of one. Bulk sync uses runs; the NFS folds one block.
+  overflow), compact-block `TreeSizeOutOfRange` (#549), tree-state `FoldError` (a non-canonical
+  note commitment, or parent nodes that will not rebuild a frontier). A compact-block fold onto a
+  non-parent panics (value-balance's parent may be any later state: insert only).
+- Runs: tree-state exports `fold_run(parent, blocks) -> Result<Vec<Changes>, FoldError>` (one
+  batched Merkle hashing per run, split per block); value-balance has a crate-internal `fold_run`
+  (one prevout probe per run). `fold` = a run of one. Bulk sync uses runs; the NFS folds one block.
+- transparent-address's fold is a lookup-free projection (spends keyed by outpoint, unspent =
+  a read-time miss in `spent`); its parent reader supplies only the network.
 - Writers: one loop each, no reorg, no tiers, no gate:
 
 ```rust

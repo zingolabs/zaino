@@ -21,10 +21,10 @@
 //!   ommers come from (ommer = left sibling = even) → ≈48 B per commitment (32 leaf + ≈16 internal)
 //! - positional: no keys stored, one record read per node
 //! - read-heavy (librustzcash asks 1:1 with `GetBlockRange`) → no replay per read, no hashing
-//! - one block = its height record + the nodes and subtree roots it completes; blocks above the
-//!   durable tip = `zaino_persistence::Tiered` (same positions, RAM only)
+//! - one block = its height record + the nodes and subtree roots it completes ([`fold`]); blocks
+//!   above the durable tip = `zaino_persistence::Tiered` (same positions, RAM only)
 //!
-//! # Lookup (`ReadView::treestate`)
+//! # Lookup ([`TreeStateReader`]: a request's tree state, a fold's parent frontier)
 //!
 //! ```text
 //! height h ──▶ heights[h] ──▶ hash, time, size s per pool        (held records first)
@@ -44,23 +44,23 @@
 //! Storage: `zaino_persistence` port (`docs/design/persistence-engine.md`),
 //! `docs/design/index-data-structures.md` §3
 
-use zaino_persistence::{Changes, IndexKind, Schema, SequenceId, SequenceRead, Width};
-use zaino_primitives::types::{Height, ShieldedPool};
+use zaino_persistence::{IndexKind, Schema, SequenceId, Width};
+use zaino_primitives::types::ShieldedPool;
 use zcash_protocol::consensus::NetworkType;
 
 mod fold;
 mod heights;
-mod index_writer;
 mod nodes;
+mod reader;
 mod serve;
 mod subtrees;
-mod view;
+mod writer;
 
-pub use index_writer::TreeStateIndexWriter;
+pub use fold::{fold, fold_run, FoldError};
+pub use reader::TreeStateReader;
 pub use serve::{PoolActivations, ServeError, TreeStateService};
-pub use view::ReadView;
+pub use writer::TreeStateIndexWriter;
 
-use heights::TreeStateHeight;
 use nodes::{MERKLE_DEPTH, NODE};
 
 /// On-disk layout version
@@ -101,39 +101,6 @@ pub fn schema(network: NetworkType) -> Schema {
         let entry = Width::fixed(subtrees::ENTRY as u32);
         levels.with_sequence(subtree_table(pool), &format!("{pool}/subtrees"), entry)
     })
-}
-
-/// `at`'s height record (`None` above `view`'s tip)
-pub(crate) fn height_record(view: &impl SequenceRead, at: Height) -> Option<TreeStateHeight> {
-    let bytes = view.record(HEIGHTS, u64::from(at))?;
-    Some(heights::decode(bytes[..].try_into().expect("RECORD bytes")))
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum IndexWriterError {
-    /// Stored nodes will not rebuild a frontier of the recorded size (a fold bug)
-    #[error("tree-state store is inconsistent at size {size}")]
-    Inconsistent { size: u64 },
-
-    /// Non-canonical field element off the wire
-    #[error("block {height} carries an uncommittable note commitment")]
-    Commitment { height: Height },
-}
-
-/// Appends `records` to `table` at its entry in `ends` (per sequence, moved on), each at its own
-/// slot (slot != end = a fold bug)
-fn append_in_order<R: AsRef<[u8]>>(
-    changes: &mut Changes,
-    ends: &mut [u64],
-    table: SequenceId,
-    records: impl Iterator<Item = (u64, R)>,
-) {
-    let end = &mut ends[usize::from(table.0)];
-    for (slot, record) in records {
-        assert_eq!(slot, *end, "{table:?}: slot {slot} appended at {end}");
-        changes.append(table, record.as_ref());
-        *end += 1;
-    }
 }
 
 #[cfg(test)]

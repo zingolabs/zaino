@@ -51,7 +51,7 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
   probe per outpoint.
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
-  with `S::View: MapRead`, serving `ReadView<V>` /
+  with `S::View: MapRead`, serving `TransparentAddressReader<TieredView<V>>` /
   `TransparentAddressService<V>`; zainod picks `DiskEngine`.
 - `TransparentAddressIndexWriter::run` is this index's own loop over its
   `zaino_sync::BlockSink` subscription (one `match` per `Step`). Services read
@@ -74,12 +74,20 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
 
 ## No lookups in the fold
 
+```rust
+use zaino_index_transparent_address::{fold, TransparentAddressReader};
+
+let parent = TransparentAddressReader::new(view, network);  // any `V: View` over this schema
+let changes = fold(&parent, &block);                         // its receives + spent rows
+```
+
 A spend is recorded under its outpoint, which the block carries, not under the
 spending address. There is no outpoint map, no UTXO set and nothing mutable:
-`apply` is a projection and the durable side never deletes. Queries compose the
-maps: scan `receives` for the address, probe `spent` per outpoint; unspent = the
-probes that miss. Cost is `O(received)` per address. See
-[`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §5.
+`fold` is a projection (the parent supplies only its network, for the schema)
+and the durable side never deletes. Queries compose the maps through a
+`TransparentAddressReader`: scan `receives` for the address, probe `spent` per
+outpoint; unspent = the probes that miss. Cost is `O(received)` per address.
+See [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §5.
 
 `transactions(start, end)` (both inclusive) scans all of history (an in-range spend consumes an
 output received at any height) and reports both receipts and spends in range.
@@ -93,7 +101,7 @@ Both are tips: the last height held, inclusive (`None` = nothing held).
 | applied | held blocks, reaches the tip | a non-final `Apply`, a commit, a `Reorg` |
 | `durable_tip()` | the committed store | a commit |
 
-- One block = its `receives` and `spent` rows (one `Changes`, projected inline
+- One block = its `receives` and `spent` rows (one `Changes`, `fold`ed inline
   on the loop, no lookups). Storage tiers are `zaino_persistence::Tiered`
   ([§5](../../docs/design/persistence-engine.md#5-tiering)): a non-final block
   is applied (RAM, no I/O); a final one is staged, committed in bulk once a
@@ -102,7 +110,7 @@ Both are tips: the last height held, inclusive (`None` = nothing held).
 - `Reorg` drops every applied block; the store is not touched. A reorg and a
   restart are the same operation: re-apply from the durable tip. See
   [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
-- Reads pin one `ReadView`: the held rows over the committed store, merged by
+- Reads pin one `TransparentAddressReader`: the held rows over the committed store, merged by
   key (a row sits in exactly one tier), answering up to the view's tip.
 - `Tiered` asserts contiguous heights from genesis: a gap would leave spent
   outputs counted as balance, so there is no start-height option.

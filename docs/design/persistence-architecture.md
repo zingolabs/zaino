@@ -102,7 +102,7 @@ A fold costs one combine per commitment, amortised. At N ≈ 3M per pool [assume
 This is the one place in Zaino where CPU is the bottleneck. The Sandblast spam (mainnet heights
 ~1.70M to 1.72M) makes it real: those blocks carry hundreds of Sapling outputs each, and a
 single-threaded fold held zainod to ~100 blocks/s on one pegged core, with 90% of its CPU in
-`PoolFold` [measured, profile of a live sync]. We therefore fold in three ways that stack:
+the tree-state fold's Merkle hashing [measured, profile of a live sync]. We therefore fold in three ways that stack:
 
 1. The fold is level-synchronous. A batch of leaves is hashed one tree level at a time through
    `Frontier::append_batch_visiting`, with one `Hashable::combine_pairs` call per level, and the

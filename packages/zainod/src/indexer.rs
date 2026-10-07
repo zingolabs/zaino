@@ -144,7 +144,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     })?;
     let schema = zaino_index_tree_state::schema(network);
     let tree_state = open_optional(&engine, &index.tree_state, schema, |store, batch| {
-        Ok(TreeStateIndexWriter::new(store, batch)?)
+        Ok(TreeStateIndexWriter::new(store, batch))
     })?;
     let config_ta = &index.transparent_address;
     let schema = zaino_index_transparent_address::schema(network);

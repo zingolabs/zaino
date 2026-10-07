@@ -51,18 +51,18 @@ request. `apply` and `stage` are the two watermarks' inputs, `finalize` is `comm
 `reset`. The window holds `finalised_depth` blocks, 1,000 by default, with one persistent-structure
 (`imbl`) clone per published block.
 
-| Index               | One block's `Changes`                                         | Carry                 |
+| Index               | One block's `Changes`                                         | Parent state read     |
 | ------------------- | ------------------------------------------------------------- | --------------------- |
-| compact block       | its encoded record                                            | none (folds read it)  |
+| compact block       | its encoded record                                            | cumulative tree sizes |
 | tree state          | its height record, the nodes and subtree roots it completes   | frontier per pool     |
 | transparent address | its `receives` and `spent` rows                               | none                  |
 | value balance       | its transparent outputs                                       | none                  |
 | block hash          | its `hash → height` row                                       | none                  |
 
-An index with a carry keeps one, after the last held block. `reset` re-reads it off the view's tip
-record (tree-state's frontiers through the same reconstruction a read uses), so a reorg runs the
-boot path. Compact-block carries nothing: its `fold` reads the parent tip record's `chainMetadata`
-through a reader over the held view, whatever that view now holds.
+An index's fold reads that state through its reader on the parent, off the view's tip record
+(compact-block's `chainMetadata`, tree-state's frontiers through the same reconstruction a read
+uses). Nothing is carried between blocks, so `reset` needs no step of its own: a reorg runs the boot
+path.
 
 ## A reorg deeper than `finalised_depth` is fatal
 

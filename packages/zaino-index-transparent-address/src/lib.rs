@@ -12,11 +12,11 @@
 //! ```
 //!
 //! - insert only: a spend = a new `spent` row, never a delete of its `receives` row
-//! - no outpoint → address map, no UTXO set: `apply` = a pure projection of one block, no lookups
+//! - no outpoint → address map, no UTXO set: [`fold`] = a pure projection of one block, no lookups
 //! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
 //! - blocks above the durable tip = `zaino_persistence::Tiered` (RAM only, keyed as the maps)
 //!
-//! # Lookup ([`TransparentAddressService::utxos`])
+//! # Lookup ([`TransparentAddressReader`], through [`TransparentAddressService::utxos`])
 //!
 //! ```text
 //! address ──▶ receives:  `range(RECEIVES, (addr, start), (addr, tip + 1), budget)`
@@ -31,16 +31,18 @@
 //! - `docs/design/index-data-structures.md` §5
 
 mod address;
-mod index_writer;
+mod fold;
 mod key;
+mod reader;
 mod serve;
-mod view;
+mod writer;
 
-pub use index_writer::TransparentAddressIndexWriter;
+pub use fold::fold;
+pub use reader::TransparentAddressReader;
 pub use serve::{
     AddressUtxo, ServeError, TransactionRef, TransparentAddressService, DEFAULT_MAX_ADDRESS_ROWS,
 };
-pub use view::ReadView;
+pub use writer::TransparentAddressIndexWriter;
 
 use zaino_persistence::{IndexKind, MapId, Schema, Width};
 use zcash_protocol::consensus::NetworkType;

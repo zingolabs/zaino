@@ -1,0 +1,56 @@
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "feature"
+section = "Added"
+description = """
+`fold(parent, block)` and `fold_run(parent, blocks)` turn blocks into their \
+`Changes` as a pure function of the parent state, read through a \
+`TreeStateReader` over any `SequenceRead` view (tree sizes from its tip \
+record, each pool's frontier rebuilt from retained nodes). `fold_run` keeps \
+the batched Merkle hashing (one `combine_pairs` per level across the run, \
+pools concurrent) and splits it per block; any split into runs yields the \
+same `Changes`. Both return `FoldError` (`Inconsistent`, `Commitment`).
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "Changed"
+description = """
+`ReadView<V>` is renamed `TreeStateReader<V>` and is generic over any view: \
+`TreeStateReader::new(view, network)`. The writer publishes, and \
+`TreeStateService<V>` serves, `TreeStateReader<TieredView<V>>`. \
+`TreeStateIndexWriter::new` is infallible: the writer no longer carries \
+frontiers, so neither boot nor a reorg reseeds anything. `IndexWriterError` \
+is replaced by `FoldError`.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "feature"
+section = "Added"
+description = """
+`fold(parent, block)` projects a block onto its `receives` and `spent` rows \
+(spends keyed by outpoint, no lookups) on top of a \
+`TransparentAddressReader` parent.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "Changed"
+description = """
+`ReadView<V>` is renamed `TransparentAddressReader<V>` and is generic over any \
+view: `TransparentAddressReader::new(view, network)`. The writer publishes, \
+and `TransparentAddressService<V>` serves, \
+`TransparentAddressReader<TieredView<V>>`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Removed"
+description = """
+`IndexerError::OpenTreeStateIndex` is removed: opening the tree-state index \
+fails only in the engine's `open` (`OpenIndex`).
+"""

@@ -1,4 +1,4 @@
-//! Address RPCs over one pinned [`ReadView`] per request
+//! Address RPCs over one pinned [`TransparentAddressReader`] per request
 //!
 //! - scan `receives`, then one batched `spent` lookup over every outpoint (unspent = a miss)
 //! - synchronous: mmapped pages and range walks, so a transport runs these off its async workers
@@ -6,13 +6,13 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::MapRead;
+use zaino_persistence::{MapRead, TieredView};
 use zaino_primitives::types::{Height, TransactionId, Zatoshis};
 use zaino_sync::Served;
 use zcash_protocol::consensus::NetworkType;
 use zcash_transparent::address::TransparentAddress;
 
-use crate::{key::AddressKey, view::ReadView};
+use crate::{key::AddressKey, TransparentAddressReader};
 
 /// - never an empty result (gap-limit walk must tell "no transactions" from "cannot tell")
 /// - transport maps these onto gRPC codes; this crate names no transport
@@ -55,7 +55,7 @@ pub struct TransactionRef {
 
 #[derive(Debug, Clone)]
 pub struct TransparentAddressService<V> {
-    served: Served<ReadView<V>>,
+    served: Served<TransparentAddressReader<TieredView<V>>>,
     network: NetworkType,
     max_rows: NonZeroUsize,
 }
@@ -63,7 +63,10 @@ pub struct TransparentAddressService<V> {
 impl<V: MapRead> TransparentAddressService<V> {
     /// - unsynced → every method [`ServeError::Syncing`]
     /// - `network` = what the index was built for (its addresses are the only ones it answers)
-    pub fn new(served: Served<ReadView<V>>, network: NetworkType) -> Self {
+    pub fn new(
+        served: Served<TransparentAddressReader<TieredView<V>>>,
+        network: NetworkType,
+    ) -> Self {
         Self { served, network, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
     }
 
@@ -189,7 +192,7 @@ impl<V: MapRead> TransparentAddressService<V> {
     }
 
     /// One consistent view for the request (no commit lands mid-answer)
-    fn pin(&self) -> Result<std::sync::Arc<ReadView<V>>, ServeError> {
+    fn pin(&self) -> Result<std::sync::Arc<TransparentAddressReader<TieredView<V>>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 }

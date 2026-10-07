@@ -241,7 +241,7 @@ mod tests {
             compact_synced_rx,
         ));
         let tree_state_store = store("/tree-state", &zaino_index_tree_state::schema(net));
-        let tree_state_index = TreeStateIndexWriter::new(tree_state_store, batch).expect("new");
+        let tree_state_index = TreeStateIndexWriter::new(tree_state_store, batch);
         // Start unsynced, flip below: the refusal and the answer come from one wiring.
         let (tree_state_synced, tree_state_synced_rx) = tokio::sync::watch::channel(false);
         let (transparent_synced, transparent_synced_rx) = tokio::sync::watch::channel(false);
