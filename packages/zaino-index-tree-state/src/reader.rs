@@ -48,17 +48,13 @@ impl<V: View> TreeStateReader<V> {
     }
 }
 
-/// Serving's seam between held blocks and the committed files (gone with `LayeredView`)
+/// A snapshot's seam: its layer above the committed files
 impl<V: View> TreeStateReader<LayeredView<V>> {
-    /// Last committed height, inclusive (`None` = nothing committed)
-    pub(crate) fn finalized(&self) -> Option<Height> {
-        self.view.durable().tip().map(|tip| tip.height)
-    }
-
-    /// `at` held above the committed files: reorg-able, and among the ~1000 heights every synced
-    /// wallet asks about (bounded: a per-publication memo keyed on these stays small)
+    /// `at` in the layer above the committed files: among the ~1000 heights every synced wallet
+    /// asks about (bounded: a per-snapshot memo keyed on these stays small)
     pub fn is_non_finalized(&self, at: Height) -> bool {
-        Some(at) <= self.tip() && Some(at) > self.finalized()
+        let committed = self.view.durable().tip().map(|tip| tip.height);
+        Some(at) <= self.tip() && Some(at) > committed
     }
 }
 
@@ -67,9 +63,11 @@ impl<V: SequenceRead> TreeStateReader<V> {
     ///
     /// - `000000` when empty: both clients map an empty *field* onto `CommitmentTree::empty()`
     ///   (`zcash_client_backend/src/proto.rs:404,420-444`), so `""` post-activation is wrong
-    /// - served through `TreeStateService::treestate_in` (Sapling floor, activation schedule)
+    /// - Sapling floor and blank pools below their upgrade = the route's ([`PoolActivations`])
     /// - reads mmapped nodes: run off async workers
-    pub(crate) fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
+    ///
+    /// [`PoolActivations`]: crate::PoolActivations
+    pub fn treestate(&self, at: Height) -> Result<Treestate, ServeError> {
         let record = self.height_record(at).ok_or(ServeError::NotFound { height: at })?;
         let inconsistent = ServeError::Inconsistent { height: at };
         let tree = |pool| self.pool_tree(pool, record.sizes).ok_or(inconsistent.clone());

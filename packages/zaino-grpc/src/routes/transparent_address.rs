@@ -1,9 +1,9 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
-//! (index names the txids, a validator supplies the bytes)
+//! (index names the txids, a validator supplies the bytes), all as of the snapshot's tip
 
 use bytes::Bytes;
-use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressService};
-use zaino_persistence::MapRead;
+use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
+use zaino_persistence::{LayeredView, MapRead};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::Zatoshis;
 use zaino_proto::proto::service as proto;
@@ -24,10 +24,15 @@ use crate::wire::{
     self, decode_request, frame, path, status_response, streamed_response, trailers, unary_response,
 };
 
-/// `Syncing` = `Unavailable` (clears on its own; `Unimplemented` would retire the method)
+/// One request's index: the snapshot's reader (as of its tip, row-capped) + the network its
+/// addresses parse in
+pub(crate) struct Addresses<V> {
+    pub(crate) reader: TransparentAddressReader<LayeredView<V>>,
+    pub(crate) network: NetworkType,
+}
+
 fn to_status(error: ServeError) -> Status {
     match &error {
-        ServeError::Syncing => Status::unavailable(error.to_string()),
         ServeError::SupplyExceeded => Status::internal(error.to_string()),
         ServeError::TooManyRows { .. } => Status::resource_exhausted(error.to_string()),
     }
@@ -35,7 +40,7 @@ fn to_status(error: ServeError) -> Status {
 
 /// Dispatches a claimed transparent-address path.
 pub(crate) async fn dispatch<V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     path: &str,
     body: B,
     reads: ReadLanes,
@@ -45,17 +50,17 @@ where
     B::Error: std::fmt::Display,
 {
     let answer = match path {
-        path::GET_ADDRESS_UTXOS => utxos(service, body, &reads)
+        path::GET_ADDRESS_UTXOS => utxos(index, body, &reads)
             .await
             .map(|address_utxos| wire::frame(&proto::GetAddressUtxosReplyList { address_utxos }))
             .map(unary_response),
-        path::GET_ADDRESS_UTXOS_STREAM => utxos(service, body, &reads)
+        path::GET_ADDRESS_UTXOS_STREAM => utxos(index, body, &reads)
             .await
             .map(|replies| replies.iter().map(wire::frame).collect())
             .map(streamed_response),
-        path::GET_TADDRESS_BALANCE => balance_of(service, body, &reads).await.map(unary_response),
+        path::GET_TADDRESS_BALANCE => balance_of(index, body, &reads).await.map(unary_response),
         path::GET_TADDRESS_BALANCE_STREAM => {
-            streamed_balance_of(service, body, &reads).await.map(unary_response)
+            streamed_balance_of(index, body, &reads).await.map(unary_response)
         }
         _ => Err(Status::unimplemented("not a transparent-address method")),
     };
@@ -72,7 +77,7 @@ where
 /// of transactions, and a client that stops reading stops the round trips rather than
 /// having paid for all of them up front. HTTP/2 flow control does the pacing.
 pub(crate) async fn transactions<S: ChainDataSource, V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     validators: TrafficBalancer<S>,
     body: B,
     reads: ReadLanes,
@@ -81,7 +86,7 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let found = match found_transactions(service, body, &reads).await {
+    let found = match found_transactions(index, body, &reads).await {
         Ok(found) => found,
         Err(status) => return status_response(status),
     };
@@ -114,7 +119,7 @@ where
 
 /// The txids the index says touched the address, in height order.
 async fn found_transactions<V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Vec<zaino_primitives::types::TransactionId>, Status>
@@ -123,7 +128,7 @@ where
     B::Error: std::fmt::Display,
 {
     let request: proto::TransparentAddressBlockFilter = decode_request(body).await?;
-    let address = transparent_address(&request.address, service.network())?;
+    let address = transparent_address(&request.address, index.network)?;
     let range = request.range.ok_or_else(|| Status::invalid_argument("range is required"))?;
 
     let height = |bound: Option<proto::BlockId>, field: &str| {
@@ -133,7 +138,8 @@ where
     };
     let (start, end) = wire::ordered(height(range.start, "start")?, height(range.end, "end")?)?;
 
-    let found = reads.read(Lane::Scan, move || service.transactions(&address, start, end)).await?;
+    let found =
+        reads.read(Lane::Scan, move || index.reader.transactions(&address, start, end)).await?;
 
     Ok(found.map_err(to_status)?.into_iter().map(|found| found.txid).collect())
 }
@@ -159,7 +165,7 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
 
 /// `GetAddressUtxos` / `GetAddressUtxosStream` — the same walk, two response shapes.
 async fn utxos<V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Vec<proto::GetAddressUtxosReply>, Status>
@@ -172,12 +178,12 @@ where
     let addresses = request
         .addresses
         .iter()
-        .map(|encoded| transparent_address(encoded, service.network()))
+        .map(|encoded| transparent_address(encoded, index.network))
         .collect::<Result<Vec<_>, _>>()?;
 
     let (addresses, utxos) = reads
         .read(Lane::Scan, move || {
-            let utxos = service.utxos_of(&addresses, from);
+            let utxos = index.reader.utxos_of(&addresses, from);
             (addresses, utxos)
         })
         .await?;
@@ -219,7 +225,7 @@ fn reply(
 }
 
 async fn balance_of<V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
@@ -228,13 +234,13 @@ where
     B::Error: std::fmt::Display,
 {
     let list: proto::AddressList = wire::decode_request(body).await?;
-    balance(service, &list.addresses, reads).await
+    balance(index, &list.addresses, reads).await
 }
 
 /// `GetTaddressBalanceStream` is client-streaming: the body is one framed `Address` each,
 /// and the reply is still the single total.
 async fn streamed_balance_of<V: MapRead, B>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
@@ -245,23 +251,23 @@ where
     let streamed: Vec<proto::Address> = wire::decode_request_stream(body).await?;
     let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
 
-    balance(service, &addresses, reads).await
+    balance(index, &addresses, reads).await
 }
 
 /// Deduped on the parsed address (a repeated address counts once)
 /// - distinct addresses' balances sum within the supply, so overflow = index corruption
 async fn balance<V: MapRead>(
-    service: TransparentAddressService<V>,
+    index: Addresses<V>,
     addresses: &[String],
     reads: &ReadLanes,
 ) -> Result<Bytes, Status> {
     let distinct: Vec<TransparentAddress> = addresses
         .iter()
-        .map(|encoded| transparent_address(encoded, service.network()))
+        .map(|encoded| transparent_address(encoded, index.network))
         .collect::<Result<std::collections::BTreeSet<_>, _>>()?
         .into_iter()
         .collect();
-    let balances = reads.read(Lane::Scan, move || service.balances(&distinct)).await?;
+    let balances = reads.read(Lane::Scan, move || index.reader.balances(&distinct)).await?;
 
     let total = Zatoshis::sum_balances(balances.map_err(to_status)?.into_iter())
         .expect("distinct addresses' balances exceed the money supply: index corrupt");
@@ -273,16 +279,13 @@ async fn balance<V: MapRead>(
 mod tests {
     use http::{HeaderMap, HeaderValue, Request, Response};
     use http_body_util::Full;
-    use std::num::NonZeroUsize;
     use tonic::{body::Body, Status};
 
-    use zaino_index_transparent_address::TransparentAddressService;
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::{frame_into, FRAME_HEADER};
-    use zaino_sync::Served;
 
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, routes_over, store, MAINNET};
+    use crate::testing::{dispatch, framed_request, indexed, routes, routes_over, snapshot};
     use crate::wire::path;
 
     /// A populated t-address index answers all four of its methods from the same rows: the two
@@ -292,10 +295,9 @@ mod tests {
     async fn a_populated_transparent_index_answers_utxos_and_balances_in_both_shapes() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_index_transparent_address::TransparentAddressIndexWriter;
         use zaino_primitives::testing::Chain;
         use zaino_primitives::types::{
-            Block, Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
+            Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
         };
         use zaino_proto::proto::service as proto;
         use zaino_source::mock::MockChain;
@@ -305,10 +307,6 @@ mod tests {
         const BOB: &str = "t3Mg6o2UpMFVtrzqGs7f2VTS6DaiPnFT5rL";
         let alice_script = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
         let bob_script = [&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat();
-
-        let schema = zaino_index_transparent_address::schema(MAINNET);
-        let index = TransparentAddressIndexWriter::new(store("/ta", &schema), NonZeroUsize::MIN);
-        let served = index.published().served();
 
         // Height 0: alice 500 (vout 0), bob 70 (vout 1). Height 1: alice 300.
         let pays = |tag: u8, outputs: Vec<(Vec<u8>, u64)>| Transaction {
@@ -333,16 +331,12 @@ mod tests {
         let mut chain = Chain::with_genesis(vec![genesis]);
         let tip = chain
             .mine_with(chain.genesis().hash, vec![pays(0x11, vec![(alice_script.clone(), 300)])]);
-        let blocks: Vec<std::sync::Arc<Block>> =
-            chain.path(tip.hash).into_iter().map(std::sync::Arc::new).collect();
-        let name = IndexKind::TransparentAddress.name();
-        indexed(&blocks, name, |queue| index.run(queue)).await;
-        let view = (*served.pin_any()).clone();
+        let blocks = chain.path(tip.hash);
+        let index = indexed(IndexKind::TransparentAddress, &blocks);
 
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(MockChain::serving(chain.path(tip.hash)));
-        let transparent = TransparentAddressService::new(Served::fixed(view), MAINNET);
-        let routes = Routes { transparent_address: Some(transparent), ..routes_over(&node).0 };
+        let routes = Routes { nfs: snapshot(&blocks, vec![index]), ..routes_over(&node).0 };
         let mut router = dispatch(routes);
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
@@ -539,7 +533,6 @@ mod tests {
     async fn a_foreign_network_address_is_refused_by_every_transparent_method() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_index_transparent_address::TransparentAddressIndexWriter;
         use zaino_primitives::testing::Chain;
         use zaino_primitives::types::{
             Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
@@ -548,9 +541,6 @@ mod tests {
         use zcash_address::ToAddress as _;
         use zcash_protocol::consensus::NetworkType;
 
-        let schema = zaino_index_transparent_address::schema(NetworkType::Main);
-        let index = TransparentAddressIndexWriter::new(store("/ta", &schema), NonZeroUsize::MIN);
-        let served = index.published().served();
         let chain = Chain::with_genesis(vec![Transaction {
             txid: TransactionId::from([0x10; 32]),
             transparent: TransparentData {
@@ -568,14 +558,9 @@ mod tests {
             orchard: Default::default(),
             ironwood: Default::default(),
         }]);
-        let funded = chain.block(chain.genesis().hash).clone();
-        let name = IndexKind::TransparentAddress.name();
-        let blocks = [std::sync::Arc::new(funded)];
-        indexed(&blocks, name, |queue| index.run(queue)).await;
-        let view = (*served.pin_any()).clone();
-
-        let transparent = TransparentAddressService::new(Served::fixed(view), MAINNET);
-        let mut router = dispatch(Routes { transparent_address: Some(transparent), ..routes() });
+        let blocks = chain.path(chain.genesis().hash);
+        let index = indexed(IndexKind::TransparentAddress, &blocks);
+        let mut router = dispatch(Routes { nfs: snapshot(&blocks, vec![index]), ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =

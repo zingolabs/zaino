@@ -21,7 +21,6 @@ mod manifest;
 mod pages;
 mod port;
 mod sequence;
-mod tiered;
 
 pub use dir::disk_bytes;
 pub use disk::{DiskEngine, DiskStore, DiskView};
@@ -32,7 +31,6 @@ pub use port::{
     Changes, Checked, MapId, MapRead, MapTable, PersistenceEngine, Schema, SequenceId,
     SequenceRead, SequenceTable, Store, Verification, View, Width,
 };
-pub use tiered::Tiered;
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +50,7 @@ pub enum StoreError {
 
 impl StoreError {
     /// Failed commit → crash naming the disk (store unusable after one, recovery = reopen)
-    pub(crate) fn commit_failed(&self, index: &str, dir: &Path) -> ! {
+    pub fn commit_failed(&self, index: &str, dir: &Path) -> ! {
         if self.disk_full() {
             panic!("{index} index commit failed: disk {} full", dir.display());
         }

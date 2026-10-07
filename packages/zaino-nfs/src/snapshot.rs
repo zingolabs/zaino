@@ -178,6 +178,33 @@ impl<V> NfsHandle<V> {
     }
 }
 
+/// Handles no driver publishes into (consumers' route tests)
+#[cfg(any(test, feature = "testing"))]
+impl<V: View> NfsHandle<V> {
+    /// Nothing published yet (a booting NFS)
+    pub fn unpublished() -> Self {
+        Publisher::new().handle()
+    }
+
+    /// One snapshot for good at `tip` on `chain`: each enabled index = its committed view, no layer
+    pub fn fixed(
+        chain: Arc<VerifiedChain>,
+        tip: BlockRef,
+        params: ChainParams,
+        durable: impl IntoIterator<Item = (IndexKind, V)>,
+    ) -> Self {
+        let (mut views, mut layers) = (PerIndex::default(), PerIndex::default());
+        for (kind, view) in durable {
+            layers.insert(kind, Layer::empty(&crate::fold::schema(kind, params.network)));
+            views.insert(kind, view);
+        }
+        let views = Views::new(params.network, &views, &layers);
+        let published = Publisher::new();
+        published.publish(Snapshot { chain, tip, params, views });
+        published.handle()
+    }
+}
+
 /// Driver's end of every [`NfsHandle`]
 pub(crate) struct Publisher<V> {
     current: Arc<ArcSwapOption<Snapshot<V>>>,

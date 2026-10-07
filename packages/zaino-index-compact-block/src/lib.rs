@@ -32,7 +32,7 @@ pub use build::{compact_tx, encode_compact_block};
 pub use fold::fold;
 pub use project::{project_tx_at, Pools};
 pub use reader::CompactBlockReader;
-pub use serve::{CompactBlockService, RangeCursor, ServeError};
+pub use serve::{RangeCursor, ServeError};
 pub use writer::CompactBlockIndexWriter;
 
 /// On-disk layout version

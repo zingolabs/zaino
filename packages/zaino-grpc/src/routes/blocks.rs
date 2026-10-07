@@ -1,26 +1,28 @@
 //! Compact-block methods: `GetLatestBlock`, `GetBlock`, `GetBlockRange` (stored records, sent as
-//! the body)
+//! the body), all at heights `<=` the snapshot's tip
 
 use bytes::Bytes;
 use http::{HeaderValue, Response};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
-use zaino_index_compact_block::{CompactBlockService, Pools, RangeCursor, ServeError};
-use zaino_internal_block_hash_to_height::BlockHashService;
-use zaino_persistence::{MapRead, SequenceRead};
+use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
+use zaino_nfs::Snapshot;
+use zaino_persistence::{LayeredView, MapRead, SequenceRead};
+use zaino_primitives::types::Height;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
 use crate::wire::{self, path, status_response, trailers, unary_response};
 use zaino_proto::proto::service as proto;
 
+/// One snapshot's compact-block records
+type Blocks<V> = CompactBlockReader<LayeredView<V>>;
+
 /// Maps an index error onto a gRPC status, keeping the kinds distinct: a miss is not a bad
 /// request, and corruption is not either.
 fn to_status(error: ServeError) -> Status {
     match &error {
-        // `Unavailable`, not `FailedPrecondition`: clears on its own (retry with backoff)
-        ServeError::Syncing | ServeError::Empty => Status::unavailable(error.to_string()),
         ServeError::NotFound { .. } | ServeError::HashNotFound => {
             Status::not_found(error.to_string())
         }
@@ -30,8 +32,8 @@ fn to_status(error: ServeError) -> Status {
 
 /// Dispatches a claimed compact-block path.
 pub(crate) async fn dispatch<V, B>(
-    service: CompactBlockService<V>,
-    locator: Option<BlockHashService<V>>,
+    snap: &Snapshot<V>,
+    blocks: Blocks<V>,
     path: &str,
     body: B,
     reads: ReadLanes,
@@ -41,13 +43,15 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
+    let tip = snap.tip().height;
     let answer = match path {
-        path::GET_LATEST_BLOCK => latest(&service).map(unary_response),
-        path::GET_BLOCK => block(service, locator, body, &reads).await.map(unary_response),
+        path::GET_LATEST_BLOCK => Ok(unary_response(latest(snap))),
+        path::GET_BLOCK => block(snap, blocks, body, &reads).await.map(unary_response),
         path::GET_BLOCK_RANGE => {
-            range(&service, body).await.map(|cursor| range_response(cursor, reads, Ok))
+            let range = range(blocks, tip, body).await;
+            range.map(|cursor| range_response(cursor, reads, Ok))
         }
-        path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(&service, body)
+        path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(blocks, tip, body)
             .await
             .map(|cursor| range_response(cursor, reads, deprecated_nullifiers::reproject)),
         _ => Err(Status::unimplemented("not a compact-block method")),
@@ -80,8 +84,8 @@ fn range_response<V: SequenceRead>(
         // spawning for those would cost a task per *block* on a projected range — putting a
         // bounded pool in front of the highest-volume RPC before the disk is even reached.
         let (cursor, chunk) = if cursor.next_touches_disk() {
-            // Range lane, per disk step (not per request): a stream reading the non-finalized
-            // tier never queues, and no range queues a point read or a scan.
+            // Range lane, per disk step (not per request): a stream reading the snapshot's
+            // layer never queues, and no range queues a point read or a scan.
             let _permit = reads.acquire(Lane::Range).await;
 
             match tokio::task::spawn_blocking(move || {
@@ -120,15 +124,11 @@ fn range_response<V: SequenceRead>(
     response
 }
 
-/// `GetLatestBlock` answers a `BlockID`, not a block — the tip's height and hash.
-///
-/// It is the one claimed method whose reply is not a stored record, so it is the one that
-/// encodes rather than copies. The message is two fields, so that costs nothing.
-///
-/// - inline: the tip was resolved when the view was published (no page read, no hop)
-fn latest<V: SequenceRead>(service: &CompactBlockService<V>) -> Result<Bytes, Status> {
-    let (height, hash) = service.latest_id().map_err(to_status)?;
-    Ok(wire::frame(&proto::BlockId { height: height.into(), hash: hash.to_vec() }))
+/// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)
+fn latest<V>(snap: &Snapshot<V>) -> Bytes {
+    let tip = snap.tip();
+    let hash = <[u8; 32]>::from(tip.hash).to_vec();
+    wire::frame(&proto::BlockId { height: tip.height.into(), hash })
 }
 
 /// `GetBlock` answers one whole block, every pool included.
@@ -139,8 +139,8 @@ fn latest<V: SequenceRead>(service: &CompactBlockService<V>) -> Result<Bytes, St
 /// answers. `BlockID` has no `poolTypes`, so there is no way to ask for less. Matching
 /// lightwalletd is the only reason to keep it.
 async fn block<V, B>(
-    service: CompactBlockService<V>,
-    locator: Option<BlockHashService<V>>,
+    snap: &Snapshot<V>,
+    blocks: Blocks<V>,
     body: B,
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
@@ -151,28 +151,27 @@ where
 {
     let id: proto::BlockId = wire::decode_request(body).await?;
 
-    // by height at the tip (pepper-sync's reorg check): RAM, answered inline
-    if id.hash.is_empty() {
-        let height = wire::height(id.height, "height")?;
-        if let Some(record) = service.resident_block(height).map_err(to_status)? {
-            return Ok(record);
-        }
+    // A hash, when given, wins: it names one block across a reorg, a height does not.
+    if !id.hash.is_empty() {
+        let (height, hash) = wire::locate(snap, &id.hash, "GetBlock")?;
+        let read = move || blocks.block_at(height, &hash).map_err(to_status);
+        return reads.read(Lane::Point, read).await?;
     }
 
-    reads
-        .read(Lane::Point, move || {
-            // A hash, when given, wins: it names one block across a reorg, a height does not.
-            if !id.hash.is_empty() {
-                let (height, hash) = wire::locate(locator.as_ref(), &id.hash, "GetBlock")?;
-                return service.block_at_hash(height, &hash).map_err(to_status);
-            }
-            service.block(wire::height(id.height, "height")?).map_err(to_status)
-        })
-        .await?
+    let height = wire::height(id.height, "height")?;
+    let missing = move || to_status(ServeError::NotFound { height });
+    if height > snap.tip().height {
+        return Err(missing());
+    }
+    // the snapshot's layer (pepper-sync's reorg check at the tip): RAM, answered inline
+    if let Some(record) = blocks.resident_block(height) {
+        return Ok(record);
+    }
+    reads.read(Lane::Point, move || blocks.block(height).ok_or_else(missing)).await?
 }
 
 /// `GetBlockRange`: the wallet-sync path, and the one that has to be cheap.
-async fn range<V, B>(service: &CompactBlockService<V>, body: B) -> Result<RangeCursor<V>, Status>
+async fn range<V, B>(blocks: Blocks<V>, tip: Height, body: B) -> Result<RangeCursor<V>, Status>
 where
     V: SequenceRead,
     B: http_body::Body,
@@ -180,11 +179,12 @@ where
 {
     let request: proto::BlockRange = wire::decode_request(body).await?;
 
-    open_range(service, &request, wire::pools(&request.pool_types)?)
+    open_range(blocks, tip, &request, wire::pools(&request.pool_types)?)
 }
 
 fn open_range<V: SequenceRead>(
-    service: &CompactBlockService<V>,
+    blocks: Blocks<V>,
+    tip: Height,
     request: &proto::BlockRange,
     pools: Pools,
 ) -> Result<RangeCursor<V>, Status> {
@@ -198,10 +198,10 @@ fn open_range<V: SequenceRead>(
         .as_ref()
         .map(|id| id.height)
         .ok_or_else(|| Status::invalid_argument("range has no end"))?;
-    // start > end = descending (the service walks it top down)
+    // start > end = descending (the cursor walks it top down)
     let (start, end) = (wire::height(start, "range start")?, wire::height(end, "range end")?);
 
-    service.range(start, end, pools).map_err(to_status)
+    RangeCursor::new(blocks, start, end, tip, pools).map_err(to_status)
 }
 
 // =================================================================================================
@@ -214,18 +214,20 @@ mod deprecated_nullifiers {
     use bytes::Bytes;
     use prost::Message as _;
     use tonic::Status;
-    use zaino_index_compact_block::{CompactBlockService, RangeCursor};
+    use zaino_index_compact_block::RangeCursor;
+    use zaino_primitives::types::Height;
     use zaino_proto::frame::{frame_into, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zaino_proto::proto::service as proto;
 
-    use super::open_range;
+    use super::{open_range, Blocks};
     use crate::wire::{self, pools};
 
     /// Proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]`
     /// alone = empty = shielded default, not "no pools")
     pub(super) async fn range<V, B>(
-        service: &CompactBlockService<V>,
+        blocks: Blocks<V>,
+        tip: Height,
         body: B,
     ) -> Result<RangeCursor<V>, Status>
     where
@@ -236,7 +238,7 @@ mod deprecated_nullifiers {
         let mut request: proto::BlockRange = wire::decode_request(body).await?;
         request.pool_types.retain(|pool| *pool != proto::PoolType::Transparent as i32);
 
-        open_range(service, &request, pools(&request.pool_types)?)
+        open_range(blocks, tip, &request, pools(&request.pool_types)?)
     }
 
     /// Framed records → framed nullifier-only records, one frame per block
@@ -287,13 +289,21 @@ mod deprecated_nullifiers {
 mod tests {
     use http::{HeaderMap, HeaderValue, Response};
     use tonic::{body::Body, Status};
-    use zaino_primitives::types::Height;
+    use zaino_nfs::NfsHandle;
+    use zaino_persistence::{IndexKind, Store};
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
-    use zaino_sync::Served;
 
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, routes};
+    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, store, MAINNET};
     use crate::wire::path;
+
+    /// `testing::block(0..count)` committed as compact-block's only view, served at `count - 1`
+    fn compact(count: u32) -> NfsHandle<zaino_persistence::DiskView> {
+        use zaino_index_compact_block::testing;
+        let committed =
+            testing::committed(store("/cb", &zaino_index_compact_block::schema(MAINNET)), count);
+        snapshot(&testing::chain(count), vec![(IndexKind::CompactBlock, committed.view())])
+    }
 
     /// `GetBlock` by hash: the block-hash index locates, the compact index answers only where it
     /// holds that same block; no locator wired = `Unimplemented`
@@ -301,43 +311,28 @@ mod tests {
     async fn get_block_by_hash_answers_only_where_the_compact_index_holds_that_block() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
-        use std::sync::Arc;
         use tower::Service as _;
-        use zaino_index_compact_block::{testing, CompactBlockService};
-        use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService};
-        use zaino_persistence::IndexKind;
+        use zaino_index_compact_block::testing;
         use zaino_proto::proto::service as proto;
 
-        use crate::testing::{indexed, store};
-
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let compact = testing::committed(store("/cb", &zaino_index_compact_block::schema(net)), 3);
+        let committed =
+            testing::committed(store("/cb", &zaino_index_compact_block::schema(MAINNET)), 3);
         // Locator's chain = the compact index's through 1, then another chain's block at 2
         let held = |at: u32| <[u8; 32]>::from(testing::block(at).0.header().hash);
         let mut other = zaino_primitives::testing::Chain::new();
         let other_2 = other.extend(other.genesis().hash, 2);
         let located = [testing::block(0).0, testing::block(1).0, other.block(other_2.hash).clone()];
-        let located: Vec<_> = located.into_iter().map(Arc::new).collect();
-        let schema = zaino_internal_block_hash_to_height::schema(net);
-        let batch = std::num::NonZeroUsize::MIN;
-        let hashes = BlockHashIndexWriter::new(store("/bh", &schema), batch);
-        let hashes_served = hashes.published().served();
-        indexed(&located, IndexKind::BlockHash.name(), |queue| hashes.run(queue)).await;
+        let locator = indexed(IndexKind::BlockHash, &located);
         let other_2 = <[u8; 32]>::from(other_2.hash);
 
-        let service = CompactBlockService::new(Served::fixed(compact));
-        let unlocated = dispatch(Routes { compact_block: service.clone(), ..routes() });
-        let locator = BlockHashService::new(Served::fixed((*hashes_served.pin_any()).clone()));
-        let mut router = dispatch(Routes {
-            compact_block: service.clone(),
-            block_hash: Some(locator),
-            ..routes()
-        });
-        let request = |hash: Vec<u8>| {
-            framed_request(
-                path::GET_BLOCK,
-                proto::BlockId { height: 0, hash }.encode_to_vec().into(),
-            )
+        let path_of = testing::chain(3);
+        let compact = (IndexKind::CompactBlock, committed.view());
+        let unlocated =
+            dispatch(Routes { nfs: snapshot(&path_of, vec![compact.clone()]), ..routes() });
+        let mut router =
+            dispatch(Routes { nfs: snapshot(&path_of, vec![compact, locator]), ..routes() });
+        let request = |hash: Vec<u8>, height: u64| {
+            framed_request(path::GET_BLOCK, proto::BlockId { height, hash }.encode_to_vec().into())
         };
         let code = |response: &Response<Body>| {
             Status::from_header_map(response.headers())
@@ -345,11 +340,12 @@ mod tests {
                 .unwrap_or(tonic::Code::Ok)
         };
 
-        let response = router.call(request(held(1).to_vec())).await.expect("answers");
+        let response = router.call(request(held(1).to_vec(), 0)).await.expect("answers");
         assert_eq!(code(&response), tonic::Code::Ok);
-        let by_height = service.block(Height::try_from(1).expect("height")).expect("by height");
-        let body = response.into_body().collect().await.expect("body").to_bytes();
-        assert_eq!(body, by_height, "same stored record as by height");
+        let by_hash = response.into_body().collect().await.expect("body").to_bytes();
+        let response = router.call(request(Vec::new(), 1)).await.expect("answers");
+        let by_height = response.into_body().collect().await.expect("body").to_bytes();
+        assert_eq!(by_hash, by_height, "same stored record as by height");
 
         let mut codes = Vec::new();
         for (mut router, hash) in [
@@ -358,7 +354,7 @@ mod tests {
             (router.clone(), held(1)[..31].to_vec()),
             (unlocated, held(1).to_vec()),
         ] {
-            codes.push(code(&router.call(request(hash)).await.expect("answers")));
+            codes.push(code(&router.call(request(hash, 0)).await.expect("answers")));
         }
         use tonic::Code::{InvalidArgument, NotFound, Unimplemented};
         let expected = [NotFound, NotFound, InvalidArgument, Unimplemented];
@@ -371,15 +367,10 @@ mod tests {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_index_compact_block::{testing, CompactBlockService};
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
 
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let schema = zaino_index_compact_block::schema(net);
-        let committed = testing::committed(crate::testing::store("/cb", &schema), 6);
-        let service = CompactBlockService::new(Served::fixed(committed));
-        let mut router = dispatch(Routes { compact_block: service, ..routes() });
+        let mut router = dispatch(Routes { nfs: compact(6), ..routes() });
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
             response.into_body().collect().await.expect("body").to_bytes()

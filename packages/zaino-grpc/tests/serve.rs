@@ -7,17 +7,14 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
 use zaino_grpc::{GrpcLimits, GrpcService, Routes};
-use zaino_persistence::{DiskEngine, DiskView, PersistenceEngine};
+use zaino_persistence::DiskView;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_source::mock::MockChain;
 
-/// An empty compact-block index, every other off, and a chain view never polled: no verified
-/// tip, so every `GetLightdInfo` here = `UNAVAILABLE` (what these transport tests read back)
+/// Nothing served yet and a chain view never polled: no verified tip, so every `GetLightdInfo`
+/// here = `UNAVAILABLE` (what these transport tests read back)
 fn routes() -> Routes<MockChain, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
-    let schema = zaino_index_compact_block::schema(network);
-    let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
-    let store = engine.open(std::path::Path::new("/cb"), &schema).expect("open");
     let validator = Arc::new(MockChain::new());
     let endpoint = zaino_chainview::Endpoint {
         address: "unpolled:18232".to_owned(),
@@ -30,12 +27,8 @@ fn routes() -> Routes<MockChain, DiskView> {
         chain: Arc::new(chain),
         validators: zaino_source::TrafficBalancer::new(vec![validator]),
         network,
-        compact_block: zaino_index_compact_block::CompactBlockService::new(
-            zaino_sync::Served::fixed(zaino_index_compact_block::testing::committed(store, 0)),
-        ),
-        block_hash: None,
-        tree_state: None,
-        transparent_address: None,
+        nfs: zaino_nfs::NfsHandle::unpublished(),
+        max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     }
 }
 

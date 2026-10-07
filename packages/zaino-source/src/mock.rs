@@ -163,14 +163,6 @@ impl MockChain {
 
 /// Its chain and mempool; no peers, a release with no halt
 impl crate::ChainDataSource for MockChain {
-    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        self.injected()?;
-        let held = self.held.read().expect("mock chain lock");
-        held.best_at(height)
-            .cloned()
-            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
-    }
-
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -327,8 +319,8 @@ mod tests {
         mock.extend_best(chain.path(fork.hash));
         let by_hash = mock.get_block_by_hash(trunk.hash).await;
         assert!(matches!(by_hash, Err(QueryError::Domain(GetBlockByHashError::NotFound(_)))));
-        let reorged = mock.get_block(at(4)).await.expect("fork tip").header().hash;
-        assert_eq!(reorged, fork.hash);
+        let reorged = mock.get_block_by_hash(fork.hash).await.expect("fork tip").header().height;
+        assert_eq!(reorged, at(4));
         mock.rewind_to(at(2));
         let polled = mock.get_poll_reading(false, &[at(1), at(2), at(3)]).await.expect("reachable");
         let forked = chain.path(fork.hash);
@@ -341,7 +333,8 @@ mod tests {
         assert_eq!(held, best, "getblockhash: its best chain, nothing above the cut");
         let above = &polled.held[2];
         assert!(matches!(above, Err(QueryError::Domain(GetBlockError::HeightNotFound(_)))));
-        assert!(mock.get_block(at(3)).await.is_err(), "nothing above the cut");
+        let cut = mock.get_block_by_hash(forked[3].header().hash).await;
+        assert!(cut.is_err(), "nothing above the cut");
 
         let raw = fixture_transactions(2_000_000).swap_remove(1);
         let txid = mock.send_raw_transaction(raw.clone()).await.expect("well-formed");

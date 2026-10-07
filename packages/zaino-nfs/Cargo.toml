@@ -14,6 +14,7 @@ description = "Zaino's non-finalized state: one folded node per block above the 
 [dependencies]
 arc-swap.workspace = true
 imbl.workspace = true
+metrics.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
 tokio-util.workspace = true
@@ -29,6 +30,10 @@ zaino-primitives.workspace = true
 zaino-source.workspace = true
 zaino-sync.workspace = true
 zcash_protocol.workspace = true
+
+[features]
+# `NfsHandle::{fixed, unpublished}`: snapshots without a driver, for consumers' route tests
+testing = []
 
 [lints.rust]
 unsafe_code = "forbid"

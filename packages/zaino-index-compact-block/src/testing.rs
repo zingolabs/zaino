@@ -2,35 +2,31 @@
 //!
 //! - behind the `testing` feature (never compiled into a served binary)
 
-use std::num::NonZeroUsize;
-
-use zaino_persistence::{LayeredView, SequenceRead, Store, Tiered};
+use zaino_persistence::{SequenceRead, Store};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
-    Block, BlockFees, CompactCiphertext, Fee, Height, OrchardAction, OrchardData, OutPoint,
-    SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
-    TransparentOutput, Zatoshis,
+    Block, BlockFees, CompactCiphertext, Fee, OrchardAction, OrchardData, OutPoint, SaplingData,
+    SaplingOutput, SaplingSpend, Script, Transaction, TransparentData, TransparentOutput, Zatoshis,
 };
 
 use crate::{fold, CompactBlockReader, HASH};
 
-/// [`block`]`(0..count)` folded and committed to `store` (one commit), as the index serves them
-pub fn committed<S: Store<View: SequenceRead>>(
-    store: S,
-    count: u32,
-) -> CompactBlockReader<LayeredView<S::View>> {
+/// `store` with [`block`]`(0..count)` folded and committed (one commit), as the index holds them
+pub fn committed<S: Store<View: SequenceRead>>(mut store: S, count: u32) -> S {
     let network = store.schema().network;
-    let mut tiered = Tiered::new(store, NonZeroUsize::MAX);
     for height in 0..count {
         let (block, fees) = block(height);
-        let parent = CompactBlockReader::new(tiered.view(), network);
+        let parent = CompactBlockReader::new(store.staged(), network);
         let changes = fold(&parent, &block, &fees).expect("one sample tx per block: far below u32");
-        assert!(!tiered.stage(changes, 0), "a batch of usize::MAX bytes never fills");
+        store.apply(changes);
     }
-    if let Some(last) = count.checked_sub(1) {
-        tiered.finalize(Height::try_from(last).expect("a small height"));
-    }
-    CompactBlockReader::new(tiered.view(), network)
+    store.commit().unwrap_or_else(|error| error.commit_failed("compact_block", store.path()));
+    store
+}
+
+/// [`block`]`(0..count)`, genesis first (a `VerifiedChain::regtest` path)
+pub fn chain(count: u32) -> Vec<Block> {
+    (0..count).map(|height| block(height).0).collect()
 }
 
 fn bytes32(seed: u8) -> [u8; HASH] {

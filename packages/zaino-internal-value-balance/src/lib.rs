@@ -9,8 +9,7 @@
 //!
 //! - insert only: spent outputs kept, never deleted (any later state re-resolves a block
 //!   identically: a downstream index behind this one replays through delivery, no rewind)
-//! - one block = its outputs' rows + its fees ([`fold`]); blocks above the durable tip =
-//!   `zaino_persistence::Tiered`
+//! - one block = its outputs' rows + its fees ([`fold`]); non-final blocks = `zaino-nfs` layers
 //! - segments, merges, filters, manifest, crash safety = the engine's
 //!
 //! # Lookup (per transparent input, [`fold`])

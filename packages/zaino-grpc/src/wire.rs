@@ -66,29 +66,25 @@ pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
     })
 }
 
-/// `BlockID.hash` → `(height, hash)` via the block-hash index
+/// `BlockID.hash` → `(height, hash)` via `snap`'s block-hash index, at or below its tip
 ///
-/// - height only: the answering index confirms it holds `hash` there (independent publications)
+/// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
+///   a time; a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::MapRead>(
-    locator: Option<&zaino_internal_block_hash_to_height::BlockHashService<V>>,
+    snap: &zaino_nfs::Snapshot<V>,
     raw: &[u8],
     method: &str,
 ) -> Result<(Height, [u8; 32]), Status> {
-    use zaino_internal_block_hash_to_height::ServeError;
-
     let hash: [u8; 32] =
         raw.try_into().map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
-    let locator = locator.ok_or_else(|| {
+    let locator = snap.views().block_hash().ok_or_else(|| {
         Status::unimplemented(format!(
             "{method} by hash resolves through the block-hash index, which is off"
         ))
     })?;
-    match locator.locate(&hash) {
-        Ok(height) => Ok((height, hash)),
-        // `Unavailable`: clears on its own (retry with backoff)
-        Err(error @ ServeError::Syncing) => Err(Status::unavailable(error.to_string())),
-        Err(error @ ServeError::HashNotFound) => Err(Status::not_found(error.to_string())),
-    }
+    let height = locator.height_of(&hash.into()).filter(|&height| height <= snap.tip().height);
+    let missing = || Status::not_found("block hash is not in the index");
+    Ok((height.ok_or_else(missing)?, hash))
 }
 
 /// Client `poolTypes` → [`Pools`] (empty = shielded default; unknown or `POOL_TYPE_INVALID` refused)
@@ -303,24 +299,23 @@ pub(super) fn status_response(status: Status) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use http::HeaderValue;
+    use zaino_persistence::IndexKind;
     use zaino_proto::frame::FRAME_HEADER;
-    use zaino_sync::Served;
 
     use super::{path, request_limit};
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, routes};
+    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot};
 
     /// A body over its method's cap is `RESOURCE_EXHAUSTED` before any decode; one byte under is
     /// decoded as usual (then refused for what it says: a hash is 32 bytes)
     #[tokio::test]
     async fn a_request_body_over_its_cap_is_refused_before_it_is_decoded() {
         use tower::Service as _;
-        use zaino_index_compact_block::{testing, CompactBlockService};
 
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let store = crate::testing::store("/cb", &zaino_index_compact_block::schema(net));
-        let compact_block = CompactBlockService::new(Served::fixed(testing::committed(store, 0)));
-        let mut router = dispatch(Routes { compact_block, ..routes() });
+        let chain = zaino_primitives::testing::Chain::new();
+        let genesis = chain.path(chain.genesis().hash);
+        let compact = indexed(IndexKind::CompactBlock, &genesis);
+        let mut router = dispatch(Routes { nfs: snapshot(&genesis, vec![compact]), ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {

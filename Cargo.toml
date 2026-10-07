@@ -14,7 +14,6 @@ members = [
     "packages/zaino-primitives",
     "packages/zaino-sync",
     "packages/zaino-source",
-    "packages/zaino-non-finalized-state",
     "packages/zainod",
     "packages/zaino-proto",
     "packages/zaino-peers",
@@ -108,6 +107,8 @@ tempfile = "3.2"
 # Domain vocabulary (heights, hashes, blocks, transactions)
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
+# Non-finalized state: fetch, folds above the durable root, the final stream, one snapshot
+zaino-nfs = { path = "packages/zaino-nfs", version = "0.1.0" }
 # The best chain by proof of work: every header verified from genesis, most-work tip
 zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can

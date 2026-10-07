@@ -141,7 +141,7 @@ mod tests {
         TransparentData, TransparentOutput, Zatoshis,
     };
 
-    use zaino_sync::{BlockSink, FeeSink, Step};
+    use zaino_sync::{FeeSink, Final, IndexerDataSink, Step};
 
     /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
     /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no
@@ -193,7 +193,7 @@ mod tests {
         // the five index loops wired as the daemon wires them, the chain sent as bulk
         let (engine, net) = (DiskEngine::new(RealFs::shared()), NetworkType::Main);
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
+        let (mut block_sink, mut fee_sink) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
         let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
         let (compact_blocks, fee_blocks) =
             (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::ValueBalance));
@@ -220,8 +220,9 @@ mod tests {
         loops.spawn(trees.run(tree_blocks));
         loops.spawn(transparent.run(transparent_blocks));
         for block in &blocks {
-            let height = block.header().height;
-            block_sink.send(Step::Apply { height, finalized: true, data: Arc::clone(block) }).await;
+            let (height, block) = (block.header().height, Arc::clone(block));
+            let data = Arc::new(Final { block, folds: None });
+            block_sink.send(Step::Apply { height, data }).await;
         }
         block_sink.shutdown();
         while let Some(indexed) = loops.join_next().await {

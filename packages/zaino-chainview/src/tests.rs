@@ -16,10 +16,10 @@ use zaino_primitives::types::{
 };
 use zaino_source::mock::MockChain;
 use zaino_source::{
-    BlockLinks, ChainDataSource, FailureMode, GetBlockByHashError, GetBlockError,
-    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    BlockLinks, ChainDataSource, FailureMode, GetBlockByHashError, GetMempoolListingError,
+    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, MetadataReading,
+    NonDomainError, PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError,
+    TransactionResponse,
 };
 
 use crate::endpoint::Polled;
@@ -94,10 +94,6 @@ fn verified(chain: &Chain, tip: BlockRef) -> Option<VerifiedChain> {
 /// (estimate, listing with each tx's fee, metadata = peers and the release as set), mempool bytes,
 /// sends (accepting = into its own mempool, listed from its next poll, as a zebrad does)
 impl ChainDataSource for FakeValidator {
-    async fn get_block(&self, _: Height) -> Result<Block, QueryError<GetBlockError>> {
-        unimplemented!("the view fetches no blocks")
-    }
-
     async fn get_block_by_hash(
         &self,
         _: BlockHash,
@@ -305,7 +301,7 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
 }
 
 /// A validator whose mempool is off below the network tip still holds the verified tip (the
-/// sync producer's input) and serves an empty mempool, then lists again once active.
+/// NFS's input) and serves an empty mempool, then lists again once active.
 #[tokio::test]
 async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     let mut chain = Chain::new();

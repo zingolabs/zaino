@@ -1,41 +1,27 @@
-//! Index sync pipeline: [`Producer`] → [`BlockSink`] → each index's own loop
+//! Index sync plumbing: the final stream ([`IndexerDataSink<Final>`]) → each index's writer loop
 //!
-//! - One fetch, one decode: the [`Producer`] follows the header chain's `VerifiedChain` and adds
-//!   each checked [`Block`] to the [`BlockSink`]
-//! - Each index subscribes ([`IndexerDataSink::subscribe`]), spawns its own loop over its
-//!   [`Subscription`] and publishes through a [`Published`]
-//! - An index's per-block output = one step it sends into another sink per step it follows
-//!   (value-balance → [`FeeSink`]); a consumer awaits one off each queue per step
-//! - Chain identity checked once, in the [`Producer`]: every block = the verified chain's at its
-//!   height, body included, and every index's durable tip = the final chain's (indexes trust the
-//!   stream)
-//! - Invariant: every index sees contiguous ascending heights from after the rearmost durable tip
-//!   (an index ahead skips heights it holds; indexes assert, never tolerate)
+//! - One sender (`zaino-nfs`), every step final: each height once, ascending, never retracted
+//! - Each writer: its own loop over its [`Subscription`], its store behind a [`Committer`]
+//! - An index's per-block output for another = a second sink (value-balance → [`FeeSink`])
 
 #![forbid(unsafe_code)]
 
+mod committer;
 mod data_sink;
 mod emit;
 mod final_block;
 mod offload;
-mod producer;
-mod published;
 mod report;
-mod served;
 
+pub use committer::{held, Committer, Run};
 pub use data_sink::{Applied, IndexerDataSink, Step, Subscription, Weight};
 pub use emit::describe_metrics;
 pub use final_block::{Final, Folds};
-pub use offload::{blocking, compute, Offloaded};
-pub use producer::{ProduceError, Producer};
-pub use published::Published;
+pub use offload::compute;
+use offload::Offloaded;
 pub use report::Human;
-pub use served::{Reads, Served};
 
 use zaino_primitives::types::{Block, BlockFees};
-
-/// The one decoded block stream every index subscribes to
-pub type BlockSink = IndexerDataSink<Block>;
 
 impl Weight for Block {
     fn weight(&self) -> usize {
@@ -43,7 +29,7 @@ impl Weight for Block {
     }
 }
 
-/// Per-block transaction fees, published step for step by the value-balance index
+/// Per-block transaction fees: value-balance → compact-block, one per unfolded final step
 pub type FeeSink = IndexerDataSink<BlockFees>;
 
 impl Weight for BlockFees {

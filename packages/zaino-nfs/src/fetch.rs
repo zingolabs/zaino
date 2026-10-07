@@ -1,5 +1,4 @@
-//! Fetching every height from any source (`nfs.md` §12 decision 5; moved from `zaino-sync`'s
-//! `ProducerCore`)
+//! Fetching every height from any source (`nfs.md` §12 decision 5)
 //!
 //! - Checked = hash + coinbase height + merkle root vs the verified header (`verified-chain.md` §5)
 //! - Misanswer → source benched [`BENCH`]

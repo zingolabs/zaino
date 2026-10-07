@@ -11,7 +11,6 @@
 //!   capability = [`failover`](TrafficBalancer::failover)
 //! - tower's `PeakEwma` + `p2c` rule, on ports instead of `tower::Service`s
 //! - idle decay = a once-slow source is retried, never starved for good
-//! - loads live on the member, so every [`among`](TrafficBalancer::among) subset shares them
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -93,14 +92,6 @@ impl<S> TrafficBalancer<S> {
                 Arc::new(Member { source, in_flight: AtomicU32::new(0), estimate })
             })
             .collect();
-        Self { members }
-    }
-
-    /// Only the members at `positions`, loads shared with `self`
-    pub fn among(&self, positions: impl IntoIterator<Item = usize>) -> Self {
-        let members: Vec<_> =
-            positions.into_iter().map(|position| Arc::clone(&self.members[position])).collect();
-        assert!(!members.is_empty(), "no source to balance over");
         Self { members }
     }
 
@@ -186,7 +177,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             }
         }
         let unanswered = failed.map(QueryError::NonDomain).or(absent.map(QueryError::Domain));
-        Err(unanswered.expect("TrafficBalancer is never empty (new / among assert it)"))
+        Err(unanswered.expect("TrafficBalancer is never empty (new asserts it)"))
     }
 }
 
@@ -195,8 +186,7 @@ mod tests {
     use super::*;
 
     /// Paused clock: a source with requests piling up or a slow last answer loses the pick; idle
-    /// decay brings the slow one back; failover order covers every member once; `among` shares
-    /// the loads it was cut from
+    /// decay brings the slow one back; failover order covers every member once
     #[tokio::test(start_paused = true)]
     async fn the_cheaper_source_wins_and_a_slow_one_is_retried_once_idle() {
         let balanced = TrafficBalancer::new(vec![Arc::new("near"), Arc::new("far")]);
@@ -217,8 +207,5 @@ mod tests {
         assert_eq!(busy, 0);
         let firsts = firsts(&balanced);
         assert!(firsts.iter().all(|first| *first == "far"), "idle-decayed far beats 10 ms × 9");
-
-        let subset = balanced.among([0]);
-        assert_eq!(subset.candidates()[0].0.in_flight.load(Ordering::Relaxed), 8, "loads shared");
     }
 }

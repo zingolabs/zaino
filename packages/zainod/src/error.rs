@@ -18,7 +18,7 @@ pub enum IndexerError {
     #[error(transparent)]
     HeaderStore(#[from] zaino_chainview::HeaderStoreFailed),
     #[error(transparent)]
-    Produce(#[from] zaino_sync::ProduceError),
+    Nfs(#[from] zaino_nfs::NfsError),
     /// Binding or running the gRPC server failed.
     #[error(transparent)]
     Grpc(#[from] zaino_grpc::GrpcServeError),

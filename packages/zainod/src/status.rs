@@ -15,8 +15,9 @@ use std::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_chainview::ChainViewSubscriber;
-use zaino_primitives::types::{self, BlockRef, Height};
-use zaino_sync::Reads;
+use zaino_nfs::NfsHandle;
+use zaino_persistence::{DiskView, View as _};
+use zaino_primitives::types::{self, Height};
 
 use crate::index_report::Usage;
 
@@ -34,23 +35,23 @@ pub(crate) fn draining() -> bool {
     DRAINING.load(Ordering::Relaxed)
 }
 
+/// `handed` = the NFS's last block handed to the indexes; `served` = its snapshots; `synced` =
+/// [`crate::serving`]'s judgement
 pub(crate) struct Sources {
     pub(crate) network: &'static str,
     pub(crate) started: Instant,
     pub(crate) chainview: ChainViewSubscriber,
-    pub(crate) fetched: watch::Receiver<Option<Height>>,
+    pub(crate) handed: watch::Receiver<Option<Height>>,
+    pub(crate) served: NfsHandle<DiskView>,
+    pub(crate) synced: watch::Receiver<bool>,
     pub(crate) indexes: Vec<IndexSource>,
     pub(crate) disabled: Vec<&'static str>,
 }
 
-/// One enabled index's `Published` watches + its last disk walk (`index_report::run`)
+/// One enabled index's committed view + its last disk walk (`index_report::run`)
 pub(crate) struct IndexSource {
     pub(crate) name: &'static str,
-    pub(crate) finalized: watch::Receiver<Option<Height>>,
-    pub(crate) applied: watch::Receiver<Option<BlockRef>>,
-    pub(crate) merged: watch::Receiver<Option<Height>>,
-    pub(crate) synced: watch::Receiver<bool>,
-    pub(crate) reads: Option<Reads>,
+    pub(crate) committed: watch::Receiver<DiskView>,
     pub(crate) usage: watch::Receiver<Option<Usage>>,
 }
 
@@ -118,8 +119,12 @@ pub(crate) struct Status {
     /// The header chain's most-work verified height (header sync progress; above `tip` while no
     /// trusted validator holds it yet)
     best_height: Option<u32>,
-    /// Last block fetched (sync progress between index batch commits)
+    /// Last block handed to the indexes (sync progress between their commits)
     fetch_height: Option<u32>,
+    /// The snapshot every request answers at (`GetLatestBlock`)
+    served_height: Option<u32>,
+    /// Served at the verified tip (`zaino.index.synced`)
+    synced: bool,
     validators: Vec<Validator>,
     alarms: Alarms,
     mempool: Mempool,
@@ -200,20 +205,14 @@ struct Mempool {
     trusted_readers: usize,
 }
 
-/// `synced` = serving gate open (built to the tip); disabled indexes listed with nulls
-/// - `durable` = on disk; `merged` = held for the next bulk commit; `applied` = highest block
-///   served (in-memory view tip, ≥ `durable`)
+/// `durable` = committed height; disabled indexes listed with nulls
 #[derive(Debug, Clone, Serialize, PartialEq)]
 struct Index {
     name: &'static str,
     enabled: bool,
-    synced: bool,
     durable: Option<u32>,
-    merged: Option<u32>,
-    applied: Option<u32>,
     size_bytes: Option<u64>,
     tables: BTreeMap<String, u64>,
-    requests: Option<u64>,
 }
 
 /// `None` = still starting
@@ -263,25 +262,17 @@ pub(crate) fn current(live: bool) -> Option<Status> {
         Index {
             name: index.name,
             enabled: true,
-            synced: *index.synced.borrow(),
-            durable: (*index.finalized.borrow()).map(u32::from),
-            merged: (*index.merged.borrow()).map(u32::from),
-            applied: index.applied.borrow().map(|tip| u32::from(tip.height)),
+            durable: index.committed.borrow().tip().map(|tip| u32::from(tip.height)),
             size_bytes: usage.as_ref().map(|usage| usage.total),
             tables: usage.map(|usage| usage.subdirs.into_iter().collect()).unwrap_or_default(),
-            requests: index.reads.as_ref().map(Reads::total),
         }
     });
     let disabled = sources.disabled.iter().map(|&name| Index {
         name,
         enabled: false,
-        synced: false,
         durable: None,
-        merged: None,
-        applied: None,
         size_bytes: None,
         tables: BTreeMap::new(),
-        requests: None,
     });
     let indexes: Vec<Index> = enabled.chain(disabled).collect();
 
@@ -299,7 +290,8 @@ pub(crate) fn current(live: bool) -> Option<Status> {
         at.map(|meta| meta.address.clone()).collect()
     };
 
-    let reasons = reasons(draining(), live, view.unserved(), &indexes);
+    let synced = *sources.synced.borrow();
+    let reasons = reasons(draining(), live, view.unserved(), synced);
     Some(Status {
         version: env!("CARGO_PKG_VERSION"),
         network: sources.network,
@@ -313,7 +305,9 @@ pub(crate) fn current(live: bool) -> Option<Status> {
             configured: endpoints.len(),
         }),
         best_height: view.best().map(|best| u32::from(best.height)),
-        fetch_height: (*sources.fetched.borrow()).map(u32::from),
+        fetch_height: (*sources.handed.borrow()).map(u32::from),
+        served_height: sources.served.snapshot().map(|snap| u32::from(snap.tip().height)),
+        synced,
         alarms: Alarms {
             partitioned: alarms.partitioned(),
             eclipsed: alarms.eclipsed(),
@@ -343,14 +337,14 @@ pub(crate) struct Startup {
     pub(crate) progress: Vec<Option<u64>>,
 }
 
-/// Booted: fetch height + every index's three heights; before: snapshot phase + bytes done
+/// Booted: fetch + served heights + every index's committed one; before: snapshot phase + bytes
 pub(crate) fn startup(live: bool) -> Startup {
     let Some(status) = current(live) else {
         return Startup { ready: false, reasons: not_booted().0, progress: snapshot_progress() };
     };
-    let heights =
-        status.indexes.iter().flat_map(|index| [index.durable, index.merged, index.applied]);
-    let progress = std::iter::once(status.fetch_height).chain(heights).map(|h| h.map(u64::from));
+    let heights = status.indexes.iter().map(|index| index.durable);
+    let nfs = [status.fetch_height, status.served_height];
+    let progress = nfs.into_iter().chain(heights).map(|h| h.map(u64::from));
     Startup { ready: status.ready, reasons: status.reasons, progress: progress.collect() }
 }
 
@@ -379,12 +373,12 @@ pub(crate) fn status_json(live: bool) -> String {
     }
 }
 
-/// Ready = not draining + runtime live + a held verified tip + every enabled index serving
+/// Ready = not draining + runtime live + a held verified tip + served at it
 fn reasons(
     draining: bool,
     live: bool,
     unserved: Option<zaino_chainview::Unserved>,
-    indexes: &[Index],
+    synced: bool,
 ) -> Vec<String> {
     let mut reasons = Vec::new();
     if draining {
@@ -398,12 +392,9 @@ fn reasons(
         Some(zaino_chainview::Unserved::NotHeld { .. }) => reasons.push("tip_not_held".to_owned()),
         None => {}
     }
-    reasons.extend(
-        indexes
-            .iter()
-            .filter(|index| index.enabled && !index.synced)
-            .map(|index| format!("{}_syncing", index.name)),
-    );
+    if !synced {
+        reasons.push("syncing".to_owned());
+    }
     reasons
 }
 
@@ -411,37 +402,19 @@ fn reasons(
 mod tests {
     use super::*;
 
-    /// Every not-ready cause named (draining first); disabled indexes never block; all clear =
-    /// ready
+    /// Every not-ready cause named (draining first); all clear = ready
     #[test]
     fn readiness_names_each_blocker() {
-        let index = |name, enabled, synced| Index {
-            name,
-            enabled,
-            synced,
-            durable: None,
-            merged: None,
-            applied: None,
-            size_bytes: None,
-            tables: BTreeMap::new(),
-            requests: None,
-        };
-        let indexes = [
-            index("compact_block", true, true),
-            index("tree_state", true, false),
-            index("transparent_address", false, false),
-        ];
         use zaino_chainview::Unserved::{NoBestTip, NotHeld};
         assert_eq!(
-            reasons(true, false, Some(NoBestTip), &indexes),
-            ["draining", "heartbeat_stale", "headers_syncing", "tree_state_syncing"]
+            reasons(true, false, Some(NoBestTip), false),
+            ["draining", "heartbeat_stale", "headers_syncing", "syncing"]
         );
         let unheld = Some(NotHeld { height: 7, configured: 2 });
-        assert_eq!(reasons(false, true, unheld, &indexes), ["tip_not_held", "tree_state_syncing"]);
-        assert_eq!(reasons(false, true, None, &indexes), ["tree_state_syncing"]);
-        let serving = [indexes[0].clone(), indexes[2].clone()];
-        assert!(reasons(false, true, None, &serving).is_empty());
-        assert_eq!(reasons(true, true, None, &serving), ["draining"], "healthy but draining");
+        assert_eq!(reasons(false, true, unheld, false), ["tip_not_held", "syncing"]);
+        assert_eq!(reasons(false, true, None, false), ["syncing"]);
+        assert!(reasons(false, true, None, true).is_empty());
+        assert_eq!(reasons(true, true, None, true), ["draining"], "healthy but draining");
     }
 
     /// The status page's contract: one `status` tag per end-of-service case, fields only where

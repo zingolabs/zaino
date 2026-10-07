@@ -1,11 +1,9 @@
-//! [`IndexerDataSink<T>`]: one publisher sends the same stream of [`Step`]s to every subscriber.
+//! [`IndexerDataSink<T>`]: one publisher, the same [`Step`]s to every subscriber, in order
 //!
-//! Each subscriber has its own queue, limited by bytes, so a slow subscriber holds back the
-//! publisher instead of growing memory. A step's data is one `Arc<T>` shared by every queue; it is
-//! freed when the last subscriber pops it. The sink decides nothing itself: the publisher chooses
-//! every step.
-//!
-//! The whole design, with a worked example, is in `docs/design/data-sink.md`.
+//! - One byte-bounded queue per subscriber (a slow one holds the publisher back, never grows
+//!   memory)
+//! - One `Arc<T>` per step, shared by every queue, freed at the last pop
+//! - Design: `docs/design/data-sink.md`
 //!
 //! ```
 //! use std::{num::NonZeroUsize, sync::Arc};
@@ -25,13 +23,11 @@
 //! let mut second = sink.subscribe("second", budget);
 //!
 //! let height = Height::try_from(7).unwrap();
-//! sink.send(Step::Apply { height, finalized: false, data: Arc::new(Blob) }).await;
-//! sink.send(Step::Finalized { height }).await;
+//! sink.send(Step::Apply { height, data: Arc::new(Blob) }).await;
 //! sink.shutdown();
 //!
 //! for queue in [&mut first, &mut second] {
 //!     assert!(matches!(queue.next().await, Step::Apply { .. }));
-//!     assert!(matches!(queue.next().await, Step::Finalized { .. }));
 //!     assert!(matches!(queue.next().await, Step::Shutdown));
 //! }
 //! # }
@@ -50,18 +46,10 @@ pub trait Weight {
     fn weight(&self) -> usize;
 }
 
-/// One instruction for a subscriber. Every subscriber receives the same steps in the same order.
+/// One step, the same for every subscriber (`Shutdown` last: commit what is held, stop)
 #[derive(Debug)]
 pub enum Step<T> {
-    /// Block `height`'s data. `finalized`: too deep to reorg, so it goes straight to disk;
-    /// otherwise it stays in memory until its [`Finalized`](Step::Finalized).
-    Apply { height: Height, finalized: bool, data: Arc<T> },
-    /// Block `height`, already applied, can no longer be reorged: write it to disk.
-    Finalized { height: Height },
-    /// Another branch won: flush what is final, drop the non-finalized state. The winning branch
-    /// follows, from the first non-final height.
-    Reorg,
-    /// Last step: flush what is final and stop.
+    Apply { height: Height, data: Arc<T> },
     Shutdown,
 }
 
@@ -70,7 +58,7 @@ impl<T: Weight> Weight for Step<T> {
         size_of::<Self>()
             + match self {
                 Self::Apply { data, .. } => data.weight(),
-                Self::Finalized { .. } | Self::Reorg | Self::Shutdown => 0,
+                Self::Shutdown => 0,
             }
     }
 }
@@ -78,11 +66,7 @@ impl<T: Weight> Weight for Step<T> {
 impl<T> Clone for Step<T> {
     fn clone(&self) -> Self {
         match self {
-            Self::Apply { height, finalized, data } => {
-                Self::Apply { height: *height, finalized: *finalized, data: Arc::clone(data) }
-            }
-            Self::Finalized { height } => Self::Finalized { height: *height },
-            Self::Reorg => Self::Reorg,
+            Self::Apply { height, data } => Self::Apply { height: *height, data: Arc::clone(data) },
             Self::Shutdown => Self::Shutdown,
         }
     }
@@ -95,8 +79,8 @@ pub(crate) struct Queued<T> {
     _held: Option<OwnedSemaphorePermit>,
 }
 
-/// One delivered block of a [`Subscription::run`]: `(height, finalized, data)`
-pub type Applied<T> = (Height, bool, Arc<T>);
+/// One delivered block of a [`Subscription::run`]
+pub type Applied<T> = (Height, Arc<T>);
 
 /// One consumer's end: its queue, in stream order
 ///
@@ -147,13 +131,13 @@ impl<T: Weight> Subscription<T> {
     ///
     /// - step ending the run = the next [`next`](Self::next)'s
     pub fn run(&mut self, first: Applied<T>, budget: NonZeroUsize) -> Vec<Applied<T>> {
-        let mut bytes = first.2.weight();
+        let mut bytes = first.1.weight();
         let mut run = vec![first];
         while bytes < budget.get() {
             match self.try_next() {
-                Some(Step::Apply { height, finalized, data }) => {
+                Some(Step::Apply { height, data }) => {
                     bytes = bytes.saturating_add(data.weight());
-                    run.push((height, finalized, data));
+                    run.push((height, data));
                 }
                 other => {
                     self.ended_run = other;
@@ -258,13 +242,13 @@ mod tests {
     }
 
     fn apply(height: u32, weight: usize) -> Step<Blob> {
-        Step::Apply { height: h(height), finalized: true, data: Arc::new(Blob(weight)) }
+        Step::Apply { height: h(height), data: Arc::new(Blob(weight)) }
     }
 
     fn popped(step: Step<Blob>) -> Height {
         match step {
             Step::Apply { height, .. } => height,
-            _ => panic!("expected an apply"),
+            Step::Shutdown => panic!("expected an apply"),
         }
     }
 
@@ -275,48 +259,42 @@ mod tests {
         let queue = NonZeroUsize::new(1 << 20).expect("nz");
         let (mut one, mut two) = (sink.subscribe("one", queue), sink.subscribe("two", queue));
         sink.send(apply(7, 1)).await;
-        sink.send(Step::Finalized { height: h(7) }).await;
-        sink.send(Step::Reorg).await;
+        sink.send(apply(8, 1)).await;
         sink.shutdown();
 
         for sub in [&mut one, &mut two] {
             assert_eq!(popped(sub.next().await), h(7));
-            assert!(matches!(sub.next().await, Step::Finalized { height } if height == h(7)));
-            assert!(matches!(sub.next().await, Step::Reorg));
+            assert_eq!(popped(sub.next().await), h(8));
             assert!(matches!(sub.next().await, Step::Shutdown));
             assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
         }
     }
 
-    /// A run = the first `Apply` + those already queued, cut at its budget or at the first other
-    /// step; that step is the next one out, then the queue resumes in order
+    /// A run = the first `Apply` + those already queued, cut at its budget or at `Shutdown`; the
+    /// step ending it is the next one out
     #[tokio::test]
     async fn a_run_gathers_queued_applies_to_its_budget_and_hands_back_the_step_ending_it() {
         let mut sink = IndexerDataSink::<Blob>::new("test");
         let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
-        for height in 0..4 {
+        for height in 0..5 {
             sink.send(apply(height, 10)).await;
         }
-        sink.send(Step::Finalized { height: h(3) }).await;
-        sink.send(apply(4, 10)).await;
         sink.shutdown();
         let first = |step: Step<Blob>| match step {
-            Step::Apply { height, finalized, data } => (height, finalized, data),
-            _ => panic!("expected an apply"),
+            Step::Apply { height, data } => (height, data),
+            Step::Shutdown => panic!("expected an apply"),
         };
         let heights = |run: Vec<Applied<Blob>>| -> Vec<u32> {
-            run.into_iter().map(|(height, ..)| u32::from(height)).collect()
+            run.into_iter().map(|(height, _)| u32::from(height)).collect()
         };
         let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
 
         let start = first(sub.next().await);
         assert_eq!(heights(sub.run(start, twenty)), [0, 1], "cut at its 20-byte budget");
         let start = first(sub.next().await);
-        assert_eq!(heights(sub.run(start, all)), [2, 3], "cut by the next non-apply step");
-        assert!(matches!(sub.next().await, Step::Finalized { height } if height == h(3)));
-        let start = first(sub.next().await);
-        assert_eq!(heights(sub.run(start, all)), [4]);
+        assert_eq!(heights(sub.run(start, all)), [2, 3, 4], "cut by Shutdown");
         assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown ended the last run");
+        assert!(matches!(sub.next().await, Step::Shutdown), "and stays");
     }
 
     /// A subscriber holds its queue through `Shutdown`: dropping it sooner is a bug upstream

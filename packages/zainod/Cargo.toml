@@ -78,12 +78,17 @@ zaino-header-chain.workspace = true
 zaino-peers.workspace = true
 futures.workspace = true
 bytes.workspace = true
+zaino-nfs.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-proto.workspace = true
+tonic.workspace = true
+zaino-source = { workspace = true, features = ["testing"] }
 
 [features]
 # `[snapshot]` bootstrap: an empty index downloads a published snapshot (needs `aria2c` on PATH)

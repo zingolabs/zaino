@@ -22,6 +22,7 @@ mod metrics;
 mod notify;
 pub mod paths;
 mod peers;
+mod serving;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod status;

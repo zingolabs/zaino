@@ -7,7 +7,8 @@
 //! ```
 //!
 //! - insert only: a finalised block's height never changes (no tombstones, no versions)
-//! - one block = one row ([`fold`]); blocks above the durable tip = `zaino_persistence::Tiered`
+//! - one block = one row ([`fold`]); non-final blocks = `zaino-nfs` layers, read through a
+//!   snapshot's `LayeredView`
 //! - segments, merges, filters, manifest, crash safety = the engine's
 
 use zaino_persistence::{IndexKind, Schema, Width};
@@ -18,12 +19,10 @@ use by_hash::{BY_HASH, HEIGHT};
 mod by_hash;
 mod fold;
 mod reader;
-mod serve;
 mod writer;
 
 pub use fold::fold;
 pub use reader::BlockHashReader;
-pub use serve::{BlockHashService, ServeError};
 pub use writer::BlockHashIndexWriter;
 
 /// Block hash width

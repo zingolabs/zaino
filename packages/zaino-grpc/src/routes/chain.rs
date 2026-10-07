@@ -27,11 +27,10 @@ use http_body::Frame;
 use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, ChainViewSubscriber, MempoolEntry, SubmitError};
-use zaino_index_compact_block::{project_tx_at, CompactBlockService};
-use zaino_persistence::SequenceRead;
+use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
-    BlockchainInfo, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
+    BlockchainInfo, Height, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
 };
 use zaino_proto::proto::service::{self as proto, LightdInfo, RawTransaction};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError, TrafficBalancer};
@@ -222,20 +221,20 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
 
 /// Serving metadata, the served height, and the validators' view of the network
 ///
-/// - `served` = what `GetLatestBlock` serves (`LightdInfo.blockHeight` must agree with it)
+/// - `served` = the snapshot tip `GetLatestBlock` serves (`LightdInfo.blockHeight` agrees)
 /// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
 /// - one pinned view, no validator call (validator half = as of its last poll tick)
 /// - no held verified tip = `UNAVAILABLE` (no stand-in branch, schedule or tip)
 /// - `lightwalletProtocolVersion` = vendored protos' release (pepper-sync refuses < v0.5.0)
-pub(crate) fn lightd_info<V: SequenceRead>(
+pub(crate) fn lightd_info(
     view: &ChainViewSubscriber,
-    served: &CompactBlockService<V>,
+    served: Option<Height>,
     network: NetworkType,
 ) -> Result<LightdInfo, Status> {
     let pinned = view.current();
     let chain = pinned.validator_info().map_err(|below| Status::unavailable(below.to_string()))?;
-    // empty index: 0 (the proto has no "none")
-    let block_height = served.tip().map_or(0, u64::from);
+    // nothing served yet: 0 (the proto has no "none")
+    let block_height = served.map_or(0, u64::from);
 
     Ok(with_validator_view(
         LightdInfo {
@@ -423,11 +422,7 @@ mod tests {
         let endpoint =
             zaino_chainview::Endpoint { address: "one:8232".to_owned(), source: validator };
         let (view, pollers) = zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one");
-        let store =
-            crate::testing::store("/cb", &zaino_index_compact_block::schema(NetworkType::Main));
-        let empty = zaino_index_compact_block::testing::committed(store, 0);
-        let served = CompactBlockService::new(zaino_sync::Served::fixed(empty));
-        let info = || lightd_info(&view.subscriber(), &served, NetworkType::Main);
+        let info = || lightd_info(&view.subscriber(), None, NetworkType::Main);
 
         let why = |refused: Status| (refused.code(), refused.message().to_owned());
         let refused = info().expect_err("no verified tip");
@@ -455,7 +450,10 @@ mod tests {
             lightwallet_protocol_version: "v0.5.0".to_owned(),
             ..Default::default()
         };
-        assert_eq!(info().expect("held"), expected, "mock: tip 7, no index");
+        assert_eq!(info().expect("held"), expected, "mock: tip 7, nothing served");
+        let five = Height::try_from(5).ok();
+        let served = lightd_info(&view.subscriber(), five, NetworkType::Main).expect("held");
+        assert_eq!(served, LightdInfo { block_height: 5, ..expected }, "the snapshot tip");
 
         cancel.cancel();
         for poller in polling {

@@ -18,6 +18,7 @@ zaino-primitives = { workspace = true }
 zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zcash_protocol.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 
 [features]
 # Sample blocks for consumers that test against a real index.
@@ -27,8 +28,7 @@ testing = ["zaino-primitives/testing"]
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 proptest.workspace = true
-arc-swap.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 
 [lints.rust]
 unreachable_pub = "warn"

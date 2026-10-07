@@ -1,13 +1,13 @@
 //! Tree-state methods: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` (framed once per
-//! publication)
+//! snapshot), all at heights `<=` the snapshot's tip
 
 use std::sync::Arc;
 
 use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
-use zaino_index_tree_state::{ServeError, TreeStateReader, TreeStateService};
-use zaino_internal_block_hash_to_height::BlockHashService;
+use zaino_index_tree_state::{ServeError, TreeStateReader};
+use zaino_nfs::Snapshot;
 use zaino_persistence::{LayeredView, MapRead, SequenceRead};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
@@ -20,17 +20,15 @@ use crate::limits::ReadLanes;
 use crate::memo::PerView;
 use crate::wire::{self, path, status_response, streamed_response, unary_response};
 
-/// Framed answers per publication: the non-finalized heights every synced wallet asks, the
-/// tip, and each pool's whole root list (sliced per request)
+/// Framed answers per snapshot: the layer heights every synced wallet asks, the tip, and each
+/// pool's root list as of the tip (sliced per request)
 pub(crate) struct Memos<V> {
-    states: ViewMemo<V, State, Result<Bytes, Status>>,
-    roots: ViewMemo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
+    states: Memo<V, State, Result<Bytes, Status>>,
+    roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
-/// One answer kind, keyed by `K`, per published tree-state view
-type ViewMemo<V, K, T> = PerView<Pinned<V>, K, T>;
-
-type Pinned<V> = TreeStateReader<LayeredView<V>>;
+/// One answer kind, keyed by `K`, per snapshot
+type Memo<V, K, T> = PerView<Snapshot<V>, K, T>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {
@@ -44,35 +42,57 @@ enum State {
     At(Height),
 }
 
-/// Everything one tree-state request is answered with
+/// Everything one tree-state request is answered with (`trees` = `snap`'s)
 pub(crate) struct Answering<V> {
-    pub(crate) service: TreeStateService<V>,
-    pub(crate) locator: Option<BlockHashService<V>>,
+    pub(crate) snap: Arc<Snapshot<V>>,
+    pub(crate) trees: TreeStateReader<LayeredView<V>>,
     pub(crate) reads: ReadLanes,
     pub(crate) memos: Arc<Memos<V>>,
 }
 
-/// Framed on first ask per publication, on the point lane (single flight); then inline
-async fn once<V, K, T>(
-    memo: fn(&Memos<V>) -> &ViewMemo<V, K, T>,
-    answering: &Answering<V>,
-    view: Arc<Pinned<V>>,
-    key: K,
-    compute: impl FnOnce(&Pinned<V>) -> T + Send + 'static,
-) -> Result<T, Status>
-where
-    V: SequenceRead,
-    K: Eq + std::hash::Hash + Send + 'static,
-    T: Clone + Send + 'static,
-{
-    if let Some(hit) = memo(&answering.memos).cached(&view, &key) {
-        return Ok(hit);
+impl<V: SequenceRead + MapRead> Answering<V> {
+    /// Framed on first ask per snapshot, on the point lane (single flight); then inline
+    async fn once<K, T>(
+        &self,
+        memo: fn(&Memos<V>) -> &Memo<V, K, T>,
+        key: K,
+        compute: impl FnOnce(&TreeStateReader<LayeredView<V>>) -> T + Send + 'static,
+    ) -> Result<T, Status>
+    where
+        K: Eq + std::hash::Hash + Send + 'static,
+        T: Clone + Send + 'static,
+    {
+        if let Some(hit) = memo(&self.memos).cached(&self.snap, &key) {
+            return Ok(hit);
+        }
+        let (memos, snap, trees) =
+            (Arc::clone(&self.memos), Arc::clone(&self.snap), self.trees.clone());
+        let compute = move || memo(&memos).get_or_compute(&snap, key, || compute(&trees));
+        self.reads.read(Lane::Point, compute).await
     }
-    let memos = Arc::clone(&answering.memos);
-    answering
-        .reads
-        .read(Lane::Point, move || memo(&memos).get_or_compute(&view, key, || compute(&view)))
-        .await
+
+    /// Tree state at `at` framed for the wire; past the tip = a miss (never ahead of the snapshot)
+    fn state_at(
+        &self,
+        at: Height,
+    ) -> impl FnOnce(&TreeStateReader<LayeredView<V>>) -> Result<Bytes, Status> + Send + 'static
+    {
+        let (tip, params) = (self.snap.tip().height, self.snap.params());
+        move |trees| {
+            if at > tip {
+                return Err(to_status(ServeError::NotFound { height: at }));
+            }
+            let sapling = params.activations.sapling;
+            if at < sapling {
+                // lightwalletd: "z_gettreestate did not return treestate"
+                let why =
+                    format!("no tree state at height {at}, below Sapling activation {sapling}");
+                return Err(Status::invalid_argument(why));
+            }
+            let state = trees.treestate(at).map_err(to_status)?;
+            Ok(reply(&state, params))
+        }
+    }
 }
 
 /// One pool's completed roots, framed back to back
@@ -108,16 +128,10 @@ impl FramedRoots {
     }
 }
 
-/// Maps an index error onto a gRPC status.
-///
-/// `Syncing` = `Unavailable` (clears on its own, so back off and retry; `Unimplemented`
-/// would retire the method and `FailedPrecondition` implies the client can fix it).
+/// Maps an index error onto a gRPC status: a miss is not corruption
 fn to_status(error: ServeError) -> Status {
     match &error {
-        ServeError::Syncing | ServeError::Empty => Status::unavailable(error.to_string()),
         ServeError::NotFound { .. } => Status::not_found(error.to_string()),
-        // lightwalletd: "z_gettreestate did not return treestate"
-        ServeError::BeforeSapling { .. } => Status::invalid_argument(error.to_string()),
         ServeError::Inconsistent { .. } => Status::internal(error.to_string()),
     }
 }
@@ -130,7 +144,7 @@ where
     B::Error: std::fmt::Display,
 {
     let answer = match path {
-        path::GET_TREE_STATE => treestate(answering, body).await.map(unary_response),
+        path::GET_TREE_STATE => treestate(&answering, body).await.map(unary_response),
         path::GET_LATEST_TREE_STATE => latest(&answering).await.map(unary_response),
         path::GET_SUBTREE_ROOTS => subtree_roots(&answering, body).await.map(|chunk| {
             streamed_response((!chunk.is_empty()).then_some(chunk).into_iter().collect())
@@ -144,24 +158,16 @@ where
     }
 }
 
-async fn latest<V: SequenceRead>(answering: &Answering<V>) -> Result<Bytes, Status> {
-    let view = answering.service.pin().map_err(to_status)?;
-    let service = answering.service.clone();
-    once(
-        |memos| &memos.states,
-        answering,
-        view,
-        State::Latest,
-        move |view| service.latest_in(view).map(|state| reply(&state, &service)).map_err(to_status),
-    )
-    .await?
+async fn latest<V: SequenceRead + MapRead>(answering: &Answering<V>) -> Result<Bytes, Status> {
+    let state = answering.state_at(answering.snap.tip().height);
+    answering.once(|memos| &memos.states, State::Latest, state).await?
 }
 
 /// A hash, when given, wins (it names one block across a reorg): the block-hash index locates
 /// its height, this index answers there only if it holds that same block
 ///
-/// - by height, non-finalized (the synced wallets' tip asks): once per publication
-async fn treestate<V, B>(answering: Answering<V>, body: B) -> Result<Bytes, Status>
+/// - by height, in the snapshot's layer (the synced wallets' tip asks): once per snapshot
+async fn treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
     V: SequenceRead + MapRead,
     B: http_body::Body,
@@ -171,61 +177,40 @@ where
 
     if id.hash.is_empty() {
         let height = wire::height(id.height, "height")?;
-        if let Ok(view) = answering.service.pin() {
-            if view.is_non_finalized(height) {
-                let service = answering.service.clone();
-                return once(
-                    |memos| &memos.states,
-                    &answering,
-                    view,
-                    State::At(height),
-                    move |view| {
-                        service
-                            .treestate_in(view, height)
-                            .map(|state| reply(&state, &service))
-                            .map_err(to_status)
-                    },
-                )
-                .await?;
-            }
+        let state = answering.state_at(height);
+        if answering.trees.is_non_finalized(height) {
+            return answering.once(|memos| &memos.states, State::At(height), state).await?;
         }
+        let trees = answering.trees.clone();
+        return answering.reads.read(Lane::Point, move || state(&trees)).await?;
     }
 
-    let Answering { service, locator, reads, .. } = answering;
-    reads.read(Lane::Point, move || treestate_of(&service, locator.as_ref(), &id)).await?
-}
-
-fn treestate_of<V: SequenceRead + MapRead>(
-    service: &TreeStateService<V>,
-    locator: Option<&BlockHashService<V>>,
-    id: &proto::BlockId,
-) -> Result<Bytes, Status> {
-    if id.hash.is_empty() {
-        let state = service.treestate(wire::height(id.height, "height")?).map_err(to_status)?;
-        return Ok(reply(&state, service));
-    }
-
-    let (height, hash) = wire::locate(locator, &id.hash, "GetTreeState")?;
-    let state = service.treestate(height).map_err(to_status)?;
-    if state.block_hash != BlockHash::from(hash) {
+    let (height, hash) = wire::locate(&answering.snap, &id.hash, "GetTreeState")?;
+    let (trees, state) = (answering.trees.clone(), answering.state_at(height));
+    let framed = answering.reads.read(Lane::Point, move || {
+        let held = trees.treestate(height).map(|state| state.block_hash);
+        (held, state(&trees))
+    });
+    let (held, framed) = framed.await?;
+    if held.map_err(to_status)? != BlockHash::from(hash) {
         return Err(Status::not_found(format!(
             "block {} is not the one this index holds at {height} (reorg)",
             BlockHash::from(hash)
         )));
     }
-    Ok(reply(&state, service))
+    framed
 }
 
 /// Domain treestate → wire (trees hex, hash in display order)
 /// - Pool below its upgrade = `""` (zebra's `z_gettreestate` omits it; lightwalletd copies that)
-fn reply<V: SequenceRead>(state: &Treestate, service: &TreeStateService<V>) -> Bytes {
-    let activations = service.activations();
-    let tree = |pool, tree: &CommitmentTreeBytes| match activations.active(pool, state.height) {
-        true => hex::encode(tree.as_bytes()),
-        false => String::new(),
-    };
+fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
+    let tree =
+        |pool, tree: &CommitmentTreeBytes| match params.activations.active(pool, state.height) {
+            true => hex::encode(tree.as_bytes()),
+            false => String::new(),
+        };
     wire::frame(&proto::TreeState {
-        network: chain_name(service.network()).to_owned(),
+        network: chain_name(params.network).to_owned(),
         height: u64::from(state.height),
         hash: state.block_hash.to_string(),
         time: state.time,
@@ -235,10 +220,11 @@ fn reply<V: SequenceRead>(state: &Treestate, service: &TreeStateService<V>) -> B
     })
 }
 
-/// Every root of the pool framed once per publication; a request = one slice of it
+/// Every root of the pool completed at or below the tip, framed once per snapshot; a request =
+/// one slice of it
 async fn subtree_roots<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
-    V: SequenceRead,
+    V: SequenceRead + MapRead,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -263,19 +249,14 @@ where
     let start = u16::try_from(request.start_index).map_err(|_| ceiling("startIndex"))?;
     let max = u16::try_from(request.max_entries).map_err(|_| ceiling("maxEntries"))?;
 
-    let view = answering.service.pin().map_err(to_status)?;
-    let framed = once(
-        |memos| &memos.roots,
-        answering,
-        view,
-        pool,
-        move |view| {
-            let every = view.subtree_roots(pool, 0, 0).map_err(to_status)?;
-            Ok(Arc::new(FramedRoots::of(&every)))
-        },
-    )
-    .await??;
-    Ok(framed.slice(start, max))
+    let tip = answering.snap.tip().height;
+    let every = move |trees: &TreeStateReader<LayeredView<V>>| {
+        let mut roots = trees.subtree_roots(pool, 0, 0).map_err(to_status)?;
+        roots.retain(|root| root.completing.height <= tip);
+        Ok::<_, Status>(Arc::new(FramedRoots::of(&roots)))
+    };
+    let framed = answering.once(|memos| &memos.roots, pool, every).await?;
+    Ok(framed?.slice(start, max))
 }
 
 /// `completingBlockHash` in display order (lightwalletd reverses the internal-order hash)
@@ -291,20 +272,25 @@ fn root(root: &SubtreeRoot) -> Bytes {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use http::{HeaderValue, Response};
     use prost::Message as _;
     use tonic::{body::Body, Status};
-    use zaino_primitives::types::{BlockRef, SubtreeRoot};
+    use zaino_header_chain::VerifiedChain;
+    use zaino_index_tree_state::PoolActivations;
+    use zaino_nfs::{ChainParams, NfsHandle};
+    use zaino_persistence::IndexKind;
+    use zaino_primitives::testing::Chain;
+    use zaino_primitives::types::{
+        BlockRef, CompactCiphertext, Height, SaplingData, SaplingOutput, SubtreeRoot, Transaction,
+        TransactionId,
+    };
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
     use zaino_proto::proto::service as proto;
-    use zaino_sync::Served;
-
-    use std::num::NonZeroUsize;
-
-    use zaino_persistence::IndexKind;
 
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, store};
+    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
     use crate::wire::path;
 
     /// Any `start` inclusive to `start + max` exclusive of the pre-framed list = exactly those
@@ -347,26 +333,11 @@ mod tests {
         }
     }
 
-    /// lightwalletd over zebra's `z_gettreestate`: a pool below its upgrade = `""`, from it = its
-    /// tree (`000000` while empty); below Sapling = no tree state at all (`InvalidArgument`)
-    #[tokio::test]
-    async fn tree_state_fields_follow_the_validators_activation_schedule() {
-        use prost::Message as _;
-        use tower::Service as _;
-        use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter, TreeStateService};
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{
-            CompactCiphertext, Height, SaplingData, SaplingOutput, Transaction, TransactionId,
-        };
-        use zaino_proto::proto::service as proto;
-
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let store = store("/ts", &zaino_index_tree_state::schema(net));
-        let index = TreeStateIndexWriter::new(store, std::num::NonZeroUsize::MIN);
-        let served = index.published().served();
+    /// One sapling output per block (a small LE value: canonical under both moduli)
+    fn one_output(seed: u8) -> Transaction {
         let mut cmu = [0u8; 32];
         cmu[0] = 7;
-        let one_output = |seed: u8| Transaction {
+        Transaction {
             txid: TransactionId::from([seed; 32]),
             transparent: Default::default(),
             sprout: Default::default(),
@@ -374,29 +345,34 @@ mod tests {
                 outputs: vec![SaplingOutput {
                     cmu: cmu.into(),
                     ephemeral_key: [2u8; 32].into(),
-                    enc_ciphertext: [3u8; CompactCiphertext::LENGTH].into(),
+                    enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
                 }],
                 ..Default::default()
             },
             orchard: Default::default(),
             ironwood: Default::default(),
-        };
+        }
+    }
+
+    /// lightwalletd over zebra's `z_gettreestate`: a pool below its upgrade = `""`, from it = its
+    /// tree (`000000` while empty); below Sapling = no tree state at all (`InvalidArgument`)
+    #[tokio::test]
+    async fn tree_state_fields_follow_the_validators_activation_schedule() {
+        use tower::Service as _;
+
         let mut chain = Chain::with_genesis(vec![one_output(0x40)]);
         let tip = (1..4u8).fold(chain.genesis(), |tip, height| {
             chain.mine_with(tip.hash, vec![one_output(0x40 + height)])
         });
-        let blocks: Vec<_> = chain.path(tip.hash).into_iter().map(std::sync::Arc::new).collect();
-        indexed(&blocks, IndexKind::TreeState.name(), |queue| index.run(queue)).await;
-
+        let blocks = chain.path(tip.hash);
+        let trees = indexed(IndexKind::TreeState, &blocks);
         let h = |n: u32| Height::try_from(n).expect("h");
         let activations =
             PoolActivations { sapling: h(1), orchard: Some(h(2)), ironwood: Some(h(3)) };
-        let service = TreeStateService::new(
-            Served::fixed((*served.pin_any()).clone()),
-            zcash_protocol::consensus::NetworkType::Regtest,
-            activations,
-        );
-        let mut router = dispatch(Routes { tree_state: Some(service), ..routes() });
+        let params = ChainParams { network: MAINNET, activations };
+        let verified = Arc::new(VerifiedChain::regtest(&blocks));
+        let nfs = NfsHandle::fixed(verified, tip, params, vec![trees]);
+        let mut router = dispatch(Routes { nfs, ..routes() });
 
         let mut ask = |path: &'static str, body: Vec<u8>| {
             let request = framed_request(path, body.into());
@@ -426,60 +402,19 @@ mod tests {
         assert_eq!(ask(path::GET_LATEST_TREE_STATE, Vec::new()).await, ok(empty(), empty()));
     }
 
-    /// By height, at the tip, and by hash through the compact locator; every pool its own hex tree
-    /// (an absent field would read as `CommitmentTree::empty()`)
+    /// By height, at the tip, and by hash through the block-hash locator; every pool its own hex
+    /// tree (an absent field would read as `CommitmentTree::empty()`)
     #[tokio::test]
     async fn a_populated_tree_state_index_answers_by_height_at_the_tip_and_by_hash() {
-        use prost::Message as _;
         use tower::Service as _;
-        use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateService};
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{
-            Block, CompactCiphertext, SaplingData, SaplingOutput, Transaction, TransactionId,
-        };
-        use zaino_proto::proto::service as proto;
 
-        // Small little-endian value: canonical under both moduli, unlike a repeated-byte filler.
-        let mut cmu = [0u8; 32];
-        cmu[0] = 7;
-
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let trees = store("/ts", &zaino_index_tree_state::schema(net));
-        let index = TreeStateIndexWriter::new(trees, NonZeroUsize::MIN);
-        let served = index.published().served();
-
-        let chain = Chain::with_genesis(vec![Transaction {
-            txid: TransactionId::from([0x33; 32]),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: SaplingData {
-                outputs: vec![SaplingOutput {
-                    cmu: cmu.into(),
-                    ephemeral_key: [2u8; 32].into(),
-                    enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
-                }],
-                ..Default::default()
-            },
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }]);
-        let block = chain.block(chain.genesis().hash).clone();
+        let chain = Chain::with_genesis(vec![one_output(0x33)]);
+        let blocks = chain.path(chain.genesis().hash);
+        let block = blocks[0].clone();
         let hash = <[u8; 32]>::from(block.header().hash);
-        let name = IndexKind::TreeState.name();
-        let blocks = [std::sync::Arc::new(block.clone())];
-        indexed(&blocks, name, |queue| index.run(queue)).await;
-
-        let genesis = zaino_primitives::types::Height::GENESIS;
-        let service = TreeStateService::new(
-            Served::fixed((*served.pin_any()).clone()),
-            zcash_protocol::consensus::NetworkType::Regtest,
-            zaino_index_tree_state::PoolActivations {
-                sapling: genesis,
-                orchard: Some(genesis),
-                ironwood: Some(genesis),
-            },
-        );
-        let mut router = dispatch(Routes { tree_state: Some(service.clone()), ..routes() });
+        let trees = indexed(IndexKind::TreeState, &blocks);
+        let mut router =
+            dispatch(Routes { nfs: snapshot(&blocks, vec![trees.clone()]), ..routes() });
 
         async fn tree_state_of(response: Response<Body>) -> proto::TreeState {
             use http_body_util::BodyExt as _;
@@ -505,7 +440,7 @@ mod tests {
         assert_eq!(state.orchard_tree, "000000", "a real empty tree, not \"\"");
         assert_eq!(state.ironwood_tree, "000000");
 
-        // Tip = the same answer, asked for differently; framed once per publication, so a second
+        // Tip = the same answer, asked for differently; framed once per snapshot, so a second
         // ask is the same allocation
         let latest = || async {
             use http_body_util::BodyExt as _;
@@ -519,7 +454,7 @@ mod tests {
         };
         let (first, second) = (latest().await, latest().await);
         assert_eq!(proto::TreeState::decode(&first[FRAME_HEADER..]).expect("decodes"), state);
-        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per publication, shared");
+        assert_eq!(first.as_ptr(), second.as_ptr(), "one render per snapshot, shared");
 
         // By hash: resolved through the block-hash index, so without it, unimplemented
         let by_hash = |hash: [u8; 32]| {
@@ -537,24 +472,11 @@ mod tests {
         assert_eq!(status(&response), tonic::Code::Unimplemented);
 
         // Block-hash index holding the same block at 0, and one holding another block there
-        // (its chain reorged away from the tree-state index's)
-        let locator = |block: Block| async move {
-            use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
-            let schema = zaino_internal_block_hash_to_height::schema(net);
-            let index = BlockHashIndexWriter::new(store("/bh", &schema), NonZeroUsize::MIN);
-            let served = index.published().served();
-            let blocks = [std::sync::Arc::new(block)];
-            let name = IndexKind::BlockHash.name();
-            indexed(&blocks, name, |queue| index.run(queue)).await;
-            let view = (*served.pin_any()).clone();
-            zaino_internal_block_hash_to_height::BlockHashService::new(Served::fixed(view))
+        let located_by = |locator: Vec<zaino_primitives::types::Block>| {
+            let views = vec![trees.clone(), indexed(IndexKind::BlockHash, &locator)];
+            dispatch(Routes { nfs: snapshot(&blocks, views), ..routes() })
         };
-
-        let located_by = |locator| {
-            let tree_state = Some(service.clone());
-            dispatch(Routes { tree_state, block_hash: Some(locator), ..routes() })
-        };
-        let mut linked = located_by(locator(block).await);
+        let mut linked = located_by(blocks.clone());
         let response = linked.call(by_hash(hash)).await.expect("answers");
         assert_eq!(status(&response), tonic::Code::Ok);
         assert_eq!(tree_state_of(response).await, state, "same answer as by height");
@@ -562,17 +484,10 @@ mod tests {
         assert_eq!(status(&response), tonic::Code::NotFound, "a hash no index holds");
 
         // another genesis (another txid → another merkle root → another hash)
-        let other = Chain::with_genesis(vec![Transaction {
-            txid: TransactionId::from([0x34; 32]),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }]);
-        let other = other.block(other.genesis().hash).clone();
-        let other_hash = <[u8; 32]>::from(other.header().hash);
-        let mut forked = located_by(locator(other).await);
+        let other = Chain::with_genesis(vec![one_output(0x34)]);
+        let other = other.path(other.genesis().hash);
+        let other_hash = <[u8; 32]>::from(other[0].header().hash);
+        let mut forked = located_by(other);
         let response = forked.call(by_hash(other_hash)).await.expect("answers");
         let located = status(&response);
         assert_eq!(located, tonic::Code::NotFound, "located at 0, another block held there");

@@ -388,12 +388,12 @@ pub(crate) struct SyncConfig {
     /// Blocks below the tip kept reorg-able: in memory and served, written once buried this
     /// deep (default + minimum off regtest: Zebra's reorg bound, 1000)
     pub(crate) finalised_depth: NonZeroU32,
-    /// Block fetches (and decodes) in flight during bulk sync
+    /// Block fetches (and folds) in flight ahead of the next block needed
     pub(crate) concurrency: NonZeroUsize,
-    /// MiB of decoded blocks per index commit in bulk sync (bigger = fewer fsyncs, more memory
-    /// held, more to redo after a crash; at the tip each final block commits)
+    /// MiB of index changes per commit in bulk sync (bigger = fewer fsyncs, more memory held,
+    /// more to redo after a crash; at the tip each final block commits)
     batch_mib: NonZeroU32,
-    /// MiB of decoded blocks one index may trail the fetch before it throttles the pipeline
+    /// MiB of final blocks one index may trail the fetch before it throttles the pipeline
     queue_mib: NonZeroU32,
 }
 
@@ -588,31 +588,30 @@ impl DaemonConfig {
         })
     }
 
-    /// `(compact_block, value_balance)`, both required (`Routes.compact_block` not optional)
-    pub(crate) fn compact_block(&self) -> Result<(IndexConfig, IndexConfig), IndexerError> {
-        let path = &self.index.compact_block.path;
-        if path.file_name().is_none() {
+    /// `(compact_block, value_balance)` when compact_block is enabled (its fees need the other)
+    pub(crate) fn compact_block(&self) -> Result<Option<(IndexConfig, IndexConfig)>, IndexerError> {
+        let Some(compact_block) = self.enabled(IndexKind::CompactBlock) else { return Ok(None) };
+        if compact_block.path.file_name().is_none() {
             return Err(IndexerError::ConfigError(format!(
                 "index.compact_block.path = {}: no final directory name (value_balance sits \
                  beside it)",
-                path.display()
+                compact_block.path.display()
             )));
         }
-        let disabled = || {
-            IndexerError::ConfigError(
-                "index.compact_block.enabled = false: required (block methods, GetLightdInfo \
-                 height)"
-                    .to_string(),
-            )
-        };
-        let compact_block = self.enabled(IndexKind::CompactBlock).ok_or_else(disabled)?;
-        let value_balance = self.enabled(IndexKind::ValueBalance).ok_or_else(disabled)?;
-        Ok((compact_block, value_balance))
+        let value_balance = self.enabled(IndexKind::ValueBalance).expect("on with compact_block");
+        Ok(Some((compact_block, value_balance)))
     }
 
     /// Reject a config the pipeline cannot be composed from.
     pub(crate) fn validate(&self) -> Result<(), IndexerError> {
         self.compact_block()?;
+        let served = [IndexKind::CompactBlock, IndexKind::BlockHash, IndexKind::TreeState];
+        let served = served.into_iter().chain([IndexKind::TransparentAddress]);
+        if served.into_iter().all(|kind| self.enabled(kind).is_none()) {
+            return Err(IndexerError::ConfigError(
+                "every [index.*] disabled: nothing to build or serve".to_string(),
+            ));
+        }
         if self.trusted_validators.is_empty() {
             return Err(IndexerError::ConfigError(
                 "no [[trusted_validators]]: at least one validator is needed".to_string(),
@@ -807,13 +806,18 @@ enabled = false
             at(crate::paths::default_index(IndexKind::HeaderChain)),
         ];
         assert_eq!(kinds.map(|kind| config.enabled(kind)), expected);
-        let (compact_block, value_balance) = config.compact_block().expect("enabled");
+        let (compact_block, value_balance) =
+            config.compact_block().expect("a valid path").expect("enabled");
         assert_eq!([Some(compact_block), Some(value_balance)], expected[..2]);
 
         let mut off = config.clone();
         off.index.compact_block.enabled = false;
-        let err = off.validate().expect_err("compact_block off").to_string();
-        assert!(err.contains("index.compact_block.enabled = false"), "{err}");
+        off.validate().expect("compact_block off, block_hash still served");
+        let pair = off.compact_block().expect("nothing to check").map(|_| ());
+        assert_eq!((pair, off.enabled(IndexKind::ValueBalance)), (None, None), "both off");
+        off.index.block_hash.enabled = false;
+        let err = off.validate().expect_err("every index off").to_string();
+        assert!(err.contains("every [index.*] disabled"), "{err}");
         let mut root = config;
         root.index.compact_block.path = "/".into();
         let err = root.validate().expect_err("no sibling for value_balance").to_string();

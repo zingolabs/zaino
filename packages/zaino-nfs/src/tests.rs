@@ -185,11 +185,7 @@ async fn commit(
 ) -> Vec<(BlockRef, bool)> {
     let mut received = Vec::new();
     loop {
-        let data = match blocks.next().await {
-            Step::Apply { data, .. } => data,
-            Step::Shutdown => return received,
-            _ => panic!("{}: the final stream sends Apply and Shutdown only", kind.name()),
-        };
+        let Step::Apply { data, .. } = blocks.next().await else { return received };
         let header = data.block.header();
         let at = BlockRef { hash: header.hash, height: header.height };
         received.push((at, data.folds.is_some()));

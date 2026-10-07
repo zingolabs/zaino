@@ -21,8 +21,8 @@
 //!   ommers come from (ommer = left sibling = even) → ≈48 B per commitment (32 leaf + ≈16 internal)
 //! - positional: no keys stored, one record read per node
 //! - read-heavy (librustzcash asks 1:1 with `GetBlockRange`) → no replay per read, no hashing
-//! - one block = its height record + the nodes and subtree roots it completes ([`fold`]); blocks
-//!   above the durable tip = `zaino_persistence::Tiered` (same positions, RAM only)
+//! - one block = its height record + the nodes and subtree roots it completes ([`fold`]);
+//!   non-final blocks = `zaino-nfs` layers (same positions, RAM only)
 //!
 //! # Lookup ([`TreeStateReader`]: a request's tree state, a fold's parent frontier)
 //!
@@ -58,7 +58,7 @@ mod writer;
 
 pub use fold::{fold, fold_run, FoldError};
 pub use reader::TreeStateReader;
-pub use serve::{PoolActivations, ServeError, TreeStateService};
+pub use serve::{PoolActivations, ServeError};
 pub use writer::TreeStateIndexWriter;
 
 use nodes::{MERKLE_DEPTH, NODE};

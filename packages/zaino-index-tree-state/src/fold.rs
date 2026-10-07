@@ -209,10 +209,10 @@ fn append_in_order<R: AsRef<[u8]>>(
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path, sync::Arc};
+    use std::{path::Path, sync::Arc};
 
     use proptest::prelude::*;
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
     use zaino_primitives::testing::linked;
     use zaino_primitives::types::{
         BlockHash, CompactCiphertext, OrchardAction, OrchardData, SaplingData, SaplingOutput,
@@ -280,7 +280,7 @@ mod tests {
 
             let schema = schema(NetworkType::Regtest);
             let store = DiskEngine::new(SimFs::new()).open(Path::new("/ts"), &schema);
-            let mut tiered = Tiered::new(store.expect("empty store"), NonZeroUsize::MIN);
+            let mut store = store.expect("empty store");
             let mut out = Vec::new();
             let (mut next_block, mut next_leaf) = (0usize, 0u64);
             for (run, length) in runs.iter().cycle().enumerate() {
@@ -288,7 +288,7 @@ mod tests {
                     break;
                 }
                 let these = &blocks[next_block..(next_block + length).min(blocks.len())];
-                let parent = TreeStateReader::new(tiered.view(), NetworkType::Regtest);
+                let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
                 let frontier = parent.frontier::<Mix>(ShieldedPool::Sapling, next_leaf);
                 prop_assert_eq!(&frontier, &library(next_leaf), "frontier read before run {}", run);
                 let mut leaves = Vec::new();
@@ -308,11 +308,11 @@ mod tests {
                 for (&(level, _), node) in nodes {
                     changes.append(level_table(ShieldedPool::Sapling, level), node);
                 }
-                tiered.apply(changes);
+                store.apply(changes);
                 out.extend(retained);
                 next_block += these.len();
             }
-            let parent = TreeStateReader::new(tiered.view(), NetworkType::Regtest);
+            let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
             let last = parent.frontier::<Mix>(ShieldedPool::Sapling, total as u64);
             prop_assert_eq!(last, library(total as u64), "frontier after every run");
 
@@ -416,23 +416,23 @@ mod tests {
         };
         let empty = || {
             let store = DiskEngine::new(SimFs::new()).open(Path::new("/ts"), &schema);
-            Tiered::new(store.expect("empty store"), NonZeroUsize::MIN)
+            store.expect("empty store")
         };
-        let mut tiered = empty();
+        let mut store = empty();
         let one_by_one: Vec<_> = chain
             .iter()
             .map(|block| {
-                let parent = TreeStateReader::new(tiered.view(), NetworkType::Regtest);
+                let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
                 let changes = fold(&parent, block).expect("folds");
                 let folded = tables(&changes);
-                tiered.apply(changes);
+                store.apply(changes);
                 folded
             })
             .collect();
 
         // bit `i` of `split` = a run ends after block `i`
         let fold_in_runs = |split: u32| {
-            let mut tiered = empty();
+            let mut store = empty();
             let mut folded = Vec::new();
             let mut run: Vec<&Block> = Vec::new();
             for (at, block) in chain.iter().enumerate() {
@@ -440,10 +440,10 @@ mod tests {
                 if split & (1 << at) == 0 && at + 1 < chain.len() {
                     continue;
                 }
-                let parent = TreeStateReader::new(tiered.view(), NetworkType::Regtest);
+                let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
                 for changes in fold_run(&parent, &std::mem::take(&mut run)).expect("folds") {
                     folded.push(tables(&changes));
-                    tiered.apply(changes);
+                    store.apply(changes);
                 }
             }
             folded
@@ -477,8 +477,7 @@ mod tests {
         let store = DiskEngine::new(SimFs::new())
             .open(Path::new("/ts"), &schema(NetworkType::Regtest))
             .expect("empty store");
-        let view = Tiered::new(store, NonZeroUsize::MIN).view();
-        let parent = TreeStateReader::new(view, NetworkType::Regtest);
+        let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
         let run: Vec<&Block> = chain.iter().map(|block| &**block).collect();
         let refused = FoldError::Commitment { height: Height::GENESIS.next() };
         assert_eq!(fold_run(&parent, &run).err(), Some(refused));

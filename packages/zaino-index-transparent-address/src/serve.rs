@@ -1,15 +1,12 @@
-//! Address RPCs over one pinned [`TransparentAddressReader`] per request
+//! Address RPCs over one [`TransparentAddressReader`] (one per request, as of the served tip)
 //!
 //! - scan `receives`, then one batched `spent` lookup over every outpoint (unspent = a miss)
 //! - synchronous: mmapped pages and range walks, so a transport runs these off its async workers
-//! - held rows reach the tip (a synced wallet's `tip - 1000` queries answer)
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{LayeredView, MapRead};
+use zaino_persistence::MapRead;
 use zaino_primitives::types::{Height, TransactionId, Zatoshis};
-use zaino_sync::Served;
-use zcash_protocol::consensus::NetworkType;
 use zcash_transparent::address::TransparentAddress;
 
 use crate::{key::AddressKey, TransparentAddressReader};
@@ -18,10 +15,6 @@ use crate::{key::AddressKey, TransparentAddressReader};
 /// - transport maps these onto gRPC codes; this crate names no transport
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
-    /// → `Unavailable` (clears on its own, so a client backs off); progress-free on purpose
-    #[error("the transparent-address index is still syncing")]
-    Syncing,
-
     /// Corrupt store, not a bad request
     #[error("unspent total for this address exceeds the money supply")]
     SupplyExceeded,
@@ -53,36 +46,9 @@ pub struct TransactionRef {
     pub txid: TransactionId,
 }
 
-#[derive(Debug, Clone)]
-pub struct TransparentAddressService<V> {
-    served: Served<TransparentAddressReader<LayeredView<V>>>,
-    network: NetworkType,
-    max_rows: NonZeroUsize,
-}
-
-impl<V: MapRead> TransparentAddressService<V> {
-    /// - unsynced → every method [`ServeError::Syncing`]
-    /// - `network` = what the index was built for (its addresses are the only ones it answers)
-    pub fn new(
-        served: Served<TransparentAddressReader<LayeredView<V>>>,
-        network: NetworkType,
-    ) -> Self {
-        Self { served, network, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
-    }
-
-    /// Overrides [`DEFAULT_MAX_ADDRESS_ROWS`]: receives one request may walk, across all its
-    /// addresses (whole history, every method)
-    pub fn with_max_rows(mut self, max_rows: NonZeroUsize) -> Self {
-        self.max_rows = max_rows;
-        self
-    }
-
+impl<V: MapRead> TransparentAddressReader<V> {
     fn too_many(&self) -> ServeError {
-        ServeError::TooManyRows { limit: self.max_rows.get() }
-    }
-
-    pub fn network(&self) -> NetworkType {
-        self.network
+        ServeError::TooManyRows { limit: self.max_rows().get() }
     }
 
     /// `GetAddressUtxos`: unspent receives from height `start` (inclusive) to the tip, oldest first
@@ -95,8 +61,8 @@ impl<V: MapRead> TransparentAddressService<V> {
         Ok(utxos.pop().expect("one list per address"))
     }
 
-    /// [`utxos`](Self::utxos) of each of `addresses`, in `addresses` order (one view, one
-    /// batched spend lookup across all of them)
+    /// [`utxos`](Self::utxos) of each of `addresses`, in `addresses` order (one batched spend
+    /// lookup across all of them)
     pub fn utxos_of(
         &self,
         addresses: &[TransparentAddress],
@@ -104,8 +70,7 @@ impl<V: MapRead> TransparentAddressService<V> {
     ) -> Result<Vec<Vec<AddressUtxo>>, ServeError> {
         let keys: Vec<AddressKey> = addresses.iter().map(AddressKey::from).collect();
         let unspent = self
-            .pin()?
-            .unspent(&keys, u32::from(start), self.max_rows.get())
+            .unspent(&keys, u32::from(start), self.max_rows().get())
             .ok_or_else(|| self.too_many())?;
         Ok(unspent
             .into_iter()
@@ -127,8 +92,8 @@ impl<V: MapRead> TransparentAddressService<V> {
         self.balance_of(address.into())
     }
 
-    /// [`balance`](Self::balance) of each of `addresses`, in `addresses` order (one view, one
-    /// batched spend lookup across all of them)
+    /// [`balance`](Self::balance) of each of `addresses`, in `addresses` order (one batched spend
+    /// lookup across all of them)
     pub fn balances(&self, addresses: &[TransparentAddress]) -> Result<Vec<Zatoshis>, ServeError> {
         let keys: Vec<AddressKey> = addresses.iter().map(AddressKey::from).collect();
         self.balances_of(&keys)
@@ -140,8 +105,7 @@ impl<V: MapRead> TransparentAddressService<V> {
     }
 
     fn balances_of(&self, keys: &[AddressKey]) -> Result<Vec<Zatoshis>, ServeError> {
-        self.pin()?
-            .unspent(keys, 0, self.max_rows.get())
+        self.unspent(keys, 0, self.max_rows().get())
             .ok_or_else(|| self.too_many())?
             .into_iter()
             .map(|rows| {
@@ -163,15 +127,14 @@ impl<V: MapRead> TransparentAddressService<V> {
         end: Height,
     ) -> Result<Vec<TransactionRef>, ServeError> {
         assert!(start <= end, "range {start}..={end} reversed (ordered at the router)");
-        let pinned = self.pin()?;
         let (start, end) = (u32::from(start), u32::from(end));
 
-        let received = pinned
-            .receives(address.into(), 0, self.max_rows.get())
+        let received = self
+            .receives(address.into(), 0, self.max_rows().get())
             .ok_or_else(|| self.too_many())?;
         let keys: Vec<_> = received.iter().map(|row| row.key).collect();
         let mut found = Vec::new();
-        for (row, spend) in received.iter().zip(pinned.spends_of(&keys)) {
+        for (row, spend) in received.iter().zip(self.spends_of(&keys)) {
             if (start..=end).contains(&row.key.height) {
                 found.push(TransactionRef { height: row.key.height, txid: row.key.txid });
             }
@@ -190,193 +153,145 @@ impl<V: MapRead> TransparentAddressService<V> {
 
         Ok(found)
     }
-
-    /// One consistent view for the request (no commit lands mid-answer)
-    fn pin(&self) -> Result<std::sync::Arc<TransparentAddressReader<LayeredView<V>>>, ServeError> {
-        self.served.pin().ok_or(ServeError::Syncing)
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroU32, sync::Arc, time::Duration};
+    use std::path::Path;
+
+    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
+    use zaino_primitives::testing::linked;
+    use zaino_primitives::types::{
+        OutPoint, Script, Transaction, TransparentData, TransparentOutput,
+    };
+    use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{schema, TransparentAddressIndexWriter};
-    use tokio::sync::watch;
-    use tokio_util::sync::CancellationToken;
-    use zaino_header_chain::VerifiedChain;
-    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, IndexKind, PersistenceEngine};
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        ReorgDepth, Script, Transaction, TransparentData, TransparentOutput,
-    };
-    use zaino_sync::{BlockSink, Step};
-
-    const NAME: &str = IndexKind::TransparentAddress.name();
+    use crate::{fold, schema};
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
     }
 
-    /// Empty index on a fresh filesystem, one bulk commit per MiB
-    fn empty() -> TransparentAddressIndexWriter<DiskStore> {
-        let network = zcash_protocol::consensus::NetworkType::Regtest;
-        let store =
-            DiskEngine::new(SimFs::new()).open(std::path::Path::new("/ta"), &schema(network));
-        let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        TransparentAddressIndexWriter::new(store.expect("open"), batch)
+    fn zat(n: u64) -> Zatoshis {
+        Zatoshis::new(n).expect("in supply")
     }
 
-    /// Syncing = a refusal on every method until the gate opens at chainview's tip; an address
-    /// with no history = a successful empty answer, never an error
-    #[tokio::test]
-    async fn syncing_refuses_and_an_empty_history_answers_empty() {
-        let address = TransparentAddress::PublicKeyHash([0x01; 20]);
-        let within = Duration::from_secs(10);
-
-        let index = empty();
-        let service = TransparentAddressService::new(
-            index.published().served(),
-            zcash_protocol::consensus::NetworkType::Regtest,
-        );
-        let (mut synced, mut durable) =
-            (index.published().subscribe_synced(), index.published().subscribe_finalized());
-        // heights 0 and 1, only 1 pays the address (0 = bare coinbase)
-        let tx = |tag: u8, outputs| Transaction {
+    /// One transparent tx: `inputs` spend `(txid tag, vout)`, `outputs` pay `(p2pkh tag, zats)`
+    fn tx(tag: u8, inputs: &[(u8, u32)], outputs: &[(u8, u64)]) -> Transaction {
+        let p2pkh =
+            |hash: u8| Script::new([&[0x76, 0xa9, 0x14][..], &[hash; 20], &[0x88, 0xac]].concat());
+        Transaction {
             txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
+            transparent: TransparentData {
+                coinbase: false,
+                inputs: inputs
+                    .iter()
+                    .map(|&(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
+                    .collect(),
+                outputs: outputs
+                    .iter()
+                    .map(|&(hash, zats)| TransparentOutput {
+                        value: zat(zats),
+                        script: p2pkh(hash),
+                    })
+                    .collect(),
+            },
             sprout: Default::default(),
             sapling: Default::default(),
             orchard: Default::default(),
             ironwood: Default::default(),
-        };
-        let paid = TransparentOutput {
-            value: Zatoshis::new(42).expect("in supply"),
-            script: Script::new([&[0x76, 0xa9, 0x14][..], &[0x01; 20], &[0x88, 0xac]].concat()),
-        };
-        let mut chain = Chain::with_genesis(vec![tx(0xc0, Vec::new())]);
-        let block = chain.mine_with(chain.genesis().hash, vec![tx(0x77, vec![paid])]);
-        // verified best at height 1: the gate opens once the index applies it
-        let verified = VerifiedChain::regtest(&chain.path(block.hash));
-        let (_tips, tips) = watch::channel(Some(Arc::new(verified)));
-        let depth = ReorgDepth::new(NonZeroU32::new(10).expect("non-zero"));
-        let cancel = CancellationToken::new();
-        let gate = tokio::spawn(index.published().gate(tips, depth, cancel.clone()));
-
-        // unsynced: every method refuses alike, none naming a height or a tip
-        assert_eq!(service.balance(&address), Err(ServeError::Syncing));
-        assert_eq!(service.utxos(&address, h(0)), Err(ServeError::Syncing));
-        assert_eq!(service.transactions(&address, h(0), h(10)), Err(ServeError::Syncing));
-
-        let mut sink = BlockSink::new("blocks");
-        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let blocks = sink.subscribe(NAME, queue);
-        let running = tokio::spawn(index.run(blocks));
-        for block in chain.path(block.hash) {
-            let height = block.header().height;
-            sink.send(Step::Apply { height, finalized: false, data: Arc::new(block) }).await;
         }
-        let open = tokio::time::timeout(within, synced.wait_for(|open| *open)).await;
-        open.expect("gate opens at the tip").expect("gate alive");
-
-        // applied, uncommitted: non-finalized served (same answer either side of a commit)
-        let paid = Zatoshis::new(42).expect("in supply");
-        assert_eq!(
-            service.balance(&address),
-            Ok(paid),
-            "non-finalized rows = answers, not a batch"
-        );
-
-        for height in [h(0), h(1)] {
-            sink.send(Step::Finalized { height }).await;
-        }
-        let one = tokio::time::timeout(within, durable.wait_for(|at| *at == Some(h(1)))).await;
-        one.expect("1 written").expect("index alive");
-
-        // applied to 2: heights past the fold absent, not an error (a synced index answers)
-        assert_eq!(service.transactions(&address, h(2), h(2)), Ok(Vec::new()));
-        assert_eq!(service.utxos(&address, h(2)), Ok(Vec::new()));
-
-        // inside the built range, an address nobody paid = a successful empty answer
-        let stranger = TransparentAddress::ScriptHash([0xff; 20]);
-        assert_eq!(service.utxos(&stranger, h(0)), Ok(Vec::new()));
-        assert_eq!(service.transactions(&stranger, h(0), h(1)), Ok(Vec::new()));
-        assert_eq!(service.balance(&stranger), Ok(Zatoshis::ZERO));
-
-        // paid address: its one row
-        assert_eq!(service.balance(&address), Ok(paid));
-        let paying = TransactionRef { height: 1, txid: TransactionId::from([0x77; 32]) };
-        assert_eq!(service.transactions(&address, h(0), h(1)), Ok(vec![paying]));
-
-        sink.shutdown();
-        running.await.expect("followed through Shutdown");
-        cancel.cancel();
-        gate.await.expect("gate ends on cancel");
     }
 
-    /// The row budget counts receives across every address of a request, on both tiers: at the
-    /// limit every method answers, one over it every method refuses whole (never a short list or
-    /// a partial balance)
-    #[tokio::test]
-    async fn a_request_over_its_row_budget_is_refused_whole_by_every_method() {
+    /// 0 and 1 committed, 2 buffered (a snapshot's committed view + layer): 1 pays `paid` 42, 2
+    /// spends it. At tip 2 the spend counts, `as_of(1)` hides it (a view ahead of the served tip);
+    /// a stranger and heights past the tip answer empty, never an error
+    #[test]
+    fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
+        let network = NetworkType::Regtest;
+        let (paid, stranger) = ([0x01; 20], [0xff; 20]);
+        let paid = TransparentAddress::PublicKeyHash(paid);
+        let stranger = TransparentAddress::ScriptHash(stranger);
+        let chain = linked([
+            vec![tx(0xc0, &[], &[])],
+            vec![tx(0x77, &[], &[(0x01, 42)])],
+            vec![tx(0x78, &[(0x77, 0)], &[(0x02, 41)])],
+        ]);
+        let mut store =
+            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
+        for (height, block) in chain.iter().enumerate() {
+            let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
+            store.apply(changes);
+            if height == 1 {
+                store.commit().expect("SimFs commit");
+            }
+        }
+        let at_two = TransparentAddressReader::new(store.staged(), network);
+        let at_one = at_two.clone().as_of(h(1));
+        let received = AddressUtxo {
+            height: 1,
+            txid: TransactionId::from([0x77; 32]),
+            vout: 0,
+            value: zat(42),
+        };
+        let paying = TransactionRef { height: 1, txid: TransactionId::from([0x77; 32]) };
+        let spending = TransactionRef { height: 2, txid: TransactionId::from([0x78; 32]) };
+
+        assert_eq!(at_two.balance(&paid), Ok(Zatoshis::ZERO), "spent at 2");
+        assert_eq!(at_two.utxos(&paid, h(0)), Ok(Vec::new()));
+        assert_eq!(at_two.transactions(&paid, h(0), h(2)), Ok(vec![paying, spending]));
+        assert_eq!(at_one.balance(&paid), Ok(zat(42)), "2's spend past the tip");
+        assert_eq!(at_one.utxos(&paid, h(0)), Ok(vec![received]));
+        assert_eq!(at_one.transactions(&paid, h(0), h(2)), Ok(vec![paying]));
+        let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
+        assert_eq!(at_one.balance(&receiver), Ok(Zatoshis::ZERO), "2's receive past the tip");
+
+        for reader in [&at_two, &at_one] {
+            assert_eq!(reader.utxos(&stranger, h(0)), Ok(Vec::new()));
+            assert_eq!(reader.transactions(&stranger, h(0), h(2)), Ok(Vec::new()));
+            assert_eq!(reader.balance(&stranger), Ok(Zatoshis::ZERO));
+            assert_eq!(reader.transactions(&paid, h(3), h(3)), Ok(Vec::new()), "past the tip");
+            assert_eq!(reader.utxos(&paid, h(3)), Ok(Vec::new()), "past the tip");
+        }
+    }
+
+    /// The row budget counts receives across every address of a request, committed and buffered
+    /// alike: at the limit every method answers, one over it every method refuses whole (never a
+    /// short list or a partial balance)
+    #[test]
+    fn a_request_over_its_row_budget_is_refused_whole_by_every_method() {
+        let network = NetworkType::Regtest;
         let (first, second) = (
             TransparentAddress::PublicKeyHash([0x01; 20]),
             TransparentAddress::PublicKeyHash([0x02; 20]),
         );
-        let pays = |hash: u8| TransparentOutput {
-            value: Zatoshis::new(10).expect("in supply"),
-            script: Script::new([&[0x76, 0xa9, 0x14][..], &[hash; 20], &[0x88, 0xac]].concat()),
-        };
-
-        let index = empty();
-        let published = index.published().served();
-        let (mut applied, mut durable) =
-            (index.published().subscribe_applied(), index.published().subscribe_finalized());
-        let mut sink = BlockSink::new("blocks");
-        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let subscription = sink.subscribe(NAME, queue);
-        let running = tokio::spawn(index.run(subscription));
-        // heights 0 to 2 (both inclusive) sent final (bulk), 3 non-final (written at the bulk →
-        // tip handoff, so 0..=2 durable): `first` paid at 1, 2 and 3, `second` at 2
-        let tx = |height: u8, outputs| Transaction {
-            txid: TransactionId::from([0x70 + height; 32]),
-            transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let mut chain = Chain::with_genesis(vec![tx(0, Vec::new())]);
-        let mut tip = chain.genesis();
-        for height in 1..4u8 {
-            let outputs = match height {
-                2 => vec![pays(0x01), pays(0x02)],
-                _ => vec![pays(0x01)],
-            };
-            tip = chain.mine_with(tip.hash, vec![tx(height, outputs)]);
+        // `first` paid at 1, 2 and 3, `second` at 2; 0..=2 committed, 3 buffered
+        let chain = linked([
+            vec![tx(0x70, &[], &[])],
+            vec![tx(0x71, &[], &[(0x01, 10)])],
+            vec![tx(0x72, &[], &[(0x01, 10), (0x02, 10)])],
+            vec![tx(0x73, &[], &[(0x01, 10)])],
+        ]);
+        let mut store =
+            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
+        for (height, block) in chain.iter().enumerate() {
+            let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
+            store.apply(changes);
+            if height == 2 {
+                store.commit().expect("SimFs commit");
+            }
         }
-        for (height, block) in (0u32..).zip(chain.path(tip.hash)) {
-            let (height, finalized) = (h(height), height < 3);
-            sink.send(Step::Apply { height, finalized, data: Arc::new(block) }).await;
-        }
-        let within = Duration::from_secs(10);
-        let three = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(tip))).await;
-        three.expect("3 applied").expect("index alive");
-        assert_eq!(*durable.borrow_and_update(), Some(h(2)), "bulk written before 3 applies on it");
-
-        let served = Served::fixed((*published.pin_any()).clone());
-        let network = zcash_protocol::consensus::NetworkType::Regtest;
         let budget = |rows: usize| {
-            TransparentAddressService::new(served.clone(), network)
+            TransparentAddressReader::new(store.staged(), network)
                 .with_max_rows(NonZeroUsize::new(rows).expect("non-zero"))
         };
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });
         let both = [first, second];
 
-        // `first` alone = 3 rows (2 durable + 1 non-finalized); both = 4
+        // `first` alone = 3 rows (2 committed + 1 buffered); both = 4
         let at = budget(3);
-        assert_eq!(at.balance(&first), Ok(Zatoshis::new(30).expect("in supply")));
+        assert_eq!(at.balance(&first), Ok(zat(30)));
         assert_eq!(at.utxos(&first, h(0)).map(|rows| rows.len()), Ok(3));
         assert_eq!(at.transactions(&first, h(0), h(3)).map(|found| found.len()), Ok(3));
         assert_eq!(at.balances(&both).err(), over(3), "3 + 1 across the request's addresses");
@@ -389,10 +304,6 @@ mod tests {
         assert_eq!(under.utxos(&first, h(2)).map(|rows| rows.len()), Ok(2), "from 2: 2 rows");
 
         let roomy = budget(4);
-        let sums = roomy.balances(&both).expect("4 rows fit");
-        assert_eq!(sums, [30, 10].map(|zat| Zatoshis::new(zat).expect("in supply")));
-
-        sink.shutdown();
-        running.await.expect("followed through Shutdown");
+        assert_eq!(roomy.balances(&both), Ok(vec![zat(30), zat(10)]));
     }
 }

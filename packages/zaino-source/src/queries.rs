@@ -18,12 +18,6 @@ use crate::{NonDomainError, QueryError};
 /// - production = `ZebraRpcAdapter` (all of it); a test fake answers what its test asks and
 ///   `unimplemented!()`s the rest
 pub trait ChainDataSource: Send + Sync + 'static {
-    /// `getblock <height> 0`, decoded from consensus bytes
-    fn get_block(
-        &self,
-        height: Height,
-    ) -> impl Future<Output = Result<Block, QueryError<GetBlockError>>> + Send;
-
     /// `getblock <hash> 0`, decoded from consensus bytes
     fn get_block_by_hash(
         &self,

@@ -192,9 +192,11 @@ fn is_empty(path: &Path) -> bool {
     std::fs::read_dir(path).map_or(true, |mut entries| entries.next().is_none())
 }
 
+/// Beside the first enabled snapshotted index (`validate`: at least one)
 fn staging(config: &DaemonConfig) -> Result<PathBuf, IndexerError> {
-    let (compact_block, _) = config.compact_block()?;
-    let index = &compact_block.path;
+    let first = SNAPSHOTTED.into_iter().find_map(|kind| config.enabled(kind));
+    let first = first.ok_or_else(|| error("no index enabled to stage beside"))?;
+    let index = &first.path;
     index
         .parent()
         .map(|parent| parent.join(STAGING))
@@ -222,7 +224,7 @@ fn install(src: &Path, index: &Path) -> Result<(), IndexerError> {
         std::fs::create_dir_all(parent).map_err(|e| error(format!("{}: {e}", parent.display())))?;
     }
     std::fs::rename(src, index).map_err(|e| {
-        // EXDEV: staging sits beside compact_block; every index must share its filesystem
+        // EXDEV: staging sits beside the first index; every index must share its filesystem
         error(format!(
             "{} → {}: {e} (index paths must share one filesystem)",
             src.display(),

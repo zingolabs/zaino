@@ -1,14 +1,15 @@
 //! Prometheus `/metrics` endpoint + the per-index metrics
 //!
-//! - Index metrics mirror each index's published watches
-//! - Producer, serve, chainview, validator-RPC + LSM metrics emitted by `zaino-sync` /
-//!   `zaino-grpc` / `zaino-chainview` / `zaino-source` / `zaino-persistence`, registered here via
-//!   their `describe_metrics` / `METRIC_BUCKETS`
+//! - Index metrics mirror each writer's committed view + the NFS's serving judgement
+//! - NFS, sink, serve, chainview, validator-RPC + LSM metrics emitted by `zaino-nfs` /
+//!   `zaino-sync` / `zaino-grpc` / `zaino-chainview` / `zaino-source` / `zaino-persistence`,
+//!   registered here via their `describe_metrics` / `METRIC_BUCKETS`
 
 use std::net::SocketAddr;
 
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tracing::info;
+use zaino_persistence::View as _;
 
 use crate::error::IndexerError;
 
@@ -40,6 +41,7 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
     zaino_grpc::describe_metrics();
     zaino_chainview::describe_metrics();
     zaino_source::describe_metrics();
+    zaino_nfs::describe_metrics();
     zaino_sync::describe_metrics();
     zaino_persistence::lsm::describe_metrics();
     describe_zainod();
@@ -72,19 +74,20 @@ fn describe_zainod() {
     );
     describe_gauge!(
         names::INDEX_SYNCED,
-        "1 = the index serves, 0 = it refuses every request as syncing, by index"
+        "1 = served at the verified tip, 0 = the served tip trails it (still syncing), by index"
     );
 }
 
-/// Mirrors one index's durable tip + serving gate, labelled `index`
+/// Mirrors one index's committed tip + the NFS's serving judgement, labelled `index`
 pub(crate) fn track_index(index: &'static str, watched: &crate::index_report::Watched) {
-    let mut finalized = watched.finalized.clone();
+    let mut committed = watched.committed.clone();
     let mut synced = watched.synced.clone();
 
     tokio::spawn(async move {
         loop {
-            publish_finalized(index, *finalized.borrow_and_update());
-            if finalized.changed().await.is_err() {
+            let durable = committed.borrow_and_update().tip().map(|tip| tip.height);
+            publish_finalized(index, durable);
+            if committed.changed().await.is_err() {
                 return;
             }
         }

@@ -14,17 +14,17 @@
 //! - insert only: a spend = a new `spent` row, never a delete of its `receives` row
 //! - no outpoint → address map, no UTXO set: [`fold`] = a pure projection of one block, no lookups
 //! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
-//! - blocks above the durable tip = `zaino_persistence::Tiered` (RAM only, keyed as the maps)
+//! - non-final blocks = `zaino-nfs` layers (keyed as the maps), read through a `LayeredView`
 //!
-//! # Lookup ([`TransparentAddressReader`], through [`TransparentAddressService::utxos`])
+//! # Lookup ([`TransparentAddressReader::utxos`], as of the served tip)
 //!
 //! ```text
 //! address ──▶ receives:  `range(RECEIVES, (addr, start), (addr, tip + 1), budget)`
-//!                        (held rows merged over committed ones, by key)
+//!                        (layer rows merged over committed ones, by key)
 //!                           │
 //!                           ▼
-//! each received outpoint ──▶ spent:  one `values(SPENT, outpoints)` ──found──▶ spent
-//!                                    (held first, then committed)   └──absent──▶ unspent
+//! each received outpoint ──▶ spent:  one `values(SPENT, outpoints)` ──found ≤ tip──▶ spent
+//!                                    (layer first, then committed)  └──otherwise──▶ unspent
 //! ```
 //!
 //! - balance = sum of the unspent; transactions = receiving txids + their spenders
@@ -39,9 +39,7 @@ mod writer;
 
 pub use fold::fold;
 pub use reader::TransparentAddressReader;
-pub use serve::{
-    AddressUtxo, ServeError, TransactionRef, TransparentAddressService, DEFAULT_MAX_ADDRESS_ROWS,
-};
+pub use serve::{AddressUtxo, ServeError, TransactionRef, DEFAULT_MAX_ADDRESS_ROWS};
 pub use writer::TransparentAddressIndexWriter;
 
 use zaino_persistence::{IndexKind, MapId, Schema, Width};

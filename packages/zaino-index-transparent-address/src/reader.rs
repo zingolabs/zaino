@@ -1,5 +1,7 @@
 //! [`TransparentAddressReader`]: typed reads of both maps over any view of them
 
+use std::num::NonZeroUsize;
+
 use zaino_persistence::{MapRead, View};
 use zaino_primitives::types::{Height, OutPoint};
 use zcash_protocol::consensus::NetworkType;
@@ -8,14 +10,18 @@ use crate::{
     key::{
         decode_receive, decode_spend, encode_receive_key, AddressKey, ReceiveKey, ReceiveRow, Spend,
     },
-    RECEIVES, SPENT,
+    DEFAULT_MAX_ADDRESS_ROWS, RECEIVES, SPENT,
 };
 
-/// One state of both maps, never moving while held (one pin per request, one parent per fold)
+/// One state of both maps, read as of `tip` (a snapshot's served tip: rows above it unseen)
+///
+/// - `max_rows` = receives one request may walk, across all its addresses
 #[derive(Clone)]
 pub struct TransparentAddressReader<V> {
     view: V,
     network: NetworkType,
+    tip: Option<Height>,
+    max_rows: NonZeroUsize,
 }
 
 impl<V: View> std::fmt::Debug for TransparentAddressReader<V> {
@@ -26,13 +32,30 @@ impl<V: View> std::fmt::Debug for TransparentAddressReader<V> {
 }
 
 impl<V: View> TransparentAddressReader<V> {
-    /// `view` of a store opened with [`schema`](crate::schema)`(network)`
+    /// `view` of a store opened with [`schema`](crate::schema)`(network)`, as of its own tip
     pub fn new(view: V, network: NetworkType) -> Self {
-        Self { view, network }
+        let tip = view.tip().map(|tip| tip.height);
+        Self { view, network, tip, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
+    }
+
+    /// Rows above `tip` unseen (a view ahead of the snapshot it serves)
+    pub fn as_of(mut self, tip: Height) -> Self {
+        self.tip = self.tip.min(Some(tip));
+        self
+    }
+
+    /// Overrides [`DEFAULT_MAX_ADDRESS_ROWS`]
+    pub fn with_max_rows(mut self, max_rows: NonZeroUsize) -> Self {
+        self.max_rows = max_rows;
+        self
     }
 
     pub(crate) fn network(&self) -> NetworkType {
         self.network
+    }
+
+    pub(crate) fn max_rows(&self) -> NonZeroUsize {
+        self.max_rows
     }
 }
 
@@ -46,7 +69,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
         limit: usize,
     ) -> Option<Vec<ReceiveRow>> {
         // key-range end, exclusive: the height after the tip
-        let end = u32::from(self.view.tip().map_or(Height::GENESIS, |tip| tip.height.next()));
+        let end = u32::from(self.tip.map_or(Height::GENESIS, Height::next));
         // start past the tip: nothing held
         if start >= end {
             return Some(Vec::new());
@@ -91,7 +114,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
         )
     }
 
-    /// What spent each of `received`, if the index has seen it spent, in `received` order (one
+    /// What spent each of `received` at or below the tip, in `received` order (one
     /// `values(SPENT, ..)` batch)
     pub(crate) fn spends_of(&self, received: &[ReceiveKey]) -> Vec<Option<Spend>> {
         let keys: Vec<[u8; OutPoint::LEN]> = received
@@ -100,8 +123,11 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
         let values = self.view.values(SPENT, &keys).into_iter();
-        let spend =
-            |value: &[u8]| decode_spend(value.try_into().expect("spent: SPEND-wide values"));
-        values.map(|value| value.as_deref().map(spend)).collect()
+        let tip = self.tip.map(u32::from);
+        let spend = |value: &[u8]| {
+            let spend = decode_spend(value.try_into().expect("spent: SPEND-wide values"));
+            (Some(spend.height) <= tip).then_some(spend)
+        };
+        values.map(|value| value.as_deref().and_then(spend)).collect()
     }
 }

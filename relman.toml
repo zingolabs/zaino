@@ -36,10 +36,6 @@ name = "zaino-chainview"
 path = "packages/zaino-chainview"
 
 [[target]]
-name = "zaino-non-finalized-state"
-path = "packages/zaino-non-finalized-state"
-
-[[target]]
 name = "zaino-index-compact-block"
 path = "packages/zaino-index-compact-block"
 

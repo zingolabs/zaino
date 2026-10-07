@@ -19,9 +19,9 @@ pub fn fold(block: &Block, network: NetworkType) -> Changes {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::path::Path;
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{BlockHash, Height};
 
@@ -37,7 +37,7 @@ mod tests {
         let tip = chain.extend(chain.genesis().hash, 2);
         let blocks = chain.path(tip.hash);
         let store = DiskEngine::new(SimFs::new()).open(Path::new("/bh"), &schema(network));
-        let mut tiered = Tiered::new(store.expect("open"), NonZeroUsize::MAX);
+        let mut store = store.expect("open");
 
         for (height, block) in (0u8..).zip(&blocks) {
             let header = block.header();
@@ -46,10 +46,10 @@ mod tests {
             let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
             assert_eq!(rows, [(&hash[..], &[0, 0, 0, height][..])], "block {height}: hash → BE");
             assert_eq!(changes.tip(), BlockRef { hash: header.hash, height: header.height });
-            tiered.apply(changes);
+            store.apply(changes);
         }
 
-        let reader = BlockHashReader::new(tiered.view());
+        let reader = BlockHashReader::new(store.staged());
         let located: Vec<_> =
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
         let expected: Vec<_> = (0..3).map(|n| Some(Height::try_from(n).expect("h"))).collect();

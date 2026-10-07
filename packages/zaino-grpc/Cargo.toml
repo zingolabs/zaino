@@ -20,8 +20,6 @@ bytes = { workspace = true }
 zaino-index-compact-block = { workspace = true }
 zaino-index-tree-state = { workspace = true }
 zaino-index-transparent-address = { workspace = true }
-# `BlockID.hash` → height for the by-hash routes above
-zaino-internal-block-hash-to-height = { workspace = true }
 # Domain values rendered onto the wire (index dispatches, `LightdInfo`'s upgrade schedule)
 zaino-primitives = { workspace = true }
 # TreeState carries its trees as hex strings.
@@ -47,6 +45,7 @@ rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 arc-swap = { workspace = true }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-nfs.workspace = true
 
 [dev-dependencies]
 rcgen = { workspace = true }
@@ -54,13 +53,13 @@ tempfile = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 zaino-index-compact-block = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
-# Service tests: index loops fed through a `BlockSink`, and the `ArcSwap` behind a
-# test-flipped serving gate.
-zaino-sync = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-nfs = { workspace = true, features = ["testing"] }
+zaino-internal-value-balance.workspace = true
+zaino-internal-block-hash-to-height.workspace = true
 
 [lints.rust]
 unreachable_pub = "warn"

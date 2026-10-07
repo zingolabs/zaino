@@ -103,18 +103,18 @@ timeout_secs = 10
 [sync]
 # Blocks below the tip kept reorg-able (in memory, served, written once buried); >= 1000 off regtest
 finalised_depth = 1000
-# Bulk-sync fetches (and decodes) in flight, spread over every trusted validator
+# Block fetches (and folds) in flight ahead of the next one needed, over every trusted validator
 concurrency = 32
-# MiB of decoded blocks per index commit in bulk sync (bigger = fewer fsyncs, more memory held,
-# more to redo after a crash); at the tip each final block commits as it arrives
+# MiB of index changes per commit in bulk sync (bigger = fewer fsyncs, more memory held, more to
+# redo after a crash); at the tip each final block commits as it arrives
 batch_mib = 64
-# MiB of decoded blocks one index may lag the fetch before it throttles the pipeline
+# MiB of final blocks one index may lag the fetch before it throttles the pipeline
 queue_mib = 256
 
 # One table per index: `enabled` (default true; off = its methods UNIMPLEMENTED) and `path`
 # (default $XDG_CACHE_HOME/zaino/indexes/<name>); an omitted table takes both defaults
 [index.compact_block]
-# GetBlock, GetBlockRange, GetLatestBlock, GetLightdInfo height; cannot be disabled
+# GetBlock, GetBlockRange, GetLatestBlock (GetLightdInfo's height = the served tip, either way)
 # - its fee index (each CompactTx.fee) lives beside it, in `value_balance`
 enabled = true
 path = "<ZAINO_DATA>/compact_block"

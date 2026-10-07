@@ -5072,11 +5072,12 @@ dependencies = [
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
  "zaino-internal-block-hash-to-height",
+ "zaino-internal-value-balance",
+ "zaino-nfs",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
- "zaino-sync",
  "zcash_address",
  "zcash_protocol",
  "zcash_script",
@@ -5105,7 +5106,6 @@ dependencies = [
 name = "zaino-index-compact-block"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "bytes",
  "proptest",
  "prost",
@@ -5125,8 +5125,6 @@ dependencies = [
  "proptest",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
- "zaino-header-chain",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-sync",
@@ -5146,8 +5144,6 @@ dependencies = [
  "sapling-crypto",
  "thiserror 2.0.18",
  "tokio",
- "tokio-util",
- "zaino-header-chain",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-sync",
@@ -5159,7 +5155,6 @@ dependencies = [
 name = "zaino-internal-block-hash-to-height"
 version = "0.1.0"
 dependencies = [
- "thiserror 2.0.18",
  "tokio",
  "zaino-persistence",
  "zaino-primitives",
@@ -5185,6 +5180,7 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "imbl",
+ "metrics",
  "proptest",
  "thiserror 2.0.18",
  "tokio",
@@ -5201,18 +5197,6 @@ dependencies = [
  "zaino-source",
  "zaino-sync",
  "zcash_protocol",
-]
-
-[[package]]
-name = "zaino-non-finalized-state"
-version = "0.2.0"
-dependencies = [
- "futures",
- "proptest",
- "thiserror 2.0.18",
- "tokio",
- "zaino-primitives",
- "zaino-source",
 ]
 
 [[package]]
@@ -5306,20 +5290,15 @@ dependencies = [
 name = "zaino-sync"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "futures",
  "metrics",
  "metrics-util",
- "proptest",
  "rayon",
- "thiserror 2.0.18",
  "tokio",
- "tokio-util",
  "tracing",
- "zaino-header-chain",
  "zaino-persistence",
  "zaino-primitives",
- "zaino-source",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -5351,6 +5330,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "toml",
+ "tonic",
  "tracing",
  "tracing-subscriber",
  "unicode-ellipsis",
@@ -5362,9 +5342,11 @@ dependencies = [
  "zaino-index-tree-state",
  "zaino-internal-block-hash-to-height",
  "zaino-internal-value-balance",
+ "zaino-nfs",
  "zaino-peers",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-proto",
  "zaino-source",
  "zaino-sync",
  "zcash_protocol",

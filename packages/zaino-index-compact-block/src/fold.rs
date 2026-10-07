@@ -32,9 +32,9 @@ pub fn fold<V: SequenceRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, panic::AssertUnwindSafe, path::Path};
+    use std::{panic::AssertUnwindSafe, path::Path};
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
         CompactCiphertext, Fee, OrchardAction, OrchardData, SaplingData, SaplingOutput,
@@ -93,25 +93,25 @@ mod tests {
         };
         let empty = || {
             let store = DiskEngine::new(SimFs::new()).open(Path::new("/cb"), &schema(network));
-            Tiered::new(store.expect("open"), NonZeroUsize::MAX)
+            store.expect("open")
         };
 
         let mut chain = Chain::with_genesis(txs(2, 1, 0));
         let one = chain.mine_with(chain.genesis().hash, txs(3, 0, 4));
         let two = chain.mine_with(one.hash, txs(0, 5, 1));
-        let mut tiered = empty();
+        let mut through_two = empty();
         for (at, after) in
             [(chain.genesis(), sizes(2, 1, 0)), (one, sizes(5, 1, 4)), (two, sizes(5, 6, 5))]
         {
             let block = chain.block(at.hash);
-            let parent = CompactBlockReader::new(tiered.view(), network);
+            let parent = CompactBlockReader::new(through_two.staged(), network);
             let changes = fold(&parent, block, &fees(block)).expect("far below u32");
             let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
             let expected = encode_compact_block(block, &fees(block), &after);
             assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
             assert_eq!(changes.tip(), at);
-            tiered.apply(changes);
-            assert_eq!(CompactBlockReader::new(tiered.view(), network).tip_sizes(), after);
+            through_two.apply(changes);
+            assert_eq!(CompactBlockReader::new(through_two.staged(), network).tip_sizes(), after);
         }
 
         // genesis record written claiming sapling = u32::MAX - 1: `one`'s 3 outputs overflow
@@ -121,29 +121,29 @@ mod tests {
         let near_full = sizes(u32::MAX - 1, 0, 0);
         changes.append(BLOCKS, &encode_compact_block(genesis, &fees(genesis), &near_full));
         seeded.apply(changes);
-        let parent = CompactBlockReader::new(seeded.view(), network);
+        let parent = CompactBlockReader::new(seeded.staged(), network);
         let block = chain.block(one.hash);
         let overflow = fold(&parent, block, &fees(block)).err();
         assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
 
-        // parents: `tiered` = 0..=2, `seeded` = 0, `through_one` = 0..=1
+        // parents: `through_two` = 0..=2, `seeded` = 0, `through_one` = 0..=1
         let sibling = chain.mine_with(chain.genesis().hash, txs(1, 1, 1));
         let cousin = chain.mine_with(sibling.hash, txs(1, 1, 1));
         let through_one = {
-            let mut tiered = empty();
+            let mut store = empty();
             for at in [chain.genesis(), one] {
                 let block = chain.block(at.hash);
-                let parent = CompactBlockReader::new(tiered.view(), network);
-                tiered.apply(fold(&parent, block, &fees(block)).expect("small"));
+                let parent = CompactBlockReader::new(store.staged(), network);
+                store.apply(fold(&parent, block, &fees(block)).expect("small"));
             }
-            tiered
+            store
         };
         for (case, parent, at) in [
             ("gap", &seeded, two),
             ("fork at the same height", &through_one, cousin),
-            ("below the tip", &tiered, one),
+            ("below the tip", &through_two, one),
         ] {
-            let parent = CompactBlockReader::new(parent.view(), network);
+            let parent = CompactBlockReader::new(parent.staged(), network);
             let block = chain.block(at.hash);
             let folded =
                 std::panic::catch_unwind(AssertUnwindSafe(|| fold(&parent, block, &fees(block))));

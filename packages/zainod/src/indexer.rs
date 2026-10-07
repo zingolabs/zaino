@@ -1,32 +1,23 @@
-//! Boots the Zaino daemon and composes its pipeline.
+//! Boots the Zaino daemon and composes its pipeline (`docs/design/nfs.md` §7).
 //!
-//! One fetch, N indexes, one server. The stack crates stay config-agnostic; this module is the
-//! only place daemon config crosses into them, and the only place the pipeline's shape is
-//! written down (`docs/design/sync.md`):
+//! The stack crates stay config-agnostic; this module is the only place daemon config crosses
+//! into them, and the only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─▶ Producer ──▶ BlockSink ─┬─▶ compact_block.run ◀──┐ fees
-//!   validators ──▶ getblock <hash> (any, checked) ─┘                      ├─▶ value_balance.run    │
-//!                                                                      │     └─▶ FeeSink ─────────┘
-//!                                                                      ├─▶ block_hash.run
-//!                                                                      ├─▶ tree_state.run
-//!                                                                      ├─▶ transparent_address.run
-//!                                                                      └─▶ (further indexes subscribe here)
-//!
-//!   non-finalized + files ──▶ CompactBlockService       ──┐
-//!   non-finalized + files ──▶ BlockHashService          ──┤ (by-hash locator for the other two)
-//!   non-finalized + files ──▶ TreeStateService          ──┤
-//!   non-finalized + runs  ──▶ TransparentAddressService ──┼─▶ Routes ─▶ GrpcService
-//!   ChainView (send, mempool, lightd info)              ──┤
-//!   TrafficBalancer (GetTransaction bytes)              ──┘
+//!   validators ──▶ HeaderSync ── VerifiedChain ─▶ Nfs ──▶ final stream ─┬─▶ value_balance ─fees─┐
+//!   validators ──▶ getblock <hash> (any, checked) ┘  │                  ├─▶ compact_block ◀──────┘
+//!                                                    │                  ├─▶ block_hash
+//!                                                    │                  ├─▶ tree_state
+//!                                                    │                  └─▶ transparent_address
+//!                                                    │   ◀── each writer's committed view ──┘
+//!                                                    ▼
+//!                                        NfsHandle ─▶ snapshot ─▶ Routes ─▶ GrpcService
+//!   ChainView (send, mempool, lightd info) + TrafficBalancer (GetTransaction) ─┘
 //! ```
 //!
-//! - Stage → stage = a channel, wired here by hand (no scheduler, no dependency graph)
-//! - Each index = its own loop over its subscription; its serving gate = a separate task reading
-//!   the verified best against the index's published applied block (hash, not height)
-//! - Every stage = one plain task in a `JoinSet`; fallible setup awaited before any spawn
-//! - Scope: compact-block, block-hash, tree-state, transparent-address slices from their indexes,
-//!   plus `SendTransaction`/`GetLightdInfo` off the validator
+//! - One NFS: fetch, fold at the tip, the final stream, one snapshot per request
+//! - Each writer = its own task over its subscription; a disabled index is never opened
+//! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
 
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -37,22 +28,25 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
+use zaino_chainview::ChainView;
 use zaino_grpc::{GrpcLimits, GrpcService, Routes, Tls, TlsFiles, TrustedProxies};
 use zaino_header_chain::VerifiedChain;
-use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockService};
-use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressService};
-use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter, TreeStateService};
-use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashService};
-use zaino_internal_value_balance::ValueBalanceIndexWriter;
-use zaino_persistence::{fs::RealFs, DiskEngine, DiskStore, IndexKind, PersistenceEngine, Schema};
+use zaino_index_compact_block::{self as compact_block, CompactBlockIndexWriter};
+use zaino_index_transparent_address::{self as transparent_address, TransparentAddressIndexWriter};
+use zaino_index_tree_state::{self as tree_state, PoolActivations, TreeStateIndexWriter};
+use zaino_internal_block_hash_to_height::{self as block_hash, BlockHashIndexWriter};
+use zaino_internal_value_balance::{self as value_balance, ValueBalanceIndexWriter};
+use zaino_nfs::{ChainParams, Nfs};
+use zaino_persistence::fs::{Fs, RealFs};
+use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
 use zaino_primitives::network::network_name;
-use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
-use zaino_source::{ChainDataSource as _, Lane, TrafficBalancer, ZebraRpcAdapter};
-use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
+use zaino_primitives::types::{BlockchainInfo, ReorgDepth};
+use zaino_source::{ChainDataSource, Lane, TrafficBalancer, ZebraRpcAdapter};
+use zaino_sync::{FeeSink, Final, Subscription};
 
 use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
 use crate::error::IndexerError;
-use crate::index_report::Watched;
+use crate::logging::component;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
@@ -95,186 +89,29 @@ async fn upgrade_schedule(validators: &[Arc<ZebraRpcAdapter>]) -> BlockchainInfo
     }
 }
 
-/// Compose the pipeline over the trusted validators, then spawn every stage.
+/// The chain view over the trusted validators, the pipeline over it, then every task spawned
 ///
 /// - One connection pool per validator; chainview on `Lane::Control`, fetch on `Sync`, serving on
 ///   `Serve` (a lane never borrows another's connections)
 async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
-    // --- the chain view: verified tip, mempool and submission, over every trusted validator
-    let chainview_span = crate::logging::component("ChainView");
+    let chainview_span = component("ChainView");
     let chainview =
         chainview_span.in_scope(|| crate::chainview::connect(&config, Arc::clone(&fs)))?;
-    let view = chainview.view.subscriber();
-    let verified = chainview.header_sync.subscribe();
-    // serving's point lookups (`GetTransaction`), each to the least-loaded validator first
-    let serve = chainview.sources.iter().map(|source| Arc::new(source.on(Lane::Serve))).collect();
-    let validators = TrafficBalancer::new(serve);
-
-    // --- the indexes: each its own files, its own finalised height, its own sink subscription
-    //
-    // A disabled index is never opened, subscribed or spawned, and its methods answer
-    // UNIMPLEMENTED. compact-block + value-balance always on (`DaemonConfig::compact_block`)
-    let depth = ReorgDepth::new(config.sync.finalised_depth);
-    let mut block_sink = BlockSink::new("blocks");
-    let network = config.network;
-
-    // compact-block reads one fee step (value-balance's) per block step
-    let mut fee_sink = FeeSink::new("fees");
-    let (config_cb, config_vb) = config.compact_block()?;
-    // the one engine every index stores through
-    let engine = DiskEngine::new(Arc::clone(&fs));
-    let schema = zaino_index_compact_block::schema(network);
-    let (compact_block_span, compact_block) = open_index(&engine, &config_cb, schema, |store| {
-        Ok(CompactBlockIndexWriter::new(store, config_cb.batch_bytes))
-    })?;
-    let compact_block_feeds = (
-        block_sink.subscribe(IndexKind::CompactBlock.name(), config_cb.queue_bytes),
-        fee_sink.subscribe(IndexKind::CompactBlock.name(), config_vb.queue_bytes),
-    );
-    let schema = zaino_internal_value_balance::schema(network);
-    let (value_balance_span, value_balance) = open_index(&engine, &config_vb, schema, |store| {
-        Ok(ValueBalanceIndexWriter::new(store, config_vb.batch_bytes))
-    })?;
-    let value_balance_blocks = subscribe(&mut block_sink, IndexKind::ValueBalance, &config_vb);
-    let config_bh = config.enabled(IndexKind::BlockHash);
-    let schema = zaino_internal_block_hash_to_height::schema(network);
-    let block_hash = open_optional(&engine, config_bh.as_ref(), schema, |store, batch| {
-        Ok(BlockHashIndexWriter::new(store, batch))
-    })?;
-    let config_ts = config.enabled(IndexKind::TreeState);
-    let schema = zaino_index_tree_state::schema(network);
-    let tree_state = open_optional(&engine, config_ts.as_ref(), schema, |store, batch| {
-        Ok(TreeStateIndexWriter::new(store, batch))
-    })?;
-    let config_ta = config.enabled(IndexKind::TransparentAddress);
-    let schema = zaino_index_transparent_address::schema(network);
-    let transparent = open_optional(&engine, config_ta.as_ref(), schema, |store, batch| {
-        Ok(TransparentAddressIndexWriter::new(store, batch))
-    })?;
-    let sink = &mut block_sink;
-    let block_hash_blocks = config_bh.as_ref().map(|c| subscribe(sink, IndexKind::BlockHash, c));
-    let tree_state_blocks = config_ts.as_ref().map(|c| subscribe(sink, IndexKind::TreeState, c));
-    let transparent_blocks =
-        config_ta.as_ref().map(|c| subscribe(sink, IndexKind::TransparentAddress, c));
-    // every subscriber's durable tip (production starts after the rearmost)
-    let durable = [
-        Some(compact_block.durable_tip()),
-        Some(value_balance.durable_tip()),
-        block_hash.as_ref().map(|(_, index)| index.durable_tip()),
-        tree_state.as_ref().map(|(_, index)| index.durable_tip()),
-        transparent.as_ref().map(|(_, index)| index.durable_tip()),
-    ];
-
-    let block_hash_service =
-        block_hash.as_ref().map(|(_, index)| BlockHashService::new(index.published().served()));
-    let tree_state_service = match &tree_state {
-        Some((_, index)) => {
-            let schedule =
-                upgrade_schedule(&chainview.sources).instrument(chainview_span.clone()).await;
-            let activations = PoolActivations::from_validator(&schedule);
-            Some(TreeStateService::new(index.published().served(), network, activations))
-        }
-        None => None,
+    let schedule = upgrade_schedule(&chainview.sources).instrument(chainview_span.clone()).await;
+    let laned = |lane| chainview.sources.iter().map(|source| Arc::new(source.on(lane))).collect();
+    let inputs = Inputs {
+        chain: chainview.header_sync.subscribe(),
+        view: Arc::clone(&chainview.view),
+        sync: laned(Lane::Sync),
+        validators: TrafficBalancer::new(laned(Lane::Serve)),
+        activations: PoolActivations::from_validator(&schedule),
     };
-    let transparent_service = transparent.as_ref().map(|(_, index)| {
-        TransparentAddressService::new(index.published().served(), network)
-            .with_max_rows(config.serve.max_address_rows)
-    });
-
-    // --- the producer: the verified chain, every block fetched from any validator and checked
-    let sync = chainview.sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
-    let (concurrency, durable) = (config.sync.concurrency, durable.into_iter().flatten());
-    let producer = Producer::new(block_sink, sync, verified.clone(), concurrency, durable)
-        .with_live_span(crate::logging::component("ZainoNFS"));
-
-    // --- serving: the routes the config enabled; bound here (EADDRINUSE = boot failure)
-    let routes = Routes {
-        chain: Arc::clone(&chainview.view),
-        validators,
-        network,
-        compact_block: CompactBlockService::new(compact_block.published().served()),
-        block_hash: block_hash_service,
-        tree_state: tree_state_service,
-        transparent_address: transparent_service,
-    };
-    let limits = GrpcLimits::from(&config.grpc);
-    let mut server = GrpcService::new(routes, config.serve.grpc_listen_address, limits)
-        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()));
-    if let Some(tls) = &config.serve.tls {
-        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
-        server = server.with_tls(Tls::load(files)?);
-    }
-    let server = server.bind().await?;
-    let grpc_span = crate::logging::component("Grpc");
-    grpc_span.in_scope(|| {
-        info!(
-            endpoint = %config.serve.grpc_listen_address,
-            network = network_name(config.network),
-            "Listening"
-        )
-    });
-
-    // --- run: nothing fallible left, every stage one task
     let cancel = CancellationToken::new();
-    let mut tasks = JoinSet::new();
-    let mut watchers = Watchers {
-        tasks: &mut tasks,
-        verified,
-        depth,
-        cancel: cancel.clone(),
-        indexes: Vec::new(),
-    };
-    let (published, name) = (compact_block.published(), IndexKind::CompactBlock.name());
-    watchers.watch(name, &compact_block_span, published, &config_cb, true);
-    // no service reads value-balance (compact-block takes its fees through the sink)
-    let (published, span) = (value_balance.published(), &value_balance_span);
-    let name = IndexKind::ValueBalance.name();
-    watchers.watch(name, span, published, &config_vb, false);
-    if let (Some((span, writer)), Some(config)) = (&block_hash, &config_bh) {
-        let name = IndexKind::BlockHash.name();
-        watchers.watch(name, span, writer.published(), config, true);
-    }
-    if let (Some((span, writer)), Some(config)) = (&tree_state, &config_ts) {
-        let name = IndexKind::TreeState.name();
-        watchers.watch(name, span, writer.published(), config, true);
-    }
-    if let (Some((span, writer)), Some(config)) = (&transparent, &config_ta) {
-        let name = IndexKind::TransparentAddress.name();
-        watchers.watch(name, span, writer.published(), config, true);
-    }
-    let disabled = [
-        (IndexKind::BlockHash.name(), block_hash.is_none()),
-        (IndexKind::TreeState.name(), tree_state.is_none()),
-        (IndexKind::TransparentAddress.name(), transparent.is_none()),
-    ];
-    crate::status::publish(crate::status::Sources {
-        network: network_name(config.network),
-        started,
-        chainview: view,
-        fetched: producer.subscribe_fetched(),
-        indexes: std::mem::take(&mut watchers.indexes),
-        disabled: disabled.into_iter().filter_map(|(name, off)| off.then_some(name)).collect(),
-    });
+    let mut tasks = pipeline(&config, fs, inputs, &cancel, started).await?;
 
-    // index loops: stopped by the producer's Shutdown (a failure panics)
-    let (blocks, fees) = compact_block_feeds;
-    let run = compact_block.run(blocks, fees);
-    spawn_index(&mut tasks, IndexKind::CompactBlock, compact_block_span, run);
-    let run = value_balance.run(value_balance_blocks, fee_sink);
-    spawn_index(&mut tasks, IndexKind::ValueBalance, value_balance_span, run);
-    if let (Some((span, index)), Some(blocks)) = (block_hash, block_hash_blocks) {
-        spawn_index(&mut tasks, IndexKind::BlockHash, span, index.run(blocks));
-    }
-    if let (Some((span, index)), Some(blocks)) = (tree_state, tree_state_blocks) {
-        spawn_index(&mut tasks, IndexKind::TreeState, span, index.run(blocks));
-    }
-    if let (Some((span, index)), Some(blocks)) = (transparent, transparent_blocks) {
-        spawn_index(&mut tasks, IndexKind::TransparentAddress, span, index.run(blocks));
-    }
-    let token = cancel.child_token();
-    let run = chainview.header_sync.run(token);
+    let run = chainview.header_sync.run(cancel.child_token());
     spawn(&mut tasks, "header-sync", chainview_span.clone(), run);
     if let Some((starting, watch)) = chainview.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
@@ -302,23 +139,188 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
         };
         spawn(&mut tasks, "chainview", chainview_span.clone(), run);
     }
-    let source_span = crate::logging::component("ZainoSource");
-    spawn(&mut tasks, "producer", source_span, producer.run(cancel.child_token()));
-    spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
-    spawn(
-        &mut tasks,
-        "heartbeat",
-        crate::logging::component("Metrics"),
-        crate::admin::beat(cancel.child_token()),
-    );
+    let heartbeat = crate::admin::beat(cancel.child_token());
+    spawn(&mut tasks, "heartbeat", component("Metrics"), heartbeat);
 
     let shutdown = config.grpc.shutdown.clone();
     Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals(), shutdown)))
 }
 
+/// What the pipeline runs on (production: the chain view's header sync and the trusted
+/// validators, each on its lane; tests: mocks)
+struct Inputs<S: ChainDataSource> {
+    chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+    view: Arc<ChainView<S>>,
+    sync: Vec<Arc<S>>,
+    validators: TrafficBalancer<S>,
+    activations: PoolActivations,
+}
+
+/// The NFS, every enabled index's writer, the gRPC server: opened, subscribed, bound, spawned
+///
+/// - an early `Err` leaves nothing running (`tasks` dropped before the NFS: no writer sees its
+///   stream end)
+async fn pipeline<S: ChainDataSource>(
+    config: &DaemonConfig,
+    fs: Arc<dyn Fs>,
+    inputs: Inputs<S>,
+    cancel: &CancellationToken,
+    started: std::time::Instant,
+) -> Result<JoinSet<TaskExit>, IndexerError> {
+    let network = config.network;
+    let depth = ReorgDepth::new(config.sync.finalised_depth);
+    let params = ChainParams { network, activations: inputs.activations };
+    let verified = inputs.chain.clone();
+    let nfs = Nfs::new(inputs.chain, inputs.sync, params, config.sync.concurrency, depth);
+    let mut indexes = Subscribed { nfs, opened: Vec::new() };
+    let mut tasks = JoinSet::new();
+    let engine = DiskEngine::new(fs);
+
+    if let Some((cb, vb)) = config.compact_block()? {
+        // compact-block folds after value-balance (its fees)
+        let mut fee_sink = FeeSink::new("fees");
+        let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
+        let schema = value_balance::schema(network);
+        let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
+        let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
+        spawn_index(&mut tasks, IndexKind::ValueBalance, span, writer.run(blocks, fee_sink));
+        let schema = compact_block::schema(network);
+        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
+        let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
+        spawn_index(&mut tasks, IndexKind::CompactBlock, span, writer.run(blocks, fees));
+    }
+    if let Some(bh) = config.enabled(IndexKind::BlockHash) {
+        let schema = block_hash::schema(network);
+        let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new)?;
+        let blocks = indexes.subscribe(IndexKind::BlockHash, writer.committed(), &bh, &span);
+        spawn_index(&mut tasks, IndexKind::BlockHash, span, writer.run(blocks));
+    }
+    if let Some(ts) = config.enabled(IndexKind::TreeState) {
+        let schema = tree_state::schema(network);
+        let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new)?;
+        let blocks = indexes.subscribe(IndexKind::TreeState, writer.committed(), &ts, &span);
+        spawn_index(&mut tasks, IndexKind::TreeState, span, writer.run(blocks));
+    }
+    if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
+        let kind = IndexKind::TransparentAddress;
+        let schema = transparent_address::schema(network);
+        let (span, writer) = open(&engine, &ta, schema, TransparentAddressIndexWriter::new)?;
+        let blocks = indexes.subscribe(kind, writer.committed(), &ta, &span);
+        spawn_index(&mut tasks, kind, span, writer.run(blocks));
+    }
+    let snapshots = indexes.nfs.handle();
+
+    // --- serving: bound here (EADDRINUSE = boot failure), every answer off one snapshot
+    let routes = Routes {
+        chain: Arc::clone(&inputs.view),
+        validators: inputs.validators,
+        network,
+        nfs: snapshots.clone(),
+        max_address_rows: config.serve.max_address_rows,
+    };
+    let limits = GrpcLimits::from(&config.grpc);
+    let mut server = GrpcService::new(routes, config.serve.grpc_listen_address, limits)
+        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()));
+    if let Some(tls) = &config.serve.tls {
+        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
+        server = server.with_tls(Tls::load(files)?);
+    }
+    let server = server.bind().await?;
+    let grpc_span = component("Grpc");
+    let endpoint = config.serve.grpc_listen_address;
+    grpc_span.in_scope(|| info!(%endpoint, network = network_name(network), "Listening"));
+
+    // --- run: nothing fallible left
+    let Subscribed { nfs, opened } = indexes;
+    let handed = nfs.subscribe_handed();
+    spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
+    spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+    let synced = watch::Sender::new(false);
+    let judged = crate::serving::run(
+        snapshots.clone(),
+        verified,
+        depth,
+        synced.clone(),
+        cancel.child_token(),
+    );
+    spawn(&mut tasks, "serving", component("ZainoNFS"), judged);
+
+    let mut sources = Vec::new();
+    for Opened { kind, span, path, committed } in opened {
+        let watched = crate::index_report::Watched {
+            committed: committed.clone(),
+            synced: synced.subscribe(),
+        };
+        crate::metrics::track_index(kind.name(), &watched);
+        let (measured, usage) = watch::channel(None);
+        let report = crate::index_report::run(watched, path, measured, cancel.child_token());
+        spawn(&mut tasks, "index-report", span, report);
+        sources.push(crate::status::IndexSource { name: kind.name(), committed, usage });
+    }
+    let off = [IndexKind::CompactBlock, IndexKind::BlockHash, IndexKind::TreeState];
+    let off = off.into_iter().chain([IndexKind::TransparentAddress]);
+    let disabled = off.filter(|&kind| config.enabled(kind).is_none()).map(IndexKind::name);
+    crate::status::publish(crate::status::Sources {
+        network: network_name(network),
+        started,
+        chainview: inputs.view.subscriber(),
+        handed,
+        served: snapshots,
+        synced: synced.subscribe(),
+        indexes: sources,
+        disabled: disabled.collect(),
+    });
+    Ok(tasks)
+}
+
+/// The NFS + every index subscribed to it so far (each watched for status once spawned)
+struct Subscribed<S> {
+    nfs: Nfs<S, DiskView>,
+    opened: Vec<Opened>,
+}
+
+struct Opened {
+    kind: IndexKind,
+    span: Span,
+    path: std::path::PathBuf,
+    committed: watch::Receiver<DiskView>,
+}
+
+impl<S: ChainDataSource> Subscribed<S> {
+    /// `kind` enabled: its committed view in, its final stream out
+    fn subscribe(
+        &mut self,
+        kind: IndexKind,
+        committed: watch::Receiver<DiskView>,
+        config: &IndexConfig,
+        span: &Span,
+    ) -> Subscription<Final> {
+        let blocks = self.nfs.subscribe(kind, committed.clone(), config.queue_bytes);
+        let (span, path) = (span.clone(), config.path.clone());
+        self.opened.push(Opened { kind, span, path, committed });
+        blocks
+    }
+}
+
+/// `config.path` opened as `schema`'s store and handed to `writer` with the batch size, under
+/// the index's component span (logged); the span then carries the index's task
+fn open<W>(
+    engine: &DiskEngine,
+    config: &IndexConfig,
+    schema: Schema,
+    writer: impl FnOnce(DiskStore, NonZeroUsize) -> W,
+) -> Result<(Span, W), IndexerError> {
+    let span = crate::logging::index_component(schema.kind.name());
+    let opened = span.in_scope(|| {
+        debug!("Opening from {}", crate::logging::shown_path(&config.path));
+        engine.open(&config.path, &schema).map(|store| writer(store, config.batch_bytes))
+    })?;
+    Ok((span, opened))
+}
+
 /// Signal → drain → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
 ///
-/// - Either way: cancel the rest, then wait for them (followers flush what is final)
+/// - Either way: cancel the rest, then wait for them (writers commit what they hold)
 async fn supervise(
     mut tasks: JoinSet<TaskExit>,
     cancel: CancellationToken,
@@ -409,98 +411,6 @@ fn spawn_index(
         run.await;
         Ok::<_, IndexerError>(())
     });
-}
-
-/// `config.path` opened as `schema`'s store and handed to `writer`, under the index's component
-/// span, logged; the span then carries the index's task
-fn open_index<W>(
-    engine: &DiskEngine,
-    config: &IndexConfig,
-    schema: Schema,
-    writer: impl FnOnce(DiskStore) -> Result<W, IndexerError>,
-) -> Result<(Span, W), IndexerError> {
-    let span = crate::logging::index_component(schema.kind.name());
-    let opened = span.in_scope(|| {
-        debug!("Opening from {}", crate::logging::shown_path(&config.path));
-        writer(engine.open(&config.path, &schema)?)
-    })?;
-    Ok((span, opened))
-}
-
-/// Enabled → [`open_index`] (`writer` given the batch size); disabled → `None`, nothing created
-fn open_optional<W>(
-    engine: &DiskEngine,
-    config: Option<&IndexConfig>,
-    schema: Schema,
-    writer: impl FnOnce(DiskStore, NonZeroUsize) -> Result<W, IndexerError>,
-) -> Result<Option<(Span, W)>, IndexerError> {
-    let open = |config: &IndexConfig| {
-        open_index(engine, config, schema, |store| writer(store, config.batch_bytes))
-    };
-    config.map(open).transpose()
-}
-
-/// `index`'s own queue off `block_sink`
-fn subscribe(
-    block_sink: &mut BlockSink,
-    index: IndexKind,
-    config: &IndexConfig,
-) -> Subscription<Block> {
-    block_sink.subscribe(index.name(), config.queue_bytes)
-}
-
-/// What every index runs beside its loop: metrics, the status report, the serving gate
-struct Watchers<'a> {
-    tasks: &'a mut JoinSet<TaskExit>,
-    verified: watch::Receiver<Option<Arc<VerifiedChain>>>,
-    depth: ReorgDepth,
-    cancel: CancellationToken,
-    /// `/statusz` sources, published once every index is watched
-    indexes: Vec<crate::status::IndexSource>,
-}
-
-impl Watchers<'_> {
-    /// `served` = a service reads it (its request count reported)
-    fn watch<V: Send + Sync + 'static>(
-        &mut self,
-        name: &'static str,
-        span: &Span,
-        published: &Published<V>,
-        config: &IndexConfig,
-        served: bool,
-    ) {
-        let watched = Watched {
-            finalized: published.subscribe_finalized(),
-            applied: published.subscribe_applied(),
-            merged: published.subscribe_merged(),
-            synced: published.subscribe_synced(),
-            reads: served.then(|| published.reads()),
-        };
-        crate::metrics::track_index(name, &watched);
-        let (measured, usage) = watch::channel(None);
-        self.indexes.push(crate::status::IndexSource {
-            name,
-            finalized: watched.finalized.clone(),
-            applied: watched.applied.clone(),
-            merged: watched.merged.clone(),
-            synced: watched.synced.clone(),
-            reads: watched.reads.clone(),
-            usage,
-        });
-        let report = crate::index_report::run(
-            watched,
-            config.path.clone(),
-            measured,
-            self.cancel.child_token(),
-        );
-        spawn(self.tasks, "index-report", span.clone(), report);
-        let gate = published.gate(self.verified.clone(), self.depth, self.cancel.child_token());
-        let gate = async move {
-            gate.await;
-            Ok::<(), IndexerError>(())
-        };
-        spawn(self.tasks, "serving-gate", span.clone(), gate);
-    }
 }
 
 /// Every shutdown signal, named (the first starts the drain, a second cuts it short)
@@ -636,31 +546,118 @@ mod tests {
         }
     }
 
-    /// `enabled = false` is honoured before anything touches the disk: no index writer, and the
-    /// index's directory is never created — so nothing can subscribe or claim a route either.
-    #[test]
-    fn a_disabled_index_is_never_constructed_and_creates_no_files() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let engine = DiskEngine::new(RealFs::shared());
-        let net = zcash_protocol::consensus::NetworkType::Regtest;
-        let optional = [
-            ("block-hash", zaino_internal_block_hash_to_height::schema(net)),
-            ("tree-state", zaino_index_tree_state::schema(net)),
-            ("transparent", zaino_index_transparent_address::schema(net)),
-        ];
-        for (name, schema) in optional {
-            for enabled in [false, true] {
-                let config = IndexConfig {
-                    path: dir.path().join(format!("{name}-{enabled}")),
-                    batch_bytes: NonZeroUsize::MIN,
-                    queue_bytes: NonZeroUsize::MIN,
-                };
-                let given = enabled.then_some(&config);
-                let opened = open_optional(&engine, given, schema.clone(), |store, _| Ok(store));
-                let opened = opened.expect("opens when enabled").is_some();
-                let created = config.path.exists();
-                assert_eq!((opened, created), (enabled, enabled), "{name}, enabled = {enabled}");
+    /// The whole pipeline over a mock validator (every index on `SimFs`, gRPC on localhost,
+    /// headers verified at depth 3): A 0..=8 at once (0..=5 final: bulk, committed once the
+    /// stream idles; 6..=8 folded at the tip), then B7 (heavier, off A6) + B8. Before and after
+    /// the reorg `GetLatestBlock`, the last block of `GetBlockRange` and `GetTreeState` at that
+    /// height name one block; the reorged heights then serve B's; cancel stops every task cleanly
+    #[tokio::test]
+    async fn the_pipeline_follows_a_reorg_and_every_rpc_agrees_on_the_served_tip() {
+        use std::num::NonZeroU32;
+        use std::time::Duration;
+
+        use zaino_header_chain::HeaderChain;
+        use zaino_primitives::testing::Chain;
+        use zaino_primitives::types::{Block, BlockHash, Height};
+        use zaino_proto::proto::service::{
+            compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
+        };
+        use zaino_source::mock::MockChain;
+
+        let mut blocks = Chain::new();
+        let genesis = blocks.genesis().hash;
+        let a8 = blocks.extend(genesis, 8);
+        let a: Vec<Block> = blocks.path(a8.hash);
+        let hash = |block: &Block| block.header().hash;
+        let b7 = blocks.mine_heavier(hash(&a[6]), &[hash(&a[7]), hash(&a[8])]).expect("in range");
+        let b8 = blocks.mine(b7.hash);
+        let b: Vec<Block> = blocks.path(b8.hash)[7..].to_vec();
+
+        let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
+        let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
+        let (verified, chain) = watch::channel(None);
+        let mock = Arc::new(MockChain::serving(a.clone()));
+        let endpoint =
+            zaino_chainview::Endpoint { address: "mock".to_owned(), source: mock.clone() };
+        let (view, _pollers) = ChainView::new(vec![endpoint], depth).expect("one endpoint");
+        let genesis_height = Height::GENESIS;
+        let activations = PoolActivations {
+            sapling: genesis_height,
+            orchard: Some(genesis_height),
+            ironwood: Some(genesis_height),
+        };
+        let inputs = Inputs {
+            chain,
+            view: Arc::new(view),
+            sync: vec![Arc::clone(&mock)],
+            validators: TrafficBalancer::new(vec![Arc::clone(&mock)]),
+            activations,
+        };
+        let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let address = probe.local_addr().expect("local addr");
+        drop(probe);
+        let mut config = DaemonConfig {
+            network: zcash_protocol::consensus::NetworkType::Regtest,
+            ..DaemonConfig::default()
+        };
+        config.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
+        config.serve.grpc_listen_address = address;
+        let fs = zaino_persistence::fs::SimFs::new();
+        let cancel = CancellationToken::new();
+        let started = std::time::Instant::now();
+        let tasks = pipeline(&config, fs, inputs, &cancel, started).await.expect("pipeline up");
+        let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
+            .await
+            .expect("the gRPC listener is bound");
+
+        let mut publish = |added: &[Block]| {
+            headers.insert_blocks(added).expect("valid headers");
+            if let Some(boundary) = headers.finalizable() {
+                headers.finalize(boundary).expect("in-memory store");
             }
-        }
+            verified.send_replace(headers.verified().map(Arc::new));
+        };
+        // (latest, range's last, tree state at it): each the block's (height, hash)
+        let mut agree_at = async |tip: &Block| {
+            let expected = (u64::from(tip.header().height), <[u8; 32]>::from(tip.header().hash));
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+            loop {
+                let latest = match wallet.get_latest_block(ChainSpec {}).await {
+                    Ok(latest) => Some(latest.into_inner()),
+                    Err(syncing) if syncing.code() == tonic::Code::Unavailable => None,
+                    Err(status) => panic!("GetLatestBlock: {status}"),
+                };
+                let served = latest.as_ref().map(|id| (id.height, id.hash.as_slice()));
+                if served == Some((expected.0, &expected.1[..])) {
+                    break;
+                }
+                assert!(tokio::time::Instant::now() < deadline, "served {latest:?}, want {tip:?}");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            let at = |height| Some(BlockId { height, hash: Vec::new() });
+            let range = BlockRange { start: at(0), end: at(99), pool_types: Vec::new() };
+            let mut stream = wallet.get_block_range(range).await.expect("range").into_inner();
+            let mut last = None;
+            while let Some(block) = stream.message().await.expect("a block") {
+                last = Some((block.height, block.hash));
+            }
+            assert_eq!(last, Some((expected.0, expected.1.to_vec())), "range ends at the tip");
+            let state = wallet.get_tree_state(BlockId { height: expected.0, hash: Vec::new() });
+            let state = state.await.expect("tree state").into_inner();
+            assert_eq!(state.hash, BlockHash::from(expected.1).to_string(), "tree state's block");
+        };
+
+        publish(&a);
+        agree_at(&a[8]).await;
+        mock.extend_best(b.clone());
+        publish(&b);
+        agree_at(&b[1]).await;
+        let reorged = wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
+        let reorged = reorged.expect("block 7").into_inner().hash;
+        assert_eq!(reorged, <[u8; 32]>::from(hash(&b[0])).to_vec(), "7 = B7 now");
+
+        cancel.cancel();
+        let (_no_signal, signals) = mpsc::channel(1);
+        supervise(tasks, cancel, signals, ShutdownConfig::default()).await.expect("clean stop");
     }
 }

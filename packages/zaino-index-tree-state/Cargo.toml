@@ -15,6 +15,7 @@ orchard.workspace = true
 rayon.workspace = true
 sapling-crypto.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
@@ -25,9 +26,7 @@ zcash_protocol.workspace = true
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 proptest.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
-tokio-util.workspace = true
-zaino-header-chain = { workspace = true, features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 
 [lints.rust]
 unreachable_pub = "warn"

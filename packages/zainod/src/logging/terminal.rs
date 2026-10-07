@@ -38,8 +38,7 @@ const GROUP_FROM: u64 = 1_000;
 /// Fields lined up across lines (index heights + size): `(key, width, right-aligned)`
 /// - Padding between pairs, never inside a value (a value with a space would be quoted)
 /// - Right-aligned = spaces before the key, so the column's right edge lines up
-const COLUMNS: &[(&str, usize, bool)] =
-    &[("durable", 9, false), ("merged", 9, false), ("applied", 9, false), ("size", 6, true)];
+const COLUMNS: &[(&str, usize, bool)] = &[("durable", 9, false), ("size", 6, true)];
 
 /// Hash shown as its first + last this many hex digits
 const HASH_ENDS: usize = 8;
@@ -334,9 +333,7 @@ mod tests {
                 tracing::warn!(reason = "queue full", ratio = 0.5, %hash, "Commit waited");
                 use super::super::{HeightCol, Size3};
                 tracing::info!(
-                    durable = %HeightCol(Some(3_501_802)),
-                    merged = %HeightCol(None),
-                    applied = %HeightCol(Some(3_501_802)),
+                    durable = %HeightCol(None),
                     size = %Size3(134_000_000),
                     "Syncing"
                 );
@@ -364,11 +361,8 @@ mod tests {
                 "{:<21}{:<30} reason=\"queue full\" ratio=0.5 hash=00000000…1a76bf89",
                 "ZainoSource:", "Commit waited"
             ),
-            // columns: `merged=—` padded to the 9-wide height, `size` right-aligned to 6
-            format!(
-                "{:<21}{:<30} durable=3,501,802 merged=—{:8} applied=3,501,802  size=134MB",
-                "ZainoSource:", "Syncing", ""
-            ),
+            // columns: `durable=—` padded to the 9-wide height, `size` right-aligned to 6
+            format!("{:<21}{:<30} durable=—{:8}  size=134MB", "ZainoSource:", "Syncing", ""),
             format!(
                 "{:<21}{:<30} error=\"disk gone\" endpoint=10.0.0.1:8232",
                 "Zainod:", "Poll failed"

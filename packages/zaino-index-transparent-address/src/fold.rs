@@ -38,9 +38,9 @@ pub fn fold<V: View>(parent: &TransparentAddressReader<V>, block: &Block) -> Cha
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::path::Path;
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, PersistenceEngine, Store};
     use zaino_primitives::testing::linked;
     use zaino_primitives::types::{
         OutPoint, Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
@@ -86,11 +86,11 @@ mod tests {
 
         let schema = schema(NetworkType::Regtest);
         let store = DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema);
-        let mut tiered = Tiered::new(store.expect("empty store"), NonZeroUsize::MIN);
+        let mut store = store.expect("empty store");
         let reader =
-            |tiered: &Tiered<_>| TransparentAddressReader::new(tiered.view(), NetworkType::Regtest);
-        tiered.apply(fold(&reader(&tiered), &chain[0]));
-        let changes = fold(&reader(&tiered), &chain[1]);
+            |store: &DiskStore| TransparentAddressReader::new(store.staged(), NetworkType::Regtest);
+        store.apply(fold(&reader(&store), &chain[0]));
+        let changes = fold(&reader(&store), &chain[1]);
 
         let spender = TransactionId::from([0x20; 32]);
         let rows = |table| {
@@ -105,8 +105,8 @@ mod tests {
         let (key, value) = encode_receive(&bob_receive);
         assert_eq!(rows(RECEIVES), vec![(key.to_vec(), value.to_vec())], "receives row");
 
-        tiered.apply(changes);
-        let read = reader(&tiered);
+        store.apply(changes);
+        let read = reader(&store);
         let unspent =
             read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX).expect("rows");
         let values: Vec<Vec<(u32, u64)>> = unspent

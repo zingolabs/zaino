@@ -174,12 +174,6 @@ fn display_hex(mut bytes: [u8; 32]) -> String {
 const LINK_BATCH_CALLS: usize = 500;
 
 impl crate::ChainDataSource for ZebraRpcAdapter {
-    #[tracing::instrument(skip(self), fields(h = u32::from(height)))]
-    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
-        self.raw_block(u32::from(height).to_string(), || GetBlockError::HeightNotFound(height))
-            .await
-    }
-
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,

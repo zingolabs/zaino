@@ -119,9 +119,9 @@ fn fee(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::path::Path;
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
     use zaino_primitives::testing::linked;
     use zaino_primitives::types::{
         OrchardData, SaplingData, Script, SignedZatoshis, SproutData, TransparentData,
@@ -197,16 +197,13 @@ pub(crate) mod tests {
                 tx(0x23, &[(0x21, 0)],       &[],               [0, 0, -59_000, 0]),
             ],
         ]);
-        let empty = || {
-            let store = DiskEngine::new(SimFs::new()).open(Path::new("/vb"), &schema(network));
-            Tiered::new(store.expect("open"), NonZeroUsize::MAX)
-        };
-        let mut tiered = empty();
-        let (genesis, genesis_fees) = fold(&ValueBalanceReader::new(tiered.view(), network), &chain[0]).expect("coinbase only");
+        let store = DiskEngine::new(SimFs::new()).open(Path::new("/vb"), &schema(network));
+        let mut store = store.expect("open");
+        let (genesis, genesis_fees) = fold(&ValueBalanceReader::new(store.staged(), network), &chain[0]).expect("coinbase only");
         assert_eq!(fees(&genesis_fees), [None]);
-        tiered.apply(genesis);
+        store.apply(genesis);
 
-        let parent = ValueBalanceReader::new(tiered.view(), network);
+        let parent = ValueBalanceReader::new(store.staged(), network);
         let run = fold_run(&parent, [&*chain[1], &*chain[2]]).expect("every prevout held");
         let run_fees: Vec<_> = run.iter().map(|(_, block_fees)| fees(block_fees)).collect();
         assert_eq!(run_fees, [vec![None, Some(1_000), Some(1_000)], vec![None, Some(1_000)]]);
@@ -222,11 +219,11 @@ pub(crate) mod tests {
         assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value BE, block order");
 
         for (block, (run_changes, run_fees)) in chain[1..].iter().zip(&run) {
-            let (changes, block_fees) = fold(&ValueBalanceReader::new(tiered.view(), network), block).expect("held");
+            let (changes, block_fees) = fold(&ValueBalanceReader::new(store.staged(), network), block).expect("held");
             assert_eq!(&block_fees, run_fees, "{:?}", block.header().height);
             assert_eq!(changes.inserts(OUTPUTS).collect::<Vec<_>>(), run_changes.inserts(OUTPUTS).collect::<Vec<_>>());
             assert_eq!(changes.tip(), run_changes.tip());
-            tiered.apply(changes);
+            store.apply(changes);
         }
     }
 
@@ -274,8 +271,7 @@ pub(crate) mod tests {
 
         for (case, blocks, expected) in cases {
             let store = DiskEngine::new(SimFs::new()).open(Path::new("/vb"), &schema(network));
-            let tiered = Tiered::new(store.expect("open"), NonZeroUsize::MAX);
-            let parent = ValueBalanceReader::new(tiered.view(), network);
+            let parent = ValueBalanceReader::new(store.expect("open").staged(), network);
             let chain = linked(blocks);
             let folded = fold_run(&parent, chain.iter().map(|block| &**block)).err();
             assert_eq!(folded, Some(expected), "{case}");

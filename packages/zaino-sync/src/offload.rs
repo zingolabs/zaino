@@ -28,7 +28,7 @@ pub async fn compute<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
 }
 
 /// Runs `f` on the blocking-I/O pool
-pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || span.in_scope(f))
         .await
@@ -39,23 +39,19 @@ pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
 ///
 /// - [`get`](Self::get) = the state itself, never a cached copy of it
 /// - absent only inside a hop (which holds `&mut self`): a read there panics, never waits
-pub struct Offloaded<S>(Option<S>);
+pub(crate) struct Offloaded<S>(Option<S>);
 
 impl<S: Send + 'static> Offloaded<S> {
-    pub fn new(state: S) -> Self {
+    pub(crate) fn new(state: S) -> Self {
         Self(Some(state))
     }
 
-    pub fn get(&self) -> &S {
+    pub(crate) fn get(&self) -> &S {
         self.0.as_ref().expect("offloaded state read mid-hop (its hop was cancelled)")
     }
 
-    pub fn get_mut(&mut self) -> &mut S {
-        self.0.as_mut().expect("offloaded state read mid-hop (its hop was cancelled)")
-    }
-
     /// `f` on the CPU pool, the state moved there and back
-    pub async fn compute<T: Send + 'static>(
+    pub(crate) async fn compute<T: Send + 'static>(
         &mut self,
         f: impl FnOnce(&mut S) -> T + Send + 'static,
     ) -> T {
@@ -70,7 +66,7 @@ impl<S: Send + 'static> Offloaded<S> {
     }
 
     /// `f` on the blocking-I/O pool (a commit's writes and fsyncs), the state moved there and back
-    pub async fn blocking<T: Send + 'static>(
+    pub(crate) async fn blocking<T: Send + 'static>(
         &mut self,
         f: impl FnOnce(&mut S) -> T + Send + 'static,
     ) -> T {
@@ -103,8 +99,7 @@ mod tests {
         assert!(state.compute(move |_| off_runtime()).await, "state hop ran on a runtime thread");
         state.compute(|v| v.push(2)).await;
         state.blocking(|v| v.push(3)).await;
-        state.get_mut().push(4);
-        assert_eq!(state.get(), &[1, 2, 3, 4], "every hop's mutation kept, in order");
+        assert_eq!(state.get(), &[1, 2, 3], "every hop's mutation kept, in order");
 
         for hop in ["compute", "blocking"] {
             let task = tokio::spawn(async move {

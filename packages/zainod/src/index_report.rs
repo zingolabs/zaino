@@ -1,8 +1,7 @@
-//! One line per enabled index: `durable` / `merged` / `applied` heights + bytes on disk
+//! One line per enabled index: its committed (`durable`) height + bytes on disk
 //!
-//! - `Syncing` every [`REPORT_EVERY`] in bulk sync (no window above `durable`)
-//! - `Committed bulk` once, as the window first opens over a bulk pass (the handoff flush)
-//! - `Serving` per serving-gate opening
+//! - `Syncing` every [`REPORT_EVERY`] while the NFS serves behind the verified tip
+//! - `Serving` once it serves the tip
 //! - Disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` usage)
 
 use std::{
@@ -18,9 +17,7 @@ use tracing::{
     info, warn,
 };
 
-use zaino_persistence::disk_bytes;
-use zaino_primitives::types::{BlockRef, Height};
-use zaino_sync::Reads;
+use zaino_persistence::{disk_bytes, DiskView, View as _};
 
 use crate::error::IndexerError;
 use crate::logging::{HeightCol, Size3};
@@ -29,20 +26,15 @@ use crate::logging::{HeightCol, Size3};
 const REPORT_EVERY: Duration = Duration::from_secs(30);
 const WALK_EVERY: Duration = Duration::from_secs(120);
 
-/// What the report reads off one index's `Published`
+/// What the report reads: the writer's committed view, the NFS's serving judgement
 pub(crate) struct Watched {
-    pub(crate) finalized: watch::Receiver<Option<Height>>,
-    pub(crate) applied: watch::Receiver<Option<BlockRef>>,
-    pub(crate) merged: watch::Receiver<Option<Height>>,
+    pub(crate) committed: watch::Receiver<DiskView>,
     pub(crate) synced: watch::Receiver<bool>,
-    /// `None` = no service reads this index
-    pub(crate) reads: Option<Reads>,
 }
 
 impl Watched {
-    fn heights(&self) -> (Option<Height>, Option<Height>, Option<Height>) {
-        let applied = self.applied.borrow().map(|tip| tip.height);
-        (*self.finalized.borrow(), *self.merged.borrow(), applied)
+    fn durable(&self) -> HeightCol {
+        HeightCol(self.committed.borrow().tip().map(|tip| u32::from(tip.height)))
     }
 }
 
@@ -59,9 +51,6 @@ pub(crate) async fn run(
     let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut walked = Walked(None);
-    let booted = *index.finalized.borrow();
-    // bulked = durable moved / a batch merged with no window open (a bulk pass ran)
-    let (mut bulked, mut committed) = (false, false);
     let mut serving = *index.synced.borrow();
     loop {
         tokio::select! {
@@ -73,43 +62,14 @@ pub(crate) async fn run(
                 let now = *index.synced.borrow_and_update();
                 if now && !serving {
                     let size = walked.size(&dir, &measured, Duration::ZERO).await?;
-                    let (durable, _, applied) = index.heights();
-                    info!(
-                        durable = %HeightCol(durable.map(u32::from)),
-                        applied = %HeightCol(applied.map(u32::from)),
-                        size,
-                        "Serving"
-                    );
+                    info!(durable = %index.durable(), size, "Serving");
                 }
                 serving = now;
             }
-            changed = index.applied.changed() => {
-                if changed.is_err() {
-                    return gone(&cancel).await;
-                }
-                index.applied.borrow_and_update();
-                let (durable, merged, applied) = index.heights();
-                let window = applied > durable;
-                bulked |= !window && (merged.is_some() || durable > booted);
-                if window && bulked && !committed {
-                    committed = true;
-                    let size = walked.size(&dir, &measured, WALK_EVERY).await?;
-                    info!(durable = %HeightCol(durable.map(u32::from)), size, "Committed bulk");
-                }
-            }
             _ = ticks.tick() => {
                 let size = walked.size(&dir, &measured, WALK_EVERY).await?;
-                let (durable, merged, applied) = index.heights();
-                let window = applied > durable;
-                bulked |= !window && (merged.is_some() || durable > booted);
-                if !serving && !window {
-                    info!(
-                        durable = %HeightCol(durable.map(u32::from)),
-                        merged = %HeightCol(merged.map(u32::from)),
-                        applied = %HeightCol(applied.map(u32::from)),
-                        size,
-                        "Syncing"
-                    );
+                if !serving {
+                    info!(durable = %index.durable(), size, "Syncing");
                 }
             }
         }
