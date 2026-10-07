@@ -208,19 +208,23 @@ impl<T> IndexerDataSink<T> {
 }
 
 impl<T: Weight> IndexerDataSink<T> {
-    /// `step` to every queue, serially (a full queue delays the rest: what bounds memory)
+    /// `step` to every queue or to none (a full queue delays it: what bounds memory)
+    ///
+    /// - every queue's share held before any push: a send cancelled mid-wait delivers nowhere
+    ///   (subscribers never part ways at a cancelled publisher's last step)
     pub async fn send(&self, step: Step<T>) {
         assert!(!matches!(step, Step::Shutdown), "Shutdown ends the sink: `shutdown`, not `send`");
+        let weight = u32::try_from(step.weight());
+        let mut held = Vec::with_capacity(self.subscribers.len());
         for subscriber in &self.subscribers {
-            let step = step.clone();
-            let permits = u32::try_from(step.weight())
-                .map_or(subscriber.capacity, |weight| weight.min(subscriber.capacity));
-            let held = Arc::clone(&subscriber.budget)
-                .acquire_many_owned(permits)
-                .await
-                .expect("queue budget never closed");
+            let permits =
+                weight.map_or(subscriber.capacity, |weight| weight.min(subscriber.capacity));
+            let budget = Arc::clone(&subscriber.budget).acquire_many_owned(permits).await;
+            held.push((permits, budget.expect("queue budget never closed")));
+        }
+        for (subscriber, (permits, held)) in self.subscribers.iter().zip(held) {
             subscriber.queued.pushed(permits);
-            subscriber.push(Queued { step, _held: Some(held) });
+            subscriber.push(Queued { step: step.clone(), _held: Some(held) });
         }
     }
 }
@@ -252,19 +256,28 @@ mod tests {
         }
     }
 
-    /// Two subscribers see the same steps in the same order; `Shutdown` lands last and stays popped
+    /// Two subscribers see the same steps in the same order; a send cancelled while `two` is full
+    /// reaches neither; `Shutdown` lands last and stays popped
     #[tokio::test]
-    async fn every_subscriber_sees_the_same_steps_then_shutdown_forever() {
+    async fn every_subscriber_sees_the_same_steps_a_cancelled_send_none_then_shutdown_forever() {
         let mut sink = IndexerDataSink::<Blob>::new("test");
-        let queue = NonZeroUsize::new(1 << 20).expect("nz");
-        let (mut one, mut two) = (sink.subscribe("one", queue), sink.subscribe("two", queue));
+        let (roomy, tight) = (1 << 20, size_of::<Step<Blob>>() + 1);
+        let nz = |bytes| NonZeroUsize::new(bytes).expect("nz");
+        let (mut one, mut two) =
+            (sink.subscribe("one", nz(roomy)), sink.subscribe("two", nz(tight)));
         sink.send(apply(7, 1)).await;
+        {
+            let blocked = sink.send(apply(99, 1));
+            tokio::pin!(blocked);
+            assert!(futures::poll!(blocked.as_mut()).is_pending(), "two's queue full");
+        }
+        assert_eq!(popped(two.next().await), h(7), "the cancelled 99 never queued for two");
         sink.send(apply(8, 1)).await;
+        assert_eq!(popped(two.next().await), h(8));
         sink.shutdown();
-
+        assert_eq!(popped(one.next().await), h(7));
+        assert_eq!(popped(one.next().await), h(8), "nor for one");
         for sub in [&mut one, &mut two] {
-            assert_eq!(popped(sub.next().await), h(7));
-            assert_eq!(popped(sub.next().await), h(8));
             assert!(matches!(sub.next().await, Step::Shutdown));
             assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
         }
