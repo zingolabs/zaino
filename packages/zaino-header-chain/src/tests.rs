@@ -4,11 +4,12 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_persistence::fs::SimFs;
-use zaino_primitives::testing::{encode_header, Chain};
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::rules::{equihash_valid, expected_bits, in_context, Ancestor, MEDIAN_SPAN};
+use crate::testing::{insert, HeaderViews};
 use crate::{check, decode_header, link_run, Header, HeaderChain, HeaderStore, Inserted, Params};
 use crate::{DecodeError, Rejected};
 use zaino_primitives::types::HeaderError;
@@ -198,8 +199,8 @@ fn each_mutation_is_refused_by_its_own_rule() {
     assert_eq!(alone(&invalid_bits), Err(Rejected::Bits { bits: 0x0180_0000 }));
 
     let regtest = Params::regtest(height(1), None);
-    let builder = Chain::new();
-    let raw = encode_header(builder.block(builder.genesis().hash).header());
+    let mut builder = MockChain::regtest();
+    let raw = builder.header_bytes(builder.genesis().hash);
     let versioned = |version: u32| {
         let mut raw = raw.clone();
         raw[..4].copy_from_slice(&version.to_le_bytes());
@@ -258,33 +259,20 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let gaps = [(blossom, 450), (blossom, 451), (nu7, 450), (nu7, 451)];
     assert_eq!(gaps.map(|(at, g)| gap(&testnet, at, g)), [false, true, false, true]);
 
-    // linkage through the chain (regtest, so each header passes stage A): a foreign genesis, an
-    // unknown parent, a parent off the final chain
-    let mut builder = Chain::new();
-    let trunk = builder.extend(builder.genesis().hash, 5);
-    let trunk: Vec<BlockHash> = builder.path(trunk.hash).iter().map(|b| b.header().hash).collect();
-    let skipped = builder.mine(trunk[5]).hash;
-    let orphan = builder.mine(skipped).hash;
-    let below = builder.mine(trunk[1]).hash;
-    let coinbase = builder.block(skipped).transactions().to_vec();
-    let foreign = Chain::with_genesis(coinbase);
-    let regtest = regtest.with_genesis(trunk[0]);
-    let checked = |builder: &Chain, hash: BlockHash| {
-        let raw = encode_header(builder.block(hash).header());
-        check(&regtest, decode_header(&raw).expect("shape")).expect("stage A")
-    };
-    let depth = ReorgDepth::new(NonZeroU32::new(2).expect("nz"));
-    let fs = SimFs::new();
-    let mut chain = HeaderChain::open(regtest, depth, store(fs, NetworkType::Regtest));
-    let foreign_genesis = checked(&foreign, foreign.genesis().hash);
-    assert_eq!(chain.insert(&foreign_genesis, now), Err(Rejected::WrongGenesis));
-    for hash in &trunk {
-        chain.insert(&checked(&builder, *hash), now).expect("trunk");
-    }
+    // linkage in the chain (regtest = stage A passes): foreign genesis, orphan, off the final chain
+    let five = builder.mine_empty(5);
+    let orphan = builder.mine_empty(2);
+    let below = builder.fork(height(1)).mine_empty(1).tip();
+    let foreign = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.txid([0xf0; 32])));
+    let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(2).expect("nz")));
+    let one = |mock: &MockChain, at: BlockRef| [Arc::clone(mock.block(at.hash))];
+    let foreign_genesis = one(&foreign, foreign.genesis());
+    assert_eq!(insert(&mut chain, &foreign_genesis), Err(Rejected::WrongGenesis));
+    insert(&mut chain, &builder.blocks(five)).expect("trunk");
     let boundary = chain.finalizable().expect("6 headers, depth 2");
     chain.finalize(boundary).expect("finalizes 0..=3");
-    assert_eq!(chain.insert(&checked(&builder, orphan), now), Err(Rejected::Orphan));
-    assert_eq!(chain.insert(&checked(&builder, below), now), Err(Rejected::BelowFinal));
+    assert_eq!(insert(&mut chain, &one(&builder, orphan)), Err(Rejected::Orphan), "6 skipped");
+    assert_eq!(insert(&mut chain, &one(&builder, below)), Err(Rejected::BelowFinal));
     chain.check();
 }
 

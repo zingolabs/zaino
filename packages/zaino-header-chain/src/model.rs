@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use proptest::prelude::*;
 use zaino_persistence::fs::SimFs;
-use zaino_primitives::testing::{encode_header, Chain};
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 use zcash_protocol::consensus::NetworkType;
 
@@ -316,12 +316,49 @@ fn height(h: u32) -> Height {
     Height::try_from(h).expect("in range")
 }
 
-/// `hash`'s header as the chain receives it: the builder's bytes, decoded and hashed here
-fn received(builder: &Chain, hash: BlockHash) -> Header {
-    let header = decode_header(&encode_header(builder.block(hash).header()))
-        .expect("well-formed regtest header");
-    assert_eq!(header.hash(), hash, "builder hash = SHA-256d of its bytes");
-    header
+/// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
+///
+/// - `templates[hash]` = block whose bytes `hash`'s header was cut from (itself unless edited)
+/// - edited = `prev_hash` + `time` rewritten (an early time or a parent `MockChain` never held)
+struct Builder {
+    chain: MockChain,
+    templates: HashMap<BlockHash, BlockRef>,
+}
+
+impl Builder {
+    fn genesis(&mut self) -> Header {
+        let genesis = self.chain.genesis();
+        self.received(genesis, |_| {})
+    }
+
+    fn mine(&mut self, model: &Model, prev: BlockHash, time: u32, bits: u32) -> Header {
+        let template = self.templates[&prev];
+        let exact = template.hash == prev && time > model.median_time_past(prev);
+        let mined = self.chain.branch(template).mine(|b| match exact {
+            true => b.time(time).bits(bits),
+            false => b.bits(bits),
+        });
+        let mined = mined.tip();
+        let header = self.received(mined, |raw| {
+            if !exact {
+                raw[4..36].copy_from_slice(&<[u8; 32]>::from(prev));
+                raw[100..104].copy_from_slice(&time.to_le_bytes());
+            }
+        });
+        assert_eq!((header.prev_hash(), header.time(), header.bits()), (prev, time, bits));
+        header
+    }
+
+    fn received(&mut self, block: BlockRef, edit: impl FnOnce(&mut Vec<u8>)) -> Header {
+        let mut raw = self.chain.header_bytes(block.hash);
+        let held = raw.clone();
+        edit(&mut raw);
+        let header = decode_header(&raw).expect("well-formed regtest header");
+        let unedited = raw == held;
+        assert_eq!(header.hash() == block.hash, unedited, "hash = SHA-256d of the bytes");
+        self.templates.insert(header.hash(), block);
+        header
+    }
 }
 
 proptest! {
@@ -338,8 +375,9 @@ proptest! {
 }
 
 fn run(moves: Vec<Move>) {
-    let mut builder = Chain::new();
-    let genesis = received(&builder, builder.genesis().hash);
+    let chain = MockChain::regtest().varied_work();
+    let mut builder = Builder { chain, templates: HashMap::new() };
+    let genesis = builder.genesis();
     let params = Params::regtest(height(1), None).with_genesis(genesis.hash()).any_bits();
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut fs = SimFs::new();
@@ -372,9 +410,8 @@ fn run(moves: Vec<Move>) {
         }
         expected.is_ok()
     };
-    let mine = |builder: &mut Chain, model: &mut Model, prev: BlockHash, time: u32, bits: u32| {
-        let mined = builder.mine_bits(prev, time, bits).hash;
-        let header = received(builder, mined);
+    let mine = |builder: &mut Builder, model: &mut Model, prev: BlockHash, time: u32, bits: u32| {
+        let header = builder.mine(model, prev, time, bits);
         model.mined.push(header.clone());
         model.by_hash.insert(header.hash(), header.clone());
         header

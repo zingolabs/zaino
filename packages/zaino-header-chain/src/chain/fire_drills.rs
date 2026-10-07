@@ -3,14 +3,14 @@
 
 use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 
-use zaino_persistence::fs::SimFs;
-use zaino_primitives::testing::{encode_header, Chain};
+use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zcash_protocol::consensus::NetworkType;
 
 use super::{HeaderChain, Node};
-use crate::{check, decode_header, Checked, HeaderStore, Inserted, Params};
+use crate::testing::{insert, HeaderViews};
+use crate::{check, decode_header, Checked, Inserted, Params};
 
 /// Panic message of `run`, `None` = it returned
 fn fired(run: impl FnOnce()) -> Option<String> {
@@ -38,25 +38,14 @@ fn clone_side(chain: &mut HeaderChain, of: BlockHash, salt: u8) {
 /// the trunk's 12): every check passes; then one planted bug per check, each firing its own
 #[test]
 fn every_invariant_check_fires_on_its_planted_bug() {
-    let mut builder = Chain::new();
-    let genesis = builder.genesis().hash;
-    let tip = builder.extend(genesis, 12);
-    let trunk: Vec<BlockHash> = builder.path(tip.hash).iter().map(|b| b.header().hash).collect();
-    let side = builder.mine(trunk[11]).hash;
-    let params = Params::regtest(Height::GENESIS.next(), None).with_genesis(genesis);
-    let checked = |hash: BlockHash| {
-        let raw = encode_header(builder.block(hash).header());
-        check(&params, decode_header(&raw).expect("real header")).expect("stage A")
-    };
+    let mut builder = MockChain::regtest();
+    let tip = builder.mine_empty(12);
+    let trunk: Vec<BlockHash> = builder.blocks(tip).iter().map(|b| b.header().hash).collect();
+    let side = builder.fork(h(11)).mine_empty(1).tip().hash;
     let valid = || {
-        let depth = ReorgDepth::new(NonZeroU32::new(9).expect("nz"));
-        let store =
-            HeaderStore::open(SimFs::new(), std::path::Path::new("/h"), NetworkType::Regtest)
-                .expect("store");
-        let mut chain = HeaderChain::open(params, depth, store);
-        for hash in trunk.iter().chain([&side]) {
-            chain.insert(&checked(*hash), i64::MAX / 2).expect("valid");
-        }
+        let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(9).expect("nz")));
+        insert(&mut chain, &builder.blocks(tip)).expect("valid");
+        insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
         let boundary = chain.finalizable().expect("12 − 9");
         chain.finalize(boundary).expect("store commits");
         chain
@@ -172,5 +161,8 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         let message = fired(|| call(&mut chain)).unwrap_or_default();
         assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
     }
-    assert_eq!(valid().insert(&checked(side), 0), Ok(Inserted::Known), "a valid call passes");
+    let mut chain = valid();
+    let header = decode_header(&builder.header_bytes(side)).expect("real header");
+    let checked = check(chain.params(), header).expect("stage A");
+    assert_eq!(chain.insert(&checked, 0), Ok(Inserted::Known), "a valid call passes");
 }
