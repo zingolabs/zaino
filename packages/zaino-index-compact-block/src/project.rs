@@ -1,4 +1,4 @@
-//! Pool pruning by walking protobuf framing (no decode)
+//! Pool pruning + single-field reads by walking protobuf framing (no decode)
 //!
 //! - record stored with every pool + every tx; `BlockRange.poolTypes` asks for a subset
 //! - tx left with no pool component dropped, every selection (lightwalletd `FilterTxPool`)
@@ -8,8 +8,12 @@
 //! - everything else copied verbatim (an unknown field survives, never silently dropped)
 
 use bytes::Bytes;
+use prost::Message as _;
+use zaino_primitives::types::{TreeSize, TreeSizes};
+use zaino_proto::frame::{frame_into, FRAME_HEADER};
+use zaino_proto::proto::compact_formats as cf;
 
-use crate::record::{frame_into, framed_len, FRAME_HEADER, HASH};
+use crate::HASH;
 
 /// `CompactBlock.vtx`, the only block-level field rewritten
 ///
@@ -18,6 +22,10 @@ use crate::record::{frame_into, framed_len, FRAME_HEADER, HASH};
 const BLOCK_VTX: u64 = 7;
 
 const BLOCK_HASH: u64 = 3;
+const BLOCK_CHAIN_METADATA: u64 = 8;
+
+/// `CompactTx.index` (varint: wire type 0, so the key = the field number shifted)
+const TX_INDEX: u64 = 1;
 
 /// Per-pool `CompactTx` fields
 const TX_SAPLING_SPENDS: u64 = 4;
@@ -59,50 +67,61 @@ impl Pools {
     }
 }
 
-/// Framed records, back to back, each rewritten to carry only `pools`
+/// Framed records, in the order given, back to back in one buffer, each rewritten to carry only
+/// `pools`
 ///
 /// - `None` on a malformed record, never a partial span (a record that will not walk = corruption)
-pub(crate) fn project(records: &[u8], pools: Pools) -> Option<Bytes> {
-    project_frames(frames(records)?, pools)
-}
-
-/// [`project`], records in reverse order (a descending range's file window)
-pub(crate) fn project_reversed(records: &[u8], pools: Pools) -> Option<Bytes> {
-    let mut frames = frames(records)?;
-    frames.reverse();
-    project_frames(frames, pools)
-}
-
-fn project_frames(frames: Vec<&[u8]>, pools: Pools) -> Option<Bytes> {
-    let mut out = Vec::with_capacity(frames.iter().map(|frame| frame.len()).sum());
-    for record in frames {
-        frame_into(&mut out, |out| project_block(&record[FRAME_HEADER..], pools, out))?;
+pub(crate) fn project(records: &[Bytes], pools: Pools) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(records.iter().map(Bytes::len).sum());
+    for record in records {
+        let block = record.get(FRAME_HEADER..)?;
+        frame_into(&mut out, |out| project_block(block, pools, out))?;
     }
     Some(Bytes::from(out))
 }
 
-/// Each framed record of `records`, header included (`None` = a torn frame)
-fn frames(mut records: &[u8]) -> Option<Vec<&[u8]>> {
-    let mut frames = Vec::new();
-    while !records.is_empty() {
-        let (record, rest) = records.split_at_checked(framed_len(records)?)?;
-        frames.push(record);
-        records = rest;
-    }
-    Some(frames)
+/// One mempool `CompactTx` (encoded at slot 0: `index` absent) at `slot`, carrying only `pools`,
+/// framed; `None` = no component left (dropped, as from a block)
+///
+/// - `encoded` = this process's own render: unwalkable = a bug, panics
+pub fn project_tx_at(encoded: &[u8], slot: u64, pools: Pools) -> Option<Bytes> {
+    let mut out = Vec::with_capacity(FRAME_HEADER + encoded.len() + 11);
+    let kept = frame_into(&mut out, |out| {
+        put_varint(TX_INDEX << 3, out);
+        put_varint(slot, out);
+        project_tx(encoded, pools, out).expect("a rendered CompactTx walks")
+    });
+    kept.then(|| Bytes::from(out))
 }
 
 /// One framed record's `CompactBlock.hash` (`None` = absent, not 32 bytes, or unwalkable)
 ///
-/// - stops at the field (precedes `vtx`: a lookup never walks the transactions)
+/// - precedes `vtx`: a lookup never walks the transactions
 pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
+    block_field(record, BLOCK_HASH)?.try_into().ok()
+}
+
+/// One framed record's `CompactBlock.chainMetadata` (`None` = absent or unwalkable)
+///
+/// - follows `vtx`: each tx skipped by its length, never decoded
+pub(crate) fn record_sizes(record: &[u8]) -> Option<TreeSizes> {
+    let metadata = cf::ChainMetadata::decode(block_field(record, BLOCK_CHAIN_METADATA)?).ok()?;
+    Some(TreeSizes {
+        sapling: TreeSize::from(metadata.sapling_commitment_tree_size),
+        orchard: TreeSize::from(metadata.orchard_commitment_tree_size),
+        ironwood: TreeSize::from(metadata.ironwood_commitment_tree_size),
+    })
+}
+
+/// Value of the first `field` of one framed record's `CompactBlock` (stops there)
+fn block_field(record: &[u8], field: u64) -> Option<&[u8]> {
     let block = record.get(FRAME_HEADER..)?;
     let mut cursor = 0usize;
     while cursor < block.len() {
         let (key, next) = varint(block, cursor)?;
         let (value, after) = field_value(block, next, key)?;
-        if key >> 3 == BLOCK_HASH {
-            return value.try_into().ok();
+        if key >> 3 == field {
+            return Some(value);
         }
         cursor = after;
     }

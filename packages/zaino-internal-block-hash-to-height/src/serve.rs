@@ -4,6 +4,7 @@
 //! - serving index confirms it holds `hash` there (independent publications: a reorg can land
 //!   between the reads)
 
+use zaino_persistence::MapRead;
 use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
@@ -20,13 +21,13 @@ pub enum ServeError {
 }
 
 #[derive(Debug, Clone)]
-pub struct BlockHashService {
-    served: Served<ReadView>,
+pub struct BlockHashService<V> {
+    served: Served<ReadView<V>>,
 }
 
-impl BlockHashService {
+impl<V: MapRead> BlockHashService<V> {
     /// Unsynced → every call [`ServeError::Syncing`]
-    pub fn new(served: Served<ReadView>) -> Self {
+    pub fn new(served: Served<ReadView<V>>) -> Self {
         Self { served }
     }
 

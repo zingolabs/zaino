@@ -5,15 +5,13 @@
 //! - Two validators, one serving the previous move's chain: spread height fetches straddle
 //!   branches, hash lookups fall past a node that lacks the block
 
-use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 
 use proptest::prelude::*;
 use zaino_non_finalized_state::{Advance, AdvanceError, ChainHead};
-use zaino_primitives::types::{
-    Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
-};
+use zaino_primitives::testing::Chain;
+use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::{mock::MockChain, BlockFetchPool};
 
 const DEPTH: u32 = 4;
@@ -44,28 +42,6 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
     )
 }
 
-/// Hash = (height, branch): every branch's block at a height is distinct
-fn hash(height: u32, branch: u16) -> BlockHash {
-    let mut bytes = [0u8; 32];
-    bytes[..4].copy_from_slice(&height.to_le_bytes());
-    bytes[4..6].copy_from_slice(&branch.to_le_bytes());
-    BlockHash::from(bytes)
-}
-
-fn block(height: u32, own: BlockHash, parent: BlockHash) -> Block {
-    Block::new(
-        BlockHeader::for_tests(height, own.into(), parent.into(), 0),
-        vec![Transaction {
-            txid: <[u8; 32]>::from(own).into(),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }],
-    )
-}
-
 fn height(h: usize) -> Height {
     Height::try_from(h as u32).expect("model height")
 }
@@ -86,18 +62,14 @@ proptest! {
 }
 
 async fn run(moves: Vec<Move>, lagging_first: bool, concurrency: usize) {
-    let mut blocks: HashMap<BlockHash, Block> = HashMap::new();
-    let mut best: Vec<BlockHash> = Vec::new();
-    for h in 0..=ANCHOR + DEPTH {
-        let parent = best.last().copied().unwrap_or(hash(u32::MAX, 0));
-        let own = hash(h, 0);
-        blocks.insert(own, block(h, own, parent));
-        best.push(own);
-    }
+    let mut blocks = Chain::new();
+    let trunk = blocks.extend(blocks.genesis().hash, ANCHOR + DEPTH);
+    let mut best: Vec<BlockHash> =
+        blocks.path(trunk.hash).iter().map(|b| b.header().hash).collect();
     let (current, lagging) = (Arc::new(MockChain::new()), Arc::new(MockChain::new()));
-    let serve = |mock: &MockChain, chain: &[BlockHash], blocks: &HashMap<BlockHash, Block>| {
+    let serve = |mock: &MockChain, chain: &[BlockHash], blocks: &Chain| {
         mock.rewind_to(height(0));
-        mock.extend_best(chain.iter().map(|own| blocks[own].clone()));
+        mock.extend_best(chain.iter().map(|own| blocks.block(*own).clone()));
     };
     serve(&current, &best, &blocks);
     serve(&lagging, &best, &blocks);
@@ -108,7 +80,7 @@ async fn run(moves: Vec<Move>, lagging_first: bool, concurrency: usize) {
     let concurrency = NonZeroUsize::new(concurrency).expect("1..=4");
     let pool = BlockFetchPool::new(sources, concurrency);
 
-    let anchor = Arc::new(blocks[&best[ANCHOR as usize]].clone());
+    let anchor = Arc::new(blocks.block(best[ANCHOR as usize]).clone());
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));
     let mut head = ChainHead::new(anchor, depth);
     let tip_of = |chain: &[BlockHash]| BlockRef {
@@ -135,9 +107,7 @@ async fn run(moves: Vec<Move>, lagging_first: bool, concurrency: usize) {
         };
         best.truncate(keep);
         for _ in 0..grow {
-            let (h, parent) = (best.len() as u32, *best.last().expect("genesis kept"));
-            let own = hash(h, step as u16 + 1);
-            blocks.insert(own, block(h, own, parent));
+            let own = blocks.mine(*best.last().expect("genesis kept")).hash;
             best.push(own);
         }
         serve(&lagging, &old, &blocks);

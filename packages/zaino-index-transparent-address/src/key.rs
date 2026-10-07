@@ -1,15 +1,17 @@
-//! Key layouts for the two segment sets + the records they order
+//! Disk layouts of the two maps + the records they hold
 //!
-//! - big-endian throughout (`zaino_persistence::lsm` compares encoded prefixes: byte order = key
-//!   order)
+//! - big-endian throughout (keys compare as bytes: byte order = key order)
 //! - derived `Ord` = that encoding (pinned by a test below)
 
-use zaino_persistence::lsm::{Key, Record};
-use zaino_primitives::types::{OutPoint, TransactionId, Zatoshis};
+use zaino_primitives::types::{TransactionId, Zatoshis};
 use zcash_transparent::address::TransparentAddress;
 
 const HASH160: usize = 20;
 const TXID: usize = 32;
+
+pub(crate) const RECEIVE_KEY: usize = AddressKey::LEN + 4 + TXID + 4;
+pub(crate) const RECEIVE_VALUE: usize = 8;
+pub(crate) const SPEND: usize = 4 + TXID;
 
 /// Standard form an output's 20 bytes came from
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -35,7 +37,7 @@ impl AddressKind {
 ///
 /// - 21 B = the addr id (interning into a `u64` breaks even at ~2.9 rows per address; TEX /
 ///   ephemeral receivers single-use by construction, `docs/design/index-data-structures.md` §7)
-/// - hash first: its uniform bytes lead the key, so the receives filter can shard on them
+/// - hash first: its uniform bytes lead the key (an engine may shard on them)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AddressKey {
     hash: [u8; HASH160],
@@ -56,18 +58,6 @@ impl AddressKey {
     /// Every non-standard output, under one key (no address string parses to it)
     pub(crate) fn opaque() -> Self {
         Self { kind: AddressKind::Opaque, hash: [0u8; HASH160] }
-    }
-
-    fn encode_into(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.hash);
-        out.push(self.kind as u8);
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            hash: bytes.get(..HASH160)?.try_into().ok()?,
-            kind: AddressKind::decode(*bytes.get(HASH160)?)?,
-        })
     }
 }
 
@@ -96,115 +86,85 @@ impl ReceiveKey {
     }
 }
 
-impl Key for ReceiveKey {
-    const LEN: usize = AddressKey::LEN + 4 + TXID + 4;
-    /// A lookup is one address's history: segments without the address are skipped
-    const FILTER_PREFIX: usize = AddressKey::LEN;
-
-    fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::LEN);
-        self.address.encode_into(&mut out);
-        out.extend_from_slice(&self.height.to_be_bytes());
-        out.extend_from_slice(&<[u8; TXID]>::from(self.txid));
-        out.extend_from_slice(&self.vout.to_be_bytes());
-        out
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let at = AddressKey::LEN;
-        Some(Self {
-            address: AddressKey::decode(bytes)?,
-            height: u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?),
-            txid: TransactionId::from(<[u8; TXID]>::try_from(bytes.get(at + 4..at + 36)?).ok()?),
-            vout: u32::from_be_bytes(bytes.get(at + 36..at + 40)?.try_into().ok()?),
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReceiveRow {
     pub(crate) key: ReceiveKey,
     pub(crate) value: Zatoshis,
 }
 
-impl Record for ReceiveRow {
-    type Key = ReceiveKey;
-
-    const STRIDE: usize = <ReceiveKey as Key>::LEN + 8;
-
-    fn key(&self) -> ReceiveKey {
-        self.key
-    }
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.key.encode());
-        out.extend_from_slice(&self.value.as_u64().to_be_bytes());
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let at = <ReceiveKey as Key>::LEN;
-        Some(Self {
-            key: ReceiveKey::decode(bytes)?,
-            value: Zatoshis::new(u64::from_be_bytes(bytes.get(at..at + 8)?.try_into().ok()?))
-                .ok()?,
-        })
-    }
-}
-
-/// What spent an outpoint (the non-finalized map's value, a `spent` row's payload)
+/// What spent an outpoint (a `spent` row's value)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Spend {
     pub(crate) height: u32,
     pub(crate) spender: TransactionId,
 }
 
-/// `outpoint → spend`, probed by outpoint
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SpentRow {
-    pub(crate) key: OutPoint,
-    pub(crate) spend: Spend,
+pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
+    let mut out = [0u8; RECEIVE_KEY];
+    out[..HASH160].copy_from_slice(&key.address.hash);
+    out[HASH160] = key.address.kind as u8;
+    let at = AddressKey::LEN;
+    out[at..at + 4].copy_from_slice(&key.height.to_be_bytes());
+    out[at + 4..at + 4 + TXID].copy_from_slice(&<[u8; TXID]>::from(key.txid));
+    out[at + 4 + TXID..].copy_from_slice(&key.vout.to_be_bytes());
+    out
 }
 
-impl Record for SpentRow {
-    type Key = OutPoint;
+pub(crate) fn encode_receive(row: &ReceiveRow) -> ([u8; RECEIVE_KEY], [u8; RECEIVE_VALUE]) {
+    (encode_receive_key(&row.key), row.value.as_u64().to_be_bytes())
+}
 
-    const STRIDE: usize = <OutPoint as Key>::LEN + 4 + TXID;
-
-    fn key(&self) -> OutPoint {
-        self.key
+/// Panics on an unknown kind tag or a value above the money supply (rows = sealed, checksummed
+/// `encode_receive` output)
+pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE]) -> ReceiveRow {
+    let field = |at: usize| -> [u8; 4] { key[at..at + 4].try_into().expect("4-byte field") };
+    let at = AddressKey::LEN;
+    let address = AddressKey {
+        hash: key[..HASH160].try_into().expect("20-byte hash"),
+        kind: AddressKind::decode(key[HASH160]).expect("receives: kind tag from encode_receive"),
+    };
+    let txid = <[u8; TXID]>::try_from(&key[at + 4..at + 4 + TXID]).expect("32-byte txid");
+    ReceiveRow {
+        key: ReceiveKey {
+            address,
+            height: u32::from_be_bytes(field(at)),
+            txid: TransactionId::from(txid),
+            vout: u32::from_be_bytes(field(at + 4 + TXID)),
+        },
+        value: Zatoshis::new(u64::from_be_bytes(*value))
+            .expect("receives: value within the money supply (from encode_receive)"),
     }
+}
 
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.key.encode());
-        out.extend_from_slice(&self.spend.height.to_be_bytes());
-        out.extend_from_slice(&<[u8; TXID]>::from(self.spend.spender));
-    }
+/// `height ‖ spender` (key = `OutPoint::encode`)
+pub(crate) fn encode_spend(spend: &Spend) -> [u8; SPEND] {
+    let mut out = [0u8; SPEND];
+    out[..4].copy_from_slice(&spend.height.to_be_bytes());
+    out[4..].copy_from_slice(&<[u8; TXID]>::from(spend.spender));
+    out
+}
 
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        let at = <OutPoint as Key>::LEN;
-        let height = u32::from_be_bytes(bytes.get(at..at + 4)?.try_into().ok()?);
-        let spender =
-            TransactionId::from(<[u8; TXID]>::try_from(bytes.get(at + 4..at + 36)?).ok()?);
-        Some(Self { key: OutPoint::decode(bytes)?, spend: Spend { height, spender } })
+pub(crate) fn decode_spend(bytes: &[u8; SPEND]) -> Spend {
+    let (height, spender) = bytes.split_at(4);
+    Spend {
+        height: u32::from_be_bytes(height.try_into().expect("4-byte height")),
+        spender: TransactionId::from(<[u8; TXID]>::try_from(spender).expect("32-byte txid")),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::panic::catch_unwind;
+
     use super::*;
 
-    fn encoded<R: Record>(record: &R) -> Vec<u8> {
-        let mut out = Vec::new();
-        record.encode(&mut out);
-        out
-    }
-
-    /// `Ord` = the encoding byte for byte, every level of both composite keys (segment search
-    /// compares encoded prefixes: a disagreement silently reorders a segment)
+    /// `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
+    /// bytes: a disagreement silently reorders a scan); golden bytes of both maps' rows
     #[test]
     fn encoded_order_is_key_order_and_every_field_round_trips() {
         let addr = AddressKey::p2pkh([0x11; HASH160]);
         let txid = TransactionId::from([0x22; TXID]);
+        let zat = |n| Zatoshis::new(n).expect("in supply");
 
         // ascending in each key part, one part changed at a time (address = hash, then kind)
         let ascending = [
@@ -226,53 +186,43 @@ mod tests {
             ReceiveKey { address: AddressKey::p2sh([0x11; HASH160]), height: 0, txid, vout: 0 },
             ReceiveKey { address: AddressKey::p2pkh([0x12; HASH160]), height: 0, txid, vout: 0 },
         ];
-
         for pair in ascending.windows(2) {
             let (low, high) = (pair[0], pair[1]);
             assert!(low < high, "{low:?} !< {high:?}");
-            assert!(low.encode() < high.encode(), "encoding != Ord: {low:?} vs {high:?}");
-            assert_eq!(ReceiveKey::decode(&low.encode()), Some(low));
+            let (low_bytes, high_bytes) = (encode_receive_key(&low), encode_receive_key(&high));
+            assert!(low_bytes < high_bytes, "encoding != Ord: {low:?} vs {high:?}");
+            let row = ReceiveRow { key: low, value: zat(5) };
+            assert_eq!(decode_receive(&low_bytes, &5u64.to_be_bytes()), row);
         }
 
-        // fixed widths (segment stride = arithmetic: a wrong LEN corrupts every later row)
-        assert_eq!(<ReceiveKey as Key>::LEN, 61);
-        assert_eq!(ReceiveRow::STRIDE, 69);
-        assert_eq!(<OutPoint as Key>::LEN, 36);
-        assert_eq!(SpentRow::STRIDE, 72);
-
-        let receive =
-            ReceiveRow { key: ascending[0], value: Zatoshis::new(1_234_567).expect("in supply") };
-        let bytes = encoded(&receive);
-        assert_eq!(bytes.len(), ReceiveRow::STRIDE);
-        assert_eq!(&bytes[..ReceiveKey::LEN], &ascending[0].encode()[..]);
-        assert_eq!(ReceiveRow::decode(&bytes), Some(receive));
-
-        // above the money supply = not a value (decode refuses)
-        let mut corrupt = bytes.clone();
-        corrupt[ReceiveKey::LEN..].copy_from_slice(&u64::MAX.to_be_bytes());
-        assert_eq!(ReceiveRow::decode(&corrupt), None);
-
-        let spent = SpentRow {
-            key: OutPoint { txid, vout: 3 },
-            spend: Spend { height: 900, spender: TransactionId::from([0x44; TXID]) },
+        let receive = ReceiveRow {
+            key: ReceiveKey {
+                address: AddressKey::p2sh([0x09; HASH160]),
+                height: 900,
+                txid,
+                vout: 3,
+            },
+            value: zat(1_234_567),
         };
-        let bytes = encoded(&spent);
-        let golden =
-            [&[0x22; TXID][..], &[0, 0, 0, 3], &[0, 0, 0x03, 0x84], &[0x44; TXID]].concat();
-        assert_eq!(bytes, golden, "outpoint ‖ height ‖ spender, big-endian");
-        assert_eq!(SpentRow::decode(&bytes), Some(spent));
+        let golden_key =
+            [&[0x09; HASH160][..], &[0x01], &[0, 0, 0x03, 0x84], &[0x22; TXID], &[0, 0, 0, 3]]
+                .concat();
+        let (key, value) = encode_receive(&receive);
+        assert_eq!(key.as_slice(), golden_key, "hash ‖ kind ‖ height ‖ txid ‖ vout, big-endian");
+        assert_eq!(value, [0, 0, 0, 0, 0, 0x12, 0xd6, 0x87], "zats big-endian");
+        assert_eq!(decode_receive(&key, &value), receive);
 
-        // tag bytes = the on-disk contract (unknown one refused, never guessed)
-        assert_eq!(AddressKey::decode(&[0x03; AddressKey::LEN]), None);
-        let p2sh = AddressKey::p2sh([9; HASH160]);
-        assert_eq!(AddressKey::decode(&p2sh.encode_bytes()), Some(p2sh));
-    }
+        // corrupt rows panic naming the invariant, never decode to a guess
+        let above_supply = catch_unwind(|| decode_receive(&key, &u64::MAX.to_be_bytes()));
+        assert!(above_supply.is_err(), "value above the money supply decoded");
+        let mut unknown_kind = key;
+        unknown_kind[HASH160] = 0x03;
+        let unknown = catch_unwind(|| decode_receive(&unknown_kind, &value));
+        assert!(unknown.is_err(), "unknown kind tag decoded");
 
-    impl AddressKey {
-        fn encode_bytes(&self) -> Vec<u8> {
-            let mut out = Vec::new();
-            self.encode_into(&mut out);
-            out
-        }
+        let spend = Spend { height: 900, spender: TransactionId::from([0x44; TXID]) };
+        let golden = [&[0, 0, 0x03, 0x84][..], &[0x44; TXID]].concat();
+        assert_eq!(encode_spend(&spend).as_slice(), golden, "height ‖ spender, big-endian");
+        assert_eq!(decode_spend(&encode_spend(&spend)), spend);
     }
 }

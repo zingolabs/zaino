@@ -26,3 +26,4 @@ zaino-source = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"

@@ -10,16 +10,11 @@ repository.workspace = true
 description = "Retained-node commitment tree index: tree states and subtree roots"
 
 [dependencies]
-arc-swap.workspace = true
-bytes.workspace = true
-imbl.workspace = true
 incrementalmerkletree = { workspace = true, features = ["legacy-api"] }
 orchard.workspace = true
 rayon.workspace = true
 sapling-crypto.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["macros", "rt", "sync"] }
-tokio-util.workspace = true
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
@@ -27,9 +22,12 @@ zcash_primitives.workspace = true
 zcash_protocol.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
 zaino-primitives = { workspace = true, features = ["testing"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 proptest.workspace = true
-zaino-chainview = { path = "../zaino-chainview" }
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+tokio-util.workspace = true
+zaino-header-chain = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unreachable_pub = "warn"

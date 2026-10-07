@@ -2,13 +2,33 @@
 //!
 //! - behind the `testing` feature (never compiled into a served binary)
 
+use std::num::NonZeroUsize;
+
+use zaino_persistence::{Changes, SequenceRead, Store, Tiered};
+use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
-    Block, BlockFees, BlockHeader, CompactCiphertext, Fee, OrchardAction, OrchardData, OutPoint,
-    SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
+    Block, BlockFees, BlockRef, CompactCiphertext, Fee, Height, OrchardAction, OrchardData,
+    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
     TransparentOutput, TreeSize, TreeSizes, Zatoshis,
 };
 
-use crate::HASH;
+use crate::{encode_compact_block, ReadView, BLOCKS, HASH};
+
+/// [`block`]`(0..count)`'s records committed to `store` (one commit), as the index serves them
+pub fn committed<S: Store<View: SequenceRead>>(store: S, count: u32) -> ReadView<S::View> {
+    let mut tiered = Tiered::new(store, NonZeroUsize::MAX);
+    for height in 0..count {
+        let (block, fees, sizes) = block(height);
+        let tip = BlockRef { hash: block.header().hash, height: block.header().height };
+        let mut changes = Changes::new(tip, tiered.schema());
+        changes.append(BLOCKS, &encode_compact_block(&block, &fees, &sizes));
+        assert!(!tiered.stage(changes, 0), "a batch of usize::MAX bytes never fills");
+    }
+    if let Some(last) = count.checked_sub(1) {
+        tiered.finalize(Height::try_from(last).expect("a small height"));
+    }
+    ReadView::new(tiered.view())
+}
 
 fn bytes32(seed: u8) -> [u8; HASH] {
     [seed; HASH]
@@ -30,7 +50,8 @@ fn action(seed: u8) -> OrchardAction {
 /// Block at `height` carrying every pool (dropped pool = missing field), its fees and its tree
 /// sizes
 ///
-/// - hash = `[height as u8; 32]` (predictable by-hash lookup); sizes = 10 / 20 / 30
+/// - one deterministic `testing::Chain`, every block the same tx: `block(h)` links onto
+///   `block(h − 1)`; sizes = 10 / 20 / 30
 /// - its one tx priced at 5 000 zat (value-balance's job to derive, stated here)
 pub fn block(height: u32) -> (Block, BlockFees, TreeSizes) {
     let tx = Transaction {
@@ -56,15 +77,12 @@ pub fn block(height: u32) -> (Block, BlockFees, TreeSizes) {
         orchard: OrchardData { actions: vec![action(0x77)], ..Default::default() },
         ironwood: OrchardData { actions: vec![action(0x88), action(0x99)], ..Default::default() },
     };
-    let block = Block::new(
-        BlockHeader::for_tests(
-            height,
-            bytes32(height as u8),
-            bytes32(height.wrapping_sub(1) as u8),
-            1_700_000_000 + height,
-        ),
-        vec![tx],
-    );
+    let mut chain = Chain::with_genesis(vec![tx.clone()]);
+    let mut tip = chain.genesis();
+    for _ in 0..height {
+        tip = chain.mine_with(tip.hash, vec![tx.clone()]);
+    }
+    let block = chain.block(tip.hash).clone();
     let fees = BlockFees {
         height: block.header().height,
         hash: block.header().hash,

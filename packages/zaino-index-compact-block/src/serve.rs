@@ -8,18 +8,17 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use zaino_persistence::{SequenceRead, View};
 use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
 use crate::{
-    project::{project, project_reversed, record_hash},
+    project::{project, record_hash},
     view::ReadView,
     Pools, HASH,
 };
 
-/// Ceiling on one range window (one readahead + one slice handed to the socket)
-///
-/// - `GetBlockRange` work per step bounded by this, not by range length
+/// Ceiling on one range window's records (one chunk handed to the socket)
 pub(crate) const SPAN_BUDGET: usize = 1 << 20;
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
@@ -44,29 +43,29 @@ pub enum ServeError {
     Malformed { height: Height },
 }
 
-/// Two tiers, one surface: files up to the finalised tip, the non-finalized tier above it
+/// Two tiers, one surface: committed records up to the finalised tip, held ones above it
 ///
 /// - a request pins **both at once** ([`ReadView`], one load): the seam cannot move mid-stream
 #[derive(Debug, Clone)]
-pub struct CompactBlockService {
-    served: Served<ReadView>,
+pub struct CompactBlockService<V> {
+    served: Served<ReadView<V>>,
 }
 
-impl CompactBlockService {
+impl<V: SequenceRead> CompactBlockService<V> {
     /// Unsynced → [`ServeError::Syncing`] past the durable tip, committed heights answered
-    pub fn new(served: Served<ReadView>) -> Self {
+    pub fn new(served: Served<ReadView<V>>) -> Self {
         Self { served }
     }
 
     /// Every tier pinned for one request or stream (one load); checked before any other
     /// validation (a syncing index = one answer, not one per request shape)
-    fn pin(&self) -> Result<Arc<ReadView>, ServeError> {
+    fn pin(&self) -> Result<Arc<ReadView<V>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 
     /// [`pin`](Self::pin), or while syncing a view whose files reach `last` (durable = final: the
     /// producer stops on a contradiction, never rewrites)
-    fn pin_through(&self, last: Height) -> Result<Arc<ReadView>, ServeError> {
+    fn pin_through(&self, last: Height) -> Result<Arc<ReadView<V>>, ServeError> {
         let view = self.served.pin_any();
         match Some(last) <= view.finalized_tip() || self.served.synced() {
             true => Ok(view),
@@ -86,7 +85,7 @@ impl CompactBlockService {
         self.pin_through(height)?.block(height).ok_or(ServeError::NotFound { height })
     }
 
-    /// [`block`](Self::block) when the non-finalized tier holds it (RAM, no page read: a transport
+    /// [`block`](Self::block) when held above the committed tip (RAM, no page read: a transport
     /// may answer inline); `Ok(None)` = ask [`block`](Self::block)
     pub fn resident_block(&self, height: Height) -> Result<Option<Bytes>, ServeError> {
         Ok(self.pin_through(height)?.resident_block(height))
@@ -107,13 +106,9 @@ impl CompactBlockService {
 
     /// `GetLatestBlock`: the tip's height and hash (a `BlockID`, not a block)
     ///
-    /// - resolved when the view was published: RAM, no page read (a transport may answer inline)
+    /// - the view's tip block: RAM, no page read (a transport may answer inline)
     pub fn latest_id(&self) -> Result<(Height, [u8; HASH]), ServeError> {
-        match self.pin()?.tip_id() {
-            None => Err(ServeError::Empty),
-            Some((height, None)) => Err(ServeError::Malformed { height }),
-            Some((height, Some(hash))) => Ok((height, hash)),
-        }
+        self.pin()?.tip_id().ok_or(ServeError::Empty)
     }
 
     /// `GetBlockRange` of heights `start` to `end`, both inclusive, as a cursor over both tiers
@@ -128,7 +123,7 @@ impl CompactBlockService {
         start: Height,
         end: Height,
         pools: Pools,
-    ) -> Result<RangeCursor, ServeError> {
+    ) -> Result<RangeCursor<V>, ServeError> {
         self.range_with_budget(start, end, pools, SPAN_BUDGET)
     }
 
@@ -139,7 +134,7 @@ impl CompactBlockService {
         end: Height,
         pools: Pools,
         budget: usize,
-    ) -> Result<RangeCursor, ServeError> {
+    ) -> Result<RangeCursor<V>, ServeError> {
         let descending = start > end;
         let (low, high) = if descending { (end, start) } else { (start, end) };
         let view = self.pin_through(high)?;
@@ -155,15 +150,14 @@ impl CompactBlockService {
     }
 }
 
-/// `GetBlockRange` walked one chunk at a time: a file window below the seam, one non-finalized
-/// record above it; either direction
+/// `GetBlockRange` walked one chunk at a time: a file window below the seam, one held record
+/// above it; either direction
 ///
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `view` pinned for the whole stream: every tier + the seam between them frozen
 /// - `next` `None` = spent; `last` = final height served, inclusive
-#[derive(Debug)]
-pub struct RangeCursor {
-    view: Arc<ReadView>,
+pub struct RangeCursor<V> {
+    view: Arc<ReadView<V>>,
     budget: usize,
     pools: Pools,
     descending: bool,
@@ -171,7 +165,19 @@ pub struct RangeCursor {
     last: Height,
 }
 
-impl RangeCursor {
+impl<V: View> std::fmt::Debug for RangeCursor<V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RangeCursor")
+            .field("view", &self.view)
+            .field("pools", &self.pools)
+            .field("descending", &self.descending)
+            .field("next", &self.next)
+            .field("last", &self.last)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<V: SequenceRead> RangeCursor<V> {
     /// Next chunk reads the files (a cold window faults: the blocking pool's step)
     pub fn next_touches_disk(&self) -> bool {
         self.next.is_some_and(|next| Some(next) <= self.view.finalized_tip())
@@ -182,30 +188,23 @@ impl RangeCursor {
     pub fn next_chunk(&mut self) -> Option<Result<Bytes, ServeError>> {
         let height = self.next?;
         if !self.next_touches_disk() {
-            // non-finalized: projected at apply for the default pools (every synced wallet's ask)
+            // held: one record per chunk, projected on read
             self.step_past(height);
-            let projected = self.view.resident_projected(height, self.pools);
-            return Some(projected.ok_or(ServeError::NotFound { height }));
+            let Some(record) = self.view.resident_block(height) else {
+                return Some(Err(ServeError::NotFound { height }));
+            };
+            let projected = project(std::slice::from_ref(&record), self.pools);
+            return Some(projected.ok_or(ServeError::Malformed { height }));
         }
 
-        let window = match self.descending {
-            false => {
-                let files_end =
-                    self.view.finalized_tip().map_or(self.last, |tip| tip.min(self.last));
-                self.view.span_from(height, files_end, self.budget)
-            }
-            true => self.view.span_to(self.last, height, self.budget),
+        // descending: every height left sits in the files (the held ones went first)
+        let files_last = match self.descending {
+            false => self.view.finalized_tip().map_or(self.last, |tip| tip.min(self.last)),
+            true => self.last,
         };
-        let Some((records, reached)) = window else {
-            return Some(Err(ServeError::NotFound { height }));
-        };
+        let (records, reached) = self.view.span(height, files_last, self.budget);
         self.step_past(reached);
-
-        let projected = match self.descending {
-            false => project(&records, self.pools),
-            true => project_reversed(&records, self.pools),
-        };
-        Some(projected.ok_or(ServeError::Malformed { height }))
+        Some(project(&records, self.pools).ok_or(ServeError::Malformed { height }))
     }
 
     /// `next` = one past `reached` in walk order (`None` once `last` is served)
@@ -220,15 +219,21 @@ impl RangeCursor {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::{
-        encode_compact_block,
-        record::{framed_len, FRAME_HEADER},
-        testing::block,
-        CompactBlockReader, CompactBlockStore, NonFinalizedState,
+        encode_compact_block, schema,
+        testing::{block, committed},
+        view::SPAN_RECORDS,
+        BLOCKS,
     };
     use prost::Message;
-    use zaino_persistence::fs::SimFs;
+    use zaino_persistence::{
+        fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Tiered,
+    };
+    use zaino_primitives::types::BlockRef;
+    use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zcash_protocol::consensus::NetworkType;
 
@@ -236,25 +241,37 @@ mod tests {
         Height::try_from(n).expect("h")
     }
 
-    /// Store holding `testing::block(0..blocks)`, committed
-    fn committed(blocks: u32) -> CompactBlockReader {
-        let mut store = CompactBlockStore::open(
-            SimFs::new(),
-            std::path::Path::new("/cb"),
-            NetworkType::Regtest,
-        )
-        .expect("open");
-        for height in 0..blocks {
-            let (block, balances, sizes) = block(height);
-            let record = encode_compact_block(&block, &balances, &sizes);
-            store.append(h(height), block.header().hash.into(), &record).expect("append");
-        }
-        store.commit(block(0).2).expect("commit");
-        store.reader()
+    /// `testing::block(height)`'s hash
+    fn hash_at(height: u32) -> [u8; HASH] {
+        block(height).0.header().hash.into()
     }
 
-    fn service(blocks: u32) -> CompactBlockService {
-        CompactBlockService::new(Served::fixed(committed(blocks).pin()))
+    fn store() -> DiskStore {
+        let schema = schema(NetworkType::Regtest);
+        DiskEngine::new(SimFs::new()).open(std::path::Path::new("/cb"), &schema).expect("open")
+    }
+
+    fn service(blocks: u32) -> CompactBlockService<DiskView> {
+        CompactBlockService::new(Served::fixed(committed(store(), blocks)))
+    }
+
+    /// `testing::block(0..=3)` committed, `4..=6` applied above them
+    fn four_committed_three_applied() -> Tiered<DiskStore> {
+        let mut tiered = Tiered::new(store(), NonZeroUsize::MAX);
+        for height in 0..7u32 {
+            let (block, balances, sizes) = block(height);
+            let tip = BlockRef { hash: block.header().hash, height: h(height) };
+            let mut changes = Changes::new(tip, tiered.schema());
+            changes.append(BLOCKS, &encode_compact_block(&block, &balances, &sizes));
+            match height {
+                0..=3 => assert!(!tiered.stage(changes, 0), "one commit for all four"),
+                _ => tiered.apply(changes),
+            }
+            if height == 3 {
+                tiered.finalize(h(3));
+            }
+        }
+        tiered
     }
 
     /// Every framed record a chunk carries, decoded
@@ -262,15 +279,15 @@ mod tests {
         let mut blocks = Vec::new();
         let mut rest = chunk;
         while !rest.is_empty() {
-            let len = framed_len(rest).expect("whole frame");
-            blocks.push(cf::CompactBlock::decode(&rest[FRAME_HEADER..len]).expect("message"));
-            rest = &rest[len..];
+            let (message, tail) = split_frame(rest).expect("whole frame");
+            blocks.push(cf::CompactBlock::decode(message).expect("message"));
+            rest = tail;
         }
         blocks
     }
 
     /// Cursor walked to the end: the chunks it yielded (a spent cursor must stay spent)
-    fn drain(mut cursor: RangeCursor) -> Vec<Bytes> {
+    fn drain(mut cursor: RangeCursor<DiskView>) -> Vec<Bytes> {
         let mut chunks = Vec::new();
         while let Some(chunk) = cursor.next_chunk() {
             chunks.push(chunk.expect("chunk"));
@@ -308,11 +325,11 @@ mod tests {
 
         assert_eq!(service.block(h(4)), Err(ServeError::NotFound { height: h(4) }));
 
-        let by_hash = service.block_at_hash(h(2), &[2u8; HASH]).expect("by hash");
+        let by_hash = service.block_at_hash(h(2), &hash_at(2)).expect("by hash");
         assert_eq!(by_hash, service.block(h(2)).expect("by height"));
-        let other = service.block_at_hash(h(2), &[0xfe; HASH]);
+        let other = service.block_at_hash(h(2), &hash_at(3));
         assert_eq!(other, Err(ServeError::HashNotFound), "another block at the located height");
-        let past = service.block_at_hash(h(9), &[9u8; HASH]);
+        let past = service.block_at_hash(h(9), &hash_at(9));
         assert_eq!(past, Err(ServeError::HashNotFound), "a height past the tip");
     }
 
@@ -320,20 +337,10 @@ mod tests {
     /// order, no duplicate or gap at the boundary
     #[test]
     fn a_range_spans_the_file_store_and_the_window_without_a_seam() {
-        // finalized 0 to 3 (both inclusive), non-finalized from 4
-        let reader = committed(4);
-        let mut non_finalized = NonFinalizedState::default();
-        for height in 4..7u32 {
-            let (block, balances, sizes) = block(height);
-            non_finalized.apply(
-                h(height),
-                [height as u8; HASH],
-                encode_compact_block(&block, &balances, &sizes),
-                sizes,
-            );
-        }
-
-        let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
+        // finalized 0 to 3 (both inclusive), applied from 4
+        let mut tiered = four_committed_three_applied();
+        let both = ReadView::new(tiered.view());
+        let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (_follower, synced) = tokio::sync::watch::channel(true);
         let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced));
         assert_eq!(service.tip(), Some(h(6)), "window extends the tip");
@@ -355,20 +362,22 @@ mod tests {
 
         // default pools either side of the seam = the full records projected on read
         let shielded = drain(service.range(h(2), h(6), Pools::default()).expect("shielded"));
-        let projected: Vec<Bytes> =
-            chunks.iter().map(|chunk| project(chunk, Pools::default()).expect("walks")).collect();
-        assert_eq!(shielded, projected, "precomputed tip records = projection on read");
+        let records: Vec<Bytes> =
+            (2..=6).map(|height| service.block(h(height)).expect("held")).collect();
+        let projected = project(&records, Pools::default()).expect("walks");
+        assert_eq!(shielded.concat(), projected, "held records = the committed projection");
+        assert_eq!(shielded.len(), chunks.len(), "same chunks as the unprojected range");
         assert_eq!(service.resident_block(h(5)), Ok(service.block(h(5)).ok()), "window: RAM");
         assert_eq!(service.resident_block(h(2)), Ok(None), "files: not resident");
 
         // hash confirmation reads both tiers' records
-        assert!(service.block_at_hash(h(2), &[2u8; HASH]).is_ok(), "finalised hash");
-        assert!(service.block_at_hash(h(5), &[5u8; HASH]).is_ok(), "window hash");
+        assert!(service.block_at_hash(h(2), &hash_at(2)).is_ok(), "finalised hash");
+        assert!(service.block_at_hash(h(5), &hash_at(5)).is_ok(), "window hash");
 
-        // stream pinned before a reorg keeps serving its branch (reorg = the writer's `reset`:
-        // the whole non-finalized tier goes, the files stay)
+        // stream pinned before a reorg: still its branch (every applied block gone, files kept)
         let pinned = service.range(h(4), h(6), Pools::ALL).expect("range");
-        window.store(Arc::new(reader.pin()));
+        tiered.reorg();
+        window.store(Arc::new(ReadView::new(tiered.view())));
         assert_eq!(heights(&drain(pinned)), [4, 5, 6], "pinned view survives the reorg");
 
         // fresh request: the files alone
@@ -382,19 +391,9 @@ mod tests {
     /// across the seam (non-finalized first), clamped at the tip like the ascending one
     #[test]
     fn a_descending_range_serves_the_ascending_records_top_down_across_the_seam() {
-        // finalized 0 to 3 (both inclusive), non-finalized from 4
-        let reader = committed(4);
-        let mut non_finalized = NonFinalizedState::default();
-        for height in 4..7u32 {
-            let (block, balances, sizes) = block(height);
-            non_finalized.apply(
-                h(height),
-                [height as u8; HASH],
-                encode_compact_block(&block, &balances, &sizes),
-                sizes,
-            );
-        }
-        let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
+        // finalized 0 to 3 (both inclusive), applied from 4
+        let both = ReadView::new(four_committed_three_applied().view());
+        let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (_follower, synced) = tokio::sync::watch::channel(true);
         let service = CompactBlockService::new(Served::new(window, synced));
 
@@ -416,36 +415,26 @@ mod tests {
         assert_eq!(past_tip, Some(ServeError::NotFound { height: h(7) }), "bottom past the tip");
 
         let shielded = drain(service.range(h(6), h(1), Pools::default()).expect("shielded"));
-        let projected: Vec<Bytes> = descending
-            .iter()
-            .map(|chunk| project(chunk, Pools::default()).expect("walks"))
-            .collect();
-        assert_eq!(shielded, projected, "projected chunk for chunk, order kept");
+        let records: Vec<Bytes> =
+            (1..=6).rev().map(|height| service.block(h(height)).expect("held")).collect();
+        let projected = project(&records, Pools::default()).expect("walks");
+        assert_eq!(shielded.concat(), projected, "projected record for record, order kept");
+        assert_eq!(shielded.len(), descending.len(), "same chunks as the unprojected range");
     }
 
     /// Syncing: committed heights final → answered; anything reaching past them = `Syncing`, never
     /// a cut or a miss (either reads as the chain's end)
     #[test]
     fn a_syncing_index_serves_only_what_it_has_committed() {
-        // finalized 0 to 3 (both inclusive), non-finalized from 4
-        let reader = committed(4);
-        let mut non_finalized = NonFinalizedState::default();
-        for height in 4..7u32 {
-            let (block, balances, sizes) = block(height);
-            non_finalized.apply(
-                h(height),
-                [height as u8; HASH],
-                encode_compact_block(&block, &balances, &sizes),
-                sizes,
-            );
-        }
-        let window = Arc::new(arc_swap::ArcSwap::from_pointee(reader.pin_with(non_finalized)));
+        // finalized 0 to 3 (both inclusive), applied from 4
+        let both = ReadView::new(four_committed_three_applied().view());
+        let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (synced, synced_rx) = tokio::sync::watch::channel(false);
         let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced_rx));
 
         let single = |height| decode(&service.block(h(height)).expect("committed"))[0].height;
         assert_eq!((single(0), single(3)), (0, 3), "both ends of the files");
-        assert!(service.block_at_hash(h(2), &[2u8; HASH]).is_ok(), "committed, by hash");
+        assert!(service.block_at_hash(h(2), &hash_at(2)).is_ok(), "committed, by hash");
         assert_eq!(service.resident_block(h(2)), Ok(None), "committed: not resident, ask block");
         let committed = drain(service.range(h(1), h(3), Pools::ALL).expect("committed range"));
         assert_eq!(heights(&committed), [1, 2, 3]);
@@ -454,7 +443,7 @@ mod tests {
         assert_eq!(service.block(h(4)), syncing, "non-finalized: a reorg can still take it");
         assert_eq!(service.block(h(99)), syncing, "past every tier: not a NotFound");
         assert_eq!(service.resident_block(h(5)), Err(ServeError::Syncing), "resident, not final");
-        assert_eq!(service.block_at_hash(h(5), &[5u8; HASH]), syncing);
+        assert_eq!(service.block_at_hash(h(5), &hash_at(5)), syncing);
         assert_eq!(service.latest_id(), Err(ServeError::Syncing), "tip mid-sync != chain tip");
         for (start, end) in [(2, 4), (3, 99), (4, 6), (4, 2), (99, 3)] {
             let refused = service.range(h(start), h(end), Pools::ALL).err();
@@ -485,6 +474,19 @@ mod tests {
         let windowed = drain(service.range(h(0), h(7), Pools::ALL).expect("range"));
         assert_eq!(windowed.len(), 1, "unprojected span goes out whole");
         assert_eq!(windowed.concat(), chunks.concat(), "same bytes, one window");
+
+        // records per window capped under any budget, either direction
+        let tip = SPAN_RECORDS + 1;
+        let long = CompactBlockService::new(Served::fixed(committed(store(), tip + 1)));
+        let up = drain(long.range(h(0), h(tip), Pools::ALL).expect("ascending"));
+        let down = drain(long.range(h(tip), h(0), Pools::ALL).expect("descending"));
+        let per_chunk = |chunks: &[Bytes]| -> Vec<usize> {
+            chunks.iter().map(|chunk| decode(chunk).len()).collect()
+        };
+        let capped = vec![SPAN_RECORDS as usize, 2];
+        assert_eq!((per_chunk(&up), per_chunk(&down)), (capped.clone(), capped));
+        let top_down: Vec<u64> = (0..=u64::from(tip)).rev().collect();
+        assert_eq!(heights(&down), top_down, "no gap or repeat at the window edge");
     }
 
     /// Range bounds and pool projection: clamped at the tip, a start past it = a miss, a projected

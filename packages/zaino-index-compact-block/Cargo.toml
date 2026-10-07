@@ -11,14 +11,11 @@ description = "Append-only store of gRPC-framed CompactBlock records"
 
 [dependencies]
 bytes = { workspace = true }
-arc-swap = { workspace = true }
 thiserror = { workspace = true }
 zaino-proto.workspace = true
 prost.workspace = true
-imbl.workspace = true
 zaino-primitives = { workspace = true }
 zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
-tokio = { workspace = true, features = ["macros", "sync"] }
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zcash_protocol.workspace = true
 
@@ -27,9 +24,12 @@ zcash_protocol.workspace = true
 testing = ["zaino-primitives/testing"]
 
 [dev-dependencies]
-tempfile = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
-tokio = { workspace = true, features = ["macros", "rt", "time"] }
 proptest.workspace = true
+arc-swap.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[lints.rust]
+unreachable_pub = "warn"
 

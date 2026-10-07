@@ -1,23 +1,25 @@
-//! Per-level node files (fixed stride: offset = address, no keys, no framing)
+//! Per-level node sequences (slot = address, no keys, no framing)
 //!
-//! - `l00.dat` = every leaf (a leaf sits at either parity); `l01.dat`..`l31.dat` = even index only
+//! - `l00` = every leaf (a leaf sits at either parity); `l01`..`l31` = even index only
 //! - odd internal index never retained (an ommer = sibling of a right child = a left child = even)
 
 use incrementalmerkletree::Address;
-use zaino_persistence::{
-    pages::{PagedFile, Pages, Sealed},
-    StoreError,
-};
+use zaino_persistence::SequenceRead;
+use zaino_primitives::types::ShieldedPool;
+
+use crate::level_table;
 
 /// Bytes per node (all three pool node types serialize to 32)
 pub(crate) const NODE: usize = 32;
 
 pub(crate) const MERKLE_DEPTH: u8 = 32;
 
-/// Nodes retained at `level` once the tree holds `size` commitments (= that file's length in nodes)
+/// Nodes retained at `level` once the tree holds `size` commitments (= that level's length)
 ///
 /// - level ℓ ≥ 1 retains `(ℓ, i)` for even `i`, from the size it completes at, `(i + 1)·2^ℓ`
 /// - the fold stores a node in the batch holding its last leaf (`Frontier::append_batch_visiting`)
+/// - the tests' oracle for what a fold retains
+#[cfg(test)]
 pub(crate) fn retained_nodes(level: u8, size: u64) -> u64 {
     match level {
         0 => size,
@@ -25,11 +27,8 @@ pub(crate) fn retained_nodes(level: u8, size: u64) -> u64 {
     }
 }
 
-/// `(level, slot)`: a node's place in the per-level files (same key in the non-finalized tier)
+/// `(level, slot)`: a node's place in the per-level sequences
 pub(crate) type Slot = (u8, u64);
-
-/// Materialised by a fold, not yet fsynced
-pub(crate) type NonFinalizedNodes = imbl::OrdMap<Slot, [u8; NODE]>;
 
 /// `None` = nothing retained at `addr`
 pub(crate) fn slot(addr: Address) -> Option<Slot> {
@@ -43,93 +42,21 @@ pub(crate) fn slot(addr: Address) -> Option<Slot> {
     }
 }
 
-/// One pool's tree of `size` commitments, non-finalized nodes over durable: what
+/// One pool's tree of `size` commitments in `view`: what
 /// [`frontier_at`](crate::fold::frontier_at) walks
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct NodeView<'a> {
-    pub(crate) non_finalized: &'a NonFinalizedNodes,
-    pub(crate) durable: &'a PoolNodes,
+pub(crate) struct NodeView<'a, V> {
+    pub(crate) view: &'a V,
+    pub(crate) pool: ShieldedPool,
     pub(crate) size: u64,
 }
 
-impl NodeView<'_> {
+impl<V: SequenceRead> NodeView<'_, V> {
     /// `None` = not retained (a tree of `size` reads only retained nodes: corruption)
     pub(crate) fn get(&self, addr: Address) -> Option<[u8; NODE]> {
-        let slot = slot(addr)?;
-        self.non_finalized.get(&slot).copied().or_else(|| self.durable.get(slot))
-    }
-}
-
-/// Committed nodes for one pool, one view per level of exactly its retained length
-#[derive(Debug, Default)]
-pub(crate) struct PoolNodes {
-    levels: Vec<Pages>,
-}
-
-impl PoolNodes {
-    /// Durable node at `slot`, `None` past what the committed size retains
-    pub(crate) fn get(&self, (level, index): Slot) -> Option<[u8; NODE]> {
-        let at = usize::try_from(index).ok()?.checked_mul(NODE)?;
-        let pages = self.levels.get(usize::from(level))?;
-        (at + NODE <= pages.len()).then(|| pages.read(at..at + NODE).try_into().expect("NODE"))
-    }
-}
-
-/// `l{level:02}.dat`
-pub(crate) fn level_file(level: u8) -> String {
-    format!("l{level:02}.dat")
-}
-
-/// Writer side: the 32 files + which grew since the last seal
-///
-/// - fsync linear in file count (3.3 ms for 1, 357.8 ms for 100, measured)
-/// - `seal()` skips clean levels (~4 dirty per batch); remapping 100 files = 235 µs
-#[derive(Debug)]
-pub(crate) struct NodeFiles {
-    levels: Vec<PagedFile>,
-    sealed: [Sealed; MERKLE_DEPTH as usize],
-    dirty: [bool; MERKLE_DEPTH as usize],
-}
-
-impl NodeFiles {
-    /// `levels` = `l00.dat`..`l31.dat`, opened at `sealed`
-    pub(crate) fn new(levels: Vec<PagedFile>, sealed: [Sealed; MERKLE_DEPTH as usize]) -> Self {
-        assert_eq!(levels.len(), usize::from(MERKLE_DEPTH), "one file per level");
-        Self { levels, sealed, dirty: [false; MERKLE_DEPTH as usize] }
-    }
-
-    /// Appends `node` at `slot` (slot = pure function of position; each level grows in order)
-    pub(crate) fn put(
-        &mut self,
-        (level, index): Slot,
-        node: &[u8; NODE],
-    ) -> Result<(), StoreError> {
-        let at = usize::from(level);
-        assert_eq!(self.levels[at].len(), index * NODE as u64, "({level}, {index}) not at end");
-        self.levels[at].append(node)?;
-        self.dirty[at] = true;
-        Ok(())
-    }
-
-    /// Seals every level that grew (fsync); every level's seal, for the manifest
-    pub(crate) fn seal(&mut self) -> Result<[Sealed; MERKLE_DEPTH as usize], StoreError> {
-        for (level, file) in self.levels.iter_mut().enumerate() {
-            if self.dirty[level] {
-                self.sealed[level] = file.seal()?;
-            }
-        }
-        self.dirty = [false; MERKLE_DEPTH as usize];
-        Ok(self.sealed)
-    }
-
-    /// Remaps every level at its seal, keeping `previous`'s checked pages
-    pub(crate) fn snapshot(&self, previous: Option<&PoolNodes>) -> Result<PoolNodes, StoreError> {
-        let mut levels = Vec::with_capacity(self.levels.len());
-        for (level, file) in self.levels.iter().enumerate() {
-            let old = previous.and_then(|old| old.levels.get(level));
-            levels.push(file.pages(self.sealed[level], old)?);
-        }
-        Ok(PoolNodes { levels })
+        let (level, index) = slot(addr)?;
+        let bytes = self.view.record(level_table(self.pool, level), index)?;
+        Some(bytes[..].try_into().expect("NODE bytes"))
     }
 }
 

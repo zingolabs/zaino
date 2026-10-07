@@ -1,11 +1,12 @@
 //! Address RPCs over one pinned [`ReadView`] per request
 //!
 //! - scan `receives`, then one batched `spent` lookup over every outpoint (unspent = a miss)
-//! - synchronous: mmapped pages and segment walks, so a transport runs these off its async workers
-//! - non-finalized rows reach the tip (a synced wallet's `tip - 1000` queries answer)
+//! - synchronous: mmapped pages and range walks, so a transport runs these off its async workers
+//! - held rows reach the tip (a synced wallet's `tip - 1000` queries answer)
 
 use std::num::NonZeroUsize;
 
+use zaino_persistence::MapRead;
 use zaino_primitives::types::{Height, TransactionId, Zatoshis};
 use zaino_sync::Served;
 use zcash_protocol::consensus::NetworkType;
@@ -21,7 +22,7 @@ pub enum ServeError {
     #[error("the transparent-address index is still syncing")]
     Syncing,
 
-    /// Corrupt segments, not a bad request
+    /// Corrupt store, not a bad request
     #[error("unspent total for this address exceeds the money supply")]
     SupplyExceeded,
 
@@ -33,7 +34,7 @@ pub enum ServeError {
 
 /// Receives one request may walk unless an operator overrides it
 ///
-/// - a light wallet's addresses hold tens to thousands; ~10 ms of segment walk at the limit
+/// - a light wallet's addresses hold tens to thousands; ~10 ms of range walk at the limit
 pub const DEFAULT_MAX_ADDRESS_ROWS: NonZeroUsize =
     NonZeroUsize::new(100_000).expect("100000 is non-zero");
 
@@ -53,16 +54,16 @@ pub struct TransactionRef {
 }
 
 #[derive(Debug, Clone)]
-pub struct TransparentAddressService {
-    served: Served<ReadView>,
+pub struct TransparentAddressService<V> {
+    served: Served<ReadView<V>>,
     network: NetworkType,
     max_rows: NonZeroUsize,
 }
 
-impl TransparentAddressService {
+impl<V: MapRead> TransparentAddressService<V> {
     /// - unsynced → every method [`ServeError::Syncing`]
     /// - `network` = what the index was built for (its addresses are the only ones it answers)
-    pub fn new(served: Served<ReadView>, network: NetworkType) -> Self {
+    pub fn new(served: Served<ReadView<V>>, network: NetworkType) -> Self {
         Self { served, network, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
     }
 
@@ -188,7 +189,7 @@ impl TransparentAddressService {
     }
 
     /// One consistent view for the request (no commit lands mid-answer)
-    fn pin(&self) -> Result<std::sync::Arc<ReadView>, ServeError> {
+    fn pin(&self) -> Result<std::sync::Arc<ReadView<V>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 }
@@ -198,19 +199,30 @@ mod tests {
     use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
     use super::*;
-    use crate::TransparentAddressIndexWriter;
+    use crate::{schema, TransparentAddressIndexWriter};
     use tokio::sync::watch;
     use tokio_util::sync::CancellationToken;
-    use zaino_chainview::{EndpointSet, QuorumTip};
-    use zaino_persistence::fs::SimFs;
+    use zaino_header_chain::VerifiedChain;
+    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, IndexKind, PersistenceEngine};
+    use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
-        Block, BlockHash, BlockHeader, BlockRef, ReorgDepth, Script, Transaction, TransparentData,
-        TransparentOutput,
+        ReorgDepth, Script, Transaction, TransparentData, TransparentOutput,
     };
     use zaino_sync::{BlockSink, Step};
 
+    const NAME: &str = IndexKind::TransparentAddress.name();
+
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
+    }
+
+    /// Empty index on a fresh filesystem, one bulk commit per MiB
+    fn empty() -> TransparentAddressIndexWriter<DiskStore> {
+        let network = zcash_protocol::consensus::NetworkType::Regtest;
+        let store =
+            DiskEngine::new(SimFs::new()).open(std::path::Path::new("/ta"), &schema(network));
+        let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
+        TransparentAddressIndexWriter::new(store.expect("open"), batch)
     }
 
     /// Syncing = a refusal on every method until the gate opens at chainview's tip; an address
@@ -220,23 +232,31 @@ mod tests {
         let address = TransparentAddress::PublicKeyHash([0x01; 20]);
         let within = Duration::from_secs(10);
 
-        let index = TransparentAddressIndexWriter::open(
-            SimFs::new(),
-            std::path::Path::new("/ta"),
-            zcash_protocol::consensus::NetworkType::Regtest,
-            NonZeroUsize::new(1 << 20).expect("non-zero"),
-        )
-        .expect("open");
+        let index = empty();
         let service = TransparentAddressService::new(
             index.published().served(),
             zcash_protocol::consensus::NetworkType::Regtest,
         );
         let (mut synced, mut durable) =
             (index.published().subscribe_synced(), index.published().subscribe_finalized());
-        // chainview's quorum tip at height 1: the gate opens once the index applies it
-        let block = BlockRef { hash: BlockHash::from([1; 32]), height: h(1) };
-        let (_tips, tips) =
-            watch::channel(Some(QuorumTip { block, agreed_by: EndpointSet::default() }));
+        // heights 0 and 1, only 1 pays the address (0 = bare coinbase)
+        let tx = |tag: u8, outputs| Transaction {
+            txid: TransactionId::from([tag; 32]),
+            transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
+            sprout: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        };
+        let paid = TransparentOutput {
+            value: Zatoshis::new(42).expect("in supply"),
+            script: Script::new([&[0x76, 0xa9, 0x14][..], &[0x01; 20], &[0x88, 0xac]].concat()),
+        };
+        let mut chain = Chain::with_genesis(vec![tx(0xc0, Vec::new())]);
+        let block = chain.mine_with(chain.genesis().hash, vec![tx(0x77, vec![paid])]);
+        // verified best at height 1: the gate opens once the index applies it
+        let verified = VerifiedChain::regtest(&chain.path(block.hash));
+        let (_tips, tips) = watch::channel(Some(Arc::new(verified)));
         let depth = ReorgDepth::new(NonZeroU32::new(10).expect("non-zero"));
         let cancel = CancellationToken::new();
         let gate = tokio::spawn(index.published().gate(tips, depth, cancel.clone()));
@@ -248,41 +268,11 @@ mod tests {
 
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let blocks = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
+        let blocks = sink.subscribe(NAME, queue);
         let running = tokio::spawn(index.run(blocks));
-        // heights 0 and 1, only 1 pays the address (0 = bare coinbase)
-        for height in 0..2u32 {
-            let (txid, outputs) = if height == 1 {
-                let paid = TransparentOutput {
-                    value: Zatoshis::new(42).expect("in supply"),
-                    script: Script::new(
-                        [&[0x76, 0xa9, 0x14][..], &[0x01; 20], &[0x88, 0xac]].concat(),
-                    ),
-                };
-                (0x77, vec![paid])
-            } else {
-                (0xc0, Vec::new())
-            };
-            let transactions = vec![Transaction {
-                txid: TransactionId::from([txid; 32]),
-                transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
-                sprout: Default::default(),
-                sapling: Default::default(),
-                orchard: Default::default(),
-                ironwood: Default::default(),
-            }];
-
-            let block = Arc::new(Block::new(
-                BlockHeader::for_tests(
-                    height,
-                    [height as u8; 32],
-                    [height.wrapping_sub(1) as u8; 32],
-                    1_700_000_000 + height,
-                ),
-                transactions,
-            ));
+        for block in chain.path(block.hash) {
             let height = block.header().height;
-            sink.send(Step::Apply { height, finalized: false, data: block }).await;
+            sink.send(Step::Apply { height, finalized: false, data: Arc::new(block) }).await;
         }
         let open = tokio::time::timeout(within, synced.wait_for(|open| *open)).await;
         open.expect("gate opens at the tip").expect("gate alive");
@@ -336,52 +326,39 @@ mod tests {
             script: Script::new([&[0x76, 0xa9, 0x14][..], &[hash; 20], &[0x88, 0xac]].concat()),
         };
 
-        let index = TransparentAddressIndexWriter::open(
-            SimFs::new(),
-            std::path::Path::new("/ta"),
-            zcash_protocol::consensus::NetworkType::Regtest,
-            NonZeroUsize::new(1 << 20).expect("non-zero"),
-        )
-        .expect("open");
+        let index = empty();
         let published = index.published().served();
         let (mut applied, mut durable) =
             (index.published().subscribe_applied(), index.published().subscribe_finalized());
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let subscription = sink.subscribe(TransparentAddressIndexWriter::NAME, queue);
+        let subscription = sink.subscribe(NAME, queue);
         let running = tokio::spawn(index.run(subscription));
         // heights 0 to 2 (both inclusive) sent final (bulk), 3 non-final (written at the bulk →
         // tip handoff, so 0..=2 durable): `first` paid at 1, 2 and 3, `second` at 2
-        let mut blocks = Vec::new();
-        for height in 0..4u32 {
+        let tx = |height: u8, outputs| Transaction {
+            txid: TransactionId::from([0x70 + height; 32]),
+            transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
+            sprout: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        };
+        let mut chain = Chain::with_genesis(vec![tx(0, Vec::new())]);
+        let mut tip = chain.genesis();
+        for height in 1..4u8 {
             let outputs = match height {
-                0 => Vec::new(),
                 2 => vec![pays(0x01), pays(0x02)],
                 _ => vec![pays(0x01)],
             };
-            blocks.push(Arc::new(Block::new(
-                BlockHeader::for_tests(
-                    height,
-                    [height as u8; 32],
-                    [height.wrapping_sub(1) as u8; 32],
-                    1_700_000_000 + height,
-                ),
-                vec![Transaction {
-                    txid: TransactionId::from([0x70 + height as u8; 32]),
-                    transparent: TransparentData { coinbase: false, inputs: Vec::new(), outputs },
-                    sprout: Default::default(),
-                    sapling: Default::default(),
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }],
-            )));
+            tip = chain.mine_with(tip.hash, vec![tx(height, outputs)]);
         }
-        for (height, block) in (0u32..).zip(&blocks) {
+        for (height, block) in (0u32..).zip(chain.path(tip.hash)) {
             let (height, finalized) = (h(height), height < 3);
-            sink.send(Step::Apply { height, finalized, data: Arc::clone(block) }).await;
+            sink.send(Step::Apply { height, finalized, data: Arc::new(block) }).await;
         }
         let within = Duration::from_secs(10);
-        let three = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(h(3)))).await;
+        let three = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(tip))).await;
         three.expect("3 applied").expect("index alive");
         assert_eq!(*durable.borrow_and_update(), Some(h(2)), "bulk written before 3 applies on it");
 

@@ -1,49 +1,34 @@
 //! Transparent address → received outputs, each with its spend (if any)
 //!
-//! # Data structure: two size-tiered LSM-Trees of sorted segments (`zaino_persistence::lsm`)
+//! # Data structure: two maps in one store (`zaino_persistence`, [`schema`])
 //!
 //! ```text
-//! <dir>/
-//!   MANIFEST           committed count, tip hash, each set's segment list = the commit point
-//!   receives/<id>.seg  one immutable sorted segment (+ `.crc`: page checksums)
-//!   spent/<id>.seg     same, for spends
-//!
-//! receives row, 69 B:  addr 21 ([hash160][kind]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
-//!                      sorted by address then height: one address = one contiguous range per segment
-//!                      fences per 4 KiB block (≈59 rows), no filter (range-scanned, never probed)
-//! spent row, 72 B:     txid 32 ‖ vout u32 → height u32 ‖ spending txid 32
-//!                      fences per 4 KiB block (≈56 rows) + binary fuse filter (txid = uniform)
+//! receives  addr 21 ([hash160][kind]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
+//!           scope = addr: one address's history = one key range
+//! spent     txid 32 ‖ vout u32 (OutPoint::encode) → height u32 ‖ spending txid 32
+//!           point lookups only
 //!
 //! integers big-endian: byte order = key order
 //! ```
 //!
-//! - LSM minus everything mutable data needs: a spend = a new `spent` row, never a delete of its
-//!   `receives` row → no memtable, no WAL, no tombstones, no versions
+//! - insert only: a spend = a new `spent` row, never a delete of its `receives` row
 //! - no outpoint → address map, no UTXO set: `apply` = a pure projection of one block, no lookups
 //! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
-//! - memtable role = `NonFinalizedRows` (reorgable blocks, RAM only, keyed as the segments)
+//! - blocks above the durable tip = `zaino_persistence::Tiered` (RAM only, keyed as the maps)
 //!
 //! # Lookup ([`TransparentAddressService::utxos`])
 //!
 //! ```text
-//! address ──▶ receives:  non-finalized rows, start to tip (both inclusive)
-//!                        + each segment: fences → block of (address, start) → walk rows while
-//!                          the address matches                    (one contiguous range per segment)
-//!                           │ merge, sort, dedupe by key
+//! address ──▶ receives:  `range(RECEIVES, (addr, start), (addr, tip + 1), budget)`
+//!                        (held rows merged over committed ones, by key)
+//!                           │
 //!                           ▼
-//! each received outpoint ──▶ spent:  non-finalized map ──hit──▶ spent
-//!                                       │ miss
-//!                                       ▼
-//!                                    each segment: filter ──"absent"──▶ next segment
-//!                                       │ "maybe"                     (every segment but ≤ 1)
-//!                                       ▼
-//!                                    fences → one 4 KiB block → binary search ──found──▶ spent
-//!                                                                 └──in no segment──▶ unspent
+//! each received outpoint ──▶ spent:  one `values(SPENT, outpoints)` ──found──▶ spent
+//!                                    (held first, then committed)   └──absent──▶ unspent
 //! ```
 //!
 //! - balance = sum of the unspent; transactions = receiving txids + their spenders
-//!
-//! Policy and file format: `zaino_persistence::lsm`, `docs/design/index-data-structures.md` §5
+//! - `docs/design/index-data-structures.md` §5
 
 mod address;
 mod index_writer;
@@ -57,28 +42,27 @@ pub use serve::{
 };
 pub use view::ReadView;
 
-use std::{io, path::Path};
-
-use zaino_persistence::{
-    lsm::{self, LsmIndex, SegmentLog},
-    manifest::IndexKind,
-    pages::CommittedFiles,
-};
+use zaino_persistence::{IndexKind, MapId, Schema, Width};
 use zcash_protocol::consensus::NetworkType;
 
-use key::{ReceiveRow, SpentRow};
+use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND};
+use zaino_primitives::types::OutPoint;
 
-/// Every file `dir`'s manifest seals (offline scrub; plain reads, no lock)
-pub fn committed_files(dir: &Path, network: NetworkType) -> io::Result<CommittedFiles> {
-    lsm::committed_files::<TransparentAddressIndex>(dir, network)
-}
+/// On-disk layout version
+const FORMAT: u16 = 1;
+const RECEIVES: MapId = MapId(0);
+const SPENT: MapId = MapId(1);
 
-/// On disk: a `receives` and a `spent` segment set
-struct TransparentAddressIndex;
-
-impl LsmIndex for TransparentAddressIndex {
-    const KIND: IndexKind = IndexKind::TransparentAddress;
-    const FORMAT: u16 = 1;
-    const SETS: &'static [&'static str] = &["receives", "spent"];
-    type Logs = (SegmentLog<ReceiveRow>, SegmentLog<SpentRow>);
+/// What the index stores (`zainod verify` scrubs a directory against it)
+pub fn schema(network: NetworkType) -> Schema {
+    let width = |bytes: usize| Width::fixed(bytes as u32);
+    Schema::new(IndexKind::TransparentAddress, FORMAT, network)
+        .with_map(
+            RECEIVES,
+            "receives",
+            width(RECEIVE_KEY),
+            width(RECEIVE_VALUE),
+            AddressKey::LEN as u32,
+        )
+        .with_map(SPENT, "spent", width(OutPoint::LEN), width(SPEND), 0)
 }

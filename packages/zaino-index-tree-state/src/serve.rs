@@ -1,11 +1,12 @@
 //! RPC surface: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots`
 //!
-//! - one `ArcSwap` load per request pins a [`ReadView`] (non-finalized + committed files)
+//! - one `ArcSwap` load per request pins a [`ReadView`] (held blocks + committed files)
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
 use std::sync::Arc;
 
+use zaino_persistence::SequenceRead;
 use zaino_primitives::types::{
     BlockchainInfo, ConsensusBranchId, Height, ShieldedPool, SubtreeRoot, Treestate,
 };
@@ -72,17 +73,17 @@ pub enum ServeError {
 }
 
 #[derive(Debug, Clone)]
-pub struct TreeStateService {
-    served: Served<ReadView>,
+pub struct TreeStateService<V> {
+    served: Served<ReadView<V>>,
     network: NetworkType,
     activations: PoolActivations,
 }
 
-impl TreeStateService {
+impl<V: SequenceRead> TreeStateService<V> {
     /// - unsynced → every method [`ServeError::Syncing`] (committed heights excepted)
     /// - `network` = operator-declared (regtest reports as `"test"` over the validator's RPC)
     pub fn new(
-        served: Served<ReadView>,
+        served: Served<ReadView<V>>,
         network: NetworkType,
         activations: PoolActivations,
     ) -> Self {
@@ -100,7 +101,7 @@ impl TreeStateService {
     }
 
     /// Tree state at `at` from one pinned `view` (a transport memoizing per publication)
-    pub fn treestate_in(&self, view: &ReadView, at: Height) -> Result<Treestate, ServeError> {
+    pub fn treestate_in(&self, view: &ReadView<V>, at: Height) -> Result<Treestate, ServeError> {
         let sapling = self.activations.sapling;
         match at < sapling {
             true => Err(ServeError::BeforeSapling { height: at, sapling }),
@@ -109,14 +110,14 @@ impl TreeStateService {
     }
 
     /// Tree state at `view`'s tip
-    pub fn latest_in(&self, view: &ReadView) -> Result<Treestate, ServeError> {
+    pub fn latest_in(&self, view: &ReadView<V>) -> Result<Treestate, ServeError> {
         self.treestate_in(view, view.tip().ok_or(ServeError::Empty)?)
     }
 
     /// The latest publication, synced only (one load; every tree state it answers comes from it)
     ///
     /// - one `Arc` per publication: a transport may key per-publication memos on it
-    pub fn pin(&self) -> Result<Arc<ReadView>, ServeError> {
+    pub fn pin(&self) -> Result<Arc<ReadView<V>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 
@@ -153,13 +154,14 @@ mod tests {
     use std::{num::NonZeroUsize, time::Duration};
 
     use super::*;
-    use crate::{TreeStateIndexWriter, TreeStateStore};
+    use crate::{schema, TreeStateIndexWriter};
     use tokio_util::sync::CancellationToken;
-    use zaino_chainview::{EndpointSet, QuorumTip};
-    use zaino_persistence::fs::SimFs;
+    use zaino_header_chain::VerifiedChain;
+    use zaino_persistence::{fs::SimFs, DiskEngine, IndexKind, PersistenceEngine};
+    use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
-        Block, BlockHeader, BlockRef, CompactCiphertext, ReorgDepth, SaplingData, SaplingOutput,
-        Transaction, TransactionId,
+        BlockRef, CompactCiphertext, ReorgDepth, SaplingData, SaplingOutput, Transaction,
+        TransactionId,
     };
     use zaino_sync::{BlockSink, Step};
 
@@ -219,48 +221,37 @@ mod tests {
     /// alike (never a partial answer). The tip reached → the gate opens, all answer
     #[tokio::test]
     async fn an_unsynced_index_serves_committed_heights_only_and_everything_once_synced() {
-        let index = TreeStateIndexWriter::new(
-            TreeStateStore::open(SimFs::new(), Path::new("/ts"), NetworkType::Regtest)
-                .expect("open"),
-            NonZeroUsize::MIN,
-        )
-        .expect("new");
+        let store =
+            DiskEngine::new(SimFs::new()).open(Path::new("/ts"), &schema(NetworkType::Regtest));
+        let index =
+            TreeStateIndexWriter::new(store.expect("open"), NonZeroUsize::MIN).expect("new");
 
         let mut cmu = [0u8; 32];
         cmu[..4].copy_from_slice(&7u32.to_le_bytes());
-        let block = |height: u32| {
-            Arc::new(Block::new(
-                BlockHeader::for_tests(
-                    height,
-                    [height as u8; 32],
-                    [height.wrapping_sub(1) as u8; 32],
-                    1_700_000_000 + height,
-                ),
-                vec![Transaction {
-                    txid: TransactionId::from([0x01 + height as u8; 32]),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: SaplingData {
-                        outputs: vec![SaplingOutput {
-                            cmu: cmu.into(),
-                            ephemeral_key: [2u8; 32].into(),
-                            enc_ciphertext: CompactCiphertext::from(
-                                [3u8; CompactCiphertext::LENGTH],
-                            ),
-                        }],
-                        ..Default::default()
-                    },
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
+        let tx = |tag: u8| Transaction {
+            txid: TransactionId::from([tag; 32]),
+            transparent: Default::default(),
+            sprout: Default::default(),
+            sapling: SaplingData {
+                outputs: vec![SaplingOutput {
+                    cmu: cmu.into(),
+                    ephemeral_key: [2u8; 32].into(),
+                    enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
                 }],
-            ))
+                ..Default::default()
+            },
+            orchard: Default::default(),
+            ironwood: Default::default(),
         };
+        // heights 0..=5 each one sapling output; the index is sent 0 and 1
+        let mut chain = Chain::with_genesis(vec![tx(0x01)]);
+        let tip =
+            (2..=6).fold(chain.genesis(), |tip, tag| chain.mine_with(tip.hash, vec![tx(tag)]));
+        let path = chain.path(tip.hash);
+        let block = |height: u32| Arc::new(path[height as usize].clone());
         let h = |n: u32| Height::try_from(n).expect("h");
-        let quorum = |height: u32| {
-            let block = BlockRef { hash: [height as u8; 32].into(), height: h(height) };
-            Some(QuorumTip { block, agreed_by: EndpointSet::default() })
-        };
-        let (tips, tip) = tokio::sync::watch::channel(quorum(5));
+        let chain_tip = |height: usize| Some(Arc::new(VerifiedChain::regtest(&path[..=height])));
+        let (tips, tip) = tokio::sync::watch::channel(chain_tip(5));
         let depth = ReorgDepth::new(std::num::NonZeroU32::new(10).expect("non-zero"));
         let cancel = CancellationToken::new();
         let published = index.published();
@@ -273,13 +264,14 @@ mod tests {
         let gate = tokio::spawn(published.gate(tip, depth, cancel.clone()));
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let blocks = sink.subscribe(TreeStateIndexWriter::NAME, queue);
+        let blocks = sink.subscribe(IndexKind::TreeState.name(), queue);
         let running = tokio::spawn(index.run(blocks));
         let within = Duration::from_secs(5);
         for (height, finalized) in [(0, true), (1, false)] {
             sink.send(Step::Apply { height: h(height), finalized, data: block(height) }).await;
         }
-        let tip_applied = tokio::time::timeout(within, applied.wait_for(|at| *at == Some(h(1))));
+        let one = Some(BlockRef { hash: path[1].header().hash, height: h(1) });
+        let tip_applied = tokio::time::timeout(within, applied.wait_for(|at| *at == one));
         tip_applied.await.expect("tip applied").expect("index alive");
 
         assert_eq!(service.treestate(h(0)).expect("committed").height, h(0));
@@ -288,7 +280,7 @@ mod tests {
         assert_eq!(service.latest(), Err(ServeError::Syncing));
         assert_eq!(service.subtree_roots(ShieldedPool::Sapling, 0, 0), Err(ServeError::Syncing));
 
-        tips.send_replace(quorum(1));
+        tips.send_replace(chain_tip(1));
         let open = tokio::time::timeout(within, synced.wait_for(|open| *open));
         open.await.expect("the tip reached opens the gate").expect("gate alive");
 

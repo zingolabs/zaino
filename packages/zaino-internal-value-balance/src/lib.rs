@@ -1,69 +1,78 @@
 //! Transparent outpoint → value; block → per-tx [`Fee`](zaino_primitives::types::Fee) for the
 //! [`FeeSink`](zaino_sync::FeeSink)
 //!
-//! # Data structure: size-tiered LSM-Tree of immutable sorted segments (`zaino_persistence::lsm`)
+//! # Data structure: one point-lookup map on the persistence port (`zaino_persistence`)
 //!
 //! ```text
-//! <dir>/
-//!   MANIFEST           committed count, tip hash, segment list (id, rows, seal) = the commit point
-//!   outputs/<id>.seg   one immutable sorted segment (+ `.crc`: page checksums)
-//!
-//! one segment file:
-//!   rows      txid 32 ‖ vout u32 BE → value u64 BE, 44 B each, sorted by outpoint, packed
-//!   fences    first outpoint of every 4 KiB block of rows (≈93 rows per block)
-//!   filter    binary fuse, 8-bit fingerprints (txid = uniform)
+//! outputs   OutPoint::encode() (txid 32 ‖ vout u32 BE) → value u64 BE      scope 0: never scanned
 //! ```
 //!
-//! - LSM minus everything mutable data needs: spent outputs kept, never deleted → no memtable, no
-//!   WAL, no tombstones (any height re-resolves identically: a downstream index behind this one
-//!   replays through delivery, no rewind)
-//! - memtable role = `pending::Pending` (every output delivered above the durable tip, staged and
-//!   non-finalized alike, RAM only)
+//! - insert only: spent outputs kept, never deleted (any height re-resolves identically: a
+//!   downstream index behind this one replays through delivery, no rewind)
+//! - memtable role = `zaino_persistence::Tiered` (every output delivered above the durable tip,
+//!   staged and applied alike, RAM only)
+//! - segments, merges, filters, manifest, crash safety = the engine's
 //! - one item published per block at delivery (bulk, replay and tip alike)
 //!
 //! # Lookup (`index_writer::resolve`, per transparent input)
 //!
 //! ```text
-//! prevout ──▶ pending map ──hit──▶ value            (this block's own outputs included)
+//! prevout ──▶ held outputs ──hit──▶ value          (this block's own outputs included)
 //!    │ miss
 //!    ▼
-//! each segment:  filter ──"absent"──▶ next segment      (every segment but ≤ 1)
-//!                  │ "maybe"
-//!                  ▼
-//!                fences → one 4 KiB block → binary search ──found──▶ value
-//!                                                  └──in no segment──▶ `MissingPrevout` (fatal)
+//! committed (whole run at once) ──found──▶ value
+//!                                └─────────▶ `MissingPrevout` (fatal)
 //! ```
-//!
-//! Policy and file format: `zaino_persistence::lsm`, `docs/design/index-data-structures.md` §5
 
 mod index_writer;
-mod key;
-mod pending;
 
 pub use index_writer::{IndexWriterError, ValueBalanceIndexWriter};
 
-use std::{io, path::Path};
-
-use zaino_persistence::{
-    lsm::{self, LsmIndex, SegmentLog},
-    manifest::IndexKind,
-    pages::CommittedFiles,
-};
+use zaino_persistence::{IndexKind, MapId, Schema, Width};
+use zaino_primitives::types::{OutPoint, Zatoshis, ZatoshisOverflow};
 use zcash_protocol::consensus::NetworkType;
 
-use key::OutputRow;
+/// On-disk layout version
+const FORMAT: u16 = 1;
+const OUTPUTS: MapId = MapId(0);
+const VALUE: usize = 8;
 
-/// Every file `dir`'s manifest seals (offline scrub; plain reads, no lock)
-pub fn committed_files(dir: &Path, network: NetworkType) -> io::Result<CommittedFiles> {
-    lsm::committed_files::<ValueBalanceIndex>(dir, network)
+/// What the store holds (`zainod verify` reads by it)
+pub fn schema(network: NetworkType) -> Schema {
+    let (key, value) = (Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32));
+    Schema::new(IndexKind::ValueBalance, FORMAT, network)
+        .with_map(OUTPUTS, "outputs", key, value, 0)
 }
 
-/// On disk: one `outputs` segment set
-struct ValueBalanceIndex;
+fn encode_value(value: Zatoshis) -> [u8; VALUE] {
+    value.as_u64().to_be_bytes()
+}
 
-impl LsmIndex for ValueBalanceIndex {
-    const KIND: IndexKind = IndexKind::ValueBalance;
-    const FORMAT: u16 = 1;
-    const SETS: &'static [&'static str] = &["outputs"];
-    type Logs = SegmentLog<OutputRow>;
+fn decode_value(bytes: &[u8; VALUE]) -> Result<Zatoshis, ZatoshisOverflow> {
+    Zatoshis::new(u64::from_be_bytes(*bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use zaino_primitives::types::TransactionId;
+
+    use super::*;
+
+    /// `outputs` row as inserted: key = `OutPoint::encode()`, value BE; out-of-supply refused
+    #[test]
+    fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
+        let key = OutPoint { txid: TransactionId::from([0xab; 32]), vout: 0x0102_0304 };
+        let value = Zatoshis::new(0x0506_0708).expect("in supply");
+        let row = [&key.encode()[..], &encode_value(value)].concat();
+
+        let golden = [
+            vec![0xab; 32],
+            vec![0x01, 0x02, 0x03, 0x04],
+            vec![0, 0, 0, 0, 0x05, 0x06, 0x07, 0x08],
+        ]
+        .concat();
+        assert_eq!(row, golden);
+        assert_eq!(decode_value(&[0, 0, 0, 0, 0x05, 0x06, 0x07, 0x08]), Ok(value));
+        assert!(decode_value(&u64::MAX.to_be_bytes()).is_err(), "value past supply");
+    }
 }

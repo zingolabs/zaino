@@ -1,6 +1,6 @@
 //! Non-final window of the best chain, in memory: what a reorg replays from (no refetch)
 //!
-//! - Canonical only: a competing branch is learned by walking back from the quorum tip's hash
+//! - Canonical only: a competing branch is learned by walking back from the verified tip's hash
 //! - Floor = `highest tip seen before this advance − depth` (every legal fork point, and every
 //!   block a sink reset can replay from: the trim runs at the start of the *next* advance)
 
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use futures::TryStreamExt;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::{
-    BlockFetchPool, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError, QueryError,
+    BlockFetchPool, ChainDataSource, GetBlockByHashError, GetBlockError, QueryError,
 };
 
 /// What [`ChainHead::advance`] changed; new blocks read back via [`ChainHead::best_chain_from`]
@@ -30,8 +30,8 @@ pub enum AdvanceError {
     FetchHeight(#[from] QueryError<GetBlockError>),
     #[error("fetch by hash: {0}")]
     FetchHash(#[from] QueryError<GetBlockByHashError>),
-    /// Quorum tip forks below the window = past the consensus reorg bound (final data is wrong)
-    #[error("quorum tip {tip:?} forks below the window floor {floor:?}")]
+    /// Verified tip forks below the window = past the consensus reorg bound (final data is wrong)
+    #[error("verified tip {tip:?} forks below the window floor {floor:?}")]
     BelowWindow { tip: BlockRef, floor: Height },
     /// Validator served block `hash` at a height its child contradicts (retryable: another tip)
     #[error("block {hash} at {got:?}, its child says {expected:?}")]
@@ -72,7 +72,7 @@ impl ChainHead {
         self.window.range(self.offset(start)..)
     }
 
-    /// Follows the quorum tip; `tip` at most `depth` above ours (the producer bulk-fetches wider
+    /// Follows the verified tip; `tip` at most `depth` above ours (the producer bulk-fetches wider
     /// gaps, so the window never holds more than the non-final span)
     pub async fn advance<S>(
         &mut self,
@@ -80,11 +80,14 @@ impl ChainHead {
         pool: &BlockFetchPool<S>,
     ) -> Result<Advance, AdvanceError>
     where
-        S: GetBlock + GetBlockByHash + Send + Sync + 'static,
+        S: ChainDataSource,
     {
         let ours = self.tip();
         let reach = u32::from(ours.height) + self.depth.get();
-        assert!(u32::from(tip.height) <= reach, "quorum tip {tip:?} beyond the window of {ours:?}");
+        assert!(
+            u32::from(tip.height) <= reach,
+            "verified tip {tip:?} beyond the window of {ours:?}"
+        );
         // what the last advance's caller has since published is now safe to drop
         self.trim();
         if tip == ours {
@@ -104,7 +107,7 @@ impl ChainHead {
         };
         self.highest = self.highest.max(tip.height);
         self.assert_linked();
-        assert_eq!(self.tip(), tip, "advance ends on the quorum tip");
+        assert_eq!(self.tip(), tip, "advance ends on the verified tip");
         Ok(outcome)
     }
 
@@ -116,7 +119,7 @@ impl ChainHead {
         pool: &BlockFetchPool<S>,
     ) -> Result<Option<Vec<Arc<Block>>>, AdvanceError>
     where
-        S: GetBlock + GetBlockByHash + Send + Sync + 'static,
+        S: ChainDataSource,
     {
         let ours = self.tip();
         let Some(from) = ours.height.checked_add(1).filter(|from| *from <= tip.height) else {
@@ -137,7 +140,7 @@ impl ChainHead {
         pool: &BlockFetchPool<S>,
     ) -> Result<Advance, AdvanceError>
     where
-        S: GetBlock + GetBlockByHash + Send + Sync + 'static,
+        S: ChainDataSource,
     {
         let mut branch: Vec<Arc<Block>> = Vec::new();
         let mut want = BlockRef { hash: tip.hash, height: tip.height };
@@ -232,7 +235,9 @@ impl ChainHead {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use zaino_primitives::types::{BlockHeader, Transaction};
+    use std::collections::HashMap;
+
+    use zaino_primitives::testing::Chain;
     use zaino_source::mock::MockChain;
 
     use super::*;
@@ -243,88 +248,71 @@ mod tests {
     /// reorg back down that keeps the floor, retreats onto and below it, and a fork below the window
     #[tokio::test]
     async fn follows_extensions_and_reorgs_and_refuses_a_fork_below_the_window() {
-        let block = |height: u32, byte: u8, parent: u8| {
-            Arc::new(Block::new(
-                BlockHeader::for_tests(height, [byte; 32], [parent; 32], 0),
-                vec![Transaction {
-                    txid: [byte; 32].into(),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: Default::default(),
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }],
-            ))
-        };
-        let a: Vec<_> = (0..=6).map(|h| block(h, 0x10 + h as u8, 0x0f + h as u8)).collect();
-        let b = [block(5, 0x25, 0x14), block(6, 0x26, 0x25), block(7, 0x27, 0x26)];
-        let c = [
-            block(3, 0x33, 0x12),
-            block(4, 0x34, 0x33),
-            block(5, 0x35, 0x34),
-            block(6, 0x36, 0x35),
-        ];
-        let validator = |blocks: Vec<&Arc<Block>>| {
-            Arc::new(
-                blocks
-                    .into_iter()
-                    .fold(MockChain::new(), |chain, block| chain.with_block(Block::clone(block))),
-            )
-        };
+        let mut builder = Chain::new();
+        let mut a = vec![builder.genesis()];
+        for _ in 1..=6 {
+            a.push(builder.mine(a[a.len() - 1].hash));
+        }
+        let mut b = vec![builder.mine(a[4].hash)];
+        for _ in 6..=7 {
+            b.push(builder.mine(b[b.len() - 1].hash));
+        }
+        let mut c = vec![builder.mine(a[2].hash)];
+        for _ in 4..=6 {
+            c.push(builder.mine(c[c.len() - 1].hash));
+        }
+        let names: HashMap<BlockHash, String> = [("a", &a, 0), ("b", &b, 5), ("c", &c, 3)]
+            .into_iter()
+            .flat_map(|(branch, blocks, from)| {
+                (blocks.iter().zip(from..)).map(move |(at, h)| (at.hash, format!("{branch}{h}")))
+            })
+            .collect();
+        let validator = |tip: &BlockRef| Arc::new(MockChain::serving(builder.path(tip.hash)));
         let pool = BlockFetchPool::new(
-            vec![
-                validator(a.iter().collect()),
-                validator(a[..=4].iter().chain(&b).collect()),
-                validator(a[..=2].iter().chain(&c).collect()),
-            ],
+            vec![validator(&a[6]), validator(&b[2]), validator(&c[3])],
             NonZeroUsize::new(2).expect("nz"),
         );
-        let at = |block: &Arc<Block>| BlockRef {
-            hash: block.header().hash,
-            height: block.header().height,
-        };
         let height = |h: u32| Height::try_from(h).expect("h");
-        let chain = |head: &ChainHead, start: u32| -> Vec<u8> {
+        let chain = |head: &ChainHead, start: u32| -> Vec<&str> {
             head.best_chain_from(height(start))
-                .map(|block| <[u8; 32]>::from(block.header().hash)[0])
+                .map(|block| names[&block.header().hash].as_str())
                 .collect()
         };
 
-        let mut head = ChainHead::new(
-            Arc::clone(&a[2]),
-            ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz")),
-        );
-        assert_eq!(head.advance(at(&a[4]), &pool).await.expect("a4"), Advance::Extended);
-        assert_eq!(chain(&head, 2), [0x12, 0x13, 0x14]);
+        let anchor = Arc::new(builder.block(a[2].hash).clone());
+        let mut head =
+            ChainHead::new(anchor, ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz")));
+        assert_eq!(head.advance(a[4], &pool).await.expect("a4"), Advance::Extended);
+        assert_eq!(chain(&head, 2), ["a2", "a3", "a4"]);
 
         // height 5 spreads to `b` (B5), 6 to `a` (A6): unlinked → walk back from A6
         // floor = the previous highest (4) − depth, trimmed only as the next advance starts
-        assert_eq!(head.advance(at(&a[6]), &pool).await.expect("a6"), Advance::Extended);
-        assert_eq!((head.floor(), chain(&head, 3)), (height(2), vec![0x13, 0x14, 0x15, 0x16]));
+        assert_eq!(head.advance(a[6], &pool).await.expect("a6"), Advance::Extended);
+        assert_eq!((head.floor(), chain(&head, 3)), (height(2), vec!["a3", "a4", "a5", "a6"]));
         assert_eq!(head.next_floor(), height(3), "the next advance trims to highest − depth first");
 
         let reorg_at_5 = Advance::Reorg { fork: height(5) };
-        assert_eq!(head.advance(at(&b[2]), &pool).await.expect("b7"), reorg_at_5);
+        assert_eq!(head.advance(b[2], &pool).await.expect("b7"), reorg_at_5);
         // A3 kept: a sink reset replays from the pre-advance tip's first non-final height
         let window = chain(&head, 3);
-        assert_eq!((head.floor(), window), (height(3), vec![0x13, 0x14, 0x25, 0x26, 0x27]));
+        assert_eq!((head.floor(), window), (height(3), vec!["a3", "a4", "b5", "b6", "b7"]));
 
         // lower winning tip: floor held at highest (7) − depth, never lowered
-        assert_eq!(head.advance(at(&a[5]), &pool).await.expect("a5"), reorg_at_5);
-        assert_eq!((head.floor(), chain(&head, 4)), (height(4), vec![0x14, 0x15]));
+        assert_eq!(head.advance(a[5], &pool).await.expect("a5"), reorg_at_5);
+        assert_eq!((head.floor(), chain(&head, 4)), (height(4), vec!["a4", "a5"]));
 
         // retreat onto a held ancestor = a reorg with no replacement block (C11)
-        assert_eq!(head.advance(at(&a[4]), &pool).await.expect("a4"), reorg_at_5);
-        assert_eq!((head.floor(), head.tip(), chain(&head, 4)), (height(4), at(&a[4]), vec![0x14]));
-        assert_eq!(head.advance(at(&a[4]), &pool).await.expect("a4 again"), Advance::Unchanged);
-        let deeper = head.advance(at(&a[3]), &pool).await;
+        assert_eq!(head.advance(a[4], &pool).await.expect("a4"), reorg_at_5);
+        assert_eq!((head.floor(), head.tip(), chain(&head, 4)), (height(4), a[4], vec!["a4"]));
+        assert_eq!(head.advance(a[4], &pool).await.expect("a4 again"), Advance::Unchanged);
+        let deeper = head.advance(a[3], &pool).await;
         let Err(AdvanceError::BelowWindow { floor, .. }) = &deeper else { panic!("{deeper:?}") };
-        assert_eq!((*floor, head.tip()), (height(4), at(&a[4])), "retreat below the floor");
-        assert_eq!(head.advance(at(&a[5]), &pool).await.expect("a5 back"), Advance::Extended);
+        assert_eq!((*floor, head.tip()), (height(4), a[4]), "retreat below the floor");
+        assert_eq!(head.advance(a[5], &pool).await.expect("a5 back"), Advance::Extended);
 
-        let refused = head.advance(at(&c[3]), &pool).await;
+        let refused = head.advance(c[3], &pool).await;
         let Err(AdvanceError::BelowWindow { floor, .. }) = &refused else { panic!("{refused:?}") };
         assert_eq!(*floor, height(4));
-        assert_eq!(head.tip(), at(&a[5]), "a refused advance leaves the window as it was");
+        assert_eq!(head.tip(), a[5], "a refused advance leaves the window as it was");
     }
 }

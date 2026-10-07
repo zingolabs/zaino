@@ -9,31 +9,36 @@ is described in
 ## Wiring
 
 ```rust
-use zaino_index_tree_state::{
-    PoolActivations, TreeStateIndexWriter, TreeStateService, TreeStateStore,
-};
+use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter, TreeStateService};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 
-let store = TreeStateStore::open(fs, &path, network)?;
+let store = DiskEngine::new(fs).open(&path, &zaino_index_tree_state::schema(network))?;
 let index = TreeStateIndexWriter::new(store, batch_bytes)?;
-let blocks = block_sink.subscribe(TreeStateIndexWriter::NAME, queue);
+let blocks = block_sink.subscribe(IndexKind::TreeState.name(), queue);
 let activations = PoolActivations::from_validator(&validator.get_blockchain_info().await?);
 let service = TreeStateService::new(index.published().served(), network, activations);
 tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
 tokio::spawn(index.run(blocks));
 ```
 
+- Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
+  `S::View: SequenceRead`, serving `ReadView<V>` / `TreeStateService<V>`;
+  zainod picks `DiskEngine`.
 - `TreeStateIndexWriter` runs its own loop over the `zaino_sync::BlockSink`
-  subscription (`NAME` = `"tree_state"`): `run` follows it through `Shutdown`,
-  publishing through a `zaino_sync::Published<ReadView>`. Final blocks (bulk)
-  are held and folded at commit, one commit per `batch_bytes`; once following
-  the tip, each `Finalized { height }` commits everything through `height` as
-  it arrives. `durable_tip()` = the last committed block, for the producer's
-  start and chain check.
-- Fallible only at boot: `open` (`StoreError`) and `new`, which reseeds the
-  running frontiers from disk (`IndexWriterError`). `run` is infallible: it
-  returns at `Shutdown` and panics on a failed commit or an unfoldable block
-  ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- `ReadView` binds the non-finalized tier and the committed snapshot into one publication:
+  subscription (`"tree_state"`): `run` follows it through `Shutdown`,
+  publishing through a `zaino_sync::Published<ReadView<V>>`. Each `Apply`
+  takes the run of blocks already queued behind it (`Subscription::run`, up to
+  `batch_bytes`), folds them as one batch and splits the result back into one
+  `Changes` per block. Final blocks (bulk) are staged in
+  `zaino_persistence::Tiered`, one commit per `batch_bytes`; once following the
+  tip, each `Finalized { height }` commits everything through `height` as it
+  arrives. `durable_tip()` = the last committed block, for the producer's start
+  and chain check.
+- Fallible only at boot: the engine's `open` (`StoreError`) and `new`, which
+  reseeds the running frontiers from the store (`IndexWriterError`). `run` is
+  infallible: it returns at `Shutdown` and panics on a failed commit or an
+  unfoldable block ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
+- `ReadView` binds the held blocks and the committed snapshot into one publication:
   a request loads it once, so the seam between them cannot move under it.
   `subtree_roots(..)` answers from it with no `synced` gate; tree states are
   read only through `TreeStateService` (`treestate_in` / `latest_in` on a pinned
@@ -94,14 +99,17 @@ tokio::spawn(index.run(blocks));
 
 ```text
 <dir>/
-  MANIFEST                   count, tip hash, every file's seal
-  heights.idx                48 B/height: hash, time, three cumulative tree sizes
+  MANIFEST                   committed tip, every table's seal
+  heights.dat                48 B/height: hash, time, three cumulative tree sizes
   sapling/ orchard/ ironwood/
     l00.dat … l31.dat        32 B/node
     subtrees.dat             36 B/entry: root, completing height
 ```
 
-Every file carries page checksums (`zaino_persistence::pages`).
+One `zaino_persistence` store (zainod: `DiskEngine`): `schema(network)` declares the
+100 fixed-width sequence tables (`heights`, then per pool `<pool>/l00` …
+`<pool>/l31` and `<pool>/subtrees`). The engine owns the manifest, checksums,
+crash safety and offline verify; this crate owns the record encodings.
 
 - Retained nodes: level 0 = every leaf, levels 1..31 = even indices only
   (48 B per commitment). That is exactly the set a frontier's ommers come from,
@@ -110,40 +118,41 @@ Every file carries page checksums (`zaino_persistence::pages`).
   reconstruction serving uses.
 - Subtree roots are written by the same fold (an odd-index root never survives
   as an ommer, so it cannot be derived from stored nodes later).
-- Commit: height records, nodes and subtree entries appended (each asserted at
-  its file's end) → every grown file sealed → `MANIFEST`. The durable carry for
-  the next batch is seeded in memory from the chunk just written (no read-back).
-- `TreeStateStore::open(fs, path, network)` opens each file at its seal: bytes
-  past it dropped, a shorter file (`PageError::Lost`) or a bad tail page
-  (`PageError::Tail`) refused, as `zaino_persistence::StoreError`. Nothing else
-  is read; the writer then reseeds its carries from ≤ 33 nodes per pool.
-- `IndexWriterError` = `Store`, `Inconsistent` (stored nodes will not rebuild
-  a frontier) or `Commitment` (a non-canonical note commitment off the wire).
+- One block = one `Changes`: its height record, the nodes whose last leaf it
+  holds and the subtree roots it closes, each asserted at its table's end
+  (slot = position). A commit merges the held blocks' `Changes` into one
+  `Store::commit`, which fsyncs only the tables that grew (~4 of 100 per
+  batch).
+- `new` asserts one `heights` record per committed height, then reseeds its
+  carries from ≤ 33 nodes per pool.
+- `IndexWriterError` = `Inconsistent` (stored nodes will not rebuild a
+  frontier) or `Commitment` (a non-canonical note commitment off the wire).
   `new` returns it at boot; inside `run` the same errors panic as
   `tree_state index: <error>`.
 - Subtrees are the protocol's 2^16-leaf shards (`SUBTREE_LEVEL`, a constant).
-- `committed_files(dir, network)` = every sealed file, for `zainod verify`.
-- `heights.idx` and `subtrees.dat` records are fixed arrays with
+- `schema(network)` = what `zainod verify` passes to
+  `PersistenceEngine::verify` for this directory.
+- `heights` and `subtrees` records are fixed arrays with
   `encode`/`decode` beside their golden-bytes tests (`heights.rs`, `subtrees.rs`).
 
-## Non-finalized tier and reorgs
+## Held blocks and reorgs
 
-Each non-final block folds into an `imbl` `NonFinalizedTrees`. A commit lands
-a contiguous batch starting after `finalized_height` (the last durable height,
-inclusive; `None` = empty), reusing non-finalized folds
-where they exist and folding the rest (bulk sync skips the non-finalized tier
-entirely). A `Reorg` restores the
-applied carry from the durable one: no reverse fold, no disk read. Nothing
-reorg-able is ever fsynced. See
+Blocks above the durable tip are `zaino_persistence::Tiered`'s: staged
+(final, bulk) or applied (tip), keyed exactly as the files, read through the
+same `ReadView`. One carry (a frontier per pool) follows the last block held.
+A `Reorg` drops every applied block and reseeds the carry off the view's tip
+through the same reconstruction a read uses: no reverse fold, no hashing.
+Nothing reorg-able is ever fsynced. See
 [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
 
 The fold (Merkle hashing) runs under `zaino_sync::compute`, reading note
-commitments straight off the sink's shared `Arc<Block>`s; the write runs under
+commitments straight off the sink's shared `Arc<Block>`s; the commit runs under
 `zaino_sync::blocking`. Both hold their state in a `zaino_sync::Offloaded`; a
 panic in either re-raises on the caller (and aborts zainod).
 
-- A batch of blocks folds level by level: each tree level's pairs hash across
-  every core (rayon), and the three pools fold concurrently.
-- The output is a pure function of (start size, leaves). Any split into batches,
-  per-block `apply` included, retains the same nodes and subtree roots
+- A run of blocks folds level by level: each tree level's pairs hash across
+  every core (rayon), and the three pools fold concurrently. A node lands in
+  the `Changes` of the block holding its last leaf.
+- The output is a pure function of (start size, leaves). Any split into batches
+  retains the same nodes and subtree roots, each under the same block
   (`fold::tests` holds it against a naive tree).

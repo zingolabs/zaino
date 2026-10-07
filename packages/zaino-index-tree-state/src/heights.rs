@@ -1,8 +1,8 @@
-//! `heights.idx`: 48 B per height (hash, time, the three cumulative tree sizes)
+//! `heights`: 48 B per height (hash, time, the three cumulative tree sizes)
 
 use zaino_primitives::types::{BlockHash, BlockTime, PerPool, TreeSize, TreeSizes};
 
-/// Fixed stride (offset = height × RECORD)
+/// Bytes per record (slot = height)
 pub(crate) const RECORD: usize = 48;
 
 /// Block identity + tree sizes after it
@@ -14,7 +14,7 @@ pub(crate) struct TreeStateHeight {
 }
 
 impl TreeStateHeight {
-    /// Sizes as positions (the node files' arithmetic)
+    /// Sizes as positions (the node sequences' arithmetic)
     pub(crate) fn positions(&self) -> PerPool<u64> {
         self.sizes.map(u64::from)
     }

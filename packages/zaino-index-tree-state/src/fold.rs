@@ -4,31 +4,40 @@
 //!   `MerkleHashOrchard`)
 //! - hashing = `Frontier::append_batch_visiting`: one `Hashable::combine_pairs` per level (the node
 //!   types split wide levels across cores)
-//! - folds into the non-finalized tier only (no file access)
+//! - folds into a [`Folded`] (no file access; the writer turns it into the block's `Changes`)
+
+use std::collections::BTreeMap;
 
 use incrementalmerkletree::{
     frontier::{Frontier, NonEmptyFrontier},
     Address, Hashable, Level, Position, Source,
 };
+use zaino_persistence::SequenceRead;
 use zaino_primitives::types::{Height, TreeRoot};
 
 use zcash_primitives::merkle_tree::HashSer;
 
 use crate::{
-    nodes::{slot, NodeView, MERKLE_DEPTH, NODE},
+    nodes::{slot, NodeView, Slot, MERKLE_DEPTH, NODE},
     subtrees::SubtreeEntry,
-    view::NonFinalizedPool,
 };
 
 /// Level whose completion = one `GetSubtreeRoots` entry (2^16 leaves, the protocol's shard)
 pub(crate) const SUBTREE_LEVEL: u8 = 16;
 
-/// Frontier of `nodes`' tree, non-finalized nodes then durable
+/// One pool's fold output for one block: nodes retained, subtrees completed (both in append order)
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Folded {
+    pub(crate) nodes: BTreeMap<Slot, [u8; NODE]>,
+    pub(crate) subtrees: BTreeMap<u64, SubtreeEntry>,
+}
+
+/// Frontier of `nodes`' tree
 ///
 /// - no hashing: every ommer = a retained left sibling, leaf = `node(0, position)`
 /// - `None` = a node missing or non-canonical (the stored tree is corrupt)
-pub(crate) fn frontier_at<H: Hashable + HashSer + Clone>(
-    nodes: NodeView<'_>,
+pub(crate) fn frontier_at<H: Hashable + HashSer + Clone, V: SequenceRead>(
+    nodes: NodeView<'_, V>,
 ) -> Option<Frontier<H, MERKLE_DEPTH>> {
     let Some(last) = nodes.size.checked_sub(1) else {
         return Some(Frontier::empty());
@@ -71,40 +80,41 @@ pub(crate) struct PoolFold<H> {
 impl<H: Hashable + HashSer + Clone> PoolFold<H> {
     /// Carry at `nodes`' size, rebuilt through [`frontier_at`] (read, restart and reorg all land
     /// here: a reconstruction bug cannot hide in the rare path)
-    pub(crate) fn seed(nodes: NodeView<'_>) -> Option<Self> {
-        Some(Self { frontier: frontier_at::<H>(nodes)?, subtree_level: Level::from(SUBTREE_LEVEL) })
+    pub(crate) fn seed<V: SequenceRead>(nodes: NodeView<'_, V>) -> Option<Self> {
+        let frontier = frontier_at::<H, V>(nodes)?;
+        Some(Self { frontier, subtree_level: Level::from(SUBTREE_LEVEL) })
     }
 
     pub(crate) fn size(&self) -> u64 {
         self.frontier.tree_size()
     }
 
-    /// Appends `leaves` into `out`: every node the grown tree retains, every subtree it completes
+    /// Appends `leaves` (every block of a batch at once: one `combine_pairs` per level) into
+    /// `out`, one [`Folded`] per block: each node the grown tree retains and each subtree it
+    /// completes, under the block holding its last leaf
     ///
-    /// - `blocks` = `(height, leaves through that block)` ascending (a subtree root names the
-    ///   block holding its last leaf)
+    /// - `blocks` = `(height, leaves through that block)` ascending, as long as `out`
     /// - output = pure function of (start size, leaves): any split into batches retains the same
     /// - infallible: consensus keeps every pool below 2^32 leaves (a depth-32 tree never fills)
     pub(crate) fn append_batch(
         &mut self,
         leaves: Vec<H>,
         blocks: &[(Height, usize)],
-        out: &mut NonFinalizedPool,
+        out: &mut [Folded],
     ) {
+        assert_eq!(blocks.len(), out.len(), "one fold output per block");
         let span = Span { start: self.size(), blocks };
         let subtree_level = self.subtree_level;
         let appended = self.frontier.append_batch_visiting(leaves, |first, nodes| {
             for (index, node) in (first.index()..).zip(nodes) {
                 let addr = Address::from_parts(first.level(), index);
+                let block = span.block_of(u64::from(addr.max_position()));
                 if let Some(slot) = slot(addr) {
-                    out.nodes.insert(slot, encode(node));
+                    out[block].nodes.insert(slot, encode(node));
                 }
                 if addr.level() == subtree_level {
-                    let entry = SubtreeEntry {
-                        root: TreeRoot::from(encode(node)),
-                        end_height: span.height_of(u64::from(addr.max_position())),
-                    };
-                    out.subtrees.insert(index, entry);
+                    let (root, end_height) = (TreeRoot::from(encode(node)), blocks[block].0);
+                    out[block].subtrees.insert(index, SubtreeEntry { root, end_height });
                 }
             }
         });
@@ -119,22 +129,25 @@ struct Span<'a> {
 }
 
 impl Span<'_> {
-    /// Height of the block holding tree position `leaf` (visited nodes end inside the batch)
-    fn height_of(&self, leaf: u64) -> Height {
+    /// Index into `blocks` of the block holding tree position `leaf` (visited nodes end inside
+    /// the batch)
+    fn block_of(&self, leaf: u64) -> usize {
         let in_batch = usize::try_from(leaf - self.start).expect("batch fits usize");
-        let block = self.blocks.partition_point(|&(_, through)| through <= in_batch);
-        self.blocks[block].0
+        self.blocks.partition_point(|&(_, through)| through <= in_batch)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{num::NonZeroUsize, path::Path};
 
     use proptest::prelude::*;
+    use zaino_persistence::{fs::SimFs, Changes, DiskEngine, PersistenceEngine, Tiered};
+    use zaino_primitives::types::{BlockHash, BlockRef, ShieldedPool};
+    use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::nodes::{retained_nodes, NonFinalizedNodes, PoolNodes};
+    use crate::{level_table, nodes::retained_nodes, schema};
 
     /// Cheap, order- and level-sensitive stand-in hash (trees past 2^16 leaves in milliseconds)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,8 +187,9 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
-        /// Random batches of random blocks: retained nodes + subtree roots = the naive tree's, the
-        /// frontier = the library's leaf-by-leaf one, whatever the split
+        /// Random batches of random blocks: retained nodes + subtree roots = the naive tree's,
+        /// each under the block holding its last leaf, the frontier = the library's leaf-by-leaf
+        /// one, whatever the split
         #[test]
         fn any_split_into_batches_retains_the_naive_trees_nodes_and_frontier(
             blocks in proptest::collection::vec(0usize..40, 1..60),
@@ -189,7 +203,7 @@ mod tests {
                 frontier: Frontier::empty(),
                 subtree_level: Level::from(subtree_level),
             };
-            let mut out = NonFinalizedPool::default();
+            let mut out = vec![Folded::default(); blocks.len()];
             let (mut next_block, mut next_leaf) = (0usize, 0u64);
             for batch in batches.iter().cycle() {
                 if next_block == blocks.len() {
@@ -203,7 +217,7 @@ mod tests {
                     next_leaf += *count as u64;
                     ends.push((height(next_block + offset), leaves.len()));
                 }
-                fold.append_batch(leaves, &ends, &mut out);
+                fold.append_batch(leaves, &ends, &mut out[next_block..next_block + these.len()]);
                 next_block += these.len();
             }
 
@@ -215,19 +229,20 @@ mod tests {
 
             let block_of_leaf: Vec<usize> =
                 blocks.iter().enumerate().flat_map(|(b, &c)| std::iter::repeat_n(b, c)).collect();
-            let mut expected_nodes = BTreeMap::new();
-            let mut expected_subtrees = BTreeMap::new();
+            let mut expected_nodes = vec![BTreeMap::new(); blocks.len()];
+            let mut expected_subtrees = vec![BTreeMap::new(); blocks.len()];
             let mut level_nodes: Vec<Mix> = (0..total as u64).map(leaf).collect();
             for level in 0..MERKLE_DEPTH {
                 let retained = retained_nodes(level, total as u64);
                 for (index, node) in (0u64..).zip(&level_nodes) {
+                    let last = usize::try_from(((index + 1) << level) - 1).expect("leaf");
+                    let block = block_of_leaf[last];
                     if level == 0 || (index % 2 == 0 && index / 2 < retained) {
                         let slot = if level == 0 { index } else { index / 2 };
-                        expected_nodes.insert((level, slot), encode(node));
+                        expected_nodes[block].insert((level, slot), encode(node));
                     }
                     if level == subtree_level {
-                        let last = usize::try_from(((index + 1) << level) - 1).expect("leaf");
-                        expected_subtrees.insert(index, (encode(node), height(block_of_leaf[last])));
+                        expected_subtrees[block].insert(index, (encode(node), height(block)));
                     }
                 }
                 level_nodes = level_nodes
@@ -235,21 +250,31 @@ mod tests {
                     .map(|pair| Mix::combine(Level::from(level), &pair[0], &pair[1]))
                     .collect();
             }
-            let folded: BTreeMap<_, _> = out.nodes.iter().map(|(k, v)| (*k, *v)).collect();
-            prop_assert_eq!(folded, expected_nodes, "retained nodes");
-            let subtrees: BTreeMap<_, _> = out
-                .subtrees
+            let folded: Vec<_> = out.iter().map(|block| block.nodes.clone()).collect();
+            prop_assert_eq!(folded, expected_nodes, "retained nodes, per block");
+            let subtrees: Vec<BTreeMap<_, _>> = out
                 .iter()
-                .map(|(i, e)| (*i, (<[u8; 32]>::from(e.root), e.end_height)))
+                .map(|block| {
+                    let entries = block.subtrees.iter();
+                    entries.map(|(i, e)| (*i, (<[u8; 32]>::from(e.root), e.end_height))).collect()
+                })
                 .collect();
-            prop_assert_eq!(subtrees, expected_subtrees, "subtree roots");
+            prop_assert_eq!(subtrees, expected_subtrees, "subtree roots, per block");
 
-            // the store's reconstruction reads back the same frontier from the retained nodes
-            let non_finalized: NonFinalizedNodes = out.nodes.clone();
-            let durable = PoolNodes::default();
-            let nodes =
-                NodeView { non_finalized: &non_finalized, durable: &durable, size: total as u64 };
-            prop_assert_eq!(frontier_at::<Mix>(nodes), Some(library));
+            // the retained nodes, held as one block's appends, read back as the same frontier
+            let schema = schema(NetworkType::Regtest);
+            let store = DiskEngine::new(SimFs::new()).open(Path::new("/ts"), &schema);
+            let mut tiered = Tiered::new(store.expect("empty store"), NonZeroUsize::MIN);
+            let tip = BlockRef { hash: BlockHash::from([0; 32]), height: Height::GENESIS };
+            let mut changes = Changes::new(tip, tiered.schema());
+            let every: BTreeMap<_, _> = out.iter().flat_map(|block| block.nodes.clone()).collect();
+            for (&(level, _), node) in &every {
+                changes.append(level_table(ShieldedPool::Sapling, level), node);
+            }
+            tiered.apply(changes);
+            let view = tiered.view();
+            let nodes = NodeView { view: &view, pool: ShieldedPool::Sapling, size: total as u64 };
+            prop_assert_eq!(frontier_at::<Mix, _>(nodes), Some(library));
         }
     }
 }

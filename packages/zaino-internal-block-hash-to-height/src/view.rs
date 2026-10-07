@@ -1,43 +1,32 @@
-//! Non-finalized map + committed segments, pinned together once per request
+//! Held blocks + committed store, pinned together once per request
 
-use std::sync::Arc;
-
-use imbl::HashMap;
-use zaino_persistence::lsm;
+use zaino_persistence::{MapRead, TieredView, View};
 use zaino_primitives::types::Height;
 
 use crate::{
-    by_hash::{HashKey, HashRow},
+    by_hash::{decode_height, BY_HASH, HEIGHT},
     HASH,
 };
 
 #[derive(Clone)]
-pub struct ReadView {
-    non_finalized: HashMap<[u8; HASH], Height>,
-    segments: Arc<lsm::Snapshot<HashKey>>,
+pub struct ReadView<V> {
+    view: TieredView<V>,
 }
 
-impl ReadView {
-    pub(crate) fn new(
-        non_finalized: HashMap<[u8; HASH], Height>,
-        segments: Arc<lsm::Snapshot<HashKey>>,
-    ) -> Self {
-        Self { non_finalized, segments }
+impl<V: MapRead> ReadView<V> {
+    pub(crate) fn new(view: TieredView<V>) -> Self {
+        Self { view }
     }
 
     pub(crate) fn height_of_hash(&self, hash: &[u8; HASH]) -> Option<Height> {
-        if let Some(height) = self.non_finalized.get(hash) {
-            return Some(*height);
-        }
-        let row = self.segments.get::<HashRow>(&HashKey(*hash))?;
-        Some(Height::try_from(row.height).expect("committed heights were valid when written"))
+        let value = self.view.value(BY_HASH, hash)?;
+        let bytes: &[u8; HEIGHT] = value[..].try_into().expect("by_hash values: schema width");
+        Some(decode_height(bytes).expect("by_hash heights: valid when committed"))
     }
 }
 
-impl std::fmt::Debug for ReadView {
+impl<V: View> std::fmt::Debug for ReadView<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ReadView")
-            .field("non_finalized", &self.non_finalized.len())
-            .finish_non_exhaustive()
+        f.debug_struct("ReadView").field("view", &self.view).finish()
     }
 }

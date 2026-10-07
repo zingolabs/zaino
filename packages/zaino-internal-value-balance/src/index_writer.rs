@@ -1,38 +1,25 @@
 //! value_balance index: each delivered block's outputs recorded, its inputs resolved into its fees,
 //! kept by its own loop
 //!
-//! - A run of queued blocks: outputs into `pending`, fees for the whole run resolved in one probe
-//!   of durable storage
+//! - A run of queued blocks: each one's outputs held (staged or applied), then the whole run's
+//!   fees resolved in one probe of every tier
 //! - Every step republished into the [`FeeSink`], 1:1 (replayed heights too: an index behind this
 //!   one still pairs them)
-//! - A commit moves outputs through a height from `pending` to the store's segments
+//! - one block = its outputs' rows; storage tiers = `zaino_persistence::Tiered`
 
-use std::{
-    collections::{HashMap, VecDeque},
-    num::NonZeroUsize,
-    path::Path,
-    sync::Arc,
-};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{
-    fs::Fs,
-    lsm::{LsmStore, SegmentSet, Snapshot},
-    StoreError,
-};
+use zaino_persistence::{Changes, MapRead, Store, Tiered, TieredView};
 use zaino_primitives::types::{
     Block, BlockFees, BlockRef, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId,
     Zatoshis,
 };
-use zaino_sync::{blocking, FeeSink, Offloaded, Published, Step, Subscription, Weight};
-use zcash_protocol::consensus::NetworkType;
+use zaino_sync::{blocking, Applied, FeeSink, Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{key::OutputRow, pending::Pending, ValueBalanceIndex};
+use crate::{decode_value, encode_value, OUTPUTS, VALUE};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexWriterError {
-    #[error(transparent)]
-    Store(#[from] StoreError),
-
     /// Spent outpoint this index never recorded (the chain is indexed from genesis: a bug or a
     /// foreign directory, never a gap to tolerate)
     #[error(
@@ -49,56 +36,27 @@ pub enum IndexWriterError {
 
 /// Records every transparent output and derives one [`BlockFees`] per block
 ///
-/// - `outputs` = the durable segment set (live: a pin = the segments as of the last commit)
-/// - `applied` = last applied height, inclusive (`None` = none)
-/// - `unwritten` = blocks whose outputs sit in `pending`, oldest first; `final_through` = the
-///   highest final one (bulk), `bulk_bytes` = their [`Weight`]
 /// - `batch_bytes` = one run's bytes and one bulk commit's
-pub struct ValueBalanceIndexWriter {
-    outputs: SegmentSet<OutPoint>,
-    store: Offloaded<LsmStore<ValueBalanceIndex>>,
-    durable: Option<BlockRef>,
-    applied: Option<Height>,
-    pending: Pending,
-    unwritten: VecDeque<BlockRef>,
-    final_through: Option<Height>,
-    bulk_bytes: usize,
+pub struct ValueBalanceIndexWriter<S: Store> {
+    tiered: Offloaded<Tiered<S>>,
     batch_bytes: NonZeroUsize,
     published: Published<()>,
 }
 
-impl ValueBalanceIndexWriter {
-    pub const NAME: &'static str = "value_balance";
+const NAME: &str = zaino_persistence::IndexKind::ValueBalance.name();
 
-    /// Opens `path` at its committed state (every listed segment proven, every other one removed)
-    ///
-    /// - `batch_bytes` = final blocks per bulk write (one fsync), and one run's bytes
-    pub fn open(
-        fs: Arc<dyn Fs>,
-        path: &Path,
-        network: NetworkType,
-        batch_bytes: NonZeroUsize,
-    ) -> Result<Self, IndexWriterError> {
-        let store = LsmStore::open(fs, path, network)?;
-        let durable = store.committed().tip;
-        let applied = durable.map(|tip| tip.height);
-        Ok(Self {
-            outputs: store.sets(),
-            store: Offloaded::new(store),
-            durable,
-            applied,
-            pending: Pending::default(),
-            unwritten: VecDeque::new(),
-            final_through: None,
-            bulk_bytes: 0,
-            batch_bytes,
-            published: Published::new((), applied),
-        })
+impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
+    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = final blocks per
+    /// bulk commit (one fsync), and one run's bytes
+    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
+        let tiered = Tiered::new(store, batch_bytes);
+        let published = Published::new((), tiered.durable_tip());
+        Self { tiered: Offloaded::new(tiered), batch_bytes, published }
     }
 
     /// Last committed block (the producer checks the chain it streams links onto it)
     pub fn durable_tip(&self) -> Option<BlockRef> {
-        self.durable
+        self.tiered.get().durable_tip()
     }
 
     /// Tips and gate, for metrics and status (taken before [`run`](Self::run))
@@ -110,176 +68,131 @@ impl ValueBalanceIndexWriter {
     ///
     /// - a failure panics (dropped `fees` = no `Shutdown`: compact-block panics too)
     pub async fn run(mut self, mut blocks: Subscription<Block>, fees: FeeSink) {
-        // non-`Apply` step popped while gathering a run (handled next, keeping step order)
-        let mut held: Option<Step<Block>> = None;
         loop {
-            let step = match held.take() {
-                Some(step) => step,
-                None => blocks.next().await,
-            };
-            match step {
+            match blocks.next().await {
                 Step::Apply { height, finalized, data } => {
-                    // run = this block + every `Apply` already queued, to one batch's bytes
-                    let mut bytes = data.weight();
-                    let mut run = vec![(height, finalized, data)];
-                    while bytes < self.batch_bytes.get() {
-                        match blocks.try_next() {
-                            Some(Step::Apply { height, finalized, data }) => {
-                                bytes = bytes.saturating_add(data.weight());
-                                run.push((height, finalized, data));
-                            }
-                            other => {
-                                held = other;
-                                break;
-                            }
-                        }
-                    }
-                    // outputs above the durable tip recorded first: a later block may spend an
-                    // earlier one's (at or below = a replay for an index behind: on disk already)
-                    // at the run's start (a commit inside the run moves `self.durable` past it)
-                    let replayed_through = self.durable.map(|tip| tip.height);
-                    for (height, _, block) in &run {
-                        if Some(*height) > replayed_through {
-                            self.pending.insert(block);
-                        }
-                    }
-                    // the whole run's fees in one probe (cold page faults overlap)
-                    let run_blocks: Vec<Arc<Block>> =
-                        run.iter().map(|(_, _, block)| Arc::clone(block)).collect();
-                    let (pending, outputs) = (self.pending.clone(), self.outputs.pin());
-                    let run_fees = blocking(move || resolve(&run_blocks, &pending, &outputs))
-                        .await
-                        .unwrap_or_else(|error| panic!("{} index: {error}", Self::NAME));
-
-                    for ((height, finalized, block), block_fees) in run.into_iter().zip(run_fees) {
-                        let data = Arc::new(block_fees);
-                        fees.send(Step::Apply { height, finalized, data }).await;
-                        let at = BlockRef { hash: block.header().hash, height };
-                        if Some(height) <= replayed_through {
-                            continue;
-                        }
-                        if finalized {
-                            assert!(
-                                self.applied <= self.durable.map(|tip| tip.height),
-                                "value_balance: final block above non-finalized"
-                            );
-                            self.unwritten.push_back(at);
-                            self.final_through = Some(height);
-                            self.bulk_bytes += block.weight();
-                            if self.bulk_bytes >= self.batch_bytes.get() {
-                                self.commit(height).await;
-                            }
-                        } else {
-                            // bulk → tip: what bulk staged commits before the first apply
-                            if let Some(through) = self.final_through {
-                                self.commit(through).await;
-                            }
-                            let next = self.applied.map_or(Height::GENESIS, Height::next);
-                            assert_eq!(
-                                height, next,
-                                "value_balance: blocks must arrive contiguously"
-                            );
-                            self.applied = Some(height);
-                            self.unwritten.push_back(at);
-                        }
-                    }
+                    let run = blocks.run((height, finalized, data), self.batch_bytes);
+                    self.apply_run(run, &fees).await
                 }
                 Step::Finalized { height } => {
                     fees.send(Step::Finalized { height }).await;
-                    self.commit(height).await;
+                    self.finalize(height).await
                 }
-                Step::Reorg => {
-                    assert!(
-                        self.final_through.is_none(),
-                        "value_balance: reorg with finals staged"
-                    );
-                    // back to the durable tip (segments untouched: commits are final-only)
-                    self.pending = Pending::default();
-                    self.unwritten.clear();
-                    self.applied = self.durable.map(|tip| tip.height);
-                    self.publish();
-                    self.published.reorged();
-                    fees.send(Step::Reorg).await;
-                }
-                Step::Shutdown => {
-                    if let Some(through) = self.final_through {
-                        self.commit(through).await;
-                    }
-                    fees.shutdown();
-                    return;
-                }
+                Step::Reorg => self.reorg(&fees).await,
+                Step::Shutdown => return self.shutdown(fees).await,
             }
-            self.publish();
         }
     }
 
-    /// Outputs of every block through `through` → disk, then they leave `pending` (segments answer
-    /// for them)
-    async fn commit(&mut self, through: Height) {
-        let mut next = self.durable.map_or(Height::GENESIS, |tip| tip.height.next());
-        let mut tip = None;
-        while self.unwritten.front().is_some_and(|block| block.height <= through) {
-            let block = self.unwritten.pop_front().expect("front checked");
-            assert_eq!(
-                block.height, next,
-                "value_balance: final blocks not contiguous from durable"
-            );
-            next = next.next();
-            tip = Some(block);
+    /// Each block above `replayed_through` held (a later block may spend an earlier one's), then
+    /// every block's fees out (replays too), the whole run resolved in one probe (cold page
+    /// faults overlap)
+    async fn apply_run(&mut self, run: Vec<Applied<Block>>, fees: &FeeSink) {
+        // at or below = replay for an index behind this one: on disk already (taken before the
+        // run: a commit inside it moves the durable tip)
+        let replayed_through = self.durable_tip().map(|tip| tip.height);
+        for (height, finalized, block) in &run {
+            if Some(*height) > replayed_through {
+                self.hold(*height, *finalized, block).await;
+            }
         }
-        let tip =
-            tip.unwrap_or_else(|| panic!("value_balance: nothing to commit through {through}"));
-        assert_eq!(tip.height, through, "value_balance: final blocks short of {through}");
+        let blocks: Vec<Arc<Block>> = run.iter().map(|(_, _, block)| Arc::clone(block)).collect();
+        let view = self.tiered.get().view();
+        let run_fees = blocking(move || resolve(&blocks, &view))
+            .await
+            .unwrap_or_else(|error| panic!("{NAME} index: {error}"));
+        for ((height, finalized, _), block_fees) in run.into_iter().zip(run_fees) {
+            fees.send(Step::Apply { height, finalized, data: Arc::new(block_fees) }).await;
+        }
+    }
 
-        let rows = self.pending.rows_through(Some(through));
-        let written: Vec<OutPoint> = rows.iter().map(|row| row.key).collect();
-        let committed = self.store.blocking(move |store| store.commit(rows, tip)).await;
-        let store = self.store.get();
-        if let Err(error) = committed {
-            error.commit_failed(Self::NAME, store.path());
+    /// Final block (bulk sync) staged for the next batch commit; a tip block applied above
+    /// durable (staged blocks written first)
+    async fn hold(&mut self, height: Height, finalized: bool, block: &Block) {
+        let changes = self.changes(block);
+        if finalized {
+            let full = self.tiered.get_mut().stage(changes, block.weight());
+            self.published.merged(height);
+            if full {
+                self.finalize(height).await;
+            }
+            return;
         }
-        self.durable = store.committed().tip;
-        self.pending.remove(&written);
-        if self.final_through <= Some(through) {
-            self.final_through = None;
-            self.bulk_bytes = 0;
+        self.finalize_staged().await;
+        self.tiered.get_mut().apply(changes);
+        self.publish();
+    }
+
+    /// Back to the durable tip (store untouched: commits final-only)
+    async fn reorg(&mut self, fees: &FeeSink) {
+        self.tiered.get_mut().reorg();
+        self.publish();
+        self.published.reorged();
+        fees.send(Step::Reorg).await;
+    }
+
+    async fn shutdown(mut self, fees: FeeSink) {
+        self.finalize_staged().await;
+        fees.shutdown();
+    }
+
+    /// Staged bulk → disk (before a tip block builds on it, and at `Shutdown`)
+    async fn finalize_staged(&mut self) {
+        if let Some(staged) = self.tiered.get().staged() {
+            self.finalize(staged.height).await;
         }
-        let durable = self.durable.map(|tip| tip.height);
-        self.applied = self.applied.max(durable);
+    }
+
+    /// Every held block through `through` → disk
+    async fn finalize(&mut self, through: Height) {
+        self.tiered.blocking(move |tiered| tiered.finalize(through)).await;
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
-        self.published.durable(durable);
+        self.published.durable(self.durable_tip().map(|tip| tip.height));
+    }
+
+    /// `block`'s outputs, one row each
+    fn changes(&self, block: &Block) -> Changes {
+        let header = block.header();
+        let tip = BlockRef { hash: header.hash, height: header.height };
+        let mut changes = Changes::new(tip, self.tiered.get().schema());
+        for tx in block.transactions() {
+            for (vout, output) in (0..).zip(&tx.transparent.outputs) {
+                let key = OutPoint { txid: tx.txid, vout }.encode();
+                changes.insert(OUTPUTS, &key, &encode_value(output.value));
+            }
+        }
+        changes
     }
 
     fn publish(&self) {
-        self.published.view((), self.applied);
+        self.published.view((), self.tiered.get().applied());
     }
 }
 
-/// Each of `blocks`' fees, every prevout found in `pending` (the whole run's outputs
-/// included) or `durable`
+/// Each of `blocks`' fees, every prevout found in `view` (the whole run's outputs held)
 ///
-/// - durable prevouts of the whole run resolved in one `get_many` (sorted keys, probed in
-///   parallel: cold page faults overlap instead of queueing one block behind another)
-/// - `pending` holding later blocks' outputs is harmless: no block spends an output created
-///   after it
-fn resolve(
+/// - the whole run's prevouts in one `values` call (cold page faults overlap instead of queueing
+///   one block behind another)
+/// - later blocks' outputs held too: harmless (no block spends an output created after it)
+fn resolve<V: MapRead>(
     blocks: &[Arc<Block>],
-    pending: &Pending,
-    durable: &Snapshot<OutPoint>,
+    view: &TieredView<V>,
 ) -> Result<Vec<BlockFees>, IndexWriterError> {
-    let prevouts =
-        blocks.iter().flat_map(|block| block.transactions()).flat_map(|tx| &tx.transparent.inputs);
+    let prevouts: Vec<OutPoint> = blocks
+        .iter()
+        .flat_map(|block| block.transactions())
+        .flat_map(|tx| tx.transparent.inputs.iter().copied())
+        .collect();
+    let keys: Vec<[u8; OutPoint::LEN]> = prevouts.iter().map(OutPoint::encode).collect();
+    let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
     let mut values: HashMap<OutPoint, Zatoshis> = HashMap::new();
-    let mut unheld = Vec::new();
-    for prevout in prevouts {
-        match pending.value(prevout) {
-            Some(value) => _ = values.insert(*prevout, value),
-            None => unheld.push(*prevout),
-        }
+    for (key, found) in prevouts.iter().zip(view.values(OUTPUTS, &keys)) {
+        let Some(found) = found else { continue };
+        let bytes: &[u8; VALUE] = found[..].try_into().expect("outputs values: schema width");
+        let value = decode_value(bytes).expect("outputs values: in supply when committed");
+        values.insert(*key, value);
     }
-    let rows = durable.get_many::<OutputRow>(&unheld);
-    values.extend(unheld.iter().zip(rows).filter_map(|(key, row)| Some((*key, row?.value))));
 
     blocks
         .iter()
@@ -333,43 +246,31 @@ fn fee(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::Path, time::Duration};
 
-    use zaino_persistence::fs::SimFs;
+    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, PersistenceEngine};
+    use zaino_primitives::testing::{linked, Chain};
     use zaino_primitives::types::{
-        BlockHeader, OrchardData, SaplingData, Script, SignedZatoshis, SproutData, Transaction,
-        TransparentData, TransparentOutput,
+        OrchardData, SaplingData, Script, SignedZatoshis, SproutData, Transaction, TransparentData,
+        TransparentOutput,
     };
     use zaino_sync::BlockSink;
+    use zcash_protocol::consensus::NetworkType;
 
     use super::*;
+    use crate::schema;
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
     }
 
+    /// `/vb` on `fs` at its committed state
+    fn open(fs: Arc<SimFs>, batch: NonZeroUsize) -> ValueBalanceIndexWriter<DiskStore> {
+        let store = DiskEngine::new(fs).open(Path::new("/vb"), &schema(NetworkType::Regtest));
+        ValueBalanceIndexWriter::new(store.expect("open"), batch)
+    }
+
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
-
-    /// `[fork, height]`-tagged hash (a fork only differs where it is named)
-    fn hash(height: u32, fork: u8) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[0] = fork;
-        bytes[1..5].copy_from_slice(&height.to_be_bytes());
-        bytes
-    }
-
-    /// Block `height` on `fork`, linked onto `parent`'s block at `height - 1`
-    fn block(height: u32, fork: u8, parent: u8, txs: Vec<Transaction>) -> Arc<Block> {
-        Arc::new(Block::new(
-            BlockHeader::for_tests(
-                height,
-                hash(height, fork),
-                hash(height.wrapping_sub(1), parent),
-                1_700_000_000 + height,
-            ),
-            txs,
-        ))
-    }
 
     /// `(txid tag, spends, outputs, [sprout, sapling, orchard, ironwood] balances)`
     fn tx(tag: u8, spends: &[(u8, u32)], outputs: &[u64], shielded: [i64; 4]) -> Transaction {
@@ -429,29 +330,22 @@ mod tests {
     /// it resolves the next block's fees against the outputs it recovered and commits it
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_committed_prefix_whose_outputs_still_resolve() {
-        let path = Path::new("/vb");
         // block h spends an output of block h - 1 (and 3 spends one of 1): each fee needs a
         // recovered output
-        let chain = [
-            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
-            block(1, 0, 0, vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])]),
-            block(2, 0, 0, vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])]),
-            block(3, 0, 0, vec![coinbase(0x13, 50_000), tx(0x22, &[(0x11, 0)], &[40_000], [0; 4])]),
-            block(4, 0, 0, vec![coinbase(0x14, 50_000), tx(0x23, &[(0x21, 0)], &[70_000], [0; 4])]),
-        ];
+        let chain = linked(vec![
+            vec![coinbase(0x10, 100_000)],
+            vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])],
+            vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])],
+            vec![coinbase(0x13, 50_000), tx(0x22, &[(0x11, 0)], &[40_000], [0; 4])],
+            vec![coinbase(0x14, 50_000), tx(0x23, &[(0x21, 0)], &[70_000], [0; 4])],
+        ]);
         let paid = vec![None, Some(10_000)];
         let expected = [vec![None], paid.clone(), paid.clone(), paid.clone(), paid];
         let within = Duration::from_secs(5);
 
         // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
         let fs = SimFs::recording();
-        let index = ValueBalanceIndexWriter::open(
-            fs.clone(),
-            path,
-            NetworkType::Regtest,
-            NonZeroUsize::MIN,
-        )
-        .expect("open");
+        let index = open(fs.clone(), NonZeroUsize::MIN);
         let mut durable = index.published().subscribe_finalized();
         let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
@@ -479,8 +373,7 @@ mod tests {
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let crashed = &state.label;
-            let index = ValueBalanceIndexWriter::open(state.fs, path, NetworkType::Regtest, QUEUE)
-                .unwrap_or_else(|error| panic!("{crashed}: {error}"));
+            let index = open(state.fs, QUEUE);
             let tip = index.durable_tip().map(|tip| tip.height);
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
             assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
@@ -511,26 +404,22 @@ mod tests {
         }
     }
 
-    /// Bulk sync whose commit lands inside a run: 0 alone (its bytes carried, under the batch),
+    /// Bulk sync whose commit lands inside a run: 0 alone (its bytes carried, under the batch, its
+    /// height published as merged),
     /// then 1 to 3 queued as one run whose batch fills at 2. 3 is still final after that commit,
     /// staged and committed at `Shutdown`, and every block's fees go out in order
     #[tokio::test]
     async fn a_commit_inside_a_run_keeps_the_rest_of_the_run_final() {
-        let chain = [
-            block(0, 0, 0, vec![coinbase(0x10, 100_000)]),
-            block(1, 0, 0, vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])]),
-            block(2, 0, 0, vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])]),
-            block(3, 0, 0, vec![coinbase(0x13, 50_000), tx(0x22, &[(0x21, 0)], &[70_000], [0; 4])]),
-        ];
+        let chain = linked(vec![
+            vec![coinbase(0x10, 100_000)],
+            vec![coinbase(0x11, 50_000), tx(0x20, &[(0x10, 0)], &[90_000], [0; 4])],
+            vec![coinbase(0x12, 50_000), tx(0x21, &[(0x20, 0)], &[80_000], [0; 4])],
+            vec![coinbase(0x13, 50_000), tx(0x22, &[(0x21, 0)], &[70_000], [0; 4])],
+        ]);
         let batch = chain[..3].iter().map(|block| block.weight()).sum::<usize>();
-        let index = ValueBalanceIndexWriter::open(
-            SimFs::new(),
-            Path::new("/vb"),
-            NetworkType::Regtest,
-            NonZeroUsize::new(batch).expect("blocks weigh something"),
-        )
-        .expect("open");
+        let index = open(SimFs::new(), NonZeroUsize::new(batch).expect("blocks weigh something"));
         let durable = index.published().subscribe_finalized();
+        let mut merged = index.published().subscribe_merged();
         let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
         let blocks = block_sink.subscribe("value_balance", QUEUE);
@@ -539,6 +428,9 @@ mod tests {
         let first = Arc::clone(&chain[0]);
         block_sink.send(Step::Apply { height: h(0), finalized: true, data: first }).await;
         assert_eq!(label(&consumer.next().await), "A0f", "0 handled as a run of its own");
+        let held = merged.wait_for(|at| *at == Some(h(0)));
+        let held = tokio::time::timeout(Duration::from_secs(5), held).await;
+        held.expect("0 merged for the next bulk commit").expect("index alive");
         assert_eq!(*durable.borrow(), None, "0's bytes under the batch: carried, not committed");
         for block in &chain[1..] {
             let (height, data) = (block.header().height, Arc::clone(block));
@@ -557,6 +449,7 @@ mod tests {
         }
         assert_eq!(steps, ["A1f", "A2f", "A3f", "S"]);
         assert_eq!(*durable.borrow(), Some(h(3)), "2 committed mid-run, 3 at shutdown");
+        assert_eq!(*merged.borrow(), None, "nothing held once a commit covers it");
     }
 
     /// Tip 4 (0 to 2 final, both inclusive; 3, 4 non-finalized): every prevout resolves wherever
@@ -575,28 +468,28 @@ mod tests {
     #[rustfmt::skip]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_a_replay_republishes_them() {
         //      tx(tag,  spends (tag, vout),      outputs,           shielded balances
-        let chain = [
-            block(0, 0, 0, vec![
+        let chain = linked(vec![
+            vec![
                 coinbase(0x10, 100_000),
-            ]),
-            block(1, 0, 0, vec![
+            ],
+            vec![
                 coinbase(0x11, 625_000_000),
                 tx(0x21, &[(0x10, 0)],            &[60_000, 39_000], [0; 4]),
                 tx(0x22, &[(0x21, 1)],            &[30_000],         [0, -8_000, 0, 0]),
-            ]),
-            block(2, 0, 0, vec![
+            ],
+            vec![
                 coinbase(0x12, 625_000_000),
                 tx(0x23, &[(0x21, 0)],            &[],               [0, 0, -59_000, 0]),
-            ]),
-            block(3, 0, 0, vec![
+            ],
+            vec![
                 coinbase(0x13, 625_000_000),
                 tx(0x24, &[(0x22, 0), (0x11, 0)], &[625_029_500],    [500, 0, 0, 0]),
-            ]),
-            block(4, 0, 0, vec![
+            ],
+            vec![
                 coinbase(0x14, 625_000_000),
                 tx(0x25, &[(0x24, 0)],            &[625_000_000],    [0, 0, 0, -29_000]),
-            ]),
-        ];
+            ],
+        ]);
         // per block, per tx (None = coinbase)
         let expected_fees = [
             vec![None],
@@ -610,13 +503,7 @@ mod tests {
             let fs = SimFs::new();
             let mut first_boot = Vec::new();
             for (boot, downstream) in [("first", None), ("restart", Some(h(0)))] {
-                let index = ValueBalanceIndexWriter::open(
-                    fs.clone(),
-                    Path::new("/vb"),
-                    NetworkType::Regtest,
-                    batch,
-                )
-                .expect("open");
+                let index = open(fs.clone(), batch);
                 let durable = index.durable_tip().map(|tip| tip.height);
                 let finalized = index.published().subscribe_finalized();
                 let mut block_sink = BlockSink::new("blocks");
@@ -681,45 +568,26 @@ mod tests {
     /// fork 1's fees, resolved against fork 1's outputs
     #[tokio::test]
     async fn a_reorg_drops_the_losing_branch_outputs_and_republishes_the_winner() {
-        let genesis = block(0, 0, 0, vec![coinbase(0x10, 100_000)]);
-        let one = block(1, 0, 0, vec![coinbase(0x11, 625_000_000)]);
-        let losing = [
-            block(
-                2,
-                0,
-                0,
-                vec![coinbase(0x12, 625_000_000), tx(0x20, &[(0x10, 0)], &[99_000], [0; 4])],
-            ),
-            block(
-                3,
-                0,
-                0,
-                vec![coinbase(0x13, 625_000_000), tx(0x30, &[(0x20, 0)], &[98_000], [0; 4])],
-            ),
-        ];
-        let winning = [
-            block(
-                2,
-                1,
-                0,
-                vec![coinbase(0x42, 625_000_000), tx(0x60, &[(0x10, 0)], &[90_000], [0; 4])],
-            ),
-            block(
-                3,
-                1,
-                1,
-                vec![coinbase(0x43, 625_000_000), tx(0x70, &[(0x60, 0)], &[80_000], [0; 4])],
-            ),
-        ];
+        let mut chain = Chain::with_genesis(vec![coinbase(0x10, 100_000)]);
+        let one = chain.mine_with(chain.genesis().hash, vec![coinbase(0x11, 625_000_000)]);
+        // both branches fork from `one`: each mines `(2, 3)` from its own transactions
+        let mut branch = |txs: [Vec<Transaction>; 2]| {
+            let [two, three] = txs;
+            let two = chain.mine_with(one.hash, two);
+            let three = chain.mine_with(two.hash, three);
+            chain.path(three.hash).into_iter().map(Arc::new).collect::<Vec<_>>()
+        };
+        let losing = branch([
+            vec![coinbase(0x12, 625_000_000), tx(0x20, &[(0x10, 0)], &[99_000], [0; 4])],
+            vec![coinbase(0x13, 625_000_000), tx(0x30, &[(0x20, 0)], &[98_000], [0; 4])],
+        ]);
+        let winning = branch([
+            vec![coinbase(0x42, 625_000_000), tx(0x60, &[(0x10, 0)], &[90_000], [0; 4])],
+            vec![coinbase(0x43, 625_000_000), tx(0x70, &[(0x60, 0)], &[80_000], [0; 4])],
+        ]);
 
         let fs = SimFs::new();
-        let index = ValueBalanceIndexWriter::open(
-            fs,
-            Path::new("/vb"),
-            NetworkType::Regtest,
-            NonZeroUsize::MIN,
-        )
-        .expect("open");
+        let index = open(fs, NonZeroUsize::MIN);
         let mut block_sink = BlockSink::new("blocks");
         let mut fee_sink = FeeSink::new("fees");
         let mut consumer = fee_sink.subscribe("consumer", QUEUE);
@@ -731,11 +599,11 @@ mod tests {
             let height = block.header().height;
             Step::Apply { height, finalized: height <= h(1), data: Arc::clone(block) }
         };
-        for block in [&genesis, &one].into_iter().chain(&losing) {
+        for block in &losing {
             block_sink.send(apply(block)).await;
         }
         block_sink.send(Step::Reorg).await;
-        for block in &winning {
+        for block in &winning[2..] {
             block_sink.send(apply(block)).await;
         }
         block_sink.shutdown();
@@ -799,13 +667,7 @@ mod tests {
 
         for (invalid, expected) in cases {
             let fs = SimFs::new();
-            let index = ValueBalanceIndexWriter::open(
-                fs,
-                Path::new("/vb"),
-                NetworkType::Regtest,
-                NonZeroUsize::MIN,
-            )
-            .expect("open");
+            let index = open(fs, NonZeroUsize::MIN);
             let mut block_sink = BlockSink::new("blocks");
             let mut fee_sink = FeeSink::new("fees");
             let mut consumer = fee_sink.subscribe("consumer", QUEUE);
@@ -813,7 +675,7 @@ mod tests {
             let running = tokio::spawn(index.run(subscription, fee_sink));
             let downstream = tokio::spawn(async move { consumer.next().await });
 
-            let data = block(0, 0, 0, vec![coinbase(0x10, 100_000), invalid]);
+            let data = Arc::clone(&linked(vec![vec![coinbase(0x10, 100_000), invalid]])[0]);
             block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
 
             let message = |joined: Result<_, tokio::task::JoinError>| {

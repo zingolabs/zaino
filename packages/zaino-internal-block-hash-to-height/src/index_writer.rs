@@ -1,61 +1,36 @@
 //! block_hash index: one hash per block, read off the header, kept by its own loop
 //!
-//! - Final block (bulk) → `bulk`, committed per batch; non-final → `non_finalized` (hash → height)
-//! - A commit moves hashes through a height from `bulk` / `non_finalized` into the store's segments
+//! - one block = one `by_hash` row; storage tiers = `zaino_persistence::Tiered`
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::num::NonZeroUsize;
 
-use imbl::HashMap;
-use zaino_persistence::lsm;
+use zaino_persistence::{Changes, MapRead, Store, Tiered};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{by_hash::HashKey, BlockHashStore, ReadView, HASH};
+use crate::{by_hash::encode_height, ReadView, BY_HASH, HASH};
 
-/// - `durable` / `segments` = the store as of the last commit (what views pin)
-/// - `applied` = last applied height, inclusive (`None` = none)
-/// - `bulk` = final blocks not yet committed, `bulk_bytes` their [`Weight`]
-pub struct BlockHashIndexWriter {
-    store: Offloaded<BlockHashStore>,
-    durable: Option<BlockRef>,
-    segments: Arc<lsm::Snapshot<HashKey>>,
-    applied: Option<Height>,
-    non_finalized: HashMap<[u8; HASH], Height>,
-    bulk: Vec<Arc<Block>>,
-    bulk_bytes: usize,
-    batch_bytes: NonZeroUsize,
-    published: Published<ReadView>,
+pub struct BlockHashIndexWriter<S: Store> {
+    tiered: Offloaded<Tiered<S>>,
+    published: Published<ReadView<S::View>>,
 }
 
-impl BlockHashIndexWriter {
-    pub const NAME: &'static str = "block_hash";
-
-    /// `batch_bytes` = final blocks per bulk commit (one fsync)
-    pub fn new(store: BlockHashStore, batch_bytes: NonZeroUsize) -> Self {
-        let durable = store.finalized_tip();
-        let applied = durable.map(|tip| tip.height);
-        let segments = store.reader().pin_segments();
-        let view = ReadView::new(HashMap::new(), Arc::clone(&segments));
-        Self {
-            store: Offloaded::new(store),
-            durable,
-            segments,
-            applied,
-            non_finalized: HashMap::new(),
-            bulk: Vec::new(),
-            bulk_bytes: 0,
-            batch_bytes,
-            published: Published::new(view, applied),
-        }
+impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
+    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = final blocks per
+    /// bulk commit (one fsync)
+    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
+        let tiered = Tiered::new(store, batch_bytes);
+        let published = Published::new(ReadView::new(tiered.view()), tiered.durable_tip());
+        Self { tiered: Offloaded::new(tiered), published }
     }
 
     /// Last committed block (the producer checks the chain it streams links onto it)
     pub fn durable_tip(&self) -> Option<BlockRef> {
-        self.durable
+        self.tiered.get().durable_tip()
     }
 
     /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<ReadView> {
+    pub fn published(&self) -> &Published<ReadView<S::View>> {
         &self.published
     }
 
@@ -64,126 +39,105 @@ impl BlockHashIndexWriter {
         loop {
             match blocks.next().await {
                 Step::Apply { height, finalized: true, data } => {
-                    // replay for an index behind this one: already on disk
-                    if Some(height) <= self.durable.map(|tip| tip.height) {
-                        continue;
-                    }
-                    self.bulk_bytes += data.weight();
-                    self.bulk.push(data);
-                    self.published.merged(height);
-                    if self.bulk_bytes >= self.batch_bytes.get() {
-                        self.commit(height).await;
-                    }
+                    self.apply_final(height, &data).await
                 }
-                Step::Apply { height, finalized: false, data } => {
-                    // bulk → tip: what bulk staged commits before the first apply builds on it
-                    if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await;
-                    }
-                    let next = self.applied.map_or(Height::GENESIS, Height::next);
-                    assert_eq!(height, next, "block_hash: blocks must arrive contiguously");
-                    self.non_finalized.insert(data.header().hash.into(), height);
-                    self.applied = Some(height);
-                }
-                Step::Finalized { height } => self.commit(height).await,
-                Step::Reorg => {
-                    assert!(self.bulk.is_empty(), "block_hash: reorg with bulk blocks staged");
-                    // back to the durable tip, the winning branch applied from there
-                    self.non_finalized = HashMap::new();
-                    self.applied = self.durable.map(|tip| tip.height);
-                    self.publish();
-                    self.published.reorged();
-                }
-                Step::Shutdown => {
-                    if let Some(last) = self.bulk.last() {
-                        self.commit(last.header().height).await;
-                    }
-                    return;
-                }
+                Step::Apply { finalized: false, data, .. } => self.apply_tip(&data).await,
+                Step::Finalized { height } => self.finalize(height).await,
+                Step::Reorg => self.reorg(),
+                Step::Shutdown => return self.finalize_staged().await,
             }
-            self.publish();
         }
     }
 
-    /// Every final block through `through` → disk (bulk ones, then applied ones), then their
-    /// hashes leave `bulk` / `non_finalized` for the segments
-    async fn commit(&mut self, through: Height) {
-        let bulk = std::mem::take(&mut self.bulk);
-        self.bulk_bytes = 0;
-        let mut rows: Vec<(Height, [u8; HASH])> =
-            bulk.iter().map(|block| (block.header().height, block.header().hash.into())).collect();
-        let mut applied: Vec<(Height, [u8; HASH])> = self
-            .non_finalized
-            .iter()
-            .filter(|(_, height)| **height <= through)
-            .map(|(hash, height)| (*height, *hash))
-            .collect();
-        applied.sort_unstable();
-        rows.extend(applied);
+    /// Final block (bulk sync): staged for the next batch commit
+    async fn apply_final(&mut self, height: Height, block: &Block) {
+        // replay for an index behind this one: already on disk
+        if Some(height) <= self.durable_height() {
+            return;
+        }
+        let changes = self.changes(block);
+        let full = self.tiered.get_mut().stage(changes, block.weight());
+        self.published.merged(height);
+        if full {
+            self.finalize(height).await;
+        }
+    }
 
-        let mut next = self.durable.map_or(Height::GENESIS, |tip| tip.height.next());
-        for (height, _) in &rows {
-            assert_eq!(*height, next, "block_hash: final blocks not contiguous from durable");
-            next = next.next();
-        }
-        assert_eq!(
-            Some(through),
-            next.checked_sub(1),
-            "block_hash: final blocks short of {through}"
-        );
+    async fn apply_tip(&mut self, block: &Block) {
+        self.finalize_staged().await;
+        let changes = self.changes(block);
+        self.tiered.get_mut().apply(changes);
+        self.publish();
+    }
 
-        let written: Vec<[u8; HASH]> = rows.iter().map(|(_, hash)| *hash).collect();
-        let committed = self.store.blocking(move |store| store.commit(&rows)).await;
-        let store = self.store.get();
-        if let Err(error) = committed {
-            error.commit_failed(Self::NAME, store.path());
+    /// Back to the durable tip (the winning branch applies from there)
+    fn reorg(&mut self) {
+        self.tiered.get_mut().reorg();
+        self.publish();
+        self.published.reorged();
+    }
+
+    /// Staged bulk → disk (before a tip block builds on it, and at `Shutdown`)
+    async fn finalize_staged(&mut self) {
+        if let Some(staged) = self.tiered.get().staged() {
+            self.finalize(staged.height).await;
         }
-        self.durable = store.finalized_tip();
-        self.segments = store.reader().pin_segments();
-        for hash in &written {
-            self.non_finalized.remove(hash);
-        }
-        let durable = self.durable.map(|tip| tip.height);
-        self.applied = self.applied.max(durable);
+    }
+
+    /// Every held block through `through` → disk
+    async fn finalize(&mut self, through: Height) {
+        self.tiered.blocking(move |tiered| tiered.finalize(through)).await;
         // view first: a reader woken by the durable tip pins the view holding it
         self.publish();
-        self.published.durable(durable);
+        self.published.durable(self.durable_height());
+    }
+
+    /// `block`'s one row
+    fn changes(&self, block: &Block) -> Changes {
+        let header = block.header();
+        let tip = BlockRef { hash: header.hash, height: header.height };
+        let mut changes = Changes::new(tip, self.tiered.get().schema());
+        changes.insert(BY_HASH, &<[u8; HASH]>::from(header.hash), &encode_height(header.height));
+        changes
+    }
+
+    fn durable_height(&self) -> Option<Height> {
+        self.durable_tip().map(|tip| tip.height)
     }
 
     fn publish(&self) {
-        let view = ReadView::new(self.non_finalized.clone(), Arc::clone(&self.segments));
-        self.published.view(view, self.applied);
+        let tiered = self.tiered.get();
+        self.published.view(ReadView::new(tiered.view()), tiered.applied());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{path::Path, sync::Arc};
 
-    use zaino_persistence::fs::SimFs;
-    use zaino_primitives::types::{BlockHash, BlockHeader, BlockRef, Transaction, TransactionId};
+    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine};
+    use zaino_primitives::testing::Chain;
+    use zaino_primitives::types::BlockRef;
     use zaino_sync::BlockSink;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
+    use crate::schema;
 
-    /// Block `height` hashing to `[hash; 32]`, its parent `[parent; 32]`
-    fn block(height: u32, hash: u8, parent: u8) -> Arc<Block> {
-        Arc::new(Block::new(
-            BlockHeader::for_tests(height, [hash; 32], [parent; 32], 1_700_000_000 + height),
-            vec![Transaction {
-                txid: TransactionId::from([hash; 32]),
-                transparent: Default::default(),
-                sprout: Default::default(),
-                sapling: Default::default(),
-                orchard: Default::default(),
-                ironwood: Default::default(),
-            }],
-        ))
-    }
+    const NAME: &str = zaino_persistence::IndexKind::BlockHash.name();
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
+    }
+
+    fn open(fs: &Arc<SimFs>, batch: NonZeroUsize) -> BlockHashIndexWriter<DiskStore> {
+        let store =
+            DiskEngine::new(fs.clone()).open(Path::new("/bh"), &schema(NetworkType::Regtest));
+        BlockHashIndexWriter::new(store.expect("open"), batch)
+    }
+
+    fn located(view: &ReadView<DiskView>, hashes: &[BlockRef]) -> Vec<Option<Height>> {
+        hashes.iter().map(|at| view.height_of_hash(&<[u8; HASH]>::from(at.hash))).collect()
     }
 
     /// Steps sent as the producer sends them: bulk, the tip above it, a block finalized, a losing
@@ -192,72 +146,123 @@ mod tests {
     #[tokio::test]
     async fn locates_both_tiers_across_a_finalize_a_reorg_and_a_reopen() {
         let fs = SimFs::new();
-        let open = |fs: &Arc<SimFs>| {
-            BlockHashStore::open(fs.clone(), Path::new("/bh"), NetworkType::Regtest).expect("open")
-        };
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let index = BlockHashIndexWriter::new(open(&fs), batch);
+        let index = open(&fs, batch);
         let served = index.published().served();
         let (mut durable, mut applied) =
             (index.published().subscribe_finalized(), index.published().subscribe_applied());
-        let located = |hashes: &[u8]| -> Vec<Option<Height>> {
-            let view = served.pin_any();
-            hashes.iter().map(|hash| view.height_of_hash(&[*hash; 32])).collect()
-        };
+        let mut chain = Chain::new();
+        let one = chain.mine(chain.genesis().hash);
+        let two = chain.mine(one.hash);
+        let (losing, winning) = (chain.mine(two.hash), chain.mine(two.hash));
         let mut sink = BlockSink::new("blocks");
         let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let blocks = sink.subscribe(BlockHashIndexWriter::NAME, queue);
+        let blocks = sink.subscribe(NAME, queue);
         let running = tokio::spawn(index.run(blocks));
-        let apply = |height, finalized, hash, parent| Step::Apply {
-            height: h(height),
+        let apply = |finalized, block: BlockRef| Step::Apply {
+            height: block.height,
             finalized,
-            data: block(height, hash, parent),
+            data: Arc::new(chain.block(block.hash).clone()),
         };
         let within = std::time::Duration::from_secs(5);
         let through = |n| Some(h(n));
 
-        for step in [apply(0, true, 10, 0), apply(1, true, 11, 10)] {
+        for step in [apply(true, chain.genesis()), apply(true, one)] {
             sink.send(step).await;
         }
-        for step in [apply(2, false, 12, 11), apply(3, false, 0xee, 12)] {
+        for step in [apply(false, two), apply(false, losing)] {
             sink.send(step).await;
         }
-        let tip = tokio::time::timeout(within, applied.wait_for(|at| *at == through(3))).await;
+        let tip = Some(losing);
+        let tip = tokio::time::timeout(within, applied.wait_for(|at| *at == tip)).await;
         tip.expect("tip applied").expect("index alive");
         assert_eq!(*durable.borrow(), through(1), "bulk written before the tip applies on it");
-        let both = located(&[10, 11, 12, 0xee]);
+        let both = located(&served.pin_any(), &[chain.genesis(), one, two, losing]);
         assert_eq!(both, [through(0), through(1), through(2), through(3)], "both tiers");
 
         sink.send(Step::Finalized { height: h(2) }).await;
-        let two = tokio::time::timeout(within, durable.wait_for(|at| *at == through(2))).await;
-        two.expect("2 written once final").expect("index alive");
+        let finalized = tokio::time::timeout(within, durable.wait_for(|at| *at == through(2)));
+        finalized.await.expect("2 written once final").expect("index alive");
         // 3 = a losing branch: dropped, the winner replayed from the first non-final height
         sink.send(Step::Reorg).await;
-        sink.send(apply(3, false, 13, 12)).await;
+        sink.send(apply(false, winning)).await;
         sink.shutdown();
         running.await.expect("followed through Shutdown");
-        assert_eq!(located(&[12, 13, 0xee]), [through(2), through(3), None], "losing branch gone");
+        let after = located(&served.pin_any(), &[two, winning, losing]);
+        assert_eq!(after, [through(2), through(3), None], "losing branch gone");
 
-        let index = BlockHashIndexWriter::new(open(&fs), batch);
-        let tip_12 = Some(BlockRef { hash: BlockHash::from([12; 32]), height: h(2) });
-        assert_eq!(index.durable_tip(), tip_12, "resumes at the durable tip");
-        let view = index.published().served().pin_any();
-        let reopened = [10, 11, 12, 13].map(|hash| view.height_of_hash(&[hash; 32]));
-        assert_eq!(reopened, [through(0), through(1), through(2), None], "non-finalized gone");
+        let index = open(&fs, batch);
+        assert_eq!(index.durable_tip(), Some(two), "resumes at the durable tip");
+        let reopened = located(&index.published().served().pin_any(), &[two, winning]);
+        assert_eq!(reopened, [through(2), None], "non-finalized gone");
+    }
+
+    /// Five final blocks, each its own commit, crashed after every operation: each state reopens
+    /// to an acknowledged or the attempted commit, locates every hash it holds and none past it,
+    /// and commits the next block
+    #[tokio::test]
+    async fn every_crash_state_reopens_to_a_committed_prefix_that_keeps_committing() {
+        let fs = SimFs::recording();
+        let mut chain = Chain::new();
+        let tip = chain.extend(chain.genesis().hash, 5);
+        let blocks: Vec<Arc<Block>> = chain.path(tip.hash).into_iter().map(Arc::new).collect();
+        let at =
+            |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
+        let queue = NonZeroUsize::new(1 << 20).expect("non-zero");
+        {
+            let index = open(&fs, NonZeroUsize::MIN);
+            let mut durable = index.published().subscribe_finalized();
+            let mut sink = BlockSink::new("blocks");
+            let blocks_queue = sink.subscribe(NAME, queue);
+            let running = tokio::spawn(index.run(blocks_queue));
+            for (acked, block) in (1u64..).zip(&blocks[..5]) {
+                let (height, data) = (block.header().height, Arc::clone(block));
+                sink.send(Step::Apply { height, finalized: true, data }).await;
+                durable.wait_for(|at| *at == Some(height)).await.expect("index alive");
+                fs.set_tag(acked);
+            }
+            sink.shutdown();
+            running.await.expect("followed through Shutdown");
+        }
+
+        let states = fs.crash_states();
+        assert!(states.len() > 10, "enumerated {} crash states", states.len());
+        for state in states {
+            let label = &state.label;
+            let index = open(&state.fs, NonZeroUsize::MIN);
+            let count = index.durable_tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
+            assert!(acked.contains(&count), "{label}: recovered {count} blocks");
+            assert_eq!(index.durable_tip(), count.checked_sub(1).map(|last| at(&blocks[last])));
+            let view = index.published().served().pin_any();
+            let held: Vec<_> = blocks[..=count].iter().map(|block| at(block)).collect();
+            let expected: Vec<_> = (0..count as u32).map(|n| Some(h(n))).chain([None]).collect();
+            assert_eq!(located(&view, &held), expected, "{label}: held hashes, none past them");
+
+            let served = index.published().served();
+            let mut sink = BlockSink::new("blocks");
+            let queue = sink.subscribe(NAME, queue);
+            let running = tokio::spawn(index.run(queue));
+            let next = Arc::clone(&blocks[count]);
+            sink.send(Step::Apply { height: h(count as u32), finalized: true, data: next }).await;
+            sink.shutdown();
+            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            let located_next = located(&served.pin_any(), &[at(&blocks[count])]);
+            assert_eq!(located_next, [Some(h(count as u32))], "{label}: commits continue");
+        }
     }
 
     /// Commit I/O failure = panic naming the index and its directory (never an `Err` to drain)
     #[tokio::test]
     async fn a_failed_commit_panics_naming_the_index_and_its_directory() {
         let fs = SimFs::new();
-        let store =
-            BlockHashStore::open(fs.clone(), Path::new("/bh"), NetworkType::Regtest).expect("open");
-        let index = BlockHashIndexWriter::new(store, NonZeroUsize::MIN);
+        let index = open(&fs, NonZeroUsize::MIN);
         fs.fail_from(fs.mutations());
         let mut sink = BlockSink::new("blocks");
-        let blocks = sink.subscribe(BlockHashIndexWriter::NAME, NonZeroUsize::MIN);
+        let blocks = sink.subscribe(NAME, NonZeroUsize::MIN);
         let running = tokio::spawn(index.run(blocks));
-        let data = block(0, 10, 0);
+        let chain = Chain::new();
+        let data = Arc::new(chain.block(chain.genesis().hash).clone());
         sink.send(Step::Apply { height: h(0), finalized: true, data }).await;
 
         let payload = running.await.expect_err("commit failure panics").into_panic();

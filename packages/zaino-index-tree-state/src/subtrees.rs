@@ -1,16 +1,15 @@
-//! `subtrees.dat`: 36 B per completed subtree (root, completing height)
+//! `<pool>/subtrees`: 36 B per completed subtree (root, completing height)
 //!
 //! - slot = subtree index → a `start_index` resume = a seek, not a scan
 
-use zaino_persistence::{
-    pages::{PagedFile, Pages, Sealed},
-    StoreError,
-};
-use zaino_primitives::types::{Height, TreeRoot};
+use zaino_persistence::SequenceRead;
+use zaino_primitives::types::{Height, ShieldedPool, TreeRoot};
+
+use crate::subtree_table;
 
 pub(crate) const ENTRY: usize = 36;
 
-/// Stored form of a completed subtree (completing hash = that height's `heights.idx` record)
+/// Stored form of a completed subtree (completing hash = that height's `heights` record)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SubtreeEntry {
     pub(crate) root: TreeRoot,
@@ -29,56 +28,18 @@ pub(crate) fn decode(bytes: &[u8; ENTRY]) -> SubtreeEntry {
     let height = u32::from_le_bytes(*bytes[32..].first_chunk::<4>().expect("ENTRY = 32 + 4"));
     SubtreeEntry {
         root: TreeRoot::from(*bytes.first_chunk::<32>().expect("ENTRY > 32")),
-        end_height: Height::try_from(height).expect("a sealed entry holds a protocol height"),
+        end_height: Height::try_from(height).expect("a committed entry holds a protocol height"),
     }
 }
 
-/// Committed subtree entries of one pool
-#[derive(Debug, Clone)]
-pub(crate) struct Subtrees {
-    entries: Pages,
-}
-
-impl Subtrees {
-    pub(crate) fn count(&self) -> u64 {
-        (self.entries.len() / ENTRY) as u64
-    }
-
-    pub(crate) fn get(&self, index: u64) -> SubtreeEntry {
-        let at = usize::try_from(index).expect("subtree index fits usize") * ENTRY;
-        decode(self.entries.read(at..at + ENTRY).try_into().expect("ENTRY bytes"))
-    }
-}
-
-/// Writer side: one append-only file per pool + its last seal
-#[derive(Debug)]
-pub(crate) struct SubtreeFile {
-    file: PagedFile,
-    sealed: Sealed,
-}
-
-impl SubtreeFile {
-    /// `file` opened at `sealed`
-    pub(crate) fn new(file: PagedFile, sealed: Sealed) -> Self {
-        Self { file, sealed }
-    }
-
-    /// Appends entry `index` (subtrees complete in order: asserted)
-    pub(crate) fn put(&mut self, index: u64, root: &SubtreeEntry) -> Result<(), StoreError> {
-        assert_eq!(self.file.len(), index * ENTRY as u64, "subtree {index} appends at the end");
-        Ok(self.file.append(&encode(root))?)
-    }
-
-    pub(crate) fn seal(&mut self) -> Result<Sealed, StoreError> {
-        self.sealed = self.file.seal()?;
-        Ok(self.sealed)
-    }
-
-    /// Remaps at the last seal, keeping `previous`'s checked pages
-    pub(crate) fn snapshot(&self, previous: Option<&Subtrees>) -> Result<Subtrees, StoreError> {
-        let entries = self.file.pages(self.sealed, previous.map(|old| &old.entries))?;
-        Ok(Subtrees { entries })
-    }
+/// `pool`'s entry `index` (`None` = at or past the count)
+pub(crate) fn entry(
+    view: &impl SequenceRead,
+    pool: ShieldedPool,
+    index: u64,
+) -> Option<SubtreeEntry> {
+    let bytes = view.record(subtree_table(pool), index)?;
+    Some(decode(bytes[..].try_into().expect("ENTRY bytes")))
 }
 
 #[cfg(test)]

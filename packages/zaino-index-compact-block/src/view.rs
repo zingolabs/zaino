@@ -1,98 +1,93 @@
 //! One pinned view of every tier a read resolves against
 //!
 //! - loaded **once** per request or stream (one atomic load, not one per refill)
-//! - non-finalized/files seam = a field of the view: "which tier owns `h`" has one answer for the
+//! - held/committed seam = a field of the view: "which tier owns `h`" has one answer for the
 //!   request's life, a commit landing mid-stream cannot move it
 //! - long-range safety from pinned bytes, not from durable records being append-only
 
-use std::sync::Arc;
-
 use bytes::Bytes;
+use zaino_persistence::{SequenceRead, TieredView, View};
 use zaino_primitives::types::Height;
 
-use crate::{project::record_hash, NonFinalizedState, Pools, Snapshot, HASH};
+use crate::{position, BLOCKS, HASH};
 
-/// Non-finalized + durable, one publication
-///
-/// - clone = a pointer bump + an `imbl` structural share (republished on every applied block)
-/// - `tip` resolved at publication (the writer's thread): `GetLatestBlock` then reads no page;
-///   `(height, None)` = a tip record that will not walk
+/// Records one [`ReadView::span`] reads (one index walk + one readahead)
+pub(crate) const SPAN_RECORDS: u32 = 256;
+
+/// Held blocks + committed records, one publication (clone = pointer copies, republished on
+/// every applied block)
 #[derive(Clone)]
-pub struct ReadView {
-    non_finalized: NonFinalizedState,
-    durable: Arc<Snapshot>,
-    tip: Option<(Height, Option<[u8; HASH]>)>,
+pub struct ReadView<V> {
+    view: TieredView<V>,
 }
 
-impl ReadView {
-    pub(crate) fn new(non_finalized: NonFinalizedState, durable: Arc<Snapshot>) -> Self {
-        if let Some(root) = non_finalized.root_height() {
-            let after_files = durable.tip.map_or(Height::GENESIS, Height::next);
-            assert_eq!(root, after_files, "non-finalized must start where the files end");
-        }
-        let tip = match non_finalized.tip_id() {
-            Some((height, hash)) => Some((height, Some(hash))),
-            None => durable.tip.map(|height| {
-                (height, durable.block(height).and_then(|record| record_hash(&record)))
-            }),
-        };
-        Self { non_finalized, durable, tip }
+impl<V: View> ReadView<V> {
+    pub(crate) fn new(view: TieredView<V>) -> Self {
+        Self { view }
     }
 
-    /// Tip height + its record's hash, resolved at publication
-    pub(crate) fn tip_id(&self) -> Option<(Height, Option<[u8; HASH]>)> {
-        self.tip
+    /// Tip height + hash (`GetLatestBlock` reads no record)
+    pub(crate) fn tip_id(&self) -> Option<(Height, [u8; HASH])> {
+        self.view.tip().map(|tip| (tip.height, tip.hash.into()))
     }
 
-    /// Last height the files answer, inclusive (the seam; `None` = no files yet)
+    /// Last committed height, inclusive (the seam; `None` = nothing committed)
     pub(crate) fn finalized_tip(&self) -> Option<Height> {
-        self.durable.tip
+        self.view.durable().tip().map(|tip| tip.height)
     }
 
     /// Last height any tier answers, inclusive (`None` = nothing held)
     pub(crate) fn tip(&self) -> Option<Height> {
-        self.non_finalized.tip_height().or(self.finalized_tip())
-    }
-
-    /// Framed, wire-ready; non-finalized first (holds the newest blocks)
-    pub(crate) fn block(&self, height: Height) -> Option<Bytes> {
-        self.non_finalized.block(height).or_else(|| self.durable.block(height))
-    }
-
-    /// Non-finalized tier only: RAM, no page touched (`None` = not there, maybe in the files)
-    pub(crate) fn resident_block(&self, height: Height) -> Option<Bytes> {
-        self.non_finalized.block(height)
-    }
-
-    /// Non-finalized record projected to `pools` (the default shape precomputed at apply)
-    pub(crate) fn resident_projected(&self, height: Height, pools: Pools) -> Option<Bytes> {
-        self.non_finalized.projected(height, pools)
-    }
-
-    /// Record-aligned prefix of heights `start` to `end`, both inclusive, from the files, plus the
-    /// last height it reaches (inclusive)
-    pub(crate) fn span_from(
-        &self,
-        start: Height,
-        end: Height,
-        budget: usize,
-    ) -> Option<(Bytes, Height)> {
-        self.durable.span_from(start, end, budget)
-    }
-
-    /// Record-aligned suffix of heights `start` to `end`, both inclusive, from the files, plus the
-    /// lowest height it reaches (inclusive)
-    pub(crate) fn span_to(
-        &self,
-        start: Height,
-        end: Height,
-        budget: usize,
-    ) -> Option<(Bytes, Height)> {
-        self.durable.span_to(start, end, budget)
+        self.view.tip().map(|tip| tip.height)
     }
 }
 
-impl std::fmt::Debug for ReadView {
+impl<V: SequenceRead> ReadView<V> {
+    /// Framed, wire-ready, every pool
+    pub(crate) fn block(&self, height: Height) -> Option<Bytes> {
+        self.view.record(BLOCKS, position(height))
+    }
+
+    /// Held above the committed tip: RAM, no page touched (`None` = not held, maybe committed)
+    pub(crate) fn resident_block(&self, height: Height) -> Option<Bytes> {
+        (Some(height) > self.finalized_tip()).then(|| self.block(height)).flatten()
+    }
+
+    /// Records from `first` toward `last` (both inclusive, both held, either direction) in walk
+    /// order, plus the last height reached
+    ///
+    /// - <= [`SPAN_RECORDS`] read, cut to `budget` bytes: work per call bounded, not by the range
+    /// - always >= 1 record, so a caller looping on the reach makes progress
+    /// - committed ones = zero-copy slices of the mapping
+    pub(crate) fn span(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height) {
+        let descending = first > last;
+        let far = match descending {
+            false => first.checked_add(SPAN_RECORDS - 1).map_or(last, |far| far.min(last)),
+            true => first.saturating_sub(SPAN_RECORDS - 1).max(last),
+        };
+        let (low, high) = (first.min(far), first.max(far));
+        let mut records = self.view.records(BLOCKS, position(low)..position(high) + 1);
+        if descending {
+            records.reverse();
+        }
+
+        let mut bytes = 0;
+        let fit = records.iter().take_while(|record| {
+            bytes += record.len();
+            bytes <= budget
+        });
+        let kept = fit.count().max(1);
+        records.truncate(kept);
+        let walked = u32::try_from(kept - 1).expect("kept <= SPAN_RECORDS");
+        let reached = match descending {
+            false => first.checked_add(walked),
+            true => first.checked_sub(walked),
+        };
+        (records, reached.expect("reach within first..=last"))
+    }
+}
+
+impl<V: View> std::fmt::Debug for ReadView<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReadView")
             .field("finalized_tip", &self.finalized_tip())

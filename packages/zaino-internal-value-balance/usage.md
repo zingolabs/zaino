@@ -7,34 +7,40 @@ indexes. The compact-block index reads one fee step after each block step to
 fill `CompactTx.fee`.
 
 The only term a block does not carry is what each transparent input spends, so
-the index keeps one
-[`zaino_persistence::lsm`](../zaino-persistence/usage.md#lsm-segments) set:
+the index keeps one map on the
+[persistence port](../zaino-persistence/usage.md) (zainod: `DiskEngine`):
 
 ```text
-outputs   txid(32) ‖ vout u32   ->  value_zat u64      probed, never scanned
+outputs   OutPoint::encode() = txid(32) ‖ vout u32   ->  value_zat u64      point lookups only
 ```
 
-Keys are big-endian. Every transparent output is kept, spent or not (Shape B,
-append-only), so any height re-resolves identically.
+Keys and values are big-endian. Every transparent output is kept, spent or not
+(Shape B, insert only), so any height re-resolves identically.
+`schema(network)` is the store's `Schema`; `zainod verify` checks the directory
+against it (`PersistenceEngine::verify`).
 
 ## Wiring
 
 ```rust
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
-let index = ValueBalanceIndexWriter::open(fs, &path, network, batch_bytes)?;
+let schema = zaino_internal_value_balance::schema(network);
+let index = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
 let durable = index.durable_tip(); // for the producer's start and chain check
 let published = index.published(); // tips + gate for metrics and status
-let blocks = block_sink.subscribe(ValueBalanceIndexWriter::NAME, queue);
+let blocks = block_sink.subscribe(IndexKind::ValueBalance.name(), queue);
 tokio::spawn(index.run(blocks, fee_sink));
 ```
 
+- Generic over the persistence port: `ValueBalanceIndexWriter<S: Store>` with
+  `S::View: MapRead`; zainod picks `DiskEngine`.
 - `run` = the index's own loop over its `BlockSink` subscription, through
-  `Shutdown`. Fallible only at boot (`open` → `StoreError`). `run` is
-  infallible: a failed commit or an unresolvable fee panics
+  `Shutdown`. Fallible only at boot (the engine's `open` → `StoreError`). `new`
+  and `run` are infallible: a failed commit or an unresolvable fee panics
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - Every step it follows goes into the fee sink, 1:1, from the same start, with
   `Shutdown` last. A consumer awaits one fee step after each of its own block
@@ -46,23 +52,22 @@ tokio::spawn(index.run(blocks, fee_sink));
 ## Resolved per delivered run
 
 Each `Apply` pulls every `Apply` already queued, to `batch_bytes`, into one
-run. The run's outputs go into `Pending`, then every block's inputs are
-resolved against those and everything recorded before, for every block: bulk,
-replay and tip alike. Resolving at commit time instead would deadlock, since
-the consumer waits on fees block by block while a commit waits for a whole
-batch. Applying a non-final block only moves the applied tip (last applied
-height, inclusive); a commit writes the outputs the run recorded; a reorg
-drops the non-final ones.
+run (`Subscription::run`). Each block of the run above the durable tip is held
+first (its outputs = one `Changes`: staged if final, applied if not, in
+`zaino_persistence::Tiered`), then every block's inputs are resolved against
+everything held and committed, for every block: bulk, replay and tip alike.
+Resolving at commit time instead would deadlock, since the consumer waits on
+fees block by block while a commit waits for a whole batch. A commit writes
+the outputs held through its height; a reorg drops the applied ones.
 
-A block's prevouts not held in memory are resolved in one
-`Snapshot::get_many` (sorted, parallel, newest segment first). A sandblast
-transaction spends thousands of outputs, and one random lookup each is one cold
-page fault each.
+A run's prevouts are resolved in one `MapRead::values` call over the held
+outputs and the committed state. A sandblast transaction spends thousands of
+outputs, and one random lookup each is one cold page fault each.
 
 | Height delivered | Outputs | Derived + forwarded |
 |---|---|---|
 | at or below this index's durable tip | already stored | yes (a consumer behind this index pairs it) |
-| above it | recorded (`Pending`) | yes |
+| above it | held (`Tiered`) | yes |
 
 A spend of an output the index never recorded panics
 (`value_balance index: ` + `IndexWriterError::MissingPrevout`): the index runs
