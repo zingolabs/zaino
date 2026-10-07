@@ -53,35 +53,21 @@ impl TreeSizes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-        SaplingData, SaplingOutput, Transaction, TransactionId,
-    };
+    use crate::testing::MockChain;
 
     /// Per-pool commitment counts added onto the prior sizes; past `u32` = an error, not a wrap
     #[test]
     fn advance_adds_each_pools_commitments_and_refuses_the_u32_ceiling() {
-        let output = SaplingOutput {
-            cmu: NoteCommitment::from([1; 32]),
-            ephemeral_key: EphemeralKey::from([2; 32]),
-            enc_ciphertext: CompactCiphertext::from([3; CompactCiphertext::LENGTH]),
-        };
-        let action = OrchardAction {
-            nullifier: Nullifier::from([4; 32]),
-            cmx: NoteCommitment::from([5; 32]),
-            ephemeral_key: EphemeralKey::from([6; 32]),
-            enc_ciphertext: CompactCiphertext::from([7; CompactCiphertext::LENGTH]),
-        };
-        let tx = |tag: u8, sapling: usize, orchard: usize, ironwood: usize| Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: SaplingData { outputs: vec![output.clone(); sapling], ..Default::default() },
-            orchard: OrchardData { actions: vec![action.clone(); orchard], ..Default::default() },
-            ironwood: OrchardData { actions: vec![action.clone(); ironwood], ..Default::default() },
-        };
-        let mut chain = crate::testing::Chain::new();
-        let mined = chain.mine_with(chain.genesis().hash, vec![tx(1, 2, 1, 0), tx(2, 1, 0, 3)]);
+        let mut chain = MockChain::regtest();
+        let mined = chain.mine(|b| {
+            b.tx(|t| t.sapling_output(1).sapling_output(2).orchard_action([4; 32], 5))
+                .tx(|t| {
+                    t.sapling_output(3)
+                        .ironwood_action([6; 32], 7)
+                        .ironwood_action([8; 32], 9)
+                        .ironwood_action([10; 32], 11)
+                })
+        });
         let block: &Block = chain.block(mined.hash);
 
         let prior = PerPool { sapling: 10, orchard: 20, ironwood: 30 }.map(TreeSize::from);

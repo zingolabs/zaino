@@ -125,14 +125,14 @@ impl<'a> HeaderBytes<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{encode_header, Chain};
+    use crate::testing::MockChain;
 
     /// `encode_header` → `split` → every field back, the rest untouched; each layout fault named
     #[test]
     fn split_reads_back_every_encoded_field_and_names_each_layout_fault() {
-        let chain = Chain::new();
+        let chain = MockChain::regtest();
         let header = chain.block(chain.genesis().hash).header().clone();
-        let mut raw = encode_header(&header);
+        let mut raw = chain.header_bytes(header.hash);
         let len = raw.len();
         raw.extend([7, 7]);
 

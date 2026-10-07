@@ -94,9 +94,9 @@ mod tests {
             orchard: OrchardData { actions: vec![action.clone(); 3], ..OrchardData::default() },
             ironwood: OrchardData { actions: vec![action], ..OrchardData::default() },
         };
-        let mut chain = crate::testing::Chain::new();
-        let mined = chain.mine_with(chain.genesis().hash, vec![tx]);
-        let block = chain.block(mined.hash);
+        let chain = crate::testing::MockChain::regtest();
+        let header = chain.block(chain.genesis().hash).header().clone();
+        let block = Block::new(header, vec![tx]);
 
         let expected = size_of::<Block>()
             + size_of::<Transaction>()
