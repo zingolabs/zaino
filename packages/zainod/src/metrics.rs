@@ -15,7 +15,7 @@ use crate::error::IndexerError;
 
 /// Dotted here, `_`-joined once scraped (`zaino.index.synced` → `zaino_index_synced`)
 mod names {
-    pub(super) const BUILD_INFO: &str = "zainod.build_info";
+    pub(super) const BUILD_INFO: &str = "zaino.build_info";
     pub(super) const INDEX_FINALIZED_HEIGHT: &str = "zaino.index.finalized_height";
     pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
 }

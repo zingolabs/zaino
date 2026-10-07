@@ -22,7 +22,7 @@ pub enum Pool {
 }
 
 impl Pool {
-    /// The pool name that routes funds into this pool.
+    /// Address kind routing funds into this pool
     pub fn address_kind(self) -> &'static str {
         match self {
             Pool::Orchard | Pool::Ironwood => "unified",

@@ -214,9 +214,8 @@ mod wallet {
         Ok(())
     }
 
-    /// A transparent send returns the same address txids from the
-    /// non-finalized state and again after a seam-deep advance lands it in
-    /// the finalised DB.
+    /// Transparent send → same address txids from the non-finalized state and again once a
+    /// seam-deep advance commits it to the durable compact-block index
     ///
     /// - at the shipped depth (1000) `SEAM_ADVANCE` buries nothing → both reads come from
     ///   the non-finalized state, compare passes vacuously
@@ -240,20 +239,16 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // The send's block, queried while it is still in the non-finalized state.
+        // Send's block, still non-finalized
         let height = indexer.latest_block_height().await?;
         let unfinalised_txs = indexer.get_taddress_txids(taddr.clone(), height, height).await?;
 
-        // The load-bearing advance: push the send below the seam so it crosses
-        // the finalised floor (`tip - seam`) into the finalized DB.
+        // Load-bearing: buries the send below the final boundary (`tip - depth`)
         let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // Without this the test is vacuous: it would compare two reads that
-        // both came from the non-finalized state. `index_frontier` is the
-        // only observable that says the finalised writer committed the
-        // send's block — a served height proves nothing, because below the
-        // seam zaino can answer straight from the validator it proxies.
+        // - Without it both reads may come from the non-finalized state (vacuous compare)
+        // - Compact-block `finalized_height` metric = only proof of the durable commit
         wait_for_finalised(&indexer, u32::from(height), SEAM_TIMEOUT).await?;
 
         let finalised_txs = indexer.get_taddress_txids(taddr, height, height).await?;

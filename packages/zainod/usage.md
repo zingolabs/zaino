@@ -49,7 +49,7 @@ own metrics and lines are in [`zaino-nfs`](../zaino-nfs/usage.md#observability).
 - At most 32 admin connections are served at once; the rest wait in the accept backlog.
 - A non-private `listen_address` logs a warning at startup, because `/metrics` is
   unauthenticated.
-- The build gauge keeps its released name, `zainod_build_info`, with the version as a label.
+- The build gauge is `zaino_build_info`, with the version as a label.
 
 ## systemd
 

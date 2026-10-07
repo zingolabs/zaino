@@ -448,7 +448,7 @@ jsonrpc_address = "eu-zebra.example:8232"
 
 [p2p]
 enabled = true
-max_peers = 16
+peer_target = 16
 ```
 
 `[[trusted_validators]]` replaces `[source]` and `[[chainview_peers]]`, with no compatibility

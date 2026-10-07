@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 955db326c20920d3e293ed9ec261695d9451f75bac2ce34e9ce4a6b746c20d2a # shrinks to fanout = 2, steps = [Commit { owners: [3, 1, 0, 3, 1, 2], ids: 2 }, PowerLoss, Commit { owners: [1, 2, 3, 2, 0, 1, 0], ids: 6 }, Commit { owners: [3, 0, 0, 3, 2, 0], ids: 3 }, Commit { owners: [1, 2, 1, 3, 3], ids: 7 }, Commit { owners: [1, 3, 3, 3, 0, 3, 3], ids: 2 }, PowerLoss, Probe { ids: [1345880090, 3160825639, 1279065652, 2668087687, 2771152013] }, Scan { from: (2, 2890072743), to: (0, 4065354393) }, Commit { owners: [0, 1, 0, 3, 2, 0, 2], ids: 2 }, Commit { owners: [1, 3, 3, 1, 1], ids: 1 }, Probe { ids: [3150449039, 1880801252, 3903098090, 58079847, 704217940, 836025072, 3861331646, 1378341072, 2729126187, 3676476831, 686292499, 2109739530, 1357640783, 2129058482] }, Probe { ids: [1172507580, 821267343, 3959756706, 3989958606, 3905408058, 241167147, 4034344479, 145969329, 1659516479, 2736947795, 3308391457, 1245032377, 1292166189, 535196891, 904672103, 3800942235, 1206200493, 1571761297, 4106518554, 1998888319, 325995714, 3900037066, 2763549512] }, Commit { owners: [3, 3], ids: 0 }, Commit { owners: [1, 0], ids: 7 }]
-cc da3b07b79f1e40ed7a63bfc1a3fb86cdf93d6ec0ecf7ae77e64a71d54432d37a # shrinks to fanout = 2, steps = [Commit { owners: [], ids: 4 }, Commit { owners: [], ids: 4 }, Reopen, Commit { owners: [], ids: 4 }, Reopen, Commit { owners: [], ids: 4 }, Reopen, Commit { owners: [], ids: 4 }, Reopen, Commit { owners: [], ids: 4 }]

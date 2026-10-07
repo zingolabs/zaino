@@ -249,7 +249,6 @@ pub(crate) fn parse_transaction(
     Ok(TransactionResponse { bytes: hex(field(value, "hex")?)?, location })
 }
 
-/// `getpeerinfo`
 /// `getinfo` + `getdeprecationinfo` (`None` = the release lacks the latter)
 ///
 /// - `end_of_service` absent = not enforced on this network
@@ -276,6 +275,7 @@ pub(crate) fn parse_node_release(
     })
 }
 
+/// `getpeerinfo`
 pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>, ParseError> {
     as_array(value)?
         .iter()

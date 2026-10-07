@@ -14,7 +14,9 @@ let
       # commonCargoSources only includes .rs & cargo files
       #   .proto — read by tonic-build (zaino-proto/build.rs)
       #   usage.md — crate docs via #![doc = include_str!("../usage.md")]
+      #   lightwallet-protocol/CHANGELOG.md — protocol version (zaino-proto/build.rs)
       (lib.fileset.fileFilter (f: f.hasExt "proto") ../packages/zaino-proto)
+      ../packages/zaino-proto/lightwallet-protocol/CHANGELOG.md
       (lib.fileset.fileFilter (f: f.name == "usage.md") ../packages)
     ];
   };
