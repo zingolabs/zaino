@@ -34,13 +34,13 @@ The end state has one of each:
   zaino-header-chain ── VerifiedChain ──▶ zaino-nfs ◀──── fetch (any source)
      (best, final)      (watch)            │
                                            │  imbl graph, one Node per block above the root
-                                           │    Node { block, folded: per-index Changes,
+                                           │    Node { block, folds: per-index Changes,
                                            │           layers: per-index Layer }
                                            │
                      ┌─────────────────────┼──────────────────────────┐
                      ▼                     ▼                          ▼
               Snapshot (ArcSwap)     BlockSink: Final{block,      fetch wants
-                     │                folded: Option}             (bulk + tip)
+                     │                folds: Option}              (bulk + tip)
                      │                     │
                      │        ┌────────────┼─────────────┬──────────────┐
                      │        ▼            ▼             ▼              ▼
@@ -49,9 +49,9 @@ The end state has one of each:
                      │        │ (bulk only) │             │              │
                      │        └────── Store::apply → Store::commit (one fsync per batch) ──┐
                      │                                                                     │
-                     │◀──────────────────── durable tips (acks) ◀──────────────────────────┘
+                     │◀────────────── committed views (watch, acks) ◀──────────────────────┘
                      ▼
-  zaino-grpc:  let snap = nfs.snapshot()?;   CompactBlockReader::at(&snap)  TreeStateReader::at(&snap) …
+  zaino-grpc:  let snap = handle.snapshot()?;   snap.views().compact_block()   snap.views().tree_state() …
 ```
 
 - Below the NFS root (bulk sync): the NFS fetches final blocks and sends them **unfolded**; each
