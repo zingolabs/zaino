@@ -43,7 +43,7 @@ mod tests {
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View,
     };
-    use zaino_primitives::testing::Chain;
+    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{Block, Height};
     use zaino_sync::{Folds, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
@@ -72,8 +72,8 @@ mod tests {
         (sink, committed, running)
     }
 
-    fn step(block: &Block, folds: Option<Folds>) -> Step<Final> {
-        let (height, block) = (block.header().height, Arc::new(block.clone()));
+    fn step(block: &Arc<Block>, folds: Option<Folds>) -> Step<Final> {
+        let (height, block) = (block.header().height, Arc::clone(block));
         Step::Apply { height, data: Arc::new(Final { block, folds: folds.map(Arc::new) }) }
     }
 
@@ -83,10 +83,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn unfolded_and_folded_steps_locate_every_hash_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();
-        let mut chain = Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 4);
-        let blocks = chain.path(tip.hash);
-        let sibling = chain.mine(blocks[3].header().hash);
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(4);
+        let blocks = chain.blocks(tip);
+        let sibling = chain.fork(h(3)).mine_empty(1).tip();
         let folded = |block: &Block| {
             let mut folds = Folds::default();
             folds.insert(IndexKind::BlockHash, fold(block, NetworkType::Regtest));
@@ -125,10 +125,10 @@ mod tests {
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_committed_prefix_that_keeps_committing() {
         let fs = SimFs::recording();
-        let mut chain = Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 5);
-        let blocks = chain.path(tip.hash);
-        let located = |view: DiskView, blocks: &[Block]| -> Vec<Option<Height>> {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(5);
+        let blocks = chain.blocks(tip);
+        let located = |view: DiskView, blocks: &[Arc<Block>]| -> Vec<Option<Height>> {
             let reader = BlockHashReader::new(view);
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect()
         };
@@ -172,7 +172,7 @@ mod tests {
         let fs = SimFs::new();
         let (sink, _committed, running) = start(open(&fs), NonZeroUsize::MIN);
         fs.fail_from(fs.mutations());
-        let chain = Chain::new();
+        let chain = MockChain::regtest();
         sink.send(step(chain.block(chain.genesis().hash), None)).await;
         sink.shutdown();
 

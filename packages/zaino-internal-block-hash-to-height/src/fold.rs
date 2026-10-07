@@ -22,7 +22,7 @@ mod tests {
     use std::path::Path;
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
-    use zaino_primitives::testing::Chain;
+    use zaino_primitives::testing::MockChain;
     use zaino_primitives::types::{BlockHash, Height};
 
     use super::*;
@@ -33,9 +33,9 @@ mod tests {
     #[test]
     fn each_block_folds_to_its_golden_row_and_the_reader_locates_exactly_those() {
         let network = NetworkType::Regtest;
-        let mut chain = Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 2);
-        let blocks = chain.path(tip.hash);
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(2);
+        let blocks = chain.blocks(tip);
         let store = DiskEngine::new(SimFs::new()).open(Path::new("/bh"), &schema(network));
         let mut store = store.expect("open");
 
