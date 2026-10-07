@@ -15,8 +15,10 @@ files only, and `zcash_client_backend` generates only the client.
   `RawTransaction.data` is `bytes::Bytes`, so fanning one transaction out to
   many streams is a refcount bump.
 - `proto::proposal` — `cash.z.wallet.sdk.ffi` proposal types.
-- `proto::utils` — `PoolTypeFilter`, `ValidatedBlockRangeRequest`,
-  `prune_compact_block` and pool-type conversions.
+- `frame` — gRPC length-prefixed framing (`[0x00][len u32 BE][message]`):
+  `FRAME_HEADER`, `frame_into` (frame a message written in place), `framed_len`
+  and `split_frame` (walk framed bytes). One implementation for every crate that
+  writes or reads gRPC frames by hand.
 
 ## Layout
 

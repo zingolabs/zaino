@@ -1,0 +1,90 @@
+// zebrad's indexer service, verbatim from zebra v6.4.2 `zebra-rpc/proto/indexer.proto`
+// (MIT OR Apache-2.0). Zaino is a client (its chain view's push streams); tests serve it.
+syntax = "proto3";
+package zebra.indexer.rpc;
+
+// Used by methods that take no arguments.
+message Empty {};
+
+// A block hash and height.
+message BlockHashAndHeight {
+  // The hash of the block in display order.
+  bytes hash = 1;
+  
+  // The height of the block in the chain.
+  uint32 height = 2;
+};
+
+// An encoded block and its hash.
+message BlockAndHash {
+  // The hash of the block in display order.
+  bytes hash = 1;
+  
+  // The encoded block data.
+  bytes data = 2;
+};
+
+// A request for a single block by hash or height from the best chain.
+message BlockRequest {
+  // The block to fetch, identified by either its hash or its height.
+  //
+  // A 32-byte value is interpreted as a block hash in display order; a 4-byte
+  // value is interpreted as a big-endian block height. Any other length is
+  // rejected.
+  bytes hash_or_height = 1;
+};
+
+// A request to subscribe to non-finalized state changes.
+message NonFinalizedStateChangeRequest {
+  // The hashes of the chain tips the caller already has, in display order.
+  //
+  // The server streams only the non-finalized blocks that come after these
+  // tips, skipping any block at or below a provided tip on the same chain.
+  // If empty, every block currently in the non-finalized state is sent, so an
+  // empty request is equivalent to the previous no-argument behavior.
+  repeated bytes chain_tip_hashes = 1;
+};
+
+// Represents a change in the mempool.
+message MempoolChangeMessage {
+  // The type of change that occurred.
+  enum ChangeType {
+    // Represents a transaction being added to the mempool.
+    ADDED = 0;
+    // Represents a transaction being invalidated and rejected from the mempool.
+    INVALIDATED  = 1;
+    // Represents a transaction being mined into a block on the best chain and 
+    // removed from the mempool.
+    MINED = 2;
+  }
+
+  // The type of change that occurred.
+  ChangeType change_type = 1;
+
+  // The hash of the transaction that changed.
+  bytes tx_hash = 2;
+
+  // The transaction auth digest.
+  bytes auth_digest = 3;
+};
+
+service Indexer {
+  // Notifies listeners of chain tip changes
+  rpc ChainTipChange(Empty) returns (stream BlockHashAndHeight);
+
+  // Notifies listeners of new blocks in the non-finalized state.
+  //
+  // Callers may provide the hashes of the chain tips they already have so the
+  // server only streams blocks after those tips. An empty request streams every
+  // block currently in the non-finalized state.
+  rpc NonFinalizedStateChange(NonFinalizedStateChangeRequest) returns (stream BlockAndHash);
+
+  // Notifies listeners of mempool changes
+  rpc MempoolChange(Empty) returns (stream MempoolChangeMessage);
+
+  // Returns the block with the given hash or height from the best chain.
+  //
+  // Used by a syncer to fetch finalized blocks that bridge the gap between its
+  // local finalized tip and the start of the streamed non-finalized chain.
+  rpc GetBlock(BlockRequest) returns (BlockAndHash);
+}

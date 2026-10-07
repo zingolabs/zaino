@@ -5,8 +5,20 @@ use std::path::{Path, PathBuf};
 use tonic_prost_build::{compile_protos, configure};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
-const INDEXED_TIP_PROTO: &str = "proto/indexed_tip.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
+const ZEBRA_INDEXER_PROTO: &str = "proto/zebra_indexer.proto";
+const PROTOCOL_CHANGELOG: &str = "lightwallet-protocol/CHANGELOG.md";
+
+/// Newest released `## [vX.Y.Z]` heading (skips `[Unreleased]`)
+fn vendored_protocol_version(changelog: &str) -> io::Result<String> {
+    changelog
+        .lines()
+        .find_map(|line| line.strip_prefix("## [v")?.split_once(']'))
+        .map(|(version, _)| format!("v{version}"))
+        .ok_or_else(|| {
+            io::Error::other(format!("no `## [vX.Y.Z]` heading in {PROTOCOL_CHANGELOG}"))
+        })
+}
 
 fn protoc_available() -> bool {
     env::var_os("PROTOC").is_some() || which::which("protoc").is_ok()
@@ -38,8 +50,12 @@ fn main() -> io::Result<()> {
     // writes, which produces a self-perpetuating recompile loop.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
-    println!("cargo:rerun-if-changed={INDEXED_TIP_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
+    println!("cargo:rerun-if-changed={ZEBRA_INDEXER_PROTO}");
+    println!("cargo:rerun-if-changed={PROTOCOL_CHANGELOG}");
+
+    let version = vendored_protocol_version(&fs::read_to_string(PROTOCOL_CHANGELOG)?)?;
+    println!("cargo:rustc-env=LIGHTWALLET_PROTOCOL_VERSION={version}");
 
     // Check and compile proto files if needed
     if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
@@ -89,8 +105,9 @@ fn build() -> io::Result<()> {
         )
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
-    configure().build_server(true).compile_protos(&[INDEXED_TIP_PROTO], &["proto/"])?;
-    copy_generated(&out.join("zaino.index.v1.rs"), "src/proto/indexed_tip.rs")?;
+    // zebrad's push streams: Zaino is a client; the server half = tests' fake zebrad
+    configure().build_server(true).compile_protos(&[ZEBRA_INDEXER_PROTO], &["proto/"])?;
+    copy_generated(&out.join("zebra.indexer.rpc.rs"), "src/proto/zebra_indexer.rs")?;
 
     // Copy the generated types into the source tree so changes can be committed. The
     // file has the same name as for the compact format types because they have the

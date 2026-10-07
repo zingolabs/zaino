@@ -22,3 +22,6 @@ tonic-prost = "0.14"
 [build-dependencies]
 which = { workspace = true }
 tonic-prost-build = "0.14"
+
+[lints.rust]
+unreachable_pub = "warn"
