@@ -1,18 +1,18 @@
-//! block_hash index: one hash per block, read off the header, kept by its own loop
+//! block_hash index: one [`fold`] per block, kept by its own loop
 //!
-//! - one block = one `by_hash` row; storage tiers = `zaino_persistence::Tiered`
+//! - storage tiers = `zaino_persistence::Tiered`
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{Changes, MapRead, Store, Tiered};
+use zaino_persistence::{MapRead, Store, Tiered, TieredView};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{by_hash::encode_height, ReadView, BY_HASH, HASH};
+use crate::{fold, BlockHashReader};
 
 pub struct BlockHashIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    published: Published<ReadView<S::View>>,
+    published: Published<BlockHashReader<TieredView<S::View>>>,
 }
 
 impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
@@ -20,7 +20,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         let tiered = Tiered::new(store, batch_bytes);
-        let published = Published::new(ReadView::new(tiered.view()), tiered.durable_tip());
+        let published = Published::new(BlockHashReader::new(tiered.view()), tiered.durable_tip());
         Self { tiered: Offloaded::new(tiered), published }
     }
 
@@ -29,8 +29,8 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         self.tiered.get().durable_tip()
     }
 
-    /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<ReadView<S::View>> {
+    /// Reader, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
+    pub fn published(&self) -> &Published<BlockHashReader<TieredView<S::View>>> {
         &self.published
     }
 
@@ -55,7 +55,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         if Some(height) <= self.durable_height() {
             return;
         }
-        let changes = self.changes(block);
+        let changes = fold(block, self.tiered.get().schema().network);
         let full = self.tiered.get_mut().stage(changes, block.weight());
         self.published.merged(height);
         if full {
@@ -65,7 +65,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
 
     async fn apply_tip(&mut self, block: &Block) {
         self.finalize_staged().await;
-        let changes = self.changes(block);
+        let changes = fold(block, self.tiered.get().schema().network);
         self.tiered.get_mut().apply(changes);
         self.publish();
     }
@@ -92,22 +92,13 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         self.published.durable(self.durable_height());
     }
 
-    /// `block`'s one row
-    fn changes(&self, block: &Block) -> Changes {
-        let header = block.header();
-        let tip = BlockRef { hash: header.hash, height: header.height };
-        let mut changes = Changes::new(tip, self.tiered.get().schema());
-        changes.insert(BY_HASH, &<[u8; HASH]>::from(header.hash), &encode_height(header.height));
-        changes
-    }
-
     fn durable_height(&self) -> Option<Height> {
         self.durable_tip().map(|tip| tip.height)
     }
 
     fn publish(&self) {
         let tiered = self.tiered.get();
-        self.published.view(ReadView::new(tiered.view()), tiered.applied());
+        self.published.view(BlockHashReader::new(tiered.view()), tiered.applied());
     }
 }
 
@@ -136,8 +127,11 @@ mod tests {
         BlockHashIndexWriter::new(store.expect("open"), batch)
     }
 
-    fn located(view: &ReadView<DiskView>, hashes: &[BlockRef]) -> Vec<Option<Height>> {
-        hashes.iter().map(|at| view.height_of_hash(&<[u8; HASH]>::from(at.hash))).collect()
+    fn located(
+        reader: &BlockHashReader<TieredView<DiskView>>,
+        blocks: &[BlockRef],
+    ) -> Vec<Option<Height>> {
+        blocks.iter().map(|at| reader.height_of(&at.hash)).collect()
     }
 
     /// Steps sent as the producer sends them: bulk, the tip above it, a block finalized, a losing

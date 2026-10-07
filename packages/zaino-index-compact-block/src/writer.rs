@@ -1,27 +1,19 @@
-//! compact_block index: raw blocks → framed records, plus the commitment-tree sizes they carry,
-//! kept by its own loop
+//! compact_block index: one [`fold`] per block over the held view, kept by its own loop
 //!
-//! - only place tree sizes are computed ([`Block`] carries none; `z_gettreestate` = one round trip
-//!   per block, unaffordable in a full sync)
-//! - derived: size at `h` = size at `h - 1` + what `h` commits → block order non-negotiable (a gap
-//!   silently mis-sizes every later block: `Tiered` refuses it)
-//! - open and reorg seed the carry from the tip record's `chainMetadata`
-//! - one block = its one record; storage tiers = `zaino_persistence::Tiered`
+//! - storage tiers = `zaino_persistence::Tiered`
 //! - fees: one [`BlockFees`] step off value-balance's sink per block step, awaited after it
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, Tiered, View};
-use zaino_primitives::types::{Block, BlockFees, BlockRef, Height, TreeSizes};
+use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, Tiered, TieredView, View};
+use zaino_primitives::types::{Block, BlockFees, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{encode_compact_block, position, tip_sizes, ReadView, BLOCKS};
+use crate::{fold, position, CompactBlockReader, BLOCKS};
 
-/// - `carry` = cumulative tree sizes after the last block held (staged or applied)
 pub struct CompactBlockIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    carry: TreeSizes,
-    published: Published<ReadView<S::View>>,
+    published: Published<CompactBlockReader<TieredView<S::View>>>,
 }
 
 const NAME: &str = IndexKind::CompactBlock.name();
@@ -60,15 +52,16 @@ fn pair(block: Step<Block>, fees: Step<BlockFees>) -> Paired {
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema)), the carry seeded from its tip
-    /// record; `batch_bytes` = final blocks per bulk commit (one fsync)
+    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = final blocks per bulk
+    /// commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         let tiered = Tiered::new(store, batch_bytes);
         let view = tiered.view();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
         assert_eq!(view.len(BLOCKS), held, "{NAME}: one record per committed height");
-        let published = Published::new(ReadView::new(view.clone()), tiered.durable_tip());
-        Self { carry: tip_sizes(&view), tiered: Offloaded::new(tiered), published }
+        let reader = CompactBlockReader::new(view, tiered.schema().network);
+        let published = Published::new(reader, tiered.durable_tip());
+        Self { tiered: Offloaded::new(tiered), published }
     }
 
     /// Last committed block (the producer checks the chain it streams links onto it)
@@ -76,8 +69,8 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         self.tiered.get().durable_tip()
     }
 
-    /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<ReadView<S::View>> {
+    /// Reader, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
+    pub fn published(&self) -> &Published<CompactBlockReader<TieredView<S::View>>> {
         &self.published
     }
 
@@ -103,7 +96,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         if Some(height) <= self.durable_tip().map(|tip| tip.height) {
             return;
         }
-        let changes = self.encode(block, fees);
+        let changes = self.changes(block, fees);
         let full = self.tiered.get_mut().stage(changes, block.weight() + fees.weight());
         self.published.merged(height);
         if full {
@@ -113,16 +106,14 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
 
     async fn apply_tip(&mut self, block: &Block, fees: &BlockFees) {
         self.finalize_staged().await;
-        let changes = self.encode(block, fees);
+        let changes = self.changes(block, fees);
         self.tiered.get_mut().apply(changes);
         self.publish();
     }
 
-    /// Back to the durable tip, the carry re-read off its record
+    /// Back to the durable tip (the winning branch folds onto its record from there)
     fn reorg(&mut self) {
-        let tiered = self.tiered.get_mut();
-        tiered.reorg();
-        self.carry = tip_sizes(&tiered.view());
+        self.tiered.get_mut().reorg();
         self.publish();
         self.published.reorged();
     }
@@ -142,22 +133,19 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         self.published.durable(self.durable_tip().map(|tip| tip.height));
     }
 
-    /// `block`'s record, its tree sizes carried on (encoded once: one copy for serving and the
-    /// commit)
-    fn encode(&mut self, block: &Block, fees: &BlockFees) -> Changes {
-        let header = block.header();
-        let carry = self.carry.advance(block);
-        self.carry =
-            carry.unwrap_or_else(|error| panic!("{NAME} index at {}: {error}", header.height));
-        let tip = BlockRef { hash: header.hash, height: header.height };
-        let mut changes = Changes::new(tip, self.tiered.get().schema());
-        changes.append(BLOCKS, &encode_compact_block(block, fees, &self.carry));
-        changes
+    /// `block` folded onto everything held (encoded once: one copy for serving and the commit)
+    fn changes(&self, block: &Block, fees: &BlockFees) -> Changes {
+        let folded = fold(&self.reader(), block, fees);
+        folded.unwrap_or_else(|error| panic!("{NAME} index at {}: {error}", block.header().height))
+    }
+
+    fn reader(&self) -> CompactBlockReader<TieredView<S::View>> {
+        let tiered = self.tiered.get();
+        CompactBlockReader::new(tiered.view(), tiered.schema().network)
     }
 
     fn publish(&self) {
-        let tiered = self.tiered.get();
-        self.published.view(ReadView::new(tiered.view()), tiered.applied());
+        self.published.view(self.reader(), self.tiered.get().applied());
     }
 }
 
@@ -261,7 +249,7 @@ mod tests {
     struct Running {
         blocks: BlockSink,
         fees: FeeSink,
-        served: Served<ReadView<DiskView>>,
+        served: Served<CompactBlockReader<TieredView<DiskView>>>,
         applied: watch::Receiver<Option<BlockRef>>,
         durable: watch::Receiver<Option<Height>>,
         run: JoinHandle<()>,
@@ -327,8 +315,8 @@ mod tests {
         }
     }
 
-    /// Tree sizes accumulate across bulk and tip blocks; a reopened index resumes the carry from
-    /// the tip record, not zero; a reorg rewinds it to durable
+    /// Tree sizes accumulate across bulk and tip blocks; after a reopen and after a reorg, the next
+    /// block folds onto the durable tip record (not zero, not the losing branch)
     #[tokio::test]
     async fn tree_sizes_accumulate_and_survive_a_restart_and_a_reorg() {
         let fs = SimFs::new();
@@ -375,7 +363,7 @@ mod tests {
         resumed.send(Step::Finalized { height: h(3) }).await;
         resumed.settled(through(3), through(3)).await;
         resumed.stop().await;
-        // carry survived restart + reorg: not zero, not the losing branch's 9s
+        // folded onto 2's record across restart + reorg: not zero, not the losing branch's 9s
         assert_eq!(stored_sizes(&fs, 3), (6, 4, 6));
     }
 
@@ -469,8 +457,12 @@ mod tests {
 
             // every applied height served from one tier, durable records in order
             let view = index.served.pin_any();
-            assert_eq!(view.tip(), tip(sent), "{case}");
-            let mut expected_span = Vec::new();
+            let sent_tip = sent.checked_sub(1).map(|last| {
+                let header = chain[last].header();
+                BlockRef { hash: header.hash, height: header.height }
+            });
+            assert_eq!(view.tip(), sent_tip, "{case}");
+            let mut expected_window = Vec::new();
             for height in tip(sent).into_iter().flat_map(|last| Height::GENESIS.up_to(last)) {
                 let record =
                     view.block(height).unwrap_or_else(|| panic!("{case}: no record at {height}"));
@@ -488,38 +480,23 @@ mod tests {
                 assert_eq!(decoded.hash, hash.to_vec(), "{record_case}");
                 assert_eq!(sizes, sizes_through(n as usize), "{record_case}");
                 assert_eq!(fees, vec![0, fee_at(n)], "{record_case}: coinbase unset, its own fee");
-                expected_span.extend_from_slice(&record);
+                expected_window.extend_from_slice(&record);
             }
             if let Some(last) = tip(finals) {
-                let (span, reach) = view.span(Height::GENESIS, last, usize::MAX);
+                let (window, reach) = view.range(Height::GENESIS, last, usize::MAX);
                 assert_eq!(reach, last, "{case}");
-                let span = span.concat();
-                assert_eq!(span, expected_span[..span.len()], "{case}: records in order");
+                let window = window.concat();
+                assert_eq!(window, expected_window[..window.len()], "{case}: records in order");
             }
         }
         index.stop().await;
     }
 
-    /// Gap in the delivered chain = every later block silently mis-sized → the index panics,
-    /// never skips
-    #[tokio::test]
-    async fn a_gap_in_the_block_stream_panics() {
-        let fs = SimFs::new();
-        let mut index = Running::start(&fs);
-
-        let blocks = linked((0..3).map(|seed| txs(seed, 1, 1, 1)));
-        index.send(apply(false, Arc::clone(&blocks[0]))).await;
-        index.send(apply(false, Arc::clone(&blocks[2]))).await;
-        let panic = index.run.await.expect_err("panicked").into_panic();
-        let message = panic.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
-        assert!(message.contains("blocks must arrive contiguously"), "{message}");
-    }
-
     /// Four final blocks, each its own commit, crashed after every operation: each state reopens
     /// to an acknowledged or the attempted commit, serves those records byte for byte, and the
-    /// next block's tree sizes carry on from its tip record (not from zero)
+    /// next block's tree sizes fold onto its tip record (not from zero)
     #[tokio::test]
-    async fn every_crash_state_reopens_to_a_committed_prefix_whose_sizes_carry_on() {
+    async fn every_crash_state_reopens_to_a_committed_prefix_the_next_block_folds_onto() {
         // (sapling, orchard, ironwood) per block: cumulative sizes distinct at every height
         let counts = [(1, 0, 2), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
         let chain = linked((0u8..).zip(counts).map(|(seed, (s, o, i))| txs(seed, s, o, i)));
@@ -563,7 +540,7 @@ mod tests {
                 meta.orchard_commitment_tree_size,
                 meta.ironwood_commitment_tree_size,
             );
-            assert_eq!(sizes, sizes_through(count + 1), "{label}: carried on from the tip record");
+            assert_eq!(sizes, sizes_through(count + 1), "{label}: folded onto the tip record");
             index.stop().await;
         }
     }

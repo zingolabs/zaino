@@ -7,26 +7,29 @@
 //! outputs   OutPoint::encode() (txid 32 ‖ vout u32 BE) → value u64 BE      scope 0: never scanned
 //! ```
 //!
-//! - insert only: spent outputs kept, never deleted (any height re-resolves identically: a
-//!   downstream index behind this one replays through delivery, no rewind)
-//! - memtable role = `zaino_persistence::Tiered` (every output delivered above the durable tip,
-//!   staged and applied alike, RAM only)
+//! - insert only: spent outputs kept, never deleted (any later state re-resolves a block
+//!   identically: a downstream index behind this one replays through delivery, no rewind)
+//! - one block = its outputs' rows + its fees ([`fold`]); blocks above the durable tip =
+//!   `zaino_persistence::Tiered`
 //! - segments, merges, filters, manifest, crash safety = the engine's
-//! - one item published per block at delivery (bulk, replay and tip alike)
 //!
-//! # Lookup (`index_writer::resolve`, per transparent input)
+//! # Lookup (per transparent input, [`fold`])
 //!
 //! ```text
-//! prevout ──▶ held outputs ──hit──▶ value          (this block's own outputs included)
+//! prevout ──▶ outputs of this block or an earlier one in the run ──hit──▶ value
 //!    │ miss
 //!    ▼
-//! committed (whole run at once) ──found──▶ value
-//!                                └─────────▶ `MissingPrevout` (fatal)
+//! parent reader (whole run at once) ──found──▶ value
+//!                                    └─────────▶ `FoldError::MissingPrevout`
 //! ```
 
-mod index_writer;
+mod fold;
+mod reader;
+mod writer;
 
-pub use index_writer::{IndexWriterError, ValueBalanceIndexWriter};
+pub use fold::{fold, FoldError};
+pub use reader::ValueBalanceReader;
+pub use writer::ValueBalanceIndexWriter;
 
 use zaino_persistence::{IndexKind, MapId, Schema, Width};
 use zaino_primitives::types::{OutPoint, Zatoshis, ZatoshisOverflow};

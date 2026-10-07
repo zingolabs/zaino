@@ -21,12 +21,19 @@ tokio::spawn(index.run(blocks));
 ```
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
-  `S::View: MapRead`, serving `ReadView<V>` / `BlockHashService<V>`; zainod
-  picks `DiskEngine`.
+  `S::View: MapRead`, serving `BlockHashReader<TieredView<V>>` /
+  `BlockHashService<V>`; zainod picks `DiskEngine`.
 - `BlockHashIndexWriter` runs its own loop over its `Subscription<Block>`
   ([the shape every index shares](../zaino-sync/usage.md#an-index-loop);
-  `"block_hash"`). It derives nothing: one block = one `by_hash` row, taken
-  from the header, held in `zaino_persistence::Tiered` until a commit.
+  `"block_hash"`). Each block's `Changes` = `fold(&block, network)`, held in
+  `zaino_persistence::Tiered` until a commit.
+
+## Folding and reading
+
+- `fold(block, network) -> Changes` is the index's whole state transition,
+  pure: one `by_hash` row from the header. It reads no parent state.
+- `BlockHashReader<V>` is generic over any `V: MapRead` (a store's committed
+  view, `TieredView`, or a layer over either): `height_of(&BlockHash)`.
 - Fallible only at boot (the engine's `open` → `StoreError`). `new` and `run`
   are infallible: `run` returns at `Shutdown` and panics on a failed commit
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
@@ -46,8 +53,8 @@ tokio::spawn(index.run(blocks));
   land between the two reads.
 - There is no height → hash lookup. Heights are every index's native key, and
   the hash at a height comes from the answering index's own records.
-- `ReadView` (pinned once per request) answers `height_of_hash(&hash)`: held
-  blocks first, then the committed store.
+- The reader pinned once per request answers `height_of(&hash)`: held blocks
+  first, then the committed store.
 - A test with no live loop serves what an index published with
   `BlockHashService::new(Served::fixed((*served.pin_any()).clone()))`.
 

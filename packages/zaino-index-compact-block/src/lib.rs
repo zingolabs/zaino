@@ -11,39 +11,29 @@
 //! ```
 //!
 //! - records = wire bytes: serving = byte movement (no decode, no re-encode)
-//! - tree sizes after the tip = the tip record's `chainMetadata` (read at open and after a reorg)
-//! - blocks above the durable tip = `zaino_persistence::Tiered` (same bytes, RAM only)
+//! - tree sizes after a block = its record's `chainMetadata` ([`fold`] reads the parent's)
 //! - hash → height = `zaino-internal-block-hash-to-height` (record's own `hash` confirms a hit)
-//!
-//! # Lookup (`ReadView`)
-//!
-//! ```text
-//! height h ──▶ held records ──hit──▶ record
-//!    │ miss
-//!    ▼
-//! blocks[h]  (a slice of the mapping)
-//!
-//! heights a..=b ──▶ <= SPAN_RECORDS records from a, cut to the cursor's byte budget (>= 1)
-//! ```
 
-use zaino_persistence::{IndexKind, Schema, SequenceId, SequenceRead, Width};
-use zaino_primitives::types::{Height, TreeSizes};
+use zaino_persistence::{IndexKind, Schema, SequenceId, Width};
+use zaino_primitives::types::Height;
 use zcash_protocol::consensus::NetworkType;
 
 mod build;
-mod index_writer;
+mod fold;
 mod project;
+mod reader;
 mod serve;
-mod view;
+mod writer;
 
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 pub use build::{compact_tx, encode_compact_block};
-pub use index_writer::CompactBlockIndexWriter;
+pub use fold::fold;
 pub use project::{project_tx_at, Pools};
+pub use reader::CompactBlockReader;
 pub use serve::{CompactBlockService, RangeCursor, ServeError};
-pub use view::ReadView;
+pub use writer::CompactBlockIndexWriter;
 
 /// On-disk layout version
 const FORMAT: u16 = 1;
@@ -65,12 +55,4 @@ pub fn schema(network: NetworkType) -> Schema {
 /// `BLOCKS` position of `height`
 pub(crate) fn position(height: Height) -> u64 {
     u64::from(u32::from(height))
-}
-
-/// Tree sizes after `view`'s tip (its record's `chainMetadata`; nothing held = zero)
-pub(crate) fn tip_sizes(view: &impl SequenceRead) -> TreeSizes {
-    let Some(tip) = view.tip() else { return TreeSizes::ZERO };
-    let record = view.record(BLOCKS, position(tip.height));
-    let record = record.unwrap_or_else(|| panic!("compact_block: no record at its tip {tip:?}"));
-    project::record_sizes(&record).expect("every record carries its chainMetadata")
 }

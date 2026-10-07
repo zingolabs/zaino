@@ -154,18 +154,24 @@ zaino-index-compact-block/src/
 
 ```rust
 // fold.rs: parent state is read, never carried
-pub fn fold<V: SequenceRead>(parent: &CompactBlockReader<V>, block: &Block, fees: &BlockFees) -> Changes {
-    let sizes = parent.tip_sizes().advance(block).expect("…");   // parent record's chainMetadata
-    let mut changes = Changes::new(block.at(), &schema(parent.network()));
+pub fn fold<V: SequenceRead>(
+    parent: &CompactBlockReader<V>,
+    block: &Block,
+    fees: &BlockFees,
+) -> Result<Changes, TreeSizeOutOfRange> {
+    // asserts `block` extends `parent.tip()` (a wrong parent mis-sizes every later record)
+    let sizes = parent.tip_sizes().advance(block)?;              // parent record's chainMetadata
+    let mut changes = Changes::new(at, &schema(parent.network()));
     changes.append(BLOCKS, &encode_compact_block(block, fees, &sizes));
-    changes
+    Ok(changes)
 }
 
-// reader.rs
-pub struct CompactBlockReader<V> { view: LayeredView<V> }
+// reader.rs: any view (`TieredView` today, `LayeredView` once the port has it)
+pub struct CompactBlockReader<V> { view: V, network: NetworkType }
 impl<V: SequenceRead> CompactBlockReader<V> {
-    pub fn at(snapshot: &Snapshot<V>) -> Result<Self, ReadError>;     // Unimplemented | Syncing
-    pub fn tip(&self) -> Option<(Height, BlockHash)>;
+    pub fn new(view: V, network: NetworkType) -> Self;
+    pub fn at(snapshot: &Snapshot<V>) -> Result<Self, ReadError>;     // wave 3: Unimplemented | Syncing
+    pub fn tip(&self) -> Option<BlockRef>;
     pub fn block(&self, at: Height) -> Option<Bytes>;
     pub fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height);
     pub(crate) fn tip_sizes(&self) -> TreeSizes;
@@ -176,12 +182,17 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 | ------------------- | ----------------------------- | ----------- | ---------------------- | ------------------------------------------------- |
 | value-balance       | resolve prevouts, fee per tx  | —           | `Changes`, `BlockFees` | (internal: fees only)                             |
 | compact-block       | encode record + tree sizes    | `BlockFees` | `Changes`              | `tip`, `block`, `range`                           |
-| block-hash          | hash → height row             | —           | `Changes`              | `height_of(hash)`                                 |
+| block-hash          | hash → height row (no parent) | `network`   | `Changes`              | `height_of(&BlockHash)`                           |
 | tree-state          | append commitments, frontiers | —           | `Changes`              | `treestate(h)`, `subtree_roots(pool, start, max)` |
 | transparent-address | receives, spends, unspent     | —           | `Changes`              | `utxos`, `balance(s)`, `transactions`             |
 
 - **Fold order = the dependency graph**, written once in `zaino-nfs::fold_block`: value-balance
   first (its fees feed compact-block), then the rest.
+- Fallible folds return `Result`: value-balance `FoldError` (missing prevout, negative fee,
+  overflow), compact-block `TreeSizeOutOfRange` (#549). A compact-block fold onto a non-parent
+  panics (value-balance's parent may be any later state: insert only).
+- value-balance also has a crate-internal `fold_run(parent, blocks)`: one prevout probe per run
+  (its writer's bulk path); `fold` = a run of one.
 - tree-state also exports `fold_run(parent, blocks) -> Vec<Changes>` (one batched Merkle hashing
   per run, split per block); `fold` = a run of one. Bulk sync uses runs; the NFS folds one block.
 - Writers: one loop each, no reorg, no tiers, no gate:

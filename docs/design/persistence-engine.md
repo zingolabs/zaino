@@ -244,8 +244,9 @@ impl<S: Store> Tiered<S> {
   fsync). A failed commit panics naming the index and its directory: the store is poisoned and a
   restart recovers.
 - **Restart and reorg leave the same state**: nothing held. An index with a carry re-reads it off
-  the view's tip record (compact-block's tree sizes, tree-state's frontiers), so the rare path is
-  the boot path.
+  the view's tip record (tree-state's frontiers), so the rare path is the boot path. A folded
+  index (compact-block's tree sizes) carries nothing: its `fold` reads the parent tip record
+  through a reader over the view ([nfs.md](nfs.md) §5).
 
 Preconditions panic at the top of the call, naming the index, before any state moves:
 
@@ -257,8 +258,9 @@ Preconditions panic at the top of the call, naming the index, before any state m
 | `finalize`       | `through` at or below durable, or above the last held; splitting the staged |
 | `reorg`          | staged blocks held (final never rolls back)                                 |
 
-An index writer is then its schema, its per-block encoding (`block → Changes`) and any carry it
-derives; its own `run` loop maps the sink's steps (`docs/design/data-sink.md`) onto `Tiered`:
+An index writer is then its schema, its per-block encoding (`block → Changes`, a pure `fold` over a
+reader of the held view where the index has one) and any carry it derives; its own `run` loop maps
+the sink's steps (`docs/design/data-sink.md`) onto `Tiered`:
 
 | Step              | Writer                                                                    |
 | ----------------- | ------------------------------------------------------------------------- |

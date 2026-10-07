@@ -4,11 +4,11 @@
 //! - serving index confirms it holds `hash` there (independent publications: a reorg can land
 //!   between the reads)
 
-use zaino_persistence::MapRead;
-use zaino_primitives::types::Height;
+use zaino_persistence::{MapRead, TieredView};
+use zaino_primitives::types::{BlockHash, Height};
 use zaino_sync::Served;
 
-use crate::{ReadView, HASH};
+use crate::{BlockHashReader, HASH};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
@@ -22,17 +22,17 @@ pub enum ServeError {
 
 #[derive(Debug, Clone)]
 pub struct BlockHashService<V> {
-    served: Served<ReadView<V>>,
+    served: Served<BlockHashReader<TieredView<V>>>,
 }
 
 impl<V: MapRead> BlockHashService<V> {
     /// Unsynced → every call [`ServeError::Syncing`]
-    pub fn new(served: Served<ReadView<V>>) -> Self {
+    pub fn new(served: Served<BlockHashReader<TieredView<V>>>) -> Self {
         Self { served }
     }
 
     pub fn locate(&self, hash: &[u8; HASH]) -> Result<Height, ServeError> {
-        let view = self.served.pin().ok_or(ServeError::Syncing)?;
-        view.height_of_hash(hash).ok_or(ServeError::HashNotFound)
+        let reader = self.served.pin().ok_or(ServeError::Syncing)?;
+        reader.height_of(&BlockHash::from(*hash)).ok_or(ServeError::HashNotFound)
     }
 }

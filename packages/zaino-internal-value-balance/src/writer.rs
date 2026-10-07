@@ -1,40 +1,20 @@
-//! value_balance index: each delivered block's outputs recorded, its inputs resolved into its fees,
-//! kept by its own loop
+//! value_balance index: each run of delivered blocks folded onto everything held, kept by its own
+//! loop
 //!
-//! - A run of queued blocks: each one's outputs held (staged or applied), then the whole run's
-//!   fees resolved in one probe of every tier
-//! - Every step republished into the [`FeeSink`], 1:1 (replayed heights too: an index behind this
+//! - every step republished into the [`FeeSink`], 1:1 (replayed heights too: an index behind this
 //!   one still pairs them)
-//! - one block = its outputs' rows; storage tiers = `zaino_persistence::Tiered`
+//! - storage tiers = `zaino_persistence::Tiered`
 
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{Changes, MapRead, Store, Tiered, TieredView};
-use zaino_primitives::types::{
-    Block, BlockFees, BlockRef, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId,
-    Zatoshis,
-};
+use zaino_persistence::{Changes, MapRead, Store, Tiered};
+use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{blocking, Applied, FeeSink, Offloaded, Published, Step, Subscription, Weight};
 
-use crate::{decode_value, encode_value, OUTPUTS, VALUE};
+use crate::{fold::fold_run, ValueBalanceReader};
 
-#[derive(Debug, thiserror::Error)]
-pub enum IndexWriterError {
-    /// Spent outpoint this index never recorded (the chain is indexed from genesis: a bug or a
-    /// foreign directory, never a gap to tolerate)
-    #[error(
-        "block {height} tx {txid}: spends {spent}:{vout}, an output this index never recorded"
-    )]
-    MissingPrevout { height: Height, txid: TransactionId, spent: TransactionId, vout: OutputIndex },
-
-    #[error("block {height} tx {txid}: value sums past the money supply")]
-    ValueOverflow { height: Height, txid: TransactionId },
-
-    #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
-    NegativeFee { height: Height, txid: TransactionId },
-}
-
-/// Records every transparent output and derives one [`BlockFees`] per block
+/// Records every transparent output and derives one [`BlockFees`](zaino_primitives::types::BlockFees)
+/// per block
 ///
 /// - `batch_bytes` = one run's bytes and one bulk commit's
 pub struct ValueBalanceIndexWriter<S: Store> {
@@ -84,34 +64,31 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
         }
     }
 
-    /// Each block above `replayed_through` held (a later block may spend an earlier one's), then
-    /// every block's fees out (replays too), the whole run resolved in one probe (cold page
-    /// faults overlap)
+    /// Whole run folded on the blocking pool (one prevout probe), then each block above
+    /// `replayed_through` held and every block's fees out (replays too)
     async fn apply_run(&mut self, run: Vec<Applied<Block>>, fees: &FeeSink) {
         // at or below = replay for an index behind this one: on disk already (taken before the
         // run: a commit inside it moves the durable tip)
         let replayed_through = self.durable_tip().map(|tip| tip.height);
-        for (height, finalized, block) in &run {
-            if Some(*height) > replayed_through {
-                self.hold(*height, *finalized, block).await;
-            }
-        }
         let blocks: Vec<Arc<Block>> = run.iter().map(|(_, _, block)| Arc::clone(block)).collect();
-        let view = self.tiered.get().view();
-        let run_fees = blocking(move || resolve(&blocks, &view))
+        let tiered = self.tiered.get();
+        let parent = ValueBalanceReader::new(tiered.view(), tiered.schema().network);
+        let folded = blocking(move || fold_run(&parent, blocks.iter().map(Arc::as_ref)))
             .await
             .unwrap_or_else(|error| panic!("{NAME} index: {error}"));
-        for ((height, finalized, _), block_fees) in run.into_iter().zip(run_fees) {
+        for ((height, finalized, block), (changes, block_fees)) in run.into_iter().zip(folded) {
+            if Some(height) > replayed_through {
+                self.hold(height, finalized, changes, block.weight()).await;
+            }
             fees.send(Step::Apply { height, finalized, data: Arc::new(block_fees) }).await;
         }
     }
 
     /// Final block (bulk sync) staged for the next batch commit; a tip block applied above
     /// durable (staged blocks written first)
-    async fn hold(&mut self, height: Height, finalized: bool, block: &Block) {
-        let changes = self.changes(block);
+    async fn hold(&mut self, height: Height, finalized: bool, changes: Changes, weight: usize) {
         if finalized {
-            let full = self.tiered.get_mut().stage(changes, block.weight());
+            let full = self.tiered.get_mut().stage(changes, weight);
             self.published.merged(height);
             if full {
                 self.finalize(height).await;
@@ -151,97 +128,9 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
         self.published.durable(self.durable_tip().map(|tip| tip.height));
     }
 
-    /// `block`'s outputs, one row each
-    fn changes(&self, block: &Block) -> Changes {
-        let header = block.header();
-        let tip = BlockRef { hash: header.hash, height: header.height };
-        let mut changes = Changes::new(tip, self.tiered.get().schema());
-        for tx in block.transactions() {
-            for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-                let key = OutPoint { txid: tx.txid, vout }.encode();
-                changes.insert(OUTPUTS, &key, &encode_value(output.value));
-            }
-        }
-        changes
-    }
-
     fn publish(&self) {
         self.published.view((), self.tiered.get().applied());
     }
-}
-
-/// Each of `blocks`' fees, every prevout found in `view` (the whole run's outputs held)
-///
-/// - the whole run's prevouts in one `values` call (cold page faults overlap instead of queueing
-///   one block behind another)
-/// - later blocks' outputs held too: harmless (no block spends an output created after it)
-fn resolve<V: MapRead>(
-    blocks: &[Arc<Block>],
-    view: &TieredView<V>,
-) -> Result<Vec<BlockFees>, IndexWriterError> {
-    let prevouts: Vec<OutPoint> = blocks
-        .iter()
-        .flat_map(|block| block.transactions())
-        .flat_map(|tx| tx.transparent.inputs.iter().copied())
-        .collect();
-    let keys: Vec<[u8; OutPoint::LEN]> = prevouts.iter().map(OutPoint::encode).collect();
-    let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
-    let mut values: HashMap<OutPoint, Zatoshis> = HashMap::new();
-    for (key, found) in prevouts.iter().zip(view.values(OUTPUTS, &keys)) {
-        let Some(found) = found else { continue };
-        let bytes: &[u8; VALUE] = found[..].try_into().expect("outputs values: schema width");
-        let value = decode_value(bytes).expect("outputs values: in supply when committed");
-        values.insert(*key, value);
-    }
-
-    blocks
-        .iter()
-        .map(|block| {
-            let height = block.header().height;
-            let fees = block
-                .transactions()
-                .iter()
-                .map(|tx| fee(height, tx, &values))
-                .collect::<Result<_, _>>()?;
-            Ok(BlockFees { height, hash: block.header().hash, fees })
-        })
-        .collect()
-}
-
-/// `tx`'s value left in the transparent transaction value pool (protocol.pdf#transactions §3.4)
-///
-/// - Σ transparent inputs − Σ transparent outputs + each shielded pool's value balance
-fn fee(
-    height: Height,
-    tx: &Transaction,
-    values: &HashMap<OutPoint, Zatoshis>,
-) -> Result<Fee, IndexWriterError> {
-    if tx.transparent.coinbase {
-        return Ok(Fee::Coinbase);
-    }
-    let overflow = || IndexWriterError::ValueOverflow { height, txid: tx.txid };
-    let spent = tx.transparent.inputs.iter().try_fold(Zatoshis::ZERO, |spent, prevout| {
-        let value = values.get(prevout).ok_or(IndexWriterError::MissingPrevout {
-            height,
-            txid: tx.txid,
-            spent: prevout.txid,
-            vout: prevout.vout,
-        })?;
-        spent.checked_add(*value).ok_or_else(overflow)
-    })?;
-    let paid = Zatoshis::sum_balances(tx.transparent.outputs.iter().map(|out| out.value))
-        .ok_or_else(overflow)?;
-
-    // every term within ±MAX_MONEY (zip-0209) → Σ of six fits i64
-    let remaining = spent.as_i64() - paid.as_i64()
-        + i64::from(tx.sprout.value_balance)
-        + i64::from(tx.sapling.value_balance)
-        + i64::from(tx.orchard.value_balance)
-        + i64::from(tx.ironwood.value_balance);
-    // MUST be nonnegative (protocol.pdf#transactions §3.4 consensus rule)
-    let remaining = u64::try_from(remaining)
-        .map_err(|_| IndexWriterError::NegativeFee { height, txid: tx.txid })?;
-    Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| overflow())?))
 }
 
 #[cfg(test)]
@@ -250,15 +139,15 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, PersistenceEngine};
     use zaino_primitives::testing::{linked, Chain};
-    use zaino_primitives::types::{
-        OrchardData, SaplingData, Script, SignedZatoshis, SproutData, Transaction, TransparentData,
-        TransparentOutput,
-    };
+    use zaino_primitives::types::{Transaction, TransactionId};
     use zaino_sync::BlockSink;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::schema;
+    use crate::{
+        fold::tests::{coinbase, fees, tx},
+        schema, FoldError,
+    };
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("h")
@@ -271,47 +160,6 @@ mod tests {
     }
 
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
-
-    /// `(txid tag, spends, outputs, [sprout, sapling, orchard, ironwood] balances)`
-    fn tx(tag: u8, spends: &[(u8, u32)], outputs: &[u64], shielded: [i64; 4]) -> Transaction {
-        let signed = |value| SignedZatoshis::new(value).expect("in supply");
-        Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: spends
-                    .iter()
-                    .map(|&(prev, vout)| OutPoint { txid: TransactionId::from([prev; 32]), vout })
-                    .collect(),
-                outputs: outputs
-                    .iter()
-                    .map(|&value| TransparentOutput {
-                        value: Zatoshis::new(value).expect("in supply"),
-                        script: Script::new(vec![0x51]),
-                    })
-                    .collect(),
-            },
-            sprout: SproutData { value_balance: signed(shielded[0]) },
-            sapling: SaplingData { value_balance: signed(shielded[1]), ..Default::default() },
-            orchard: OrchardData { value_balance: signed(shielded[2]), ..Default::default() },
-            ironwood: OrchardData { value_balance: signed(shielded[3]), ..Default::default() },
-        }
-    }
-
-    fn coinbase(tag: u8, value: u64) -> Transaction {
-        let mut tx = tx(tag, &[], &[value], [0; 4]);
-        tx.transparent.coinbase = true;
-        tx
-    }
-
-    /// Per tx fee, in zats (`None` = coinbase)
-    fn fees(block_fees: &BlockFees) -> Vec<Option<u64>> {
-        let paid = |fee: &Fee| match fee {
-            Fee::Coinbase => None,
-            Fee::Paid(fee) => Some(fee.as_u64()),
-        };
-        block_fees.fees.iter().map(paid).collect()
-    }
 
     /// `A<h>[f]` / `F<h>` / `R` / `S`: a step's position in the stream, data aside
     fn label<T>(step: &Step<T>) -> String {
@@ -637,58 +485,34 @@ mod tests {
         );
     }
 
-    /// Tx 0x20 of block 0 unresolvable or consensus-invalid: the index panics, named; the
-    /// downstream consumer never sees `Shutdown` (its sink dropped → it panics too)
+    /// Fold error (each kind: `fold::tests`) = the index panics, named; the downstream consumer
+    /// never sees `Shutdown` (its sink dropped → it panics too)
     #[tokio::test]
-    async fn an_unrecorded_prevout_or_a_negative_fee_panics_the_index_and_its_consumer() {
+    async fn a_fold_error_panics_the_index_and_its_consumer() {
+        let index = open(SimFs::new(), NonZeroUsize::MIN);
+        let mut block_sink = BlockSink::new("blocks");
+        let mut fee_sink = FeeSink::new("fees");
+        let mut consumer = fee_sink.subscribe("consumer", QUEUE);
+        let subscription = block_sink.subscribe("value_balance", QUEUE);
+        let running = tokio::spawn(index.run(subscription, fee_sink));
+        let downstream = tokio::spawn(async move { consumer.next().await });
+
+        let unrecorded = tx(0x20, &[(0x99, 3)], &[1], [0; 4]);
+        let data = Arc::clone(&linked(vec![vec![coinbase(0x10, 100_000), unrecorded]])[0]);
+        block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
+
+        let message = |joined: Result<_, tokio::task::JoinError>| {
+            let payload = joined.expect_err("panicked").into_panic();
+            payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
+        };
         let id = |byte| TransactionId::from([byte; 32]);
-        let cases = [
-            // spends an outpoint never recorded (a foreign directory, a gap)
-            (
-                tx(0x20, &[(0x99, 3)], &[1], [0; 4]),
-                IndexWriterError::MissingPrevout {
-                    height: h(0),
-                    txid: id(0x20),
-                    spent: id(0x99),
-                    vout: 3,
-                },
-            ),
-            // transparent outputs > inputs
-            (
-                tx(0x20, &[(0x10, 0)], &[100_001], [0; 4]),
-                IndexWriterError::NegativeFee { height: h(0), txid: id(0x20) },
-            ),
-            // value into sapling from nothing
-            (
-                tx(0x20, &[], &[], [0, -1, 0, 0]),
-                IndexWriterError::NegativeFee { height: h(0), txid: id(0x20) },
-            ),
-        ];
-
-        for (invalid, expected) in cases {
-            let fs = SimFs::new();
-            let index = open(fs, NonZeroUsize::MIN);
-            let mut block_sink = BlockSink::new("blocks");
-            let mut fee_sink = FeeSink::new("fees");
-            let mut consumer = fee_sink.subscribe("consumer", QUEUE);
-            let subscription = block_sink.subscribe("value_balance", QUEUE);
-            let running = tokio::spawn(index.run(subscription, fee_sink));
-            let downstream = tokio::spawn(async move { consumer.next().await });
-
-            let data = Arc::clone(&linked(vec![vec![coinbase(0x10, 100_000), invalid]])[0]);
-            block_sink.send(Step::Apply { height: h(0), finalized: false, data }).await;
-
-            let message = |joined: Result<_, tokio::task::JoinError>| {
-                let payload = joined.expect_err("panicked").into_panic();
-                payload
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
-            };
-            let index = message(running.await);
-            assert_eq!(index, Some(format!("value_balance index: {expected}")));
-            let consumer = message(downstream.await.map(drop));
-            assert_eq!(consumer.as_deref(), Some("sink dropped without Shutdown"), "{expected}");
-        }
+        let expected =
+            FoldError::MissingPrevout { height: h(0), txid: id(0x20), spent: id(0x99), vout: 3 };
+        assert_eq!(message(running.await), Some(format!("value_balance index: {expected}")));
+        let consumer = message(downstream.await.map(drop));
+        assert_eq!(consumer.as_deref(), Some("sink dropped without Shutdown"));
     }
 }

@@ -1,8 +1,10 @@
 # zaino-index-compact-block
 
 The compact-block index: an append-only sequence of gRPC-framed `CompactBlock`
-records, the loop that builds it (`CompactBlockIndexWriter`), and the service
-`zaino-grpc` serves `GetLatestBlock` / `GetBlock` / `GetBlockRange` from.
+records, the pure step that derives one block's record (`fold`), typed reads
+over any view of it (`CompactBlockReader`), the loop that builds it
+(`CompactBlockIndexWriter`), and the service `zaino-grpc` serves
+`GetLatestBlock` / `GetBlock` / `GetBlockRange` from.
 
 ## On disk
 
@@ -30,6 +32,30 @@ blocks.idx    end offset per record
   `DiskEngine::verify` checks this index's directory against, for
   `zainod verify`.
 
+## Folding and reading
+
+```rust,ignore
+let parent = CompactBlockReader::new(view, network); // any V: SequenceRead
+let changes = fold(&parent, &block, &fees)?;          // Result<Changes, TreeSizeOutOfRange>
+```
+
+- `fold(parent, block, fees)` is the index's whole state transition, pure: the
+  block's one record, framed, with its `CompactTx.fee`s from `fees` (asserted
+  to be that block's) and its commitment-tree sizes (`chainMetadata`) = the
+  parent tip record's sizes plus what the block commits. Nothing is carried
+  between calls; the parent's sizes are read through the reader, so a fold
+  after a restart or a reorg reads the record it now builds on.
+- `parent` must hold exactly the block's parent as its tip (genesis: an empty
+  view). Anything else panics ("does not extend the parent tip"): a fold onto
+  the wrong parent would silently mis-size every later record.
+- `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
+- `CompactBlockReader<V>` is generic over any `V: SequenceRead`: a store's
+  committed view, `zaino_persistence::TieredView`, or a layer over either.
+  `tip()` (`Option<BlockRef>`), `block(h)` (one framed record, every pool) and
+  `range(first, last, budget)` (one window: at most 256 records, cut to
+  `budget` bytes, never fewer than one; either direction) are its reads.
+  Cloning it clones the view (pointer copies).
+
 ## Building
 
 ```rust,ignore
@@ -54,27 +80,25 @@ tokio::spawn(index.run(blocks, fees));
   past `u32` (#549), and when value-balance's fee sink drops
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - Storage tiers are `zaino_persistence::Tiered`
-  ([§5](../../docs/design/persistence-engine.md#5-tiering)): one block = its one
-  record. A final block is staged (a replay at or below the durable tip is
-  skipped) and committed once `batch_bytes` of source blocks are staged; a
-  non-final block commits what is staged, then is applied; `Finalized { h }`
-  commits through `h`; `Reorg` drops every applied block; `Shutdown` commits
-  what is staged. Commits run on the blocking pool; the loop waits for them.
-  Chain identity is the producer's check, not this index's.
-- `published()` (`zaino_sync::Published<ReadView<V>>`) = the view, both tips
-  and the serving gate (its task: `published().gate(tips, depth, cancel)`).
-- It derives each block's commitment-tree sizes (`chainMetadata`) as the
-  previous block's plus this block's commitments, so blocks must be contiguous
-  (`Tiered` refuses a gap). Open and reorg reseed the carry from the view's tip
-  record.
-- Encoding runs inline on the loop, once per block, staged or applied: serving
+  ([§5](../../docs/design/persistence-engine.md#5-tiering)): each block is
+  `fold`ed onto a reader over everything held. A final block is staged (a
+  replay at or below the durable tip is skipped) and committed once
+  `batch_bytes` of source blocks are staged; a non-final block commits what is
+  staged, then is applied; `Finalized { h }` commits through `h`; `Reorg` drops
+  every applied block (the winner folds onto the durable tip record);
+  `Shutdown` commits what is staged. Commits run on the blocking pool; the loop
+  waits for them. Chain identity is the producer's check, not this index's.
+- `published()` (`zaino_sync::Published<CompactBlockReader<TieredView<V>>>`) =
+  the reader, both tips and the serving gate (its task:
+  `published().gate(tips, depth, cancel)`).
+- Folding runs inline on the loop, once per block, staged or applied: serving
   and the commit read the same bytes.
 - The committed tip hash is what the producer checks the final verified chain
   against at boot (`ProduceError::Diverged`).
 - `encode_compact_block(&Block, &BlockFees, &TreeSizes)` returns the
-  framed record bytes. The block carries neither fees nor tree sizes, so the
-  caller supplies its fees (asserted to be that block's) and the cumulative
-  `TreeSizes`.
+  framed record bytes `fold` stores. The block carries neither fees nor tree
+  sizes, so the caller supplies its fees (asserted to be that block's) and the
+  cumulative `TreeSizes`.
 
 ## Serving
 
@@ -82,8 +106,9 @@ tokio::spawn(index.run(blocks, fees));
 let service = CompactBlockService::new(index.published().served());
 ```
 
-- `published().served()` (`zaino_sync::Served<ReadView<V>>`) = the view the
-  loop republishes after every step and commit, gated on `synced`. Until the
+- `published().served()` (`zaino_sync::Served<CompactBlockReader<TieredView<V>>>`)
+  = the reader the loop republishes after every step and commit, gated on
+  `synced`. Until the
   index reaches the tip, `block`, `resident_block`, `block_at_hash` and `range`
   answer heights at or below the durable tip (final: the producer stops on a
   contradiction and never rewrites one) and return `ServeError::Syncing` for
@@ -117,8 +142,9 @@ let service = CompactBlockService::new(index.published().served());
   `Pools::ALL` (lightwalletd's `FilterTxPool`); the block itself is always
   served. `block(h)` is never filtered.
 
-Each request pins one `ReadView` (held blocks + durable mapping) for its whole
-life, so a commit landing mid-stream cannot move the held/committed seam. A
+Each request pins one `CompactBlockReader` (held blocks + durable mapping) for
+its whole life, so a commit landing mid-stream cannot move the held/committed
+seam. A
 record's `hash` field is read by walking its framing; the walk stops before
 `vtx`, so it never touches the transactions.
 
@@ -143,10 +169,11 @@ write 0, "not provided", rather than a saturated wrong value.
 
 ## Features
 
-`testing` exposes `testing::block(height) -> (Block, BlockFees, TreeSizes)`,
-a sample block carrying every pool, its fees (one tx, fee 5 000) and its tree
-sizes, and `testing::committed(store, n) -> ReadView<V>`: `block(0..n)`'s
-records committed to `store` in one commit, served as the index serves them.
+`testing` exposes `testing::block(height) -> (Block, BlockFees)`, a sample
+block carrying every pool and its fees (one tx, fee 5 000), and
+`testing::committed(store, n) -> CompactBlockReader<TieredView<V>>`:
+`block(0..n)` folded and committed to `store` in one commit, served as the
+index serves them (tree sizes after `h` = `(h + 1) × (1, 1, 2)`).
 Blocks come from one deterministic `zaino_primitives::testing::Chain` (it
 enables `zaino-primitives/testing`), every block carrying the same sample
 transaction, so `block(h)` links onto `block(h - 1)` and its hash is real

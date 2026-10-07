@@ -16,7 +16,7 @@ use crate::HASH;
 /// `block` → gRPC-framed `CompactBlock` bytes, every pool included (`project` prunes on read)
 ///
 /// - `fees` = `block`'s own (asserted), one per tx: each `CompactTx.fee`
-/// - `sizes` = cumulative tree sizes after `block` (`CompactBlockIndexWriter` derives)
+/// - `sizes` = cumulative tree sizes after `block` ([`fold`](crate::fold) derives)
 pub fn encode_compact_block(block: &Block, fees: &BlockFees, sizes: &TreeSizes) -> Bytes {
     let header = &block.header();
     let height = header.height;
@@ -114,6 +114,7 @@ pub fn compact_tx(index: u64, tx: &Transaction, fee: Option<Zatoshis>) -> cf::Co
 mod tests {
     use std::slice;
 
+    use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
 
     use super::*;
@@ -124,7 +125,12 @@ mod tests {
 
     #[test]
     fn a_record_decodes_back_to_every_pool_it_was_built_from() {
-        let (block, fees, sizes) = block(1);
+        let (block, fees) = block(1);
+        let sizes = TreeSizes {
+            sapling: TreeSize::from(10),
+            orchard: TreeSize::from(20),
+            ironwood: TreeSize::from(30),
+        };
         let framed = encode_compact_block(&block, &fees, &sizes);
         assert_eq!(framed_len(&framed), Some(framed.len()), "gRPC length prefix");
         let decoded = cf::CompactBlock::decode(&framed[FRAME_HEADER..]).expect("decodes as proto");
@@ -171,7 +177,7 @@ mod tests {
     /// `u32::MAX` both write 0 ("not provided"), never a saturated lie
     #[test]
     fn fee_is_exact_within_u32_and_unset_otherwise() {
-        let (block, _, _) = block(1);
+        let (block, _) = block(1);
         let tx = &block.transactions()[0];
         let max = u64::from(u32::MAX);
         for (fee, wire) in [
@@ -190,9 +196,9 @@ mod tests {
     #[test]
     #[should_panic(expected = "encoded with another block's fees")]
     fn encoding_with_another_blocks_fees_panics() {
-        let (block, _, sizes) = block(1);
-        let (_, stranger, _) = crate::testing::block(2);
-        let _ = encode_compact_block(&block, &stranger, &sizes);
+        let (block, _) = block(1);
+        let (_, stranger) = crate::testing::block(2);
+        let _ = encode_compact_block(&block, &stranger, &TreeSizes::ZERO);
     }
 
     /// Decoded projection = exactly the requested pools, nothing else changed (the walk rewrites
@@ -201,8 +207,8 @@ mod tests {
     fn projection_drops_only_the_pools_not_requested() {
         use crate::{project::project, Pools};
 
-        let (block, fees, sizes) = block(0);
-        let stored = encode_compact_block(&block, &fees, &sizes);
+        let (block, fees) = block(0);
+        let stored = encode_compact_block(&block, &fees, &TreeSizes::ZERO);
         let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decode");
 
         // every pool requested: the stored bytes, untouched
@@ -259,7 +265,7 @@ mod tests {
         use zaino_primitives::testing::Chain;
         use zaino_primitives::types::{
             OrchardData, OutPoint, SaplingData, SaplingOutput, Script, TransparentData,
-            TransparentOutput, TreeSize,
+            TransparentOutput,
         };
 
         use crate::{

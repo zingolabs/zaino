@@ -7,18 +7,8 @@
 //! ```
 //!
 //! - insert only: a finalised block's height never changes (no tombstones, no versions)
-//! - one block = one row; blocks above the durable tip = `zaino_persistence::Tiered` (RAM)
+//! - one block = one row ([`fold`]); blocks above the durable tip = `zaino_persistence::Tiered`
 //! - segments, merges, filters, manifest, crash safety = the engine's
-//!
-//! # Lookup (`ReadView::height_of_hash`)
-//!
-//! ```text
-//! held blocks ──hit──▶ height
-//!    │ miss
-//!    ▼
-//! committed ──found──▶ height
-//!            └─────────▶ None
-//! ```
 
 use zaino_persistence::{IndexKind, Schema, Width};
 use zcash_protocol::consensus::NetworkType;
@@ -26,13 +16,15 @@ use zcash_protocol::consensus::NetworkType;
 use by_hash::{BY_HASH, HEIGHT};
 
 mod by_hash;
-mod index_writer;
+mod fold;
+mod reader;
 mod serve;
-mod view;
+mod writer;
 
-pub use index_writer::BlockHashIndexWriter;
+pub use fold::fold;
+pub use reader::BlockHashReader;
 pub use serve::{BlockHashService, ServeError};
-pub use view::ReadView;
+pub use writer::BlockHashIndexWriter;
 
 /// Block hash width
 pub(crate) const HASH: usize = 32;

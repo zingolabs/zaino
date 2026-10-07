@@ -2,24 +2,40 @@
 //!
 //! - here, not in the server crate (an index disabled = its methods never compiled)
 //! - answers in stored bytes, never decoded or re-encoded
-//! - block / range = zero-copy [`Bytes`] slices of the mapping (range walked per [`SPAN_BUDGET`]
+//! - block / range = zero-copy [`Bytes`] slices of the mapping (range walked per [`WINDOW_BYTES`]
 //!   window), pool pruning = framing walk
+//! - held/committed seam = the pinned reader's: a commit landing mid-stream cannot move it
 
 use std::sync::Arc;
 
 use bytes::Bytes;
-use zaino_persistence::{SequenceRead, View};
+use zaino_persistence::{SequenceRead, TieredView, View};
 use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
 use crate::{
     project::{project, record_hash},
-    view::ReadView,
-    Pools, HASH,
+    CompactBlockReader, Pools, HASH,
 };
 
 /// Ceiling on one range window's records (one chunk handed to the socket)
-pub(crate) const SPAN_BUDGET: usize = 1 << 20;
+const WINDOW_BYTES: usize = 1 << 20;
+
+/// Pinned reader over both tiers: committed records up to the durable tip, held ones above
+type Pinned<V> = Arc<CompactBlockReader<TieredView<V>>>;
+
+/// Tier seam (serving only: gone with `Tiered`)
+impl<V: SequenceRead> CompactBlockReader<TieredView<V>> {
+    /// Last committed height, inclusive (`None` = nothing committed)
+    fn durable_height(&self) -> Option<Height> {
+        self.view().durable().tip().map(|tip| tip.height)
+    }
+
+    /// Held above the committed tip: RAM, no page touched (`None` = not held, maybe committed)
+    pub(crate) fn resident_block(&self, height: Height) -> Option<Bytes> {
+        (Some(height) > self.durable_height()).then(|| self.block(height)).flatten()
+    }
+}
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -45,30 +61,30 @@ pub enum ServeError {
 
 /// Two tiers, one surface: committed records up to the finalised tip, held ones above it
 ///
-/// - a request pins **both at once** ([`ReadView`], one load): the seam cannot move mid-stream
+/// - a request pins **both at once** (one reader, one load): the seam cannot move mid-stream
 #[derive(Debug, Clone)]
 pub struct CompactBlockService<V> {
-    served: Served<ReadView<V>>,
+    served: Served<CompactBlockReader<TieredView<V>>>,
 }
 
 impl<V: SequenceRead> CompactBlockService<V> {
     /// Unsynced → [`ServeError::Syncing`] past the durable tip, committed heights answered
-    pub fn new(served: Served<ReadView<V>>) -> Self {
+    pub fn new(served: Served<CompactBlockReader<TieredView<V>>>) -> Self {
         Self { served }
     }
 
     /// Every tier pinned for one request or stream (one load); checked before any other
     /// validation (a syncing index = one answer, not one per request shape)
-    fn pin(&self) -> Result<Arc<ReadView<V>>, ServeError> {
+    fn pin(&self) -> Result<Pinned<V>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 
-    /// [`pin`](Self::pin), or while syncing a view whose files reach `last` (durable = final: the
-    /// producer stops on a contradiction, never rewrites)
-    fn pin_through(&self, last: Height) -> Result<Arc<ReadView<V>>, ServeError> {
-        let view = self.served.pin_any();
-        match Some(last) <= view.finalized_tip() || self.served.synced() {
-            true => Ok(view),
+    /// [`pin`](Self::pin), or while syncing a reader whose files reach `last` (durable = final:
+    /// the producer stops on a contradiction, never rewrites)
+    fn pin_through(&self, last: Height) -> Result<Pinned<V>, ServeError> {
+        let reader = self.served.pin_any();
+        match Some(last) <= reader.durable_height() || self.served.synced() {
+            true => Ok(reader),
             false => Err(ServeError::Syncing),
         }
     }
@@ -76,7 +92,7 @@ impl<V: SequenceRead> CompactBlockService<V> {
     /// Last height any tier can serve, inclusive, synced or not (non-finalized included: what
     /// `GetLatestBlock` answers once synced; `None` = nothing held)
     pub fn tip(&self) -> Option<Height> {
-        self.served.pin_any().tip()
+        self.served.pin_any().tip().map(|tip| tip.height)
     }
 
     /// `GetBlock`: every pool, transparent included (only `GetBlockRange` filters: the protocol's
@@ -106,9 +122,10 @@ impl<V: SequenceRead> CompactBlockService<V> {
 
     /// `GetLatestBlock`: the tip's height and hash (a `BlockID`, not a block)
     ///
-    /// - the view's tip block: RAM, no page read (a transport may answer inline)
+    /// - the reader's tip: RAM, no page read (a transport may answer inline)
     pub fn latest_id(&self) -> Result<(Height, [u8; HASH]), ServeError> {
-        self.pin()?.tip_id().ok_or(ServeError::Empty)
+        let tip = self.pin()?.tip().ok_or(ServeError::Empty)?;
+        Ok((tip.height, tip.hash.into()))
     }
 
     /// `GetBlockRange` of heights `start` to `end`, both inclusive, as a cursor over both tiers
@@ -124,7 +141,7 @@ impl<V: SequenceRead> CompactBlockService<V> {
         end: Height,
         pools: Pools,
     ) -> Result<RangeCursor<V>, ServeError> {
-        self.range_with_budget(start, end, pools, SPAN_BUDGET)
+        self.range_with_budget(start, end, pools, WINDOW_BYTES)
     }
 
     /// [`range`](Self::range) with an explicit window size (a test forces a refill)
@@ -137,8 +154,8 @@ impl<V: SequenceRead> CompactBlockService<V> {
     ) -> Result<RangeCursor<V>, ServeError> {
         let descending = start > end;
         let (low, high) = if descending { (end, start) } else { (start, end) };
-        let view = self.pin_through(high)?;
-        let Some(tip) = view.tip().filter(|&tip| low <= tip) else {
+        let reader = self.pin_through(high)?;
+        let Some(tip) = reader.tip().map(|tip| tip.height).filter(|&tip| low <= tip) else {
             return Err(ServeError::NotFound { height: low });
         };
 
@@ -146,7 +163,7 @@ impl<V: SequenceRead> CompactBlockService<V> {
         let high = high.min(tip);
         let (next, last) = if descending { (high, low) } else { (low, high) };
 
-        Ok(RangeCursor { view, budget, pools, descending, next: Some(next), last })
+        Ok(RangeCursor { reader, budget, pools, descending, next: Some(next), last })
     }
 }
 
@@ -154,10 +171,10 @@ impl<V: SequenceRead> CompactBlockService<V> {
 /// above it; either direction
 ///
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
-/// - `view` pinned for the whole stream: every tier + the seam between them frozen
+/// - `reader` pinned for the whole stream: every tier + the seam between them frozen
 /// - `next` `None` = spent; `last` = final height served, inclusive
 pub struct RangeCursor<V> {
-    view: Arc<ReadView<V>>,
+    reader: Pinned<V>,
     budget: usize,
     pools: Pools,
     descending: bool,
@@ -168,7 +185,7 @@ pub struct RangeCursor<V> {
 impl<V: View> std::fmt::Debug for RangeCursor<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RangeCursor")
-            .field("view", &self.view)
+            .field("reader", &self.reader)
             .field("pools", &self.pools)
             .field("descending", &self.descending)
             .field("next", &self.next)
@@ -180,7 +197,7 @@ impl<V: View> std::fmt::Debug for RangeCursor<V> {
 impl<V: SequenceRead> RangeCursor<V> {
     /// Next chunk reads the files (a cold window faults: the blocking pool's step)
     pub fn next_touches_disk(&self) -> bool {
-        self.next.is_some_and(|next| Some(next) <= self.view.finalized_tip())
+        self.next.is_some_and(|next| Some(next) <= self.reader.durable_height())
     }
 
     /// Next wire chunk (framed records back to back, in walk order, projected to the cursor's
@@ -190,7 +207,7 @@ impl<V: SequenceRead> RangeCursor<V> {
         if !self.next_touches_disk() {
             // held: one record per chunk, projected on read
             self.step_past(height);
-            let Some(record) = self.view.resident_block(height) else {
+            let Some(record) = self.reader.resident_block(height) else {
                 return Some(Err(ServeError::NotFound { height }));
             };
             let projected = project(std::slice::from_ref(&record), self.pools);
@@ -199,10 +216,10 @@ impl<V: SequenceRead> RangeCursor<V> {
 
         // descending: every height left sits in the files (the held ones went first)
         let files_last = match self.descending {
-            false => self.view.finalized_tip().map_or(self.last, |tip| tip.min(self.last)),
+            false => self.reader.durable_height().map_or(self.last, |tip| tip.min(self.last)),
             true => self.last,
         };
-        let (records, reached) = self.view.span(height, files_last, self.budget);
+        let (records, reached) = self.reader.range(height, files_last, self.budget);
         self.step_past(reached);
         Some(project(&records, self.pools).ok_or(ServeError::Malformed { height }))
     }
@@ -223,16 +240,15 @@ mod tests {
 
     use super::*;
     use crate::{
-        encode_compact_block, schema,
+        fold,
+        reader::WINDOW_RECORDS,
+        schema,
         testing::{block, committed},
-        view::SPAN_RECORDS,
-        BLOCKS,
     };
     use prost::Message;
     use zaino_persistence::{
-        fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Tiered,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Tiered,
     };
-    use zaino_primitives::types::BlockRef;
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zcash_protocol::consensus::NetworkType;
@@ -259,10 +275,9 @@ mod tests {
     fn four_committed_three_applied() -> Tiered<DiskStore> {
         let mut tiered = Tiered::new(store(), NonZeroUsize::MAX);
         for height in 0..7u32 {
-            let (block, balances, sizes) = block(height);
-            let tip = BlockRef { hash: block.header().hash, height: h(height) };
-            let mut changes = Changes::new(tip, tiered.schema());
-            changes.append(BLOCKS, &encode_compact_block(&block, &balances, &sizes));
+            let (block, fees) = block(height);
+            let parent = CompactBlockReader::new(tiered.view(), NetworkType::Regtest);
+            let changes = fold(&parent, &block, &fees).expect("small tree sizes");
             match height {
                 0..=3 => assert!(!tiered.stage(changes, 0), "one commit for all four"),
                 _ => tiered.apply(changes),
@@ -339,7 +354,7 @@ mod tests {
     fn a_range_spans_the_file_store_and_the_window_without_a_seam() {
         // finalized 0 to 3 (both inclusive), applied from 4
         let mut tiered = four_committed_three_applied();
-        let both = ReadView::new(tiered.view());
+        let both = CompactBlockReader::new(tiered.view(), NetworkType::Regtest);
         let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (_follower, synced) = tokio::sync::watch::channel(true);
         let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced));
@@ -377,7 +392,7 @@ mod tests {
         // stream pinned before a reorg: still its branch (every applied block gone, files kept)
         let pinned = service.range(h(4), h(6), Pools::ALL).expect("range");
         tiered.reorg();
-        window.store(Arc::new(ReadView::new(tiered.view())));
+        window.store(Arc::new(CompactBlockReader::new(tiered.view(), NetworkType::Regtest)));
         assert_eq!(heights(&drain(pinned)), [4, 5, 6], "pinned view survives the reorg");
 
         // fresh request: the files alone
@@ -392,7 +407,8 @@ mod tests {
     #[test]
     fn a_descending_range_serves_the_ascending_records_top_down_across_the_seam() {
         // finalized 0 to 3 (both inclusive), applied from 4
-        let both = ReadView::new(four_committed_three_applied().view());
+        let both =
+            CompactBlockReader::new(four_committed_three_applied().view(), NetworkType::Regtest);
         let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (_follower, synced) = tokio::sync::watch::channel(true);
         let service = CompactBlockService::new(Served::new(window, synced));
@@ -427,7 +443,8 @@ mod tests {
     #[test]
     fn a_syncing_index_serves_only_what_it_has_committed() {
         // finalized 0 to 3 (both inclusive), applied from 4
-        let both = ReadView::new(four_committed_three_applied().view());
+        let both =
+            CompactBlockReader::new(four_committed_three_applied().view(), NetworkType::Regtest);
         let window = Arc::new(arc_swap::ArcSwap::from_pointee(both));
         let (synced, synced_rx) = tokio::sync::watch::channel(false);
         let service = CompactBlockService::new(Served::new(Arc::clone(&window), synced_rx));
@@ -476,14 +493,14 @@ mod tests {
         assert_eq!(windowed.concat(), chunks.concat(), "same bytes, one window");
 
         // records per window capped under any budget, either direction
-        let tip = SPAN_RECORDS + 1;
+        let tip = WINDOW_RECORDS + 1;
         let long = CompactBlockService::new(Served::fixed(committed(store(), tip + 1)));
         let up = drain(long.range(h(0), h(tip), Pools::ALL).expect("ascending"));
         let down = drain(long.range(h(tip), h(0), Pools::ALL).expect("descending"));
         let per_chunk = |chunks: &[Bytes]| -> Vec<usize> {
             chunks.iter().map(|chunk| decode(chunk).len()).collect()
         };
-        let capped = vec![SPAN_RECORDS as usize, 2];
+        let capped = vec![WINDOW_RECORDS as usize, 2];
         assert_eq!((per_chunk(&up), per_chunk(&down)), (capped.clone(), capped));
         let top_down: Vec<u64> = (0..=u64::from(tip)).rev().collect();
         assert_eq!(heights(&down), top_down, "no gap or repeat at the window edge");

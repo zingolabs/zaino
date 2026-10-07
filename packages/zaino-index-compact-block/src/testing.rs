@@ -4,30 +4,33 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{Changes, SequenceRead, Store, Tiered};
+use zaino_persistence::{SequenceRead, Store, Tiered, TieredView};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
-    Block, BlockFees, BlockRef, CompactCiphertext, Fee, Height, OrchardAction, OrchardData,
-    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
-    TransparentOutput, TreeSize, TreeSizes, Zatoshis,
+    Block, BlockFees, CompactCiphertext, Fee, Height, OrchardAction, OrchardData, OutPoint,
+    SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransparentData,
+    TransparentOutput, Zatoshis,
 };
 
-use crate::{encode_compact_block, ReadView, BLOCKS, HASH};
+use crate::{fold, CompactBlockReader, HASH};
 
-/// [`block`]`(0..count)`'s records committed to `store` (one commit), as the index serves them
-pub fn committed<S: Store<View: SequenceRead>>(store: S, count: u32) -> ReadView<S::View> {
+/// [`block`]`(0..count)` folded and committed to `store` (one commit), as the index serves them
+pub fn committed<S: Store<View: SequenceRead>>(
+    store: S,
+    count: u32,
+) -> CompactBlockReader<TieredView<S::View>> {
+    let network = store.schema().network;
     let mut tiered = Tiered::new(store, NonZeroUsize::MAX);
     for height in 0..count {
-        let (block, fees, sizes) = block(height);
-        let tip = BlockRef { hash: block.header().hash, height: block.header().height };
-        let mut changes = Changes::new(tip, tiered.schema());
-        changes.append(BLOCKS, &encode_compact_block(&block, &fees, &sizes));
+        let (block, fees) = block(height);
+        let parent = CompactBlockReader::new(tiered.view(), network);
+        let changes = fold(&parent, &block, &fees).expect("one sample tx per block: far below u32");
         assert!(!tiered.stage(changes, 0), "a batch of usize::MAX bytes never fills");
     }
     if let Some(last) = count.checked_sub(1) {
         tiered.finalize(Height::try_from(last).expect("a small height"));
     }
-    ReadView::new(tiered.view())
+    CompactBlockReader::new(tiered.view(), network)
 }
 
 fn bytes32(seed: u8) -> [u8; HASH] {
@@ -47,13 +50,12 @@ fn action(seed: u8) -> OrchardAction {
     }
 }
 
-/// Block at `height` carrying every pool (dropped pool = missing field), its fees and its tree
-/// sizes
+/// Block at `height` carrying every pool (dropped pool = missing field) + its fees
 ///
 /// - one deterministic `testing::Chain`, every block the same tx: `block(h)` links onto
-///   `block(h − 1)`; sizes = 10 / 20 / 30
+///   `block(h − 1)`; tree sizes after `h` = (h + 1) × 1 / 1 / 2
 /// - its one tx priced at 5 000 zat (value-balance's job to derive, stated here)
-pub fn block(height: u32) -> (Block, BlockFees, TreeSizes) {
+pub fn block(height: u32) -> (Block, BlockFees) {
     let tx = Transaction {
         txid: bytes32(0x11).into(),
         transparent: TransparentData {
@@ -88,10 +90,5 @@ pub fn block(height: u32) -> (Block, BlockFees, TreeSizes) {
         hash: block.header().hash,
         fees: vec![Fee::Paid(Zatoshis::new(5_000).expect("in range"))],
     };
-    let sizes = TreeSizes {
-        sapling: TreeSize::from(10),
-        orchard: TreeSize::from(20),
-        ironwood: TreeSize::from(30),
-    };
-    (block, fees, sizes)
+    (block, fees)
 }

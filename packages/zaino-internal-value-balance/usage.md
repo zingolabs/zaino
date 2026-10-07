@@ -49,30 +49,50 @@ tokio::spawn(index.run(blocks, fee_sink));
 - `published()` carries `()` as its view (no service reads this index), plus
   its durable and applied tips.
 
+## Folding
+
+```rust,ignore
+let parent = ValueBalanceReader::new(view, network); // any V: MapRead
+let (changes, fees) = fold(&parent, &block)?;         // Result<_, FoldError>
+```
+
+- `fold(parent, block)` is the index's whole state transition, pure: the
+  block's outputs as one `Changes` (one `outputs` row each) and its
+  `BlockFees`, every prevout resolved from the block itself or through
+  `parent`.
+- `parent` = any state at or past the block's parent: the map is insert only,
+  so a later state resolves the same block identically (a replay below the
+  durable tip folds against the durable state).
+- `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
+  internal (fees are the only consumer).
+- The loop folds a delivered run at once (`fold_run`, crate-internal): block
+  `k` resolves against `parent` plus the outputs of blocks `0..=k`, and every
+  prevout from outside the run is asked in one `MapRead::values` call. A
+  sandblast transaction spends thousands of outputs, and one random lookup each
+  is one cold page fault each. A block spending an output that only a later
+  block of the run creates is `MissingPrevout`, as it would be alone.
+- `FoldError` names the block and transaction: `MissingPrevout` (an output the
+  index never recorded: it runs from genesis, so a foreign directory or a bug,
+  never a gap to work around), `NegativeFee`, `ValueOverflow` (below).
+
 ## Resolved per delivered run
 
 Each `Apply` pulls every `Apply` already queued, to `batch_bytes`, into one
-run (`Subscription::run`). Each block of the run above the durable tip is held
-first (its outputs = one `Changes`: staged if final, applied if not, in
-`zaino_persistence::Tiered`), then every block's inputs are resolved against
-everything held and committed, for every block: bulk, replay and tip alike.
-Resolving at commit time instead would deadlock, since the consumer waits on
-fees block by block while a commit waits for a whole batch. A commit writes
-the outputs held through its height; a reorg drops the applied ones.
-
-A run's prevouts are resolved in one `MapRead::values` call over the held
-outputs and the committed state. A sandblast transaction spends thousands of
-outputs, and one random lookup each is one cold page fault each.
+run (`Subscription::run`). The whole run is folded onto everything held and
+committed, on the blocking pool. Then each block above the durable tip is held
+(its `Changes`: staged if final, applied if not, in
+`zaino_persistence::Tiered`) and every block's fees go out, for every block:
+bulk, replay and tip alike. Resolving at commit time instead would deadlock,
+since the consumer waits on fees block by block while a commit waits for a
+whole batch. A commit writes the outputs held through its height; a reorg
+drops the applied ones.
 
 | Height delivered | Outputs | Derived + forwarded |
 |---|---|---|
 | at or below this index's durable tip | already stored | yes (a consumer behind this index pairs it) |
 | above it | held (`Tiered`) | yes |
 
-A spend of an output the index never recorded panics
-(`value_balance index: ` + `IndexWriterError::MissingPrevout`): the index runs
-from genesis, so it means a foreign directory or a bug, never a gap to work
-around.
+A fold error panics the loop (`value_balance index: ` + the `FoldError`).
 
 ## Fees
 
@@ -93,8 +113,8 @@ These are the same terms as librustzcash's `fee_paid`.
 - A coinbase transaction (decoded as `TransparentData::coinbase`) pays no fee
   (§3.11), so it is `Fee::Coinbase`, never a computed sum.
 - A negative sum is consensus-invalid for any other transaction (§3.4: "MUST
-  be nonnegative"), so it panics (`IndexWriterError::NegativeFee`) and is never
-  clamped. So does a sum past the money supply (`ValueOverflow`, ZIP 209).
+  be nonnegative"), so it is `FoldError::NegativeFee` (the loop panics) and is
+  never clamped. So does a sum past the money supply (`ValueOverflow`, ZIP 209).
 
 Mempool fees do not come from here:
 the validator lists them (`getrawmempool true`), since it resolved those
