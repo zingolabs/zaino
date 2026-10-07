@@ -8,6 +8,18 @@ in downstream crates.
 
 [`zaino-persistence`]: ../zaino-persistence/usage.md
 
+## Composition merge order
+
+An index declares a composition — `Append`, `Monoidal`, or `Fold` — that says how a
+batch's per-block deltas combine. The engine extracts blocks in parallel and out of
+chain order, then merges **every** composition in chain order: each delta is tagged
+with its block offset and the batch is reordered before the combine runs.
+
+`Monoidal`'s combine must be associative with an identity but is **not** assumed
+commutative, and `Fold` is outright order-dependent; neither an index nor an engine
+optimisation may rely on a commutative merge. A commutative fast path, if ever
+wanted, must be a separately named composition.
+
 ## Sync profiling (`sync-profile` feature)
 
 Off by default and compiled out entirely when off (no `Instant::now`, no extra

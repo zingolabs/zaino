@@ -424,17 +424,29 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     .pipelines
                     .get(&job.index)
                     .expect("scheduler only emits registered indexes");
-                (pipeline, ctx)
+                (job.global_offset, pipeline, ctx)
             })
             .collect();
+
+        // Test-only: run a batch's extractions sequentially in reversed chain
+        // order. A bridge that merges deltas in completion order rather than
+        // chain order then produces a wrong (reversed) result deterministically,
+        // which pins the ordering contract (see `ReverseExtractionGuard`).
+        #[cfg(test)]
+        if reverse_extraction_order() {
+            for (offset, pipeline, ctx) in work.iter().rev() {
+                pipeline.extract_one(*offset, ctx)?;
+            }
+            return Ok(());
+        }
 
         // Capture current span so rayon threads inherit the trace context.
         #[cfg(feature = "tracing")]
         let parent_span = tracing::Span::current();
-        work.par_iter().try_for_each(|(pipeline, ctx)| {
+        work.par_iter().try_for_each(|(offset, pipeline, ctx)| {
             #[cfg(feature = "tracing")]
             let _guard = parent_span.enter();
-            pipeline.extract_one(ctx)
+            pipeline.extract_one(*offset, ctx)
         })?;
 
         Ok(())
@@ -681,5 +693,48 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// The per-batch profiles emitted during this sync run.
     pub(crate) fn profile_records(&self) -> &[crate::profile::BatchProfileRecord] {
         self.profile.records()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// When set on the current thread, [`SyncEngine::run_extractions_parallel`]
+    /// extracts a batch sequentially in reversed chain order instead of fanning
+    /// out over rayon. It is thread-local (not global) because the test harness
+    /// runs tests concurrently on a reused thread pool; a global flag would bleed
+    /// between tests, and the engine drives a sync synchronously on the thread
+    /// that sets it.
+    static REVERSE_EXTRACTION_ORDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread forces reversed extraction order.
+#[cfg(test)]
+fn reverse_extraction_order() -> bool {
+    REVERSE_EXTRACTION_ORDER.with(std::cell::Cell::get)
+}
+
+/// RAII switch that forces reversed per-batch extraction order on the current
+/// thread for as long as it is held.
+///
+/// The non-commutative toy indexes use it to guarantee that merge sees deltas
+/// in a non-chain order, so the chain-order merge contract is exercised
+/// deterministically rather than depending on how rayon happens to schedule.
+/// Dropping it (including on unwind) clears the flag, so no later test on the
+/// same reused harness thread inherits it.
+#[cfg(test)]
+pub(crate) struct ReverseExtractionGuard(());
+
+#[cfg(test)]
+impl ReverseExtractionGuard {
+    pub(crate) fn new() -> Self {
+        REVERSE_EXTRACTION_ORDER.with(|flag| flag.set(true));
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReverseExtractionGuard {
+    fn drop(&mut self) {
+        REVERSE_EXTRACTION_ORDER.with(|flag| flag.set(false));
     }
 }

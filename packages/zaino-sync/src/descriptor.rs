@@ -70,8 +70,14 @@ impl Scope for CrossIndex {
 /// Disjoint keys across blocks. Merge = collect.
 pub struct Append;
 
-/// Overlapping keys with associative + commutative combine.
-/// Merge can be parallelised with a reduce tree.
+/// Overlapping keys combined by an associative operation with an identity.
+///
+/// The combine is **not** assumed commutative: the engine combines deltas in
+/// chain order, and that order is part of the contract. A reduce tree may still
+/// parallelise the merge, but only a balanced one that preserves left-to-right
+/// order — never one that reorders operands. Nothing here or downstream may
+/// rely on commutativity; a commutative fast path, if ever wanted, must be a
+/// separately named composition.
 pub struct Monoidal;
 
 /// Order-dependent. Must apply in chain order. Merge is sequential.
@@ -86,7 +92,8 @@ impl sealed::Composition for Fold {}
 pub enum CompositionType {
     /// Disjoint keys. Merge = collect.
     Append,
-    /// Associative + commutative. Merge = parallel reduce.
+    /// Associative with identity, NOT assumed commutative. Merge = reduce in
+    /// chain order.
     Monoidal,
     /// Order-dependent. Merge = sequential fold.
     Fold,

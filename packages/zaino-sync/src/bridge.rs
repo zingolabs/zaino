@@ -44,7 +44,7 @@ use std::sync::Mutex;
 use crate::backend::{BackendReader, Namespace, WriteOp};
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
 use crate::pipeline::{IndexPipeline, PipelineError};
-use crate::primitives::BlockHeight;
+use crate::primitives::{BlockHeight, BlockOffset};
 use crate::traits::{
     CumulativeAppend, ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold,
     MergeMonoidal, ProvideContext, Schema,
@@ -325,12 +325,16 @@ where
 ///
 /// **Parallelism profile:**
 /// - Extraction: fully parallel across blocks (BlockLocal proves no
-///   inter-block deps).
-/// - Merge: depends on strategy (trivial for Append, parallel-reducible
-///   for Monoidal, sequential for Fold).
+///   inter-block deps), so deltas arrive in rayon completion order, not chain
+///   order.
+/// - Merge: each delta is tagged with its block [`BlockOffset`] at extraction
+///   and the buffer is reordered to chain order before the strategy folds it.
+///   Chain order is the merge contract for every composition — `Monoidal`'s
+///   `combine` is associative but not commutative, and `Fold` is outright
+///   order-dependent — so the reorder is unconditional rather than per-strategy.
 pub(crate) struct LocalBridge<I: IndexDef, S: MergeStrategy<I>> {
     descriptor: Descriptor,
-    deltas: Mutex<Vec<I::Delta>>,
+    deltas: Mutex<Vec<(BlockOffset, I::Delta)>>,
     merged: Mutex<Option<S::MergedState>>,
     _phantom: PhantomData<(I, S)>,
 }
@@ -359,22 +363,28 @@ where
         &self.descriptor
     }
 
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+    fn extract_one(&self, offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError> {
         let delta = I::extract(&ctx.context()).map_err(PipelineError::extract)?;
         self.deltas
             .lock()
             .expect("delta mutex poisoned")
-            .push(delta);
+            .push((offset, delta));
         Ok(())
     }
 
     fn merge(&self) -> Result<(), PipelineError> {
-        let deltas: Vec<I::Delta> = self
+        let mut tagged: Vec<(BlockOffset, I::Delta)> = self
             .deltas
             .lock()
             .expect("delta mutex poisoned")
             .drain(..)
             .collect();
+
+        // Parallel extraction buffers deltas in completion order; the merge
+        // contract is chain order. Reorder by offset before folding. Offsets are
+        // unique within a batch, so the sort is total and `unstable` is safe.
+        tagged.sort_unstable_by_key(|(offset, _)| *offset);
+        let deltas: Vec<I::Delta> = tagged.into_iter().map(|(_, delta)| delta).collect();
 
         let state = S::merge_deltas(deltas);
         *self.merged.lock().expect("merged mutex poisoned") = Some(state);
@@ -472,7 +482,10 @@ where
         Ok(())
     }
 
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+    // Extraction is sequential in chain order (the scheduler emits one block at
+    // a time for a SelfCumulative index), so the offset carries no information
+    // this bridge needs.
+    fn extract_one(&self, _offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError> {
         let mut running = self
             .running_state
             .lock()
@@ -578,7 +591,10 @@ where
         Ok(())
     }
 
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+    // Extraction is sequential in chain order (the scheduler emits one block at
+    // a time for a SelfCumulative index), so the offset carries no information
+    // this bridge needs — the carry already threads blocks in order.
+    fn extract_one(&self, _offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError> {
         let mut carry = self.carry.lock().expect("carry mutex poisoned");
         let delta = I::extract(&ctx.context(), &carry).map_err(PipelineError::extract)?;
         *carry = I::carry(&delta);

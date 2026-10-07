@@ -203,12 +203,15 @@ pub trait ExtractCross: IndexDef<Scope = CrossIndex> {
 /// [`Persist`] at batch boundary.
 pub trait MergeAppend: IndexDef<Composition = Append> {}
 
-/// Merge for monoidal-type indexes (associative + commutative combine).
+/// Merge for monoidal-type indexes (associative combine with an identity).
 ///
-/// The engine may merge deltas from multiple blocks in any order using a
-/// parallel reduce tree. The implementor must ensure `combine` is
-/// associative and commutative — the type system cannot enforce these
-/// algebraic properties, but the engine relies on them for correctness.
+/// The engine combines a batch's deltas in **chain order**. A reduce tree may
+/// parallelise the merge, but only one that preserves left-to-right order; the
+/// engine never reorders operands. The implementor must ensure `combine` is
+/// associative and `identity` is its unit — the type system cannot enforce
+/// these algebraic properties, but the engine relies on them. Commutativity is
+/// **not** part of the contract: a correct index may have `combine(a, b) !=
+/// combine(b, a)`, and no index or engine optimisation may assume otherwise.
 ///
 /// Pure domain algebra — no persistence concern. Serialization of the
 /// merged accumulator is handled by [`Persist`].
@@ -216,13 +219,16 @@ pub trait MergeMonoidal: IndexDef<Composition = Monoidal> {
     /// The intermediate type used during the reduce.
     type Accumulator: Send + Sync;
 
-    /// The identity element: `combine(identity(), x) == x`.
+    /// The identity element: `combine(identity(), x) == x == combine(x, identity())`.
     fn identity() -> Self::Accumulator;
 
     /// Lift a single delta into the accumulator space.
     fn lift(delta: Self::Delta) -> Self::Accumulator;
 
-    /// Associative, commutative combine of two accumulators.
+    /// Associative combine of two accumulators, with `a` the chain-earlier
+    /// operand. Must be associative but need **not** be commutative, so the
+    /// engine always passes operands in chain order and preserves it through
+    /// any reduce tree.
     fn combine(a: Self::Accumulator, b: Self::Accumulator) -> Self::Accumulator;
 }
 

@@ -35,7 +35,7 @@
 use crate::backend::{BackendReader, WriteOp};
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
-use crate::primitives::BlockHeight;
+use crate::primitives::{BlockHeight, BlockOffset};
 use crate::traits::{IndexDef, ProvideContext};
 
 /// Errors during pipeline operations.
@@ -101,18 +101,22 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
 
     /// Extract a delta from one block's context.
     ///
-    /// Stores the delta in the bridge's internal buffer. The engine
-    /// calls this once per block, potentially in parallel for
-    /// `BlockLocal` indexes. The scheduler tracks completion counts
-    /// and transitions to merge when the batch is full.
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError>;
+    /// `offset` is the block's position in the sync range — its chain-order
+    /// rank. The engine calls this once per block, potentially in parallel and
+    /// out of chain order for `BlockLocal` indexes, so a bridge whose merge is
+    /// order-sensitive tags each delta with `offset` and reorders at merge
+    /// time. Bridges whose extraction is already sequential in chain order (the
+    /// cumulative ones) ignore it. The scheduler tracks completion counts and
+    /// transitions to merge when the batch is full.
+    fn extract_one(&self, offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError>;
 
     /// Merge all accumulated deltas for the current batch.
     ///
     /// Consumes the delta buffer and combines deltas according to the
     /// composition type:
     /// - **Append**: collect (no-op — deltas are already independent).
-    /// - **Monoidal**: parallel-reducible fold via `combine`.
+    /// - **Monoidal**: reduce via `combine` in chain order (associative, not
+    ///   assumed commutative).
     /// - **Fold**: strictly sequential application in chain order.
     ///
     /// The merged state is held internally until [`persist`](Self::persist).
@@ -151,8 +155,13 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
         blocks: &[Ctx],
         _deps: Option<&crate::traits::DepsReader>,
     ) -> Result<Vec<WriteOp>, PipelineError> {
-        for ctx in blocks {
-            self.extract_one(ctx)?;
+        for (index, ctx) in blocks.iter().enumerate() {
+            // This convenience path applies blocks in slice order, which already
+            // is chain order, so each block's offset is just its index.
+            let offset = BlockOffset::new(
+                u32::try_from(index).expect("batch block count fits a u32 offset"),
+            );
+            self.extract_one(offset, ctx)?;
         }
         self.merge()?;
         self.persist()
