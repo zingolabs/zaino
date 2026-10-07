@@ -30,3 +30,5 @@ pub use rpc::{EndpointError, Lane, LinkLimits, RpcClient, RpcClientConfig, RpcEr
 /// `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]
 pub mod mock;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
