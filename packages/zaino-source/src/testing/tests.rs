@@ -22,7 +22,7 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
 
     let links = validator.get_block_links(&[h(0), h(3), h(4)]).await.expect("reachable");
     let link = |at: BlockRef| Ok(BlockLink { header: chain.header_bytes(at.hash) });
-    let above = Err(GetBlockError::HeightNotFound(h(4)));
+    let above = Err(GetAtHeightError::HeightNotFound(h(4)));
     assert_eq!(links, [link(chain.genesis()), link(three), above]);
     let polled = validator.get_poll_reading(false, &[]).await.expect("reachable");
     assert_eq!(polled.info, chain.blockchain_info(three));

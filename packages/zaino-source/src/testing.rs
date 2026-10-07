@@ -15,7 +15,7 @@ use zaino_primitives::types::{
 };
 
 use crate::{
-    BlockLink, BlockLinks, ChainDataSource, FailureMode, GetBlockByHashError, GetBlockError,
+    BlockLink, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
     SendRawTransactionError, TransactionResponse,
@@ -295,7 +295,7 @@ impl ChainDataSource for MockValidator {
         self.enter(|calls| calls.links += heights.len()).await?;
         let state = self.state();
         let link = |height: &Height| {
-            let block = state.best_at(*height).ok_or(GetBlockError::HeightNotFound(*height))?;
+            let block = state.best_at(*height).ok_or(GetAtHeightError::HeightNotFound(*height))?;
             Ok(BlockLink { header: encode_header(block.header()) })
         };
         Ok(heights.iter().map(link).collect())
@@ -315,7 +315,7 @@ impl ChainDataSource for MockValidator {
         }
         let held = holds.iter().map(|height| match state.best_at(*height) {
             Some(block) => Ok(block.header().hash),
-            None => Err(QueryError::Domain(GetBlockError::HeightNotFound(*height))),
+            None => Err(QueryError::Domain(GetAtHeightError::HeightNotFound(*height))),
         });
         let listing = state.listing.clone().map(|()| {
             let listed = state.mempool.iter().map(|(txid, (raw, fee))| MempoolListed {
