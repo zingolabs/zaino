@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::json;
-use zaino_testutils::wait_for_finalised;
+use zaino_testutils::{wait_for_finalised, ZEBRAD_VERSION};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
@@ -31,7 +31,7 @@ const FAST_SEAM: u32 = 100;
 #[tokio::test(flavor = "multi_thread")]
 async fn finalised_index_advances_past_the_seam() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+    let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
     let indexer = env.add_indexer(
         dev!(
             Indexer::Zainod,
@@ -75,7 +75,7 @@ async fn finalised_index_advances_past_the_seam() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn range_across_the_seam_is_one_unbroken_chain() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+    let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
     let indexer = env.add_indexer(
         dev!(
             Indexer::Zainod,
@@ -132,7 +132,7 @@ async fn range_across_the_seam_is_one_unbroken_chain() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+    let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
     let indexer = env.add_indexer(
         dev!(
             Indexer::Zainod,
@@ -191,7 +191,7 @@ async fn seam_blocks_are_identical_whichever_side_serves_them() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn descending_range_across_the_seam_reverses_the_ascending_one() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+    let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
     let indexer = env.add_indexer(
         dev!(
             Indexer::Zainod,
@@ -239,7 +239,7 @@ async fn descending_range_across_the_seam_reverses_the_ascending_one() -> Result
 #[tokio::test(flavor = "multi_thread")]
 async fn served_blocks_match_the_validator_on_both_sides_of_the_seam() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+    let validator = env.add_validator(Validator::zebrad(ZEBRAD_VERSION).regtest());
     let indexer = env.add_indexer(
         dev!(
             Indexer::Zainod,

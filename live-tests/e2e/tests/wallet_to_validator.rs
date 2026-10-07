@@ -33,7 +33,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use rstest::rstest;
 use serde_json::{json, Value};
-use zaino_testutils::{assert_rpc_parity, wait_for_finalised};
+use zaino_testutils::{assert_rpc_parity, wait_for_finalised, ZEBRAD_VERSION};
 use ztest::prelude::*;
 
 use e2e::{assert_pool_absent, assert_pool_present, Pool};
@@ -75,8 +75,8 @@ mod wallet {
 
     /// The faucet's synced wallet holds a spendable shielded coinbase note.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn receives_mining_reward<B: ValidatorConfig>(
@@ -121,8 +121,8 @@ mod wallet {
     /// Smoke: faucet and recipient wallets connect and sync without error,
     /// and the indexer reports node info.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_to_node_get_info<B: ValidatorConfig>(
@@ -164,8 +164,8 @@ mod wallet {
     /// receiver credits Ironwood from NU6.3 (Orchard is spend-locked) and Orchard
     /// before it.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_unified<B: ValidatorConfig>(
@@ -221,7 +221,9 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_sapling(#[case] backend: Backend) -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let base = Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest());
+        let base = Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest());
         let image = dev!(Indexer::Zainod, "../../Dockerfile");
         let (validator, indexer) = match backend {
             Backend::Fetch => (env.add_validator(base), env.add_indexer(image.regtest())),
@@ -262,8 +264,8 @@ mod wallet {
     /// The faucet sends 250_000 to the recipient's transparent address; the
     /// recipient's synced wallet shows it.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent<B: ValidatorConfig>(
@@ -318,7 +320,9 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_all(#[case] backend: Backend) -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let base = Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest());
+        let base = Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest());
         let image = dev!(Indexer::Zainod, "../../Dockerfile");
         let (validator, indexer) = match backend {
             Backend::Fetch => (env.add_validator(base), env.add_indexer(image.regtest())),
@@ -367,8 +371,8 @@ mod wallet {
     /// The recipient receives a transparent 250_000, shields it, and reports
     /// 250_000 − 15_000 fee in the pool the chain's latest activation shields into.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn shield_for_validator<B: ValidatorConfig>(
@@ -434,8 +438,8 @@ mod wallet {
     /// - Advance mined to `FILLER_ADDRESS`: on this file's `FUND` coinbase it is
     ///   `SEAM_ADVANCE` halo2 proofs, past the tier's cap on the two cores it reserves
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent_finalization<B: ValidatorConfig>(
@@ -554,7 +558,9 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_mined(#[case] backend: Backend) -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let base = Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest());
+        let base = Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest());
         let image = dev!(Indexer::Zainod, "../../Dockerfile");
         let (validator, indexer) = match backend {
             Backend::Fetch => (env.add_validator(base), env.add_indexer(image.regtest())),
@@ -614,8 +620,8 @@ mod wallet {
     /// sides are sorted; the two broadcast txids keep `[] == []` from
     /// passing.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_mempool<B: ValidatorConfig>(
@@ -722,8 +728,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_tx() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -828,8 +837,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -954,8 +966,8 @@ mod wallet {
     /// is enforced against, while zebra reports its own memory estimate.
     /// The floor makes `usage >= bytes` the only contractual relation.
     #[rstest]
-    #[case::fetch(Validator::zebrad("6.2.3"), Backend::Fetch)]
-    #[case::state(Validator::zebrad("6.2.3"), Backend::State)]
+    #[case::fetch(Validator::zebrad(ZEBRAD_VERSION), Backend::Fetch)]
+    #[case::state(Validator::zebrad(ZEBRAD_VERSION), Backend::State)]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_info<B: ValidatorConfig>(
@@ -1136,7 +1148,9 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn monitor_unverified_mempool(#[case] backend: Backend) -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let base = Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest());
+        let base = Validator::zebrad(ZEBRAD_VERSION)
+            .regtest()
+            .mine_to(FUND.ztest());
         let image = dev!(Indexer::Zainod, "../../Dockerfile");
         let (validator, indexer) = match backend {
             Backend::Fetch => (env.add_validator(base), env.add_indexer(image.regtest())),
@@ -1250,7 +1264,7 @@ mod wallet {
     /// `getaddresstxids` over the recipient's taddr returns the send's txid
     /// (asserted as the first txid returned), identically to the validator's own.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_address_tx_ids<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -1306,7 +1320,7 @@ mod wallet {
     /// the send's, over both the gRPC and the JSON-RPC surface, and the JSON-RPC
     /// one matches the validator's own.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_address_utxos<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -1371,7 +1385,7 @@ mod wallet {
     /// non-empty tree per shielded protocol, and matches the validator's
     /// `z_gettreestate` field for field.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn z_get_treestate<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -1420,7 +1434,7 @@ mod wallet {
     /// No regtest chain completes a subtree, so the roots are empty — and empty
     /// identically to the validator's own `z_getsubtreesbyindex`.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn z_get_subtrees_by_index<B: ValidatorConfig>(
@@ -1462,7 +1476,7 @@ mod wallet {
     /// `getrawtransaction` for the shielded send's txid reports the confirming
     /// height, identically to the validator's own answer.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_raw_transaction<B: ValidatorConfig>(
@@ -1524,8 +1538,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_txids() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -1569,8 +1586,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_utxos() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -1600,8 +1620,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_utxos_stream() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -1649,8 +1672,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_mempool() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -1712,7 +1738,7 @@ mod wallet {
     /// `getaddressbalance` over the recipient's taddr reports exactly 250_000,
     /// identically to the validator's own answer.
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[case::zebra(Validator::zebrad(ZEBRAD_VERSION))]
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_address_balance<B: ValidatorConfig>(
@@ -1754,8 +1780,11 @@ mod wallet {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_balance() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator =
-            env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+        let validator = env.add_validator(
+            Validator::zebrad(ZEBRAD_VERSION)
+                .regtest()
+                .mine_to(FUND.ztest()),
+        );
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
@@ -1795,7 +1824,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1902,7 +1931,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2008,7 +2037,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2092,7 +2121,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2177,7 +2206,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2280,7 +2309,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2395,7 +2424,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2515,7 +2544,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2609,7 +2638,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2705,7 +2734,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2801,7 +2830,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2904,7 +2933,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2997,7 +3026,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -3078,7 +3107,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -3170,7 +3199,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -3357,7 +3386,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Orchard.ztest())
                 .mount(&vol),
@@ -3501,7 +3530,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Orchard.ztest())
                 .mount(&vol),
@@ -3551,7 +3580,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -3638,7 +3667,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -3723,7 +3752,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.3")
+            Validator::zebrad(ZEBRAD_VERSION)
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),

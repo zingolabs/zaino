@@ -1,0 +1,40 @@
+[[changes]]
+crate = "zaino-convert-zebra"
+kind = "breaking"
+description = "Built against zebra-chain 13 (zebrad 6.4.2); public functions take zebra-chain 13 types."
+migration = "Upgrade `zebra-chain` to 13."
+
+[[changes]]
+crate = "zaino-source-zebra-readstate"
+kind = "breaking"
+description = "Built against zebra-chain 13 and zebra-state 14 (zebrad 6.4.2); `open` and `read_state_service` use their types."
+migration = "Upgrade `zebra-chain` to 13 and `zebra-state` to 14."
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "breaking"
+description = "Built against zebra-chain 13 and zebra-rpc 17 (zebrad 6.4.2); the config's network is a zebra-chain 13 `Network`."
+migration = "Upgrade `zebra-chain` to 13 and `zebra-rpc` to 17."
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = "Built against zebra-chain 13, zebra-state 14 and zebra-rpc 17 (zebrad 6.4.2); public traits use their types."
+migration = "Upgrade `zebra-chain` to 13, `zebra-state` to 14 and `zebra-rpc` to 17."
+
+[[changes]]
+crate = "zaino-common"
+kind = "breaking"
+description = "Built against zebra-chain 13 (zebrad 6.4.2); network conversions use its `Network`."
+migration = "Upgrade `zebra-chain` to 13."
+
+[[changes]]
+crate = "zaino-serve"
+kind = "breaking"
+description = "Built against zebra-chain 13 and zebra-rpc 17 (zebrad 6.4.2); wire types expose their types."
+migration = "Upgrade `zebra-chain` to 13 and `zebra-rpc` to 17."
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = "Built against the zebrad 6.4.2 crates and tested against zebrad 6.4.2."
