@@ -142,6 +142,7 @@ Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `RpcClient`, and the least-loaded-first `TrafficBalancer`.
+- [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers — request classes with reserved permits, one hedge / retry / blame policy under one budget, `report` benching exactly the member that misanswered, and every trusted validator's poll.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — attributed transaction announcements (the chain view's mempool sightings) and the isolated per-attempt submission push; peers never decide the tip.
 - [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the proof-of-work verified header tree from genesis — which rules, the most-work tip, and why finality is the caller's gate.

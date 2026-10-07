@@ -1,0 +1,20 @@
+id = "01a11858-64b3-75b1-ab75-93b7fa2b0c4e"
+
+[[changes]]
+crate = "zaino-traffic"
+kind = "feature"
+section = "added"
+description = """
+First release. One scheduler for every request to trusted validators and peers \
+(`TrafficBalancer::new(trusted, peers)` over any `zaino_source::ChainDataSource`, peers through \
+the `PeerTransport` port; `TrafficDriver::run(cancel)` its one task). Asks by class \
+(`block(hash, Tip | Bulk)`, `headers(Pinned | Peers)`, `bytes`, `transaction`, `submit`), each \
+`Answered { value, from, ticket }`; trusted members by `priority` tier, then peers, P2C on a \
+peak-EWMA cost within a tier; per-class reserved and ceiling-capped permits per member \
+(`Limits::MIN_CONNECTIONS` = 6) and an optional request-rate GCRA; hedges past max(class floor, \
+the member's p95); retries and hedges under one budget; `report(ticket, why)` benches exactly the \
+sender (60 s doubling to 1 h, `zaino_traffic_misanswers_total`); dropping an ask abandons it. \
+Every trusted member polled (1 s, 15 s streaming, 200 ms floor, 0.5 → 30 s ladder; `Down` after \
+10 failures) with `ask_each_poll` heights and `pushed` wake-ups; `observe(member)` = its latest \
+`Observation`, `members()` = the `MemberTable`, `entries()` = submission entries.
+"""

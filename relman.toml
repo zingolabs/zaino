@@ -88,5 +88,9 @@ name = "zaino-source"
 path = "packages/zaino-source"
 
 [[target]]
+name = "zaino-traffic"
+path = "packages/zaino-traffic"
+
+[[target]]
 name = "zaino-sync"
 path = "packages/zaino-sync"
