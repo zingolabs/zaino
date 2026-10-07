@@ -9,11 +9,11 @@ keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "The storage core every Zaino index shares: the file layer, manifest commits, immutable sorted segments and the verify report vocabulary."
+description = "The persistence port every Zaino index stores through, and DiskEngine behind it: positional files for sequences, an LSM for maps, one manifest commit."
 
 [features]
-# `fs::SimFs`: crash-state enumeration for index tests
-testing = []
+# `fs::SimFs` (crash-state enumeration) + `conformance` (the suite every engine runs)
+testing = ["dep:proptest"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -21,13 +21,14 @@ zaino-primitives = { version = "0.3.0", path = "../zaino-primitives" }
 serde = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 memmap2 = { workspace = true }
-arc-swap = { workspace = true }
 crc32fast.workspace = true
 zcash_protocol.workspace = true
 xorf.workspace = true
 rayon.workspace = true
 metrics = { workspace = true }
 tracing.workspace = true
+proptest = { workspace = true, optional = true }
+imbl.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
@@ -35,3 +36,6 @@ tempfile.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
+
+[lints.rust]
+unreachable_pub = "warn"

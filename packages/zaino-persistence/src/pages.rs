@@ -12,7 +12,7 @@
 //!
 //! Each page's checksum covers its page index as well as its bytes, so a page and its checksum
 //! moved together to another position still fail. The manifest also holds a digest of the whole
-//! `<file>.crc`, checked at open: the manifest (itself checksummed and atomically renamed) pins
+//! `<file>.crc`, checked at open: the manifest (itself checksummed, two slots) pins
 //! every page checksum, and each checksum pins its page. A data page and its checksum that are
 //! both stale, for example after a lost write, therefore fail too.
 //!
@@ -30,14 +30,14 @@ use std::{
 };
 
 use bytes::Bytes;
-use zaino_primitives::types::Height;
 
 use crate::{
     fs::{Access, FileHandle, Fs, Mapping},
     manifest::{BodyReader, ManifestError},
+    port::Checked,
 };
 
-pub const PAGE: usize = 4096;
+pub(crate) const PAGE: usize = 4096;
 
 const SUM: usize = 4;
 
@@ -59,23 +59,23 @@ const CORRUPTION: &str = "on-disk corruption: stop zainod, run `zainod verify`, 
 /// - `tail` = [`page_sum`] of the bytes after the last complete page
 /// - `sums` = CRC-32 of `<file>.crc` through the last complete page (CRC of nothing when none)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sealed {
-    pub len: u64,
-    pub tail: u32,
-    pub sums: u32,
+pub(crate) struct Sealed {
+    pub(crate) len: u64,
+    pub(crate) tail: u32,
+    pub(crate) sums: u32,
 }
 
 impl Sealed {
     /// A file with nothing committed
-    pub const EMPTY: Self = Self { len: 0, tail: 0, sums: 0 };
+    pub(crate) const EMPTY: Self = Self { len: 0, tail: 0, sums: 0 };
 
-    pub fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.len.to_le_bytes());
         out.extend_from_slice(&self.tail.to_le_bytes());
         out.extend_from_slice(&self.sums.to_le_bytes());
     }
 
-    pub fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
+    pub(crate) fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
         Ok(Self { len: body.u64()?, tail: body.u32()?, sums: body.u32()? })
     }
 
@@ -108,7 +108,7 @@ fn extend_digest(digest: u32, more: &[u8]) -> u32 {
 }
 
 /// `<file>.crc`
-pub fn sums_path(path: &Path) -> PathBuf {
+pub(crate) fn sums_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
     name.push(".crc");
     PathBuf::from(name)
@@ -131,7 +131,7 @@ pub enum PageError {
 
 /// What a paged file is, which decides how it grows and who makes its name durable
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FileKind {
+pub(crate) enum FileKind {
     /// Written once, then sealed for good (an LSM segment): grows by exactly what is appended,
     /// and the caller syncs the directory that links it
     Segment,
@@ -184,7 +184,7 @@ impl Reserve {
 /// - `sums_digest` = CRC-32 of every sealed page checksum (what the next seal extends)
 /// - `reserves` = the data's and the checksums' [`Reserve`]s (`None` = a [`FileKind::Segment`])
 #[derive(Debug)]
-pub struct PagedFile {
+pub(crate) struct PagedFile {
     path: PathBuf,
     data: Arc<dyn FileHandle>,
     sums: Arc<dyn FileHandle>,
@@ -204,7 +204,7 @@ impl PagedFile {
     ///
     /// - a [`FileKind::Log`] with either file created here: the directory is synced, so the file
     ///   outlives a crash before any manifest names it (a commit no longer syncs directories)
-    pub fn open(
+    pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
         sealed: Sealed,
@@ -249,23 +249,15 @@ impl PagedFile {
         })
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
     /// Bytes written (sealed or not)
-    pub fn len(&self) -> u64 {
+    pub(crate) fn len(&self) -> u64 {
         self.len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
     }
 
     /// Appends at the end; neither durable nor sealed until [`seal`](Self::seal)
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
-    pub fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
+    pub(crate) fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
         if let Some([data, _]) = &mut self.reserves {
             data.cover(self.data.as_ref(), self.len + bytes.len() as u64)?;
         }
@@ -291,7 +283,7 @@ impl PagedFile {
 
     /// Data fsync → completed pages' CRCs written + fsynced; the seal the owner's next manifest
     /// must carry (committed only once that manifest is durable)
-    pub fn seal(&mut self) -> io::Result<Sealed> {
+    pub(crate) fn seal(&mut self) -> io::Result<Sealed> {
         self.data.sync_data()?;
         if !self.unsealed_sums.is_empty() {
             let at = self.sealed_pages * SUM as u64;
@@ -309,7 +301,7 @@ impl PagedFile {
     }
 
     /// Read view of `sealed` (a seal this file produced), keeping `previous`'s checked pages
-    pub fn pages(&self, sealed: Sealed, previous: Option<&Pages>) -> io::Result<Pages> {
+    pub(crate) fn pages(&self, sealed: Sealed, previous: Option<&Pages>) -> io::Result<Pages> {
         let (data, sums) = (self.data.as_ref(), self.sums.as_ref());
         Pages::map(&self.path, data, sums, sealed, previous, Access::Normal)
     }
@@ -331,7 +323,7 @@ fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageErr
 /// - a failed check = bytes changed on disk after they were sealed: dies (never serves bytes
 ///   it cannot vouch for; `docs/design/durability.md`)
 #[derive(Clone)]
-pub struct Pages {
+pub(crate) struct Pages {
     inner: Arc<Mapped>,
 }
 
@@ -358,7 +350,7 @@ impl Pages {
     /// checked, nothing truncated
     ///
     /// - `access` = how this mapping is read (another mapping of the same file keeps its own)
-    pub fn open(
+    pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
         sealed: Sealed,
@@ -430,22 +422,18 @@ impl Pages {
         })
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.inner.data.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.inner.data.is_empty()
-    }
-
     /// `range`, checked, as a zero-copy slice of the mapping
-    pub fn bytes(&self, range: Range<usize>) -> Bytes {
+    pub(crate) fn bytes(&self, range: Range<usize>) -> Bytes {
         self.check(range.clone());
         self.inner.data.slice(range)
     }
 
     /// `range`, checked
-    pub fn read(&self, range: Range<usize>) -> &[u8] {
+    pub(crate) fn read(&self, range: Range<usize>) -> &[u8] {
         self.check(range.clone());
         &self.inner.data[range]
     }
@@ -462,7 +450,7 @@ impl Pages {
     }
 
     /// `MADV_WILLNEED` over `range`, clipped to the sealed bytes (advisory)
-    pub fn will_need(&self, range: Range<usize>) {
+    pub(crate) fn will_need(&self, range: Range<usize>) {
         let end = range.end.min(self.inner.data.len());
         if let Some(mapping) = self.inner.mapping.as_ref().filter(|_| range.start < end) {
             mapping.will_need(range.start..end);
@@ -499,57 +487,31 @@ impl Pages {
     }
 }
 
-/// What an index directory's manifest commits: its tip (last height, inclusive; `None` = empty),
-/// and every file it seals (paths relative to the directory)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommittedFiles {
-    pub tip: Option<Height>,
-    pub files: Vec<(String, Sealed)>,
-}
-
-/// One file's offline check (plain reads: safe beside a live writer)
-///
-/// - `orphaned_bytes` = past the committed length (uncommitted, dropped at the next open)
-/// - `lost` = missing or shorter than committed
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct Scrub {
-    pub path: String,
-    pub committed_bytes: u64,
-    pub orphaned_bytes: u64,
-    pub lost: bool,
-    /// `<file>.crc` differs from the digest the manifest committed
-    pub bad_sums: bool,
-    pub bad_pages: Vec<u64>,
-}
-
-impl Scrub {
-    pub fn is_clean(&self) -> bool {
-        !self.lost && !self.bad_sums && self.bad_pages.is_empty()
-    }
-}
-
 /// Reads `dir/relative` up to `sealed` and checks every page against `<file>.crc` + the tail CRC
-pub fn scrub(dir: &Path, relative: &str, sealed: Sealed) -> io::Result<Scrub> {
-    use std::io::Read as _;
-
+///
+/// - read only, no lock: safe beside a live writer
+pub(crate) fn scrub(
+    fs: &dyn Fs,
+    dir: &Path,
+    relative: &str,
+    sealed: Sealed,
+) -> io::Result<Checked> {
     let path = dir.join(relative);
-    let mut report = Scrub {
-        path: relative.to_owned(),
+    let mut report = Checked {
+        name: relative.to_owned(),
         committed_bytes: sealed.len,
         orphaned_bytes: 0,
         lost: false,
         bad_sums: false,
         bad_pages: Vec::new(),
     };
-    let (data, sums) = match (std::fs::File::open(&path), std::fs::read(sums_path(&path))) {
-        (Ok(data), Ok(sums)) => (data, sums),
-        (Err(error), _) | (_, Err(error)) if error.kind() == io::ErrorKind::NotFound => {
-            report.lost = true;
-            return Ok(report);
-        }
-        (Err(error), _) | (_, Err(error)) => return Err(error),
+    let (Some(data), Some(sums)) =
+        (fs.open_read_only(&path)?, fs.open_read_only(&sums_path(&path))?)
+    else {
+        report.lost = true;
+        return Ok(report);
     };
-    let len = data.metadata()?.len();
+    let (len, sums) = (data.len()?, sums.read_all()?);
     if len < sealed.len || (sums.len() as u64) < sealed.full_pages() * SUM as u64 {
         report.lost = true;
         return Ok(report);
@@ -558,11 +520,10 @@ pub fn scrub(dir: &Path, relative: &str, sealed: Sealed) -> io::Result<Scrub> {
     let committed_sums = &sums[..usize::try_from(sealed.full_pages()).expect("fits") * SUM];
     report.bad_sums = crc32fast::hash(committed_sums) != sealed.sums;
 
-    let mut reader = io::BufReader::with_capacity(1 << 20, data).take(sealed.len);
     let mut page = vec![0u8; PAGE];
     for index in 0..sealed.len.div_ceil(PAGE as u64) {
         let size = (sealed.len - index * PAGE as u64).min(PAGE as u64) as usize;
-        reader.read_exact(&mut page[..size])?;
+        data.read_exact_at(&mut page[..size], index * PAGE as u64)?;
         let expected = match size == PAGE {
             true => {
                 let at = usize::try_from(index).expect("page index fits usize") * SUM;
@@ -771,7 +732,7 @@ mod tests {
         file.append(&bytes).expect("append");
         let sealed = file.seal().expect("seal");
 
-        let clean = scrub(dir.path(), "data", sealed).expect("scrub");
+        let clean = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
         assert!(clean.is_clean(), "{clean:?}");
         assert_eq!(clean.committed_bytes, bytes.len() as u64);
 
@@ -779,7 +740,7 @@ mod tests {
         damaged[PAGE + 1] ^= 1;
         damaged.extend_from_slice(&[0; 5]);
         std::fs::write(&path, &damaged).expect("write");
-        let report = scrub(dir.path(), "data", sealed).expect("scrub");
+        let report = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
         assert_eq!((report.bad_pages.clone(), report.orphaned_bytes), (vec![1], 5));
         assert!(!report.bad_sums, "the checksums themselves are intact");
 
@@ -787,10 +748,10 @@ mod tests {
         let mut sums = std::fs::read(&sums_at).expect("sums");
         sums[0] ^= 1;
         std::fs::write(&sums_at, &sums).expect("write sums");
-        let report = scrub(dir.path(), "data", sealed).expect("scrub");
+        let report = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
         assert!(report.bad_sums && !report.is_clean(), "{report:?}");
 
         std::fs::write(&path, &bytes[..PAGE]).expect("truncate");
-        assert!(scrub(dir.path(), "data", sealed).expect("scrub").lost);
+        assert!(scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub").lost);
     }
 }

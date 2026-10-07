@@ -531,6 +531,10 @@ impl Fs for SimFs {
         }))
     }
 
+    fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
+        self.open_existing(path)
+    }
+
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
         let mut inner = self.lock_inner();
         let id = inner.image.file(from)?.ok_or_else(|| not_found(from))?;

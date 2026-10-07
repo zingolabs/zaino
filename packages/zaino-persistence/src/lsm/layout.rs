@@ -4,29 +4,33 @@
 //! records   records × STRIDE, keys strictly ascending
 //! fences    blocks × first key          block = BLOCK_BYTES / STRIDE records (≈ one page)
 //! summary   groups × first key          group = BLOCK_BYTES / key_len fences (≈ one page)
-//! filter    filtered sets only (`filter.rs`), else absent
+//! filter    binary fuse over each key's first `filtered` bytes (`filter.rs`)
 //! ```
 //!
 //! A reader keeps the summary in memory (about 1/100 of the fences), so finding a key's block
 //! touches one page of fences instead of binary-searching all of them on disk.
 //!
+//! - row = key ‖ value, both fixed width
 //! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
 
 use std::{cmp::Ordering, ops::Range, path::Path, sync::Arc};
 
 use super::{
     filter::{FilterError, FilterLayout, FilterWriter},
-    record::{Key, Record},
     spill::{scratch_path, Spill},
 };
-use crate::{fs::Fs, pages::PagedFile};
+use crate::{
+    fs::Fs,
+    pages::PagedFile,
+    port::{MapTable, Width},
+};
 
 const BLOCK_BYTES: usize = 4096;
 
-/// What a record type's segments look like on disk
+/// What a map's segments look like on disk
 ///
-/// - `probed` = point lookups (random access); `filtered` = key bytes the filter covers (the whole
-///   key for probed sets, `FILTER_PREFIX` for range-scanned ones, 0 = no filter)
+/// - `probed` = point lookups (scope 0: random access, filter over whole keys)
+/// - `filtered` = key bytes the filter covers (whole key, or the scope)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Shape {
     pub(crate) stride: usize,
@@ -38,24 +42,25 @@ pub(crate) struct Shape {
 }
 
 impl Shape {
-    pub(crate) fn of<R: Record>() -> Self {
-        let (key_len, probed) = (<R::Key as Key>::LEN, <R::Key as Key>::PROBED);
-        let prefix = <R::Key as Key>::FILTER_PREFIX;
-        const {
-            let (len, prefix) = (<R::Key as Key>::LEN, <R::Key as Key>::FILTER_PREFIX);
-            assert!(len > 0, "keys hold bytes");
-            assert!(len <= R::STRIDE, "key within its record");
-            assert!(!<R::Key as Key>::PROBED || len >= 8, "probed key ≥ 8 bytes");
-            assert!(!<R::Key as Key>::PROBED || prefix == 0, "a probed set filters whole keys");
-            assert!(prefix == 0 || (8 <= prefix && prefix <= len), "filter prefix 8..=LEN bytes");
+    /// Panics on a map the LSM cannot hold (a schema = a constant: a mismatch is a bug)
+    pub(crate) fn of(table: &MapTable) -> Self {
+        let name = &table.name;
+        let Width::Fixed(key) = table.key else { panic!("LSM map {name}: keys must be Fixed") };
+        let Width::Fixed(value) = table.value else {
+            panic!("LSM map {name}: values must be Fixed")
         };
+        let (key_len, scope) = (key.get() as usize, table.scope as usize);
+        assert!(scope <= key_len, "LSM map {name}: scope {scope} > its {key_len}-byte key");
+        let filtered = if scope == 0 { key_len } else { scope };
+        assert!(filtered >= 8, "LSM map {name}: filter shards on 8 key bytes, has {filtered}");
+        let stride = key_len + value.get() as usize;
         Self {
-            stride: R::STRIDE,
+            stride,
             key_len,
-            block_rows: (BLOCK_BYTES / R::STRIDE).max(1),
+            block_rows: (BLOCK_BYTES / stride).max(1),
             group_fences: (BLOCK_BYTES / key_len).max(1),
-            probed,
-            filtered: if probed { key_len } else { prefix },
+            probed: scope == 0,
+            filtered,
         }
     }
 
@@ -76,26 +81,22 @@ pub(crate) struct Sections {
     pub(crate) records: usize,
     pub(crate) fences: usize,
     pub(crate) summary: Range<usize>,
-    pub(crate) filter: Option<(usize, FilterLayout)>,
+    pub(crate) filter: (usize, FilterLayout),
 }
 
 impl Sections {
-    /// `filter` = the filter section's bytes (filtered sets), parsed for its shard offsets
+    /// `filter` = the filter section (from its offset), parsed for its shard offsets
     pub(crate) fn new(
         shape: Shape,
         records: u64,
-        len: usize,
         filter: impl FnOnce(usize) -> Option<FilterLayout>,
     ) -> Self {
         let fences = usize::try_from(records).expect("record count fits usize") * shape.stride;
         let summary_at = fences + shape.blocks(records) * shape.key_len;
         let filter_at = summary_at + shape.groups(records) * shape.key_len;
-        let filter = (shape.filtered > 0).then(|| {
-            (filter_at, filter(filter_at).expect("a sealed segment's filter section parses"))
-        });
-        assert!(filter.is_some() || filter_at == len, "an unfiltered segment ends at its summary");
+        let filter = filter(filter_at).expect("a sealed segment's filter section parses");
         let records = usize::try_from(records).expect("record count fits usize");
-        Self { shape, records, fences, summary: summary_at..filter_at, filter }
+        Self { shape, records, fences, summary: summary_at..filter_at, filter: (filter_at, filter) }
     }
 
     pub(crate) fn fence(&self, b: usize) -> Range<usize> {
@@ -156,7 +157,7 @@ pub(crate) struct Navigation {
     records: u64,
     fences: Spill,
     summary: Vec<u8>,
-    filter: Option<FilterWriter<Spill>>,
+    filter: FilterWriter<Spill>,
     previous: Vec<u8>,
 }
 
@@ -170,7 +171,7 @@ impl Navigation {
             records: 0,
             fences: spill("fences"),
             summary: Vec::with_capacity(shape.groups(records) * shape.key_len),
-            filter: (shape.filtered > 0).then(|| FilterWriter::new(records, spill("filter"))),
+            filter: FilterWriter::new(records, spill("filter")),
             previous: Vec::with_capacity(shape.key_len),
         }
     }
@@ -193,11 +194,9 @@ impl Navigation {
             }
             self.fences.push(key)?;
         }
-        if let Some(filter) = &mut self.filter {
-            let filtered = self.shape.filtered;
-            if first || self.previous[..filtered] != key[..filtered] {
-                filter.push(&key[..filtered])?;
-            }
+        let filtered = self.shape.filtered;
+        if first || self.previous[..filtered] != key[..filtered] {
+            self.filter.push(&key[..filtered])?;
         }
         self.previous.clear();
         self.previous.extend_from_slice(key);
@@ -210,11 +209,9 @@ impl Navigation {
         assert_eq!(self.records, expected, "pushed every record the segment was sized for");
         self.fences.append_to(out)?;
         out.append(&self.summary)?;
-        if let Some(filter) = self.filter {
-            let (head, fingerprints) = filter.finish()?;
-            out.append(&head)?;
-            fingerprints.append_to(out)?;
-        }
+        let (head, fingerprints) = self.filter.finish()?;
+        out.append(&head)?;
+        fingerprints.append_to(out)?;
         Ok(())
     }
 }

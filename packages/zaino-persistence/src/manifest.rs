@@ -20,10 +20,10 @@ const HEADER: usize = 24;
 const CRC: usize = 4;
 
 /// One slot's capacity (the largest body: a segment store's lists, a few KiB at most)
-pub const SLOT: usize = 64 << 10;
+pub(crate) const SLOT: usize = 64 << 10;
 
 /// The whole manifest file: both slots
-pub const FILE_LEN: u64 = 2 * SLOT as u64;
+pub(crate) const FILE_LEN: u64 = 2 * SLOT as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -33,14 +33,29 @@ pub enum IndexKind {
     TransparentAddress = 3,
     BlockHash = 4,
     ValueBalance = 5,
+    HeaderChain = 6,
+}
+
+impl IndexKind {
+    /// One spelling everywhere (metric label, statusz, task, default directory, snapshot entry)
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::CompactBlock => "compact_block",
+            Self::TreeState => "tree_state",
+            Self::TransparentAddress => "transparent_address",
+            Self::BlockHash => "block_hash",
+            Self::ValueBalance => "value_balance",
+            Self::HeaderChain => "header_chain",
+        }
+    }
 }
 
 /// What a directory must have been written as: refusing any mismatch is the chain-identity check
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Identity {
-    pub kind: IndexKind,
-    pub format: u16,
-    pub network: NetworkType,
+pub(crate) struct Identity {
+    pub(crate) kind: IndexKind,
+    pub(crate) format: u16,
+    pub(crate) network: NetworkType,
 }
 
 fn network_tag(network: NetworkType) -> u8 {
@@ -72,7 +87,7 @@ pub enum ManifestError {
     #[error("MANIFEST body claims {claimed} bytes, {actual} present")]
     BodyLength { claimed: u32, actual: usize },
 
-    #[error("directory holds index kind {found}, expected {expected:?}")]
+    #[error("directory holds index kind {found}, expected {}", expected.name())]
     Kind { expected: IndexKind, found: u8 },
 
     #[error("directory holds format {found}, this build reads format {expected}")]
@@ -90,7 +105,7 @@ pub enum ManifestError {
 
 /// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; the rest of the slot is left as
 /// it was, outside the CRC)
-pub fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
+pub(crate) fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
     assert!(
         HEADER + body.len() + CRC <= SLOT,
         "manifest body of {} bytes overflows its {SLOT}-byte slot",
@@ -109,7 +124,7 @@ pub fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
 }
 
 /// Where commit `seq` is written: alternating slots, so it never overwrites the commit before it
-pub fn slot_offset(seq: u64) -> u64 {
+pub(crate) fn slot_offset(seq: u64) -> u64 {
     (seq % 2) * SLOT as u64
 }
 
@@ -167,7 +182,10 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
 /// - both torn: an error (the file is created zeroed and synced before any commit, and a crash
 ///   tears only the slot being written, never the other)
 /// - any other length: an error (an older layout; this file is only ever created whole)
-pub fn latest(identity: Identity, file: &[u8]) -> Result<Option<(u64, &[u8])>, ManifestError> {
+pub(crate) fn latest(
+    identity: Identity,
+    file: &[u8],
+) -> Result<Option<(u64, &[u8])>, ManifestError> {
     if file.len() as u64 != FILE_LEN {
         return Err(ManifestError::Layout { len: file.len() as u64 });
     }
@@ -189,15 +207,17 @@ pub fn latest(identity: Identity, file: &[u8]) -> Result<Option<(u64, &[u8])>, M
     }
 }
 
-/// `dir`'s committed body, read offline (plain read, no lock); `None` = never committed, a
+/// `dir`'s committed body, read offline (read only, no lock); `None` = never committed, a
 /// manifest that will not decode as `identity` = `InvalidData`
-pub fn read(dir: &std::path::Path, identity: Identity) -> std::io::Result<Option<Vec<u8>>> {
-    let bytes = match std::fs::read(dir.join(crate::dir::MANIFEST)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+pub(crate) fn read(
+    fs: &dyn crate::fs::Fs,
+    dir: &std::path::Path,
+    identity: Identity,
+) -> std::io::Result<Option<Vec<u8>>> {
+    let Some(file) = fs.open_read_only(&dir.join(crate::dir::MANIFEST))? else {
+        return Ok(None);
     };
-    latest(identity, &bytes)
+    latest(identity, &file.read_all()?)
         .map(|committed| committed.map(|(_, body)| body.to_vec()))
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
@@ -205,29 +225,29 @@ pub fn read(dir: &std::path::Path, identity: Identity) -> std::io::Result<Option
 /// Committed tip (`None` = nothing committed): every body's first 40 bytes, as the block count
 /// from genesis ‖ the tip hash (zeros when empty)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Committed {
-    pub tip: Option<BlockRef>,
+pub(crate) struct Committed {
+    pub(crate) tip: Option<BlockRef>,
 }
 
 impl Committed {
-    pub const EMPTY: Self = Self { tip: None };
+    pub(crate) const EMPTY: Self = Self { tip: None };
 
     /// Last committed height, inclusive (`None` = nothing committed)
-    pub fn height(&self) -> Option<Height> {
+    pub(crate) fn height(&self) -> Option<Height> {
         self.tip.map(|tip| tip.height)
     }
 
     /// Blocks committed from genesis (what a file sized per height is checked against)
-    pub fn count(&self) -> u64 {
+    pub(crate) fn count(&self) -> u64 {
         self.height().map_or(0, |height| u64::from(height) + 1)
     }
 
-    pub fn encode(&self, out: &mut Vec<u8>) {
+    pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.count().to_le_bytes());
         out.extend_from_slice(&self.tip.map_or([0; 32], |tip| <[u8; 32]>::from(tip.hash)));
     }
 
-    pub fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
+    pub(crate) fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
         let count = body.u64()?;
         let hash = body.array::<32>()?;
         // presence = count > 0 (a zero hash is a hash, not a sentinel)
@@ -246,31 +266,31 @@ impl Committed {
 }
 
 /// Cursor over a body; every read is bounds-checked, [`finish`](Self::finish) refuses a tail
-pub struct BodyReader<'a> {
+pub(crate) struct BodyReader<'a> {
     rest: &'a [u8],
 }
 
 impl<'a> BodyReader<'a> {
-    pub fn new(body: &'a [u8]) -> Self {
+    pub(crate) fn new(body: &'a [u8]) -> Self {
         Self { rest: body }
     }
 
-    pub fn array<const N: usize>(&mut self) -> Result<[u8; N], ManifestError> {
+    pub(crate) fn array<const N: usize>(&mut self) -> Result<[u8; N], ManifestError> {
         let (head, rest) =
             self.rest.split_first_chunk::<N>().ok_or(ManifestError::Body("truncated"))?;
         self.rest = rest;
         Ok(*head)
     }
 
-    pub fn u32(&mut self) -> Result<u32, ManifestError> {
+    pub(crate) fn u32(&mut self) -> Result<u32, ManifestError> {
         self.array().map(u32::from_le_bytes)
     }
 
-    pub fn u64(&mut self) -> Result<u64, ManifestError> {
+    pub(crate) fn u64(&mut self) -> Result<u64, ManifestError> {
         self.array().map(u64::from_le_bytes)
     }
 
-    pub fn finish(self) -> Result<(), ManifestError> {
+    pub(crate) fn finish(self) -> Result<(), ManifestError> {
         match self.rest.is_empty() {
             true => Ok(()),
             false => Err(ManifestError::Body("trailing bytes")),
@@ -281,6 +301,21 @@ impl<'a> BodyReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_index_kind_has_its_disk_tag_and_one_snake_case_name() {
+        let table = [
+            (IndexKind::CompactBlock, 1, "compact_block"),
+            (IndexKind::TreeState, 2, "tree_state"),
+            (IndexKind::TransparentAddress, 3, "transparent_address"),
+            (IndexKind::BlockHash, 4, "block_hash"),
+            (IndexKind::ValueBalance, 5, "value_balance"),
+            (IndexKind::HeaderChain, 6, "header_chain"),
+        ];
+        for (kind, tag, name) in table {
+            assert_eq!((kind as u8, kind.name()), (tag, name), "{kind:?}");
+        }
+    }
 
     /// A slot pinned byte for byte, alternating by `seq`, and the committed state read off every
     /// shape a crash, a foreign directory or an older layout can leave in the two slots

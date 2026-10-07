@@ -1,5 +1,5 @@
-//! Storage core implementing an LSM-Tree Index: the file layer, the manifest commit point,
-//! immutable sorted segments, and the offline verifier's report types (`docs/design/durability.md`)
+//! What every Zaino index stores through: the persistence port (`port.rs`) and the engine behind
+//! it, [`DiskEngine`] (`docs/design/persistence-engine.md`, `docs/design/durability.md`)
 
 // only `unsafe` = `fs::real::{map_read_only, start_writeback}` (mmap, sync_file_range)
 #![deny(unsafe_code)]
@@ -10,11 +10,27 @@ use std::{
     path::Path,
 };
 
-pub mod dir;
+#[cfg(any(test, feature = "testing"))]
+pub mod conformance;
+mod dir;
+mod disk;
 pub mod fs;
 pub mod lsm;
-pub mod manifest;
-pub mod pages;
+mod manifest;
+mod pages;
+mod port;
+mod sequence;
+mod tiered;
+
+pub use dir::disk_bytes;
+pub use disk::{DiskEngine, DiskStore, DiskView};
+pub use manifest::{IndexKind, ManifestError};
+pub use pages::PageError;
+pub use port::{
+    Changes, Checked, MapId, MapRead, MapTable, PersistenceEngine, Schema, SequenceId,
+    SequenceRead, SequenceTable, Store, Verification, View, Width,
+};
+pub use tiered::{Tiered, TieredView};
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]
@@ -23,10 +39,10 @@ pub enum StoreError {
     Io(#[from] io::Error),
 
     #[error(transparent)]
-    Manifest(#[from] manifest::ManifestError),
+    Manifest(#[from] ManifestError),
 
     #[error(transparent)]
-    Page(#[from] pages::PageError),
+    Page(#[from] PageError),
 
     #[error(transparent)]
     Segment(#[from] lsm::SegmentError),
@@ -34,7 +50,7 @@ pub enum StoreError {
 
 impl StoreError {
     /// Failed commit → crash naming the disk (store unusable after one, recovery = reopen)
-    pub fn commit_failed(&self, index: &str, dir: &Path) -> ! {
+    pub(crate) fn commit_failed(&self, index: &str, dir: &Path) -> ! {
         if self.disk_full() {
             panic!("{index} index commit failed: disk {} full", dir.display());
         }

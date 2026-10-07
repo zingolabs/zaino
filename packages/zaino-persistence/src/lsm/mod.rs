@@ -1,9 +1,9 @@
-//! Size-tiered LSM over immutable sorted segments: associative storage for data that only grows
+//! Size-tiered LSM over immutable sorted segments: the map tables of [`DiskEngine`]
 //!
 //! - Stripped to what Zaino's indexes use: **nothing updated or deleted** (every row derives from
 //!   one block) → no memtable, no WAL, no tombstones, no versions
 //! - Segment = one batch, sorted by key, **fixed stride, 100% packed**, then per-block fences and
-//!   (probed sets) a binary fuse filter (`layout.rs`)
+//!   a binary fuse filter (`layout.rs`)
 //! - Committed segments = the owner's manifest list ([`SegmentMeta`]: id, record count, file
 //!   seal); a segment file the manifest does not list is uncommitted and removed at open
 //! - Integrity = the file's page checksums (`crate::pages`)
@@ -11,6 +11,8 @@
 //!   `TieredMergePolicy`), swapped in by the owner's next manifest ([`SegmentLog`])
 //!
 //! Design: `docs/design/index-data-structures.md`, `docs/design/durability.md`
+//!
+//! [`DiskEngine`]: crate::DiskEngine
 
 mod emit;
 mod file;
@@ -19,23 +21,18 @@ mod layout;
 mod log;
 mod meta;
 mod reader;
-mod record;
 mod report;
 mod slots;
 mod spill;
-mod store;
 mod writer;
 
 #[cfg(test)]
 mod tests;
 
 pub use emit::{describe_metrics, METRIC_BUCKETS};
-pub use log::SegmentLog;
-pub use meta::{decode_list, encode_list, SegmentMeta};
-pub use reader::{SegmentSet, Snapshot};
-pub use record::{Key, Record};
-pub use report::Size;
-pub use store::{committed_files, LsmIndex, LsmStore, SegmentLogs};
+pub(crate) use log::SegmentLog;
+pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
+pub(crate) use reader::Snapshot;
 
 use crate::pages::PageError;
 
@@ -60,14 +57,6 @@ pub(crate) fn file_name(segment: u32) -> String {
 }
 
 /// Id of a segment file or its checksums; `None` for anything else in the directory
-pub(crate) fn parse_file_name(name: &str) -> Option<u32> {
+fn parse_file_name(name: &str) -> Option<u32> {
     name.strip_suffix(".crc").unwrap_or(name).strip_suffix(".seg")?.parse().ok()
-}
-
-/// Each listed segment's path under its index directory (`<set>/<id:010>.seg`), and its seal
-pub fn segment_files(set: &str, segments: &[SegmentMeta]) -> Vec<(String, crate::pages::Sealed)> {
-    segments
-        .iter()
-        .map(|segment| (format!("{set}/{}", file_name(segment.id)), segment.sealed))
-        .collect()
 }

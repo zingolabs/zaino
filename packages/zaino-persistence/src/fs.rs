@@ -27,6 +27,9 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     /// `None` when absent
     fn open_existing(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>>;
 
+    /// Read only, `None` when absent (offline verify: beside a live writer, never writes)
+    fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>>;
+
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()>;
 
     fn remove(&self, path: &Path) -> io::Result<()>;
@@ -66,7 +69,7 @@ pub trait FileHandle: Send + Sync + fmt::Debug {
 }
 
 impl dyn FileHandle {
-    pub fn read_all(&self) -> io::Result<Vec<u8>> {
+    pub(crate) fn read_all(&self) -> io::Result<Vec<u8>> {
         let len = usize::try_from(self.len()?).map_err(io::Error::other)?;
         let mut bytes = vec![0; len];
         self.read_exact_at(&mut bytes, 0)?;
@@ -93,19 +96,19 @@ pub struct Mapping {
 }
 
 impl Mapping {
-    pub fn bytes(&self) -> &Bytes {
+    pub(crate) fn bytes(&self) -> &Bytes {
         &self.bytes
     }
 
     /// `MADV_WILLNEED` over `range` (advisory: a failure costs page faults, not correctness)
-    pub fn will_need(&self, range: Range<usize>) {
+    pub(crate) fn will_need(&self, range: Range<usize>) {
         if let Some(map) = &self.advice {
             let _ = map.advise_range(memmap2::Advice::WillNeed, range.start, range.len());
         }
     }
 
     /// Readahead for this mapping only (advice is per mapping, never per file; advisory)
-    pub fn advise(&self, access: Access) {
+    pub(crate) fn advise(&self, access: Access) {
         let advice = match access {
             Access::Normal => return,
             Access::Random => memmap2::Advice::Random,
@@ -122,7 +125,7 @@ impl Mapping {
 /// - `Random` = point lookups (one 4 KiB fault each, not a 128 KiB window)
 /// - `Sequential` = one pass start to end (larger readahead, pages reclaimed sooner)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Access {
+pub(crate) enum Access {
     Normal,
     Random,
     Sequential,

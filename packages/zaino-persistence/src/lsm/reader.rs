@@ -1,23 +1,17 @@
-//! Reading across a set of segments
+//! Reading across one map's committed segments
 //!
-//! - one [`Snapshot`] pin per request (one atomic load)
-//! - a merge landing mid-request changes nothing pinned (pre-merge segments hold the same rows)
+//! - [`Snapshot`] = one committed list, mapped; immutable (a commit builds the next one)
+//! - a merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 
-use std::{
-    marker::PhantomData,
-    ops::Range,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{ops::Range, path::Path, sync::Arc};
 
-use arc_swap::ArcSwap;
+use bytes::Bytes;
 use rayon::prelude::*;
 
 use super::{
     file::{Prefetch, SegmentFile},
     layout::Shape,
     parse_file_name,
-    record::{Key, Record},
     spill::is_scratch,
     Result, SegmentMeta,
 };
@@ -30,46 +24,25 @@ use crate::{
 /// rows: 2-16 keys 5-10× slower on rayon (wake-up), crossover ≈ 64, 256 keys 3× faster)
 const PARALLEL_FROM: usize = 64;
 
-/// One mapped segment, typed by its key
-struct Mapped<K> {
-    file: SegmentFile,
-    _key: PhantomData<fn() -> K>,
+/// One map's committed segments, mapped for reads
+pub(crate) struct Snapshot {
+    shape: Shape,
+    segments: Vec<Arc<SegmentFile>>,
 }
 
-impl<K: Key> Mapped<K> {
-    /// `meta`'s segment mapped for reads, its filter read and checked up front
-    fn open<R: Record<Key = K>>(
-        fs: &Arc<dyn Fs>,
-        dir: &Path,
-        meta: &SegmentMeta,
-    ) -> Result<Arc<Self>> {
-        let file = SegmentFile::open(fs.as_ref(), dir, meta, Shape::of::<R>(), reads::<R>())?;
-        file.warm_filter();
-        Ok(Arc::new(Self { file, _key: PhantomData }))
-    }
-
-    /// The row keyed exactly `key` (filter first: a miss touches no record)
-    fn get<R: Record<Key = K>>(&self, key: &[u8]) -> Option<R> {
-        if !self.file.may_contain(&key[..self.file.filtered()]) {
-            return None;
-        }
-        let slot = self.file.seek(key);
-        (slot < self.file.records() && self.file.key(slot) == key)
-            .then(|| decoded(&self.file, slot))
+impl std::fmt::Debug for Snapshot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Snapshot").field("segments", &self.segments.len()).finish()
     }
 }
 
-/// How a reader's mapping is read: probed = point lookups on hash-like keys, else range scans
-fn reads<R: Record>() -> Access {
-    match Shape::of::<R>().probed {
-        true => Access::Random,
-        false => Access::Normal,
-    }
-}
-
-/// Sealed records decode (a failure = a writer bug, never data)
-fn decoded<R: Record>(file: &SegmentFile, slot: usize) -> R {
-    R::decode(file.row(slot)).expect("a sealed segment's records decode")
+/// `meta`'s segment mapped for reads, its filter read and checked up front
+fn mapped(fs: &dyn Fs, dir: &Path, shape: Shape, meta: &SegmentMeta) -> Result<Arc<SegmentFile>> {
+    // probed = point lookups on hash-like keys, else range scans
+    let access = if shape.probed { Access::Random } else { Access::Normal };
+    let file = SegmentFile::open(fs, dir, meta, shape, access)?;
+    file.warm_filter();
+    Ok(Arc::new(file))
 }
 
 /// Ascending byte ranges widened to whole pages (readahead's unit), then merged where they
@@ -88,95 +61,119 @@ fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
     merged
 }
 
-/// A consistent view of every committed segment
-pub struct Snapshot<K> {
-    segments: Vec<Arc<Mapped<K>>>,
-}
-
-impl<K: Key> Snapshot<K> {
-    /// Every record keyed `start` inclusive to `end` exclusive, ascending, across all segments
-    pub fn range<R: Record<Key = K>>(&self, start: &K, end: &K) -> Vec<R> {
-        self.range_at_most(start, end, usize::MAX).expect("no range holds usize::MAX rows")
+impl Snapshot {
+    /// `dir` holding exactly `listed`: every other segment file (and its checksums) and any
+    /// writer's scratch removed, every listed one mapped (lengths only; pages checked on touch)
+    pub(crate) fn open(
+        fs: &dyn Fs,
+        dir: &Path,
+        shape: Shape,
+        listed: &[SegmentMeta],
+    ) -> Result<Self> {
+        let mut removed = false;
+        for name in fs.list(dir)? {
+            // scratch never listed: whatever is left of one was cut short
+            let unlisted = match parse_file_name(&name) {
+                Some(id) => !listed.iter().any(|segment| segment.id == id),
+                None => is_scratch(&name),
+            };
+            if unlisted {
+                fs.remove(&dir.join(name))?;
+                removed = true;
+            }
+        }
+        if removed {
+            fs.sync_dir(dir)?;
+        }
+        let segments =
+            listed.iter().map(|meta| mapped(fs, dir, shape, meta)).collect::<Result<_>>()?;
+        Ok(Self { shape, segments })
     }
 
-    /// [`range`](Self::range), or `None` once more than `limit` rows match across all segments
+    /// `listed` mapped, sharing the segments this snapshot already maps
+    pub(crate) fn next(&self, fs: &dyn Fs, dir: &Path, listed: &[SegmentMeta]) -> Result<Self> {
+        let mut segments = Vec::with_capacity(listed.len());
+        for meta in listed {
+            let reused = self.segments.iter().find(|file| file.meta == *meta).map(Arc::clone);
+            segments.push(match reused {
+                Some(file) => file,
+                None => mapped(fs, dir, self.shape, meta)?,
+            });
+        }
+        Ok(Self { shape: self.shape, segments })
+    }
+
+    /// `(key, value)` for `start <= key < end`, ascending across all segments; `None` once more
+    /// than `limit` match
     ///
-    /// - stops scanning at row `limit + 1` (a serve-path budget: cost bounded by `limit`, not by
-    ///   how many rows the range holds)
-    /// - a range whose start and end share the set's `FILTER_PREFIX` visits only the segments
-    ///   whose filter may hold that prefix
-    pub fn range_at_most<R: Record<Key = K>>(
+    /// - stops scanning at row `limit + 1` (cost bounded by `limit`, not by the range)
+    /// - `start` and `end` sharing the filtered prefix → only segments whose filter may hold it
+    pub(crate) fn range(
         &self,
-        start: &K,
-        end: &K,
+        start: &[u8],
+        end: &[u8],
         limit: usize,
-    ) -> Option<Vec<R>> {
-        let (start, end) = (start.encode(), end.encode());
-        let filtered = Shape::of::<R>().filtered;
-        let prefix =
-            (filtered > 0 && start[..filtered] == end[..filtered]).then(|| &start[..filtered]);
+    ) -> Option<Vec<(Bytes, Bytes)>> {
+        let filtered = self.shape.filtered;
+        let prefix = (start.len() >= filtered && end.len() >= filtered)
+            .then(|| &start[..filtered])
+            .filter(|prefix| *prefix == &end[..filtered]);
         let mut found = Vec::new();
 
-        for mapped in &self.segments {
-            let file = &mapped.file;
+        for file in &self.segments {
             if prefix.is_some_and(|prefix| !file.may_contain(prefix)) {
                 continue;
             }
-            for slot in file.seek(&start)..file.records() {
-                if file.key(slot) >= end.as_slice() {
+            for slot in file.seek(start)..file.records() {
+                if file.key(slot) >= end {
                     break;
                 }
                 if found.len() == limit {
                     return None;
                 }
-                found.push(decoded::<R>(file, slot));
+                found.push(file.entry(slot));
             }
         }
 
-        found.sort_by_key(|record| record.key());
+        found.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         for pair in found.windows(2) {
-            assert!(pair[0].key() < pair[1].key(), "a key listed in two committed segments");
+            assert!(pair[0].0 < pair[1].0, "a key listed in two committed segments");
         }
         Some(found)
     }
 
-    /// The row keyed `key` (committed segments hold a key at most once; the owner's invariant)
-    ///
-    /// - probed sets: each segment's filter first, so a miss is a memory probe per segment
-    pub fn get<R: Record<Key = K>>(&self, key: &K) -> Option<R> {
-        self.find(&key.encode())
+    /// Value under `key` (each segment's filter first: a miss = a memory probe per segment)
+    pub(crate) fn get(&self, key: &[u8]) -> Option<Bytes> {
+        self.find(key)
     }
 
-    /// Rows for `keys`, in `keys`' order (`None` = absent)
+    /// Values for `keys`, in `keys`' order (`None` = absent)
     ///
     /// - probed in ascending key order: neighbouring keys share fence, filter and record pages
-    /// - [`PARALLEL_FROM`] keys and up: prefetched ([`prefetch`](Self::prefetch)), then contiguous
-    ///   runs probed on the rayon pool; below: this thread, no prefetch
-    pub fn get_many<R: Record<Key = K> + Send>(&self, keys: &[K]) -> Vec<Option<R>>
-    where
-        K: Sync,
-    {
-        let mut sorted: Vec<(Vec<u8>, usize)> =
-            keys.iter().enumerate().map(|(at, key)| (key.encode(), at)).collect();
+    /// - [`PARALLEL_FROM`] keys and up: prefetched ([`prefetch`](Self::prefetch)), then probed on
+    ///   the rayon pool; below: this thread, no prefetch
+    pub(crate) fn get_many(&self, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
+        let mut sorted: Vec<(&[u8], usize)> =
+            keys.iter().enumerate().map(|(at, key)| (*key, at)).collect();
         sorted.sort_unstable();
         if sorted.len() >= PARALLEL_FROM {
             self.prefetch(&sorted);
         }
-        let probe = |(key, at): &(Vec<u8>, usize)| (*at, self.find(key));
-        let found: Vec<(usize, Option<R>)> = match sorted.len() < PARALLEL_FROM {
+        let probe = |(key, at): &(&[u8], usize)| (*at, self.find(key));
+        let found: Vec<(usize, Option<Bytes>)> = match sorted.len() < PARALLEL_FROM {
             true => sorted.iter().map(probe).collect(),
             false => sorted.par_iter().map(probe).collect(),
         };
 
-        let mut rows: Vec<Option<R>> = std::iter::repeat_with(|| None).take(keys.len()).collect();
-        for (at, row) in found {
-            rows[at] = row;
+        let mut values = vec![None; keys.len()];
+        for (at, value) in found {
+            values[at] = value;
         }
-        rows
+        values
     }
 
-    /// Readahead for a batch of point lookups (`sorted` = ascending encoded keys), in the order a
-    /// seek reads its pages; advisory, so it never changes an answer
+    /// Readahead for a batch of point lookups (`sorted` = ascending keys), in the order a seek
+    /// reads its pages; advisory, so it never changes an answer
     ///
     /// A cold seek faults twice in a row in each segment it searches: its fence group, then its
     /// block of records. A faulting thread waits on each read, so across a batch the device only
@@ -184,14 +181,12 @@ impl<K: Key> Snapshot<K> {
     /// device sees the whole batch at once: first every candidate's fence group, then (with those
     /// reads in flight) every candidate's block of records.
     ///
-    /// - candidate = a segment whose filter admits the key, which for a filtered set is almost
-    ///   only the segment holding it (an unfiltered set is skipped: every segment would be a
-    ///   candidate, while a lookup stops at its first hit)
+    /// - candidate = a segment whose filter admits the key (≈ only the segment holding it)
     /// - sorted keys give ascending ranges per segment, merged where they share a page
-    fn prefetch(&self, sorted: &[(Vec<u8>, usize)]) {
+    fn prefetch(&self, sorted: &[(&[u8], usize)]) {
         for step in [Prefetch::Fences, Prefetch::Records] {
             for (segment, range) in self.prefetch_plan(step, sorted) {
-                self.segments[segment].file.will_need(range);
+                self.segments[segment].will_need(range);
             }
         }
     }
@@ -203,13 +198,10 @@ impl<K: Key> Snapshot<K> {
     pub(super) fn prefetch_plan(
         &self,
         step: Prefetch,
-        sorted: &[(Vec<u8>, usize)],
+        sorted: &[(&[u8], usize)],
     ) -> Vec<(usize, Range<usize>)> {
         let mut plan = Vec::new();
-        for (segment, file) in self.segments.iter().map(|mapped| &mapped.file).enumerate() {
-            if file.filtered() == 0 {
-                continue;
-            }
+        for (segment, file) in self.segments.iter().enumerate() {
             let wanted = sorted
                 .iter()
                 .filter(|(key, _)| file.may_contain(&key[..file.filtered()]))
@@ -221,111 +213,20 @@ impl<K: Key> Snapshot<K> {
 
     /// Newest segment first: list ≈ data age (batches append, a merge takes its oldest input's
     /// slot) and lookups skew recent; order never changes an answer (keys unique across segments)
-    fn find<R: Record<Key = K>>(&self, key: &[u8]) -> Option<R> {
-        self.segments.iter().rev().find_map(|mapped| mapped.get::<R>(key))
-    }
-
-    /// Committed segments in list order (the merge policy's input)
-    pub fn segments(&self) -> Vec<SegmentMeta> {
-        self.segments.iter().map(|mapped| mapped.file.meta).collect()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
-    }
-}
-
-/// Directory of committed segments, published for reading (clones share one snapshot; readers
-/// and the publishing writer never block each other)
-pub struct SegmentSet<K> {
-    fs: Arc<dyn Fs>,
-    dir: PathBuf,
-    snapshot: Arc<ArcSwap<Snapshot<K>>>,
-}
-
-impl<K> std::fmt::Debug for SegmentSet<K> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SegmentSet")
-            .field("dir", &self.dir)
-            .field("segments", &self.snapshot.load().segments.len())
-            .finish()
-    }
-}
-
-impl<K> Clone for SegmentSet<K> {
-    fn clone(&self) -> Self {
-        Self {
-            fs: Arc::clone(&self.fs),
-            dir: self.dir.clone(),
-            snapshot: Arc::clone(&self.snapshot),
-        }
-    }
-}
-
-impl<K: Key + Send + Sync + 'static> SegmentSet<K> {
-    /// Opens `dir` holding exactly `listed`: every other segment file (and its checksums) removed,
-    /// every listed one mapped (lengths only; pages checked as reads touch them)
-    pub fn open<R: Record<Key = K>>(
-        fs: Arc<dyn Fs>,
-        dir: &Path,
-        listed: &[SegmentMeta],
-    ) -> Result<Self> {
-        let mut removed = false;
-        for name in fs.list(dir)? {
-            // a writer's scratch is never listed: whatever is left of one was cut short
-            if is_scratch(&name) {
-                fs.remove(&dir.join(name))?;
-                removed = true;
-                continue;
+    fn find(&self, key: &[u8]) -> Option<Bytes> {
+        assert_eq!(key.len(), self.shape.key_len, "a point lookup names a whole key");
+        self.segments.iter().rev().find_map(|file| {
+            if !file.may_contain(&key[..self.shape.filtered]) {
+                return None;
             }
-            let Some(id) = parse_file_name(&name) else {
-                continue;
-            };
-            if !listed.iter().any(|segment| segment.id == id) {
-                fs.remove(&dir.join(name))?;
-                removed = true;
-            }
-        }
-        if removed {
-            fs.sync_dir(dir)?;
-        }
-
-        let segments =
-            listed.iter().map(|meta| Mapped::open::<R>(&fs, dir, meta)).collect::<Result<_>>()?;
-        Ok(Self {
-            fs,
-            dir: dir.to_path_buf(),
-            snapshot: Arc::new(ArcSwap::from_pointee(Snapshot { segments })),
+            let slot = file.seek(key);
+            (slot < file.records() && file.key(slot) == key).then(|| file.entry(slot).1)
         })
     }
 
-    /// Publishes a newly committed list; segments already mapped are shared, not remapped
-    pub fn publish<R: Record<Key = K>>(&self, listed: &[SegmentMeta]) -> Result<()> {
-        let current = self.snapshot.load();
-        let mut segments = Vec::with_capacity(listed.len());
-        for meta in listed {
-            let reused =
-                current.segments.iter().find(|mapped| mapped.file.meta == *meta).map(Arc::clone);
-            segments.push(match reused {
-                Some(mapped) => mapped,
-                None => Mapped::open::<R>(&self.fs, &self.dir, meta)?,
-            });
-        }
-        self.snapshot.store(Arc::new(Snapshot { segments }));
-        Ok(())
-    }
-
-    /// Current view (one atomic load: once per request)
-    pub fn pin(&self) -> Arc<Snapshot<K>> {
-        self.snapshot.load_full()
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    pub(super) fn fs(&self) -> &Arc<dyn Fs> {
-        &self.fs
+    /// Committed segments in list order (the merge policy's input)
+    pub(crate) fn segments(&self) -> Vec<SegmentMeta> {
+        self.segments.iter().map(|file| file.meta).collect()
     }
 }
 

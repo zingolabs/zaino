@@ -2,6 +2,8 @@
 
 use std::{ops::Range, path::Path};
 
+use bytes::Bytes;
+
 use super::{
     file_name,
     filter::FilterLayout,
@@ -41,7 +43,7 @@ impl SegmentFile {
     ) -> Result<Self> {
         let pages = Pages::open(fs, &dir.join(file_name(meta.id)), meta.sealed, access)?;
         let len = pages.len();
-        let sections = Sections::new(shape, meta.records, len, |at| {
+        let sections = Sections::new(shape, meta.records, |at| {
             FilterLayout::parse(|range| pages.read(at + range.start..at + range.end), len - at)
         });
         let summary = pages.read(sections.summary.clone()).into();
@@ -51,11 +53,10 @@ impl SegmentFile {
     /// Reads and checks the whole filter section up front, so no probe ever faults a cold filter
     /// page in or checks one (a reader's copy; merges never probe)
     pub(crate) fn warm_filter(&self) {
-        if let Some((at, layout)) = &self.sections.filter {
-            let range = *at..*at + layout.len();
-            self.pages.will_need(range.clone());
-            self.pages.read(range);
-        }
+        let (at, layout) = &self.sections.filter;
+        let range = *at..*at + layout.len();
+        self.pages.will_need(range.clone());
+        self.pages.read(range);
     }
 
     pub(crate) fn records(&self) -> usize {
@@ -63,15 +64,26 @@ impl SegmentFile {
     }
 
     pub(crate) fn row(&self, slot: usize) -> &[u8] {
-        let stride = self.sections.shape.stride;
-        self.pages.read(slot * stride..(slot + 1) * stride)
+        self.pages.read(self.row_range(slot))
     }
 
     pub(crate) fn key(&self, slot: usize) -> &[u8] {
         &self.row(slot)[..self.sections.shape.key_len]
     }
 
-    /// Key bytes the filter covers (0 = no filter)
+    /// `(key, value)` at `slot`, zero-copy slices of the mapping
+    pub(crate) fn entry(&self, slot: usize) -> (Bytes, Bytes) {
+        let mut key = self.pages.bytes(self.row_range(slot));
+        let value = key.split_off(self.sections.shape.key_len);
+        (key, value)
+    }
+
+    fn row_range(&self, slot: usize) -> Range<usize> {
+        let stride = self.sections.shape.stride;
+        slot * stride..(slot + 1) * stride
+    }
+
+    /// Key bytes the filter covers
     pub(crate) fn filtered(&self) -> usize {
         self.sections.shape.filtered
     }
@@ -125,13 +137,11 @@ impl SegmentFile {
     }
 
     /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) is in this
-    /// segment; always `true` for an unfiltered set
+    /// segment
     ///
     /// - reads only pages [`warm_filter`](Self::warm_filter) already checked
     pub(crate) fn may_contain(&self, prefix: &[u8]) -> bool {
-        let Some((at, layout)) = &self.sections.filter else {
-            return true;
-        };
+        let (at, layout) = &self.sections.filter;
         layout.may_contain(
             |range| self.pages.read_unchecked(at + range.start..at + range.end),
             prefix,

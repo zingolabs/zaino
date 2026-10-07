@@ -9,10 +9,10 @@ use crate::{
 
 /// One committed segment: file id, record count, its file's seal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SegmentMeta {
-    pub id: u32,
-    pub records: u64,
-    pub sealed: Sealed,
+pub(crate) struct SegmentMeta {
+    pub(crate) id: u32,
+    pub(crate) records: u64,
+    pub(crate) sealed: Sealed,
 }
 
 impl SegmentMeta {
@@ -28,7 +28,7 @@ impl SegmentMeta {
 }
 
 /// `count u32 ‖ (id u32 ‖ records u64 ‖ sealed len u64 ‖ tail crc u32)*`, in list order
-pub fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
+pub(crate) fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
     out.extend_from_slice(
         &u32::try_from(segments.len()).expect("segment count < 2^32").to_le_bytes(),
     );
@@ -38,7 +38,7 @@ pub fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
 }
 
 /// Refuses a duplicate id or an empty segment (neither is ever committed)
-pub fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
+pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
     let count = body.u32()?;
     let mut segments = Vec::new();
     for _ in 0..count {

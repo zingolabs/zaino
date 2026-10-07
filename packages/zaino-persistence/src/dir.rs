@@ -21,7 +21,7 @@ const CREATING: &str = "MANIFEST.creating";
 ///
 /// - `seq` = the last committed manifest's sequence number (0 = nothing committed yet)
 #[derive(Debug)]
-pub struct IndexDir {
+pub(crate) struct IndexDir {
     fs: Arc<dyn Fs>,
     path: PathBuf,
     identity: Identity,
@@ -32,9 +32,9 @@ pub struct IndexDir {
 
 /// A freshly opened directory: its committed manifest body, or `None` when never committed
 #[derive(Debug)]
-pub struct Opened {
-    pub dir: IndexDir,
-    pub body: Option<Vec<u8>>,
+pub(crate) struct Opened {
+    pub(crate) dir: IndexDir,
+    pub(crate) body: Option<Vec<u8>>,
 }
 
 impl IndexDir {
@@ -43,7 +43,11 @@ impl IndexDir {
     /// - a missing manifest is created as two zeroed slots under a temporary name, synced, then
     ///   renamed in: `MANIFEST` only ever exists whole, and every later commit overwrites blocks
     ///   that already exist (a creation a crash interrupted = a leftover temporary, removed here)
-    pub fn open(fs: Arc<dyn Fs>, path: &Path, identity: Identity) -> Result<Opened, ManifestError> {
+    pub(crate) fn open(
+        fs: Arc<dyn Fs>,
+        path: &Path,
+        identity: Identity,
+    ) -> Result<Opened, ManifestError> {
         fs.create_dir_all(path)?;
         if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
             fs.sync_dir(parent)?;
@@ -72,20 +76,12 @@ impl IndexDir {
         Ok(Opened { dir, body })
     }
 
-    pub fn fs(&self) -> &Arc<dyn Fs> {
-        &self.fs
-    }
-
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn file(&self, relative: &str) -> io::Result<Arc<dyn FileHandle>> {
-        self.fs.open(&self.path.join(relative))
-    }
-
     /// `relative` created and durably linked into this directory
-    pub fn subdir(&self, relative: &str) -> io::Result<PathBuf> {
+    pub(crate) fn subdir(&self, relative: &str) -> io::Result<PathBuf> {
         let dir = self.path.join(relative);
         self.fs.create_dir_all(&dir)?;
         self.fs.sync_dir(&self.path)?;
@@ -98,7 +94,7 @@ impl IndexDir {
     /// - a crash before the sync completes leaves the other slot, the last commit, intact
     /// - no rename, no truncate, no directory sync: the write lands in existing blocks below EOF,
     ///   so the sync flushes this file only and never commits the filesystem journal
-    pub fn commit(&mut self, body: &[u8]) -> io::Result<()> {
+    pub(crate) fn commit(&mut self, body: &[u8]) -> io::Result<()> {
         let seq = self.seq + 1;
         let slot = manifest::encode(self.identity, seq, body);
         self.manifest.write_all_at(&slot, manifest::slot_offset(seq))?;
@@ -108,7 +104,7 @@ impl IndexDir {
     }
 
     /// Fresh-directory check: `relative` absent or empty, else it holds uncommitted data
-    pub fn ensure_empty(&self, relative: &str) -> Result<(), ManifestError> {
+    pub(crate) fn ensure_empty(&self, relative: &str) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
         if let Some(file) = self.fs.open_existing(&path)? {
@@ -121,7 +117,7 @@ impl IndexDir {
 
     /// Fresh-directory check for a subdirectory: absent, or holding only empty files (a crash
     /// between creating them and the first commit)
-    pub fn ensure_empty_dir(&self, relative: &str) -> Result<(), ManifestError> {
+    pub(crate) fn ensure_empty_dir(&self, relative: &str) -> Result<(), ManifestError> {
         let names = match self.fs.list(&self.path.join(relative)) {
             Ok(names) => names,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -184,7 +180,7 @@ mod tests {
             matches!(&locked, ManifestError::Io(e) if e.kind() == io::ErrorKind::WouldBlock);
         assert!(would_block, "{locked}");
 
-        opened.dir.file("blocks.dat").expect("file").write_all_at(&[9], 0).expect("write");
+        fs.open(&path.join("blocks.dat")).expect("file").write_all_at(&[9], 0).expect("write");
         let written = opened.dir.ensure_empty("blocks.dat");
         assert!(matches!(written, Err(ManifestError::Unmanifested { .. })));
         drop(opened);
@@ -229,18 +225,18 @@ mod tests {
         }
     }
 
-    /// The offline reader (`zainod verify`, plain `std::fs`, no lock) sees what `IndexDir` sees:
+    /// The offline reader (`zainod verify`, read only, no lock) sees what `IndexDir` sees:
     /// nothing before a manifest exists or before its first commit, then the newest commit; an
     /// older layout is `InvalidData`
     #[test]
     fn the_offline_reader_answers_the_newest_commit() {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("idx");
-        let read = || manifest::read(&path, IDENTITY);
+        let fs = crate::fs::RealFs::shared();
+        let read = || manifest::read(fs.as_ref(), &path, IDENTITY);
         assert_eq!(read().expect("no directory"), None);
 
-        let mut opened =
-            IndexDir::open(crate::fs::RealFs::shared(), &path, IDENTITY).expect("open").dir;
+        let mut opened = IndexDir::open(fs.clone(), &path, IDENTITY).expect("open").dir;
         assert_eq!(read().expect("zeroed slots"), None, "created, never committed");
         for body in [[1u8], [2], [3]] {
             opened.commit(&body).expect("commit");

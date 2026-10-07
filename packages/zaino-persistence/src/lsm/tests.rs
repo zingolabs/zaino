@@ -1,150 +1,55 @@
-//! `LsmStore` end to end: `BTreeMap` model, every crash state, every failed I/O call, planted bugs
+//! One map's segments below the store: shape checks, open, corruption, seek arithmetic, prefetch
+//! plans, scope filters (the store end to end: `disk/tests.rs`)
 
 use std::{
-    collections::BTreeMap,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
-    sync::Arc,
 };
-
-use proptest::{prelude::*, strategy::Union};
-use zaino_primitives::types::{BlockHash, BlockRef, Height};
-use zcash_protocol::consensus::NetworkType;
 
 use super::{
-    file_name, writer::SegmentWriter, Key, LsmIndex, LsmStore, Record, SegmentError, SegmentLog,
-    SegmentSet, Snapshot,
+    file::{Prefetch, SegmentFile},
+    file_name,
+    layout::Shape,
+    writer::SegmentWriter,
+    SegmentError, SegmentLog, Snapshot,
 };
 use crate::{
-    fs::{Fs, SimFs},
-    manifest::IndexKind,
+    fs::{Access, Fs, SimFs},
     pages::{sums_path, PageError},
+    port::{MapTable, Width},
 };
 
-const NET: NetworkType = NetworkType::Regtest;
-
-/// `scanned` = range-read rows (`owner ‖ seq`), `probed` = filtered point lookups (hash-like id)
-struct TestIndex<const FANOUT: usize>;
-
-impl<const FANOUT: usize> LsmIndex for TestIndex<FANOUT> {
-    const KIND: IndexKind = IndexKind::TransparentAddress;
-    const FORMAT: u16 = 1;
-    const FANOUT: usize = FANOUT;
-    const SETS: &'static [&'static str] = &["scanned", "probed"];
-    type Logs = (SegmentLog<Row>, SegmentLog<IdRow>);
+/// `account ‖ seq → seq · 1000`, ranges read per account (scope = the account)
+fn scanned() -> MapTable {
+    MapTable { name: "scanned".into(), key: Width::fixed(12), value: Width::fixed(8), scope: 8 }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct OwnerAt {
-    owner: [u8; 4],
-    seq: u32,
+/// Hash-like id → position, point lookups only
+fn probed() -> MapTable {
+    MapTable { name: "probed".into(), key: Width::fixed(16), value: Width::fixed(4), scope: 0 }
 }
 
-impl Key for OwnerAt {
-    const LEN: usize = 8;
-
-    fn encode(&self) -> Vec<u8> {
-        [&self.owner[..], &self.seq.to_be_bytes()].concat()
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            owner: bytes.get(..4)?.try_into().ok()?,
-            seq: u32::from_be_bytes(bytes.get(4..8)?.try_into().ok()?),
-        })
-    }
+/// Uniform 8 bytes per account (the filter shards on them)
+fn account(n: u64) -> [u8; 8] {
+    n.wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Row {
-    at: OwnerAt,
-    value: u64,
+fn scanned_row(owner: u64, seq: u32) -> (Vec<u8>, Vec<u8>) {
+    let key = [&account(owner)[..], &seq.to_be_bytes()].concat();
+    (key, (u64::from(seq) * 1000).to_be_bytes().to_vec())
 }
 
-impl Record for Row {
-    type Key = OwnerAt;
-    const STRIDE: usize = 16;
-
-    fn key(&self) -> OwnerAt {
-        self.at
-    }
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.at.encode());
-        out.extend_from_slice(&self.value.to_be_bytes());
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            at: OwnerAt::decode(bytes)?,
-            value: u64::from_be_bytes(bytes.get(8..16)?.try_into().ok()?),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Id([u8; 16]);
-
-impl Key for Id {
-    const LEN: usize = 16;
-    const PROBED: bool = true;
-
-    fn encode(&self) -> Vec<u8> {
-        self.0.to_vec()
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self(bytes.get(..16)?.try_into().ok()?))
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IdRow {
-    id: Id,
-    at: u32,
-}
-
-impl Record for IdRow {
-    type Key = Id;
-    const STRIDE: usize = 20;
-
-    fn key(&self) -> Id {
-        self.id
-    }
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&self.id.0);
-        out.extend_from_slice(&self.at.to_be_bytes());
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            id: Id::decode(bytes)?,
-            at: u32::from_be_bytes(bytes.get(16..20)?.try_into().ok()?),
-        })
-    }
-}
-
-/// Uniform first 8 bytes (the filter shards on them), `n` in the last 4 (distinct per `n`)
-fn id_row(n: u32) -> IdRow {
-    let mut id = [0u8; 16];
+/// Uniform first 8 bytes, `n` in the last 4 (distinct per `n`)
+fn probed_row(n: u32) -> (Vec<u8>, Vec<u8>) {
+    let mut id = vec![0u8; 16];
     id[..8].copy_from_slice(&u64::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes());
     id[12..].copy_from_slice(&n.to_be_bytes());
-    IdRow { id: Id(id), at: n }
+    (id, n.to_be_bytes().to_vec())
 }
 
-fn row(owner: u8, seq: u32) -> Row {
-    Row { at: OwnerAt { owner: [owner; 4], seq }, value: u64::from(seq) * 1000 + u64::from(owner) }
+fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], &[u8])> {
+    rows.iter().map(|(key, value)| (key.as_slice(), value.as_slice())).collect()
 }
-
-/// Commit `n` (from 1) covers heights 0 to `n - 1`, both inclusive, tipped by `[n; 32]`
-fn commit_point(n: usize) -> BlockRef {
-    let height = Height::try_from(n as u32 - 1).expect("small height");
-    BlockRef { hash: BlockHash::from([n as u8; 32]), height }
-}
-
-const EVERY_OWNER: (OwnerAt, OwnerAt) =
-    (OwnerAt { owner: [0; 4], seq: 0 }, OwnerAt { owner: [0xff; 4], seq: u32::MAX });
 
 /// Panic payload text (`panic!` with arguments → `String`, a literal → `&str`)
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
@@ -156,494 +61,51 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// - `Commit`: one `scanned` row per listed owner (fresh seqs), `ids` fresh `probed` ids
-/// - `Settle`: merges finish (land next commit); `Reopen`: exit mid-merge; `PowerLoss`: crash now
-/// - `Pin`: views + model kept, re-checked every later step; `Scan` / `Probe`: raw bounds / ids,
-///   reduced modulo what was issued at run time
-#[derive(Debug, Clone)]
-enum Step {
-    Commit { owners: Vec<u8>, ids: u16 },
-    Settle,
-    Reopen,
-    PowerLoss,
-    Pin,
-    Scan { from: (u8, u32), to: (u8, u32), limit: u16 },
-    Probe { ids: Vec<u32> },
-}
-
-/// Swarm testing (TigerBeetle `tree_fuzz`): whole step kinds off per case (a uniform mix dilutes
-/// rare interleavings: all reopens, no settles, only small batches, …)
-fn steps() -> impl Strategy<Value = Vec<Step>> {
-    let on = prop::array::uniform6(prop::bool::ANY);
-    on.prop_flat_map(|[settle, reopen, power_loss, pin, query, large]| {
-        // small batches; with `large`, sometimes past a 4 KiB block (256 scanned / 204 probed)
-        let small = prop::collection::vec(0u8..4, 0..8);
-        let (owners, ids) = match large {
-            true => {
-                let big = prop::collection::vec(0u8..4, 250..600);
-                (
-                    prop_oneof![4 => small, 1 => big].boxed(),
-                    prop_oneof![4 => 0u16..8, 1 => 200u16..600].boxed(),
-                )
-            }
-            false => (small.boxed(), (0u16..8).boxed()),
-        };
-        let commit = (owners, ids).prop_map(|(owners, ids)| Step::Commit { owners, ids }).boxed();
-        let bound = (0u8..6, any::<u32>());
-        let scan = (bound.clone(), bound, 0u16..64).prop_map(|(from, to, limit)| Step::Scan {
-            from,
-            to,
-            limit,
-        });
-        let probe = prop::collection::vec(any::<u32>(), 0..24).prop_map(|ids| Step::Probe { ids });
-        let mut kinds = vec![(6, commit)];
-        for (enabled, weight, kind) in [
-            (settle, 1, Just(Step::Settle).boxed()),
-            (reopen, 1, Just(Step::Reopen).boxed()),
-            (power_loss, 1, Just(Step::PowerLoss).boxed()),
-            (pin, 1, Just(Step::Pin).boxed()),
-            (query, 2, scan.boxed()),
-            (query, 2, probe.boxed()),
-        ] {
-            if enabled {
-                kinds.push((weight, kind));
-            }
-        }
-        prop::collection::vec(Union::new_weighted(kinds), 1..40)
-    })
-}
-
-proptest! {
-    // 64 cases ≈ 1.5 s idle, ~7 s on a loaded box; heavy run after any change: root CLAUDE.md
-    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
-
-    /// After every step: every query = the model (pinned views = the model when pinned), extent +
-    /// tip = the last commit, tiers within their stall bound, a (re)open leaves only listed files
-    #[test]
-    fn random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss(
-        fanout in prop_oneof![Just(2usize), Just(3), Just(8)],
-        steps in steps(),
-    ) {
-        match fanout {
-            2 => random_history::<2>(&steps),
-            3 => random_history::<3>(&steps),
-            _ => random_history::<8>(&steps),
-        }
-    }
-}
-
-/// Every row the store acknowledged (all durable: a commit returns after its manifest fsync)
-#[derive(Debug, Clone, Default)]
-struct Model {
-    scanned: BTreeMap<OwnerAt, Row>,
-    probed: BTreeMap<Id, IdRow>,
-    commits: usize,
-    seq: u32,
-    ids: u32,
-}
-
-impl Model {
-    /// `owner` + `raw` seq reduced into `0` to `seq + 1`, both inclusive (lands on, between and past
-    /// issued rows)
-    fn bound(&self, (owner, raw): (u8, u32)) -> OwnerAt {
-        OwnerAt { owner: [owner; 4], seq: raw % (self.seq + 2) }
-    }
-
-    /// `start` inclusive to `end` exclusive, empty when `start >= end` (`BTreeMap::range` panics
-    /// there)
-    fn scan(&self, start: OwnerAt, end: OwnerAt) -> Vec<Row> {
-        match start < end {
-            true => self.scanned.range(start..end).map(|(_, row)| *row).collect(),
-            false => Vec::new(),
-        }
-    }
-
-    /// `raw` ids reduced into every id issued + as many never issued
-    fn ids(&self, raw: &[u32]) -> Vec<Id> {
-        raw.iter().map(|&n| id_row(n % (2 * self.ids + 2)).id).collect()
-    }
-
-    /// Full scan, per-owner scans, sampled gets + a miss, get_many / get over every id ever issued
-    /// and as many never issued (each asked twice: answers in caller order)
-    fn assert_views(&self, scanned: &Snapshot<OwnerAt>, probed: &Snapshot<Id>, label: &str) {
-        let every: Vec<Row> = self.scanned.values().copied().collect();
-        assert_eq!(scanned.range::<Row>(&EVERY_OWNER.0, &EVERY_OWNER.1), every, "{label}: scan");
-        for owner in [0u8, 3, 9] {
-            let (from, to) = (
-                OwnerAt { owner: [owner; 4], seq: 0 },
-                OwnerAt { owner: [owner; 4], seq: u32::MAX },
-            );
-            assert_eq!(
-                scanned.range::<Row>(&from, &to),
-                self.scan(from, to),
-                "{label}: owner {owner}"
-            );
-        }
-        for (key, row) in self.scanned.iter().step_by(7) {
-            assert_eq!(scanned.get::<Row>(key), Some(*row), "{label}: get {key:?}");
-        }
-        let unissued = OwnerAt { owner: [1; 4], seq: self.seq + 1 };
-        assert_eq!(scanned.get::<Row>(&unissued), None, "{label}: get past the last seq");
-
-        let asked: Vec<Id> = (0..2 * self.ids + 2).flat_map(|n| [id_row(n).id; 2]).collect();
-        let answers: Vec<Option<IdRow>> =
-            asked.iter().map(|id| self.probed.get(id).copied()).collect();
-        assert_eq!(probed.get_many::<IdRow>(&asked), answers, "{label}: get_many");
-        let singles: Vec<Option<IdRow>> = asked.iter().map(|id| probed.get::<IdRow>(id)).collect();
-        assert_eq!(singles, answers, "{label}: get");
-    }
-}
-
-/// Manifest = the model's last commit; each tier within `fanout` inputs + `STALL_WINDOWS` (2)
-/// idle windows; with `files` (just opened): every listed segment + sums on disk, beyond them
-/// only running merges' outputs (open launches merges)
-fn assert_store<const FANOUT: usize>(
-    store: &LsmStore<TestIndex<FANOUT>>,
-    model: &Model,
-    fs: &SimFs,
-    files: bool,
-    label: &str,
-) {
-    let expected = (model.commits > 0).then(|| commit_point(model.commits));
-    assert_eq!(store.committed().tip, expected, "{label}");
-
-    let logs = store.logs();
-    let sets = [
-        ("scanned", logs.0.segments(), logs.0.merging()),
-        ("probed", logs.1.segments(), logs.1.merging()),
-    ];
-    for (set, listed, merging) in sets {
-        let mut per_tier = BTreeMap::<u32, usize>::new();
-        for segment in listed {
-            *per_tier.entry(segment.records.ilog(FANOUT as u64)).or_default() += 1;
-        }
-        let bounded = per_tier.values().all(|&segments| segments < 3 * FANOUT);
-        assert!(bounded, "{label}: {set} segments per tier {per_tier:?}");
-        if files {
-            let on_disk = fs.list(&Path::new("/idx").join(set)).expect("list");
-            for segment in listed {
-                let name = file_name(segment.id);
-                let present =
-                    [name.clone(), format!("{name}.crc")].iter().all(|n| on_disk.contains(n));
-                assert!(present, "{label}: {set} lost listed {name}: {on_disk:?}");
-            }
-            let extra = on_disk.len() - 2 * listed.len();
-            assert!(
-                extra <= 2 * merging,
-                "{label}: {set} unlisted files {on_disk:?}, {merging} merges"
-            );
-        }
-    }
-}
-
-/// One history against one store: apply each step to both, then compare everything
-fn random_history<const FANOUT: usize>(steps: &[Step]) {
-    let root = Path::new("/idx");
-    let mut fs = SimFs::new();
-    let mut store = LsmStore::<TestIndex<FANOUT>>::open(fs.clone(), root, NET).expect("open");
-    let mut model = Model::default();
-    let mut pinned: Option<Pinned> = None;
-
-    for (at, step) in steps.iter().enumerate() {
-        let label = format!("fanout {FANOUT}, step {at} {step:?}");
-        let (scanned, probed) = store.sets();
-        let (scanned, probed) = (scanned.pin(), probed.pin());
-        let mut reopened = false;
-        match step {
-            Step::Commit { owners, ids } => {
-                let rows: Vec<Row> = owners
-                    .iter()
-                    .zip(model.seq + 1..)
-                    .map(|(&owner, seq)| row(owner, seq))
-                    .collect();
-                let fresh: Vec<IdRow> =
-                    (model.ids..model.ids + u32::from(*ids)).map(id_row).collect();
-                let tip = commit_point(model.commits + 1);
-                store.commit((rows.clone(), fresh.clone()), tip).expect("commit");
-                model.commits += 1;
-                model.seq += rows.len() as u32;
-                model.ids += u32::from(*ids);
-                model.scanned.extend(rows.into_iter().map(|row| (row.at, row)));
-                model.probed.extend(fresh.into_iter().map(|row| (row.id, row)));
-            }
-            Step::Settle => {
-                store.logs().0.settle();
-                store.logs().1.settle();
-            }
-            Step::Reopen => {
-                drop(store);
-                store = LsmStore::open(fs.clone(), root, NET).expect("reopen");
-                reopened = true;
-            }
-            // image taken while merges may still be writing; acknowledged = durable, so nothing
-            // rolls back
-            Step::PowerLoss => {
-                let crashed = fs.power_loss();
-                drop(store);
-                fs = crashed;
-                store = LsmStore::open(fs.clone(), root, NET).expect("open after power loss");
-                reopened = true;
-            }
-            Step::Pin => pinned = Some(Pinned { at, model: model.clone(), scanned, probed }),
-            Step::Scan { from, to, limit } => {
-                let (from, to) = (model.bound(*from), model.bound(*to));
-                let expected = model.scan(from, to);
-                assert_eq!(scanned.range::<Row>(&from, &to), expected, "{label}: {from:?}..{to:?}");
-                // over the budget = `None`, never a truncated answer; both sides of the edge + one
-                // random limit
-                let len = expected.len();
-                let random = usize::from(*limit) % (len + 2);
-                for limit in [len.saturating_sub(1), len, len + 1, random] {
-                    let bounded = (len <= limit).then(|| expected.clone());
-                    let answer = scanned.range_at_most::<Row>(&from, &to, limit);
-                    assert_eq!(answer, bounded, "{label}: {from:?}..{to:?} at most {limit}");
-                }
-            }
-            Step::Probe { ids } => {
-                let asked = model.ids(ids);
-                let answers: Vec<Option<IdRow>> =
-                    asked.iter().map(|id| model.probed.get(id).copied()).collect();
-                assert_eq!(probed.get_many::<IdRow>(&asked), answers, "{label}: get_many");
-                let singles: Vec<Option<IdRow>> =
-                    asked.iter().map(|id| probed.get::<IdRow>(id)).collect();
-                assert_eq!(singles, answers, "{label}: get");
-            }
-        }
-
-        assert_store(&store, &model, &fs, reopened, &label);
-        let (scanned, probed) = store.sets();
-        model.assert_views(&scanned.pin(), &probed.pin(), &label);
-        if let Some(pinned) = &pinned {
-            let pinned_label = format!("{label}: view pinned at step {}", pinned.at);
-            pinned.model.assert_views(&pinned.scanned, &pinned.probed, &pinned_label);
-        }
-    }
-}
-
-/// Views taken at step `at`, and the model they must keep answering (commits, merges, reopens and
-/// power loss since then change nothing a pinned view sees)
-struct Pinned {
-    at: usize,
-    model: Model,
-    scanned: Arc<Snapshot<OwnerAt>>,
-    probed: Arc<Snapshot<Id>>,
-}
-
-/// Fanout 2: merges launch on commits 2-3, land on 3-4; per state: rows of recovered commits all
-/// present, later ones all absent, only listed files, commits continue
+/// A map the LSM cannot hold panics at construction, naming the map and why; a batch row of
+/// the wrong widths panics naming the map
 #[test]
-fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
-    let fs = SimFs::recording();
-    let root = Path::new("/idx");
-    let commits: [(Vec<Row>, Vec<IdRow>); 4] = [
-        (vec![row(1, 0), row(2, 1), row(1, 2)], vec![id_row(0), id_row(1)]),
-        (vec![row(1, 3), row(3, 4)], vec![id_row(2)]),
-        (vec![], vec![id_row(3)]),
-        (vec![row(4, 5)], vec![]),
+fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
+    let cases = [
+        (MapTable { key: Width::Variable, ..scanned() }, "LSM map scanned: keys must be Fixed"),
+        (MapTable { value: Width::Variable, ..scanned() }, "LSM map scanned: values must be Fixed"),
+        (MapTable { scope: 13, ..scanned() }, "LSM map scanned: scope 13 > its 12-byte key"),
+        (MapTable { scope: 4, ..scanned() }, "filter shards on 8 key bytes, has 4"),
+        (MapTable { key: Width::fixed(6), scope: 0, ..scanned() }, "filter shards on 8 key bytes"),
     ];
-    {
-        let mut store = LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET).expect("open");
-        for (acked, rows) in (1u64..).zip(&commits) {
-            store.logs().0.settle();
-            store.logs().1.settle();
-            store.commit(rows.clone(), commit_point(acked as usize)).expect("commit");
-            fs.set_tag(acked);
-        }
-        let merged = (store.logs().0.segments().len(), store.logs().1.segments().len());
-        assert_eq!(merged, (2, 2), "scanned 2+2 rows merged, probed 1+1 rows merged");
-    }
-
-    let states = fs.crash_states();
-    assert!(states.len() > 50, "enumerated {} crash states", states.len());
-    for state in states {
-        let label = &state.label;
-        let mut store = LsmStore::<TestIndex<2>>::open(state.fs.clone(), root, NET)
-            .unwrap_or_else(|error| panic!("{label}: {error}"));
-        let recovered = store.committed().count() as usize;
-        let acked = usize::try_from(state.tag).expect("small");
-        assert!(recovered == acked || recovered == acked + 1, "{label}: recovered {recovered}");
-        assert_eq!(store.committed().tip, (recovered > 0).then(|| commit_point(recovered)));
-
-        // recovered commits' rows all present, every later commit's rows all absent
-        let (scanned, probed) = store.sets();
-        let (scanned, probed) = (scanned.pin(), probed.pin());
-        for (n, (rows, ids)) in commits.iter().enumerate() {
-            let durable = n < recovered;
-            for row in rows {
-                assert_eq!(scanned.get::<Row>(&row.at).is_some(), durable, "{label}: {row:?}");
-            }
-            for id in ids {
-                assert_eq!(probed.get::<IdRow>(&id.id).is_some(), durable, "{label}: {id:?}");
-            }
-        }
-        let mut rows: Vec<Row> =
-            commits[..recovered].iter().flat_map(|(rows, _)| rows.clone()).collect();
-        rows.sort_by_key(|row| row.key());
-        assert_eq!(
-            scanned.range::<Row>(&EVERY_OWNER.0, &EVERY_OWNER.1),
-            rows,
-            "{label}: nothing else"
-        );
-        // open removed every unlisted file; beyond the listed ones only merges open launched
-        let logs = store.logs();
-        let sets = [
-            ("scanned", logs.0.segments().len(), logs.0.merging()),
-            ("probed", logs.1.segments().len(), logs.1.merging()),
-        ];
-        for (set, listed, merging) in sets {
-            let files = state.fs.list(&root.join(set)).expect("list").len();
-            let within = (2 * listed..=2 * (listed + merging)).contains(&files);
-            assert!(within, "{label}: {set}: {files} files, {listed} listed, {merging} merging");
-        }
-
-        store
-            .commit((vec![row(9, 99)], vec![id_row(99)]), commit_point(recovered + 1))
-            .expect("commit after recovery");
-        let next = store.sets().1.pin().get::<IdRow>(&id_row(99).id);
-        assert_eq!(next, Some(id_row(99)), "{label}: commits continue at the recovered end");
-    }
-}
-
-/// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`); each = the injected `Err`
-/// (never a panic, never swallowed), later commits refused, restart = acked or attempted commit
-#[test]
-fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_state() {
-    let root = Path::new("/idx");
-    let commits: [(Vec<Row>, Vec<IdRow>); 3] = [
-        (vec![row(1, 0), row(2, 1)], vec![id_row(0)]),
-        (vec![row(1, 2)], vec![id_row(1)]),
-        (vec![row(3, 3)], vec![id_row(2), id_row(3)]),
-    ];
-    let mut failures = 0;
-    for fail_at in 0.. {
-        assert!(fail_at < 10_000, "workload never succeeded");
-        let fs = SimFs::new();
-        fs.fail_from(fail_at);
-        let mut acked = 0;
-        let error = match LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET) {
-            Err(error) => error,
-            Ok(mut store) => {
-                let mut failed = None;
-                for (at, rows) in commits.iter().enumerate() {
-                    store.logs().0.settle();
-                    store.logs().1.settle();
-                    match store.commit(rows.clone(), commit_point(at + 1)) {
-                        Ok(()) => acked = at + 1,
-                        Err(error) => {
-                            failed = Some(error);
-                            break;
-                        }
-                    }
-                }
-                let error = match failed {
-                    Some(error) => error,
-                    None => {
-                        store.logs().0.settle();
-                        store.logs().1.settle();
-                        if fs.mutations() <= fail_at {
-                            break;
-                        }
-                        // op `fail_at` hit a merge the last commit launched: surfaces next commit
-                        let next = store.commit((vec![], vec![]), commit_point(acked + 1));
-                        next.expect_err("a failed background merge surfaces at the next commit")
-                    }
-                };
-                let tip = commit_point(acked + 2);
-                let retried =
-                    catch_unwind(AssertUnwindSafe(|| store.commit(commits[0].clone(), tip)));
-                let message =
-                    panic_message(retried.expect_err("commit after a failed one refused"));
-                assert!(message.contains("after a failed one"), "op {fail_at}: {message}");
-                error
-            }
-        };
-        failures += 1;
-        assert!(error.to_string().contains("injected EIO"), "op {fail_at}: {error}");
-
-        let fs = fs.restarted();
-        let mut store = LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET)
-            .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
-        let recovered = store.committed().count() as usize;
-        assert!(
-            recovered == acked || recovered == acked + 1,
-            "op {fail_at}: recovered {recovered}"
-        );
-        let mut rows: Vec<Row> =
-            commits[..recovered].iter().flat_map(|(rows, _)| rows.clone()).collect();
-        rows.sort_by_key(|row| row.key());
-        let (scanned, _) = store.sets();
-        assert_eq!(
-            scanned.pin().range::<Row>(&EVERY_OWNER.0, &EVERY_OWNER.1),
-            rows,
-            "op {fail_at}"
-        );
-        store
-            .commit((vec![row(9, 99)], vec![]), commit_point(recovered + 1))
-            .expect("commit after restart");
-    }
-    assert!(failures > 40, "only {failures} failure points exercised");
-}
-
-/// Duplicate key in a batch, a key in two segments (read + merge), a non-advancing tip (RocksDB:
-/// a check never seen firing = not known to work)
-#[test]
-fn invariant_checks_fire_on_the_bugs_they_guard() {
-    let fires = |expected: &str, bug: &dyn Fn()| {
-        let message = panic_message(catch_unwind(AssertUnwindSafe(bug)).expect_err(expected));
+    for (table, expected) in cases {
+        let message = panic_message(catch_unwind(|| Shape::of(&table)).expect_err(expected));
         assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
-    };
-    let open =
-        || LsmStore::<TestIndex<2>>::open(SimFs::new(), Path::new("/idx"), NET).expect("open");
+    }
 
-    fires("strictly ascending", &|| {
-        let _ = open().commit((vec![row(1, 0), row(1, 0)], vec![]), commit_point(1));
-    });
-
-    fires("a key listed in two committed segments", &|| {
-        let mut store = open();
-        for n in 1..=2 {
-            store.commit((vec![row(1, 0)], vec![]), commit_point(n)).expect("commit");
-        }
-        store.sets().0.pin().range::<Row>(&EVERY_OWNER.0, &EVERY_OWNER.1);
-    });
-
-    // two 1-row segments at fanout 2 = a merge; its duplicate panics on its thread, resumed here
-    fires("strictly ascending", &|| {
-        let mut store = open();
-        for n in 1..=2 {
-            store.commit((vec![row(1, 0)], vec![]), commit_point(n)).expect("commit");
-        }
-        store.logs().0.settle();
-        let _ = store.commit((vec![], vec![]), commit_point(3));
-    });
-
-    fires("LSM commit to height 0, not above the committed Some(Height(0))", &|| {
-        let mut store = open();
-        store.commit((vec![row(1, 0)], vec![]), commit_point(1)).expect("commit");
-        let _ = store.commit((vec![row(1, 1)], vec![]), commit_point(1));
-    });
+    let fs = SimFs::new();
+    fs.create_dir_all(Path::new("/m")).expect("dir");
+    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2).expect("open");
+    let short_value = catch_unwind(AssertUnwindSafe(|| log.batch(vec![(&[0; 12], &[0; 7])])));
+    let message = panic_message(short_value.expect_err("a 7-byte value"));
+    assert!(message.contains("LSM map scanned: (key, value) widths"), "{message}");
 }
 
-/// Open removes unlisted segments (and their checksums) and any writer's scratch, and refuses a lost
-/// segment; a flipped committed byte passes open (lengths only) and dies on the first read or
+/// Open removes unlisted segments (and their checksums) and any writer's scratch, and refuses a
+/// lost segment; a flipped committed byte passes open (lengths only) and dies on the first read or
 /// merge that touches its page
 #[test]
 fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let fs = SimFs::new();
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
-    let writer = SegmentWriter::open(fs.clone(), dir);
+    let shape = Shape::of(&scanned());
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
     // enough rows that page 0 holds records only (open reads the summary, past them)
-    let rows = |owner| (0..600).map(move |seq| row(owner, seq)).collect::<Vec<_>>();
-    let kept = writer.write(0, rows(1)).expect("write").expect("rows");
-    let orphan = writer.write(1, vec![row(3, 0)]).expect("write").expect("rows");
+    let rows = |owner| (0..600).map(move |seq| scanned_row(owner, seq)).collect::<Vec<_>>();
+    let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
+    let orphan = writer.write(1, borrowed(&[scanned_row(3, 0)])).expect("write").expect("rows");
     // a merge cut short by a crash leaves its scratch, even under a listed segment's id
     for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
         fs.open(&dir.join(leftover)).expect("scratch").write_all_at(&[1; 9], 0).expect("write");
     }
     writer.sync_dir().expect("sync");
 
-    SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).expect("open");
+    Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("open");
     let path = dir.join(file_name(kept.id));
     let mut kept_files = vec![file_name(kept.id), format!("{}.crc", file_name(kept.id))];
     kept_files.sort();
@@ -651,15 +113,14 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
 
     let original = fs.contents(&path).expect("segment bytes");
     fs.corrupt(&path, |bytes| bytes.truncate(10));
-    let short = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).map(|_| ());
+    let short = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
     assert!(matches!(short, Err(SegmentError::Page(PageError::Lost { have: 10, .. }))));
 
     fs.corrupt(&path, |bytes| {
         *bytes = original.clone();
-        bytes[Row::STRIDE + 9] ^= 1;
+        bytes[shape.stride + 9] ^= 1;
     });
-    let set = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).expect("lengths intact");
-    let pinned = set.pin();
+    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
     let died = |touch: &dyn Fn()| {
         let message =
             panic_message(catch_unwind(AssertUnwindSafe(touch)).expect_err("never serves"));
@@ -668,13 +129,12 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
         assert!(named, "{message}");
     };
     died(&|| {
-        pinned.get::<Row>(&row(1, 1).at);
+        snapshot.get(&scanned_row(1, 1).0);
     });
 
     // same tier as `kept` at fanout 2 → opening both launches their merge, which reads the page
-    let second = writer.write(2, rows(4)).expect("write").expect("rows");
-    let set = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept, second]).expect("open");
-    let log = SegmentLog::<Row>::open(set, 2).expect("merge launched");
+    let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
+    let log = SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], 2).expect("merge");
     log.settle();
     let log = std::sync::Mutex::new(log);
     died(&|| {
@@ -682,58 +142,56 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     });
 
     fs.remove(&sums_path(&path)).expect("remove checksums");
-    let unsummed = SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), dir, &[kept]).map(|_| ());
+    let unsummed = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
 
-    // probed set: last byte = a filter fingerprint; a reader reads and checks its whole filter
-    // when it maps the segment, so opening it dies before any probe
+    // last byte = a filter fingerprint; a reader reads and checks its whole filter when it maps
+    // the segment, so opening it dies before any probe
     let ids = Path::new("/ids");
     fs.create_dir_all(ids).expect("dir");
-    let id_writer = SegmentWriter::open(fs.clone(), ids);
-    let probed =
-        id_writer.write(0, (0..3_000).map(id_row).collect()).expect("write").expect("rows");
-    let id_path = ids.join(file_name(probed.id));
-    fs.corrupt(&id_path, |bytes| *bytes.last_mut().expect("non-empty") ^= 1);
+    let id_shape = Shape::of(&probed());
+    let id_rows: Vec<_> = (0..3_000).map(probed_row).collect();
+    let id_writer = SegmentWriter::open(fs.clone(), ids, id_shape);
+    let written = id_writer.write(0, borrowed(&id_rows)).expect("write").expect("rows");
+    fs.corrupt(&ids.join(file_name(written.id)), |bytes| *bytes.last_mut().expect("bytes") ^= 1);
     let message = panic_message(
         catch_unwind(AssertUnwindSafe(|| {
-            SegmentSet::<Id>::open::<IdRow>(fs.clone(), ids, &[probed]).map(|_| ())
+            Snapshot::open(fs.as_ref(), ids, id_shape, &[written]).map(|_| ())
         }))
         .expect_err("a corrupt filter never answers"),
     );
-    let page = (probed.sealed.len - 1) / 4096;
+    let page = (written.sealed.len - 1) / 4096;
     assert!(message.contains(&format!("page {page}: checksum mismatch")), "{message}");
 }
 
-/// Several summary groups (group = 512 fences = 131,072 rows here): `seek` finds every key's slot,
-/// the slot after a gap, and both ends, through the in-memory summary and one page of fences.
-/// For every key, the bytes `get_many` prefetches are exactly the ones that seek reads: the whole
-/// fence group of the key's block, then the key's whole block of records (the layout's arithmetic
-/// written out here independently)
+/// Several summary groups: `seek` finds every key's slot, the slot after a gap, and both ends,
+/// through the in-memory summary and one page of fences. For every key, the bytes a prefetch
+/// names are exactly the ones seek reads: the whole fence group of the key's block, then the
+/// key's whole block of records (the layout's arithmetic written out here independently)
 #[test]
 fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() {
-    use super::{
-        file::{Prefetch, SegmentFile},
-        layout::Shape,
-    };
-    use crate::fs::Access;
-
     let fs = SimFs::new();
     let dir = Path::new("/wide");
     fs.create_dir_all(dir).expect("dir");
-    let rows = 3 * 131_072 + 999;
+    let shape = Shape::of(&scanned());
+    let Shape { stride, key_len, block_rows, group_fences, .. } = shape;
+    let group_rows = block_rows * group_fences;
+    let rows = 3 * group_rows + 999;
     // even seqs only: every odd seq sits in a gap
-    let written = (0..rows).map(|n| row(7, 2 * n as u32)).collect::<Vec<_>>();
-    let meta =
-        SegmentWriter::open(fs.clone(), dir).write(0, written).expect("write").expect("rows");
-    let file = SegmentFile::open(fs.as_ref(), dir, &meta, Shape::of::<Row>(), Access::Normal)
-        .expect("open");
+    let written: Vec<_> = (0..rows).map(|n| scanned_row(7, 2 * n as u32)).collect();
+    let meta = SegmentWriter::open(fs.clone(), dir, shape)
+        .write(0, borrowed(&written))
+        .expect("write")
+        .expect("rows");
+    let file = SegmentFile::open(fs.as_ref(), dir, &meta, shape, Access::Normal).expect("open");
 
-    let key = |seq: u32| row(7, seq).at.encode();
-    assert_eq!(file.seek(&row(6, 0).at.encode()), 0, "below every key");
-    assert_eq!(file.seek(&row(8, 0).at.encode()), rows, "above every key");
-    let Shape { stride, key_len, block_rows, group_fences, .. } = Shape::of::<Row>();
+    let key = |seq: u32| scanned_row(7, seq).0;
+    let (below, above) = (account(7).to_vec(), [&account(7)[..], &[0xff; 4]].concat());
+    assert_eq!(file.seek(&below), 0, "below every key");
+    assert_eq!(file.seek(&above), rows, "above every key");
     let (blocks, fences_at) = (rows.div_ceil(block_rows), rows * stride);
-    for slot in (0..rows).step_by(997).chain([rows - 1, 131_071, 131_072, 262_144]) {
+    let edges = [rows - 1, group_rows - 1, group_rows, 2 * group_rows];
+    for slot in (0..rows).step_by(997).chain(edges) {
         let seq = 2 * slot as u32;
         assert_eq!(file.seek(&key(seq)), slot, "key at slot {slot}");
         assert_eq!(file.seek(&key(seq + 1)), slot + 1, "gap after slot {slot}");
@@ -749,47 +207,41 @@ fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() 
     }
 }
 
-/// A batch's prefetch plan over three filtered segments, the keys asked held by the first and the
-/// last: each round covers, in the segment holding it, every asked key's fence group then its
-/// block of records, as whole pages, ascending and disjoint per segment. An unfiltered set plans
-/// nothing (every segment would be a candidate)
+/// A batch's prefetch plan over three segments, the keys asked held by the first and the last:
+/// each round covers, in the segment holding it, every asked key's fence group then its block of
+/// records, as whole pages, ascending and disjoint per segment
 #[test]
 fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
-    use super::{
-        file::{Prefetch, SegmentFile},
-        layout::Shape,
-    };
-    use crate::fs::Access;
-
     let fs = SimFs::new();
     let dir = Path::new("/probed");
     fs.create_dir_all(dir).expect("dir");
-    let writer = SegmentWriter::open(fs.clone(), dir);
+    let shape = Shape::of(&probed());
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
     let spans = [0..20_000u32, 20_000..40_000, 40_000..60_000];
     let metas: Vec<_> = (0u32..)
         .zip(&spans)
         .map(|(id, span)| {
-            let rows = span.clone().map(id_row).collect::<Vec<_>>();
-            writer.write(id, rows).expect("write").expect("rows")
+            let rows: Vec<_> = span.clone().map(probed_row).collect();
+            writer.write(id, borrowed(&rows)).expect("write").expect("rows")
         })
         .collect();
     writer.sync_dir().expect("sync");
-    let set = SegmentSet::<Id>::open::<IdRow>(fs.clone(), dir, &metas).expect("open");
-    let pinned = set.pin();
+    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &metas).expect("open");
     let files: Vec<SegmentFile> = metas
         .iter()
-        .map(|meta| SegmentFile::open(fs.as_ref(), dir, meta, Shape::of::<IdRow>(), Access::Normal))
+        .map(|meta| SegmentFile::open(fs.as_ref(), dir, meta, shape, Access::Normal))
         .collect::<Result<_, _>>()
         .expect("each segment, mapped on its own");
 
     let asked: Vec<u32> = (1_000..1_100).chain(45_000..45_100).collect();
-    let mut sorted: Vec<(Vec<u8>, usize)> =
-        asked.iter().enumerate().map(|(at, n)| (id_row(*n).id.encode(), at)).collect();
+    let keys: Vec<Vec<u8>> = asked.iter().map(|n| probed_row(*n).0).collect();
+    let mut sorted: Vec<(&[u8], usize)> =
+        keys.iter().enumerate().map(|(at, key)| (key.as_slice(), at)).collect();
     sorted.sort_unstable();
     let holder = |n: u32| spans.iter().position(|span| span.contains(&n)).expect("held");
 
     for step in [Prefetch::Fences, Prefetch::Records] {
-        let plan = pinned.prefetch_plan(step, &sorted);
+        let plan = snapshot.prefetch_plan(step, &sorted);
         for segment in 0..spans.len() {
             let ranges: Vec<_> =
                 plan.iter().filter(|(s, _)| *s == segment).map(|(_, r)| r).collect();
@@ -797,166 +249,52 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
             let disjoint = ranges.windows(2).all(|pair| pair[0].end < pair[1].start);
             assert!(whole_pages && disjoint, "{step:?}, segment {segment}: {ranges:?}");
         }
-        for &n in &asked {
+        for (&n, key) in asked.iter().zip(&keys) {
             let segment = holder(n);
-            let wanted = files[segment].prefetch_range(step, &id_row(n).id.encode());
+            let wanted = files[segment].prefetch_range(step, key);
             let covered = plan.iter().any(|(s, range)| {
                 *s == segment && range.start <= wanted.start && wanted.end <= range.end
             });
             assert!(covered, "{step:?}: id {n}'s {wanted:?} in segment {segment}");
         }
     }
-
-    let scanned = Path::new("/scanned");
-    fs.create_dir_all(scanned).expect("dir");
-    let writer = SegmentWriter::open(fs.clone(), scanned);
-    let meta = writer.write(0, (0..600).map(|seq| row(1, seq)).collect()).expect("write");
-    writer.sync_dir().expect("sync");
-    let unfiltered =
-        SegmentSet::<OwnerAt>::open::<Row>(fs.clone(), scanned, &[meta.expect("rows")])
-            .expect("open");
-    let keys = [(row(1, 5).at.encode(), 0)];
-    assert!(unfiltered.pin().prefetch_plan(Prefetch::Fences, &keys).is_empty(), "no filter");
-}
-
-/// `account ‖ seq`, filtered on the account: a range over one account skips the segments the
-/// filter rules out, and never misses a row
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct AccountSeq {
-    account: [u8; 8],
-    seq: u32,
-}
-
-impl Key for AccountSeq {
-    const LEN: usize = 12;
-    const FILTER_PREFIX: usize = 8;
-
-    fn encode(&self) -> Vec<u8> {
-        [&self.account[..], &self.seq.to_be_bytes()].concat()
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        Some(Self {
-            account: bytes.get(..8)?.try_into().ok()?,
-            seq: u32::from_be_bytes(bytes.get(8..12)?.try_into().ok()?),
-        })
-    }
-}
-
-impl Record for AccountSeq {
-    type Key = AccountSeq;
-    const STRIDE: usize = 12;
-
-    fn key(&self) -> AccountSeq {
-        *self
-    }
-
-    fn encode(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(&Key::encode(self));
-    }
-
-    fn decode(bytes: &[u8]) -> Option<Self> {
-        <Self as Key>::decode(bytes)
-    }
-}
-
-/// Uniform account bytes (the filter shards on them)
-fn account(n: u64) -> [u8; 8] {
-    n.wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes()
 }
 
 /// Ranges within one account return every row across segments; a segment's filter turns away
 /// accounts it never held at about its false-positive rate (2^-8)
 #[test]
-fn a_prefix_filter_skips_segments_without_the_prefix_and_misses_nothing() {
-    use super::{file::SegmentFile, layout::Shape};
-    use crate::fs::Access;
-
+fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     let fs = SimFs::new();
     let dir = Path::new("/accounts");
     fs.create_dir_all(dir).expect("dir");
-    let writer = SegmentWriter::open(fs.clone(), dir);
-    // account 0 in every segment, accounts 100·s .. 100·s + 49 only in segment s
+    let shape = Shape::of(&scanned());
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    // account 0 in every segment, accounts 100·s + 1 .. 100·s + 49 only in segment s
     let segments: Vec<_> = (0u64..6)
         .map(|s| {
             let accounts = std::iter::once(0).chain(100 * s + 1..100 * s + 50);
-            let mut rows: Vec<AccountSeq> = accounts
-                .flat_map(|a| {
-                    (0..20).map(move |seq| AccountSeq {
-                        account: account(a),
-                        seq: seq + 100 * s as u32,
-                    })
-                })
+            let rows: Vec<_> = accounts
+                .flat_map(|a| (0..20).map(move |seq| scanned_row(a, seq + 100 * s as u32)))
                 .collect();
-            rows.sort();
-            writer.write(s as u32, rows).expect("write").expect("rows")
+            writer.write(s as u32, borrowed(&rows)).expect("write").expect("rows")
         })
         .collect();
     writer.sync_dir().expect("sync");
 
-    let set =
-        SegmentSet::<AccountSeq>::open::<AccountSeq>(fs.clone(), dir, &segments).expect("open");
-    let pinned = set.pin();
+    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &segments).expect("open");
     let range = |a: u64| {
-        let (start, end) = (
-            AccountSeq { account: account(a), seq: 0 },
-            AccountSeq { account: account(a), seq: u32::MAX },
-        );
-        pinned.range::<AccountSeq>(&start, &end)
+        let (start, end) = (account(a).to_vec(), [&account(a)[..], &[0xff; 4]].concat());
+        snapshot.range(&start, &end, usize::MAX).expect("unbounded")
     };
     assert_eq!(range(0).len(), 6 * 20, "the shared account from every segment");
     assert_eq!(range(301).len(), 20, "an account from one segment");
     assert!(range(7_777).is_empty(), "an account no segment holds");
 
-    let file = SegmentFile::open(
-        fs.as_ref(),
-        dir,
-        &segments[0],
-        Shape::of::<AccountSeq>(),
-        Access::Normal,
-    )
-    .expect("open");
+    let file =
+        SegmentFile::open(fs.as_ref(), dir, &segments[0], shape, Access::Normal).expect("open");
     file.warm_filter();
     assert!((1..50).all(|a| file.may_contain(&account(a))), "no false negative");
     let absent = 10_000u64;
     let passed = (1_000..1_000 + absent).filter(|a| file.may_contain(&account(*a))).count();
     assert!(passed < 200, "{passed} of {absent} absent accounts passed (≈ 39 expected)");
-}
-
-/// Read 0, 1, 2, … failed while reopening a committed store until the open succeeds: each
-/// failure surfaces as the injected `Err`, never a panic, and the open that succeeds finds every
-/// commit
-#[test]
-fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
-    let root = Path::new("/idx");
-    let fs = SimFs::new();
-    {
-        let mut store = LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET).expect("open");
-        for at in 0..3u32 {
-            let rows = (vec![row(1, at)], vec![id_row(at)]);
-            store.commit(rows, commit_point(at as usize + 1)).expect("commit");
-        }
-    }
-
-    let mut failures = 0;
-    for fail_at in 0.. {
-        assert!(fail_at < 1_000, "open never succeeded");
-        let fs = fs.restarted();
-        fs.fail_reads_from(fail_at);
-        let opened = catch_unwind(AssertUnwindSafe(|| {
-            LsmStore::<TestIndex<2>>::open(fs.clone(), root, NET)
-        }))
-        .unwrap_or_else(|payload| panic!("read {fail_at}: panicked: {}", panic_message(payload)));
-        match opened {
-            Ok(store) => {
-                assert_eq!(store.committed().count(), 3, "read {fail_at}: every commit found");
-                break;
-            }
-            Err(error) => {
-                assert!(error.to_string().contains("injected read EIO"), "read {fail_at}: {error}");
-                failures += 1;
-            }
-        }
-    }
-    assert!(failures > 0, "open reads through positional reads (the manifest at least)");
 }

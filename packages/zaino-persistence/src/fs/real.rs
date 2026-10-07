@@ -23,6 +23,14 @@ impl RealFs {
     }
 }
 
+fn existing(opened: io::Result<File>) -> io::Result<Option<Arc<dyn FileHandle>>> {
+    match opened {
+        Ok(file) => Ok(Some(Arc::new(RealFile(file)))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 impl Fs for RealFs {
     fn create_dir_all(&self, dir: &Path) -> io::Result<()> {
         std::fs::create_dir_all(dir)
@@ -35,11 +43,11 @@ impl Fs for RealFs {
     }
 
     fn open_existing(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(file) => Ok(Some(Arc::new(RealFile(file)))),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error),
-        }
+        existing(OpenOptions::new().read(true).write(true).open(path))
+    }
+
+    fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
+        existing(OpenOptions::new().read(true).open(path))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {

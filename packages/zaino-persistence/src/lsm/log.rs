@@ -5,9 +5,8 @@
 //! - inputs unlinked only once that manifest is durable (open removes anything unlisted)
 
 use std::{
-    fmt,
-    marker::PhantomData,
-    panic,
+    fmt, panic,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -18,27 +17,32 @@ use std::{
 
 use super::{
     emit,
+    layout::Shape,
     meta::{merge_candidates, tier_of, tier_shape},
-    reader::SegmentSet,
-    record::Record,
+    reader::Snapshot,
     report::{self, Landed},
     slots::SLOTS,
     writer::SegmentWriter,
     Result, SegmentMeta,
 };
+use crate::{fs::Fs, port::MapTable};
 
 /// Idle windows a merging tier may queue before [`SegmentLog::batch`] waits on its merge
 /// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
 const STALL_WINDOWS: usize = 2;
 
-/// The committed list, the merges running under it, and the list staged for the next manifest
+/// One map's committed list, the merges running under it, and the list staged for the next
+/// manifest
 ///
 /// - one merge per tier at a time, and at most `MERGE_SLOTS` doing work process-wide (lowest tier
 ///   first: small merges never queue behind a large one)
-/// - `batch` stages → owner's manifest commit → `committed` publishes, unlinks, launches
-pub struct SegmentLog<R: Record> {
-    set: SegmentSet<R::Key>,
+/// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
+pub(crate) struct SegmentLog {
+    fs: Arc<dyn Fs>,
+    dir: PathBuf,
     name: String,
+    shape: Shape,
+    snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
     fanout: usize,
     next: u32,
@@ -46,7 +50,6 @@ pub struct SegmentLog<R: Record> {
     staged: Option<Staged>,
     merges: Vec<Merge>,
     shape_tiers: usize,
-    _record: PhantomData<fn() -> R>,
 }
 
 /// A list awaiting the owner's manifest, the merge inputs it no longer lists, the merges it lands
@@ -64,63 +67,76 @@ struct Merge {
     thread: JoinHandle<Result<Option<(SegmentMeta, Duration)>>>,
 }
 
-impl<R> SegmentLog<R>
-where
-    R: Record + 'static,
-    R::Key: Sync + 'static,
-{
-    /// Writes into `set`'s directory, from the list `set` was opened or last published with
+impl SegmentLog {
+    /// `table`'s segments in `dir`, at the committed `listed`
     ///
+    /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
+    /// - unlisted files removed ([`Snapshot::open`])
     /// - merges launched on every idle tier holding `fanout` segments (a reopen cancelled the
     ///   last process's: without them no stall bounds a tier until the next commit)
-    pub fn open(set: SegmentSet<R::Key>, fanout: usize) -> Result<Self> {
-        let segments = set.pin().segments();
-        let next = segments
+    pub(crate) fn open(
+        fs: Arc<dyn Fs>,
+        dir: &Path,
+        table: &MapTable,
+        listed: &[SegmentMeta],
+        fanout: usize,
+    ) -> Result<Self> {
+        let shape = Shape::of(table);
+        let snapshot = Arc::new(Snapshot::open(fs.as_ref(), dir, shape, listed)?);
+        let next = listed
             .iter()
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
             .max()
             .unwrap_or(0);
-        let name = set.dir().file_name().unwrap_or_default().to_string_lossy().into_owned();
         let mut log = Self {
-            writer: SegmentWriter::open(Arc::clone(set.fs()), set.dir()),
-            set,
-            name,
+            writer: SegmentWriter::open(Arc::clone(&fs), dir, shape),
+            fs,
+            dir: dir.to_path_buf(),
+            name: table.name.clone(),
+            shape,
+            snapshot,
             fanout,
             next,
-            segments,
+            segments: listed.to_vec(),
             staged: None,
             merges: Vec::new(),
             shape_tiers: 0,
-            _record: PhantomData,
         };
         emit::stall_at(&log.name, stall_at(fanout));
         log.launch_merges()?;
         Ok(log)
     }
 
-    pub fn set(&self) -> &SegmentSet<R::Key> {
-        &self.set
+    /// Committed segments, mapped
+    pub(crate) fn snapshot(&self) -> &Arc<Snapshot> {
+        &self.snapshot
     }
 
     /// Committed list, ≈ data age (readers probe newest first; an answer never depends on order)
-    pub fn segments(&self) -> &[SegmentMeta] {
+    #[cfg(test)]
+    pub(crate) fn segments(&self) -> &[SegmentMeta] {
         &self.segments
     }
 
-    /// `records` as one segment (sealed, durably linked) + every finished merge swapped in for its
-    /// inputs: the list the owner's next manifest must carry
+    /// `rows` (`(key, value)`) as one segment (sealed, durably linked) + every finished merge
+    /// swapped in for its inputs: the list the owner's next manifest must carry
     ///
     /// - a merge panic resumes here, a merge error returns here
     /// - waits only on a merging tier the staged list holds `STALL_WINDOWS` windows behind
     ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
-    pub fn batch(&mut self, records: Vec<R>) -> Result<Vec<SegmentMeta>> {
+    pub(crate) fn batch(&mut self, rows: Vec<(&[u8], &[u8])>) -> Result<Vec<SegmentMeta>> {
         assert!(self.staged.is_none(), "{}: batch before the last one was committed", self.name);
+        let (key_len, value_len) = (self.shape.key_len, self.shape.stride - self.shape.key_len);
+        for (key, value) in &rows {
+            let widths = (key.len(), value.len());
+            assert_eq!(widths, (key_len, value_len), "LSM map {}: (key, value) widths", self.name);
+        }
         let mut staged =
             Staged { segments: self.segments.clone(), retired: Vec::new(), landed: Vec::new() };
         self.land(&mut staged, |merge, _| merge.thread.is_finished())?;
 
         let id = self.allocate();
-        if let Some(segment) = self.writer.write(id, records)? {
+        if let Some(segment) = self.writer.write(id, rows)? {
             self.writer.sync_dir()?;
             emit::batched(&self.name, &segment);
             staged.segments.push(segment);
@@ -146,13 +162,14 @@ where
         Ok(segments)
     }
 
-    /// The owner's manifest carrying [`batch`](Self::batch)'s list is durable: published,
-    /// retired inputs unlinked, merges launched on every idle tier holding `fanout` segments
-    pub fn committed(&mut self) -> Result<()> {
+    /// The owner's manifest carrying [`batch`](Self::batch)'s list is durable: mapped, retired
+    /// inputs unlinked, merges launched on every idle tier holding `fanout` segments
+    pub(crate) fn committed(&mut self) -> Result<()> {
         let staged = self.staged.take().expect("committed follows batch");
         self.segments = staged.segments;
-        self.set.publish::<R>(&self.segments)?;
-        assert_eq!(self.set.pin().segments(), self.segments, "{}: readers see the list", self.name);
+        self.snapshot =
+            Arc::new(self.snapshot.next(self.fs.as_ref(), &self.dir, &self.segments)?);
+        assert_eq!(self.snapshot.segments(), self.segments, "{}: readers see the list", self.name);
         self.writer.remove(&staged.retired)?;
         for landed in &staged.landed {
             report::swapped(&self.name, landed);
@@ -201,7 +218,7 @@ where
                         return Ok(None);
                     };
                     let started = Instant::now();
-                    let Some(segment) = writer.merge::<R>(id, &inputs, &cancel)? else {
+                    let Some(segment) = writer.merge(id, &inputs, &cancel)? else {
                         return Ok(None);
                     };
                     writer.sync_dir()?;
@@ -245,14 +262,14 @@ where
     }
 
     /// Merges launched and not yet landed (each may have an unlisted output on disk)
-    #[cfg(any(test, feature = "testing"))]
-    pub fn merging(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn merging(&self) -> usize {
         self.merges.len()
     }
 
     /// Blocks until every running merge has finished (lands on the next `batch`)
     #[cfg(any(test, feature = "testing"))]
-    pub fn settle(&self) {
+    pub(crate) fn settle(&self) {
         while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
             thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -290,7 +307,7 @@ impl Staged {
 /// Cancels and joins every merge (a detached one could race the next open's id allocation)
 ///
 /// - outcomes dropped: outputs unlisted, a merge panic already reported by the panic hook
-impl<R: Record> Drop for SegmentLog<R> {
+impl Drop for SegmentLog {
     fn drop(&mut self) {
         if !self.merges.is_empty() {
             report::cancelled(&self.name, self.merges.len());
@@ -304,10 +321,10 @@ impl<R: Record> Drop for SegmentLog<R> {
     }
 }
 
-impl<R: Record> fmt::Debug for SegmentLog<R> {
+impl fmt::Debug for SegmentLog {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SegmentLog")
-            .field("set", &self.set)
+            .field("name", &self.name)
             .field("segments", &self.segments.len())
             .field("merging", &self.merges.iter().map(|merge| merge.tier).collect::<Vec<_>>())
             .finish()

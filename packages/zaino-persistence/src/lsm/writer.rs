@@ -19,7 +19,6 @@ use super::{
     file_name,
     filter::FilterError,
     layout::{Navigation, Shape},
-    record::Record,
     Result, SegmentError, SegmentMeta,
 };
 use crate::{
@@ -37,11 +36,12 @@ const VERIFY: bool = cfg!(any(test, feature = "testing"));
 /// A merge input's next record: `(key, source, slot)`, min-first
 type Head<'a> = Reverse<(&'a [u8], usize, usize)>;
 
-/// Writes segments into one directory; ids allocated by the caller (one writer per id)
+/// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentWriter {
     fs: Arc<dyn Fs>,
     dir: PathBuf,
+    shape: Shape,
 }
 
 /// One segment being written: records streamed out in key order, its navigation built alongside
@@ -89,33 +89,34 @@ fn navigation_error(segment: u32, error: FilterError) -> SegmentError {
 }
 
 impl SegmentWriter {
-    pub(crate) fn open(fs: Arc<dyn Fs>, dir: &Path) -> Self {
-        Self { fs, dir: dir.to_path_buf() }
+    pub(crate) fn open(fs: Arc<dyn Fs>, dir: &Path, shape: Shape) -> Self {
+        Self { fs, dir: dir.to_path_buf(), shape }
     }
 
-    /// Sorts `records` and writes them as segment `id`, sealed; `None` for an empty batch
+    /// Sorts `rows` (`(key, value)`) and writes them as segment `id`, sealed; `None` for none
     ///
     /// - uncommitted until listed in a manifest, and unlinked until [`sync_dir`](Self::sync_dir)
     /// - duplicate keys panic (a batch projects distinct rows by construction)
     /// - unique keys → an unstable sort is exact; parallel on the CPU pool
-    pub(crate) fn write<R: Record>(
+    pub(crate) fn write(
         &self,
         id: u32,
-        mut records: Vec<R>,
+        mut rows: Vec<(&[u8], &[u8])>,
     ) -> Result<Option<SegmentMeta>> {
-        if records.is_empty() {
+        if rows.is_empty() {
             return Ok(None);
         }
-        records.par_sort_unstable_by_key(|record| record.key());
+        rows.par_sort_unstable_by_key(|(key, _)| *key);
 
-        let mut out = self.create::<R>(id, records.len() as u64)?;
-        let mut row = Vec::with_capacity(R::STRIDE);
-        for record in &records {
+        let mut out = self.create(id, rows.len() as u64)?;
+        let mut row = Vec::with_capacity(self.shape.stride);
+        for (key, value) in rows {
             row.clear();
-            record.encode(&mut row);
+            row.extend_from_slice(key);
+            row.extend_from_slice(value);
             out.push(&row)?;
         }
-        self.sealed::<R>(out).map(Some)
+        self.sealed(out).map(Some)
     }
 
     /// K-way merge of `inputs` into segment `id`, sealed (record count = inputs' sum); `None` once
@@ -126,18 +127,17 @@ impl SegmentWriter {
     ///   the inputs
     /// - streams: memory = a few 1 MiB buffers, the summary and the filter's shard table, whatever
     ///   the segments' size (fences and fingerprints spill to scratch files, `spill.rs`)
-    pub(crate) fn merge<R: Record>(
+    pub(crate) fn merge(
         &self,
         id: u32,
         inputs: &[SegmentMeta],
         cancel: &AtomicBool,
     ) -> Result<Option<SegmentMeta>> {
         assert!(inputs.len() >= 2, "merge of {} segments", inputs.len());
-        let shape = Shape::of::<R>();
         let sources = inputs
             .iter()
             .map(|meta| {
-                SegmentFile::open(self.fs.as_ref(), &self.dir, meta, shape, Access::Sequential)
+                SegmentFile::open(self.fs.as_ref(), &self.dir, meta, self.shape, Access::Sequential)
             })
             .collect::<Result<Vec<_>>>()?;
         let total: u64 = inputs.iter().map(|meta| meta.records).sum();
@@ -149,7 +149,7 @@ impl SegmentWriter {
         let mut heads: BinaryHeap<Head<'_>> =
             (0..sources.len()).filter_map(|source| head(source, 0)).collect();
 
-        let mut out = self.create::<R>(id, total)?;
+        let mut out = self.create(id, total)?;
         while let Some(Reverse((_, source, slot))) = heads.pop() {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
@@ -158,28 +158,23 @@ impl SegmentWriter {
             heads.extend(head(source, slot + 1));
         }
         // `finish` asserts every input record was emitted once
-        self.sealed::<R>(out).map(Some)
+        self.sealed(out).map(Some)
     }
 
     /// `out` finished, then (under [`VERIFY`]) read back through its page checksums
-    fn sealed<R: Record>(&self, out: SegmentOut) -> Result<SegmentMeta> {
+    fn sealed(&self, out: SegmentOut) -> Result<SegmentMeta> {
         let (meta, digest) = out.finish()?;
         if VERIFY {
-            self.verify::<R>(&meta, digest)?;
+            self.verify(&meta, digest)?;
         }
         Ok(meta)
     }
 
     /// Sealed segment re-read from disk: record count, strictly ascending keys, no filter false
     /// negative, same row digest as written (TigerBeetle pair assertion: checked writing + reading)
-    fn verify<R: Record>(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
-        let file = SegmentFile::open(
-            self.fs.as_ref(),
-            &self.dir,
-            meta,
-            Shape::of::<R>(),
-            Access::Sequential,
-        )?;
+    fn verify(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
+        let file =
+            SegmentFile::open(self.fs.as_ref(), &self.dir, meta, self.shape, Access::Sequential)?;
         assert_eq!(file.records() as u64, meta.records, "segment {}: record count", meta.id);
         file.warm_filter();
         let mut digest = crc32fast::Hasher::new();
@@ -213,15 +208,15 @@ impl SegmentWriter {
         Ok(())
     }
 
-    fn create<R: Record>(&self, id: u32, records: u64) -> Result<SegmentOut> {
+    fn create(&self, id: u32, records: u64) -> Result<SegmentOut> {
         let path = self.dir.join(file_name(id));
         let file = PagedFile::open(self.fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)?;
         Ok(SegmentOut {
             id,
             file,
             records,
-            navigation: Navigation::new(Shape::of::<R>(), records, &self.fs, &self.dir, id),
-            chunk: Vec::with_capacity(CHUNK + R::STRIDE),
+            navigation: Navigation::new(self.shape, records, &self.fs, &self.dir, id),
+            chunk: Vec::with_capacity(CHUNK + self.shape.stride),
             digest: crc32fast::Hasher::new(),
         })
     }

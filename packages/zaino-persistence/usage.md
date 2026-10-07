@@ -1,324 +1,224 @@
 # zaino-persistence
 
-The storage core the index crates share: the file layer, the manifest commit
-point, page checksums and immutable sorted segments. The protocol these
-implement is [`docs/design/durability.md`](../../docs/design/durability.md).
+What every index stores through: the persistence port (`PersistenceEngine`,
+`Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`), the tiering
+every index holds its uncommitted blocks in (`Tiered`, over any `Store`), and
+the engine behind it, `DiskEngine`, which keeps sequences as positional files
+and maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
+crash protocol: [`docs/design/durability.md`](../../docs/design/durability.md).
 
-Each index owns its own record layouts: fixed-width `encode`/`decode` functions
-beside a golden-bytes test (e.g. `zaino-index-tree-state/src/heights.rs`).
+An index owns only its schema and its record layouts: fixed-width `encode` /
+`decode` functions beside a golden-bytes test (e.g.
+`zaino-index-tree-state/src/heights.rs`). The engine sees bytes.
 
-## File layer (`fs`)
-
-Every index reads and writes through `Arc<dyn Fs>`:
-
-```rust
-use zaino_persistence::fs::{Fs, RealFs};
-
-let fs = RealFs::shared();               // std::fs + memmap2 (Linux)
-let file = fs.open(&path)?;              // read + write, created if absent, never truncated
-file.write_all_at(&bytes, offset)?;      // positional only: no implicit cursor
-file.sync_data()?;                       // content + length durable
-fs.sync_dir(&dir)?;                      // new names / renames / removals durable
-let mapping = file.map()?;               // read-only Bytes; None when empty
-```
-
-- `lock(path)` takes an exclusive `File::try_lock`; a held lock is
-  `ErrorKind::WouldBlock`.
-
-`SimFs` (feature `testing`) is the in-memory implementation crash tests run on.
-`SimFs::recording()` records the image around every persistence point
-(`sync_data`, `sync_dir`, `rename`, `remove`); `crash_states()` then returns
-every distinct state a power loss there could leave, each tagged with the value
-`set_tag` held at the time (a test's acknowledged commits):
+## Declaring, opening, committing, reading
 
 ```rust
-let fs = SimFs::recording();
-// ... run a workload, fs.set_tag(n) after each acknowledged commit ...
-for state in fs.crash_states() {
-    let store = Store::open(state.fs, path, network)?;   // must reopen
-    // recovered = commit `state.tag` or `state.tag + 1`
-}
-```
+use zaino_persistence::{
+    Changes, DiskEngine, IndexKind, MapId, MapRead, PersistenceEngine, Schema, SequenceId,
+    SequenceRead, Store, View, Width,
+};
 
-Crash states cover unsynced writes dropped, kept as a prefix, reordered (one lost,
-later ones kept), torn, zero- or garbage-filled, and unsynced directory entries
-lost or kept.
+const BLOCKS: SequenceId = SequenceId(0);
+const SPENT: MapId = MapId(0);
 
-`fail_from(n)` fails the nth mutating call (create, write, truncate, sync,
-rename, remove; 0-based) and every later one with `EIO`, applying nothing
-(Pebble `errorfs`). Loop `n` upward until the workload succeeds; `mutations()`
-counts the calls so far, and `restarted()` is the same image after a process
-exit, healthy again. `power_loss()` is the image a crash right now would leave
-(only synced entries and bytes), even while background merges are mid-write:
-
-```rust
-for n in 0.. {
-    let fs = SimFs::new();
-    fs.fail_from(n);
-    match workload(&fs) {
-        Ok(()) if fs.mutations() <= n => break,  // op n never reached
-        outcome => /* the Err names "injected EIO at op n" */,
-    }
-    let store = Store::open(fs.restarted(), path, network)?; // recovers a committed state
-}
-```
-
-`contents(path)` and `corrupt(path, edit)` inspect and damage files durably.
-
-## Page checksums (`pages`)
-
-Every index file is a `PagedFile`: append-only data, a `<file>.crc` sidecar
-holding a CRC-32 per complete 4 KiB page (seeded with the page's index), and a
-`Sealed { len, tail, sums }` that the owner's manifest carries: the length, the
-partial last page's checksum, and a CRC-32 of the whole `.crc`, which binds the
-checksums to the manifest (design: `docs/design/durability.md`).
-
-```rust
-use zaino_persistence::pages::{FileKind, PagedFile, Sealed};
-
-// fresh = Sealed::EMPTY
-let mut file = PagedFile::open(fs.as_ref(), &path, body.sealed, FileKind::Log)?;
-file.append(&bytes)?;                    // at the end, never positional
-let sealed = file.seal()?;               // fsync data, write + fsync new page CRCs
-// commit a manifest carrying `sealed`, then:
-let pages = file.pages(sealed, Some(&old_pages))?; // read view; checked pages stay checked
-let bytes = pages.bytes(range);          // zero-copy, every page checked on first touch
-```
-
-- `open` checks the file is at least as long as its seal (then truncates to it),
-  the tail page's checksum, and the `.crc` against `sums`:
-  `PageError::{Lost, Tail, Sums}`. `Pages::open` checks the same digest.
-- `FileKind` says what the file is. A `Segment` (an LSM segment, written once and
-  sealed) grows by exactly what is appended, and the caller fsyncs its directory.
-  A `Log` (appended to commit after commit) is linked durably when `open`
-  creates it, and grows into a reserve of zeros written and fsynced ahead
-  of the appends (each step the file's size again, 64 KiB to 64 MiB), so a seal
-  changes no metadata and its `fdatasync` never waits on the filesystem journal
-  (`docs/design/durability.md` §3). The file on disk is longer than its seal by
-  the reserve; open truncates it back.
-- A read that first touches a page whose CRC disagrees **panics** (corruption:
-  zainod aborts; never serves bytes it cannot vouch for).
-- `Pages::open(fs, path, sealed, access)` maps an immutable sealed file (a segment)
-  without truncating. `fs::Access` is the kernel readahead advice for that mapping
-  and its checksums, per mapping and never per file: `Random` (point lookups: one
-  4 KiB fault instead of a 128 KiB readahead window), `Sequential` (one pass;
-  larger readahead, pages reclaimed sooner), `Normal` (no advice). `PagedFile`
-  views (appendable files) are `Normal`.
-- `scrub(dir, relative, sealed)` is the offline check: plain sequential reads,
-  every page against its CRC and the `.crc` against `sums` → `Scrub { committed_bytes, orphaned_bytes, lost, bad_sums, bad_pages }`. Each index exposes `committed_files(dir, network)` →
-  `CommittedFiles { heights, files }`, the list `zainod verify` scrubs.
-
-## Manifest and index directory (`manifest`, `dir`)
-
-`IndexDir::open(fs, path, identity)` creates and durably links the directory,
-takes its `LOCK`, creates `MANIFEST` if absent (two zeroed slots, written under
-a temporary name and renamed in whole), and returns the committed manifest body
-(`None` = never committed):
-
-```rust
-let Opened { mut dir, body } = IndexDir::open(fs, path, Identity { kind, format, network })?;
-match body {
-    Some(body) => /* decode, open every file at its seal */,
-    None => { dir.ensure_empty("data.bin")?; dir.commit(&empty_body)?; }
-}
-dir.commit(&new_body)?;   // over the slot the last commit did not use → fdatasync
-```
-
-- A commit rewrites one of `MANIFEST`'s two fixed slots in place: no rename, no
-  directory fsync, so it never waits on the filesystem journal. The other slot
-  keeps the commit before it, which a crash mid-write falls back to.
-- Each slot's header checks magic, CRC, index kind, format version and network.
-  A slot failing magic, length or CRC reads as a torn write, and the other slot
-  stands. A checksummed slot for another kind, format or network, two torn
-  slots, or a file of the wrong length (an older layout) is a `ManifestError`.
-- Every body starts with `Committed { tip: Option<BlockRef> }` (the last
-  committed block, inclusive; `None` = nothing committed), stored as the block
-  count from genesis then the tip hash; `BodyReader` reads the rest with bounds
-  checks, and `finish()` refuses trailing bytes.
-- `ensure_empty` / `ensure_empty_dir` refuse data in a directory with no
-  manifest (`Unmanifested`): a crash never produces it, because the first
-  commit precedes any data write.
-- `manifest::read(dir, identity)` = the committed body read offline (no lock).
-
-## LSM segments
-
-`lsm` is a size-tiered LSM for associative data that only grows. Every row
-derives from one block and is never updated or deleted, so there is no memtable,
-WAL, tombstone or version. Each batch is sorted and written once as
-a segment (`<dir>/<id:010>.seg` + `.crc`): packed records, one fence key per ~4 KiB
-block, and for a probed key a sharded BinaryFuse8 filter. The owner's manifest
-lists committed segments as `SegmentMeta { id, records, sealed }`; a segment it does not
-list is uncommitted and removed at open.
-
-An index stored this way implements `LsmIndex` on a marker type and lets
-`LsmStore` own its directory: the manifest (committed tip, one segment list per
-set), the fresh-directory sequence, and the commit.
-
-```rust
-use zaino_persistence::lsm::{LsmIndex, LsmStore, SegmentLog};
-
-struct MyIndex;
-impl LsmIndex for MyIndex {
-    const KIND: IndexKind = IndexKind::ValueBalance;
-    const FORMAT: u16 = 1;
-    const SETS: &'static [&'static str] = &["outputs"];  // one sub-directory per set
-    type Logs = SegmentLog<MyRow>;                        // or (SegmentLog<A>, SegmentLog<B>)
-    // optional: const FANOUT (default 8), fn check(committed, lists) (manifest invariant)
+pub fn schema(network: NetworkType) -> Schema {
+    Schema::new(IndexKind::CompactBlock, FORMAT, network)
+        .with_sequence(BLOCKS, "blocks", Width::Variable)               // blocks.dat + blocks.idx
+        .with_map(SPENT, "spent", Width::fixed(36), Width::fixed(36), 0) // spent/<id>.seg
 }
 
-let mut store = LsmStore::<MyIndex>::open(fs, path, network)?; // unlisted segments removed
-let set = store.sets();                                        // read handles (shared)
-store.commit(rows, tip)?;          // tip: BlockRef; segment per set → MANIFEST → published
-let committed = store.committed(); // Committed { tip: Option<BlockRef> }
-lsm::committed_files::<MyIndex>(path, network)?;               // for `zainod verify`
+let engine = DiskEngine::new(fs);
+let mut store = engine.open(path, &schema(network))?;   // fresh = empty, else the committed tip
+
+let mut changes = Changes::new(tip, store.schema());
+changes.append(BLOCKS, &record);                         // at the end, in call order
+changes.insert(SPENT, &outpoint.encode(), &spend);       // keys unique
+let view = store.commit(changes)?;                        // durable, then readable
+
+view.tip();                                               // Option<BlockRef>
+view.record(BLOCKS, h);  view.records(BLOCKS, a..b);      // zero-copy mmap slices
+view.value(SPENT, &key); view.values(SPENT, &keys);       // answers in `keys` order
+view.range(SPENT, &start, &end, limit);                   // [start, end); None = over `limit`
 ```
 
-Failures are `zaino_persistence::StoreError` (`Io`, `Manifest`, `Page`,
-`Segment`), the one error every index directory reports.
+- **`IndexKind`** is the manifest's kind tag, and `IndexKind::name()` (`const`,
+  snake_case: `compact_block`, …, `header_chain`) is the index's one spelling:
+  sink subscription, metric label, statusz key, task name, default directory,
+  snapshot entry and a writer's panic messages all read it.
+- **Ids** are declared in order (`SequenceId(0)`, `(1)`, …). A name with a `/`
+  puts the table's files in a sub-directory (`"sapling/l00"`).
+- **Map keys** compare as bytes: encode numeric fields big-endian. They lead
+  with at least 8 uniform bytes (a hash, a txid), because each segment's filter
+  shards on them. `scope` gives the leading key bytes every range read shares:
+  the filter covers that prefix, and a range whose bounds share it visits only
+  the segments that may hold it. Scope 0 means point lookups, with whole keys
+  filtered and segments mapped for random access.
+- **`Changes`** holds one buffer per table, shaped by the schema. Fixed-width
+  tables cost only their bytes; variable ones add an end offset per item. A
+  fixed-width item of the wrong size, or an undeclared id, panics at the
+  `append` or `insert` call, naming the table.
+- **`commit`:**
+  - Appends are sealed (only tables that grew are fsynced) and each map's rows
+    are written as one sorted segment; then the manifest slot is written, which
+    is the commit point, and the new view is returned.
+  - It asserts that the tip advances and that the changes were built for this
+    store's schema.
+  - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
+    never retried; `durability.md` §6). Drop the store and reopen it.
+  - `Tiered::finalize` (below) turns the `Err` into a panic naming the index
+    and `store.path()`: `<index> index commit failed: disk <dir> full` when
+    `StorageFull` or `QuotaExceeded` sits anywhere in the error chain, else
+    `<index> index commit failed at <dir>: <error>`.
+- **Reads never error.** A page whose checksum fails **panics** on its first
+  touch, telling the operator to run `zainod verify`. A `View` never changes
+  while held, so a request or stream keeps one state throughout.
+- **`open` refuses:**
+  - another index kind, format or network (`ManifestError::{Kind, Format, Network}`)
+  - data in a directory with no manifest (`Unmanifested`)
+  - a file shorter than its seal, a torn tail page, or `.crc` checksums that
+    don't match the manifest (`PageError::{Lost, Tail, Sums}`)
 
-- A `commit` that returns `Err` ends the store: any later `commit` panics (an
-  `fsync` error is never retried; `docs/design/durability.md` §6). Drop it and
-  reopen; recovery lands on the last durable manifest.
-- The store returns `Err`; an index writer turns it into a panic with
-  `error.commit_failed(index, store.path()) -> !`:
-  `<index> index commit failed: disk <dir> full` when `StorageFull` /
-  `QuotaExceeded` sits anywhere in the error chain, else
-  `<index> index commit failed at <dir>: <error>`.
-- `commit` asserts `tip` above the committed one, and runs `LsmIndex::check`
-  on the lists it is about to write as well as on the lists it reads at open.
+  Bytes past the seal (an interrupted commit, or the zeroed reserve) are
+  truncated, and segments the manifest doesn't list are removed.
+- **Tables the LSM can't hold** panic at `open`, naming the map: a `Variable`
+  key or value, a scope longer than the key, or fewer than 8 filtered key bytes.
+- **Errors** are `StoreError` (`Io`, `Manifest`, `Page`, `Segment`).
 
-The pieces underneath, for a store with a different layout:
+## Verifying offline
 
 ```rust
-use zaino_persistence::lsm::{SegmentLog, SegmentSet};
-
-let set = SegmentSet::<MyKey>::open::<MyRow>(fs, &dir, &body.segments)?; // unlisted removed
-let mut log = SegmentLog::<MyRow>::open(set.clone(), 8);                 // fanout 8
-
-let listed = log.batch(rows)?; // sorted, written, sealed, linked + finished merges: the next list
-// commit the manifest carrying `listed`, then:
-log.committed()?;              // publish, unlink merged-away inputs, launch merges
-
-let rows: Vec<MyRow> = set.pin().range(&start, &end); // start inclusive, end exclusive; ascending
-let row: Option<MyRow> = set.pin().get(&key);         // exact key: filter first
-let rows: Vec<Option<MyRow>> = set.pin().get_many(&keys); // a batch, in `keys`' order
-let rows: Option<Vec<MyRow>> = set.pin().range_at_most(&start, &end, limit); // None = > limit rows
+let report = DiskEngine::new(fs).verify(path, &schema(network))?; // plain std::fs reads, no lock
+report.heights;          // blocks committed from genesis
+report.units;            // Vec<Checked { name, committed_bytes, orphaned_bytes, lost, bad_sums, bad_pages }>
+report.is_clean();
 ```
 
-- `range_at_most` stops scanning at row `limit + 1` and answers `None` (never a
-  truncated list): a serve-path budget bounds the cost, not the range's size.
-  `range` = `range_at_most(.., usize::MAX)`.
+- Every file the manifest seals is read through and checked page by page.
+- Safe beside a running daemon. A segment that a merge retired between reading
+  the manifest and scrubbing it is scrubbed again against the newer manifest; a
+  file still listed but missing is reported `lost`.
 
-- `get` probes the newest segment first. The list is roughly data age (batches
-  append, a merge takes its oldest input's slot) and lookups skew recent. Keys
-  are unique across segments, so order never changes an answer.
+## On disk
 
-- `get_many` is the batched lookup (RocksDB `MultiGet`): it sorts the keys and
-  resolves them in key order. Neighbouring keys share fence, filter and record
-  pages, so one fault serves several. From 64 keys it resolves contiguous sorted
-  runs in parallel on the rayon pool; below that it stays on the calling thread,
-  where rayon's wake-up cost 5–10× the lookups themselves (measured). Use it
-  whenever one request needs many keys.
+```text
+<dir>/MANIFEST         two fixed slots; commit n rewrites slot n % 2 in place, then fdatasync
+<dir>/<seq>.dat        sequence records back to back      (+ .crc: CRC-32 per 4 KiB page)
+<dir>/<seq>.idx        Variable only: u64 LE end offset per record
+<dir>/<map>/<id>.seg   one sorted segment per batch or merge
+```
 
-- From 64 keys on a filtered set, `get_many` first prefetches the batch
-  (`MADV_WILLNEED`, advisory, never changing an answer), in the two reads a seek
-  makes: every candidate segment's fence group, then every candidate's block of
-  records. A faulting thread waits on each read, so without it the device only
-  ever sees one read per rayon thread; with it, the whole batch is queued at
-  once. Candidates are the segments whose filter admits the key, which is almost
-  only the one holding it; an unfiltered set is not prefetched, since every
-  segment would be a candidate while a lookup stops at its first hit.
+- **Manifest:** each slot checks magic, CRC, index kind, format and network. A
+  torn slot falls back to the other one. The body is the committed tip, then
+  each sequence's seals, then each map's segment list
+  (`disk.rs::a_manifest_body_is_its_golden_bytes`).
+- **Page checksums:** each file's `.crc` holds a CRC-32 per complete page,
+  seeded with the page's index. The tail page's CRC and a digest of the whole
+  `.crc` ride the manifest, which binds every page to the commit.
+- **Write-ahead reserve:** sequence files grow into a zeroed, fsynced reserve,
+  so a seal changes no metadata and never waits on the filesystem journal.
+  Writeback starts every 1 MiB appended (`sync_file_range`), so seal-time fsyncs
+  find little dirty data.
 
-- Readers map a probed set's segments `Access::Random` (point lookups) and an
-  unprobed set's `Access::Normal` (range scans want readahead). A merge maps its
-  inputs separately with `Access::Sequential`, so it neither slows lookups nor is
-  slowed by them.
+## LSM behaviour (map tables)
 
-- `Key` (`const LEN`, `encode`, `decode`) must be **big-endian**: reads compare
-  encoded prefixes, so byte order must be key order. `const PROBED = true` gives
-  each segment a filter and requires the encoded key's first 8 bytes uniform (a
-  hash, a txid): the filter shards on them.
+- **Segments:**
+  - Packed fixed-width rows (key ‖ value), one fence per ~4 KiB block, an
+    in-memory summary over the fences, and a sharded BinaryFuse8 filter
+    (FPR 2⁻⁸).
+  - A seek is a search in memory, then one page of fences, then one block of
+    rows.
+  - Each reader reads and checks a segment's whole filter when it maps the
+    segment.
+- **`values`:**
+  - Sorts the keys and resolves them in key order.
+  - From 64 keys it prefetches (`MADV_WILLNEED`: every candidate's fence group,
+    then its block of records) and resolves the keys on the rayon pool.
+  - Below 64 keys it stays on the calling thread, where rayon's wake-up cost
+    5–10× the lookups (measured).
+- **Merges:**
+  - Run on background threads, at most one per size tier and four doing work
+    across the process, lowest tier first, at background CPU and I/O priority.
+  - A finished merge is swapped in by the next commit's manifest, and its
+    inputs are unlinked once that manifest is durable.
+  - A commit waits for a merging tier only once that tier is two idle windows
+    behind (`STALL_WINDOWS`), which bounds read fan-out.
+  - Merge errors and panics surface at the next commit.
+  - Dropping the store cancels and joins every merge.
+- **Duplicate keys** panic, whether within a batch or across segments (on a
+  read or a merge).
+- **Read-back check:** under `cfg(test)` or feature `testing`, every sealed
+  segment is read back: row count, ascending keys, no filter false negative, and
+  a CRC of the rows.
+- **Metrics:** `zaino_lsm_*`, labelled `set` = the map's name. Register them
+  with `lsm::describe_metrics` and `lsm::METRIC_BUCKETS`.
+- **Logs:** `Compacting segments` / `Compacted segments` (debug) and
+  `Commit waited on compaction` (warn).
 
-- `Record` (`type Key`, `const STRIDE`, `key`, `encode`, `decode`) is
-  fixed-width, key first. A batch with a duplicate key panics (asserted while
-  writing, before anything is sealed). Key length > 0, ≤ `STRIDE`, and ≥ 8 when
-  probed are checked at compile time.
+## Tiering: blocks above the committed tip (`Tiered`)
 
-- Keys are unique across a set's committed segments (the owner's invariant):
-  `range` panics on a key it finds in two segments, and a merge of two such
-  segments panics on its thread, resumed at the next `batch()`.
+Every index holds its non-final and not-yet-committed blocks through one generic
+layer over any `Store`
+([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-tiering)):
 
-- A merge's output must hold exactly its inputs' row count (asserted when it
-  lands). Under `cfg(test)` or feature `testing`, every sealed segment (batch or
-  merge) is read back through its page checksums: row count, strictly ascending
-  keys, no filter false negative, and a CRC of the rows equal to the one taken
-  while writing (RocksDB `paranoid_file_checks`).
+```rust
+let mut tiered = Tiered::new(store, batch_bytes);   // nothing held above the committed tip
 
-- Merges run in the background, off the commit path (LevelDB/RocksDB
-  background compaction). `committed()` starts one per size tier
-  (`⌊log_fanout(records)⌋`) that lists `fanout` idle segments, taking the oldest of
-  the lowest such tier first, on its own `merge <set> t<tier>` thread. A merge
-  streams its inputs through their page checksums and seals and links its
-  output, but never commits it: the next `batch()` swaps each finished merge in
-  for its inputs, and that batch's manifest commits both at once. Inputs are
-  unlinked only after that manifest is durable. Peers need not be adjacent,
-  since keys are unique across segments and list order means nothing to readers.
+let mut changes = Changes::new(block_ref, tiered.schema()); // one block = one Changes
+changes.append(BLOCKS, &record);
+tiered.apply(changes);                               // tip block: RAM, reorgable
+if tiered.stage(final_changes, block_weight) {       // final block: true = a batch's bytes staged
+    tiered.finalize(height);                         // held through `height` → one commit
+}
+tiered.reorg();                                      // every applied block dropped
 
-- One merge per tier at a time, and at most `MERGE_SLOTS` (4) doing work at once
-  across every set in the process. A launched merge waits for a free slot, and
-  the lowest tier waiting gets the next one, so a small merge never waits behind
-  a large one. Each merge thread lowers itself to background priority (CPU nice
-  10, I/O best-effort level 7) so merges yield the disk and cores to serving
-  reads; the I/O class only matters under a scheduler that honours it (BFQ,
-  mq-deadline). Write stall: if a merging tier falls two idle windows behind
-  (`STALL_WINDOWS`), `batch()` waits for that merge (RocksDB
-  `level0_stop_writes_trigger`), which bounds how many segments a read fans out
-  over.
+let view = tiered.view();                            // TieredView<S::View>: held first, then durable
+view.record(BLOCKS, h); view.value(SPENT, &key);     // the read traits the store's view has
+view.durable();                                      // the committed view alone (the seam)
+tiered.durable_tip(); tiered.applied(); tiered.staged(); // Option<BlockRef> each
+```
 
-- Errors surface at the next `batch()`, and a merge panic (a corrupt input
-  page) resumes there. Dropping the log cancels and joins every merge; a
-  cancelled output is unlisted, so the next open removes it.
+- A held block is keyed exactly as the store holds it: a view answers a
+  position past the durable length from the held records, a key from the held
+  rows first. `range` merges both and keeps the `None` = over `limit` rule.
+- Views are O(tables) pointer copies (`imbl` per table): publish one per block.
+- Staged and applied blocks never coexist: finalize the staged before applying
+  a tip block. Each precondition (a gap, apply over staged, stage over applied,
+  finalize outside (durable, held] or splitting the staged, reorg with staged,
+  changes for another schema, a key held twice) panics at the top of the call,
+  naming the index.
+- `stage`'s `weight` = the source block's bytes, so a batch means the same
+  whatever the index stores per block.
+- `finalize` merges the held blocks through `height` into one `Changes`, commits
+  it (one fsync) and panics naming the index and directory if the commit fails.
+- `check(label)` and `store()` (feature `testing`) = its internal invariants and
+  the store underneath, for the conformance suite.
 
-- Publishes `zaino_lsm_*` metrics labelled by `set` (the
-  segment directory's name). They cover segments and running merges per size
-  tier, the stall count, rows batched and merged (their ratio is write
-  amplification), merge bytes, and merge and stall durations. Register them with
-  `lsm::describe_metrics` and `lsm::METRIC_BUCKETS`.
+## Conformance suite (feature `testing`)
 
-- Logs (`tracing`, fields `set`, `tier`, `rows`, `size`):
+`conformance` tests any `PersistenceEngine` through the port alone, driven through `Tiered`
+as every index drives it. An engine implements `conformance::Subject`, which is `engine()`
+and `path()` plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
+`conformance::history` under proptest and `conformance::contract` as a plain test.
+`PROPTEST_CASES=1000` is its heavy run. `conformance::Model` is the expected state for an
+engine's own crash tests. Design:
+[`persistence-engine.md` §4](../../docs/design/persistence-engine.md#4-tests).
 
-  - `Compacting segments` (debug, adds `segments`) when a merge starts.
-  - `Compacted segments` (debug, adds `took`) once the manifest listing its
-    output is durable and its inputs are unlinked.
-  - `Commit waited on compaction` (warn) when a stall joins a merge.
-  - A merge thread runs inside the span that opened or batched the log, so its
-    lines carry the owner's context.
+## File layer (`fs`) and crash simulation
 
-- Every `PagedFile` starts writeback per 1 MiB appended
-  (`FileHandle::write_behind` = `sync_file_range(SYNC_FILE_RANGE_WRITE)`,
-  RocksDB `bytes_per_sync`). A merge's seal-time `fsync` then finds little
-  dirty data, so it never stalls the commit path's own `fsync`s.
+Everything the engine writes goes through `Arc<dyn Fs>` (`RealFs::shared()` in
+production). `SimFs` (feature `testing`) is the in-memory implementation crash
+tests run on:
 
-- A segment is `records ‖ fences ‖ summary ‖ filter`. The summary holds the
-  first key of every page of fences, and a reader copies it into memory at
-  open, so a seek is a search in memory, one page of fences, then one block of
-  rows (≈ one page): two page reads per segment whatever its size.
-
-- A reader reads and checks each segment's whole filter when it maps the
-  segment (`warm_filter`), so no probe ever faults in or checks a cold filter
-  page, and a corrupt filter dies at open. Merges never probe, so they skip it.
-
-- `Key::PROBED` filters whole keys (point lookups). `Key::FILTER_PREFIX` filters
-  the first N bytes of a range-scanned key: each distinct prefix goes into the
-  filter once, and `range_at_most` skips every segment whose filter rules out
-  a prefix the range's start and end share. Either way the filter shards on the
-  first 8 filtered bytes, which must be uniform.
-
-- A segment being written keeps its fences and filter fingerprints in memory
-  only up to 1 MiB each, then spills them to `<id>.fences.scratch` and
-  `<id>.filter.scratch` beside it, and copies them in after the records. Merge
-  memory stays at a few MiB whatever the segment's size, for about 2% extra
-  I/O. Scratch files are never listed; opening a set deletes any it finds.
-
-- Filter sizing (BinaryFuse8, ≤ 2²⁰ keys per shard):
-  [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §7.
+- **`SimFs::recording()` + `crash_states()`:** every distinct state a power
+  loss could leave at each persistence point, each tagged with what `set_tag`
+  held then. A test reopens each state and asserts it recovered to an
+  acknowledged or the attempted commit.
+- **`fail_from(n)`:** fails the nth mutating call and every later one with
+  `EIO`, applying nothing (Pebble `errorfs`). `mutations()` counts the calls,
+  and `restarted()` is the same image after a process exit.
+- **`fail_reads_from(n)`:** the same, for reads.
+- **`power_loss()`:** the image a crash right now would leave.
+- **`contents(path)` and `corrupt(path, edit)`:** inspect and damage files.
+- **`DiskEngine::with_fanout(fs, n)` and `DiskStore::settle()`:** small fanouts
+  and deterministic merge landing, for tests.
