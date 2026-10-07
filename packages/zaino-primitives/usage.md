@@ -4,10 +4,14 @@ Zaino's domain vocabulary: Zcash chain types in Zaino's own terms, independent
 of how they are transported or stored. Every other Zaino crate that needs a
 height, hash, block or amount depends on this one.
 
-## Dependencies: `thiserror` only
+## Dependencies: `thiserror`, `zcash_protocol` and `sha2` only
 
-Anything added here lands in every crate above it. In particular there is no
-serde: formats are owned by the boundary that speaks them.
+Anything added here lands in every crate above it. `zcash_protocol` is there
+for `NetworkType`, which every crate above already speaks; `sha2` for
+`MerkleRoot::of_txids`, the consensus merkle root a block's transactions must
+rebuild (the producer's body check, and the chain builder's headers). In
+particular there is no serde: formats are owned by the boundary that speaks
+them.
 
 | Direction | Owner |
 |---|---|
@@ -22,6 +26,7 @@ values never belong here.
 ## Modules
 
 ```rust
+use zaino_primitives::network::{chain_name, network_name};
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
 use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
@@ -43,6 +48,10 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
   (`BlockDeltas`, `BlockHeaderVerbose`, `BlockSubsidy`, `ChainTip`,
   `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`, …). Only named,
   typed fields; `Option` means "the validator may not report it".
+- `network` — `NetworkType`'s two spellings: `chain_name` (`main` / `test` /
+  `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
+  `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and
+  messages). Every surface uses one of these, never its own match.
 - `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000) and `MAX_BLOCK_BYTES`
   (2,000,000, the spec's `MAX_BLOCK_SIZE`). Stated as protocol facts, not
   borrowed from a node. Restating them elsewhere is a bug.
@@ -106,6 +115,29 @@ that presents it.
 
 ## Features
 
-`testing` exposes `BlockHeader::for_tests(height, hash, prev_hash, time)`: a
-fixture header with regtest `bits` and every field no test asserts on zeroed.
-Enable it from `[dev-dependencies]` only.
+`testing` exposes the one chain builder every test below the live suite uses. Enable it
+from `[dev-dependencies]` only.
+
+```rust,ignore
+use zaino_primitives::testing::{encode_header, Chain};
+
+let mut chain = Chain::new();                        // regtest genesis, bare coinbase
+let tip = chain.extend(chain.genesis().hash, 10);    // ten bare blocks on genesis
+let fork = chain.mine(chain.path(tip.hash)[8].header().hash); // a branch at any height
+let paid = chain.mine_with(tip.hash, transactions);  // exactly these transactions
+let early = chain.mine_at(tip.hash, time);           // a chosen header time
+let heavy = chain.mine_heavier(parent, &replaced);   // one block outweighing `replaced` (< 256)
+let blocks: Vec<Block> = chain.path(tip.hash);        // genesis ..= tip, linked
+let raw = encode_header(blocks[3].header());         // the consensus header bytes
+```
+
+Every block is real: `hash` = SHA-256d of `encode_header` (`header_hash`), `prev_hash`
+links, `merkle_root` = the Bitcoin merkle tree over its txids (`MerkleRoot::of_txids`, an
+odd level's last duplicated; a repeated pair has no root, CVE-2012-2459), version 4, regtest nBits (`0x200f0f0f`), a zero 36-byte
+solution, each block 75 s after its parent. A mint counter sets each nonce and default
+coinbase txid, so siblings never collide and every run builds the same hashes.
+`Chain::with_genesis(transactions)` starts from a genesis holding chosen transactions;
+`linked(per_block)` builds one such branch whole, as the `Arc<Block>`s an index sink takes.
+`encode_header` is pinned against five mainnet headers (`zaino-source` decode tests) and
+the genesis bytes here; `zaino-header-chain`'s model inserts builder headers through
+every regtest rule.

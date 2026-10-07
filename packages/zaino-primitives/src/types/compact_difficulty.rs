@@ -89,6 +89,11 @@ impl CompactDifficulty {
         expand(bits)?.work().ok_or(CompactDifficultyError::WorkOverWidth { bits })?;
         Ok(Self(bits))
     }
+
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn bits(self) -> u32 {
+        self.0
+    }
 }
 
 /// Decode nBits into its expanded 256-bit target, applying the acceptance set.

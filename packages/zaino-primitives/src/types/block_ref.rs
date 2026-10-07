@@ -20,11 +20,3 @@ pub struct BlockRef {
     /// The block's height.
     pub height: Height,
 }
-
-impl BlockRef {
-    /// Build a reference from the pair the tip ports answer with.
-    pub fn from_tip(tip: (BlockHash, Height)) -> Self {
-        let (hash, height) = tip;
-        Self { hash, height }
-    }
-}

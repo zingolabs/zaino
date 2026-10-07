@@ -19,15 +19,6 @@ impl<T> PerPool<T> {
         }
     }
 
-    /// [`from_fn`](Self::from_fn), stopping at the first error
-    pub fn try_from_fn<E>(mut f: impl FnMut(ShieldedPool) -> Result<T, E>) -> Result<Self, E> {
-        Ok(Self {
-            sapling: f(ShieldedPool::Sapling)?,
-            orchard: f(ShieldedPool::Orchard)?,
-            ironwood: f(ShieldedPool::Ironwood)?,
-        })
-    }
-
     pub fn get(&self, pool: ShieldedPool) -> &T {
         match pool {
             ShieldedPool::Sapling => &self.sapling,
@@ -79,13 +70,12 @@ impl TreeSizes {
 mod tests {
     use super::*;
     use crate::types::{
-        BlockHeader, CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction,
-        OrchardData, SaplingData, SaplingOutput, Transaction, TransactionId,
+        CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
+        SaplingData, SaplingOutput, Transaction, TransactionId,
     };
 
-    /// Each pool's slot filled by its own pool, in `ALL` order; the first error stops the rest
     #[test]
-    fn from_fn_fills_each_pool_in_order_and_try_stops_at_the_first_error() {
+    fn from_fn_fills_each_pool_in_all_order() {
         let mut visited = Vec::new();
         let pools = PerPool::from_fn(|pool| {
             visited.push(pool);
@@ -97,17 +87,6 @@ mod tests {
             ironwood: ShieldedPool::Ironwood,
         };
         assert_eq!((pools, visited), (expected, ShieldedPool::ALL.to_vec()));
-
-        let mut tried = Vec::new();
-        let failed = PerPool::<()>::try_from_fn(|pool| {
-            tried.push(pool);
-            if pool == ShieldedPool::Orchard {
-                Err(pool)
-            } else {
-                Ok(())
-            }
-        });
-        assert_eq!((failed, tried), (Err(ShieldedPool::Orchard), ShieldedPool::ALL[..2].to_vec()));
     }
 
     /// Per-pool commitment counts added onto the prior sizes; past `u32` = an error, not a wrap
@@ -124,24 +103,23 @@ mod tests {
             ephemeral_key: EphemeralKey::from([6; 32]),
             enc_ciphertext: CompactCiphertext::from([7; CompactCiphertext::LENGTH]),
         };
-        let tx = |sapling: usize, orchard: usize, ironwood: usize| Transaction {
-            txid: TransactionId::from([0; 32]),
+        let tx = |tag: u8, sapling: usize, orchard: usize, ironwood: usize| Transaction {
+            txid: TransactionId::from([tag; 32]),
             transparent: Default::default(),
             sprout: Default::default(),
             sapling: SaplingData { outputs: vec![output.clone(); sapling], ..Default::default() },
             orchard: OrchardData { actions: vec![action.clone(); orchard], ..Default::default() },
             ironwood: OrchardData { actions: vec![action.clone(); ironwood], ..Default::default() },
         };
-        let block = Block::new(
-            BlockHeader::for_tests(1, [1; 32], [0; 32], 0),
-            vec![tx(2, 1, 0), tx(1, 0, 3)],
-        );
+        let mut chain = crate::testing::Chain::new();
+        let mined = chain.mine_with(chain.genesis().hash, vec![tx(1, 2, 1, 0), tx(2, 1, 0, 3)]);
+        let block: &Block = chain.block(mined.hash);
 
         let prior = PerPool { sapling: 10, orchard: 20, ironwood: 30 }.map(TreeSize::from);
         let expected = PerPool { sapling: 13, orchard: 21, ironwood: 33 }.map(TreeSize::from);
-        assert_eq!(prior.advance(&block), Ok(expected));
+        assert_eq!(prior.advance(block), Ok(expected));
 
         let full = PerPool { sapling: u32::MAX, orchard: 0, ironwood: 0 }.map(TreeSize::from);
-        assert!(full.advance(&block).is_err(), "sapling past u32::MAX");
+        assert!(full.advance(block).is_err(), "sapling past u32::MAX");
     }
 }

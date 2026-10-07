@@ -14,6 +14,7 @@ mod fee;
 mod height;
 mod merkle_root;
 mod network_upgrade;
+mod node_release;
 mod note_commitment;
 mod nullifier;
 mod peer_info;
@@ -36,7 +37,7 @@ pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
 pub use blockchain_info::BlockchainInfo;
-pub use compact_ciphertext::{CompactCiphertext, NOTE_CIPHERTEXT_LENGTH};
+pub use compact_ciphertext::CompactCiphertext;
 pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
@@ -46,6 +47,7 @@ pub use merkle_root::MerkleRoot;
 pub use network_upgrade::{
     ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
 };
+pub use node_release::{EndOfService, NodeRelease};
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use peer_info::PeerInfo;

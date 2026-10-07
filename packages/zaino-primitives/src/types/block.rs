@@ -24,26 +24,6 @@ pub struct BlockHeader {
     pub solution: EquihashSolution,
 }
 
-#[cfg(any(test, feature = "testing"))]
-impl BlockHeader {
-    /// Fixture header: caller-named identity + time; regtest bits, zeroed rest (no test reads them)
-    pub fn for_tests(height: u32, hash: [u8; 32], prev_hash: [u8; 32], time: u32) -> Self {
-        Self {
-            hash: hash.into(),
-            version: 4,
-            prev_hash: prev_hash.into(),
-            height: Height::try_from(height).expect("fixture height within Height range"),
-            time,
-            merkle_root: [0u8; 32].into(),
-            block_commitments: [0u8; 32].into(),
-            bits: CompactDifficulty::try_from_bits(0x2007_ffff)
-                .expect("regtest nBits = valid compact difficulty"),
-            nonce: [0u8; 32],
-            solution: EquihashSolution::Regtest([0u8; 36]),
-        }
-    }
-}
-
 /// A block as decoded from its consensus bytes: the one parse every index consumes
 ///
 /// - Each index keeps what it needs and drops the rest (no per-consumer re-parse)
@@ -116,7 +96,9 @@ mod tests {
             orchard: OrchardData { actions: vec![action.clone(); 3], ..OrchardData::default() },
             ironwood: OrchardData { actions: vec![action], ..OrchardData::default() },
         };
-        let block = Block::new(BlockHeader::for_tests(7, [7; 32], [6; 32], 0), vec![tx]);
+        let mut chain = crate::testing::Chain::new();
+        let mined = chain.mine_with(chain.genesis().hash, vec![tx]);
+        let block = chain.block(mined.hash);
 
         let expected = size_of::<Block>()
             + size_of::<Transaction>()

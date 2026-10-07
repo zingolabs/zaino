@@ -12,11 +12,14 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-# Test-only constructors (`BlockHeader::for_tests`) for downstream fixtures.
+# `testing::Chain`: regtest chains with real header bytes, for downstream tests
 testing = []
 
 [dependencies]
+sha2 = "0.10"
 thiserror = { workspace = true }
+zcash_protocol.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"

@@ -72,6 +72,43 @@ pub struct OutPoint {
     pub vout: OutputIndex,
 }
 
+impl OutPoint {
+    pub const LEN: usize = 32 + 4;
+
+    /// `txid ‖ vout` big-endian: byte order = `Ord` (a txid leads: uniform, shardable bytes)
+    pub fn encode(&self) -> [u8; Self::LEN] {
+        let mut out = [0u8; Self::LEN];
+        out[..32].copy_from_slice(&<[u8; 32]>::from(self.txid));
+        out[32..].copy_from_slice(&self.vout.to_be_bytes());
+        out
+    }
+
+    pub fn decode(bytes: &[u8; Self::LEN]) -> Self {
+        let (txid, vout) = bytes.split_at(32);
+        Self {
+            txid: TransactionId::from(<[u8; 32]>::try_from(txid).expect("32 bytes")),
+            vout: u32::from_be_bytes(vout.try_into().expect("4 bytes")),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Golden layout: txid bytes as held, then `vout` big-endian (so byte order = key order)
+    #[test]
+    fn an_outpoint_is_its_golden_bytes_and_orders_like_them() {
+        let outpoint = OutPoint { txid: TransactionId::from([0xab; 32]), vout: 0x0102_0304 };
+        let golden = [&[0xab; 32][..], &[0x01, 0x02, 0x03, 0x04]].concat();
+        assert_eq!(outpoint.encode().as_slice(), golden);
+        assert_eq!(OutPoint::decode(&outpoint.encode()), outpoint);
+
+        let later = OutPoint { vout: 0x0102_0305, ..outpoint };
+        assert!(outpoint < later && outpoint.encode() < later.encode(), "derived Ord = byte order");
+    }
+}
+
 /// A transparent output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransparentOutput {
