@@ -1,0 +1,31 @@
+[package]
+name = "zaino-peers"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+description = "Zaino's p2p layer: zebra-network peers for headers, blocks, mempool sightings and isolated submission pushes"
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+thiserror.workspace = true
+tokio.workspace = true
+# zebra-network's own (its peer set is a tower 0.4 `Buffer`; the workspace's 0.5 cannot hold one)
+tower = { version = "0.4.13", features = ["buffer", "util"] }
+tracing.workspace = true
+zaino-primitives.workspace = true
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+zebra-chain.workspace = true
+zebra-network.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+zebra-network = { workspace = true, features = ["proptest-impl"] }
+zebra-test.workspace = true
+
+[lints.rust]
+unreachable_pub = "warn"
