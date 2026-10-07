@@ -1,200 +1,196 @@
 # `zaino-source` — usage
 
-The driven ports: one trait per question a consumer can ask a validator,
-declared in `zaino-primitives` vocabulary, each with its own domain error.
-`ZebraRpcAdapter::at(address, cookie, user, password, timeouts)` builds one from
-config without contacting the validator (an unreachable validator is the
-caller's retry, never a construction failure; `EndpointError` = a bad address or
-an unreadable cookie). It implements them over the validator's JSON-RPC; blocks come
-from `getblock <id> 0` and are decoded once, from consensus bytes, into
-`zaino_primitives::types::Block`.
+`ChainDataSource`: every question Zaino asks one trusted validator's RPC, one
+trait, declared in `zaino-primitives` vocabulary, each method with its own domain
+error. `ZebraRpcAdapter` answers all of it over zebrad's JSON-RPC; blocks come from
+`getblock <id> 0` and are decoded once, from consensus bytes, into
+`zaino_primitives::types::Block`. A test fake answers what its test asks and
+`unimplemented!()`s the rest.
 
-## Two port layers
+| Method | RPC | Answer |
+|---|---|---|
+| `get_block(height)` | `getblock <h> 0` | `Block`, or `GetBlockError::HeightNotFound` |
+| `get_block_by_hash(hash)` | `getblock <hash> 0` | `Block`, or `GetBlockByHashError::NotFound` |
+| `get_block_links(heights)` | `getblockheader <h> false`, batched | `BlockLink` per height, or `GetBlockError::HeightNotFound` |
+| `get_poll_reading(metadata, holds)` | one poll batch (below) | `PollReading` |
+| `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | bytes per entry |
+| `get_transaction(txid)` | `getrawtransaction <txid> 1` | bytes + `TransactionLocation` |
+| `send_raw_transaction(bytes)` | `sendrawtransaction` | the txid, or the rejection |
 
-Every query exists twice:
-
-| layer | names | returns | implemented by |
-|---|---|---|---|
-| single-attempt | `OneShotGetBlock`, `OneShotGetChainTip`, … | `QueryError<E, Self::NonDomain>` | adapters (and `MockChain`) |
-| resilient (canonical) | `GetBlock`, `GetChainTip`, … | `SourceError<E>` | `ValidatorClient<V>` only (sealed) |
-
-Consumers bind the unqualified resilient names; holding one proves the value
-went through the retry ladder, since only `ValidatorClient` can implement them.
-Name `OneShot*` only when writing an adapter, or when a consumer runs its own
-retry (as `zaino-chainview` does).
+## Building an adapter: one link per validator
 
 ```rust,ignore
-use zaino_source::{GetBlock, GetChainTip, RetryPolicy, ValidatorClient};
+use zaino_source::{Lane, LinkLimits, Timeouts, ZebraRpcAdapter};
 
-async fn tip_block<V: GetBlock + GetChainTip>(source: &V) -> Result<Block, MyError> {
-    let (_hash, tip) = source.get_chain_tip().await?;
-    Ok(source.get_block(tip).await?)
-}
-
-let source = ValidatorClient::new(adapter, RetryPolicy::default());
-let block = tip_block(&source).await?;
+let limits = LinkLimits::new(max_connections, max_requests_per_sec, max_bytes_per_sec)
+    .expect("max_connections >= LinkLimits::MIN_CONNECTIONS");
+let chainview = ZebraRpcAdapter::at(address, cookie, user, password, Timeouts::default(), limits)?;
+let sync = chainview.on(Lane::Sync);
+let serve = chainview.on(Lane::Serve);
 ```
 
-A bound is a statement of dependency; keep it short. A consumer needing many
-ports declares its own alias trait with a blanket impl **in its own crate**
-(e.g. `zaino_chainview::EndpointSource`); this crate does not know its
-consumers.
+`at` builds the adapter from config without contacting the validator. An
+unreachable validator is the caller's retry, never a construction failure;
+`EndpointError` means a bad address, an unreadable cookie, or a client that
+cannot be built.
 
-Every adapter implements `ValidatorSource`, whose `type NonDomain:
-Into<NonDomainError>` is the adapter's own transport-fault type (the zebra-rpc
-adapter uses `NonDomainError` itself).
+Every handle made with `on` shares one link, and so one budget, to that
+validator. Zaino never exceeds the budget, however many consumers it has:
+
+| Lane      | Connections        | Used by                                      |
+| --------- | ------------------ | -------------------------------------------- |
+| `Control` | 2                  | chain view polling, submission (`at` default) |
+| `Serve`   | a quarter, at least 1 | wallet lookups (`GetTransaction`, …)      |
+| `Sync`    | the rest           | bulk block fetch                             |
+
+- One HTTP/1.1 request holds one connection, so the permits are the connection cap.
+  A lane never borrows another's: a sync burst or a wallet storm cannot delay the
+  tip poll.
+- `max_requests_per_sec` and `max_bytes_per_sec` (`None` = unlimited) are GCRA
+  budgets over the whole link. Response bytes are charged per body chunk as they
+  are read, so an exhausted budget slows the sender through TCP backpressure.
+- Per-validator metrics carry a `validator` label: wait for a permit
+  (`zaino.validator_rpc.wait_seconds`, by lane), requests in flight, bytes
+  received.
 
 ## Error model
 
 ```rust,ignore
-pub enum QueryError<E, N = NonDomainError> {
-    Domain(E),     // the validator answered; this is the answer
-    NonDomain(N),  // no domain answer: unreachable, timed out, unauthorized, undecodable
-}
-
-pub enum SourceError<E> {
-    Domain(E),                   // never retried
-    NonDomain(NonDomainError),   // non-retryable failure, passed through
-    Unavailable(UnavailableError), // retryable failure, retries exhausted
+pub enum QueryError<E> {
+    Domain(E),                  // the validator answered; this is the answer
+    NonDomain(NonDomainError),  // no answer: unreachable, timed out, unauthorized, undecodable
 }
 ```
 
-The split is load-bearing. `Domain` is returned immediately (asking again
-yields the same answer); `NonDomain` is what `ValidatorClient` retries. An
-adapter that reports "no block at that height" as `NonDomain` makes the retry
-ladder treat every above-tip probe as an outage. If the validator replied at
-all, it is almost certainly `Domain`.
+`Domain` is never worth asking again. An adapter that reports "no block at
+that height" as `NonDomain` makes every caller's retry treat an above-tip probe
+as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
-`NonDomainError { mode: FailureMode, message, .. }` keeps the concrete cause as
-its `source()` (`from_cause`) or, for a coded refusal with no error value, a
-message (`new`). `FailureMode` = `Connection`, `Timeout`, `HttpStatus(u16)`,
-`RpcError(i64)`, `Parse`, `Auth`.
+`NonDomainError { mode: FailureMode, .. }` keeps the concrete cause as its
+`source()`. `FailureMode::is_transient()` is true for `Connection`, `Timeout`,
+`HttpStatus(>= 500)` and RPC codes `-1` (work queue full) and `-28` (warming
+up). Every other code is the validator's considered reply. The transport
+re-sends a work-queue-full refusal itself, up to `RpcClientConfig::max_retries`.
 
-### Domain variants name answers
+## `IndexerWatch`: push streams as wake hints
 
-```rust,ignore
-GetBlockError::HeightNotFound(Height)
-GetChainTipError::NotReady
-SendRawTransactionError::{ Malformed(String), Rejected(String) }
-GetSpentInfoError::{ NotSpent, Unsupported }
-```
+`IndexerWatch::at(address, timeouts)` names zebrad's indexer gRPC
+(`indexer_listen_addr`, no auth). `run(cancel, on_change, on_link)` subscribes to
+`ChainTipChange` and `MempoolChange` until cancelled: every event calls
+`on_change(Change::Tip | Change::Mempool)`; `on_link(true)` fires once both
+streams are open and `on_link(false)` when either ends after that (a refused
+connect is no edge), then it reconnects on a 500 ms → 30 s ladder. Events are
+hints only: zebrad ends a lagged stream rather than skip events, so a consumer
+that polls on every edge never misses a change.
 
-A variant earns its place by being producible by some adapter. When a method
-has no domain answer, type it `Infallible` (`GetBlockchainInfo` does).
+## `TrafficBalancer`: which validator answers a read
 
-## `ValidatorClient` and `RetryPolicy`
+The set of trusted validators, never one: it is not a `ChainDataSource`. Its one
+operation, `failover(|validator| read)`, asks them in turn until one answers:
 
-`ValidatorClient::new(adapter, policy)` implements every resilient port whose
-`OneShot*` twin the adapter provides. The impls and the `QueryError →
-SourceError` translation are generated by `#[resilient_port]`
-(`zaino-source-macros`) on each `OneShot*` trait, so the retry ladder exists in
-one place (`ValidatorClient::with_retry`).
+- first = the cheaper of two at random, cost = peak-EWMA latency × (in flight +
+  1) (tower's `PeakEwma` rule); the rest follow cheapest first. The estimate
+  jumps to any slower sample, decays toward faster ones, and decays to zero while
+  idle, so a once-slow validator is tried again
+- a transient failure is retried 3 times on that validator (250 ms, doubling)
+- a domain answer (every read's is "absent") moves on: a lagging validator lacks
+  a just-mined block or transaction
+- the result = the first answer, else a transport failure (that validator may
+  have held it), else the last absence
 
-- `RetryPolicy::default()`: 3 attempts, 250 ms initial delay, ×2 backoff, 8 s
-  cap. Tune retries through a custom `RetryPolicy`; the seal only blocks
-  structurally different strategies
-- retryable: `Connection`, `Timeout`, `HttpStatus(>= 500)`, and RPC codes `-1`
-  (work queue full) and `-28` (in warmup). Every other code is the validator's
-  considered reply
-- `OneShotSendRawTransaction` has **no** resilient twin: resending a
-  non-idempotent submit risks a double-submit, and an error does not prove the
-  transaction was not accepted earlier
-
-`Arc<V>` forwards `ValidatorSource`, `OneShotGetBlock` and
-`OneShotGetBlockByHash`, so one shared `Arc<Adapter>` per validator backs both
-the fetch pool's `ValidatorClient` and raw one-shot consumers (chainview, the
-gRPC fallback).
+`among(positions)` is a subset sharing the same loads. Writes never go through
+it: submission belongs to the chain view.
 
 ## `BlockFetchPool`: blocks from N validators
 
-`BlockFetchPool::new(sources, concurrency)` over one adapter per validator
-(non-empty).
+`BlockFetchPool::new(sources, concurrency)` takes one adapter per validator
+(non-empty), on `Lane::Sync`.
 
-- `blocks(start, end)` (both inclusive; `start <= end` asserted) → an ordered
-  `Stream` of `Result<Block, _>`, ascending. Each height's
-  fetch + decode is its own spawned task (decode spreads across cores), at most
-  `concurrency` in flight, `buffered` so completion order never shows. The
-  first error ends the stream: nothing after it is sent
-- heights rotate over every validator, falling back to the others when one
-  fails (a lagging node lacks the height)
-- `among(positions)` is the same pool over only the sources at `positions`
-  (e.g. the validators agreeing on a quorum tip)
-- `block_by_hash(hash)` tries every validator in turn (a branch tip may be on
-  only some of them); used by `zaino-non-finalized-state` to walk a reorg back
-- a validator answering with another height or hash panics: decode derives
-  both from the bytes, so that is a broken validator, not a race
+- `blocks(start, end)`, both bounds inclusive, returns an ascending `Stream` of
+  `Result<Block, _>`. Each height's fetch and decode is its own task, at most
+  `concurrency` in flight. The first error ends the stream.
+- Each height goes through a `TrafficBalancer` as it is dispatched (the
+  least-loaded validator first, its failover rules after).
+- `among(positions)` is the same pool over only the sources at `positions`.
+- `block_by_hash(hash)` tries every validator in turn, since a branch tip may be
+  on only some of them.
+- A validator answering with another height or hash counts as that validator's
+  failure, and the next one is tried.
 
-## Capability is structural
+## Batched ports for one poller
 
-An adapter implements only the ports it can answer. Do not add an impl that
-`unimplemented!()`s; leave the port out, and routing that query to the adapter
-becomes a compile error.
+The chain view's poller asks one validator at most two batches per tick (the poll,
+then the bytes of what it newly lists); its header sync asks `get_block_links`:
 
-## Ancestry port: `GetBlockLink`
+- `get_poll_reading(metadata, holds)`: `getblockchaininfo` +
+  `getrawmempool true` + `getblockhash <h>` per height in `holds`, in one batch,
+  so the listing and the answers are tagged with the tip read beside them.
+  `PollReading::held` has one answer per height, in order: the hash on the
+  validator's best chain, `GetBlockError::HeightNotFound` above its tip (zebrad's
+  `-32602`, zcashd's `-8`), or that item's own failure (the rest of the poll
+  stands). The chain view asks this to learn which validators hold a verified
+  block. With `metadata`, also `getpeerinfo` + `getinfo` +
+  `getdeprecationinfo`, each its own outcome (`MetadataReading`): telemetry, so
+  a failed half never fails the poll. The listing carries each entry's txid,
+  fee and `encoded_len`; the fee is the validator's (it resolved the prevouts),
+  sent by zebra as an `f64` and parsed back to exact zatoshis. `Unavailable`
+  means the validator has no mempool. `Inactive` means zebrad's mempool is off
+  until it reaches the network tip (an empty state reports genesis this way).
+- `get_block_links(heights)` (`getblockheader <h> false` each):
+  `BlockLink { header }` per height, the raw consensus header bytes, neither decoded nor
+  hashed here: the consumer decodes once on receipt (`zaino_header_chain::decode_header`
+  recomputes the hash from the bytes). `GetBlockError::HeightNotFound` (the same error as
+  `get_block`) means a height above the tip.
+- `get_raw_mempool_transactions(listed)`: the bytes of listed entries, in batches of at most
+  100 calls and 8 MiB of transactions by `encoded_len` (the hex reply stays under
+  zebrad's response cap). `NotFound` on an item means it left the mempool after
+  the listing (a normal race).
 
-`GetBlockLink::get_block_link(height)` (`getblockheader <height> false`) returns
-a `BlockLink { hash, prev_hash }` for the validator's best-chain block at that
-height, without the block body. The hash is recomputed from the header bytes,
-never read from a JSON field. `HeightNotFound` is the validator's answer for a
-height above its tip (for example, a tip that retreated since it was read).
-The raw form is used because zebrad's verbose form does two extra state reads
-per header. `zaino-chainview` walks each endpoint's ancestry with it.
+In each, items come back in request order and `Err` means the batch as a whole
+failed. A crate-internal JSON-RPC batch call is the transport underneath: one
+permit, the request budget charged per call, replies matched by `id`.
 
-## Mempool ports
-
-Three ports, all answered from the same source:
-
-- `GetMempoolListing` (`getrawmempool true`): every entry's txid and fee
-  (`MempoolListed`), polled every tick. The fee is the validator's: it resolved
-  the prevouts admitting the transaction, and no index holds unconfirmed
-  outputs. Zebra sends ZEC as an `f64`, parsed back to exact zatoshis (every
-  in-supply count is below 2^53)
-- `GetRawMempoolTransaction`: bytes of one listed transaction, `NotFound` when
-  it left the mempool between listing and fetch (a normal race)
-- `GetBlockchainInfo` (`getblockchaininfo`): the tip the listing was read
-  against, hash and height in one round trip (so a consumer can tag each
-  published set with a tip coherent with it), plus the validator's
-  `estimated_height` of the network tip and its upgrade schedule; typed
-  `QueryError<Infallible>` (no domain answer exists)
-
-The two listing ports carry `Unavailable` (the validator exposes no mempool):
-retrying cannot change it, so a consumer stops asking. `GetMempoolListing` also
-carries `Inactive`: zebrad's mempool is off until it reaches the network tip,
-and its own tip is still valid.
-
-## Lifecycle
-
-`SourceLifecycle::shutdown()` releases adapter-owned resources; synchronous,
-infallible, idempotent, default no-op.
+`NodeRelease` (from `getinfo` + `getdeprecationinfo`) carries the build, user
+agent, protocol version and `EndOfService`: `At { height, estimated_unix }` on
+mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
 
 ## Testing: `MockChain`
 
 Behind the `testing` feature (always compiled for this crate's own tests):
 
 ```rust,ignore
+use zaino_primitives::testing::Chain;
 use zaino_source::{FailureMode, mock::MockChain};
 
-let mock = MockChain::new()
-    .with_block(block)
+let mut chain = Chain::new();
+let tip = chain.extend(chain.genesis().hash, 10);
+let mock = MockChain::serving(chain.path(tip.hash))
     .fail_next(2, FailureMode::Timeout); // failure injection
 
-mock.extend_best(fork); // each block becomes the tip: its height and above are replaced
-mock.rewind_to(height); // invalidateblock: heights above leave the best chain
-mock.set_ready(false);  // getbestblockheightandhash answers "not ready"
+mock.extend_best(chain.path(fork.hash)); // each block becomes the tip: its height and up replaced
+mock.rewind_to(height);                  // invalidateblock: heights above leave the best chain
+mock.mempool_insert(txid, raw);          // listed from the next poll
+mock.set_reachable(false);               // every call fails in transport until set back
 ```
 
-It answers the way zebrad does, so a test cannot pass on behaviour no node has:
-blocks by height *and* by hash come from the best chain only (a block a reorg
-replaced is not found), and nothing is served above the tip. It is also a
-`zaino_chainview::EndpointSource`: its tip, readiness, an empty mempool and no
-peers, so one mock backs the chain view and the fetch pool alike.
+It serves only real chains: every block it is given must come from
+`zaino_primitives::testing::Chain` (its hash = SHA-256d of its encoded header, its parent
+the best block below it), and `get_block_links` hands out those header bytes, so a
+header chain can verify what it serves. It answers the way zebrad does: blocks by
+height and by hash come from the best chain only, and nothing is served above the
+tip. It is a whole `ChainDataSource`: its tip; its mempool, each entry listed at
+`MEMPOOL_FEE`, a sent transaction (txid from its bytes, `Malformed` if they do not
+decode) listed from the next poll, a mined txid dropped; `get_transaction` locating a
+txid in the mempool or on the best chain; no peers; a release with no halt. One mock
+backs the chain view, the gRPC routes and the fetch pool alike.
 
-`extend_best` and `rewind_to` move the best chain under a live consumer, so a
-reorg test drives the real producer and followers against it
-(`zaino-sync/tests/reorg_model.rs`). A reorg onto a lower tip is `rewind_to`
-the fork parent, then `extend_best` the new branch; a retreat is `rewind_to`
-alone.
+`mock::fixture_block(height)` / `mock::fixture_transactions(height)`: a captured
+mainnet block from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000,
+2,500,000), whole or as each transaction's own consensus bytes, for tests that need
+real transactions (every pool, every version).
+`zaino-sync/tests/reorg_model.rs` drives the real producer through reorgs with
+`extend_best` and `rewind_to`.
 
 A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
-bare feature gate nothing enables compiles nothing, and its tests silently
+bare feature gate that nothing enables compiles nothing, and its tests silently
 never run.

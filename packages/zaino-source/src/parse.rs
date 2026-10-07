@@ -6,8 +6,9 @@
 //!   "garbled" are different facts)
 
 use zaino_primitives::types::{
-    BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, NetworkUpgradeInfo,
-    NetworkUpgradeStatus, PeerInfo, TransactionId, TransactionLocation, Zatoshis,
+    BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, PeerInfo, TransactionId,
+    TransactionLocation, Zatoshis,
 };
 
 use zcash_protocol::consensus::BranchId;
@@ -108,7 +109,7 @@ pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseE
     reversed(as_str(value)?).map(TransactionId::from)
 }
 
-fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
+pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
     reversed(as_str(value)?).map(BlockHash::from)
 }
 
@@ -133,27 +134,6 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
 
         deserializer.deserialize_str(Visitor)
     }
-}
-
-/// `getbestblockheightandhash`
-///
-/// - `hash` = JSON array of 32 bytes, internal order (zebra derives `Serialize` on
-///   `block::Hash([u8; 32])`), not the display hex every other method sends
-pub(crate) fn parse_best_tip(value: &serde_json::Value) -> Result<(BlockHash, Height), ParseError> {
-    Ok((byte_array_hash(field(value, "hash")?)?, as_height(field(value, "height")?)?))
-}
-
-fn byte_array_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
-    let bytes = as_array(value)?;
-    let mut hash = [0u8; 32];
-    if bytes.len() != hash.len() {
-        return Err(ParseError::WrongLength { expected: hash.len(), got: bytes.len() });
-    }
-    for (slot, byte) in hash.iter_mut().zip(bytes) {
-        let n = as_u64(byte)?;
-        *slot = u8::try_from(n).map_err(|_| ParseError::Overflow(n))?;
-    }
-    Ok(BlockHash::from(hash))
 }
 
 /// `getblockchaininfo`: the tip + the upgrade schedule (a consensus input: strict); every other
@@ -226,9 +206,14 @@ pub(crate) fn parse_mempool_listing(
     entries
         .iter()
         .map(|(txid, entry)| {
+            let size = field(entry, "size")?;
             Ok(MempoolListed {
                 txid: TransactionId::from(reversed(txid)?),
                 fee: as_zec(field(entry, "fee")?)?,
+                encoded_len: size
+                    .as_u64()
+                    .and_then(|size| u32::try_from(size).ok())
+                    .ok_or_else(|| ParseError::unexpected("u32", size))?,
             })
         })
         .collect()
@@ -265,6 +250,32 @@ pub(crate) fn parse_transaction(
 }
 
 /// `getpeerinfo`
+/// `getinfo` + `getdeprecationinfo` (`None` = the release lacks the latter)
+///
+/// - `end_of_service` absent = not enforced on this network
+pub(crate) fn parse_node_release(
+    info: &serde_json::Value,
+    deprecation: Option<&serde_json::Value>,
+) -> Result<NodeRelease, ParseError> {
+    let end_of_service = match deprecation {
+        None => EndOfService::Unknown,
+        Some(deprecation) => match opt_field(deprecation, "end_of_service") {
+            None => EndOfService::NotEnforced,
+            Some(at) => EndOfService::At {
+                height: as_height(field(at, "block_height")?)?,
+                estimated_unix: as_i64(field(at, "estimated_time")?)?,
+            },
+        },
+    };
+    let protocol = as_u64(field(info, "protocolversion")?)?;
+    Ok(NodeRelease {
+        build: as_str(field(info, "build")?)?.to_owned(),
+        user_agent: as_str(field(info, "subversion")?)?.to_owned(),
+        protocol_version: u32::try_from(protocol).map_err(|_| ParseError::Overflow(protocol))?,
+        end_of_service,
+    })
+}
+
 pub(crate) fn parse_peer_info(value: &serde_json::Value) -> Result<Vec<PeerInfo>, ParseError> {
     as_array(value)?
         .iter()
@@ -285,32 +296,10 @@ mod tests {
     /// Reads differently forwards and backwards (a mirrored decode cannot pass by coincidence)
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
 
-    /// Hashes reverse on the wire (zebra's `FromHex`); the tip reads both halves and names a
-    /// missing field
-    #[test]
-    fn hashes_reverse_and_the_tip_carries_them() {
-        let mut reversed_bytes = [0u8; 32];
-        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
-        reversed_bytes.reverse();
-
-        let internal: Vec<u8> = (0u8..32).collect();
-        let hash = BlockHash::from(<[u8; 32]>::try_from(internal.as_slice()).expect("32"));
-        let height = Height::try_from(3_100_000).expect("h");
-        let tip = parse_best_tip(&json!({ "height": 3_100_000, "hash": internal })).expect("tip");
-        assert_eq!(tip, (hash, height), "zebra tip hash = internal-order byte array, as is");
-
-        use ParseError::{MissingField, UnexpectedType, WrongLength};
-        let hex = parse_best_tip(&json!({ "height": 1, "hash": ASYMMETRIC_HEX }));
-        assert!(matches!(hex, Err(UnexpectedType { expected: "array", .. })));
-        let short = parse_best_tip(&json!({ "height": 1, "hash": vec![0u8; 31] }));
-        assert!(matches!(short, Err(WrongLength { expected: 32, got: 31 })));
-        let no_height = parse_best_tip(&json!({ "hash": internal }));
-        assert!(matches!(no_height, Err(MissingField("height"))));
-    }
-
     /// Zebra's verbose listing (`fee` = lossy `f64` ZEC): each key reversed into a txid, each fee
-    /// back to its exact zatoshis (ZIP-317 minimum, sub-zat float noise, the whole supply); a
-    /// negative or past-supply fee, a missing one and an over-cap listing refused
+    /// back to its exact zatoshis (ZIP-317 minimum, sub-zat float noise, the whole supply), `size`
+    /// as the encoded length; a negative or past-supply fee, a missing fee or size, a size past
+    /// `u32` and an over-cap listing refused
     #[test]
     fn mempool_listing_reads_each_txid_and_its_exact_fee() {
         let mut reversed_bytes = [0u8; 32];
@@ -329,7 +318,8 @@ mod tests {
             (json!(0), 0),
         ] {
             let txid = TransactionId::from(reversed_bytes);
-            let expected = MempoolListed { txid, fee: Zatoshis::new(zats).expect("in supply") };
+            let fee_zats = Zatoshis::new(zats).expect("in supply");
+            let expected = MempoolListed { txid, fee: fee_zats, encoded_len: 250 };
             assert_eq!(listed(fee.clone()).expect("listing"), vec![expected], "fee {fee}");
         }
         for fee in [json!(-0.0001), json!(21_000_000.00000001 + 1.0), json!("0.0001")] {
@@ -337,6 +327,11 @@ mod tests {
         }
         let no_fee = parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 250 } }));
         assert!(matches!(no_fee, Err(ParseError::MissingField("fee"))));
+        let no_size = parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "fee": 0.0001 } }));
+        assert!(matches!(no_size, Err(ParseError::MissingField("size"))));
+        let huge =
+            parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 1u64 << 32, "fee": 0 } }));
+        assert!(huge.is_err());
 
         let oversized: serde_json::Map<String, serde_json::Value> = (0
             ..=MAX_MEMPOOL_LISTING_ENTRIES)
@@ -422,5 +417,35 @@ mod tests {
         assert_eq!(raw, [0xde, 0xad, 0xbe, 0xef]);
         let object = parse_raw_transaction(&json!({ "hex": "deadbeef" }));
         assert!(matches!(object, Err(ParseError::UnexpectedType { .. })));
+    }
+
+    /// zebrad 6.4.2's shapes: mainnet names the halt height, other networks omit it, a release
+    /// before `getdeprecationinfo` says nothing (never read as "no halt")
+    #[test]
+    fn a_release_reads_its_build_and_where_it_halts() {
+        let info = json!({
+            "version": 6040250, "build": "v6.4.2", "subversion": "/Zebra:6.4.2/",
+            "protocolversion": 170140, "blocks": 3_400_000, "connections": 8,
+        });
+        let release = |deprecation: Option<serde_json::Value>| {
+            parse_node_release(&info, deprecation.as_ref()).map(|release| release.end_of_service)
+        };
+        let mainnet = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
+        let halts = EndOfService::At {
+            height: Height::try_from(3_564_960).expect("in range"),
+            estimated_unix: 1_790_000_000,
+        };
+        assert_eq!(release(Some(mainnet)).expect("mainnet"), halts);
+        assert_eq!(release(Some(json!({}))).expect("testnet"), EndOfService::NotEnforced);
+        assert_eq!(release(None).expect("zebrad 6.2"), EndOfService::Unknown);
+
+        let read = parse_node_release(&info, None).expect("getinfo");
+        assert_eq!(
+            (read.build.as_str(), read.user_agent.as_str(), read.protocol_version),
+            ("v6.4.2", "/Zebra:6.4.2/", 170_140)
+        );
+        let no_height = json!({ "end_of_service": { "estimated_time": 1 } });
+        let missing = parse_node_release(&info, Some(&no_height));
+        assert!(matches!(missing, Err(ParseError::MissingField("block_height"))));
     }
 }

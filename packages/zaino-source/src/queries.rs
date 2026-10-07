@@ -1,31 +1,80 @@
-//! One trait per question a consumer asks a validator, each with its own domain error
+//! [`ChainDataSource`]: every question Zaino asks a trusted validator's RPC, one port
 //!
 //! - `Err(QueryError::Domain(_))` = the validator's answer (never worth asking again)
 //! - `Err(QueryError::NonDomain(_))` = no answer (unreachable, timed out, undecodable)
-//! - Bounds name only what a consumer asks (fakes implement the same traits)
+//! - batched questions: one `Result` per item inside the batch's own `NonDomainError`
 
-use std::convert::Infallible;
 use std::future::Future;
 
-use zaino_primitives::types::PeerInfo;
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, Height, TransactionId, TransactionLocation, Zatoshis,
+    Block, BlockHash, BlockchainInfo, Height, NodeRelease, PeerInfo, TransactionId,
+    TransactionLocation, Zatoshis,
 };
 
-use crate::QueryError;
+use crate::{NonDomainError, QueryError};
+
+/// One trusted validator's RPC interface, as every Zaino consumer asks it
+///
+/// - production = `ZebraRpcAdapter` (all of it); a test fake answers what its test asks and
+///   `unimplemented!()`s the rest
+pub trait ChainDataSource: Send + Sync + 'static {
+    /// `getblock <height> 0`, decoded from consensus bytes
+    fn get_block(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockError>>> + Send;
+
+    /// `getblock <hash> 0`, decoded from consensus bytes
+    fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
+
+    /// `getblockheader <height> false` per height, batched: ancestry + raw headers, no bodies
+    ///
+    /// - one item per height, `heights` order
+    fn get_block_links(
+        &self,
+        heights: &[Height],
+    ) -> impl Future<Output = Result<BlockLinks, NonDomainError>> + Send;
+
+    /// One poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
+    /// per `holds` height; with `metadata`, `getpeerinfo` + `getinfo` + `getdeprecationinfo` too
+    ///
+    /// - `Err` = no tip read (transport, or the info unparseable)
+    fn get_poll_reading(
+        &self,
+        metadata: bool,
+        holds: &[Height],
+    ) -> impl Future<Output = Result<PollReading, NonDomainError>> + Send;
+
+    /// `getrawtransaction <txid> 0` per listed mempool transaction, batched by `encoded_len`
+    ///
+    /// - one item per entry, `listed` order
+    fn get_raw_mempool_transactions(
+        &self,
+        listed: &[MempoolListed],
+    ) -> impl Future<Output = Result<RawMempoolTransactions, NonDomainError>> + Send;
+
+    /// `getrawtransaction <txid> 1`: bytes + where it was found (mined vs mempool)
+    fn get_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> impl Future<Output = Result<TransactionResponse, QueryError<GetTransactionError>>> + Send;
+
+    /// `sendrawtransaction`: the one write
+    ///
+    /// - not idempotent: an error does not prove an earlier attempt was not accepted
+    fn send_raw_transaction(
+        &self,
+        transaction: Vec<u8>,
+    ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
+}
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetBlockError {
     #[error("no block at height {0}")]
     HeightNotFound(Height),
-}
-
-/// `getblock <height> 0`, decoded from consensus bytes
-pub trait GetBlock: Send + Sync {
-    fn get_block(
-        &self,
-        height: Height,
-    ) -> impl Future<Output = Result<Block, QueryError<GetBlockError>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -34,56 +83,33 @@ pub enum GetBlockByHashError {
     NotFound(BlockHash),
 }
 
-/// `getblock <hash> 0`, decoded from consensus bytes
-pub trait GetBlockByHash: Send + Sync {
-    fn get_block_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
-}
-
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetBlockLinkError {
-    #[error("no block at height {0}")]
-    HeightNotFound(Height),
-}
-
-/// Best-chain block at a height: its hash (from the header bytes) + its parent's
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockLink {
-    pub hash: BlockHash,
-    pub prev_hash: BlockHash,
-}
-
-/// `getblockheader <height> false`: ancestry without the block body
-pub trait GetBlockLink: Send + Sync {
-    fn get_block_link(
-        &self,
-        height: Height,
-    ) -> impl Future<Output = Result<BlockLink, QueryError<GetBlockLinkError>>> + Send;
-}
-
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetChainTipError {
-    #[error("validator not ready")]
-    NotReady,
-}
-
-/// `getbestblockheightandhash` (one call: hash and height from the same tip)
-pub trait GetChainTip: Send + Sync {
-    fn get_chain_tip(
-        &self,
-    ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<GetChainTipError>>> + Send;
-}
-
-/// `getblockchaininfo`: tip + hash in one round trip, the network estimate, the upgrade schedule
+/// Best-chain block at a height: its consensus header bytes as served
 ///
-/// - Same source as [`GetMempoolListing`] = the tip a listing is tagged with
-/// - `Infallible` domain: answers with a tip or fails in transport
-pub trait GetBlockchainInfo: Send + Sync {
-    fn get_blockchain_info(
-        &self,
-    ) -> impl Future<Output = Result<BlockchainInfo, QueryError<Infallible>>> + Send;
+/// - undecoded, unhashed (the header chain decodes once, on receipt)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockLink {
+    pub header: Vec<u8>,
+}
+
+pub type BlockLinks = Vec<Result<BlockLink, GetBlockError>>;
+
+/// One batch's answers (the tip a listing is tagged with)
+///
+/// - `held[i]` = its best-chain hash at `holds[i]`; `HeightNotFound` = above its tip; `NonDomain`
+///   = that item unanswered (the rest of the poll stands)
+#[derive(Debug)]
+pub struct PollReading {
+    pub info: BlockchainInfo,
+    pub listing: Result<Vec<MempoolListed>, GetMempoolListingError>,
+    pub held: Vec<Result<BlockHash, QueryError<GetBlockError>>>,
+    pub metadata: Option<MetadataReading>,
+}
+
+/// Telemetry reads: each its own outcome (a failure keeps the last, never fails the poll)
+#[derive(Debug)]
+pub struct MetadataReading {
+    pub peers: Result<Vec<PeerInfo>, NonDomainError>,
+    pub release: Result<NodeRelease, NonDomainError>,
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -101,13 +127,7 @@ pub enum GetMempoolListingError {
 pub struct MempoolListed {
     pub txid: TransactionId,
     pub fee: Zatoshis,
-}
-
-/// `getrawmempool true`
-pub trait GetMempoolListing: Send + Sync {
-    fn get_mempool_listing(
-        &self,
-    ) -> impl Future<Output = Result<Vec<MempoolListed>, QueryError<GetMempoolListingError>>> + Send;
+    pub encoded_len: u32,
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -117,26 +137,7 @@ pub enum GetRawMempoolTransactionError {
     NotFound(TransactionId),
 }
 
-/// `getrawtransaction <txid> 0` for a listed mempool transaction (same source as the listing)
-pub trait GetRawMempoolTransaction: Send + Sync {
-    fn get_raw_mempool_transaction(
-        &self,
-        txid: TransactionId,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>>> + Send;
-}
-
-#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetPeerInfoError {
-    #[error("validator not ready")]
-    NotReady,
-}
-
-/// `getpeerinfo`: the validator's peers (empty = isolated, not an error)
-pub trait GetPeerInfo: Send + Sync {
-    fn get_peer_info(
-        &self,
-    ) -> impl Future<Output = Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>>> + Send;
-}
+pub type RawMempoolTransactions = Vec<Result<Vec<u8>, GetRawMempoolTransactionError>>;
 
 #[derive(Debug, Clone)]
 pub struct TransactionResponse {
@@ -150,28 +151,10 @@ pub enum GetTransactionError {
     NotFound(TransactionId),
 }
 
-/// `getrawtransaction <txid> 1` (bytes + where it was found)
-pub trait GetTransaction: Send + Sync {
-    fn get_transaction(
-        &self,
-        txid: TransactionId,
-    ) -> impl Future<Output = Result<TransactionResponse, QueryError<GetTransactionError>>> + Send;
-}
-
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SendRawTransactionError {
     #[error("malformed transaction: {0}")]
     Malformed(String),
     #[error("rejected by validator: {0}")]
     Rejected(String),
-}
-
-/// `sendrawtransaction`: the one mutating call
-///
-/// - Not idempotent: an error does not prove the transaction was not accepted earlier
-pub trait SendRawTransaction: Send + Sync {
-    fn send_raw_transaction(
-        &self,
-        transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
 }

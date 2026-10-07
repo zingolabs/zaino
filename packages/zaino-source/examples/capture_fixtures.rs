@@ -6,7 +6,7 @@
 //! Prints the raw hex string returned by `getblock` (verbosity=0) for each
 //! fixture height. These are stored as test fixtures for offline unit tests.
 
-use zaino_source::{RpcClient, RpcClientConfig};
+use zaino_source::{Lane, RpcClient, RpcClientConfig};
 
 const HEIGHTS: &[u32] = &[419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000];
 
@@ -22,7 +22,7 @@ async fn main() {
     for &h in HEIGHTS {
         let params =
             vec![serde_json::Value::String(h.to_string()), serde_json::Value::Number(0.into())];
-        let value = rpc.call("getblock", params).await.expect("getblock failed");
+        let value = rpc.call(Lane::Sync, "getblock", params).await.expect("getblock failed");
         let hex_str = value.as_str().expect("expected string response");
 
         println!("--- HEIGHT {h} ---");

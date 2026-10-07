@@ -1,48 +1,62 @@
 //! The ports over zebrad's JSON-RPC
 
-use std::convert::Infallible;
 use std::path::Path;
+use std::sync::Arc;
 
-use zaino_primitives::types::PeerInfo;
-use zaino_primitives::types::{Block, BlockHash, BlockchainInfo, Height, TransactionId};
+use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 
 use crate::rpc::{
-    auth_from_parts, validator_url, EndpointError, RpcClient, RpcClientConfig, RpcError, Timeouts,
+    auth_from_parts, validator_url, Call, EndpointError, Lane, LinkLimits, RpcClient,
+    RpcClientConfig, RpcError, Timeouts,
 };
 use crate::{
-    decode, parse, BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetBlockLinkError,
-    GetChainTipError, GetMempoolListingError, GetPeerInfoError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, NonDomainError, QueryError, SendRawTransactionError,
-    TransactionResponse,
+    decode, parse, BlockLink, BlockLinks, FailureMode, GetBlockByHashError, GetBlockError,
+    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
+    MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
+    SendRawTransactionError, TransactionResponse,
 };
 
-/// Single attempt per call (callers own their retry)
+/// One validator's link + the lane this handle's calls use; single attempt per call (callers
+/// own their retry)
+///
+/// - every handle on one validator shares one link (one connection budget): [`on`](Self::on)
+#[derive(Clone)]
 pub struct ZebraRpcAdapter {
-    rpc: RpcClient,
+    rpc: Arc<RpcClient>,
+    lane: Lane,
 }
 
 impl ZebraRpcAdapter {
     pub fn new(rpc: RpcClient) -> Self {
-        Self { rpc }
+        Self { rpc: Arc::new(rpc), lane: Lane::Control }
     }
 
-    /// The validator at `address` (`host:port`), unprobed: whether it answers is the first call's
-    /// question, so a validator down at boot is the caller's retry, never a boot failure
+    /// The validator at `address` (`host:port`), unprobed (whether it answers is the first
+    /// call's question: a validator down at boot is the caller's retry, never a boot failure),
+    /// on [`Lane::Control`]
     pub fn at(
         address: &str,
         cookie_path: Option<&Path>,
         user: Option<String>,
         password: Option<String>,
         timeouts: Timeouts,
+        limits: LinkLimits,
     ) -> Result<Self, EndpointError> {
         let rpc = RpcClient::new(RpcClientConfig {
             url: validator_url(address)?,
+            name: address.to_owned(),
             auth: auth_from_parts(cookie_path, user, password)?,
             timeouts,
+            limits,
             ..RpcClientConfig::default()
         })
         .map_err(EndpointError::Client)?;
         Ok(Self::new(rpc))
+    }
+
+    /// The same validator and budget, its calls on `lane`
+    pub fn on(&self, lane: Lane) -> Self {
+        Self { rpc: Arc::clone(&self.rpc), lane }
     }
 
     /// `getblock <id> 0` → bytes (const-hex) → [`decode::block`]
@@ -57,7 +71,7 @@ impl ZebraRpcAdapter {
         let params = vec![id.into(), serde_json::Value::Number(0.into())];
         let parse::HexBytes(raw) = self
             .rpc
-            .call_as("getblock", params)
+            .call_as(self.lane, "getblock", params)
             .await
             .map_err(|error| absent_or_fetch(error, absent))?;
         decode::block(&raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
@@ -74,7 +88,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call(method, params).await.map_err(classify)?;
+        let value = self.rpc.call(self.lane, method, params).await.map_err(classify)?;
         parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 }
@@ -83,15 +97,14 @@ fn from_parse(e: parse::ParseError) -> NonDomainError {
     NonDomainError::from_cause(FailureMode::Parse, e)
 }
 
-fn fetch_failure<E: std::fmt::Debug + std::fmt::Display>(error: RpcError) -> QueryError<E> {
-    QueryError::NonDomain(error.into())
-}
-
 /// zebrad's "no such object": `-8` on `getblock <height>`, `-5` on hash/txid lookups
 ///
 /// - Both also mean "malformed parameter" upstream; safe here (every param rendered from a
 ///   domain type, so none can be malformed)
 const NOT_FOUND_CODES: [i64; 2] = [-5, -8];
+
+/// `getblockhash` above the tip: zebrad `-32602` (index past the tip), zcashd `-8` (out of range)
+const ABOVE_TIP_CODES: [i64; 2] = [-8, -32602];
 
 /// JSON-RPC "method not implemented"
 const METHOD_NOT_FOUND: i64 = -32601;
@@ -101,11 +114,17 @@ fn absent_or_fetch<E>(error: RpcError, absent: impl FnOnce() -> E) -> QueryError
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
+    absent_on(&NOT_FOUND_CODES, error, absent)
+}
+
+/// One of `codes` → the port's absent answer; anything else stays a fetch failure
+fn absent_on<E>(codes: &[i64], error: RpcError, absent: impl FnOnce() -> E) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
     let error: NonDomainError = error.into();
     match error.mode {
-        FailureMode::RpcError(code) if NOT_FOUND_CODES.contains(&code) => {
-            QueryError::Domain(absent())
-        }
+        FailureMode::RpcError(code) if codes.contains(&code) => QueryError::Domain(absent()),
         _ => QueryError::NonDomain(error),
     }
 }
@@ -151,82 +170,119 @@ fn display_hex(mut bytes: [u8; 32]) -> String {
     const_hex::encode(bytes)
 }
 
-impl crate::GetBlock for ZebraRpcAdapter {
+/// Headers per `getblockheader` batch (~3 KB hex each: ~1.5 MB reply)
+const LINK_BATCH_CALLS: usize = 500;
+
+impl crate::ChainDataSource for ZebraRpcAdapter {
     #[tracing::instrument(skip(self), fields(h = u32::from(height)))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         self.raw_block(u32::from(height).to_string(), || GetBlockError::HeightNotFound(height))
             .await
     }
-}
 
-impl crate::GetBlockByHash for ZebraRpcAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
         self.raw_block(display_hex(hash.into()), || GetBlockByHashError::NotFound(hash)).await
     }
-}
 
-impl crate::GetBlockLink for ZebraRpcAdapter {
     /// Raw form (verbose = two extra state reads per header on zebrad)
-    async fn get_block_link(
+    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
+        let mut links = Vec::with_capacity(heights.len());
+        for batch in heights.chunks(LINK_BATCH_CALLS) {
+            let calls = batch
+                .iter()
+                .map(|height| Call {
+                    method: "getblockheader",
+                    params: vec![u32::from(*height).to_string().into(), false.into()],
+                })
+                .collect();
+            let replies = self.rpc.call_batch::<parse::HexBytes>(self.lane, calls).await?;
+            for (height, reply) in batch.iter().zip(replies) {
+                let absent = || GetBlockError::HeightNotFound(*height);
+                links.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
+                    Ok(parse::HexBytes(header)) => Ok(BlockLink { header }),
+                    Err(gone) => Err(gone),
+                });
+            }
+        }
+        Ok(links)
+    }
+
+    async fn get_poll_reading(
         &self,
-        height: Height,
-    ) -> Result<BlockLink, QueryError<GetBlockLinkError>> {
-        let params = vec![u32::from(height).to_string().into(), serde_json::Value::Bool(false)];
-        let parse::HexBytes(raw) =
-            self.rpc.call_as("getblockheader", params).await.map_err(|error| {
-                absent_or_fetch(error, || GetBlockLinkError::HeightNotFound(height))
-            })?;
-        decode::block_link(&raw)
-            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
-    }
-}
+        metadata: bool,
+        holds: &[Height],
+    ) -> Result<PollReading, NonDomainError> {
+        let call = |method, params| Call { method, params };
+        let mut calls =
+            vec![call("getblockchaininfo", vec![]), call("getrawmempool", vec![true.into()])];
+        calls.extend(holds.iter().map(|h| call("getblockhash", vec![u32::from(*h).into()])));
+        if metadata {
+            calls.extend(["getpeerinfo", "getinfo", "getdeprecationinfo"].map(|m| call(m, vec![])));
+        }
+        let mut replies =
+            self.rpc.call_batch::<serde_json::Value>(self.lane, calls).await?.into_iter();
+        let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
-impl crate::GetChainTip for ZebraRpcAdapter {
-    #[tracing::instrument(skip(self))]
-    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
-        self.call_parsed("getbestblockheightandhash", vec![], parse::parse_best_tip, fetch_failure)
-            .await
+        let info = parse::parse_blockchain_info(&next()?).map_err(from_parse)?;
+        let listing = match split(next().map_err(mempool_unavailable_or_fetch))? {
+            Ok(listing) => Ok(parse::parse_mempool_listing(&listing).map_err(from_parse)?),
+            Err(refused) => Err(refused),
+        };
+        let held = holds
+            .iter()
+            .map(|height| {
+                let absent = || GetBlockError::HeightNotFound(*height);
+                let hash = next().map_err(|error| absent_on(&ABOVE_TIP_CODES, error, absent))?;
+                parse::as_block_hash(&hash).map_err(|e| QueryError::NonDomain(from_parse(e)))
+            })
+            .collect();
+        let metadata = metadata.then(|| {
+            let peers = next().map_err(NonDomainError::from);
+            let info = next().map_err(NonDomainError::from);
+            let deprecation = match next() {
+                Ok(value) => Ok(Some(value)),
+                Err(RpcError::Rpc { code: METHOD_NOT_FOUND, .. }) => Ok(None),
+                Err(other) => Err(NonDomainError::from(other)),
+            };
+            MetadataReading {
+                peers: peers.and_then(|peers| parse::parse_peer_info(&peers).map_err(from_parse)),
+                release: info.and_then(|info| {
+                    let deprecation = deprecation?;
+                    parse::parse_node_release(&info, deprecation.as_ref()).map_err(from_parse)
+                }),
+            }
+        });
+        Ok(PollReading { info, listing, held, metadata })
     }
-}
 
-impl crate::GetBlockchainInfo for ZebraRpcAdapter {
-    async fn get_blockchain_info(&self) -> Result<BlockchainInfo, QueryError<Infallible>> {
-        self.call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info, fetch_failure)
-            .await
-    }
-}
-
-impl crate::GetMempoolListing for ZebraRpcAdapter {
-    async fn get_mempool_listing(
+    async fn get_raw_mempool_transactions(
         &self,
-    ) -> Result<Vec<MempoolListed>, QueryError<GetMempoolListingError>> {
-        self.call_parsed(
-            "getrawmempool",
-            vec![serde_json::Value::Bool(true)],
-            parse::parse_mempool_listing,
-            mempool_unavailable_or_fetch,
-        )
-        .await
+        listed: &[MempoolListed],
+    ) -> Result<RawMempoolTransactions, NonDomainError> {
+        let mut fetched = Vec::with_capacity(listed.len());
+        for batch in raw_batches(listed) {
+            let calls = batch
+                .iter()
+                .map(|entry| Call {
+                    method: "getrawtransaction",
+                    params: vec![display_hex(entry.txid.into()).into(), 0.into()],
+                })
+                .collect();
+            let replies = self.rpc.call_batch(self.lane, calls).await?;
+            for (entry, reply) in batch.iter().zip(replies) {
+                let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
+                fetched.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
+                    Ok(value) => Ok(parse::parse_raw_transaction(&value).map_err(from_parse)?),
+                    Err(gone) => Err(gone),
+                });
+            }
+        }
+        Ok(fetched)
     }
-}
 
-impl crate::GetRawMempoolTransaction for ZebraRpcAdapter {
-    async fn get_raw_mempool_transaction(
-        &self,
-        txid: TransactionId,
-    ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>> {
-        let params = vec![display_hex(txid.into()).into(), serde_json::Value::Number(0.into())];
-        self.call_parsed("getrawtransaction", params, parse::parse_raw_transaction, |error| {
-            absent_or_fetch(error, || GetRawMempoolTransactionError::NotFound(txid))
-        })
-        .await
-    }
-}
-
-impl crate::SendRawTransaction for ZebraRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -241,15 +297,7 @@ impl crate::SendRawTransaction for ZebraRpcAdapter {
         })
         .await
     }
-}
 
-impl crate::GetPeerInfo for ZebraRpcAdapter {
-    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>> {
-        self.call_parsed("getpeerinfo", vec![], parse::parse_peer_info, fetch_failure).await
-    }
-}
-
-impl crate::GetTransaction for ZebraRpcAdapter {
     /// Verbosity 1: the height places it (mined vs mempool)
     async fn get_transaction(
         &self,
@@ -263,6 +311,43 @@ impl crate::GetTransaction for ZebraRpcAdapter {
     }
 }
 
+/// A port's answer apart from its failure: `Ok(Err(domain))` = the validator's answer
+fn split<T, E>(result: Result<T, QueryError<E>>) -> Result<Result<T, E>, NonDomainError>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    match result {
+        Ok(value) => Ok(Ok(value)),
+        Err(QueryError::Domain(answer)) => Ok(Err(answer)),
+        Err(QueryError::NonDomain(cause)) => Err(cause),
+    }
+}
+
+/// Raw bytes per `getrawtransaction` batch (hex doubles it: 16 MiB reply, under
+/// `MAX_RESPONSE_BYTES` and zebra's 50 MiB `max_response_body_size` default)
+const RAW_BATCH_BYTES: u64 = 8 << 20;
+/// Calls per batch (one batch holds one control-lane connection for its whole reply)
+const RAW_BATCH_CALLS: usize = 100;
+
+/// `listed` cut in order into batches within both budgets (an entry over the byte budget alone)
+fn raw_batches(listed: &[MempoolListed]) -> Vec<&[MempoolListed]> {
+    let mut batches = Vec::new();
+    let (mut start, mut bytes) = (0, 0u64);
+    for (index, entry) in listed.iter().enumerate() {
+        let len = u64::from(entry.encoded_len);
+        let full = index - start == RAW_BATCH_CALLS || bytes + len > RAW_BATCH_BYTES;
+        if full && index > start {
+            batches.push(&listed[start..index]);
+            (start, bytes) = (index, 0);
+        }
+        bytes += len;
+    }
+    if start < listed.len() {
+        batches.push(&listed[start..]);
+    }
+    batches
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,24 +356,56 @@ mod tests {
         RpcError::Rpc { code, message: message.to_string() }
     }
 
+    /// Batches keep listing order and cover it exactly; a batch closes at 100 calls or before
+    /// passing 8 MiB, and an entry over the byte budget still goes (alone)
+    #[test]
+    fn raw_batches_split_in_order_on_either_budget() {
+        let entry = |encoded_len: u32| MempoolListed {
+            txid: TransactionId::from([0; 32]),
+            fee: zaino_primitives::types::Zatoshis::ZERO,
+            encoded_len,
+        };
+        let sizes = |listed: &[MempoolListed]| {
+            raw_batches(listed).iter().map(|batch| batch.len()).collect::<Vec<_>>()
+        };
+
+        assert_eq!(sizes(&[]), Vec::<usize>::new());
+        assert_eq!(sizes(&vec![entry(250); 250]), [100, 100, 50]);
+        let mib = 1 << 20;
+        assert_eq!(sizes(&[entry(3 * mib), entry(3 * mib), entry(3 * mib)]), [2, 1]);
+        assert_eq!(sizes(&[entry(8 * mib), entry(1)]), [1, 1]);
+        assert_eq!(sizes(&[entry(1), entry(9 * mib), entry(1)]), [1, 1, 1]);
+    }
+
     /// Both not-found codes = the port's absent answer (a missing block misfiled as a failure
-    /// stalls sync against a healthy validator); every other code and every transport failure
-    /// stays a failure (an outage must never read as an empty chain)
+    /// stalls sync against a healthy validator); `getblockhash` above the tip likewise, with
+    /// zebrad's `-32602` (a validator behind = holds nothing there, never a failed poll); every
+    /// other code and every transport failure stays a failure (an outage must never read as an
+    /// empty chain)
     #[test]
     fn only_not_found_codes_are_absent_answers() {
         let absent = || GetBlockError::HeightNotFound(Height::try_from(42u32).expect("h"));
-        for code in NOT_FOUND_CODES {
-            let classified = absent_or_fetch(rpc(code, "not found"), absent);
-            assert!(matches!(classified, QueryError::Domain(_)), "code {code}: {classified:?}");
+        let classifiers: [(&str, &[i64]); 2] =
+            [("not found", &NOT_FOUND_CODES), ("above the tip", &ABOVE_TIP_CODES)];
+        for (case, codes) in classifiers {
+            for &code in codes {
+                let classified = absent_on(codes, rpc(code, case), absent);
+                assert!(matches!(classified, QueryError::Domain(_)), "{case} {code}");
+            }
+            for error in [-1, -3, -20, -22, -25, -28, -32_600]
+                .map(|code| rpc(code, "something else"))
+                .into_iter()
+                .chain([RpcError::Status(503)])
+            {
+                let classified = absent_on(codes, error, absent);
+                assert!(matches!(classified, QueryError::NonDomain(_)), "{case}: {classified:?}");
+            }
         }
-        for error in [-1, -3, -20, -22, -25, -28, -32_600]
-            .map(|code| rpc(code, "something else"))
-            .into_iter()
-            .chain([RpcError::Status(503)])
-        {
-            let classified = absent_or_fetch(error, absent);
-            assert!(matches!(classified, QueryError::NonDomain(_)), "{classified:?}");
-        }
+        let classified = absent_or_fetch(rpc(-32602, "past the tip"), absent);
+        assert!(
+            matches!(classified, QueryError::NonDomain(_)),
+            "-32602 absent only for getblockhash"
+        );
     }
 
     /// Rejections carry the reason (the only useful part); a warming-up node has not

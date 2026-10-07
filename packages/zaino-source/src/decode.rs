@@ -1,5 +1,4 @@
-//! Consensus bytes → domain types: `getblock <h> 0` blocks, `getblockheader <h> false` links and
-//! standalone mempool transactions
+//! Consensus bytes → domain types: `getblock <h> 0` blocks and standalone mempool transactions
 //!
 //! - librustzcash's lazy readers (`CompressedTransaction`): txid for every version, curve points
 //!   left compressed (nothing here needs them decompressed)
@@ -9,16 +8,16 @@ use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, CompactCiphertext, CompactDifficulty,
-    CompactDifficultyError, EphemeralKey, EquihashSolution, Height, HeightOverflow, MerkleRoot,
-    NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput,
-    SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow, SproutData, Transaction,
-    TransactionId, TransparentData, TransparentOutput, Zatoshis, ZatoshisOverflow,
+    CompactDifficultyError, ConsensusBranchId, EphemeralKey, EquihashSolution, Height,
+    HeightOverflow, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint,
+    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow,
+    SproutData, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
+    ZatoshisOverflow,
 };
 use zcash_encoding::CompactSize;
-use zcash_primitives::{block::BlockHeader as RawHeader, transaction::CompressedTransaction};
+use zcash_primitives::block::BlockHeader as RawHeader;
+use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
 use zcash_protocol::{consensus::BranchId, value::ZatBalance};
-
-use crate::BlockLink;
 
 type OrchardBytes = orchard::BundleBytes<orchard::bundle::Authorized, ZatBalance>;
 
@@ -49,7 +48,12 @@ pub enum DecodeError {
     Solution(usize),
     #[error("difficulty: {0}")]
     Difficulty(#[from] CompactDifficultyError),
+    #[error("expiry height {0} above ZIP-203's 499999999")]
+    ExpiryHeight(u32),
 }
+
+/// ZIP-203: `nExpiryHeight` ≤ this, or the transaction is invalid on its own
+const MAX_EXPIRY_HEIGHT: u32 = 499_999_999;
 
 /// `getblock <h> 0` bytes → [`Block`] (the one block parse; every index projects from it)
 pub(crate) fn block(raw: &[u8]) -> Result<Block, DecodeError> {
@@ -72,17 +76,35 @@ pub(crate) fn block(raw: &[u8]) -> Result<Block, DecodeError> {
     Ok(Block::new(header, transactions))
 }
 
-/// `getblockheader <h> false` bytes → [`BlockLink`] (hash recomputed, never taken on trust)
-pub(crate) fn block_link(raw: &[u8]) -> Result<BlockLink, DecodeError> {
+/// What submission checks before any push, from the bytes alone (a peer answers a push with
+/// nothing, not even the txid)
+///
+/// - `expiry_height` `None` = never expires (0 on the wire, or pre-Overwinter)
+/// - `branch` = v5+'s embedded consensus branch id; earlier versions carry none
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prepared {
+    pub txid: TransactionId,
+    pub expiry_height: Option<Height>,
+    pub branch: Option<ConsensusBranchId>,
+}
+
+pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
     let mut cursor = Cursor::new(raw);
-    let header = RawHeader::read(&mut cursor)?;
+    let tx = read_transaction(&mut cursor)?;
     let trailing = raw.len() - cursor.position() as usize;
     if trailing != 0 {
         return Err(DecodeError::Trailing(trailing));
     }
-    Ok(BlockLink {
-        hash: BlockHash::from(header.hash().0),
-        prev_hash: BlockHash::from(header.prev_block.0),
+    let embeds_branch =
+        !matches!(tx.version(), TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4);
+    let expiry = u32::from(tx.expiry_height());
+    if expiry > MAX_EXPIRY_HEIGHT {
+        return Err(DecodeError::ExpiryHeight(expiry));
+    }
+    Ok(Prepared {
+        txid: TransactionId::from(*tx.txid().as_ref()),
+        expiry_height: (expiry != 0).then(|| Height::try_from(expiry)).transpose()?,
+        branch: embeds_branch.then(|| ConsensusBranchId::new(u32::from(tx.consensus_branch_id()))),
     })
 }
 
@@ -260,29 +282,25 @@ fn signed(balance: ZatBalance) -> Result<SignedZatoshis, DecodeError> {
     Ok(SignedZatoshis::new(i64::from(balance))?)
 }
 
+/// Byte span of each tx inside a block (header + count skipped by the same readers)
+#[cfg(any(test, feature = "testing"))]
+pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
+    let mut cursor = Cursor::new(raw);
+    RawHeader::read(&mut cursor).expect("header");
+    let count = CompactSize::read(&mut cursor).expect("count");
+    (0..count)
+        .map(|_| {
+            let start = cursor.position() as usize;
+            read_transaction(&mut cursor).expect("tx");
+            start..cursor.position() as usize
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn fixture(height: u32) -> Vec<u8> {
-        let path = format!("{}/tests/fixtures/block_{height}.hex", env!("CARGO_MANIFEST_DIR"));
-        let hex = std::fs::read_to_string(&path).expect("fixture readable");
-        const_hex::decode(hex.trim()).expect("fixture is hex")
-    }
-
-    /// Byte span of each tx inside a block (header + count skipped by the same readers)
-    fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
-        let mut cursor = Cursor::new(raw);
-        RawHeader::read(&mut cursor).expect("header");
-        let count = CompactSize::read(&mut cursor).expect("count");
-        (0..count)
-            .map(|_| {
-                let start = cursor.position() as usize;
-                read_transaction(&mut cursor).expect("tx");
-                start..cursor.position() as usize
-            })
-            .collect()
-    }
+    use crate::mock::fixture_block as fixture;
 
     /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard):
     /// header decoded, BIP 34 height agrees, every pool present, standalone path = block path
@@ -326,6 +344,7 @@ mod tests {
 
     /// - Header prefix of each fixture → the full-block decode's hash + parent
     /// - Hash = SHA-256d of the header bytes (sha2, independent of librustzcash)
+    /// - `testing::encode_header` of the decoded header = those bytes (test chains' one encoder)
     #[test]
     fn a_header_links_to_its_block_hash_and_parent() {
         use sha2::{Digest, Sha256};
@@ -338,38 +357,25 @@ mod tests {
             let decoded = block(&raw).expect("block decodes");
             let sha256d: [u8; 32] = Sha256::digest(Sha256::digest(header)).into();
             let prev: [u8; 32] = header[4..36].try_into().expect("32");
-            let expected =
-                BlockLink { hash: decoded.header().hash, prev_hash: decoded.header().prev_hash };
-            assert_eq!(block_link(header).expect("header decodes"), expected, "height {height}");
             assert_eq!(
+                (decoded.header().hash, decoded.header().prev_hash),
                 (BlockHash::from(sha256d), BlockHash::from(prev)),
-                (expected.hash, expected.prev_hash),
                 "height {height}"
             );
-            let padded = [header, &[0]].concat();
-            assert!(matches!(block_link(&padded), Err(DecodeError::Trailing(1))));
+            let encoded = zaino_primitives::testing::encode_header(decoded.header());
+            assert_eq!(encoded, header, "re-encoded at {height}");
         }
     }
 
     /// Header merkle root = Bitcoin merkle tree over txids (every tx version) → pins each txid,
-    /// v4 (byte hash) and v5 (ZIP 244 digest) alike
+    /// v4 (byte hash) and v5 (ZIP 244 digest) alike, and `MerkleRoot::of_txids` on real blocks
     #[test]
     fn every_fixture_txid_rebuilds_its_header_merkle_root() {
-        use sha2::{Digest, Sha256};
-        let sha256d = |bytes: &[u8]| -> [u8; 32] { Sha256::digest(Sha256::digest(bytes)).into() };
-
         for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
             let block = block(&fixture(height)).expect("block decodes");
-            let mut level: Vec<[u8; 32]> =
-                block.transactions().iter().map(|tx| <[u8; 32]>::from(tx.txid)).collect();
-            while level.len() > 1 {
-                if level.len() % 2 == 1 {
-                    level.push(*level.last().expect("non-empty"));
-                }
-                level = level.chunks(2).map(|pair| sha256d(&pair.concat())).collect();
-            }
-            let merkle_root = <[u8; 32]>::from(block.header().merkle_root);
-            assert_eq!(level[0], merkle_root, "merkle root at {height}");
+            let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
+            let rebuilt = MerkleRoot::of_txids(&txids);
+            assert_eq!(rebuilt, Some(block.header().merkle_root), "merkle root at {height}");
         }
     }
 
@@ -421,12 +427,21 @@ mod tests {
     }
 
     proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+        // arb_tx filters ~80 draws per case (signing-key prop_filter): reject cap must scale w/ cases
+        #![proptest_config(proptest::prelude::ProptestConfig {
+            max_local_rejects: u32::MAX,
+            ..proptest::prelude::ProptestConfig::with_cases(64)
+        })]
 
-        /// librustzcash-written NU6.3 txs (v5 + v6, Ironwood included) decode to their source
+        /// librustzcash-written txs of every format Zaino serves (Sapling v4, NU5 v5, NU6.3 v5 +
+        /// v6 with Ironwood) decode to their source
         #[test]
-        fn nu6_3_transactions_decode_to_their_source(
-            tx in zcash_primitives::transaction::testing::arb_tx(BranchId::Nu6_3)
+        fn transactions_decode_to_their_source(
+            tx in proptest::prop_oneof![
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Sapling),
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu5),
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu6_3),
+            ]
         ) {
             let mut raw = Vec::new();
             tx.write(&mut raw).expect("writes");
@@ -465,14 +480,58 @@ mod tests {
                 .map_or(vec![], |b| b.shielded_outputs().iter().map(|o| o.cmu().to_bytes()).collect());
             let sapling_balance = sapling.map_or(0, |b| i64::from(*b.value_balance()));
 
+            // the bytes are the truth: librustzcash's reference parse of them is the txid oracle
+            let reference = zcash_primitives::transaction::Transaction::read(
+                &raw[..],
+                tx.consensus_branch_id(),
+            )
+            .expect("librustzcash reads its own bytes");
             use proptest::prop_assert_eq;
-            prop_assert_eq!(<[u8; 32]>::from(decoded.txid), *tx.txid().as_ref());
+            prop_assert_eq!(<[u8; 32]>::from(decoded.txid), *reference.txid().as_ref());
             prop_assert_eq!(vout, source_vout);
             prop_assert_eq!(spends, source_spends);
             prop_assert_eq!(cmus, source_cmus);
             prop_assert_eq!(i64::from(decoded.sapling.value_balance), sapling_balance);
             prop_assert_eq!(decoded_actions(&decoded.orchard), source_actions(tx.orchard_bundle()));
             prop_assert_eq!(decoded_actions(&decoded.ironwood), source_actions(tx.ironwood_bundle()));
+        }
+
+        /// Across Sapling (v4), NU5 and NU6.3 (v5 + v6): the submission facts are the source's
+        /// own: txid, expiry (`0` = none), the branch id only where the format embeds one; an
+        /// expiry past ZIP-203's ceiling refused; trailing or truncated bytes refused
+        #[test]
+        fn a_prepared_transaction_carries_its_own_txid_expiry_and_branch(
+            tx in proptest::prop_oneof![
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Sapling),
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu5),
+                zcash_primitives::transaction::testing::arb_tx(BranchId::Nu6_3),
+            ]
+        ) {
+            use proptest::{prop_assert, prop_assert_eq};
+            let mut raw = Vec::new();
+            tx.write(&mut raw).expect("writes");
+            let expiry = u32::from(tx.expiry_height());
+            if expiry > MAX_EXPIRY_HEIGHT {
+                let refused = prepare_transaction(&raw);
+                prop_assert!(matches!(refused, Err(DecodeError::ExpiryHeight(e)) if e == expiry));
+                return Ok(());
+            }
+            let prepared = prepare_transaction(&raw).expect("prepares");
+            let embeds = matches!(tx.version(), TxVersion::V5 | TxVersion::V6);
+            let reference = zcash_primitives::transaction::Transaction::read(
+                &raw[..],
+                tx.consensus_branch_id(),
+            )
+            .expect("librustzcash reads its own bytes");
+
+            prop_assert_eq!(<[u8; 32]>::from(prepared.txid), *reference.txid().as_ref());
+            prop_assert_eq!(prepared.expiry_height.map(u32::from), (expiry != 0).then_some(expiry));
+            let branch = embeds.then(|| ConsensusBranchId::new(u32::from(tx.consensus_branch_id())));
+            prop_assert_eq!(prepared.branch, branch);
+            let mut padded = raw.clone();
+            padded.push(0);
+            prop_assert!(matches!(prepare_transaction(&padded), Err(DecodeError::Trailing(1))));
+            prop_assert!(prepare_transaction(&raw[..raw.len() - 1]).is_err(), "truncated");
         }
     }
 

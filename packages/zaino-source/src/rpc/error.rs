@@ -17,6 +17,8 @@ pub enum RpcError {
     NullResult,
     #[error("response body exceeded {max} bytes")]
     ResponseBodyTooLarge { max: usize },
+    #[error("batch reply does not answer each call exactly once")]
+    BatchMismatch,
 }
 
 impl RpcError {
@@ -30,9 +32,10 @@ impl RpcError {
             RpcError::Status(code) => FailureMode::HttpStatus(*code),
             RpcError::Rpc { code, .. } => FailureMode::RpcError(*code),
             // oversized body = `Parse`, not retryable (same request → same oversized reply)
-            RpcError::Json(_) | RpcError::NullResult | RpcError::ResponseBodyTooLarge { .. } => {
-                FailureMode::Parse
-            }
+            RpcError::Json(_)
+            | RpcError::NullResult
+            | RpcError::ResponseBodyTooLarge { .. }
+            | RpcError::BatchMismatch => FailureMode::Parse,
         }
     }
 }

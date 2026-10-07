@@ -10,9 +10,8 @@ use std::collections::HashMap;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use zaino_primitives::types::Height;
-use zaino_source::GetBlock;
-use zaino_source::{RpcClient, RpcClientConfig, ZebraRpcAdapter};
+use zaino_primitives::types::{BlockHash, Height};
+use zaino_source::{ChainDataSource, RpcClient, RpcClientConfig, ZebraRpcAdapter};
 
 struct Expected {
     height: u32,
@@ -90,7 +89,7 @@ const FIXTURES: &[Expected] = &[
     },
 ];
 
-/// Load hex fixtures into a height→hex-string map.
+/// Load hex fixtures into a hash (display hex)→hex-string map.
 fn load_fixtures() -> HashMap<String, String> {
     let mut map = HashMap::new();
     for expected in FIXTURES {
@@ -100,7 +99,7 @@ fn load_fixtures() -> HashMap<String, String> {
             .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
             .trim()
             .to_string();
-        map.insert(expected.height.to_string(), hex);
+        map.insert(expected.hash.to_string(), hex);
     }
     map
 }
@@ -133,8 +132,8 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
 
             let result = match method {
                 "getblock" => {
-                    let height = req["params"][0].as_str().unwrap_or("");
-                    match fixtures.get(height) {
+                    let hash = req["params"][0].as_str().unwrap_or("");
+                    match fixtures.get(hash) {
                         Some(hex) => serde_json::Value::String(hex.clone()),
                         None => {
                             let err_resp = serde_json::json!({
@@ -196,10 +195,13 @@ async fn block_parity_with_explorer_offline() {
 
     for expected in FIXTURES {
         let height = Height::try_from(expected.height).expect("fixture height");
+        let mut hash: [u8; 32] = const_hex::decode_to_array(expected.hash).expect("display hex");
+        hash.reverse();
         let block = adapter
-            .get_block(height)
+            .get_block_by_hash(BlockHash::from(hash))
             .await
-            .unwrap_or_else(|e| panic!("get_block({}) failed: {e}", expected.height));
+            .unwrap_or_else(|e| panic!("getblock {} failed: {e}", expected.hash));
+        assert_eq!(block.header().height, height, "coinbase height");
 
         let header = block.header();
         let (hash, prev_hash) = (header.hash.to_string(), header.prev_hash.to_string());
