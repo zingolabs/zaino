@@ -16,6 +16,7 @@
 
 mod data_sink;
 mod emit;
+mod final_block;
 mod offload;
 mod producer;
 mod published;
@@ -24,6 +25,7 @@ mod served;
 
 pub use data_sink::{Applied, IndexerDataSink, Step, Subscription, Weight};
 pub use emit::describe_metrics;
+pub use final_block::{Final, Folds};
 pub use offload::{blocking, compute, Offloaded};
 pub use producer::{ProduceError, Producer};
 pub use published::Published;

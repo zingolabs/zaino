@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing.workspace = true
 zaino-header-chain.workspace = true
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 

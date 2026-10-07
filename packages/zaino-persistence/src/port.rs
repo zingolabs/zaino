@@ -240,7 +240,7 @@ impl Changes {
     }
 
     /// Item bytes held, every table (end offsets not counted)
-    pub(crate) fn bytes(&self) -> usize {
+    pub fn bytes(&self) -> usize {
         let maps = self.maps.iter().flatten();
         self.sequences.iter().chain(maps).map(|buffer| buffer.bytes.len()).sum()
     }

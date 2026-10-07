@@ -5304,6 +5304,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-header-chain",
+ "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
 ]
