@@ -27,7 +27,8 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
   personal fork if you are a new contributor. Keep a PR in `Draft` until it is
   ready for review.
 - Run `makers lint` before pushing: it runs every lint CI runs (fmt, clippy,
-  cargo-deny, shellcheck, duplication and boundary-conversion guards).
+  cargo-deny bans, shellcheck, the Dockerfile openssl ban, code duplication,
+  `tools/` lints).
   `git config core.hooksPath .githooks` runs it as a pre-push hook.
 - Every PR that changes a released crate carries a changeset; see
   [changeset format](./docs/release/changeset-format.md).

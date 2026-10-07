@@ -38,7 +38,7 @@ command = "cargo"
 args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-code-duplication"]
 
 [tasks.deny]
-description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
+description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories (h2, crossbeam-epoch) and licenses (unlicensed zaino-grpc, deny.toml allow-list) fail today, tracked separately."
 command = "cargo"
 args = ["deny", "check", "bans"]
 

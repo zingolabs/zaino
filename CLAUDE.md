@@ -148,9 +148,10 @@ while [ $SECONDS -lt $end ]; do
     || { echo "FAILED in round $round"; break; }
 done
 
-# 2. every crate built on it
+# 2. every crate built on it (`cargo tree -i zaino-persistence --workspace`)
 cargo test -p zaino-internal-block-hash-to-height -p zaino-internal-value-balance \
-  -p zaino-index-transparent-address -p zaino-index-compact-block -p zaino-index-tree-state
+  -p zaino-index-transparent-address -p zaino-index-compact-block -p zaino-index-tree-state \
+  -p zaino-header-chain -p zaino-sync -p zaino-nfs -p zaino-chainview -p zaino-grpc -p zainod
 ```
 
 - Step 1 re-runs the whole persistence suite each round, so the thread-timing

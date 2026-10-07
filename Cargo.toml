@@ -29,11 +29,7 @@ repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
 edition = "2021"
 license = "Apache-2.0"
-# Publish metadata shared by every published crate, inherited via
-# `readme.workspace = true` etc. crates.io requires `description` + `license`;
-# `readme`/`keywords`/`categories` round out what `clippy::cargo_common_metadata`
-# checks (see the `clippy` task in tools/makefiles/lints.toml). `readme` is
-# resolved from the workspace root.
+# Publish metadata, inherited via `readme.workspace = true` etc. (crates.io: description + license)
 readme = "README.md"
 keywords = ["zcash", "blockchain", "indexer", "lightwallet"]
 categories = ["cryptography::cryptocurrencies"]
@@ -111,9 +107,7 @@ zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
 zaino-nfs = { path = "packages/zaino-nfs", version = "0.1.0" }
 # The best chain by proof of work: every header verified from genesis, most-work tip
 zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.1.0" }
-# Driven port traits for validator access: one trait per question a consumer can
-# ask, so each consumer's bound names exactly the capabilities it uses and an
-# adapter that cannot answer a question simply does not implement it.
+# Validator JSON-RPC: `ChainDataSource` port, zebrad adapter, traffic balancer
 zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
 zaino-peers = { path = "packages/zaino-peers", version = "0.1.0" }
@@ -121,18 +115,15 @@ zaino-peers = { path = "packages/zaino-peers", version = "0.1.0" }
 zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
 zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
 zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "4.0.0" }
-# CompactBlockIndex's storage engine: gRPC-framed records in append-only files,
-# served as contiguous mmap spans.
+# Height → gRPC-framed compact block, served as contiguous mmap spans
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
 # Block hash <-> height: the locator every by-hash request resolves through.
 zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.1.0" }
 # Outpoint -> value: every transaction's value balance (fees), published for compact blocks.
 zaino-internal-value-balance = { path = "packages/zaino-internal-value-balance", version = "0.1.0" }
-# TreeStateIndex's storage: retained commitment-tree nodes, per-height sizes,
-# subtree roots. Rebuilds any historical frontier with no hashing.
+# Height → commitment-tree state, subtree roots (any historical frontier, no hashing)
 zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.1.0" }
-# TransparentAddressIndex's storage: `receives` and `spent` as two immutable
-# sorted-run projections, composed per query.
+# Transparent address → receives + their spends (two maps, composed per query)
 zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.1.0" }
 
 

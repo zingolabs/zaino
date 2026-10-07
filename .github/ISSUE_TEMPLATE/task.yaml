@@ -58,20 +58,21 @@ body:
       multiple: true
       options:
         - zainod
-        - zaino-grpc
         - zaino-chainview
-        - zaino-sync
+        - zaino-grpc
+        - zaino-header-chain
         - zaino-index-compact-block
-        - zaino-index-tree-state
         - zaino-index-transparent-address
+        - zaino-index-tree-state
+        - zaino-internal-block-hash-to-height
+        - zaino-internal-value-balance
+        - zaino-nfs
+        - zaino-peers
         - zaino-persistence
-        - zaino-persistence-macros
-        - zaino-non-finalized-state
-        - zaino-source
-        - zaino-source-macros
-        - zaino-source-zebra-rpc
         - zaino-primitives
         - zaino-proto
+        - zaino-source
+        - zaino-sync
         - Testing / CI
         - Documentation
         - Other

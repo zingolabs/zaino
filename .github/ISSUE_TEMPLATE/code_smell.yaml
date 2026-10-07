@@ -37,7 +37,7 @@ body:
       label: Location
       description: Where is this code? (file paths, module names, function names)
       placeholder: |
-        `packages/zaino-sync/src/fanout.rs:42`
+        `packages/zaino-sync/src/committer.rs:42`
     validations:
       required: true
 

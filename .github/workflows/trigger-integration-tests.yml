@@ -1,23 +1,8 @@
 name: Trigger Integration Tests
 
+# Paused: upstream integration tests still send the old config (docs/design/integration-test-plan.md §13)
 on:
-  pull_request:
-    branches: [dev]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - .cargo/config.toml
-      - .github/workflows/trigger-integration-tests.yml
-
-  push:
-    branches: [dev]
-    paths:
-      - "**/*.rs"
-      - "**/Cargo.toml"
-      - "**/Cargo.lock"
-      - .cargo/config.toml
-      - .github/workflows/trigger-integration-tests.yml
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}

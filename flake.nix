@@ -80,7 +80,6 @@
             # Integration tests
             kind
             kubectl
-            openshift
           ];
 
           env = commonArgs.env;
