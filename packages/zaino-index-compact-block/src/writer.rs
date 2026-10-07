@@ -75,11 +75,8 @@ mod tests {
     use prost::Message as _;
     use tokio::task::JoinHandle;
     use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine};
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        CompactCiphertext, Fee, Height, OrchardAction, OrchardData, SaplingData, SaplingOutput,
-        Transaction, TransactionId, TransparentData, Zatoshis,
-    };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::Height;
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats as cf;
     use zaino_sync::{FeeSink, Folds, IndexerDataSink};
@@ -91,68 +88,24 @@ mod tests {
     const NETWORK: NetworkType = NetworkType::Regtest;
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
 
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
-    }
-
     fn open(fs: &Arc<SimFs>) -> DiskStore {
         DiskEngine::new(fs.clone()).open(Path::new("/cb"), &schema(NETWORK)).expect("open")
     }
 
-    /// Coinbase, then one tx (txid `[seed; 32]`) committing `sapling` outputs, `orchard` and
-    /// `ironwood` actions
-    fn txs(seed: u8, sapling: usize, orchard: usize, ironwood: usize) -> Vec<Transaction> {
-        let out = SaplingOutput {
-            cmu: [1u8; 32].into(),
-            ephemeral_key: [2u8; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
-        };
-        let action = OrchardAction {
-            nullifier: [4u8; 32].into(),
-            cmx: [5u8; 32].into(),
-            ephemeral_key: [6u8; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([7u8; CompactCiphertext::LENGTH]),
-        };
-
-        vec![
-            Transaction {
-                txid: TransactionId::from([0xcb; 32]),
-                transparent: TransparentData { coinbase: true, ..Default::default() },
-                sprout: Default::default(),
-                sapling: Default::default(),
-                orchard: Default::default(),
-                ironwood: Default::default(),
-            },
-            Transaction {
-                txid: TransactionId::from([seed; 32]),
-                transparent: Default::default(),
-                sprout: Default::default(),
-                sapling: SaplingData { outputs: vec![out; sapling], ..Default::default() },
-                orchard: OrchardData {
-                    actions: vec![action.clone(); orchard],
-                    ..Default::default()
-                },
-                ironwood: OrchardData { actions: vec![action; ironwood], ..Default::default() },
-            },
-        ]
-    }
-
-    /// Fees value-balance states for `block`: coinbase, then `1 000 × (height + 1)` (distinct
-    /// per height: a pairing slip = a wrong fee in the record)
-    fn fees_of(block: &Block) -> BlockFees {
-        let paid = Zatoshis::new(1_000 * (u64::from(block.header().height) + 1)).expect("supply");
-        let (height, hash) = (block.header().height, block.header().hash);
-        BlockFees { height, hash, fees: vec![Fee::Coinbase, Fee::Paid(paid)] }
+    /// Genesis ..= tip, each block beside the fees value-balance derives for it
+    fn with_fees(chain: &MockChain) -> Vec<(Arc<Block>, BlockFees)> {
+        let blocks = chain.blocks(chain.tip()).into_iter();
+        blocks.map(|block| (Arc::clone(&block), chain.fees(block.header().hash))).collect()
     }
 
     /// Each block's own fold from genesis, as the NFS folds it (the folded steps' payload)
-    fn folded(chain: &[Arc<Block>]) -> Vec<Arc<Folds>> {
+    fn folded(chain: &[(Arc<Block>, BlockFees)]) -> Vec<Arc<Folds>> {
         let mut scratch = open(&SimFs::new());
         chain
             .iter()
-            .map(|block| {
+            .map(|(block, fees)| {
                 let parent = CompactBlockReader::new(scratch.staged(), NETWORK);
-                let changes = fold(&parent, block, &fees_of(block)).expect("small sizes");
+                let changes = fold(&parent, block, fees).expect("small sizes");
                 let mut folds = Folds::default();
                 folds.insert(IndexKind::CompactBlock, changes.clone());
                 scratch.apply(changes);
@@ -162,7 +115,7 @@ mod tests {
     }
 
     /// Writer as zainod runs it: the NFS's final stream, value-balance's fee stream (fees
-    /// per unfolded step, [`fees_of`]), its committed view
+    /// per unfolded step), its committed view
     struct Running {
         blocks: IndexerDataSink<Final>,
         fees: FeeSink,
@@ -180,11 +133,11 @@ mod tests {
             Self { blocks, fees, committed, run }
         }
 
-        /// `block`, folded (`folds`) or not; its fees too when not (as value-balance sends them)
-        async fn send(&self, block: &Arc<Block>, folds: Option<&Arc<Folds>>) {
+        /// `block`, folded (`folds`) or not; its `fees` too when not (as value-balance sends them)
+        async fn send(&self, (block, fees): &(Arc<Block>, BlockFees), folds: Option<&Arc<Folds>>) {
             let height = block.header().height;
             if folds.is_none() {
-                self.fees.send(Step::Apply { height, data: Arc::new(fees_of(block)) }).await;
+                self.fees.send(Step::Apply { height, data: Arc::new(fees.clone()) }).await;
             }
             let data = Arc::new(Final { block: Arc::clone(block), folds: folds.map(Arc::clone) });
             self.blocks.send(Step::Apply { height, data }).await;
@@ -223,31 +176,54 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn tree_sizes_and_fees_accumulate_across_folded_steps_and_a_restart() {
         let fs = SimFs::new();
-        let chain = linked([txs(0, 2, 1, 0), txs(1, 3, 2, 1), txs(2, 0, 0, 4), txs(3, 1, 1, 1)]);
+        let miner = p2pkh([0xc0; 20]);
+        let mut mock = MockChain::regtest();
+        // block h: coinbase pays 1 000 × h, spent whole by one tx (fee distinct per height: a
+        // pairing slip = a wrong fee in the record) committing (sapling, orchard, ironwood)
+        for (at, (sapling, orchard, ironwood)) in
+            (1u8..).zip([(2, 1, 0), (3, 2, 1), (0, 0, 4), (1, 1, 1)])
+        {
+            let fee = 1_000 * u64::from(at);
+            mock.mine(|b| {
+                b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
+                    let t = t.spend(outpoint([0xc0 + at; 32], 0)).fee(fee);
+                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
+                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
+                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                })
+            });
+        }
+        let chain = with_fees(&mock);
         let folds = folded(&chain);
 
         let mut index = Running::start(open(&fs), QUEUE);
-        index.send(&chain[0], None).await;
-        index.send(&chain[1], None).await;
-        index.reached(Some(1)).await;
-        index.send(&chain[2], Some(&folds[2])).await;
+        for block in &chain[..3] {
+            index.send(block, None).await;
+        }
         index.reached(Some(2)).await;
+        index.send(&chain[3], Some(&folds[3])).await;
+        index.reached(Some(3)).await;
         let committed = index.stop().await;
         let view = committed.borrow().clone();
-        let stored = [0, 1, 2].map(|height| record(&view, height));
-        let fees = |height: u32| vec![0, 1_000 * (height + 1)];
-        let expected = [((2, 1, 0), fees(0)), ((5, 3, 1), fees(1)), ((5, 3, 5), fees(2))];
+        let stored = [0, 1, 2, 3].map(|height| record(&view, height));
+        let fees = |height: u32| vec![0, 1_000 * height];
+        let expected = [
+            ((0, 0, 0), vec![0]),
+            ((2, 1, 0), fees(1)),
+            ((5, 3, 1), fees(2)),
+            ((5, 3, 5), fees(3)),
+        ];
         assert_eq!(stored, expected, "cumulative sizes, each block's own fees");
 
         let mut resumed = Running::start(open(&fs), QUEUE);
-        resumed.send(&chain[1], None).await;
         resumed.send(&chain[2], None).await;
-        resumed.send(&chain[3], Some(&folds[3])).await;
-        resumed.reached(Some(3)).await;
+        resumed.send(&chain[3], None).await;
+        resumed.send(&chain[4], Some(&folds[4])).await;
+        resumed.reached(Some(4)).await;
         let committed = resumed.stop().await;
         let view = committed.borrow().clone();
-        assert_eq!(record(&view, 2), expected[2], "held: untouched");
-        assert_eq!(record(&view, 3), ((6, 4, 6), fees(3)), "folded onto 2's record");
+        assert_eq!(record(&view, 3), expected[3], "held: untouched");
+        assert_eq!(record(&view, 4), ((6, 4, 6), fees(4)), "folded onto 3's record");
     }
 
     /// - `Send(n)`: next `n` blocks, unfolded until `Fold`, folded after it
@@ -300,11 +276,27 @@ mod tests {
         moves: Vec<Move>,
         batch: NonZeroUsize,
     ) {
-        let chain: Vec<Arc<Block>> =
-            linked((0u8..).zip(&counts).map(|(seed, &(s, o, i))| txs(seed, s, o, i)));
+        // genesis, then block h: coinbase pays 1 000 × h, spent whole by one tx committing
+        // `counts[h - 1]` (sapling, orchard, ironwood)
+        let miner = p2pkh([0xc0; 20]);
+        let mut mock = MockChain::regtest();
+        for (at, &(sapling, orchard, ironwood)) in (1u8..).zip(&counts) {
+            let fee = 1_000 * u64::from(at);
+            let [sapling, orchard, ironwood] =
+                [sapling, orchard, ironwood].map(|count| u8::try_from(count).expect("≤ 3"));
+            mock.mine(|b| {
+                b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
+                    let t = t.spend(outpoint([0xc0 + at; 32], 0)).fee(fee);
+                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
+                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
+                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                })
+            });
+        }
+        let chain = with_fees(&mock);
         let folds = folded(&chain);
-        let sizes_through = |height: usize| {
-            counts[..=height].iter().fold((0u32, 0u32, 0u32), |(s, o, i), &(ds, d_o, di)| {
+        let sizes_at = |height: usize| {
+            counts[..height].iter().fold((0u32, 0u32, 0u32), |(s, o, i), &(ds, d_o, di)| {
                 (s + ds as u32, o + d_o as u32, i + di as u32)
             })
         };
@@ -340,10 +332,14 @@ mod tests {
                 let (sizes, fees) = record(&view, height);
                 let stored = reader.block(h(height)).expect("record");
                 let decoded = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-                let hash = <[u8; 32]>::from(chain[height as usize].header().hash);
+                let hash = <[u8; 32]>::from(chain[height as usize].0.header().hash);
                 assert_eq!(decoded.hash, hash.to_vec(), "{case}: record {height}");
-                assert_eq!(sizes, sizes_through(height as usize), "{case}: record {height}");
-                assert_eq!(fees, vec![0, 1_000 * (height + 1)], "{case}: its own fees");
+                assert_eq!(sizes, sizes_at(height as usize), "{case}: record {height}");
+                let own = match height {
+                    0 => vec![0],
+                    paid => vec![0, 1_000 * paid],
+                };
+                assert_eq!(fees, own, "{case}: its own fees");
                 records.extend_from_slice(&stored);
             }
             if let Some(last) = sent.checked_sub(1) {
@@ -355,29 +351,39 @@ mod tests {
         index.stop().await;
     }
 
-    /// Four bulk blocks, each its own commit, crashed after every operation: each state reopens
-    /// to an acknowledged or the attempted commit, serves those records byte for byte, and the
-    /// next block's tree sizes fold onto its tip record (not from zero)
+    /// Genesis + four bulk blocks, each its own commit, crashed after every operation: each state
+    /// reopens to an acknowledged or the attempted commit, serves those records byte for byte,
+    /// and the next block's tree sizes fold onto its tip record (not from zero)
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_committed_prefix_the_next_block_folds_onto() {
-        // (sapling, orchard, ironwood) per block: cumulative sizes distinct at every height
-        let counts = [(1, 0, 2), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
-        let chain = linked((0u8..).zip(counts).map(|(seed, (s, o, i))| txs(seed, s, o, i)));
-        let sizes_through = |count: usize| {
-            counts[..count].iter().fold((0, 0, 0), |(s, o, i), &(ds, d_o, di)| {
-                (s + ds as u32, o + d_o as u32, i + di as u32)
+        // (sapling, orchard, ironwood) per block from 1: cumulative sizes distinct at every height
+        let counts = [(1u8, 0u8, 2u8), (2, 1, 0), (0, 3, 1), (4, 1, 1), (1, 2, 3)];
+        let mut mock = MockChain::regtest();
+        for (at, (sapling, orchard, ironwood)) in (1u8..).zip(counts) {
+            mock.mine(|b| {
+                b.tx(|t| {
+                    let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
+                    let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
+                    (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
+                })
+            });
+        }
+        let chain = with_fees(&mock);
+        let sizes_at = |height: usize| {
+            counts[..height].iter().fold((0, 0, 0), |(s, o, i), &(ds, d_o, di)| {
+                (s + u32::from(ds), o + u32::from(d_o), i + u32::from(di))
             })
         };
         let fs = SimFs::recording();
         let mut index = Running::start(open(&fs), NonZeroUsize::MIN);
-        for (acked, block) in (1u64..).zip(&chain[..4]) {
+        for (acked, block) in (1u64..).zip(&chain[..5]) {
             index.send(block, None).await;
-            index.reached(Some(u32::from(block.header().height))).await;
+            index.reached(Some(u32::from(block.0.header().height))).await;
             fs.set_tag(acked);
         }
         let committed = index.stop().await;
         let reader = CompactBlockReader::new(committed.borrow().clone(), NETWORK);
-        let records: Vec<_> = (0..4).map(|n| reader.block(h(n))).collect();
+        let records: Vec<_> = (0..5).map(|n| reader.block(h(n))).collect();
 
         let states = fs.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
@@ -385,7 +391,7 @@ mod tests {
             let label = &state.label;
             let store = open(&state.fs);
             let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
-            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(4) as usize);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
             let reader = CompactBlockReader::new(store.view(), NETWORK);
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
@@ -396,7 +402,7 @@ mod tests {
             index.reached(Some(count as u32)).await;
             let committed = index.stop().await;
             let (sizes, _) = record(&committed.borrow(), count as u32);
-            assert_eq!(sizes, sizes_through(count + 1), "{label}: folded onto the tip record");
+            assert_eq!(sizes, sizes_at(count), "{label}: folded onto the tip record");
         }
     }
 }

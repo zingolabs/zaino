@@ -114,41 +114,60 @@ pub fn compact_tx(index: u64, tx: &Transaction, fee: Option<Zatoshis>) -> cf::Co
 mod tests {
     use std::slice;
 
+    use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
     use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
 
     use super::*;
-    use crate::{
-        project::{record_hash, record_sizes},
-        testing::block,
-    };
+    use crate::project::{record_hash, record_sizes};
 
+    /// Block 2's tx spends block 1's output 7 and carries every pool; fee 5 000
     #[test]
     fn a_record_decodes_back_to_every_pool_it_was_built_from() {
-        let (block, fees) = block(1);
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| {
+            b.coinbase(|c| (0..8).fold(c.txid([0x22; 32]), |c, _| c.pay(&alice, 17_345)))
+        });
+        let two = chain.mine(|b| {
+            b.tx(|t| {
+                t.txid([0x11; 32])
+                    .spend(outpoint([0x22; 32], 7))
+                    .pay(&alice, 12_345)
+                    .fee(5_000)
+                    .sapling_spend([0x33; 32])
+                    .sapling_output(0x44)
+                    .orchard_action([0x77; 32], 0x78)
+                    .ironwood_action([0x88; 32], 0x89)
+                    .ironwood_action([0x99; 32], 0x9a)
+            })
+        });
+        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
         let sizes = TreeSizes {
             sapling: TreeSize::from(10),
             orchard: TreeSize::from(20),
             ironwood: TreeSize::from(30),
         };
-        let framed = encode_compact_block(&block, &fees, &sizes);
+        let framed = encode_compact_block(block, &fees, &sizes);
         assert_eq!(framed_len(&framed), Some(framed.len()), "gRPC length prefix");
         let decoded = cf::CompactBlock::decode(&framed[FRAME_HEADER..]).expect("decodes as proto");
 
         let hash = <[u8; HASH]>::from(block.header().hash);
         let prev = <[u8; HASH]>::from(block.header().prev_hash);
-        assert_eq!((decoded.height, decoded.time), (1, block.header().time));
+        assert_eq!((decoded.height, decoded.time), (2, block.header().time));
         assert_eq!((decoded.hash, decoded.prev_hash), (hash.to_vec(), prev.to_vec()));
         assert_eq!(record_hash(&framed), Some(hash), "framing walk reads the proto's hash");
         assert_eq!(record_hash(&framed[..FRAME_HEADER + 4]), None, "cut before the hash");
-        assert_eq!(decoded.vtx.len(), 1);
+        assert_eq!(decoded.vtx.len(), 2, "coinbase + the tx");
+        assert_eq!(decoded.vtx[0].fee, 0, "coinbase: no fee on the wire");
 
-        let tx = &decoded.vtx[0];
-        assert_eq!(tx.index, 0);
+        let tx = &decoded.vtx[1];
+        assert_eq!(tx.index, 1);
         assert_eq!(tx.txid, [0x11; HASH].to_vec());
 
         // every pool survives the round trip (`ironwood_actions` included)
         assert_eq!(tx.spends.len(), 1, "sapling spends");
+        assert_eq!(tx.spends[0].nf, [0x33; HASH].to_vec());
         assert_eq!(tx.outputs.len(), 1, "sapling outputs");
         assert_eq!(tx.actions.len(), 1, "orchard actions");
         assert_eq!(tx.ironwood_actions.len(), 2, "ironwood actions");
@@ -177,8 +196,9 @@ mod tests {
     /// `u32::MAX` both write 0 ("not provided"), never a saturated lie
     #[test]
     fn fee_is_exact_within_u32_and_unset_otherwise() {
-        let (block, _) = block(1);
-        let tx = &block.transactions()[0];
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| b.tx(|t| t.sapling_output(1)));
+        let tx = &chain.block(one.hash).transactions()[1];
         let max = u64::from(u32::MAX);
         for (fee, wire) in [
             (None, 0),
@@ -196,9 +216,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "encoded with another block's fees")]
     fn encoding_with_another_blocks_fees_panics() {
-        let (block, _) = block(1);
-        let (_, stranger) = crate::testing::block(2);
-        let _ = encode_compact_block(&block, &stranger, &TreeSizes::ZERO);
+        let mut chain = MockChain::regtest();
+        let (one, two) = (chain.mine_empty(1), chain.mine_empty(1));
+        let stranger = chain.fees(two.hash);
+        let _ = encode_compact_block(chain.block(one.hash), &stranger, &TreeSizes::ZERO);
     }
 
     /// Decoded projection = exactly the requested pools, nothing else changed (the walk rewrites
@@ -207,9 +228,24 @@ mod tests {
     fn projection_drops_only_the_pools_not_requested() {
         use crate::{project::project, Pools};
 
-        let (block, fees) = block(0);
-        let stored = encode_compact_block(&block, &fees, &TreeSizes::ZERO);
+        // coinbase pays (transparent only); the tx carries every pool
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 17_345)));
+        let two = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 625)).tx(|t| {
+                t.spend(outpoint([0x22; 32], 0))
+                    .pay(&alice, 12_345)
+                    .sapling_spend([0x33; 32])
+                    .sapling_output(0x44)
+                    .orchard_action([0x77; 32], 0x78)
+                    .ironwood_action([0x88; 32], 0x89)
+            })
+        });
+        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
+        let stored = encode_compact_block(block, &fees, &TreeSizes::ZERO);
         let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decode");
+        let full_tx = &full.vtx[1];
 
         // every pool requested: the stored bytes, untouched
         assert_eq!(
@@ -221,14 +257,14 @@ mod tests {
         // default (shielded only): transparent gone, shielded intact
         let shielded = project(slice::from_ref(&stored), Pools::default()).expect("default");
         let decoded = cf::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
-        let tx = &decoded.vtx[0];
+        let [tx] = &decoded.vtx[..] else { panic!("coinbase (transparent only) dropped") };
 
         assert!(tx.vin.is_empty(), "transparent inputs dropped");
         assert!(tx.vout.is_empty(), "transparent outputs dropped");
-        assert_eq!(tx.spends, full.vtx[0].spends, "sapling spends kept");
-        assert_eq!(tx.outputs, full.vtx[0].outputs, "sapling outputs kept");
-        assert_eq!(tx.actions, full.vtx[0].actions, "orchard kept");
-        assert_eq!(tx.ironwood_actions, full.vtx[0].ironwood_actions, "ironwood kept");
+        assert_eq!(tx.spends, full_tx.spends, "sapling spends kept");
+        assert_eq!(tx.outputs, full_tx.outputs, "sapling outputs kept");
+        assert_eq!(tx.actions, full_tx.actions, "orchard kept");
+        assert_eq!(tx.ironwood_actions, full_tx.ironwood_actions, "ironwood kept");
 
         // nothing outside the pools moved
         assert_eq!(decoded.height, full.height);
@@ -236,8 +272,8 @@ mod tests {
         assert_eq!(decoded.prev_hash, full.prev_hash);
         assert_eq!(decoded.time, full.time);
         assert_eq!(decoded.chain_metadata, full.chain_metadata);
-        assert_eq!(tx.index, full.vtx[0].index);
-        assert_eq!(tx.txid, full.vtx[0].txid);
+        assert_eq!(tx.index, full_tx.index);
+        assert_eq!(tx.txid, full_tx.txid);
 
         // frame length prefix rewritten to the shortened payload
         assert_eq!(framed_len(&shielded), Some(shielded.len()));
@@ -247,14 +283,14 @@ mod tests {
         let orchard = Pools { sapling: false, orchard: true, ironwood: false, transparent: false };
         let orchard_only = project(slice::from_ref(&stored), orchard).expect("orchard only");
         let decoded = cf::CompactBlock::decode(&orchard_only[FRAME_HEADER..]).expect("decodes");
-        let tx = &decoded.vtx[0];
+        let [tx] = &decoded.vtx[..] else { panic!("coinbase (transparent only) dropped") };
 
-        assert_eq!(tx.actions, full.vtx[0].actions, "orchard kept");
+        assert_eq!(tx.actions, full_tx.actions, "orchard kept");
         assert!(tx.spends.is_empty(), "sapling spends dropped");
         assert!(tx.outputs.is_empty(), "sapling outputs dropped");
         assert!(tx.ironwood_actions.is_empty(), "ironwood dropped");
         assert!(tx.vin.is_empty());
-        assert_eq!(tx.txid, full.vtx[0].txid, "identity survives every selection");
+        assert_eq!(tx.txid, full_tx.txid, "identity survives every selection");
     }
 
     /// lightwalletd `FilterTxPool`: a tx left with no component after projection is dropped, for
@@ -262,80 +298,24 @@ mod tests {
     /// block stays, even with no tx left; the stored record (`GetBlock`) keeps every tx
     #[test]
     fn projection_drops_transactions_left_with_no_component() {
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{
-            OrchardData, OutPoint, SaplingData, SaplingOutput, Script, TransparentData,
-            TransparentOutput,
-        };
-
         use crate::{
             project::{project, project_tx_at},
             Pools,
         };
 
-        let out = |value| TransparentOutput {
-            value: Zatoshis::new(value).expect("in range"),
-            script: Script::new(vec![0x76, 0xa9, 0x14]),
-        };
-        let action = OrchardAction {
-            nullifier: [0x77; HASH].into(),
-            cmx: [0x78; HASH].into(),
-            ephemeral_key: [0x79; HASH].into(),
-            enc_ciphertext: [0x7a; CompactCiphertext::LENGTH].into(),
-        };
-        let tx = |seed: u8| Transaction {
-            txid: [seed; HASH].into(),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let coinbase = Transaction {
-            transparent: TransparentData {
-                coinbase: true,
-                inputs: vec![],
-                outputs: vec![out(625)],
-            },
-            ..tx(0)
-        };
-        let componentless = tx(1);
-        let sapling_only = Transaction {
-            sapling: SaplingData {
-                outputs: vec![SaplingOutput {
-                    cmu: [0x44; HASH].into(),
-                    ephemeral_key: [0x55; HASH].into(),
-                    enc_ciphertext: [0x66; CompactCiphertext::LENGTH].into(),
-                }],
-                ..Default::default()
-            },
-            ..tx(2)
-        };
-        let orchard_only = Transaction {
-            orchard: OrchardData { actions: vec![action], ..Default::default() },
-            ..tx(3)
-        };
-        let transparent_only = Transaction {
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: vec![OutPoint { txid: [0x22; HASH].into(), vout: 1 }],
-                outputs: vec![out(100)],
-            },
-            ..tx(4)
-        };
-        let mut chain = Chain::new();
-        let eight = chain.extend(chain.genesis().hash, 8);
-        let txs =
-            vec![coinbase.clone(), componentless, sapling_only, orchard_only, transparent_only];
-        let nine = chain.mine_with(eight.hash, txs);
-        let ten = chain.mine_with(nine.hash, vec![coinbase]);
-        let block = chain.block(nine.hash);
-        let paid = Fee::Paid(Zatoshis::new(1_000).expect("in range"));
-        let fees = BlockFees {
-            height: block.header().height,
-            hash: block.header().hash,
-            fees: vec![Fee::Coinbase, paid, paid, paid, paid],
-        };
+        // slots: coinbase (transparent), component-less, sapling only, orchard only, transparent
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 1).pay(&alice, 1_100)));
+        let two = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 625))
+                .tx(|t| t.txid([1; 32]))
+                .tx(|t| t.txid([2; 32]).sapling_output(0x44))
+                .tx(|t| t.txid([3; 32]).orchard_action([0x77; 32], 0x78))
+                .tx(|t| t.txid([4; 32]).spend(outpoint([0x22; 32], 1)).pay(&alice, 100).fee(1_000))
+        });
+        let three = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
+        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
         let sizes = TreeSizes {
             sapling: TreeSize::from(1),
             orchard: TreeSize::from(1),
@@ -379,13 +359,8 @@ mod tests {
         assert_eq!(mempool(transparent), [0, 4]);
         assert_eq!(mempool(orchard), [3]);
 
-        let coinbase_only = chain.block(ten.hash);
-        let fees = BlockFees {
-            height: coinbase_only.header().height,
-            hash: coinbase_only.header().hash,
-            fees: vec![Fee::Coinbase],
-        };
-        let stored = encode_compact_block(coinbase_only, &fees, &sizes);
+        let coinbase_only = chain.block(three.hash);
+        let stored = encode_compact_block(coinbase_only, &chain.fees(three.hash), &sizes);
         let shielded = project(slice::from_ref(&stored), Pools::default()).expect("walks");
         let decoded = cf::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
         let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");

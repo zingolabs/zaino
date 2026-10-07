@@ -35,57 +35,18 @@ mod tests {
     use std::{panic::AssertUnwindSafe, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        CompactCiphertext, Fee, OrchardAction, OrchardData, SaplingData, SaplingOutput,
-        Transaction, TransactionId, TransparentData, TreeSize, TreeSizes,
-    };
+    use zaino_primitives::testing::{h, MockChain};
+    use zaino_primitives::types::{TreeSize, TreeSizes};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
 
-    /// Three blocks folded one onto the next over an in-memory view: each record = the block
-    /// encoded with the running sizes; a parent record claiming near-`u32::MAX` seeds the next
-    /// fold (sizes read, not carried), so one block more overflows; a gap or a fork panics
+    /// Genesis + three blocks folded one onto the next over an in-memory view: each record = the
+    /// block encoded with the running sizes; a parent record claiming near-`u32::MAX` seeds the
+    /// next fold (sizes read, not carried), so one block more overflows; a gap or a fork panics
     #[test]
     fn sizes_advance_from_the_parent_record_and_a_non_parent_panics() {
         let network = NetworkType::Regtest;
-        let output = SaplingOutput {
-            cmu: [1; 32].into(),
-            ephemeral_key: [2; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([3; CompactCiphertext::LENGTH]),
-        };
-        let action = OrchardAction {
-            nullifier: [4; 32].into(),
-            cmx: [5; 32].into(),
-            ephemeral_key: [6; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([7; CompactCiphertext::LENGTH]),
-        };
-        // one coinbase committing `(sapling, orchard, ironwood)`
-        let txs = |sapling: usize, orchard: usize, ironwood: usize| {
-            vec![Transaction {
-                txid: TransactionId::from([0xcb; 32]),
-                transparent: TransparentData { coinbase: true, ..Default::default() },
-                sprout: Default::default(),
-                sapling: SaplingData {
-                    outputs: vec![output.clone(); sapling],
-                    ..Default::default()
-                },
-                orchard: OrchardData {
-                    actions: vec![action.clone(); orchard],
-                    ..Default::default()
-                },
-                ironwood: OrchardData {
-                    actions: vec![action.clone(); ironwood],
-                    ..Default::default()
-                },
-            }]
-        };
-        let fees = |block: &Block| BlockFees {
-            height: block.header().height,
-            hash: block.header().hash,
-            fees: vec![Fee::Coinbase],
-        };
         let sizes = |sapling: u32, orchard: u32, ironwood: u32| TreeSizes {
             sapling: TreeSize::from(sapling),
             orchard: TreeSize::from(orchard),
@@ -96,42 +57,66 @@ mod tests {
             store.expect("open")
         };
 
-        let mut chain = Chain::with_genesis(txs(2, 1, 0));
-        let one = chain.mine_with(chain.genesis().hash, txs(3, 0, 4));
-        let two = chain.mine_with(one.hash, txs(0, 5, 1));
-        let mut through_two = empty();
-        for (at, after) in
-            [(chain.genesis(), sizes(2, 1, 0)), (one, sizes(5, 1, 4)), (two, sizes(5, 6, 5))]
-        {
+        // coinbases commit (sapling, orchard, ironwood) = (2, 1, 0), (3, 0, 4), (0, 5, 1)
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.sapling_output(1).sapling_output(2).orchard_action([1; 32], 1))
+        });
+        let two = chain.mine(|b| {
+            b.coinbase(|c| {
+                let c = c.sapling_output(3).sapling_output(4).sapling_output(5);
+                let c = c.ironwood_action([1; 32], 1).ironwood_action([2; 32], 2);
+                c.ironwood_action([3; 32], 3).ironwood_action([4; 32], 4)
+            })
+        });
+        let three = chain.mine(|b| {
+            b.coinbase(|c| {
+                let c = c.orchard_action([2; 32], 2).orchard_action([3; 32], 3);
+                let c = c.orchard_action([4; 32], 4).orchard_action([5; 32], 5);
+                c.orchard_action([6; 32], 6).ironwood_action([5; 32], 5)
+            })
+        });
+        // height 3 on a sibling of `two`
+        let cousin = chain.fork(h(1)).mine_empty(2).tip();
+        let fees = |block: &Block| chain.fees(block.header().hash);
+        let mut through_three = empty();
+        for (at, after) in [
+            (chain.genesis(), sizes(0, 0, 0)),
+            (one, sizes(2, 1, 0)),
+            (two, sizes(5, 1, 4)),
+            (three, sizes(5, 6, 5)),
+        ] {
             let block = chain.block(at.hash);
-            let parent = CompactBlockReader::new(through_two.staged(), network);
+            let parent = CompactBlockReader::new(through_three.staged(), network);
             let changes = fold(&parent, block, &fees(block)).expect("far below u32");
             let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
             let expected = encode_compact_block(block, &fees(block), &after);
             assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
             assert_eq!(changes.tip(), at);
-            through_two.apply(changes);
-            assert_eq!(CompactBlockReader::new(through_two.staged(), network).tip_sizes(), after);
+            through_three.apply(changes);
+            let reader = CompactBlockReader::new(through_three.staged(), network);
+            assert_eq!(reader.tip_sizes(), after);
         }
 
-        // genesis record written claiming sapling = u32::MAX - 1: `one`'s 3 outputs overflow
-        let genesis = chain.block(chain.genesis().hash);
+        // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
         let mut seeded = empty();
-        let mut changes = Changes::new(chain.genesis(), &schema(network));
+        let genesis = chain.block(chain.genesis().hash);
+        let parent = CompactBlockReader::new(seeded.staged(), network);
+        seeded.apply(fold(&parent, genesis, &fees(genesis)).expect("bare"));
+        let mut changes = Changes::new(one, &schema(network));
         let near_full = sizes(u32::MAX - 1, 0, 0);
-        changes.append(BLOCKS, &encode_compact_block(genesis, &fees(genesis), &near_full));
+        let block = chain.block(one.hash);
+        changes.append(BLOCKS, &encode_compact_block(block, &fees(block), &near_full));
         seeded.apply(changes);
         let parent = CompactBlockReader::new(seeded.staged(), network);
-        let block = chain.block(one.hash);
+        let block = chain.block(two.hash);
         let overflow = fold(&parent, block, &fees(block)).err();
         assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
 
-        // parents: `through_two` = 0..=2, `seeded` = 0, `through_one` = 0..=1
-        let sibling = chain.mine_with(chain.genesis().hash, txs(1, 1, 1));
-        let cousin = chain.mine_with(sibling.hash, txs(1, 1, 1));
-        let through_one = {
+        // parents: `through_three` = 0..=3, `seeded` = 0..=1, `through_two` = 0..=2
+        let through_two = {
             let mut store = empty();
-            for at in [chain.genesis(), one] {
+            for at in [chain.genesis(), one, two] {
                 let block = chain.block(at.hash);
                 let parent = CompactBlockReader::new(store.staged(), network);
                 store.apply(fold(&parent, block, &fees(block)).expect("small"));
@@ -139,9 +124,9 @@ mod tests {
             store
         };
         for (case, parent, at) in [
-            ("gap", &seeded, two),
-            ("fork at the same height", &through_one, cousin),
-            ("below the tip", &through_two, one),
+            ("gap", &seeded, three),
+            ("fork at the same height", &through_two, cousin),
+            ("below the tip", &through_three, two),
         ] {
             let parent = CompactBlockReader::new(parent.staged(), network);
             let block = chain.block(at.hash);
