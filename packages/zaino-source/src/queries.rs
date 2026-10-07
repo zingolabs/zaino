@@ -66,7 +66,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
-pub enum GetBlockError {
+pub enum GetAtHeightError {
     #[error("no block at height {0}")]
     HeightNotFound(Height),
 }
@@ -85,7 +85,7 @@ pub struct BlockLink {
     pub header: Vec<u8>,
 }
 
-pub type BlockLinks = Vec<Result<BlockLink, GetBlockError>>;
+pub type BlockLinks = Vec<Result<BlockLink, GetAtHeightError>>;
 
 /// One batch's answers (the tip a listing is tagged with)
 ///
@@ -95,7 +95,7 @@ pub type BlockLinks = Vec<Result<BlockLink, GetBlockError>>;
 pub struct PollReading {
     pub info: BlockchainInfo,
     pub listing: Result<Vec<MempoolListed>, GetMempoolListingError>,
-    pub held: Vec<Result<BlockHash, QueryError<GetBlockError>>>,
+    pub held: Vec<Result<BlockHash, QueryError<GetAtHeightError>>>,
     pub metadata: Option<MetadataReading>,
 }
 

@@ -17,7 +17,7 @@ use zaino_primitives::types::{
 };
 
 use crate::{
-    BlockLink, FailureMode, GetBlockByHashError, GetBlockError, GetRawMempoolTransactionError,
+    BlockLink, FailureMode, GetAtHeightError, GetBlockByHashError, GetRawMempoolTransactionError,
     GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
     SendRawTransactionError, TransactionResponse,
 };
@@ -223,7 +223,7 @@ impl crate::ChainDataSource for MockChain {
         let held = self.held.read().expect("mock chain lock");
         let answers = holds.iter().map(|height| {
             let hash = held.best.get(height).copied();
-            hash.ok_or(QueryError::Domain(GetBlockError::HeightNotFound(*height)))
+            hash.ok_or(QueryError::Domain(GetAtHeightError::HeightNotFound(*height)))
         });
         let fee = Zatoshis::new(MEMPOOL_FEE).expect("in supply");
         let listing = held.mempool.iter().map(|(txid, raw)| MempoolListed {
@@ -257,7 +257,7 @@ impl crate::ChainDataSource for MockChain {
             .map(|height| {
                 let block = held.best_at(*height);
                 let link = block.map(|block| BlockLink { header: encode_header(block.header()) });
-                link.ok_or(GetBlockError::HeightNotFound(*height))
+                link.ok_or(GetAtHeightError::HeightNotFound(*height))
             })
             .collect())
     }
@@ -313,7 +313,7 @@ mod tests {
 
         let links = mock.get_block_links(&[at(0), at(3), at(4)]).await.expect("reachable");
         let path = chain.path(trunk.hash);
-        let expected = [Ok(&path[0]), Ok(&path[3]), Err(GetBlockError::HeightNotFound(at(4)))]
+        let expected = [Ok(&path[0]), Ok(&path[3]), Err(GetAtHeightError::HeightNotFound(at(4)))]
             .map(|block| block.map(|b| BlockLink { header: encode_header(b.header()) }));
         assert_eq!(links, expected);
         assert_eq!(header_hash(path[3].header()), trunk.hash, "served bytes hash to the tip");
@@ -334,7 +334,7 @@ mod tests {
         let best = [Some(&forked[1].header().hash), Some(&forked[2].header().hash), None];
         assert_eq!(held, best, "getblockhash: its best chain, nothing above the cut");
         let above = &polled.held[2];
-        assert!(matches!(above, Err(QueryError::Domain(GetBlockError::HeightNotFound(_)))));
+        assert!(matches!(above, Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_)))));
         let cut = mock.get_block_by_hash(forked[3].header().hash).await;
         assert!(cut.is_err(), "nothing above the cut");
 

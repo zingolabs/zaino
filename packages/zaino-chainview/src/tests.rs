@@ -974,9 +974,9 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     assert_eq!(reader.current().alarms().ending(), EndpointSet::default(), "upgraded");
 }
 
-/// A validator that goes away is `Down` after the failure ceiling: its vote and sightings are
-/// withdrawn (fail closed, never a stale vote) but its poller keeps running and retrying, and its
-/// first answer back restores both; only cancel ends the poller
+/// - Gone validator → `Down` past the failure ceiling: its holds + sightings withdrawn (fail
+///   closed, never stale), poller still retrying
+/// - First answer back restores both; only cancel ends the poller
 #[tokio::test(start_paused = true)]
 async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_its_hold() {
     let validator = Arc::new(FakeValidator::default());

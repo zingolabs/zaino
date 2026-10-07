@@ -26,8 +26,8 @@ pub struct Heard {
     pub txids: Vec<TransactionId>,
 }
 
-/// The Zcash p2p network as the view uses it (§5, §6): sightings and submission entries, never
-/// a vote; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
+/// Zcash p2p network as the view uses it (§5, §6): sightings + submission entries, never the tip
+/// or finality; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers
 pub trait ValidatorP2pSource: Send + Sync + 'static {

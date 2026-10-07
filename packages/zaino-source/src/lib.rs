@@ -19,7 +19,7 @@ pub use decode::{decode_transaction, prepare_transaction, DecodeError, Prepared}
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use indexer::{Change, IndexerWatch};
 pub use queries::{
-    BlockLink, BlockLinks, ChainDataSource, GetBlockByHashError, GetBlockError,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
     MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
     TransactionResponse,

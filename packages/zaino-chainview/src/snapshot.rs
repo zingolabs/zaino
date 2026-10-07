@@ -266,7 +266,7 @@ impl ChainViewSnapshot {
         self.tip.ok_or_else(|| self.unserved().unwrap_or(Unserved::NoBestTip))
     }
 
-    /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry, never a vote)
+    /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry only, never gates)
     pub fn alarms(&self) -> Alarms {
         self.alarms
     }

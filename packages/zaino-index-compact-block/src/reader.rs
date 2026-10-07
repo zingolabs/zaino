@@ -1,4 +1,4 @@
-//! Typed reads over any `SequenceRead` view (held tiers, a layer, the committed store alike)
+//! Typed reads over any `SequenceRead` view (a snapshot's layered view, the committed store alike)
 //!
 //! - one reader = one pinned state: a commit or reorg landing mid-stream cannot move it
 //! - clone = the view's clone (pointer copies)

@@ -1,6 +1,6 @@
 //! Endpoint telemetry: gauges each fold, a log line per alarm edge
 //!
-//! - Observation only: never a vote, never gates serving or sync (a false alarm costs a log line)
+//! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
 
 use std::collections::HashSet;
 

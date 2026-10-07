@@ -1,4 +1,4 @@
-//! Typed reads over any `MapRead` view (held tiers, a layer, the committed store alike)
+//! Typed reads over any `MapRead` view (a snapshot's layered view, the committed store alike)
 
 use zaino_persistence::{MapRead, View};
 use zaino_primitives::types::{BlockHash, Height};

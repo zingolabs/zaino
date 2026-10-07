@@ -243,13 +243,13 @@ carries the full rationale):
 | `clientless::validator_heights` | **dev** | ~5 tests, regtest mining |
 | `clientless::compact_block_consistency` | **dev** | ~13 tests, regtest mining |
 | `e2e::compact_block_wire` | **dev** | ~7 tests, regtest — pulled from the capacity-excluded e2e group |
-| `clientless::fetch_service` | **rc** | over the smoke budget |
+| `clientless::grpc_surface` | **rc** | over the smoke budget |
 | `e2e::ironwood_activation` | **rc** | validator-heavy |
 | `clientless::chain_cache` | **disabled** | hangs → #1312; excluded both tiers until fixed |
 
-Deltas from today's `CI - PR` set: `fetch_service` moves **out** of pre-merge
+Deltas from today's `CI - PR` set: `grpc_surface` moves **out** of pre-merge
 (size); `e2e::compact_block_wire` moves **in**. A finer within-binary split
-(keeping the regtest subset of `fetch_service` as a smoke) is
+(keeping the regtest subset of `grpc_surface` as a smoke) is
 deferred to per-test filtersets once real wall-clock data exists — the manifest
 edit is one line when it does. That one-line-edit property is the point: moving a
 test between tiers needs no gate rename or policy-doc churn, and a gate-aware

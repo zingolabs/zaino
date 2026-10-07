@@ -124,7 +124,7 @@ async fn every_index_serves_the_validators_chain_after_a_reorg(
     assert_eq!(scrape.counter_total(family::REORGS), Some(1), "one rollback counted");
     assert_eq!(scrape.height(family::BEST_TIP), Some(tip), "zaino_best_tip");
     for index in ZainoIndex::ALL {
-        assert_eq!(indexer.synced(index).await?, Some(true), "{index:?} gate reopened");
+        assert_eq!(indexer.synced(index).await?, Some(true), "{index:?} synced at the new tip");
     }
     let durable = indexer.finalized_height(ZainoIndex::CompactBlock).await?;
     let old_durable = u32::from(old_tip.0) - DEPTH;

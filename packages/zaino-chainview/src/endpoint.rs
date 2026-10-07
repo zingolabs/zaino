@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo, TransactionId};
 use zaino_source::{
-    GetBlockError, GetMempoolListingError, GetRawMempoolTransactionError, MempoolListed,
+    GetAtHeightError, GetMempoolListingError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError,
 };
 
@@ -232,11 +232,11 @@ impl<S: ChainDataSource> EndpointPoller<S> {
     fn answered(
         &self,
         asked: &[Height],
-        held: Vec<Result<BlockHash, QueryError<GetBlockError>>>,
+        held: Vec<Result<BlockHash, QueryError<GetAtHeightError>>>,
     ) -> Vec<BlockRef> {
         let answers = asked.iter().zip(held).filter_map(|(height, answer)| match answer {
             Ok(hash) => Some(BlockRef { hash, height: *height }),
-            Err(QueryError::Domain(GetBlockError::HeightNotFound(_))) => None,
+            Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_))) => None,
             Err(QueryError::NonDomain(cause)) => {
                 debug!(endpoint = %self.address, ?height, %cause, "getblockhash unanswered");
                 None

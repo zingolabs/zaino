@@ -10,7 +10,7 @@ error. `ZebraRpcAdapter` answers all of it over zebrad's JSON-RPC; blocks come f
 | Method | RPC | Answer |
 |---|---|---|
 | `get_block_by_hash(hash)` | `getblock <hash> 0` | `Block`, or `GetBlockByHashError::NotFound` |
-| `get_block_links(heights)` | `getblockheader <h> false`, batched | `BlockLink` per height, or `GetBlockError::HeightNotFound` |
+| `get_block_links(heights)` | `getblockheader <h> false`, batched | `BlockLink` per height, or `GetAtHeightError::HeightNotFound` |
 | `get_poll_reading(metadata, holds)` | one poll batch (below) | `PollReading` |
 | `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | bytes per entry |
 | `get_transaction(txid)` | `getrawtransaction <txid> 1` | bytes + `TransactionLocation` |
@@ -110,7 +110,7 @@ then the bytes of what it newly lists); its header sync asks `get_block_links`:
   `getrawmempool true` + `getblockhash <h>` per height in `holds`, in one batch,
   so the listing and the answers are tagged with the tip read beside them.
   `PollReading::held` has one answer per height, in order: the hash on the
-  validator's best chain, `GetBlockError::HeightNotFound` above its tip (zebrad's
+  validator's best chain, `GetAtHeightError::HeightNotFound` above its tip (zebrad's
   `-32602`, zcashd's `-8`), or that item's own failure (the rest of the poll
   stands). The chain view asks this to learn which validators hold a verified
   block. With `metadata`, also `getpeerinfo` + `getinfo` +
@@ -123,7 +123,7 @@ then the bytes of what it newly lists); its header sync asks `get_block_links`:
 - `get_block_links(heights)` (`getblockheader <h> false` each):
   `BlockLink { header }` per height, the raw consensus header bytes, neither decoded nor
   hashed here: the consumer decodes once on receipt (`zaino_header_chain::decode_header`
-  recomputes the hash from the bytes). `GetBlockError::HeightNotFound` means a height above the tip.
+  recomputes the hash from the bytes). `GetAtHeightError::HeightNotFound` means a height above the tip.
 - `get_raw_mempool_transactions(listed)`: the bytes of listed entries, in batches of at most
   100 calls and 8 MiB of transactions by `encoded_len` (the hex reply stays under
   zebrad's response cap). `NotFound` on an item means it left the mempool after

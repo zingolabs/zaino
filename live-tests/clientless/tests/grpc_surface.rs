@@ -1,4 +1,4 @@
-//! Zaino's gRPC surface answers over a regtest zebrad
+//! Smoke over zaino's block, tree-state and info gRPC RPCs against a regtest zebrad
 
 use std::time::Duration;
 
@@ -7,9 +7,7 @@ use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(60);
 
-/// Blocks each `get` test mines to reach the two-block chain the pre-ztest
-/// harness left at launch, which these assertions were written against.
-/// `TestEnv::build` already mines one warm-up block per regtest validator.
+/// Blocks each `get` test mines → a two-block chain (`TestEnv::build` mines the warm-up block)
 const BASELINE: u32 = 1;
 
 mod launch {

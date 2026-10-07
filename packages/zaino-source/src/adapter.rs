@@ -10,7 +10,7 @@ use crate::rpc::{
     RpcClientConfig, RpcError, Timeouts,
 };
 use crate::{
-    decode, parse, BlockLink, BlockLinks, FailureMode, GetBlockByHashError, GetBlockError,
+    decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
     SendRawTransactionError, TransactionResponse,
@@ -188,7 +188,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
                 .collect();
             let replies = self.rpc.call_batch::<parse::HexBytes>(self.lane, calls).await?;
             for (height, reply) in batch.iter().zip(replies) {
-                let absent = || GetBlockError::HeightNotFound(*height);
+                let absent = || GetAtHeightError::HeightNotFound(*height);
                 links.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
                     Ok(parse::HexBytes(header)) => Ok(BlockLink { header }),
                     Err(gone) => Err(gone),
@@ -222,7 +222,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         let held = holds
             .iter()
             .map(|height| {
-                let absent = || GetBlockError::HeightNotFound(*height);
+                let absent = || GetAtHeightError::HeightNotFound(*height);
                 let hash = next().map_err(|error| absent_on(&ABOVE_TIP_CODES, error, absent))?;
                 parse::as_block_hash(&hash).map_err(|e| QueryError::NonDomain(from_parse(e)))
             })
@@ -372,7 +372,7 @@ mod tests {
     /// empty chain)
     #[test]
     fn only_not_found_codes_are_absent_answers() {
-        let absent = || GetBlockError::HeightNotFound(Height::try_from(42u32).expect("h"));
+        let absent = || GetAtHeightError::HeightNotFound(Height::try_from(42u32).expect("h"));
         let classifiers: [(&str, &[i64]); 2] =
             [("not found", &NOT_FOUND_CODES), ("above the tip", &ABOVE_TIP_CODES)];
         for (case, codes) in classifiers {

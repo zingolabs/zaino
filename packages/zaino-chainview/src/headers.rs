@@ -28,7 +28,7 @@ use zaino_header_chain::{
     check, decode_header, link_run, Checked, Header, HeaderChain, Params, Rejected, VerifiedChain,
 };
 use zaino_primitives::types::{BlockRef, Height};
-use zaino_source::{ChainDataSource, GetBlockError};
+use zaino_source::{ChainDataSource, GetAtHeightError};
 
 use crate::endpoints::EndpointIndex;
 use crate::error::HeaderStoreFailed;
@@ -147,7 +147,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
                         }
                     },
                     // retreated since its claim was read: next round reads its new one
-                    Err(GetBlockError::HeightNotFound(_)) => return Ok(Synced::Stalled),
+                    Err(GetAtHeightError::HeightNotFound(_)) => return Ok(Synced::Stalled),
                 }
             }
             let Some(top) =
@@ -299,7 +299,7 @@ fn stage_b(chain: &mut HeaderChain, run: Vec<Checked>, now: i64) -> Option<Rejec
 /// Finalizes while some trusted validator holds the boundary (H6); `true` = finality paused
 ///
 /// - `holders` = the view's, under this chain's best (published before every call)
-/// - work never gates it (peers alone never finalize: a trusted holder already vouches)
+/// - work never gates it (peers alone never finalize: a trusted holder = required)
 fn finalize_held(chain: &mut HeaderChain, holders: &Holders) -> Result<bool, HeaderStoreFailed> {
     while let Some(boundary) = chain.finalizable() {
         if holders.holders(boundary).is_empty() {

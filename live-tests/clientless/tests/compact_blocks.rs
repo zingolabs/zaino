@@ -1,17 +1,7 @@
-//! Compact-block serving against the new runtime stack, sourced over JSON-RPC.
+//! `GetBlockRange` end to end: validator JSON-RPC → NFS → compact-block index → gRPC
 //!
-//! The new zainod boots its pipeline (validator → indexer → store →
-//! lightserve gRPC) and serves the compact-block triad from its own index. This
-//! walk proves that path end to end over the wire: the indexer builds the
-//! current-zaino index from the validator's JSON-RPC, and `GetBlockRange` serves
-//! the composed compact blocks the harness streams back.
-//!
-//! Runs the shipped reorg depth (1000), so every regtest block is non-final and
-//! served from the indexes' non-finalized state.
-//!
-//! Scope is the served slice only — heights and compact-block shape. Treestate,
-//! transactions, address queries and per-tx ironwood actions are out of the
-//! index-only serving path and are not asserted here.
+//! - Shipped depth (1000): every regtest block non-final (served off snapshot layers)
+//! - Heights + compact-block shape only (tree state, transactions, addresses: other files)
 
 use std::time::Duration;
 
@@ -20,10 +10,7 @@ use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(180);
 
-/// zainod serves a contiguous compact-block range, sourced over JSON-RPC, up to
-/// the mined tip.
-///
-/// multi_thread required: the harness spawns the validator and indexer services.
+/// Contiguous from 1 to the mined tip, each block hashed
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn serves_compact_block_range() -> Result<()> {

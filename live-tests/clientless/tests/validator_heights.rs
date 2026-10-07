@@ -1,26 +1,7 @@
-//! Regression tests for the single source of truth for activation heights
-//! (zaino#1076, `zainod-heights-from-validator-spec.md`).
+//! Activation heights = the validator's `getblockchaininfo.upgrades` (zaino#1076)
 //!
-//! The invariant: the validator's configured activation heights are
-//! authoritative. zainod's config carries only a network kind — its regtest
-//! placeholder is the canonical `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`
-//! regardless of the fixture — and both backends adopt the real schedule
-//! from `getblockchaininfo.upgrades` at spawn.
-//!
-//! Two halves, matching the spec's acceptance criteria:
-//!
-//! 1. [`zainod_syncs_a_schedule_its_config_never_saw`] — boundary sync and
-//!    the no-recompile proof in one: the same zainod build and (kind-only)
-//!    configuration that every canonical-heights test runs is here pointed
-//!    at a validator on the NU6.3-at-6 transition schedule, and must sync
-//!    across the boundary and serve era-correct compact blocks. Before
-//!    adoption this exact misalignment killed the chain-index sync with
-//!    `InvalidData("Block commitment could not be computed")`.
-//! 2. [`getblockchaininfo_reports_the_configured_schedule`] — the input
-//!    contract: what zebrad actually puts in the `upgrades` map for a
-//!    configured schedule, pinned against a live node rather than assumed.
-//!    The mapping from that shape to adopted heights is unit-tested next to
-//!    `activation_heights_from_upgrades` in zaino-state.
+//! - zainod config = network kind only (regtest placeholder = `ActivationHeights::regtest_default`)
+//! - Upgrades map → schedule: unit-tested at `parse_blockchain_info` (zaino-source `parse.rs`)
 
 use std::time::Duration;
 
@@ -32,12 +13,8 @@ const READY: Duration = Duration::from_secs(120);
 
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
-/// Boundary sync + no-recompile proof: a kind-only-configured zainod adopts
-/// the NU6.3-at-6 schedule from the validator, syncs across the boundary,
-/// and serves era-correct compact blocks for both eras.
-///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
+/// Kind-only config + validator on NU6.3-at-6 → synced across the boundary, each era's compact
+/// blocks served (one build, no recompile per schedule)
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
@@ -60,18 +37,13 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
-    // Two blocks past the boundary, so both eras carry more than one block.
-    // Reaching the tip at all is the core regression: pre-adoption, the
-    // chain-index sync died on the first block whose commitment scheme the
-    // misconfigured heights got wrong.
+    // Past the boundary: a wrong schedule fails the first block whose commitments it misreads
     let tip = validator.generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1).await?;
     indexer.wait_for_block_num(tip, READY).await?;
     let indexed_tip = u64::from(indexer.latest_block_height().await?);
     assert!(indexed_tip > u64::from(NU6_3_TRANSITION_BOUNDARY), "indexer tip {indexed_tip}");
 
-    // Era composition of the served chain proves the adopted schedule is the
-    // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
-    // the pre-boundary orchard coinbases would be misread as ironwood-era.
+    // Placeholder schedule (NU6.3 at 2) would serve pre-boundary orchard coinbases as ironwood
     let blocks = indexer.get_block_range(BlockHeight::from(2u32), tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
     for block in &blocks {
@@ -86,14 +58,8 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     Ok(())
 }
 
-/// The input contract for adoption: the `upgrades` map a live zebrad reports
-/// for the transition schedule, pinned exactly — upgrade set, order, and
-/// heights. Establishes (from real output, not reasoning) that nothing
-/// pre-Overwinter appears: the map is keyed by consensus branch ID, which
-/// pre-Overwinter eras don't have.
-///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
+/// Input contract: zebrad's `upgrades` map for the transition schedule, pinned (set, order,
+/// heights; nothing pre-Overwinter: keyed by branch id)
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
@@ -122,9 +88,7 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
         .and_then(Value::as_object)
         .context("getblockchaininfo must carry an upgrades object")?;
 
-    // zebra emits `upgrades` in activation order (keyed by consensus branch id) and
-    // serde_json's `preserve_order` keeps it after parsing, so comparing ordered `Vec`s
-    // pins the upgrade set, their heights, and their order.
+    // Activation order kept (serde_json `preserve_order`) → ordered `Vec` compare pins it too
     let mut reported: Vec<(String, u64)> = Vec::new();
     for entry in upgrades.values() {
         let name = entry
