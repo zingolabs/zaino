@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::BlockchainInfo;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockchainInfo`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -23,9 +23,11 @@ pub enum GetBlockchainInfoError {
 ///
 /// Maps to `getblockchaininfo` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockchainInfo: Send + Sync {
+pub trait OneShotGetBlockchainInfo: ValidatorSource + Send + Sync {
     /// Fetch chain state and the upgrade schedule.
     fn get_blockchain_info(
         &self,
-    ) -> impl Future<Output = Result<BlockchainInfo, QueryError<GetBlockchainInfoError>>> + Send;
+    ) -> impl Future<
+        Output = Result<BlockchainInfo, QueryError<GetBlockchainInfoError, Self::NonDomain>>,
+    > + Send;
 }

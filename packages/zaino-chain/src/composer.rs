@@ -1517,12 +1517,15 @@ where
     /// A caller builds that future before the guards run, which costs nothing:
     /// an `async fn` does no work until awaited, so a withheld capability still
     /// never reaches the validator.
-    async fn address_query<T, E>(
+    async fn address_query<T, E, N>(
         &self,
-        call: impl core::future::Future<Output = core::result::Result<T, zaino_source::QueryError<E>>>,
+        call: impl core::future::Future<
+            Output = core::result::Result<T, zaino_source::QueryError<E, N>>,
+        >,
     ) -> Result<T>
     where
         E: core::fmt::Debug + core::fmt::Display,
+        N: std::error::Error + Into<zaino_source::NonDomainError>,
     {
         if !self.served.contains(ChainCapability::AddressHistory) {
             return Err(withheld(ChainCapability::AddressHistory));
