@@ -1,0 +1,36 @@
+[package]
+name = "zaino-header-chain"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+repository.workspace = true
+description = "Proof-of-work verified header chain: the most-work tip, from genesis"
+
+[dependencies]
+equihash = "0.3"
+imbl.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+uint = "0.9"
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-primitives.workspace = true
+zcash_protocol.workspace = true
+
+[features]
+# `Params::with_genesis` + `HeaderChain::{regtest_in_memory, insert_blocks}`, for consumers' tests
+testing = ["zaino-primitives/testing", "zaino-persistence/testing"]
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[dev-dependencies]
+const-hex = "1.19.3"
+proptest.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json.workspace = true
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
