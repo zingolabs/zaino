@@ -15,11 +15,11 @@ pub enum IndexerError {
     /// The tree-state index's carries would not reseed off disk.
     #[error(transparent)]
     OpenTreeStateIndex(#[from] zaino_index_tree_state::IndexWriterError),
-    #[error(transparent)]
-    OpenValueBalanceIndex(#[from] zaino_internal_value_balance::IndexWriterError),
     /// The configured validator set is empty or beyond the endpoint-set bound.
     #[error(transparent)]
     ChainView(#[from] zaino_chainview::ConfigError),
+    #[error(transparent)]
+    HeaderStore(#[from] zaino_chainview::HeaderStoreFailed),
     #[error(transparent)]
     Produce(#[from] zaino_sync::ProduceError),
     /// Binding or running the gRPC server failed.

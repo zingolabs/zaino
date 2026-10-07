@@ -15,7 +15,7 @@ use std::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_chainview::ChainViewSubscriber;
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{self, BlockRef, Height};
 use zaino_sync::Reads;
 
 use crate::index_report::Usage;
@@ -47,7 +47,7 @@ pub(crate) struct Sources {
 pub(crate) struct IndexSource {
     pub(crate) name: &'static str,
     pub(crate) finalized: watch::Receiver<Option<Height>>,
-    pub(crate) applied: watch::Receiver<Option<Height>>,
+    pub(crate) applied: watch::Receiver<Option<BlockRef>>,
     pub(crate) merged: watch::Receiver<Option<Height>>,
     pub(crate) synced: watch::Receiver<bool>,
     pub(crate) reads: Option<Reads>,
@@ -113,11 +113,16 @@ pub(crate) struct Status {
     uptime_s: u64,
     ready: bool,
     reasons: Vec<String>,
-    quorum: Option<Quorum>,
+    /// The verified tip and how many trusted validators hold it (`None` = unserved)
+    tip: Option<Tip>,
+    /// The header chain's most-work verified height (header sync progress; above `tip` while no
+    /// trusted validator holds it yet)
+    best_height: Option<u32>,
     /// Last block fetched (sync progress between index batch commits)
     fetch_height: Option<u32>,
     validators: Vec<Validator>,
     alarms: Alarms,
+    mempool: Mempool,
     indexes: Vec<Index>,
     grpc: Grpc,
 }
@@ -128,15 +133,14 @@ struct Grpc {
 }
 
 #[derive(Debug, Serialize, PartialEq)]
-struct Quorum {
+struct Tip {
     height: u32,
     hash: String,
-    agreed: usize,
-    threshold: usize,
+    held_by: usize,
     configured: usize,
 }
 
-/// Configured validator (votes) + the p2p peers it reports (telemetry only, chainview §1)
+/// Configured validator (may hold the tip) + the p2p peers it reports (telemetry only, chainview §1)
 #[derive(Debug, Serialize, PartialEq)]
 struct Validator {
     address: String,
@@ -147,7 +151,28 @@ struct Validator {
     latency_ms: Option<u64>,
     failures: u32,
     observed_s_ago: Option<u64>,
+    /// Push streams up (polling at the reconcile cadence)
+    streaming: bool,
+    /// `None` until its first metadata read answers
+    release: Option<Release>,
     peers: Vec<Peer>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct Release {
+    build: String,
+    user_agent: String,
+    protocol_version: u32,
+    end_of_service: EndOfService,
+}
+
+/// `blocks_left` = from the validator's own tip
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum EndOfService {
+    At { height: u32, estimated_unix: i64, blocks_left: Option<u32> },
+    NotEnforced,
+    Unknown,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -161,9 +186,21 @@ struct Alarms {
     partitioned: bool,
     eclipsed: bool,
     stale: Vec<String>,
+    /// Validators whose release halts within a week of their tip
+    ending: Vec<String>,
 }
 
-/// `synced` = serving gate open (built to the quorum tip); disabled indexes listed with nulls
+/// `transactions` = held (servable or not); `trusted_readers` = the `y` of `trusted: x/y`
+#[derive(Debug, Serialize, PartialEq)]
+struct Mempool {
+    transactions: usize,
+    verified: usize,
+    ours_unverified: usize,
+    fully_spread: usize,
+    trusted_readers: usize,
+}
+
+/// `synced` = serving gate open (built to the tip); disabled indexes listed with nulls
 /// - `durable` = on disk; `merged` = held for the next bulk commit; `applied` = highest block
 ///   served (in-memory view tip, ≥ `durable`)
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -185,7 +222,6 @@ pub(crate) fn current(live: bool) -> Option<Status> {
     let view = sources.chainview.current();
     let endpoints = view.endpoints();
     let tip = *sources.chainview.subscribe_tip().borrow();
-    let quorum = sources.chainview.quorum();
     let alarms = view.alarms();
 
     let validators = endpoints
@@ -199,6 +235,21 @@ pub(crate) fn current(live: bool) -> Option<Status> {
             latency_ms: meta.latency.mean().map(|mean| mean.as_millis() as u64),
             failures: meta.failures,
             observed_s_ago: meta.observed_at.map(|at| at.elapsed().as_secs()),
+            streaming: meta.streaming,
+            release: meta.release.as_ref().map(|release| Release {
+                build: release.build.clone(),
+                user_agent: release.user_agent.clone(),
+                protocol_version: release.protocol_version,
+                end_of_service: match release.end_of_service {
+                    types::EndOfService::At { height, estimated_unix } => EndOfService::At {
+                        height: u32::from(height),
+                        estimated_unix,
+                        blocks_left: meta.blocks_to_end_of_service(),
+                    },
+                    types::EndOfService::NotEnforced => EndOfService::NotEnforced,
+                    types::EndOfService::Unknown => EndOfService::Unknown,
+                },
+            }),
             peers: meta
                 .peers
                 .iter()
@@ -215,7 +266,7 @@ pub(crate) fn current(live: bool) -> Option<Status> {
             synced: *index.synced.borrow(),
             durable: (*index.finalized.borrow()).map(u32::from),
             merged: (*index.merged.borrow()).map(u32::from),
-            applied: (*index.applied.borrow()).map(u32::from),
+            applied: index.applied.borrow().map(|tip| u32::from(tip.height)),
             size_bytes: usage.as_ref().map(|usage| usage.total),
             tables: usage.map(|usage| usage.subdirs.into_iter().collect()).unwrap_or_default(),
             requests: index.reads.as_ref().map(Reads::total),
@@ -234,31 +285,42 @@ pub(crate) fn current(live: bool) -> Option<Status> {
     });
     let indexes: Vec<Index> = enabled.chain(disabled).collect();
 
-    let reasons = reasons(draining(), live, tip.is_some(), &indexes);
+    let readers = view.mempool_readers().count();
+    let spreads: Vec<_> = view.spreads().map(|(_, spread)| spread).collect();
+    let mempool = Mempool {
+        transactions: spreads.len(),
+        verified: spreads.iter().filter(|spread| spread.trusted.seen > 0).count(),
+        ours_unverified: spreads.iter().filter(|s| s.ours && s.trusted.seen == 0).count(),
+        fully_spread: spreads.iter().filter(|s| readers > 0 && s.trusted.seen == readers).count(),
+        trusted_readers: readers,
+    };
+    let named = |set: zaino_chainview::EndpointSet| -> Vec<String> {
+        let at = set.positions().filter_map(|position| endpoints.get(position));
+        at.map(|meta| meta.address.clone()).collect()
+    };
+
+    let reasons = reasons(draining(), live, view.unserved(), &indexes);
     Some(Status {
         version: env!("CARGO_PKG_VERSION"),
         network: sources.network,
         uptime_s: sources.started.elapsed().as_secs(),
         ready: reasons.is_empty(),
         reasons,
-        quorum: tip.map(|tip| Quorum {
+        tip: tip.map(|tip| Tip {
             height: u32::from(tip.block.height),
             hash: tip.block.hash.to_string(),
-            agreed: tip.agreed_by.count(),
-            threshold: quorum.threshold(),
-            configured: quorum.configured(),
+            held_by: tip.held_by.count(),
+            configured: endpoints.len(),
         }),
+        best_height: view.best().map(|best| u32::from(best.height)),
         fetch_height: (*sources.fetched.borrow()).map(u32::from),
         alarms: Alarms {
             partitioned: alarms.partitioned(),
             eclipsed: alarms.eclipsed(),
-            stale: alarms
-                .stale()
-                .positions()
-                .filter_map(|i| endpoints.get(i))
-                .map(|meta| meta.address.clone())
-                .collect(),
+            stale: named(alarms.stale()),
+            ending: named(alarms.ending()),
         },
+        mempool,
         validators,
         indexes,
         grpc: Grpc { sent_bytes: zaino_grpc::sent_bytes_total() },
@@ -317,8 +379,13 @@ pub(crate) fn status_json(live: bool) -> String {
     }
 }
 
-/// Ready = not draining + runtime live + a quorum tip + every enabled index serving
-fn reasons(draining: bool, live: bool, quorum_tip: bool, indexes: &[Index]) -> Vec<String> {
+/// Ready = not draining + runtime live + a held verified tip + every enabled index serving
+fn reasons(
+    draining: bool,
+    live: bool,
+    unserved: Option<zaino_chainview::Unserved>,
+    indexes: &[Index],
+) -> Vec<String> {
     let mut reasons = Vec::new();
     if draining {
         reasons.push("draining".to_owned());
@@ -326,8 +393,10 @@ fn reasons(draining: bool, live: bool, quorum_tip: bool, indexes: &[Index]) -> V
     if !live {
         reasons.push("heartbeat_stale".to_owned());
     }
-    if !quorum_tip {
-        reasons.push("no_quorum_tip".to_owned());
+    match unserved {
+        Some(zaino_chainview::Unserved::NoBestTip) => reasons.push("headers_syncing".to_owned()),
+        Some(zaino_chainview::Unserved::NotHeld { .. }) => reasons.push("tip_not_held".to_owned()),
+        None => {}
     }
     reasons.extend(
         indexes
@@ -362,13 +431,52 @@ mod tests {
             index("tree_state", true, false),
             index("transparent_address", false, false),
         ];
+        use zaino_chainview::Unserved::{NoBestTip, NotHeld};
         assert_eq!(
-            reasons(true, false, false, &indexes),
-            ["draining", "heartbeat_stale", "no_quorum_tip", "tree_state_syncing"]
+            reasons(true, false, Some(NoBestTip), &indexes),
+            ["draining", "heartbeat_stale", "headers_syncing", "tree_state_syncing"]
         );
-        assert_eq!(reasons(false, true, true, &indexes), ["tree_state_syncing"]);
+        let unheld = Some(NotHeld { height: 7, configured: 2 });
+        assert_eq!(reasons(false, true, unheld, &indexes), ["tip_not_held", "tree_state_syncing"]);
+        assert_eq!(reasons(false, true, None, &indexes), ["tree_state_syncing"]);
         let serving = [indexes[0].clone(), indexes[2].clone()];
-        assert!(reasons(false, true, true, &serving).is_empty());
-        assert_eq!(reasons(true, true, true, &serving), ["draining"], "healthy but draining");
+        assert!(reasons(false, true, None, &serving).is_empty());
+        assert_eq!(reasons(true, true, None, &serving), ["draining"], "healthy but draining");
+    }
+
+    /// The status page's contract: one `status` tag per end-of-service case, fields only where
+    /// they exist
+    #[test]
+    fn a_release_serializes_its_end_of_service_by_status() {
+        let release = |end_of_service| {
+            let release = Release {
+                build: "v6.4.2".to_owned(),
+                user_agent: "/Zebra:6.4.2/".to_owned(),
+                protocol_version: 170_140,
+                end_of_service,
+            };
+            serde_json::to_value(release).expect("serializes")
+        };
+        let mainnet = EndOfService::At {
+            height: 3_564_960,
+            estimated_unix: 1_790_000_000,
+            blocks_left: Some(4_960),
+        };
+        assert_eq!(
+            release(mainnet),
+            serde_json::json!({
+                "build": "v6.4.2", "user_agent": "/Zebra:6.4.2/", "protocol_version": 170_140,
+                "end_of_service": {
+                    "status": "at", "height": 3_564_960, "estimated_unix": 1_790_000_000,
+                    "blocks_left": 4_960,
+                },
+            })
+        );
+        let status = |eos| release(eos)["end_of_service"].clone();
+        assert_eq!(
+            status(EndOfService::NotEnforced),
+            serde_json::json!({ "status": "not_enforced" })
+        );
+        assert_eq!(status(EndOfService::Unknown), serde_json::json!({ "status": "unknown" }));
     }
 }

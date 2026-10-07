@@ -17,13 +17,20 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 | `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
 `/readyz` reasons: `draining` (a shutdown signal arrived; listed first, see
-[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, `no_quorum_tip`,
+[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, `headers_syncing` (no
+verified header chain tip yet), `tip_not_held` (no trusted validator holds the verified tip),
 `<index>_syncing` (an enabled index's serving gate is closed).
 
-`/statusz` = version, network, uptime, readiness, the quorum tip (`agreed` of `configured`,
-`threshold`), `fetch_height` (the last block fetched: sync progress between index batch
+`/statusz` = version, network, uptime, readiness, the verified tip (`height`, `hash`, `held_by`
+of `configured` trusted validators; `null` = unserved), `best_height` (the header chain's
+most-work verified height: header sync progress, above `tip` until a validator holds it),
+`fetch_height` (the last block fetched: sync progress between index batch
 commits, where `applied` moves in jumps), each configured validator (state, agreement, tip height, stale blocks, latency,
-failures, the p2p peers its `getpeerinfo` reports), the chainview alarms, and every index (enabled,
+failures, `streaming` (push streams up), `release`: build, user agent, protocol and `end_of_service` as `{"status": "at", height,
+estimated_unix, blocks_left}` / `{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad
+< 6.3), and the p2p peers its `getpeerinfo` reports), the chainview alarms (`stale`, `ending` =
+releases halting within a week, `partitioned`, `eclipsed`), the mempool's spread (`transactions`,
+`verified`, `ours_unverified`, `fully_spread`, `trusted_readers`), and every index (enabled,
 synced, three heights, bytes on disk and per subdirectory, requests answered). Heights:
 `durable` = committed to disk; `merged` = the last final block held in memory for the next bulk
 commit (`batch_mib`), `null` once committed; `applied` = the highest block served (the in-memory
@@ -56,7 +63,7 @@ TimeoutStartSec=15min
 
 | Message | When |
 |---|---|
-| `READY=1` | the first time `/readyz` passes: serving, every enabled index at the quorum tip |
+| `READY=1` | the first time `/readyz` passes: serving, every enabled index at the verified tip |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height or an index height moved |
 | `STATUS=` | the readiness reasons (`ready` once ready), whenever they change |
 | `STOPPING=1` + `EXTEND_TIMEOUT_USEC` | on the shutdown signal, covering `[grpc.shutdown]`'s delay and timeout plus 30 s for the index flush |
@@ -97,7 +104,7 @@ The manifest describes one archive (`archive` resolves against the manifest URL)
 ```
 
 The archive is a zstd tar holding one top-level directory per index, named like its default
-path: `compact-block`, `value-balance`, `block-hash`, `tree-state`, `transparent-address`.
+path: `compact_block`, `value_balance`, `block_hash`, `tree_state`, `transparent_address`.
 
 - Only an enabled index whose directory is missing or empty is filled; one holding data is
   never touched, and with none empty the snapshot is skipped (no download).
@@ -236,33 +243,38 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        d
   numbers). A 64-hex hash shows its first and last 8 digits (`json` keeps it
   whole). A value containing a space or `=` is quoted, and an error field
   carries its whole source chain. A path in a message longer than 48 columns
-  keeps its tail (`…/zaino/compact-block`).
+  keeps its tail (`…/zaino/indexes/compact_block`).
 - Fields from enclosing spans follow the event's own fields.
 
 What an operator sees at `info`:
 
 | Component | Event | Level | When |
 |---|---|---|---|
-| `ChainView` | `Validator reachable` / `Quorum configured` | info | At startup. |
+| `ChainView` | `Chain view configured` | info | At startup (`validators`, `headers_final` = the header chain's final height resumed from disk). |
+| `ChainView` | `Polling validator` | info | A validator's first answered poll (`endpoint`, `mempool` size). |
+| `ChainView` | `Headers verified and final` | info | Header sync finalized past another 100,000 heights (`height`). |
+| `ChainView` | `Header fetch failed` / `Validator served an undecodable header` / `Validator served a header that fails a rule` | warn | Header sync skips that validator this round and retries in 5 s (`endpoint`, cause; a rule failure = it served an invalid chain). |
+| `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll on the backoff ladder; the failure ceiling or no mempool (its chain and sightings retracted); its first answer after down. |
+| `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
 | `ChainView` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `estimated`). |
 | `ChainView` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
 | `ChainView` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
-| `ChainView` | `Peer list read failed, last one kept` | warn | A `getpeerinfo` transport failure (telemetry only: the poll carries on). |
-| `ZainoNFS` | `Quorum tip below the non-final window (agreeing validators lag), waiting` | warn | Chainview's tip retreated under the chain head's window (`tip`, `floor`); production resumes on the next tip. |
+| `ChainView` | `Validator peer list read failed, last kept` / `Validator release read failed, last kept` | warn | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on). |
+| `ChainView` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
+| `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's indexer push streams (`indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
+| `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
 | `Grpc` | `Serving` | info / warn | Every 60 s while anything is served or held: `rps`, `p99` time to first message, `out` bytes/s (3 significant figures), `conns` held; warn with `failed`, `refused`, `at_capacity`, `slow`, `slowest`, `stalled`, `conns_refused` when any is non-zero ([zaino-grpc: Serving log](../zaino-grpc/usage.md#serving-log)). |
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (index syncing, validator unreachable: `method`, `error`). |
-| `ZainoSource` | `Syncing to finalized target` | info | A bulk pass starts (`from`, `target` = tip − `finalised_depth`, `tip`). |
-| `ZainoSource` | `Syncing blocks` | info | Every 30 s during a bulk pass (`height` fetched, `target`, `bps`, `eta`). |
-| `ZainoSource` | `Block fetch stalled` | warn | A whole 30 s interval of a bulk pass added no block. |
-| `ZainoSource` | `Reached finalized target` | info | A bulk pass finished (`blocks`, `elapsed`, average `bps`). |
-| `ZainoSource` | `Applying to tip` | info | Every 30 s from there until the non-final window reaches the tip it saw (`applied`, `tip`, `bps`, `eta`). |
-| `ZainoNFS` | `Chain tip advanced` | info | Each chain-head step past bulk (`height`, `hash`, `blocks`, `txs`, block `age`, `finalized`). |
-| `ZainoNFS` | `Chain reorg detected` | warn | A branch won (`fork`, `dropped`, `added`, new tip). |
+| `ZainoSource` | `Syncing blocks` | info | Every 30 s while the blocks sent trail the verified best (`height` sent, `target` = the best, `bps`, `eta`). |
+| `ZainoSource` | `Block fetch stalled` | warn | A whole 30 s interval behind the best sent no block. |
+| `ZainoSource` | `Source misanswered a block, asking another` | warn | A source served another block or a body its header does not commit to (`source` = its `[[trusted_validators]]` position, `height`, `why`); it is skipped for 60 s. |
+| `ZainoNFS` | `Chain tip advanced` | info | Each verified best the sink reaches (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
+| `ZainoNFS` | `Chain reorg detected` | warn | A heavier branch won (`fork` = first replaced height, `dropped` = non-final blocks replaced). |
 | index | `Syncing` | info | Every 30 s in bulk sync: `durable` (on disk), `merged` (last final block held for the next bulk commit, `—` when none), `applied` (highest block served), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Committed bulk` | info | Once, as the index hands bulk over to its non-final window (`durable`, `size`). |
 | index | `Serving` | info | The serving gate opens (`durable`, `applied`, `size`). |

@@ -61,8 +61,6 @@ thiserror = { workspace = true }
 zaino-primitives.workspace = true
 zcash_protocol = { workspace = true }
 zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
-tonic.workspace = true
-zaino-proto.workspace = true
 serde_json.workspace = true
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 tracing-subscriber.workspace = true
@@ -76,6 +74,10 @@ reqwest = { workspace = true, optional = true }
 sha2 = { version = "0.10", optional = true }
 zstd = { version = "0.14.0", optional = true }
 tar = { version = "0.4.46", optional = true }
+zaino-header-chain.workspace = true
+zaino-peers.workspace = true
+futures.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -89,3 +91,6 @@ snapshot = ["dep:reqwest", "dep:sha2", "dep:zstd", "dep:tar"]
 
 [target."cfg(unix)".dependencies]
 sd-notify = "0.5"
+
+[lints.rust]
+unreachable_pub = "warn"

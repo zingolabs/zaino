@@ -22,6 +22,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tracing::{debug, info};
+use zaino_persistence::IndexKind;
 use zaino_sync::Human;
 
 use crate::config::{DaemonConfig, SnapshotConfig, ZainoIndexConfig};
@@ -81,7 +82,7 @@ pub(crate) async fn bootstrap(
     let aria2 = Aria2::start(&staging, snapshot.connections).await?;
     aria2.download(manifest_url.as_str(), MANIFEST, |_| {}).await?;
     let manifest = read_manifest(&staging.join(MANIFEST))?;
-    let network = crate::config::network_name(config.network);
+    let network = zaino_primitives::network::network_name(config.network);
     if manifest.network != network {
         return Err(error(format!(
             "manifest is for {}, this daemon serves {network}",
@@ -182,11 +183,11 @@ pub(crate) async fn bootstrap(
 fn indexes(config: &DaemonConfig) -> [(&'static str, &ZainoIndexConfig); 5] {
     let index = &config.index;
     [
-        ("compact-block", &index.compact_block),
-        ("value-balance", &index.value_balance),
-        ("block-hash", &index.block_hash),
-        ("tree-state", &index.tree_state),
-        ("transparent-address", &index.transparent_address),
+        (IndexKind::CompactBlock.name(), &index.compact_block),
+        (IndexKind::ValueBalance.name(), &index.value_balance),
+        (IndexKind::BlockHash.name(), &index.block_hash),
+        (IndexKind::TreeState.name(), &index.tree_state),
+        (IndexKind::TransparentAddress.name(), &index.transparent_address),
     ]
 }
 

@@ -12,15 +12,16 @@ use tracing::{error, info, Instrument as _};
 mod admin;
 mod chainview;
 pub mod cli;
-pub mod config;
+mod config;
 pub mod error;
 mod fd_limit;
 mod index_report;
-pub mod indexer;
+mod indexer;
 pub mod logging;
 mod metrics;
 mod notify;
 pub mod paths;
+mod peers;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod status;

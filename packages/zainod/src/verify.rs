@@ -1,38 +1,27 @@
 //! `zainod verify`: every file each enabled index's manifest seals, against its page checksums.
 //!
 //! - read-only: no index opened for writing, no directory created, no lock taken
-//! - the same check for every index: bytes on disk = bytes sealed (what they mean was settled
-//!   before they were written)
+//! - one check for every index (`DiskEngine::verify` with the index's schema)
 
-use std::{io, path::Path, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use serde::Serialize;
-use zaino_persistence::pages::{scrub, CommittedFiles, Scrub};
+use zaino_persistence::{
+    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, Schema, StoreError, Verification,
+};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{load_config, DaemonConfig, ZainoIndexConfig};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct IndexReport {
-    heights: u64,
-    files: Vec<Scrub>,
-}
-
-impl IndexReport {
-    fn is_clean(&self) -> bool {
-        self.files.iter().all(Scrub::is_clean)
-    }
-}
-
 /// Disabled index = `None`; `clean` = every sealed file present with every page intact
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct Verification {
+struct Report {
     clean: bool,
-    compact_block: Option<IndexReport>,
-    value_balance: Option<IndexReport>,
-    block_hash: Option<IndexReport>,
-    tree_state: Option<IndexReport>,
-    transparent_address: Option<IndexReport>,
+    #[serde(flatten)]
+    indexes: BTreeMap<&'static str, Option<Verification>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +30,7 @@ enum VerifyError {
     Config(#[from] crate::error::IndexerError),
 
     #[error("{index} index at {path}: {source}")]
-    Index { index: &'static str, path: PathBuf, source: io::Error },
+    Index { index: &'static str, path: PathBuf, source: StoreError },
 
     #[error("rendering the report: {0}")]
     Render(#[from] serde_json::Error),
@@ -70,116 +59,75 @@ pub fn run(config_path: &Path) -> i32 {
     }
 }
 
-type Committed = fn(&Path, NetworkType) -> io::Result<CommittedFiles>;
+/// An index's tables, as its crate declares them
+type SchemaOf = fn(NetworkType) -> Schema;
 
-/// Scrubs of one index before a file missing from disk counts as lost
-///
-/// A live daemon's merge can retire files between reading the manifest and scrubbing them. A
-/// missing file the manifest no longer lists was retired, not lost: scrub again against the
-/// newer manifest. Each retry needs another merge to land mid-scrub, so a few are plenty.
-const ATTEMPTS: usize = 4;
-
-/// Every file `committed` lists, scrubbed; retried while missing files turn out to be retired
-fn scrub_index(dir: &Path, network: NetworkType, committed: Committed) -> io::Result<IndexReport> {
-    let scrub_all = |listed: &CommittedFiles| {
-        listed
-            .files
-            .iter()
-            .map(|(path, sealed)| scrub(dir, path, *sealed))
-            .collect::<io::Result<Vec<_>>>()
-    };
-    let mut listed = committed(dir, network)?;
-    let mut files: Vec<Scrub> = scrub_all(&listed)?;
-    for _ in 1..ATTEMPTS {
-        if files.iter().all(|file| !file.lost) {
-            break;
-        }
-        let newer = committed(dir, network)?;
-        let still_listed = |file: &Scrub| newer.files.iter().any(|(path, _)| *path == file.path);
-        if files.iter().filter(|file| file.lost).all(still_listed) {
-            break;
-        }
-        listed = newer;
-        files = scrub_all(&listed)?;
-    }
-    let heights = listed.tip.map_or(0, |tip| u64::from(tip) + 1);
-    Ok(IndexReport { heights, files })
+fn enabled(index: &ZainoIndexConfig) -> Option<&Path> {
+    index.enabled.then_some(index.path.as_path())
 }
 
-fn verify(config: &DaemonConfig) -> Result<Verification, VerifyError> {
-    let index = |name: &'static str, index: &ZainoIndexConfig, committed: Committed| {
-        index
-            .enabled
-            .then(|| {
-                scrub_index(&index.path, config.network, committed).map_err(|source| {
-                    VerifyError::Index { index: name, path: index.path.clone(), source }
-                })
+fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
+    let index = &config.index;
+    let indexes: [(IndexKind, Option<&Path>, SchemaOf); 6] = [
+        (IndexKind::CompactBlock, enabled(&index.compact_block), zaino_index_compact_block::schema),
+        (
+            IndexKind::ValueBalance,
+            enabled(&index.value_balance),
+            zaino_internal_value_balance::schema,
+        ),
+        (
+            IndexKind::BlockHash,
+            enabled(&index.block_hash),
+            zaino_internal_block_hash_to_height::schema,
+        ),
+        (IndexKind::TreeState, enabled(&index.tree_state), zaino_index_tree_state::schema),
+        (
+            IndexKind::TransparentAddress,
+            enabled(&index.transparent_address),
+            zaino_index_transparent_address::schema,
+        ),
+        (IndexKind::HeaderChain, Some(&index.header_chain.path), zaino_header_chain::schema),
+    ];
+
+    let engine = DiskEngine::new(RealFs::shared());
+    let mut reports = BTreeMap::new();
+    for (kind, path, schema) in indexes {
+        let index = kind.name();
+        let report = path.map(|path| {
+            engine.verify(path, &schema(config.network)).map_err(|source| VerifyError::Index {
+                index,
+                path: path.to_owned(),
+                source,
             })
-            .transpose()
-    };
-
-    let compact_block = index(
-        "compact-block",
-        &config.index.compact_block,
-        zaino_index_compact_block::committed_files,
-    )?;
-    let value_balance = index(
-        "value-balance",
-        &config.index.value_balance,
-        zaino_internal_value_balance::committed_files,
-    )?;
-    let block_hash = index(
-        "block-hash",
-        &config.index.block_hash,
-        zaino_internal_block_hash_to_height::committed_files,
-    )?;
-    let tree_state =
-        index("tree-state", &config.index.tree_state, zaino_index_tree_state::committed_files)?;
-    let transparent_address = index(
-        "transparent-address",
-        &config.index.transparent_address,
-        zaino_index_transparent_address::committed_files,
-    )?;
-
-    let clean = [&compact_block, &value_balance, &block_hash, &tree_state, &transparent_address]
-        .into_iter()
-        .flatten()
-        .all(IndexReport::is_clean);
-    Ok(Verification {
-        clean,
-        compact_block,
-        value_balance,
-        block_hash,
-        tree_state,
-        transparent_address,
-    })
+        });
+        reports.insert(index, report.transpose()?);
+    }
+    let clean = reports.values().flatten().all(Verification::is_clean);
+    Ok(Report { clean, indexes: reports })
 }
 
-impl Verification {
+impl Report {
     /// One line per index, for a human on stderr
     fn summary(&self) -> String {
         let mut out = String::new();
-        for (name, report) in [
-            ("compact_block", &self.compact_block),
-            ("value_balance", &self.value_balance),
-            ("block_hash", &self.block_hash),
-            ("tree_state", &self.tree_state),
-            ("transparent_address", &self.transparent_address),
-        ] {
+        for (name, report) in &self.indexes {
             out += &match report {
                 None => format!("{name}: disabled\n"),
                 Some(report) => {
-                    let bad = |scrub: &Scrub| {
-                        scrub.bad_pages.len()
-                            + usize::from(scrub.lost)
-                            + usize::from(scrub.bad_sums)
-                    };
+                    let units = &report.units;
+                    let faults: usize = units
+                        .iter()
+                        .map(|unit| {
+                            unit.bad_pages.len()
+                                + usize::from(unit.lost)
+                                + usize::from(unit.bad_sums)
+                        })
+                        .sum();
+                    let orphaned: u64 = units.iter().map(|unit| unit.orphaned_bytes).sum();
                     format!(
-                        "{name}: {} heights, {} files, {} faults, {} orphaned bytes\n",
+                        "{name}: {} heights, {} files, {faults} faults, {orphaned} orphaned bytes\n",
                         report.heights,
-                        report.files.len(),
-                        report.files.iter().map(bad).sum::<usize>(),
-                        report.files.iter().map(|f| f.orphaned_bytes).sum::<u64>(),
+                        units.len(),
                     )
                 }
             };
@@ -198,57 +146,19 @@ mod tests {
     use std::sync::Arc;
 
     use std::num::NonZeroUsize;
-    use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockStore};
+    use zaino_index_compact_block::CompactBlockIndexWriter;
     use zaino_index_transparent_address::TransparentAddressIndexWriter;
-    use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateStore};
-    use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashStore};
+    use zaino_index_tree_state::TreeStateIndexWriter;
+    use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::fs::RealFs;
+    use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
-        Block, BlockHeader, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction,
-        TransactionId, TransparentData, TransparentOutput, Zatoshis,
+        Block, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction, TransactionId,
+        TransparentData, TransparentOutput, Zatoshis,
     };
 
     use zaino_sync::{BlockSink, FeeSink, Step};
-
-    /// A live daemon's merge retiring a file between the manifest read and its scrub is not a
-    /// lost file: the index is scrubbed again against the newer manifest. A file still listed
-    /// and missing is lost.
-    #[test]
-    fn a_file_retired_mid_scrub_is_rescrubbed_but_a_listed_missing_one_is_lost() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use zaino_persistence::pages::Sealed;
-        use zaino_primitives::types::Height;
-
-        static READS: AtomicUsize = AtomicUsize::new(0);
-        fn listing(name: &str) -> CommittedFiles {
-            let tip = Some(Height::try_from(3).expect("height"));
-            CommittedFiles { tip, files: vec![(name.to_owned(), Sealed::EMPTY)] }
-        }
-        fn merged_mid_scrub(_: &Path, _: NetworkType) -> io::Result<CommittedFiles> {
-            Ok(match READS.fetch_add(1, Ordering::SeqCst) {
-                0 => listing("input.seg"),
-                _ => listing("output.seg"),
-            })
-        }
-        fn really_lost(_: &Path, _: NetworkType) -> io::Result<CommittedFiles> {
-            Ok(listing("missing.seg"))
-        }
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        for file in ["output.seg", "output.seg.crc"] {
-            std::fs::write(dir.path().join(file), []).expect(file);
-        }
-
-        let report =
-            scrub_index(dir.path(), NetworkType::Main, merged_mid_scrub).expect("rescrubbed");
-        assert!(report.is_clean(), "{report:?}");
-        assert_eq!(report.files[0].path, "output.seg");
-        assert_eq!((report.heights, READS.load(Ordering::SeqCst)), (4, 2));
-
-        let lost = scrub_index(dir.path(), NetworkType::Main, really_lost).expect("scrubbed");
-        assert!(lost.files[0].lost, "{lost:?}");
-    }
 
     /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
     /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no
@@ -256,44 +166,39 @@ mod tests {
     #[tokio::test]
     async fn verify_scrubs_every_sealed_file_and_exits_by_the_corruption_rule() {
         let root = tempfile::tempdir().expect("tempdir");
-        let blocks: Vec<Arc<Block>> = (0u32..4)
-            .map(|height| {
-                let mut cmu = [0u8; 32];
-                cmu[..4].copy_from_slice(&(height + 1).to_le_bytes());
-                Arc::new(Block::new(
-                    BlockHeader::for_tests(
-                        height,
-                        [height as u8 + 1; 32],
-                        [height as u8; 32],
-                        1_700_000_000 + height,
-                    ),
-                    vec![Transaction {
-                        txid: TransactionId::from([0xa0 + height as u8; 32]),
-                        transparent: TransparentData {
-                            coinbase: true,
-                            inputs: Vec::new(),
-                            outputs: vec![TransparentOutput {
-                                value: Zatoshis::new(500).expect("in supply"),
-                                script: Script::new(
-                                    [&[0x76, 0xa9, 0x14][..], &[0x11; 20], &[0x88, 0xac]].concat(),
-                                ),
-                            }],
-                        },
-                        sprout: Default::default(),
-                        sapling: SaplingData {
-                            outputs: vec![SaplingOutput {
-                                cmu: cmu.into(),
-                                ephemeral_key: [2u8; 32].into(),
-                                enc_ciphertext: [3u8; CompactCiphertext::LENGTH].into(),
-                            }],
-                            ..Default::default()
-                        },
-                        orchard: Default::default(),
-                        ironwood: Default::default(),
+        // heights 0..4: each a coinbase paying one p2pkh, plus one sapling output
+        let coinbase = |height: u32| {
+            let mut cmu = [0u8; 32];
+            cmu[..4].copy_from_slice(&(height + 1).to_le_bytes());
+            Transaction {
+                txid: TransactionId::from([0xa0 + height as u8; 32]),
+                transparent: TransparentData {
+                    coinbase: true,
+                    inputs: Vec::new(),
+                    outputs: vec![TransparentOutput {
+                        value: Zatoshis::new(500).expect("in supply"),
+                        script: Script::new(
+                            [&[0x76, 0xa9, 0x14][..], &[0x11; 20], &[0x88, 0xac]].concat(),
+                        ),
                     }],
-                ))
-            })
-            .collect();
+                },
+                sprout: Default::default(),
+                sapling: SaplingData {
+                    outputs: vec![SaplingOutput {
+                        cmu: cmu.into(),
+                        ephemeral_key: [2u8; 32].into(),
+                        enc_ciphertext: [3u8; CompactCiphertext::LENGTH].into(),
+                    }],
+                    ..Default::default()
+                },
+                orchard: Default::default(),
+                ironwood: Default::default(),
+            }
+        };
+        let mut chain = Chain::with_genesis(vec![coinbase(0)]);
+        let tip =
+            (1..4).fold(chain.genesis(), |tip, h| chain.mine_with(tip.hash, vec![coinbase(h)]));
+        let blocks: Vec<Arc<Block>> = chain.path(tip.hash).into_iter().map(Arc::new).collect();
 
         let (cb, vb, bh, ts, ta) = (
             root.path().join("cb"),
@@ -303,26 +208,27 @@ mod tests {
             root.path().join("ta"),
         );
         // the five index loops wired as the daemon wires them, the chain sent as bulk
-        let (fs, net) = (RealFs::shared(), NetworkType::Main);
+        let (engine, net) = (DiskEngine::new(RealFs::shared()), NetworkType::Main);
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
         let (mut block_sink, mut fee_sink) = (BlockSink::new("blocks"), FeeSink::new("fees"));
-        let mut subscribe = |name| block_sink.subscribe(name, batch);
-        let (compact_name, fees_name) =
-            (CompactBlockIndexWriter::NAME, ValueBalanceIndexWriter::NAME);
-        let (compact_blocks, fee_blocks) = (subscribe(compact_name), subscribe(fees_name));
-        let hash_blocks = subscribe(BlockHashIndexWriter::NAME);
-        let tree_blocks = subscribe(TreeStateIndexWriter::NAME);
-        let transparent_blocks = subscribe(TransparentAddressIndexWriter::NAME);
-        let compact_fees = fee_sink.subscribe(compact_name, batch);
-        let store = CompactBlockStore::open(fs.clone(), &cb, net).expect("cb");
+        let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
+        let (compact_blocks, fee_blocks) =
+            (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::ValueBalance));
+        let hash_blocks = subscribe(IndexKind::BlockHash);
+        let tree_blocks = subscribe(IndexKind::TreeState);
+        let transparent_blocks = subscribe(IndexKind::TransparentAddress);
+        let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
+        let open = |path: &Path, schema: Schema| engine.open(path, &schema).expect("open");
+        let store = open(&cb, zaino_index_compact_block::schema(net));
         let compact = CompactBlockIndexWriter::new(store, batch);
-        let fees = ValueBalanceIndexWriter::open(fs.clone(), &vb, net, batch).expect("vb writer");
-        let store = BlockHashStore::open(fs.clone(), &bh, net).expect("bh");
+        let store = open(&vb, zaino_internal_value_balance::schema(net));
+        let fees = ValueBalanceIndexWriter::new(store, batch);
+        let store = open(&bh, zaino_internal_block_hash_to_height::schema(net));
         let hashes = BlockHashIndexWriter::new(store, batch);
-        let store = TreeStateStore::open(fs.clone(), &ts, net).expect("ts");
+        let store = open(&ts, zaino_index_tree_state::schema(net));
         let trees = TreeStateIndexWriter::new(store, batch).expect("ts writer");
-        let transparent =
-            TransparentAddressIndexWriter::open(fs, &ta, net, batch).expect("ta writer");
+        let store = open(&ta, zaino_index_transparent_address::schema(net));
+        let transparent = TransparentAddressIndexWriter::new(store, batch);
 
         let mut loops = tokio::task::JoinSet::new();
         loops.spawn(compact.run(compact_blocks, compact_fees));
@@ -339,6 +245,8 @@ mod tests {
             indexed.expect("indexed through Shutdown");
         }
 
+        // header chain never synced here: an absent directory verifies as empty, never created
+        let hc = root.path().join("hc");
         let config_path = root.path().join("zainod.toml");
         std::fs::write(
             &config_path,
@@ -347,7 +255,8 @@ mod tests {
                  [index.value_balance]\npath = {vb:?}\n\
                  [index.block_hash]\npath = {bh:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
-                 [index.transparent_address]\npath = {ta:?}\n"
+                 [index.transparent_address]\npath = {ta:?}\n\
+                 [index.header_chain]\npath = {hc:?}\n"
             ),
         )
         .expect("config");
@@ -358,38 +267,40 @@ mod tests {
         let indexes =
             ["compact_block", "value_balance", "block_hash", "tree_state", "transparent_address"];
         // on disk = the sealed bytes, then the zeroed reserve the appends grow into (uncommitted)
-        let files = zaino_index_compact_block::committed_files(&cb, net).expect("manifest").files;
-        let sealed = files.iter().find(|(name, _)| name == "blocks.dat").expect("blocks.dat").1;
+        let blocks_dat = &clean["compact_block"]["units"][0];
+        let committed = blocks_dat["committed_bytes"].as_u64().expect("committed bytes");
         let on_disk = std::fs::metadata(cb.join("blocks.dat")).expect("meta").len();
-        assert!(on_disk > sealed.len, "a reserve past the seal");
-        let blocks_dat = json!({
-            "path": "blocks.dat", "committed_bytes": sealed.len,
-            "orphaned_bytes": on_disk - sealed.len,
+        assert!(on_disk > committed, "a reserve past the seal");
+        let expected = json!({
+            "name": "blocks.dat", "committed_bytes": committed,
+            "orphaned_bytes": on_disk - committed,
             "lost": false, "bad_sums": false, "bad_pages": [],
         });
-        let tree_files = clean["tree_state"]["files"].as_array().map(Vec::len);
+        let tree_units = clean["tree_state"]["units"].as_array().map(Vec::len);
         assert_eq!(clean["clean"], true, "{clean:#}");
         assert_eq!(indexes.map(|index| clean[index]["heights"].as_u64()), [Some(4); 5]);
-        assert_eq!(clean["compact_block"]["files"][0], blocks_dat);
-        assert_eq!(tree_files, Some(1 + 3 * 33), "heights + 3 pools × (32 levels + subtrees)");
+        assert_eq!(*blocks_dat, expected);
+        assert_eq!(tree_units, Some(1 + 3 * 33), "heights + 3 pools × (32 levels + subtrees)");
+        assert_eq!(clean["header_chain"], json!({ "heights": 0, "units": [] }));
+        assert!(!hc.exists(), "verify created {}", hc.display());
         assert_eq!(run(&config_path), 0, "clean → exit 0");
 
-        let heights = ts.join("heights.idx");
+        let heights = ts.join("heights.dat");
         let mut records = std::fs::read(&heights).expect("read");
         records[3] ^= 0x01;
         std::fs::write(&heights, &records).expect("write");
         let corrupt = serde_json::to_value(verify(&config).expect("verify")).expect("json");
-        let bad_pages = &corrupt["tree_state"]["files"][0]["bad_pages"];
+        let bad_pages = &corrupt["tree_state"]["units"][0]["bad_pages"];
         assert_eq!((&corrupt["clean"], bad_pages), (&json!(false), &json!([0])));
         assert_eq!(run(&config_path), 1, "any corruption → exit 1");
         records[3] ^= 0x01;
         std::fs::write(&heights, &records).expect("restore");
 
         let segment =
-            clean["block_hash"]["files"][0]["path"].as_str().expect("a committed segment");
+            clean["block_hash"]["units"][0]["name"].as_str().expect("a committed segment");
         std::fs::remove_file(bh.join(segment)).expect("remove");
         let lost = serde_json::to_value(verify(&config).expect("verify")).expect("json");
-        let lost_flag = &lost["block_hash"]["files"][0]["lost"];
+        let lost_flag = &lost["block_hash"]["units"][0]["lost"];
         assert_eq!((&lost["clean"], lost_flag), (&json!(false), &json!(true)));
 
         // disabled = skipped and never created
@@ -402,7 +313,8 @@ mod tests {
                  [index.value_balance]\nenabled = false\npath = {absent:?}\n\
                  [index.block_hash]\nenabled = false\npath = {absent:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
-                 [index.transparent_address]\npath = {ta:?}\n"
+                 [index.transparent_address]\npath = {ta:?}\n\
+                 [index.header_chain]\npath = {hc:?}\n"
             ),
         )
         .expect("config");

@@ -18,8 +18,8 @@ use tracing::{
     info, warn,
 };
 
-use zaino_persistence::dir::disk_bytes;
-use zaino_primitives::types::Height;
+use zaino_persistence::disk_bytes;
+use zaino_primitives::types::{BlockRef, Height};
 use zaino_sync::Reads;
 
 use crate::error::IndexerError;
@@ -32,7 +32,7 @@ const WALK_EVERY: Duration = Duration::from_secs(120);
 /// What the report reads off one index's `Published`
 pub(crate) struct Watched {
     pub(crate) finalized: watch::Receiver<Option<Height>>,
-    pub(crate) applied: watch::Receiver<Option<Height>>,
+    pub(crate) applied: watch::Receiver<Option<BlockRef>>,
     pub(crate) merged: watch::Receiver<Option<Height>>,
     pub(crate) synced: watch::Receiver<bool>,
     /// `None` = no service reads this index
@@ -41,7 +41,8 @@ pub(crate) struct Watched {
 
 impl Watched {
     fn heights(&self) -> (Option<Height>, Option<Height>, Option<Height>) {
-        (*self.finalized.borrow(), *self.merged.borrow(), *self.applied.borrow())
+        let applied = self.applied.borrow().map(|tip| tip.height);
+        (*self.finalized.borrow(), *self.merged.borrow(), applied)
     }
 }
 
