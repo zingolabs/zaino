@@ -158,7 +158,7 @@ async fn served_blocks_match_the_validator_on_both_sides_of_the_seam() -> Result
         .get_block_range_with_pools(
             BlockHeight::from(floor - 3),
             BlockHeight::from(floor + 3),
-            // zaino's `PoolType` wire enum, every pool — matches `PoolTypeFilter::default`.
+            // zaino's `PoolType` wire enum, every pool (transparent included)
             vec![1, 2, 3, 4],
         )
         .await?;

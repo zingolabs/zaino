@@ -847,9 +847,7 @@ mod zebrad {
         let end = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(end, READY).await?;
 
-        // `PoolType` wire codes. This must equal `PoolTypeFilter::default()` — every
-        // shielded pool, ironwood included — or the default-vs-explicit checks below compare
-        // two different filters.
+        // `PoolType` codes = `Pools::default()` (else default-vs-explicit checks compare 2 filters)
         let shielded_pools = vec![2, 3, 4];
         let start = BlockHeight::from(1u32);
 
