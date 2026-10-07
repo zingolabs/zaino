@@ -5183,11 +5183,24 @@ dependencies = [
 name = "zaino-nfs"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "imbl",
  "proptest",
  "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
  "zaino-header-chain",
+ "zaino-index-compact-block",
+ "zaino-index-transparent-address",
+ "zaino-index-tree-state",
+ "zaino-internal-block-hash-to-height",
+ "zaino-internal-value-balance",
+ "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
+ "zaino-sync",
+ "zcash_protocol",
 ]
 
 [[package]]

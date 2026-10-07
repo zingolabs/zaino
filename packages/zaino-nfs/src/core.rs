@@ -18,8 +18,8 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use crate::fetch::{Answer, Checked, Fetcher, Misanswer};
 use crate::graph::{on_best, Graph, Node};
 
-/// Folded payload `F` = one block's folded state per index (wave 2: `Folded`, toy in the model)
-pub struct NfsCore<F> {
+/// Folded payload `F` = one block's folded state per index (`Folded`, toy in the model)
+pub(crate) struct NfsCore<F> {
     lookahead: usize,
     chain: Option<Arc<VerifiedChain>>,
     durable: Vec<Option<BlockRef>>,
@@ -38,7 +38,7 @@ struct Sent {
 }
 
 #[derive(Debug, Clone)]
-pub enum Input<F> {
+pub(crate) enum Input<F> {
     Chain(Arc<VerifiedChain>),
     Body { from: usize, at: BlockRef, answer: Answer },
     Folded { at: BlockRef, folded: Arc<F> },
@@ -49,7 +49,7 @@ pub enum Input<F> {
 /// - `Send`s in list order; the rest in any
 /// - `Fold.parent` = `None`: fold on the committed stores at the root
 #[derive(Debug, Clone)]
-pub enum Output<F> {
+pub(crate) enum Output<F> {
     Fetch { from: usize, height: Height, record: Record },
     Misanswered { from: usize, at: BlockRef, why: Misanswer },
     Unserved { height: Height },
@@ -60,35 +60,32 @@ pub enum Output<F> {
 
 /// One final-stream step (`folded` = `None`: the writer folds it)
 #[derive(Debug, Clone)]
-pub struct Final<F> {
-    pub block: Arc<Block>,
-    pub folded: Option<Arc<F>>,
+pub(crate) struct Final<F> {
+    pub(crate) block: Arc<Block>,
+    pub(crate) folded: Option<Arc<F>>,
 }
 
 /// `folded` = `None`: the root, read from the committed stores alone
 #[derive(Debug, Clone)]
-pub struct SnapshotTip<F> {
-    pub chain: Arc<VerifiedChain>,
-    pub tip: BlockRef,
-    pub folded: Option<Arc<F>>,
+pub(crate) struct SnapshotTip<F> {
+    pub(crate) chain: Arc<VerifiedChain>,
+    pub(crate) tip: BlockRef,
+    pub(crate) folded: Option<Arc<F>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "index {index} committed {expected} at {height:?}, the verified chain has {got} (resync \
-     required)"
-)]
-pub struct Diverged {
-    pub index: usize,
-    pub height: Height,
-    pub expected: BlockHash,
-    pub got: BlockHash,
+/// Index `index`'s durable block off the final chain (resync required)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Diverged {
+    pub(crate) index: usize,
+    pub(crate) height: Height,
+    pub(crate) expected: BlockHash,
+    pub(crate) got: BlockHash,
 }
 
 impl<F> NfsCore<F> {
     /// - `durable` = each enabled index's durable tip (`Durable.index` = its position)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
-    pub fn new(
+    pub(crate) fn new(
         sources: usize,
         lookahead: usize,
         depth: ReorgDepth,
@@ -112,7 +109,11 @@ impl<F> NfsCore<F> {
     }
 
     /// `Err` = an index's durable block off the final chain (resync required)
-    pub fn step(&mut self, input: Input<F>, now: Instant) -> Result<Vec<Output<F>>, Diverged> {
+    pub(crate) fn step(
+        &mut self,
+        input: Input<F>,
+        now: Instant,
+    ) -> Result<Vec<Output<F>>, Diverged> {
         let mut out = Vec::new();
         match input {
             Input::Chain(chain) => self.follow(chain)?,
@@ -304,7 +305,7 @@ impl<F> NfsCore<F> {
     }
 
     /// N1–N5 and the fetch bookkeeping; panics naming the invariant broken
-    pub fn check(&self) {
+    pub(crate) fn check(&self) {
         let Some(chain) = &self.chain else {
             let empty = self.graph.is_empty() && self.ready.is_empty() && self.folding.is_empty();
             assert!(empty && self.served.is_none(), "nothing before a chain");

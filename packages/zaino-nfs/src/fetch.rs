@@ -22,20 +22,20 @@ const BENCH: Duration = Duration::from_secs(60);
 
 /// Block that passed [`check_block`] (no other constructor)
 #[derive(Debug, Clone)]
-pub struct Checked(Arc<Block>);
+pub(crate) struct Checked(Arc<Block>);
 
 impl Checked {
-    pub fn block(&self) -> &Arc<Block> {
+    pub(crate) fn block(&self) -> &Arc<Block> {
         &self.0
     }
 
-    pub fn at(&self) -> BlockRef {
+    pub(crate) fn at(&self) -> BlockRef {
         BlockRef { hash: self.0.header().hash, height: self.0.header().height }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Misanswer {
+pub(crate) enum Misanswer {
     #[error("served block {got}")]
     WrongBlock { got: BlockHash },
     #[error("served a block whose coinbase says height {got:?}")]
@@ -50,7 +50,11 @@ pub enum Misanswer {
 ///
 /// - Mismatch = that source misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
-pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Checked, Misanswer> {
+pub(crate) fn check_block(
+    block: Block,
+    height: Height,
+    record: &Record,
+) -> Result<Checked, Misanswer> {
     let header = block.header();
     if header.hash != record.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
@@ -73,7 +77,7 @@ pub(crate) fn merkle_root(block: &Block) -> Option<MerkleRoot> {
 
 /// Source's answer to an [`Output::Fetch`]
 #[derive(Debug, Clone)]
-pub enum Answer {
+pub(crate) enum Answer {
     Checked(Checked),
     Misanswered(Misanswer),
     Failed,

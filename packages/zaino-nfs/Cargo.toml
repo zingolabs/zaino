@@ -12,10 +12,23 @@ homepage.workspace = true
 description = "Zaino's non-finalized state: one folded node per block above the durable root, one final stream"
 
 [dependencies]
+arc-swap.workspace = true
 imbl.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tokio-util.workspace = true
+tracing.workspace = true
 zaino-header-chain.workspace = true
+zaino-index-compact-block.workspace = true
+zaino-index-transparent-address.workspace = true
+zaino-index-tree-state.workspace = true
+zaino-internal-block-hash-to-height.workspace = true
+zaino-internal-value-balance.workspace = true
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
+zaino-source.workspace = true
+zaino-sync.workspace = true
+zcash_protocol.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -23,5 +36,8 @@ unreachable_pub = "warn"
 
 [dev-dependencies]
 proptest.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }

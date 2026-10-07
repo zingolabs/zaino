@@ -1,69 +1,97 @@
 # `zaino-nfs` — usage
 
 The non-finalized state (`docs/design/nfs.md`): one folded node per block above the durable
-root, one final stream into the indexes, one served tip. This crate holds the pure core today;
-the async driver, the real fold (`Folded`, `fold_block`) and `Snapshot` arrive with it.
+root, one final stream into the index writers, one served `Snapshot` across every index.
 
-## `NfsCore<F>`: a pure state machine
-
-No I/O, no clock, no randomness: a driver feeds it inputs with the current `Instant` and carries
-out the outputs. `F` is one block's folded payload (the real `Folded` in zainod, a toy in tests).
+## Wiring: `Nfs`
 
 ```rust,ignore
-use zaino_nfs::{check_block, Answer, Final, Input, NfsCore, Output, SnapshotTip};
+use zaino_nfs::{ChainParams, Nfs, NfsError};
 
-// one durable tip per enabled index; `Durable.index` = its position here
-let mut core = NfsCore::new(sources.len(), lookahead, depth, durable_tips);
+let params = ChainParams { network, activations: PoolActivations::from_validator(&info) };
+let sync = sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
+let mut nfs = Nfs::new(header_sync.subscribe(), sync, params, lookahead, depth);
 
-loop {
-    let input = next_input().await;          // Chain | Body | Folded | Durable | Tick (1 s)
-    for output in core.step(input, Instant::now())? {   // Err(Diverged): resync required
-        match output {
-            Output::Fetch { from, height, record } => spawn(async move {
-                let answer = match sources[from].block(record.hash).await {
-                    Ok(block) => check_block(block, height, &record).map_or_else(Answer::Misanswered, Answer::Checked),
-                    Err(_) => Answer::Failed,
-                };
-                Input::Body { from, at: BlockRef { hash: record.hash, height }, answer }
-            }),
-            Output::Fold { at, parent, block } => spawn_blocking(move || {
-                // parent = None: fold on the committed stores at the root
-                Input::Folded { at, folded: Arc::new(fold_block(parent, &block)) }
-            }),
-            Output::Send(Final { block, folded }) => sink.send(Final { block, folded }).await,
-            Output::Publish(SnapshotTip { chain, tip, folded }) => publish(chain, tip, folded),
-            Output::Misanswered { .. } | Output::Unserved { .. } => { /* status, metrics */ }
-        }
-    }
-}
+// one per enabled index: its final stream out, its committed view in
+// value_balance before compact_block (its fees feed compact-block's fold)
+let blocks = nfs.subscribe(IndexKind::ValueBalance, writer.committed(), queue_bytes);
+// … each writer: `Subscription<Final>` → `Store::apply` → `commit` → `committed.send_replace(store.view())`
+
+let snapshots = nfs.handle();                         // clone per route / stream
+tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold | ChainGone | WriterGone
 ```
 
-`Send`s must reach the sink in list order; every other output may run in any order.
+- `Nfs::new`: the `VerifiedChain` watch, the block sources (any may serve any block: each answer
+  checked against the verified header), the chain params, `lookahead` (bodies fetched or folding
+  ahead of the next one needed), the header chain's reorg depth.
+- `subscribe(kind, committed, queue)`: enables `kind`. `committed` is a
+  `watch::Receiver<V>` of the index store's committed view, sent after every commit: its tip is
+  the index's durable tip, and the view is what snapshots and root folds read. Panics on a kind
+  twice, or `CompactBlock` before `ValueBalance`.
+- `run(cancel)`: cancel → `Ok`; either way the final stream ends with `Shutdown`.
+  `Diverged { index, .. }` = an index's durable block off the final chain (resync), `Fold` = an
+  index's fold refused a verified block, `ChainGone` / `WriterGone(index)` = an input dropped.
+- Folds run on the compute pool (`zaino_sync::compute`), fetches on tasks; final-stream sends are
+  awaited in order (a full queue holds the driver back, never grows memory).
 
-## What it promises
+## Writers: the final stream
 
-| Output | Promise |
-| --- | --- |
-| `Send(Final)` | every height exactly once, ascending, final, never retracted; `folded: None` below the first folded parent (the writer folds), `Some` above it |
-| `Fold` | only a block on the verified best, only once its parent is folded; on the root (`parent: None`) only once every index holds everything sent |
-| `Publish` | the deepest folded block on the verified best (else the root): a reorg moves it to the fork point at once, forward as the new branch folds |
-| `Fetch` | any source may serve any block; nothing unchecked enters |
+Every `Step::Apply { height, finalized: true, data: Arc<Final> }` is one final block: every
+height once, ascending, never retracted.
 
+| `Final.folds` | Meaning                                         | Writer                              |
+| ------------- | ----------------------------------------------- | ----------------------------------- |
+| `None`        | below the first folded parent (bulk sync)       | folds it itself (`fold`, `fold_run`) |
+| `Some(folds)` | folded once by the NFS (the tip)                | `store.apply(folds.get(kind).clone())` |
+
+- Once one step is folded, every later one is too (until a restart).
 - **Lockstep finality**: a node leaves only after every enabled index's durable tip reaches it,
-  and the first tip fold waits for every index to hold everything sent. A writer must therefore
-  commit when its stream idles, not only once its batch fills.
-- **Restart**: build a fresh core from each index's durable tip. A tip on the final chain resumes
-  from the lowest one (indexes ahead skip what they hold); a tip off it is `Diverged`; a tip above
-  the final tip (a lost header store) holds everything until the header chain covers it.
-- **Side branches** stay folded while the header chain can still pick them (fork at or above the
-  final tip, at most `4 · depth` side nodes): switching back costs no fetch and no fold.
+  and the first tip fold waits for every index to hold everything sent. A writer must commit when
+  its stream idles, not only once its batch fills.
+- **Restart**: indexes resume from the lowest durable tip; an index ahead receives heights it
+  holds and skips them (value-balance still re-folds a held height for compact-block's fees:
+  insert-only, any later state resolves the same).
 
-## Invariants and tests
+## Readers: `Snapshot`
 
-`check()` asserts N1–N5 (`nfs.md` §9) by name; tests and debug drivers run it after every step.
-`core/model.rs` drives the core through random verified-chain evolutions, lying and silent
-sources, delayed folds and commits, and restarts, against naive writers and a fold-from-genesis
-oracle. `core/fire_drills.rs` plants one bug per check and precondition.
+```rust,ignore
+let snap = snapshots.snapshot().ok_or_else(syncing)?;  // one atomic load, pinned for the request
+let tip = snap.tip();                                   // GetLatestBlock: every read answers <= it
+let blocks = snap.views().compact_block().ok_or_else(disabled)?;
+let trees = snap.views().tree_state();                  // Option: None = index disabled
+let located = snap.views().block_hash().map(|r| r.height_of(&hash));
+snapshots.changed().await?;                             // next publish (Err: driver stopped)
+```
+
+- One snapshot = one served tip across every index: each view = the index's committed view +
+  the tip node's layer (rebased onto that view), so a commit or reorg mid-request moves nothing
+  it reads.
+- `tip()` = the deepest folded block on the verified best, else the root (the lowest durable tip);
+  a reorg moves it to the fork point at once and forward as the new branch folds.
+- At the root (bulk sync), an index ahead of the root reads past `tip()`: serve at `tip()`.
+- `chain()` = the `VerifiedChain` it was cut from, `params()` = network + pool activations.
+
+## Folds: `fold_block`
+
+`fold.rs` is the one place indexes meet, in dependency order: value-balance (its fees) →
+compact-block → block-hash → tree-state → transparent-address, each only if enabled. A node's
+`Folded` = the final stream's `Folds` + one `Layer` per index (`parent layer.with(own Changes)`).
+
+## The core: `NfsCore<F>`
+
+Pure (no I/O, time as input): `step(input, now) -> Result<Vec<Output>, Diverged>` and `check()`
+(N1–N5, `nfs.md` §9), crate-internal. The driver feeds it the verified chain, checked bodies,
+fold results and durable tips, and carries out fetches, folds, sends and publishes.
+
+## Tests
+
+- `core/model.rs`: random verified-chain evolutions, lying and silent sources, delayed folds and
+  commits, restarts, against naive writers and a fold-from-genesis oracle; `core/fire_drills.rs`
+  plants one bug per check and precondition.
+- `tests.rs`: the driver end to end with all five real folds over `SimFs` stores and mock
+  validators, through bulk, reorgs (longer, same height, retreat), finality and a crash restart;
+  every snapshot seen = each index folded from genesis along best; the driver's refusals.
+- `fold.rs`: `fold_block` golden (fees in the compact-block record, disabled indexes absent).
 
 ```bash
 # heavy run: at least 3 minutes after any change to this crate

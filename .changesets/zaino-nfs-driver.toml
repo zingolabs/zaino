@@ -1,0 +1,28 @@
+[[changes]]
+crate = "zaino-nfs"
+kind = "feature"
+section = "Added"
+description = """
+The driver (`docs/design/nfs.md` §6): `Nfs<S, V>` runs the core against real block sources, \
+folds and writers. `Nfs::new(chain, sources, params, lookahead, depth)`; \
+`subscribe(kind, committed, queue)` enables an index and returns its final stream \
+(`Subscription<zaino_sync::Final>`), taking a watch of the index store's committed view as its \
+durable input; `run(cancel)` fetches every block (checked), folds each block joining the \
+verified best on the compute pool, sends every final block once and publishes snapshots, \
+stopping on `NfsError::{Diverged, Fold, ChainGone, WriterGone}`. `fold_block` folds a block \
+through every enabled index in dependency order (value-balance's fees feed compact-block), each \
+index's layer = its parent's plus its own `Changes`. `NfsHandle::snapshot()` (one atomic load) \
+returns a `Snapshot`: the served tip, its `VerifiedChain`, `ChainParams` (network, pool \
+activations) and `Views` with a typed reader per enabled index (`compact_block`, `tree_state`, \
+`block_hash`, `transparent_address`), every one answering as of that tip; `changed()` awaits the \
+next publish.
+"""
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "breaking"
+section = "Changed"
+description = """
+`NfsCore`, its `Input`/`Output`/`Final`/`SnapshotTip`/`Diverged`, and `check_block`, `Answer`, \
+`Checked`, `Misanswer` are crate-internal: `Nfs` is the crate's entry point.
+"""

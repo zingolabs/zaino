@@ -1,0 +1,500 @@
+//! [`Nfs`] end to end: every real fold, `SimFs` stores, mock validators, a test-only committer per
+//! index (`nfs.md` §10)
+//!
+//! - Oracle = each index's own fold from genesis along best, into fresh stores
+//! - Every snapshot seen: tip on its best; each index = the oracle at its view's tip; R12 = every
+//!   view at the snapshot tip (a durable-only view ahead of it: root snapshots only)
+//! - Final stream, per index and run: each height once, ascending, final, folded once folded
+
+use std::collections::HashMap;
+use std::num::{NonZeroU32, NonZeroUsize};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::watch;
+use tokio_util::sync::CancellationToken;
+use zaino_header_chain::HeaderChain;
+use zaino_index_compact_block::CompactBlockReader;
+use zaino_index_transparent_address::TransparentAddressReader;
+use zaino_index_tree_state::{PoolActivations, TreeStateReader};
+use zaino_internal_value_balance::ValueBalanceReader;
+use zaino_persistence::{
+    fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, LayeredView, PersistenceEngine, Schema,
+    Store, View, Width,
+};
+use zaino_primitives::testing::Chain;
+use zaino_primitives::types::{
+    Block, BlockHash, CompactCiphertext, OrchardAction, OrchardData, OutPoint, SaplingData,
+    SaplingOutput, Script, Transaction, TransactionId, TransparentData, TransparentOutput,
+    Zatoshis,
+};
+use zaino_source::mock::MockChain;
+use zcash_protocol::consensus::NetworkType;
+
+use super::*;
+use crate::fold::schema;
+
+const NETWORK: NetworkType = NetworkType::Regtest;
+/// Subscribe order = fold order: (index, commit lag s, last height run 0 commits before its crash)
+const INDEXES: [(IndexKind, u64, u32); 5] = [
+    (IndexKind::ValueBalance, 0, 17),
+    (IndexKind::CompactBlock, 1, 16),
+    (IndexKind::BlockHash, 2, 15),
+    (IndexKind::TreeState, 3, 14),
+    (IndexKind::TransparentAddress, 1, 16),
+];
+
+/// Every record and row, table by table (engine-agnostic equality)
+type Tables = Vec<Vec<Vec<u8>>>;
+
+/// A coinbase paying 10 000, + a spend of `funding`'s output 0 (fee 1 000) carrying one sapling
+/// output and one orchard action (none: genesis, or a funding coinbase paying nothing)
+fn transactions(funding: Option<&Transaction>, tag: u32) -> Vec<Transaction> {
+    let id = |kind: u8| {
+        let mut id = [kind; 32];
+        id[..4].copy_from_slice(&tag.to_le_bytes());
+        id
+    };
+    let pays = |value: u64| TransparentOutput {
+        value: Zatoshis::new(value).expect("in supply"),
+        script: Script::new([&[0x76, 0xa9, 0x14][..], &id(0xad)[..20], &[0x88, 0xac]].concat()),
+    };
+    let commitment = || {
+        let mut leaf = [0u8; 32];
+        leaf[..4].copy_from_slice(&tag.to_le_bytes());
+        leaf
+    };
+    let tx = |txid: [u8; 32], transparent: TransparentData| Transaction {
+        txid: TransactionId::from(txid),
+        transparent,
+        sprout: Default::default(),
+        sapling: Default::default(),
+        orchard: Default::default(),
+        ironwood: Default::default(),
+    };
+    let coinbase = TransparentData { coinbase: true, inputs: vec![], outputs: vec![pays(10_000)] };
+    let mut txs = vec![tx(id(0xc0), coinbase)];
+    let funded = funding.and_then(|funding| Some((funding, funding.transparent.outputs.first()?)));
+    if let Some((funding, output)) = funded {
+        let inputs = vec![OutPoint { txid: funding.txid, vout: 0 }];
+        let outputs = vec![pays(output.value.as_u64() - 1_000)];
+        let mut spend = tx(id(0x5e), TransparentData { coinbase: false, inputs, outputs });
+        spend.sapling = SaplingData {
+            outputs: vec![SaplingOutput {
+                cmu: commitment().into(),
+                ephemeral_key: [0x02; 32].into(),
+                enc_ciphertext: CompactCiphertext::from([0x03; CompactCiphertext::LENGTH]),
+            }],
+            ..Default::default()
+        };
+        spend.orchard = OrchardData {
+            actions: vec![OrchardAction {
+                nullifier: id(0x0f).into(),
+                cmx: commitment().into(),
+                ephemeral_key: [0x06; 32].into(),
+                enc_ciphertext: CompactCiphertext::from([0x07; CompactCiphertext::LENGTH]),
+            }],
+            ..Default::default()
+        };
+        txs.push(spend);
+    }
+    txs
+}
+
+/// `kind`'s own fold of `block` onto `parent` (`value_balance` = a state past the block's parent:
+/// compact-block's fees)
+fn own_fold(
+    kind: IndexKind,
+    parent: impl SequenceRead + MapRead,
+    value_balance: impl MapRead,
+    block: &Block,
+) -> Changes {
+    match kind {
+        IndexKind::ValueBalance => {
+            let parent = ValueBalanceReader::new(parent, NETWORK);
+            zaino_internal_value_balance::fold(&parent, block).expect("prevouts held").0
+        }
+        IndexKind::CompactBlock => {
+            let fees = ValueBalanceReader::new(value_balance, NETWORK);
+            let (_, fees) = zaino_internal_value_balance::fold(&fees, block).expect("held");
+            let parent = CompactBlockReader::new(parent, NETWORK);
+            zaino_index_compact_block::fold(&parent, block, &fees).expect("sizes in range")
+        }
+        IndexKind::BlockHash => zaino_internal_block_hash_to_height::fold(block, NETWORK),
+        IndexKind::TreeState => {
+            let parent = TreeStateReader::new(parent, NETWORK);
+            zaino_index_tree_state::fold(&parent, block).expect("canonical commitments")
+        }
+        IndexKind::TransparentAddress => zaino_index_transparent_address::fold(
+            &TransparentAddressReader::new(parent, NETWORK),
+            block,
+        ),
+        IndexKind::HeaderChain => panic!("not an NFS index"),
+    }
+}
+
+fn tables(view: &(impl SequenceRead + MapRead), schema: &Schema) -> Tables {
+    let sequences = schema.sequence_ids().map(|table| {
+        let records = view.records(table, 0..view.len(table));
+        records.iter().map(|record| record.to_vec()).collect()
+    });
+    let maps = schema.map_ids().map(|table| {
+        let Width::Fixed(key) = schema.map(table).key else { panic!("fixed-width keys") };
+        let past = vec![0xff; key.get() as usize + 1];
+        let rows = view.range(table, &[], &past, usize::MAX).expect("under the limit");
+        rows.iter().map(|(key, value)| [&key[..], &value[..]].concat()).collect()
+    });
+    sequences.chain(maps).collect()
+}
+
+/// Every index folded from genesis through `path` by its own fold, into fresh stores
+fn oracle(path: &[Block]) -> Vec<(IndexKind, Tables)> {
+    let engine = DiskEngine::new(SimFs::new());
+    let open = |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind, NETWORK));
+    let mut stores: Vec<(IndexKind, DiskStore)> =
+        INDEXES.iter().map(|&(kind, ..)| (kind, open(kind).expect("fresh store"))).collect();
+    for block in path {
+        let value_balance = stores[0].1.staged();
+        for (kind, store) in &mut stores {
+            let changes = own_fold(*kind, store.staged(), value_balance.clone(), block);
+            store.apply(changes);
+        }
+    }
+    let mut folded = Vec::new();
+    for (kind, mut store) in stores {
+        store.commit().expect("SimFs commit");
+        folded.push((kind, tables(&store.view(), &schema(kind, NETWORK))));
+    }
+    folded
+}
+
+/// Test-only writer: each `Final` applied (folded, else its own fold) and committed after `lag`
+///
+/// - A height already held skipped (restart: an index ahead of the root)
+/// - Past `crash`: received, never committed (the crashed process's lost steps)
+/// - Returns every step received: `(block, folded)`
+async fn commit(
+    kind: IndexKind,
+    store: &mut DiskStore,
+    mut blocks: Subscription<Final>,
+    committed: &watch::Sender<DiskView>,
+    mut value_balance: watch::Receiver<DiskView>,
+    lag: Duration,
+    crash: Option<Height>,
+) -> Vec<(BlockRef, bool)> {
+    let mut received = Vec::new();
+    loop {
+        let data = match blocks.next().await {
+            Step::Apply { data, .. } => data,
+            Step::Shutdown => return received,
+            _ => panic!("{}: the final stream sends Apply and Shutdown only", kind.name()),
+        };
+        let header = data.block.header();
+        let at = BlockRef { hash: header.hash, height: header.height };
+        received.push((at, data.folds.is_some()));
+        let held = Some(at.height) <= store.view().tip().map(|tip| tip.height);
+        if held || crash.is_some_and(|crash| at.height > crash) {
+            continue;
+        }
+        let changes = match &data.folds {
+            Some(folds) => folds.get(kind).expect("folded for every enabled index").clone(),
+            None => {
+                let below = at.height.checked_sub(1);
+                let fees = value_balance.wait_for(|view| view.tip().map(|tip| tip.height) >= below);
+                let fees = fees.await.expect("value_balance committer alive").clone();
+                own_fold(kind, store.view(), fees, &data.block)
+            }
+        };
+        store.apply(changes);
+        tokio::time::sleep(lag).await;
+        store.commit().expect("SimFs commit");
+        committed.send_replace(store.view());
+    }
+}
+
+/// Tip on its chain's best; each index = the oracle at its view's tip, that tip = the snapshot's
+/// (R12) unless the snapshot is the root and the view durable-only
+fn verify(
+    snapshot: &Snapshot<DiskView>,
+    blocks: &Chain,
+    oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
+    context: &str,
+) {
+    let (chain, tip) = (snapshot.chain(), snapshot.tip());
+    assert_eq!(chain.hash_at(tip.height), Some(tip.hash), "{context}: N4 tip {tip:?} off best");
+    let views: Vec<(IndexKind, LayeredView<DiskView>)> = INDEXES
+        .iter()
+        .map(|&(kind, ..)| (kind, snapshot.views().view(kind).expect("every index enabled")))
+        .collect();
+    let root = views.iter().any(|(_, view)| view.tip() != Some(tip));
+    for (kind, view) in &views {
+        let name = kind.name();
+        let Some(at) = view.tip().filter(|at| at.height >= tip.height) else {
+            panic!("{context}: N4 {name} at {:?} below the tip {tip:?}", view.tip());
+        };
+        assert_eq!(chain.hash_at(at.height), Some(at.hash), "{context}: {name} at {at:?} off best");
+        if root {
+            let durable = view.durable().tip();
+            assert_eq!(durable, Some(at), "{context}: R12 {name} ahead of {tip:?} non-final");
+        }
+        let expected = oracles.entry(at.hash).or_insert_with(|| oracle(&blocks.path(at.hash)));
+        let (_, expected) = expected.iter().find(|(each, _)| each == kind).expect("every index");
+        let got = tables(view, &schema(*kind, NETWORK));
+        assert!(got == *expected, "{context}: N6 {name} at {at:?} != folded from genesis");
+    }
+    let lowest = views.iter().filter_map(|(_, view)| view.tip()).map(|at| at.height).min();
+    assert_eq!(lowest, Some(tip.height), "{context}: N4 a root snapshot = its lowest index");
+}
+
+/// Block tree (mined up front), then two NFS runs over the same stores, each move settled (every
+/// index durable through final, served tip = best):
+///
+/// - Run 0: A 1..=12 (final 9: bulk, then tip), B 10..=13 off A9 (longer, heavier), C13 off B12
+///   (same height), D12 off B11 (retreat), E 13..=16 (final 13: folded sends), E 17..=20 (final
+///   17: indexes crash at 14..=17)
+/// - Run 1: restart from those tips (apart), E 21..=24 (final 21)
+#[tokio::test(start_paused = true)]
+async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart() {
+    let mut blocks = Chain::with_genesis(transactions(None, 0));
+    let genesis = blocks.genesis().hash;
+    let mut tag = 0;
+    let mut mine = |blocks: &mut Chain, parent: BlockHash, count: u32| -> Vec<Block> {
+        let mut tip = parent;
+        for _ in 0..count {
+            tag += 1;
+            let funding = blocks.block(tip).transactions().first();
+            tip = blocks.mine_with(tip, transactions(funding, tag)).hash;
+        }
+        let path = blocks.path(tip);
+        path[path.len() - count as usize..].to_vec()
+    };
+    let hash = |block: &Block| block.header().hash;
+    let a = [blocks.path(genesis), mine(&mut blocks, genesis, 12)].concat();
+    let b10 = blocks.mine_heavier(hash(&a[9]), &a[10..].iter().map(hash).collect::<Vec<_>>());
+    let b10 = blocks.block(b10.expect("work in range").hash).clone();
+    let b = [vec![b10.clone()], mine(&mut blocks, hash(&b10), 3)].concat();
+    let c13 = blocks.mine_heavier(hash(&b[2]), &[hash(&b[3])]).expect("work in range").hash;
+    let d12 = blocks.mine_heavier(hash(&b[1]), &[hash(&b[2]), c13]).expect("work in range").hash;
+    let e = mine(&mut blocks, d12, 12);
+    let (c13, d12) = (blocks.block(c13).clone(), blocks.block(d12).clone());
+    let blocks = blocks;
+    // (headers added, finalize)
+    let runs: [&[(&[Block], bool)]; 2] = [
+        &[
+            (&a[1..], true),
+            (&b, false),
+            (std::slice::from_ref(&c13), false),
+            (std::slice::from_ref(&d12), false),
+            (&e[..4], true),
+            (&e[4..8], true),
+        ],
+        &[(&[], false), (&e[8..], true)],
+    ];
+
+    let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
+    headers.insert_blocks(&a[..1]).expect("genesis");
+    let sources = [
+        Arc::new(MockChain::serving([a[0].clone()])),
+        Arc::new(MockChain::serving([a[0].clone()])),
+    ];
+    let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let activations = PoolActivations {
+        sapling: Height::GENESIS,
+        orchard: Some(Height::GENESIS),
+        ironwood: None,
+    };
+    let params = ChainParams { network: NETWORK, activations };
+    let engine = DiskEngine::new(SimFs::new());
+    let mut indexes: Vec<(IndexKind, DiskStore, watch::Sender<DiskView>)> = INDEXES
+        .iter()
+        .map(|&(kind, ..)| {
+            let store = engine.open(Path::new(kind.name()), &schema(kind, NETWORK));
+            let store = store.expect("fresh store");
+            let committed = watch::channel(store.view()).0;
+            (kind, store, committed)
+        })
+        .collect();
+    let mut oracles = HashMap::new();
+    let queue = NonZeroUsize::new(1 << 24).expect("nonzero");
+    let lookahead = NonZeroUsize::new(4).expect("nonzero");
+
+    for (run, moves) in runs.iter().enumerate() {
+        let mut nfs = Nfs::new(verified_rx.clone(), sources.to_vec(), params, lookahead, depth);
+        let value_balance = indexes[0].2.subscribe();
+        let durable: Vec<watch::Receiver<DiskView>> =
+            indexes.iter().map(|(_, _, committed)| committed.subscribe()).collect();
+        let tips: Vec<Option<Height>> =
+            durable.iter().map(|view| view.borrow().tip().map(|tip| tip.height)).collect();
+        let apart = tips.iter().any(|tip| *tip != tips[0]);
+        assert_eq!(apart, run == 1, "run {run}: restarted with indexes apart {tips:?}");
+        let root = tips.iter().min().copied().flatten();
+        let crashes: Vec<Option<Height>> = INDEXES
+            .iter()
+            .map(|&(.., crash)| (run == 0).then(|| Height::try_from(crash).expect("small chain")))
+            .collect();
+        let committers: Vec<_> = indexes
+            .drain(..)
+            .zip(INDEXES)
+            .zip(crashes.clone())
+            .map(|(((kind, mut store, committed), (_, lag, _)), crash)| {
+                let blocks = nfs.subscribe(kind, committed.subscribe(), queue);
+                let value_balance = value_balance.clone();
+                tokio::spawn(async move {
+                    let lag = Duration::from_secs(lag);
+                    let received =
+                        commit(kind, &mut store, blocks, &committed, value_balance, lag, crash);
+                    let received = received.await;
+                    (kind, store, committed, received)
+                })
+            })
+            .collect();
+        let mut handle = nfs.handle();
+        let cancel = CancellationToken::new();
+        let mut driver = tokio::spawn(nfs.run(cancel.clone()));
+
+        for (at, &(added, finalize)) in moves.iter().enumerate() {
+            let context = format!("run {run} move {at}");
+            headers.insert_blocks(added).expect("valid headers");
+            if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
+                headers.finalize(boundary).expect("in-memory store");
+            }
+            for source in &sources {
+                source.extend_best(added.to_vec());
+            }
+            verified.send_replace(headers.verified().map(Arc::new));
+            let best = headers.best().expect("verified").block;
+            let final_height = headers.final_tip().map(|tip| tip.height);
+            let durable_heights = || -> Vec<Option<Height>> {
+                durable.iter().map(|view| view.borrow().tip().map(|tip| tip.height)).collect()
+            };
+            let settled_heights: Vec<Option<Height>> =
+                crashes.iter().map(|crash| final_height.min(crash.or(final_height))).collect();
+            let mut seen: Option<Arc<Snapshot<DiskView>>> = None;
+            let settled = async {
+                loop {
+                    let new = |latest: &Arc<_>| {
+                        !seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, latest))
+                    };
+                    if let Some(latest) = handle.snapshot().filter(new) {
+                        verify(&latest, &blocks, &mut oracles, &context);
+                        seen = Some(latest);
+                    }
+                    let durable = durable_heights() == settled_heights;
+                    if durable && seen.as_ref().is_some_and(|seen| seen.tip() == best) {
+                        return;
+                    }
+                    tokio::select! {
+                        Ok(()) = handle.changed() => {}
+                        stopped = &mut driver => match stopped {
+                            Err(join) => std::panic::resume_unwind(join.into_panic()),
+                            Ok(result) => panic!("{context}: driver stopped: {result:?}"),
+                        },
+                        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                }
+            };
+            let day = Duration::from_secs(86_400);
+            if tokio::time::timeout(day, settled).await.is_err() {
+                let (durable, settled) = (durable_heights(), settled_heights);
+                panic!("{context}: never settled: {best:?}, durable {durable:?} != {settled:?}");
+            }
+        }
+
+        cancel.cancel();
+        driver.await.expect("driver task").expect("cancel = clean stop");
+        let chain = headers.verified().expect("verified");
+        let final_height = chain.final_tip().map(|tip| tip.height);
+        for committer in committers {
+            let (kind, store, committed, received) = committer.await.expect("committer task");
+            let name = kind.name();
+            let heights: Vec<Height> = received.iter().map(|(at, _)| at.height).collect();
+            let from = root.map_or(Height::GENESIS, Height::next);
+            let expected: Vec<Height> = from.up_to(final_height.expect("final")).collect();
+            assert_eq!(heights, expected, "run {run}: N5 {name} each height once, through final");
+            for (at, _) in &received {
+                let best = chain.hash_at(at.height) == Some(at.hash);
+                assert!(best, "run {run}: N5 {name} {at:?} off the final chain");
+            }
+            let folded: Vec<bool> = received.iter().map(|(_, folded)| *folded).collect();
+            assert!(folded.is_sorted(), "run {run}: {name} unfolded after folded {folded:?}");
+            assert!(
+                folded.contains(&false) && folded.contains(&true),
+                "run {run}: {name} bulk then tip {folded:?}"
+            );
+            indexes.push((kind, store, committed));
+        }
+    }
+}
+
+/// Chain A 0..=5 (final 2), block-hash alone: `compact_block` before `value_balance` or an index
+/// twice refused at subscribe; a committed X1 (A1's sibling) stops the run as `Diverged` naming
+/// the index, before any step; a writer dropping its committed view stops it as `WriterGone`
+#[tokio::test(start_paused = true)]
+async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a_lost_writer() {
+    let mut blocks = Chain::new();
+    let genesis = blocks.genesis().hash;
+    let a5 = blocks.extend(genesis, 5).hash;
+    let a = blocks.path(a5);
+    let x1 = blocks.mine(genesis).hash;
+    let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
+    headers.insert_blocks(&a).expect("valid headers");
+    headers.finalize(headers.finalizable().expect("5 - 3")).expect("in-memory store");
+    let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let activations = PoolActivations { sapling: Height::GENESIS, orchard: None, ironwood: None };
+    let params = ChainParams { network: NETWORK, activations };
+    let (queue, lookahead) = (NonZeroUsize::MAX, NonZeroUsize::MIN);
+    let nfs = || {
+        let sources = vec![Arc::new(MockChain::serving(a.clone()))];
+        Nfs::<MockChain, DiskView>::new(verified_rx.clone(), sources, params, lookahead, depth)
+    };
+    let engine = DiskEngine::new(SimFs::new());
+    let schema = schema(IndexKind::BlockHash, NETWORK);
+    let mut store = engine.open(Path::new("/foreign"), &schema).expect("fresh store");
+
+    let committed = watch::channel(store.view()).0;
+    let refused = [
+        (
+            "compact_block folds on value_balance's fees",
+            fired(|| drop(nfs().subscribe(IndexKind::CompactBlock, committed.subscribe(), queue))),
+        ),
+        (
+            "block_hash: twice",
+            fired(|| {
+                let mut nfs = nfs();
+                let _first = nfs.subscribe(IndexKind::BlockHash, committed.subscribe(), queue);
+                drop(nfs.subscribe(IndexKind::BlockHash, committed.subscribe(), queue));
+            }),
+        ),
+    ];
+    for (expected, message) in refused {
+        let message = message.unwrap_or_default();
+        assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
+    }
+
+    store.apply(zaino_internal_block_hash_to_height::fold(&a[0], NETWORK));
+    store.apply(zaino_internal_block_hash_to_height::fold(blocks.block(x1), NETWORK));
+    store.commit().expect("SimFs commit");
+    committed.send_replace(store.view());
+    let mut foreign = nfs();
+    let mut stream = foreign.subscribe(IndexKind::BlockHash, committed.subscribe(), queue);
+    let stopped = foreign.run(CancellationToken::new()).await.expect_err("X1 off the final chain");
+    let a1 = a[1].header().hash;
+    assert!(
+        matches!(stopped, NfsError::Diverged { index: "block_hash", height, expected, got }
+            if u32::from(height) == 1 && expected == x1 && got == a1),
+        "{stopped}"
+    );
+    assert!(matches!(stream.next().await, Step::Shutdown), "no step before the stop");
+
+    let fresh = engine.open(Path::new("/fresh"), &schema).expect("fresh store");
+    let (committed, view) = watch::channel(fresh.view());
+    let mut lost = nfs();
+    let _stream = lost.subscribe(IndexKind::BlockHash, view, queue);
+    let run = tokio::spawn(lost.run(CancellationToken::new()));
+    drop(committed);
+    let stopped = run.await.expect("driver task").expect_err("writer gone");
+    assert!(matches!(stopped, NfsError::WriterGone("block_hash")), "{stopped}");
+}
