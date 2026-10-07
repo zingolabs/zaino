@@ -20,7 +20,7 @@ use zebra_rpc::{
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    NodeInfo, PeerInfo,
+    NodeInfo, PeerInfo, StandardFee,
 };
 
 use zaino_proto::proto::{
@@ -719,6 +719,10 @@ impl<
 
     async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         Ok(self.indexer.get_block_subsidy(height).await?)
+    }
+
+    async fn get_standard_fee(&self) -> Result<StandardFee, Self::Error> {
+        Ok(self.indexer.get_standard_fee().await?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.

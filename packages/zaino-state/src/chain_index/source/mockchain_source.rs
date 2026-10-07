@@ -1009,7 +1009,7 @@ impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
                 for block_index in 0..=self.active_chain_height_as_usize() {
                     let height = self.block_height_at_index(block_index);
                     for note_commitment in self.blocks[block_index].sapling_note_commitments() {
-                        tree.append(*note_commitment).map_err(|error| {
+                        tree.append(note_commitment).map_err(|error| {
                             port_fault::<zaino_source::GetSubtreeRootsError>(format!(
                                 "could not append Sapling note commitment to tree: {error}"
                             ))
@@ -1034,7 +1034,7 @@ impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
                 for block_index in 0..=self.active_chain_height_as_usize() {
                     let height = self.block_height_at_index(block_index);
                     for note_commitment in self.blocks[block_index].orchard_note_commitments() {
-                        tree.append(*note_commitment).map_err(|error| {
+                        tree.append(note_commitment).map_err(|error| {
                             port_fault::<zaino_source::GetSubtreeRootsError>(format!(
                                 "could not append Orchard note commitment to tree: {error}"
                             ))
@@ -1340,7 +1340,7 @@ impl MockchainSource {
         network: &zebra_chain::parameters::Network,
     ) -> Option<(domain::TransparentAddress, u64)> {
         let (_, prev) = self.txid_index.get(&outpoint.hash)?;
-        let output = prev.outputs().get(outpoint.index as usize)?;
+        let output = prev.outputs().into_iter().nth(outpoint.index as usize)?;
         let address = output.address(network)?;
         Some((
             domain::TransparentAddress::try_new(address.to_string())
@@ -1571,6 +1571,16 @@ impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     ) -> Result<domain::rpc::BlockSubsidy, PortError<zaino_source::GetBlockSubsidyError>> {
         unimplemented!(
             "MockchainSource cannot serve get_block_subsidy until test vectors are extended"
+        )
+    }
+}
+
+impl zaino_source::OneShotGetStandardFee for MockchainSource {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<domain::rpc::StandardFee, PortError<zaino_source::GetStandardFeeError>> {
+        unimplemented!(
+            "MockchainSource cannot serve get_standard_fee until test vectors are extended"
         )
     }
 }

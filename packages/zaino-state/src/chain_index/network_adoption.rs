@@ -17,7 +17,9 @@
 //! the protocol-defined identity. Each branch id is translated to zebra's
 //! `NetworkUpgrade` locally, only where a zebra `Network` must be built. A
 //! branch id this build does not recognise is a validator ahead of Zaino: it is
-//! skipped, never rejected, so a newer validator cannot fail adoption.
+//! skipped, never rejected, so a newer validator cannot fail adoption — unless
+//! that branch is already in force at the tip or the next block, in which case
+//! this build would index the chain under the wrong rules and adoption fails.
 
 use tracing::info;
 use zaino_primitives::types::NetworkUpgradeInfo;
@@ -62,6 +64,14 @@ pub(crate) async fn adopt_network(
     })?;
     let upgrades = &blockchain_info.upgrades;
 
+    verify_active_branches_known(&blockchain_info.consensus).map_err(|reason| {
+        BlockchainSourceError::Unrecoverable(format!(
+            "the validator at {} is on a consensus branch this build of Zaino does not know: \
+             {reason}",
+            common.validator_rpc_address
+        ))
+    })?;
+
     // Shared by the Mainnet / The Public Testnet arms: the compiled network is only
     // trusted after the validator's report agrees with it.
     let verified = |network: zebra_chain::parameters::Network| {
@@ -90,6 +100,28 @@ pub(crate) async fn adopt_network(
             Ok(heights.to_regtest_network())
         }
     }
+}
+
+/// Rejects a validator whose chain-tip or next-block consensus branch this
+/// build does not know.
+///
+/// Unknown entries in `upgrades` are tolerated (a scheduled future upgrade),
+/// but an unknown branch already in force means this build would index the
+/// chain under rules it does not implement; the fix is to upgrade Zaino.
+fn verify_active_branches_known(
+    consensus: &zaino_primitives::types::ConsensusBranchIds,
+) -> Result<(), String> {
+    for (position, branch) in [
+        ("chain tip", consensus.chain_tip),
+        ("next block", consensus.next_block),
+    ] {
+        if !zebra_bridge::branch_known(branch) {
+            return Err(format!(
+                "the {position} consensus branch is {branch}; upgrade Zaino"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks every `(upgrade, height)` the validator reports against `network`'s
@@ -179,9 +211,8 @@ mod test_upgrades {
     pub(super) const NU6_2: u32 = 0x5437_f330;
     pub(super) const NU6_3: u32 = 0x37a5_165b;
 
-    /// zebra's placeholder branch for NU7 (the real `0x77190ad8` is still a TODO
-    /// in zebra-chain): resolvable, and disabled on Mainnet.
-    pub(super) const NU7: u32 = 0xffff_fffe;
+    /// NU7's consensus branch id (ZIP 259).
+    pub(super) const NU7: u32 = 0x7719_0ad9;
 
     /// A branch id no build knows.
     pub(super) const UNKNOWN_BRANCH: u32 = 0x0bad_0bad;
@@ -301,6 +332,7 @@ mod tests {
 #[cfg(test)]
 mod verify_reported_upgrades {
     use super::test_upgrades::*;
+    use zaino_common::config::network::ActivationHeights;
 
     /// A report agreeing with the compiled schedule passes.
     #[test]
@@ -327,15 +359,44 @@ mod verify_reported_upgrades {
         );
     }
 
+    /// The public Testnet's NU7 schedule, as a zebrad 7 validator reports it,
+    /// agrees with the compiled parameters: NU7 at 4,465,026 after NU6.3.
+    #[test]
+    fn accepts_the_public_testnet_nu7_schedule() {
+        let upgrades = [upgrade(NU6_3, 4_134_000), upgrade(NU7, 4_465_026)];
+
+        super::verify_reported_upgrades(
+            &zebra_chain::parameters::Network::new_default_testnet(),
+            &upgrades,
+        )
+        .expect("the public Testnet NU7 schedule matches the compiled one");
+    }
+
+    /// A validator placing NU7 one block off on the public Testnet is a
+    /// schedule drift, caught before a single block is indexed.
+    #[test]
+    fn rejects_a_wrong_public_testnet_nu7_height() {
+        let upgrades = [upgrade(NU7, 4_465_027)];
+
+        let reason = super::verify_reported_upgrades(
+            &zebra_chain::parameters::Network::new_default_testnet(),
+            &upgrades,
+        )
+        .expect_err("a wrong NU7 height must be rejected");
+        assert!(reason.contains("4465027"), "got: {reason}");
+    }
+
     /// An upgrade the compiled schedule disables on this network must be
-    /// rejected when the validator reports a height for it.
+    /// rejected when the validator reports a height for it. A regtest schedule
+    /// with NU7 unset stands in for the compiled side, so the test does not
+    /// depend on which public network has an NU7 height yet.
     #[test]
     fn rejects_an_upgrade_the_compiled_schedule_lacks() {
+        let network = ActivationHeights::default().to_regtest_network();
         let upgrades = [upgrade(NU7, 123)];
 
-        let reason =
-            super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
-                .expect_err("an unscheduled upgrade with a reported height must be rejected");
+        let reason = super::verify_reported_upgrades(&network, &upgrades)
+            .expect_err("an unscheduled upgrade with a reported height must be rejected");
         assert!(
             reason.contains("None"),
             "error should show the compiled schedule has no height, got: {reason}"
@@ -350,5 +411,57 @@ mod verify_reported_upgrades {
 
         super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
             .expect("an unknown branch id must be skipped, not rejected");
+    }
+}
+
+#[cfg(test)]
+mod verify_active_branches_known {
+    use super::test_upgrades::*;
+    use zaino_primitives::types::{ConsensusBranchId, ConsensusBranchIds};
+
+    fn consensus(chain_tip: u32, next_block: u32) -> ConsensusBranchIds {
+        ConsensusBranchIds {
+            chain_tip: ConsensusBranchId::new(chain_tip),
+            next_block: ConsensusBranchId::new(next_block),
+        }
+    }
+
+    /// Known branches on both sides of the tip pass, including the NU7
+    /// boundary and the activation block itself.
+    #[test]
+    fn accepts_known_branches() {
+        for (tip, next) in [(NU6_3, NU6_3), (NU6_3, NU7), (NU7, NU7)] {
+            super::verify_active_branches_known(&consensus(tip, next))
+                .expect("known branches must pass");
+        }
+    }
+
+    /// Zero is the validator's "no branch id" for pre-Overwinter heights — a
+    /// fresh regtest chain at genesis — not an unknown upgrade.
+    #[test]
+    fn accepts_the_pre_overwinter_marker() {
+        super::verify_active_branches_known(&consensus(0, 0)).expect("a genesis tip must pass");
+        super::verify_active_branches_known(&consensus(0, OVERWINTER))
+            .expect("a genesis tip whose next block is Overwinter must pass");
+    }
+
+    /// An unknown branch already in force at the tip is rejected: this build
+    /// would index under rules it does not implement.
+    #[test]
+    fn rejects_an_unknown_chain_tip_branch() {
+        let reason =
+            super::verify_active_branches_known(&consensus(UNKNOWN_BRANCH, UNKNOWN_BRANCH))
+                .expect_err("an unknown tip branch must be rejected");
+        assert!(reason.contains("chain tip"), "got: {reason}");
+        assert!(reason.contains("0bad0bad"), "got: {reason}");
+    }
+
+    /// An unknown branch activating at the next block is rejected too: the
+    /// very next block would be indexed under unknown rules.
+    #[test]
+    fn rejects_an_unknown_next_block_branch() {
+        let reason = super::verify_active_branches_known(&consensus(NU7, UNKNOWN_BRANCH))
+            .expect_err("an unknown next-block branch must be rejected");
+        assert!(reason.contains("next block"), "got: {reason}");
     }
 }

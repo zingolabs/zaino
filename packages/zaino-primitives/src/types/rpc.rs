@@ -45,6 +45,7 @@ mod mining_info;
 mod node_info;
 mod peer_info;
 mod spent_info;
+mod standard_fee;
 mod subtree_roots;
 mod tx_out;
 
@@ -57,5 +58,6 @@ pub use mining_info::MiningInfo;
 pub use node_info::NodeInfo;
 pub use peer_info::PeerInfo;
 pub use spent_info::{SpentInfo, SpentOutpoint};
+pub use standard_fee::StandardFee;
 pub use subtree_roots::SubtreeRoots;
 pub use tx_out::{ScriptPubKey, TxOut};

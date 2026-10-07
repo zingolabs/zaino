@@ -477,6 +477,13 @@ const IRONWOOD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
     nu7: None,
 };
 
+/// NU7 active from height 2: the Ironwood era under NU7 rules, with injected V6
+/// content versioned for the NU7 branch.
+const NU7_HEIGHTS: ActivationHeights = ActivationHeights {
+    nu7: Some(2),
+    ..IRONWOOD_ONLY_HEIGHTS
+};
+
 /// Per-block consistency between served compact-block content and its chain metadata.
 ///
 /// A compact block's `chainMetadata` tree sizes are cumulative note-commitment counts;
@@ -535,49 +542,79 @@ fn synced_index_metadata_consistency_orchard_to_ironwood_transition() {
     )
 }
 
-/// A structurally-valid (cryptographically fake) V6 transaction carrying a two-action
-/// Ironwood bundle. Injected because zebra's stock strategy generates V6 only
-/// probabilistically, so era content must be deterministic here
-/// (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
-fn fake_ironwood_transaction() -> zebra_chain::transaction::Transaction {
-    use zebra_chain::amount::Amount;
-    use zebra_chain::orchard::{Flags, ShieldedDataV6};
-    use zebra_chain::parameters::NetworkUpgrade;
-    use zebra_chain::transaction::arbitrary::{fake_v6_orchard_shielded_data, fake_v6_transaction};
+/// NU7 era: generated blocks and injected Ironwood content under NU7 rules from
+/// height 2. NU7 adds no transaction format (ZIP 259), so the served form must be
+/// exactly the Ironwood era's.
+#[test]
+fn synced_index_metadata_consistency_nu7() {
+    metadata_consistency_for_era(NU7_HEIGHTS, Some(2), false)
+}
 
-    let ironwood = zebra_chain::ironwood::ShieldedData::new(ShieldedDataV6::new(
-        fake_v6_orchard_shielded_data(
-            Flags::ENABLE_SPENDS,
-            Amount::try_from(0).expect("zero is a valid amount"),
-            2,
-        ),
-    ));
-    fake_v6_transaction(NetworkUpgrade::Nu6_3, None, Some(ironwood))
+/// The NU7 transition: NU6.3 content below the boundary, NU7-branch content from it,
+/// with the boundary inside the walked window so both eras are observed.
+#[test]
+fn synced_index_metadata_consistency_ironwood_to_nu7_transition() {
+    let expected_tip = (2 * SEGMENT_LENGTH - 1) as u32;
+    let boundary = expected_tip - (OPERATIONAL_NFS_DEPTH / 2);
+    metadata_consistency_for_era(
+        ActivationHeights {
+            nu7: Some(boundary),
+            ..IRONWOOD_ONLY_HEIGHTS
+        },
+        Some(2),
+        false,
+    )
+}
+
+/// A structurally-valid (cryptographically fake) V6 transaction carrying a two-action
+/// Ironwood bundle, versioned for `upgrade` (NU6.3 or NU7). Injected because zebra's
+/// stock strategy generates V6 only probabilistically, so era content must be
+/// deterministic here (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
+fn fake_ironwood_transaction(
+    seed: u64,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+) -> zebra_chain::transaction::Transaction {
+    use zebra_chain::parameters::NetworkUpgrade;
+    use zebra_chain::transaction::arbitrary::fake_v6_transaction;
+
+    let branch = match upgrade {
+        NetworkUpgrade::Nu7 => zcash_protocol::consensus::BranchId::Nu7,
+        _ => zcash_protocol::consensus::BranchId::Nu6_3,
+    };
+    let ironwood = fake_two_action_bundle(branch, orchard::ValuePool::Ironwood, seed);
+    fake_v6_transaction(upgrade, None, Some(ironwood))
 }
 
 /// A structurally-valid (cryptographically fake) V5 transaction carrying a two-action
 /// Orchard bundle, for deterministic orchard-era content (the stock strategy's orchard
 /// data is probabilistic).
-fn fake_orchard_transaction() -> zebra_chain::transaction::Transaction {
-    use zebra_chain::amount::Amount;
-    use zebra_chain::orchard::Flags;
+fn fake_orchard_transaction(seed: u64) -> zebra_chain::transaction::Transaction {
     use zebra_chain::parameters::NetworkUpgrade;
-    use zebra_chain::transaction::arbitrary::fake_v6_orchard_shielded_data;
     use zebra_chain::transaction::{LockTime, Transaction};
 
-    Transaction::V5 {
-        network_upgrade: NetworkUpgrade::Nu5,
-        lock_time: LockTime::unlocked(),
-        expiry_height: zebra_chain::block::Height(0),
-        inputs: Vec::new(),
-        outputs: Vec::new(),
-        sapling_shielded_data: None,
-        orchard_shielded_data: Some(fake_v6_orchard_shielded_data(
-            Flags::ENABLE_SPENDS,
-            Amount::try_from(0).expect("zero is a valid amount"),
-            2,
+    Transaction::test_v5_with_orchard(
+        NetworkUpgrade::Nu5,
+        Vec::new(),
+        Vec::new(),
+        LockTime::unlocked(),
+        zebra_chain::block::Height(0),
+        Some(fake_two_action_bundle(
+            zcash_protocol::consensus::BranchId::Nu5,
+            orchard::ValuePool::Orchard,
+            seed,
         )),
-    }
+    )
+}
+
+/// A zero-balance, two-action bundle for `pool`, versioned for `branch`. Each `seed`
+/// gives a distinct transaction, so injected transactions never repeat a txid.
+fn fake_two_action_bundle(
+    branch: zcash_protocol::consensus::BranchId,
+    pool: orchard::ValuePool,
+    seed: u64,
+) -> orchard::Bundle<orchard::bundle::Authorized, zcash_protocol::value::ZatBalance> {
+    zebra_chain::transaction::arbitrary::fake_bundle_for_branch(branch, pool, 2, seed)
+        .expect("the pool is defined for the branch")
 }
 
 /// Runs the metadata-consistency walk on a chain whose injected shielded content
@@ -593,6 +630,7 @@ fn metadata_consistency_for_era(
     ironwood_boundary: Option<u32>,
     orchard_below_boundary: bool,
 ) {
+    let nu7 = heights.nu7;
     let inject = move |blocks: &mut Vec<Arc<zebra_chain::block::Block>>| {
         for block in blocks.iter_mut() {
             let height = block
@@ -603,9 +641,16 @@ fn metadata_consistency_for_era(
                 continue;
             }
             let fake_tx = match ironwood_boundary {
-                None => fake_orchard_transaction(),
-                Some(boundary) if height >= boundary => fake_ironwood_transaction(),
-                Some(_) if orchard_below_boundary => fake_orchard_transaction(),
+                None => fake_orchard_transaction(u64::from(height)),
+                Some(boundary) if height >= boundary => {
+                    let upgrade = if nu7.is_some_and(|nu7| height >= nu7) {
+                        zebra_chain::parameters::NetworkUpgrade::Nu7
+                    } else {
+                        zebra_chain::parameters::NetworkUpgrade::Nu6_3
+                    };
+                    fake_ironwood_transaction(u64::from(height), upgrade)
+                }
+                Some(_) if orchard_below_boundary => fake_orchard_transaction(u64::from(height)),
                 Some(_) => continue,
             };
             let mut new_block = (**block).clone();
@@ -1433,7 +1478,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
                     }
                     for orc_commitment in transaction.orchard_note_commitments() {
                         let orc_commitment =
-                            zebra_chain::orchard::tree::Node::from(*orc_commitment);
+                            zebra_chain::orchard::tree::Node::try_from(orc_commitment.to_bytes())
+                                .expect("cmx is a canonical pallas base");
                         let mut tree = orchard.unwrap_or_else(|| {
                             incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
                         });
@@ -1443,7 +1489,8 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
                     // Ironwood reuses the Orchard tree/node types.
                     for irw_commitment in transaction.ironwood_note_commitments() {
                         let irw_commitment =
-                            zebra_chain::orchard::tree::Node::from(*irw_commitment);
+                            zebra_chain::orchard::tree::Node::try_from(irw_commitment.to_bytes())
+                                .expect("cmx is a canonical pallas base");
                         let mut tree = ironwood.unwrap_or_else(|| {
                             incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
                         });
@@ -1504,6 +1551,22 @@ fn relink_chain(genesis_segment: &mut ChainSegment, branching_segments: &mut [Ch
     }
 }
 
+/// Replaces an empty-but-present transparent bundle with an absent one.
+///
+/// Workaround for zebra-chain 13.0.1 and 14.0.0: `Transaction::with_transparent_inputs` keeps
+/// `Some(empty)` when the generator drops every input, and ZIP-244 hashes that
+/// differently from the `None` its bytes deserialize to. Remove once fixed upstream.
+fn without_empty_transparent_bundle(
+    transaction: &Arc<zebra_chain::transaction::Transaction>,
+) -> Arc<zebra_chain::transaction::Transaction> {
+    match transaction.transparent_bundle() {
+        Some(bundle) if bundle.vin.is_empty() && bundle.vout.is_empty() => {
+            Arc::new((**transaction).clone().with_transparent_outputs(Vec::new()))
+        }
+        _ => Arc::clone(transaction),
+    }
+}
+
 /// [`relink_chain`] over one segment, whose first block's parent becomes `parent` when given, yielding the relinked tip's hash.
 fn relink_segment(
     segment: &mut ChainSegment,
@@ -1512,6 +1575,11 @@ fn relink_segment(
     let mut parent = parent;
     for block in segment.0.iter_mut() {
         let mut relinked = (**block).clone();
+        relinked.transactions = relinked
+            .transactions
+            .iter()
+            .map(without_empty_transparent_bundle)
+            .collect();
         let mut header = *relinked.header;
         header.merkle_root = relinked
             .transactions
@@ -1859,6 +1927,17 @@ impl zaino_source::OneShotGetBlockSubsidy for ProptestMockchain {
     ) -> Result<
         zaino_primitives::types::rpc::BlockSubsidy,
         PortError<zaino_source::GetBlockSubsidyError>,
+    > {
+        unimplemented!()
+    }
+}
+
+impl zaino_source::OneShotGetStandardFee for ProptestMockchain {
+    async fn get_standard_fee(
+        &self,
+    ) -> Result<
+        zaino_primitives::types::rpc::StandardFee,
+        PortError<zaino_source::GetStandardFeeError>,
     > {
         unimplemented!()
     }

@@ -26,7 +26,13 @@ rstest = "0.23"
 # against) and the vectors it parses. Path deps into packages/ are limited to
 # `zaino-proto`, whose generated compact-format types the parser renders into.
 zaino-proto = { path = "../packages/zaino-proto", default-features = false }
-zebra-chain = "12.0"
+zebra-chain = "14.0"
+orchard = "0.16"
 prost = "0.14"
 thiserror = "2.0"
 wire_serialized_transaction_test_data = "1.0.0"
+
+# TEMPORARY: ztest on the NU7 librustzcash line (zcash_client_backend 0.25-pre) is
+# unreleased. Drop this patch once that ztest is published.
+[patch.crates-io]
+ztest = { git = "https://github.com/zingolabs/ztest.git", branch = "feat/nu7-0.1.29" }

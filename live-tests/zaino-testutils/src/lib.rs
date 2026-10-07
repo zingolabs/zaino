@@ -26,3 +26,6 @@ pub use json::{
     sort_json_array,
 };
 pub use rpc::assert_rpc_parity;
+
+/// The zebrad release (`zfnd/zebra:<version>` image) the live tests run against.
+pub const ZEBRAD_VERSION: &str = "7.0.0-rc.0";

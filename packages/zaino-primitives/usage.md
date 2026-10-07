@@ -64,7 +64,7 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
-  `BlockSubsidy`.
+  `BlockSubsidy`, `StandardFee`.
 
 ### Bytes are allowed; JSON is not
 

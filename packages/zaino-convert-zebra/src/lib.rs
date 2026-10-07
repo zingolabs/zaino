@@ -11,6 +11,10 @@ use zaino_primitives::types::{
     TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
+/// An Orchard-shaped action as zebra's transaction accessors yield it.
+type AuthorizedAction =
+    orchard::Action<<orchard::bundle::Authorized as orchard::bundle::Authorization>::SpendAuth>;
+
 /// Errors during conversion from zebra types.
 #[derive(Debug, thiserror::Error)]
 pub enum ConvertError {
@@ -185,18 +189,16 @@ fn sapling_from_zebra(
         spends: tx
             .sapling_nullifiers()
             .map(|nf| SaplingSpend {
-                nullifier: Nullifier::from(<[u8; 32]>::from(*nf)),
+                nullifier: Nullifier::from(<[u8; 32]>::from(nf)),
             })
             .collect(),
         outputs: tx
             .sapling_outputs()
             .map(|out| {
-                let epk_bytes: [u8; 32] = (&out.ephemeral_key).into();
-                let enc_bytes: [u8; 580] = out.enc_ciphertext.into();
                 Ok(SaplingOutput {
-                    cmu: NoteCommitment::from(out.cm_u.to_bytes()),
-                    ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                    cmu: NoteCommitment::from(out.cmu().to_bytes()),
+                    ephemeral_key: EphemeralKey::from(out.ephemeral_key().0),
+                    enc_ciphertext: compact_prefix(out.enc_ciphertext())?,
                 })
             })
             .collect::<Result<Vec<_>, ConvertError>>()?,
@@ -228,24 +230,22 @@ fn ironwood_from_zebra(
 /// Convert an Orchard-shaped action stream and its value balance.
 ///
 /// Shared by the Orchard and Ironwood pools: Ironwood actions are the same
-/// `zebra_chain::orchard::Action` type, so the two differ only in which
-/// accessors the caller reads them from. Keeping one conversion means a fix to
-/// action handling cannot reach one pool and miss the other.
+/// `orchard::Action` type, so the two differ only in which accessors the
+/// caller reads them from. Keeping one conversion means a fix to action
+/// handling cannot reach one pool and miss the other.
 fn orchard_shaped_from_zebra<'a>(
-    actions: impl Iterator<Item = &'a zebra_chain::orchard::Action>,
+    actions: impl Iterator<Item = &'a AuthorizedAction>,
     value_balance: i64,
 ) -> Result<OrchardData, ConvertError> {
     Ok(OrchardData {
         actions: actions
             .map(|act| {
-                let nf_bytes: [u8; 32] = act.nullifier.into();
-                let epk_bytes: [u8; 32] = (&act.ephemeral_key).into();
-                let enc_bytes: [u8; 580] = act.enc_ciphertext.into();
+                let note = act.encrypted_note();
                 Ok(OrchardAction {
-                    nullifier: Nullifier::from(nf_bytes),
-                    cmx: NoteCommitment::from(<[u8; 32]>::from(act.cm_x)),
-                    ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                    nullifier: Nullifier::from(act.nullifier().to_bytes()),
+                    cmx: NoteCommitment::from(act.cmx().to_bytes()),
+                    ephemeral_key: EphemeralKey::from(note.epk_bytes),
+                    enc_ciphertext: compact_prefix(&note.enc_ciphertext.0)?,
                 })
             })
             .collect::<Result<Vec<_>, ConvertError>>()?,
@@ -263,7 +263,7 @@ mod tests {
     /// inside it — otherwise one pool's balance would be reported for both.
     #[test]
     fn shared_conversion_reports_the_balance_it_was_given() {
-        let empty: [&zebra_chain::orchard::Action; 0] = [];
+        let empty: [&AuthorizedAction; 0] = [];
 
         let pool = orchard_shaped_from_zebra(empty.into_iter(), -42).expect("a valid balance");
 
@@ -336,6 +336,24 @@ mod consensus_agreement {
             zaino_consensus::MAX_BLOCK_BYTES,
             zebra_chain::block::MAX_BLOCK_BYTES
         );
+    }
+
+    /// NU7's deployment facts (ZIP 259 branch id and Testnet height, ZIP 218
+    /// block spacing) as zebra states them. A zebra bump that drops or moves
+    /// any of these would otherwise surface only on a live chain.
+    #[test]
+    fn nu7_deployment_agrees() {
+        use zebra_chain::parameters::{ConsensusBranchId, Network, NetworkUpgrade};
+
+        assert_eq!(
+            NetworkUpgrade::Nu7.branch_id(),
+            Some(ConsensusBranchId::from(0x7719_0ad9u32))
+        );
+        assert_eq!(
+            NetworkUpgrade::Nu7.activation_height(&Network::new_default_testnet()),
+            Some(zebra_chain::block::Height(4_465_026))
+        );
+        assert_eq!(NetworkUpgrade::Nu7.target_spacing().num_seconds(), 25);
     }
 }
 
