@@ -10,13 +10,11 @@ use std::time::{Duration, Instant};
 use http::{Request, Response};
 use http_body::{Body, Frame, SizeHint};
 use tonic::{Code, Status};
+use zaino_proto::frame::{framed_len, FRAME_HEADER};
 
 use crate::admission::AtCapacity;
 use crate::emit::{self, Method};
 use crate::report;
-
-/// gRPC framing: compression flag + big-endian length.
-const FRAME_HEADER: usize = 5;
 
 /// Times each request and counts what its body wrote.
 #[derive(Clone, Debug)]
@@ -211,15 +209,11 @@ impl Messages {
             }
 
             self.seen = 0;
-            let len = u32::from_be_bytes([
-                self.header[1],
-                self.header[2],
-                self.header[3],
-                self.header[4],
-            ]) as usize;
-            match len {
-                0 => self.complete += 1,
-                len => self.owed = len,
+            match framed_len(&self.header).map(|framed| framed - FRAME_HEADER) {
+                Some(0) => self.complete += 1,
+                Some(len) => self.owed = len,
+                // header whole: `None` only on a 32-bit `usize` overflow (no real message)
+                None => {}
             }
         }
     }
@@ -234,9 +228,8 @@ mod tests {
     #[test]
     fn messages_are_counted_across_chunk_boundaries() {
         let framed = |payload: &[u8]| {
-            let mut frame = vec![0u8];
-            frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
-            frame.extend_from_slice(payload);
+            let mut frame = Vec::new();
+            zaino_proto::frame::frame_into(&mut frame, |out| out.extend_from_slice(payload));
             frame
         };
 

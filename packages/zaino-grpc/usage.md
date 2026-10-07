@@ -1,94 +1,77 @@
 # zaino-grpc
 
-The wallet-facing `CompactTxStreamer` gRPC server. One service; each method is
-answered by an index, the chain view, or the validator. The per-method table and
-the status codes a client must distinguish live in
+The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
+dispatched by path over the [`Routes`] the config enabled. The per-method table
+and the status codes a client must distinguish live in
 [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
-## Routing
-
-`CompactTxStreamer` is one fixed service name, so its methods cannot be split
-across tonic services. [`Router`] is the named service and dispatches by method
-path:
-
-- a path claimed by a wired index or the chain view is answered there;
-- everything else falls through to [`GrpcService`], the generated server, which
-  answers `GetTransaction` off the validator, `GetLightdInfo` off the chain
-  view, and `UNIMPLEMENTED` for the rest.
-
-`ValidatorPorts` is the validator's whole surface here:
-`SendRawTransaction + GetTransaction` (from `zaino-source`). Derived answers have no port to forward to, so they
-cannot silently fall back to the validator — see
-[`docs/design/boundaries.md`](../../docs/design/boundaries.md).
-
-`GetTaddressTransactions` (and its deprecated alias `GetTaddressTxids`) needs
-both halves: the transparent index names the transactions, the validator holds
-the bytes. `GrpcServer::new` wires the validator half automatically.
-
-## Building a server
+## Routes
 
 ```rust
-let serve = GrpcServer::new(
-    ValidatorHandler::new(Arc::clone(&validator), compact_block_service.clone(), view, network),
-    grpc_listen_address,
-    limits,
-)
-.with_compact_block(compact_block_service)
-.with_tree_state(tree_state_service)
-.with_transparent_address(transparent_service)
-.with_chainview(chainview_handles)
-.bind()
-.await?;
-tokio::spawn(serve.run(cancel.child_token()));
+let routes = Routes {
+    chain: Arc::clone(&view),            // Arc<ChainView<S>>
+    validators,                          // TrafficBalancer<S>
+    network,
+    compact_block: compact_block_service, // CompactBlockService<V>
+    block_hash: Some(block_hash_service),
+    tree_state: Some(tree_state_service),
+    transparent_address: None,           // [index.transparent_address] off
+};
+let bound = GrpcService::new(routes, grpc_listen_address, limits)
+    .with_trusted_proxies(proxies)
+    .with_tls(tls)
+    .bind()
+    .await?;
+tokio::spawn(bound.run(cancel.child_token()));
 ```
 
-- `ValidatorHandler::new(source: Arc<S>, served: CompactBlockService,
-  view: ChainViewSubscriber, network: NetworkType)` — `served` gives
-  `LightdInfo.block_height` (the compact-block index's tip); `view` gives the
-  rest of `LightdInfo` (`ChainViewSnapshot::validator_info`, read from one
-  pinned snapshot, no validator call; below quorum = `UNAVAILABLE`); `network`
-  is the configured network, never read off the validator.
-- `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
-  its `[grpc]` config section.
-- Every `with_*` is optional. An omitted index leaves its paths with
-  `GrpcService`, which answers `UNIMPLEMENTED`.
-- `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through
-  `with_block_hash(BlockHashService)`: its `locate(hash)` names the height, and
-  the answering index must hold the same hash there (else `NOT_FOUND`).
-  Without the block-hash index wired, a hash request is `UNIMPLEMENTED`.
+| Method | Answered by |
+|---|---|
+| `GetLatestBlock`, `GetBlock`, `GetBlockRange[Nullifiers]` | `compact_block` (always on: stored records, never re-encoded) |
+| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | `tree_state` |
+| `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `transparent_address` |
+| `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
+| `SendTransaction`, `GetMempoolTx`, `GetMempoolStream` | `chain` (submission §6, the servable mempool) |
+| `GetTransaction` | `validators` (first validator holding it) |
+| `GetLightdInfo` | `chain`'s pinned view + `compact_block`'s tip; `network` as configured |
+
+- `None` = that index disabled: its methods are `UNIMPLEMENTED`, naming the index
+  (`GetTreeState needs the tree_state index, which is not enabled`). An unknown
+  path is `UNIMPLEMENTED`.
+- `S` = the validators' `ChainDataSource`. Derived answers have no validator
+  method to fall back to: they come from an index or not at all — see
+  [`docs/design/boundaries.md`](../../docs/design/boundaries.md).
+- `V` = the persistence engine's view every index service reads through
+  (`SequenceRead + MapRead`; zainod: `zaino_persistence::DiskView`): `Routes<S,
+  V>`, `GrpcService<S, V>`. The crate names no engine.
+- `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through `block_hash`:
+  its `locate(hash)` names the height, and the answering index must hold the
+  same hash there (else `NOT_FOUND`). With `block_hash: None`, a hash request is
+  `UNIMPLEMENTED`.
+- `GetLightdInfo` never calls a validator: one pinned chain-view snapshot
+  (`validator_info`); no held verified tip = `UNAVAILABLE`.
+- `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
+  `compact_tx`, cached on the entry's `Projection`); each request only renumbers
+  slots and prunes pools.
 - A t-address encoded for a network other than the transparent index's is
   `INVALID_ARGUMENT`.
-- `ChainViewHandles { view, relay, compact }` backs `SendTransaction` (relayed
-  to every validator via the `Relay` port), `GetMempoolTx` and
-  `GetMempoolStream`. `ProjectCompact` renders raw mempool bytes as a
-  `CompactTx`; zainod supplies the implementation.
-- `GrpcServer::bind().await` takes the socket and returns a
-  `BoundGrpcServer`; await it at boot so a bind failure is a boot failure
-  (`GrpcServeError::Serve`), then `tokio::spawn(bound.run(cancel))`. Once
-  `cancel` fires, `run` closes the listener, sends every open connection an
-  HTTP/2 GOAWAY, and returns `Ok(())` when they have all closed or
-  `GrpcLimits::drain_timeout` has passed, whichever is first. Connections still
-  open then are dropped with the runtime. The default `drain_timeout` is zero:
-  return at once.
-
-## Features
-
-| Feature | Default | Effect |
-|---|---|---|
-| `index-compact-block` | on | claims `GetLatestBlock`, `GetBlock`, `GetBlockRange`, `GetBlockRangeNullifiers` |
-| `index-tree-state` | on | claims `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` |
-| `index-transparent-address` | on | claims `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]`, `GetTaddressTransactions`, `GetTaddressTxids` |
-| `chainview` | on | claims `SendTransaction`, `GetMempoolTx`, `GetMempoolStream` |
-
-Off means the paths are not claimed and the index crate is not compiled in.
+- `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
+  its `[grpc]` config section.
+- `bind().await` takes the socket and returns a `BoundGrpcService`; await it at
+  boot so a bind failure is a boot failure (`GrpcServeError::Serve`), then
+  `tokio::spawn(bound.run(cancel))`. Once `cancel` fires, `run` closes the
+  listener, sends every open connection an HTTP/2 GOAWAY, and returns `Ok(())`
+  when they have all closed or `GrpcLimits::drain_timeout` has passed,
+  whichever is first. Connections still open then are dropped with the runtime.
+  The default `drain_timeout` is zero: return at once.
 
 ## Serve stack
 
-hyper-util's HTTP/2 server with the routed tonic service mounted, not
+hyper-util's HTTP/2 server around the path dispatch, not
 `tonic::transport::Server`, so the accept loop is zaino's:
 
 ```text
-accept ─ total cap ─ client identity ─ per-client cap ─ h2 conn ─ admission ─ Router
+accept ─ total cap ─ client identity ─ per-client cap ─ h2 conn ─ admission ─ dispatch
 ```
 
 Every cap refuses; none queues except the read lanes:
@@ -132,7 +115,7 @@ Every cap refuses; none queues except the read lanes:
 
 ### Read lanes
 
-`ReadLanes` (owned by the `Router`, one per process) runs every read that
+`ReadLanes` (owned by the `GrpcService`, one per process) runs every read that
 touches index files on the blocking pool, under a permit of its lane, never on
 a runtime worker:
 
@@ -220,4 +203,4 @@ dispatch builds the proto message and frames it.
 `GetMempoolStream` opens with the tail's whole snapshot as one DATA chunk. The
 chunk is framed once per published chain view and shared by refcount, so the
 per-block reconnect of every wallet costs one render. Each later arrival is
-its own record. Below quorum the stream is `UNAVAILABLE`, never opened silent.
+its own record. With no held verified tip the stream is `UNAVAILABLE`, never opened silent.

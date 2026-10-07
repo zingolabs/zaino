@@ -40,7 +40,7 @@ pub(crate) enum Class {
 impl Class {
     fn of(path: &str) -> Self {
         match path {
-            crate::router::path::GET_MEMPOOL_STREAM => Self::Subscription,
+            crate::wire::path::GET_MEMPOOL_STREAM => Self::Subscription,
             _ => Self::Work,
         }
     }
@@ -241,7 +241,7 @@ mod tests {
 
         fn call(&mut self, request: Request<Full<Bytes>>) -> Self::Future {
             let body = match request.uri().path() {
-                "/open" | crate::router::path::GET_MEMPOOL_STREAM => {
+                "/open" | crate::wire::path::GET_MEMPOOL_STREAM => {
                     tonic::body::Body::new(StreamBody::new(futures::stream::pending::<
                         Result<Frame<Bytes>, Status>,
                     >()))
@@ -328,7 +328,7 @@ mod tests {
         let open = admission.call(request("/open")).await.expect("infallible");
         assert_eq!(streams.available_permits(), 0, "the open stream holds it");
 
-        let mempool = crate::router::path::GET_MEMPOOL_STREAM;
+        let mempool = crate::wire::path::GET_MEMPOOL_STREAM;
         let subscribed = admission.call(request(mempool)).await.expect("infallible");
         let status = subscribed.headers().get("grpc-status");
         assert_eq!(status, None, "a full work pool leaves subscriptions admitted");

@@ -1,14 +1,10 @@
-//! gRPC transport: hyper-util's HTTP/2 server with the routed tonic services mounted on it
-//! (`server.bind().await?` at boot, then `tokio::spawn(bound.run(cancel))`)
+//! [`GrpcService`]: hyper-util's HTTP/2 server around the path dispatch (`service.rs`)
+//! (`service.bind().await?` at boot, then `tokio::spawn(bound.run(cancel))`)
 //!
-//! Serves the [`Router`], not the generated service directly. The router is what lets an
-//! enabled index answer its own methods from stored bytes while everything else falls through
-//! to [`GrpcService`] — one service name, two answer paths, chosen per method path.
-//!
-//! The stack around it, outermost first:
+//! The stack, outermost first:
 //!
 //! ```text
-//!   accept ─ connection caps ─ PROXY header ─ TLS ─ h2 conn ─ metrics ─ admission ─ Router
+//!   accept ─ connection caps ─ PROXY header ─ TLS ─ h2 conn ─ metrics ─ admission ─ dispatch
 //! ```
 //!
 //! Serving hyper directly rather than `tonic::transport::Server` is what makes the caps
@@ -28,17 +24,17 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn, Instrument as _, Span};
-use zaino_proto::proto::service::compact_tx_streamer_server::CompactTxStreamerServer;
+use zaino_persistence::{MapRead, SequenceRead};
+use zaino_source::ChainDataSource;
 
 use crate::admission::{Admission, Class, Permits};
 use crate::client::TrustedProxies;
 use crate::connections::{ConnectionCaps, Reserved};
-use crate::grpc::GrpcService;
 use crate::limits::ReadLanes;
 use crate::observe::Measured;
 use crate::report::{self, Held, INTERVAL};
-use crate::validator::{ValidatorHandler, ValidatorPorts};
-use crate::{emit, GrpcLimits, Router};
+use crate::service::{Dispatch, Routes};
+use crate::{emit, GrpcLimits};
 
 /// Per-stream send buffer. Flow control paces each stream from here, so a slow wallet backs
 /// itself up rather than the server.
@@ -67,12 +63,10 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Locally-reset streams a peer may accumulate before the connection is closed (CVE-2023-44487).
 const RAPID_RESET_LIMIT: usize = 128;
 
-/// The routed `CompactTxStreamer`: indexes first, node fallback behind them.
-type Routed<S> = Router<CompactTxStreamerServer<GrpcService<S>>>;
-
-/// A `CompactTxStreamer` server, bounded by [`GrpcLimits`].
-pub struct GrpcServer<S> {
-    routed: Routed<S>,
+/// The `CompactTxStreamer` endpoint: the enabled [`Routes`], served on one listener, bounded by
+/// [`GrpcLimits`]
+pub struct GrpcService<S: ChainDataSource, V> {
+    dispatch: Dispatch<S, V>,
     bind: SocketAddr,
     limits: GrpcLimits,
     proxies: TrustedProxies,
@@ -87,20 +81,10 @@ pub enum GrpcServeError {
     Serve(String),
 }
 
-impl<S: ValidatorPorts> GrpcServer<S> {
-    /// A server over `handler`, bounded by `limits`, with no index claiming anything yet
-    ///
-    /// - `handler` twice: the fallback service, and the bytes half of `GetTaddressTransactions`
-    ///   (the router holds both halves of that method)
-    pub fn new(handler: ValidatorHandler<S>, bind: SocketAddr, limits: GrpcLimits) -> Self {
-        let raw = std::sync::Arc::new(handler.clone());
-        let routed = Router::new(
-            CompactTxStreamerServer::new(GrpcService::new(handler)),
-            raw,
-            ReadLanes::new(&limits),
-        );
-
-        Self { routed, bind, limits, proxies: TrustedProxies::default(), tls: None }
+impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
+    pub fn new(routes: Routes<S, V>, bind: SocketAddr, limits: GrpcLimits) -> Self {
+        let dispatch = Dispatch::new(routes, ReadLanes::new(&limits));
+        Self { dispatch, bind, limits, proxies: TrustedProxies::default(), tls: None }
     }
 
     /// Terminates TLS on the listener (else plaintext h2c, for a TLS-terminating proxy in front)
@@ -115,45 +99,6 @@ impl<S: ValidatorPorts> GrpcServer<S> {
     /// - a trusted peer sending no header is dropped
     pub fn with_trusted_proxies(mut self, proxies: TrustedProxies) -> Self {
         self.proxies = proxies;
-        self
-    }
-
-    /// Lets the compact-block index answer the block methods.
-    pub fn with_compact_block(
-        mut self,
-        service: zaino_index_compact_block::CompactBlockService,
-    ) -> Self {
-        self.routed = self.routed.with_compact_block(service);
-        self
-    }
-
-    /// Lets the block-hash index resolve `BlockID.hash` for the other indexes' methods.
-    pub fn with_block_hash(
-        mut self,
-        service: zaino_internal_block_hash_to_height::BlockHashService,
-    ) -> Self {
-        self.routed = self.routed.with_block_hash(service);
-        self
-    }
-
-    /// Lets the tree-state index answer the treestate and subtree-root methods.
-    pub fn with_tree_state(mut self, service: zaino_index_tree_state::TreeStateService) -> Self {
-        self.routed = self.routed.with_tree_state(service);
-        self
-    }
-
-    /// Lets the transparent-address index answer the utxo and balance methods.
-    pub fn with_transparent_address(
-        mut self,
-        service: zaino_index_transparent_address::TransparentAddressService,
-    ) -> Self {
-        self.routed = self.routed.with_transparent_address(service);
-        self
-    }
-
-    /// Lets the chain view answer the mempool methods and own the broadcast fan-out.
-    pub fn with_chainview(mut self, handles: crate::ChainViewHandles) -> Self {
-        self.routed = self.routed.with_chainview(handles);
         self
     }
 }
@@ -174,39 +119,39 @@ fn http2(limits: &GrpcLimits) -> auto::Builder<TokioExecutor> {
     builder
 }
 
-/// [`GrpcServer`] holding its socket, ready to [`run`](Self::run)
-pub struct BoundGrpcServer<S> {
-    server: GrpcServer<S>,
+/// [`GrpcService`] holding its socket, ready to [`run`](Self::run)
+pub struct BoundGrpcService<S: ChainDataSource, V> {
+    server: GrpcService<S, V>,
     listener: TcpListener,
 }
 
-impl<S: ValidatorPorts> GrpcServer<S> {
+impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
     /// Awaited at boot, before spawning `run` (EADDRINUSE = boot failure, not a serve-loop
     /// failure (#1081))
-    pub async fn bind(self) -> Result<BoundGrpcServer<S>, GrpcServeError> {
+    pub async fn bind(self) -> Result<BoundGrpcService<S, V>, GrpcServeError> {
         let listener = TcpListener::bind(self.bind)
             .await
             .map_err(|e| GrpcServeError::Serve(format!("bind failed: {e}")))?;
-        Ok(BoundGrpcServer { server: self, listener })
+        Ok(BoundGrpcService { server: self, listener })
     }
 }
 
 /// The per-connection service stack (see the module doc)
-type Stack<S> = TowerToHyperService<Measured<Admission<Routed<S>>>>;
+type Stack<S, V> = TowerToHyperService<Measured<Admission<Dispatch<S, V>>>>;
 
 /// What every connection task shares
-struct Shared<S> {
+struct Shared<S: ChainDataSource, V> {
     caps: ConnectionCaps,
     proxies: TrustedProxies,
     tls: Option<tokio_rustls::TlsAcceptor>,
     http2: auto::Builder<TokioExecutor>,
-    routed: Routed<S>,
+    dispatch: Dispatch<S, V>,
     permits: Permits,
     limits: GrpcLimits,
     cancel: CancellationToken,
 }
 
-impl<S> Shared<S> {
+impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
     /// Permits and connections held now, each against its cap
     fn held(&self) -> Held {
         Held {
@@ -219,7 +164,7 @@ impl<S> Shared<S> {
     }
 }
 
-impl<S: ValidatorPorts> BoundGrpcServer<S> {
+impl<S: ChainDataSource, V: SequenceRead + MapRead> BoundGrpcService<S, V> {
     /// Accept + serve until `cancel`, then drain: listener closed, every connection GOAWAY'd,
     /// returns once they all finish or `drain_timeout` passes (the rest dropped)
     ///
@@ -252,7 +197,7 @@ impl<S: ValidatorPorts> BoundGrpcServer<S> {
             proxies: server.proxies,
             tls: server.tls.as_ref().map(crate::Tls::acceptor),
             http2: http2(&server.limits),
-            routed: server.routed,
+            dispatch: server.dispatch,
             permits: Permits::new(&server.limits),
             limits: server.limits,
             cancel: cancel.clone(),
@@ -324,7 +269,7 @@ fn tune(socket: &TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-impl<S: ValidatorPorts> Shared<S> {
+impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
     /// Names the client, applies its cap, then serves HTTP/2 until close or `cancel`
     async fn connection(
         self: Arc<Self>,
@@ -387,8 +332,8 @@ impl<S: ValidatorPorts> Shared<S> {
         I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
     {
         let stalls = Arc::new(crate::stall::Watch::default());
-        let service: Stack<S> = TowerToHyperService::new(Measured::new(Admission::new(
-            self.routed.clone(),
+        let service: Stack<S, V> = TowerToHyperService::new(Measured::new(Admission::new(
+            self.dispatch.clone(),
             self.permits.clone(),
             Arc::clone(&stalls),
         )));

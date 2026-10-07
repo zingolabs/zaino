@@ -6,8 +6,38 @@ use std::time::Duration;
 
 use tokio::io::AsyncReadExt as _;
 use tokio_util::sync::CancellationToken;
-use zaino_grpc::{GrpcLimits, GrpcServer, ValidatorHandler};
+use zaino_grpc::{GrpcLimits, GrpcService, Routes};
+use zaino_persistence::{DiskEngine, DiskView, PersistenceEngine};
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
+use zaino_source::mock::MockChain;
+
+/// An empty compact-block index, every other off, and a chain view never polled: no verified
+/// tip, so every `GetLightdInfo` here = `UNAVAILABLE` (what these transport tests read back)
+fn routes() -> Routes<MockChain, DiskView> {
+    let network = zcash_protocol::consensus::NetworkType::Test;
+    let schema = zaino_index_compact_block::schema(network);
+    let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
+    let store = engine.open(std::path::Path::new("/cb"), &schema).expect("open");
+    let validator = Arc::new(MockChain::new());
+    let endpoint = zaino_chainview::Endpoint {
+        address: "unpolled:18232".to_owned(),
+        source: validator.clone(),
+    };
+    let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
+    let (chain, _pollers) =
+        zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one endpoint");
+    Routes {
+        chain: Arc::new(chain),
+        validators: zaino_source::TrafficBalancer::new(vec![validator]),
+        network,
+        compact_block: zaino_index_compact_block::CompactBlockService::new(
+            zaino_sync::Served::fixed(zaino_index_compact_block::testing::committed(store, 0)),
+        ),
+        block_hash: None,
+        tree_state: None,
+        transparent_address: None,
+    }
+}
 
 /// A real wallet gets a real answer over the hyper-served h2, and a second connection from the
 /// same address is closed at accept rather than served.
@@ -19,32 +49,8 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     drop(probe);
 
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
-    let server = GrpcServer::new(
-        ValidatorHandler::new(
-            Arc::new(zaino_source::mock::MockChain::new()),
-            zaino_index_compact_block::CompactBlockService::new(zaino_sync::Served::fixed(
-                zaino_index_compact_block::CompactBlockStore::open(
-                    zaino_persistence::fs::SimFs::new(),
-                    std::path::Path::new("/cb"),
-                    zcash_protocol::consensus::NetworkType::Test,
-                )
-                .expect("open")
-                .reader()
-                .pin(),
-            )),
-            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
-            zaino_chainview::ChainView::new(
-                vec![zaino_chainview::Endpoint {
-                    address: "unpolled:18232".to_owned(),
-                    source: Arc::new(zaino_source::mock::MockChain::new()),
-                }],
-                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
-            )
-            .expect("one endpoint")
-            .0
-            .subscriber(),
-            zcash_protocol::consensus::NetworkType::Test,
-        ),
+    let server = GrpcService::new(
+        routes(),
         bind,
         GrpcLimits {
             max_connections: non_zero(64),
@@ -72,13 +78,13 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     .await
     .expect("the server binds and accepts");
 
-    // Unpolled view = below quorum → UNAVAILABLE (no stand-in branch or tip), decoded over h2 as
-    // a status rather than a dropped stream
+    // No verified tip → UNAVAILABLE (no stand-in branch or tip), decoded over h2 as a status
+    // rather than a dropped stream
     let refusal = wallet
         .get_lightd_info(zaino_proto::proto::service::Empty {})
         .await
-        .expect_err("below quorum");
-    let named = refusal.message().ends_with("validators agree on a tip; 1 required");
+        .expect_err("no verified tip");
+    let named = refusal.message() == "no verified header chain tip yet";
     assert_eq!((refusal.code(), named), (tonic::Code::Unavailable, true), "{refusal:?}");
 
     // The wallet holds the one per-address slot, so the next connection is closed unserved:
@@ -107,41 +113,14 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     drop(probe);
 
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
-    let server = GrpcServer::new(
-        ValidatorHandler::new(
-            Arc::new(zaino_source::mock::MockChain::new()),
-            zaino_index_compact_block::CompactBlockService::new(zaino_sync::Served::fixed(
-                zaino_index_compact_block::CompactBlockStore::open(
-                    zaino_persistence::fs::SimFs::new(),
-                    std::path::Path::new("/cb"),
-                    zcash_protocol::consensus::NetworkType::Test,
-                )
-                .expect("open")
-                .reader()
-                .pin(),
-            )),
-            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
-            zaino_chainview::ChainView::new(
-                vec![zaino_chainview::Endpoint {
-                    address: "unpolled:18232".to_owned(),
-                    source: Arc::new(zaino_source::mock::MockChain::new()),
-                }],
-                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
-            )
-            .expect("one endpoint")
-            .0
-            .subscriber(),
-            zcash_protocol::consensus::NetworkType::Test,
-        ),
-        bind,
-        GrpcLimits { max_connections_per_ip: non_zero(1), ..GrpcLimits::default() },
-    )
-    .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
-        .parse()
-        .expect("loopback net")]))
-    .bind()
-    .await
-    .expect("the freed port binds");
+    let limits = GrpcLimits { max_connections_per_ip: non_zero(1), ..GrpcLimits::default() };
+    let server = GrpcService::new(routes(), bind, limits)
+        .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
+            .parse()
+            .expect("loopback net")]))
+        .bind()
+        .await
+        .expect("the freed port binds");
 
     let cancel = CancellationToken::new();
     let serving = tokio::spawn(server.run(cancel.clone()));
@@ -217,43 +196,14 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         let bind = probe.local_addr().expect("local addr");
         drop(probe);
 
-        let server = GrpcServer::new(
-            ValidatorHandler::new(
-                Arc::new(zaino_source::mock::MockChain::new()),
-                zaino_index_compact_block::CompactBlockService::new(zaino_sync::Served::fixed(
-                    zaino_index_compact_block::CompactBlockStore::open(
-                        zaino_persistence::fs::SimFs::new(),
-                        std::path::Path::new("/cb"),
-                        zcash_protocol::consensus::NetworkType::Test,
-                    )
-                    .expect("open")
-                    .reader()
-                    .pin(),
-                )),
-                // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
-                zaino_chainview::ChainView::new(
-                    vec![zaino_chainview::Endpoint {
-                        address: "unpolled:18232".to_owned(),
-                        source: Arc::new(zaino_source::mock::MockChain::new()),
-                    }],
-                    zaino_primitives::types::ReorgDepth::new(
-                        std::num::NonZeroU32::new(3).expect("non-zero"),
-                    ),
-                )
-                .expect("one endpoint")
-                .0
-                .subscriber(),
-                zcash_protocol::consensus::NetworkType::Test,
-            ),
-            bind,
-            GrpcLimits { drain_timeout, ..GrpcLimits::default() },
-        )
-        .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
-            .parse()
-            .expect("loopback net")]))
-        .bind()
-        .await
-        .expect("the freed port binds");
+        let limits = GrpcLimits { drain_timeout, ..GrpcLimits::default() };
+        let server = GrpcService::new(routes(), bind, limits)
+            .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
+                .parse()
+                .expect("loopback net")]))
+            .bind()
+            .await
+            .expect("the freed port binds");
 
         let cancel = CancellationToken::new();
         let serving = tokio::spawn(server.run(cancel.clone()));
@@ -277,7 +227,7 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         assert_eq!(
             answered.err(),
             Some(tonic::Code::Unavailable),
-            "{case}: served (unpolled view: below quorum)"
+            "{case}: served (no verified tip)"
         );
 
         let cancelled = std::time::Instant::now();
@@ -298,37 +248,7 @@ async fn binding_a_held_port_fails_before_anything_is_served() {
     let held = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let bind = held.local_addr().expect("local addr");
 
-    let outcome = GrpcServer::new(
-        ValidatorHandler::new(
-            Arc::new(zaino_source::mock::MockChain::new()),
-            zaino_index_compact_block::CompactBlockService::new(zaino_sync::Served::fixed(
-                zaino_index_compact_block::CompactBlockStore::open(
-                    zaino_persistence::fs::SimFs::new(),
-                    std::path::Path::new("/cb"),
-                    zcash_protocol::consensus::NetworkType::Test,
-                )
-                .expect("open")
-                .reader()
-                .pin(),
-            )),
-            // never polled: below quorum, so GetLightdInfo = UNAVAILABLE
-            zaino_chainview::ChainView::new(
-                vec![zaino_chainview::Endpoint {
-                    address: "unpolled:18232".to_owned(),
-                    source: Arc::new(zaino_source::mock::MockChain::new()),
-                }],
-                zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero")),
-            )
-            .expect("one endpoint")
-            .0
-            .subscriber(),
-            zcash_protocol::consensus::NetworkType::Test,
-        ),
-        bind,
-        GrpcLimits::default(),
-    )
-    .bind()
-    .await;
+    let outcome = GrpcService::new(routes(), bind, GrpcLimits::default()).bind().await;
 
     use zaino_grpc::GrpcServeError::Serve;
     let error = outcome.err();

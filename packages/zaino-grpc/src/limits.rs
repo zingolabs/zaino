@@ -79,14 +79,14 @@ impl Lane {
 
 /// The three read lanes, process-wide (clone = share)
 #[derive(Clone, Debug)]
-pub struct ReadLanes {
+pub(crate) struct ReadLanes {
     point: Arc<Semaphore>,
     range: Arc<Semaphore>,
     scan: Arc<Semaphore>,
 }
 
 impl ReadLanes {
-    pub fn new(limits: &GrpcLimits) -> Self {
+    pub(crate) fn new(limits: &GrpcLimits) -> Self {
         let lane = |max: NonZeroUsize| Arc::new(Semaphore::new(max.get()));
         Self {
             point: lane(limits.max_point_reads),

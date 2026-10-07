@@ -1,9 +1,7 @@
-//! `zaino-grpc` — the lightwalletd-compatible `CompactTxStreamer` adapter.
+//! `zaino-grpc` — the lightwalletd-compatible `CompactTxStreamer` endpoint.
 //!
-//! - [`Router`] dispatches by method path: enabled index / chain view claims its methods
-//!   (compact blocks = stored bytes, never re-encoded)
-//! - Unclaimed → [`GrpcService`]: `GetTransaction`, `GetLightdInfo` & `SendTransaction` (w/o
-//!   chain view) off the validator, rest unimplemented
+//! - [`GrpcService`] = every method, dispatched by path over [`Routes`] (the enabled indexes,
+//!   the chain view, the validators); compact blocks = stored bytes, never re-encoded
 //! - Domain → wire owned by the byte-producing crate (no domain crate depends on the schema)
 #![forbid(unsafe_code)]
 
@@ -11,24 +9,22 @@ mod admission;
 mod client;
 mod connections;
 mod emit;
-mod grpc;
 mod limits;
 mod memo;
 mod observe;
 mod report;
-mod router;
+mod routes;
+mod service;
 mod stall;
+#[cfg(test)]
+mod testing;
 mod tls;
 mod transport;
-mod validator;
+mod wire;
 
 pub use client::TrustedProxies;
 pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
-pub use grpc::GrpcService;
-pub use limits::{GrpcLimits, ReadLanes};
-pub use router::ChainViewHandles;
-pub use router::Router;
+pub use limits::GrpcLimits;
+pub use service::Routes;
 pub use tls::{Tls, TlsError, TlsFiles};
-pub use transport::{BoundGrpcServer, GrpcServeError, GrpcServer};
-pub use validator::{ProjectCompact, Relay};
-pub use validator::{ValidatorHandler, ValidatorPorts};
+pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};

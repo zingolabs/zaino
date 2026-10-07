@@ -46,6 +46,7 @@ hyper-util = { workspace = true, features = ["http2", "server", "server-auto", "
 rustls = { workspace = true }
 tokio-rustls = { workspace = true }
 arc-swap = { workspace = true }
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 
 [dev-dependencies]
 rcgen = { workspace = true }
@@ -53,8 +54,13 @@ tempfile = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 zaino-index-compact-block = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
-# Router tests: index loops fed through a `BlockSink`, and the `ArcSwap` behind a
+# Service tests: index loops fed through a `BlockSink`, and the `ArcSwap` behind a
 # test-flipped serving gate.
 zaino-sync = { workspace = true }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
+zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unreachable_pub = "warn"
