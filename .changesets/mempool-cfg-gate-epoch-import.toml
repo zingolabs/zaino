@@ -1,0 +1,7 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0d62f-520a-71e0-a888-142cd63c9b5c"
+
+[[changes]]
+crate       = "zaino-mempool"
+kind        = "fix"
+description = "Compiles again with default features off: the `ChainStateEpoch` import is gated behind `tip_aware_mempool` like its only uses."

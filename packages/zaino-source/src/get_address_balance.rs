@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::AddressBalance;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetAddressBalance`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -18,10 +18,12 @@ pub enum GetAddressBalanceError {
 ///
 /// Maps to `getaddressbalance` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetAddressBalance: Send + Sync {
+pub trait OneShotGetAddressBalance: ValidatorSource + Send + Sync {
     /// Fetch address balance.
     fn get_address_balance(
         &self,
         addresses: Vec<String>,
-    ) -> impl Future<Output = Result<AddressBalance, QueryError<GetAddressBalanceError>>> + Send;
+    ) -> impl Future<
+        Output = Result<AddressBalance, QueryError<GetAddressBalanceError, Self::NonDomain>>,
+    > + Send;
 }

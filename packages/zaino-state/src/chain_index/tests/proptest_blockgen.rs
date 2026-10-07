@@ -1129,6 +1129,10 @@ impl ProptestMockchain {
     }
 }
 
+impl zaino_source::ValidatorSource for ProptestMockchain {
+    type NonDomain = zaino_source::NonDomainError;
+}
+
 impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
     async fn get_raw_block(
         &self,
@@ -1329,7 +1333,7 @@ impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
                     "proptest mockchain has no chain tip to serve the mempool",
                 )
             }
-            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            PortError::NonDomain(fetch) => PortError::NonDomain(fetch),
         })
     }
 }
@@ -1353,7 +1357,7 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
                         zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
                     )
                 }
-                PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                PortError::NonDomain(non_domain) => PortError::NonDomain(non_domain),
             })?;
         let hash = block.header.hash;
         let roots =
@@ -1366,7 +1370,7 @@ impl zaino_source::OneShotGetCommitmentTreeRootsByHeight for ProptestMockchain {
                     ) => super::super::source::mockchain_source::port_fault(format!(
                         "proptest mockchain lost block {hash} it just served"
                     )),
-                    PortError::Fetch(fetch) => PortError::Fetch(fetch),
+                    PortError::NonDomain(non_domain) => PortError::NonDomain(non_domain),
                 })?;
         Ok((hash, roots))
     }
