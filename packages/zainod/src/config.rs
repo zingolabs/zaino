@@ -90,8 +90,8 @@ impl Default for TrustedValidatorConfig {
                 .expect("the default connect timeout is whole, non-zero seconds"),
             read_timeout_secs: NonZeroU64::new(timeouts.read.as_secs())
                 .expect("the default read timeout is whole, non-zero seconds"),
-            max_connections: limits.max_connections(),
-            max_requests_per_sec: limits.max_requests_per_sec,
+            max_connections: limits.max_connections,
+            max_requests_per_sec: None,
             max_mib_per_sec: None,
             indexer_address: None,
             priority: 0,
@@ -107,10 +107,10 @@ impl TrustedValidatorConfig {
     }
 
     /// The transport's: connection pool + response bytes paced as read
-    pub(crate) fn link(&self) -> Option<zaino_source::LinkLimits> {
+    pub(crate) fn link(&self) -> zaino_source::LinkLimits {
         let mib = NonZeroU32::new(1 << 20).expect("2^20 is non-zero");
-        let bytes = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
-        zaino_source::LinkLimits::new(self.max_connections, self.max_requests_per_sec, bytes)
+        let max_bytes_per_sec = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
+        zaino_source::LinkLimits { max_connections: self.max_connections, max_bytes_per_sec }
     }
 }
 
@@ -1015,8 +1015,9 @@ path = "/tmp/zaino-compact-block"
         assert_eq!(config.trusted_validators, [entry("127.0.0.1:18232"), eu.clone()]);
         assert!(config.validate().is_ok());
         assert_eq!(eu.limits(), zaino_traffic::Limits::new(8, Some(n(200))), "the balancer's");
-        let link = eu.link().expect("8 connections suffice");
-        assert_eq!((link.max_connections(), link.max_bytes_per_sec), (n(8), Some(n(4 << 20))));
+        let link =
+            zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
+        assert_eq!(eu.link(), link, "the transport's");
 
         let refused = |config: DaemonConfig| config.validate().expect_err("refused").to_string();
         let none = DaemonConfig { trusted_validators: Vec::new(), ..config.clone() };

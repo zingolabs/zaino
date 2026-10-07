@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
 use zaino_primitives::types::{BlockHash, Height};
-use zaino_source::{ChainDataSource, RpcClient, RpcClientConfig, ZebraRpcAdapter};
+use zaino_source::{ChainDataSource, LinkLimits, Timeouts, ZebraRpcAdapter};
 
 struct Expected {
     height: u32,
@@ -176,13 +176,10 @@ async fn block_parity_with_explorer_offline() {
     let port = listener.local_addr().expect("local addr").port();
     tokio::spawn(mock_zebra_rpc(listener, fixtures));
 
-    let rpc = RpcClient::new(RpcClientConfig {
-        url: format!("http://127.0.0.1:{port}"),
-        auth: None,
-        ..Default::default()
-    })
-    .expect("RPC client creation");
-    let adapter = ZebraRpcAdapter::new(rpc);
+    let address = format!("127.0.0.1:{port}");
+    let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
+    let adapter = ZebraRpcAdapter::at(&address, None, None, None, timeouts, limits);
+    let adapter = adapter.expect("host:port");
 
     for expected in FIXTURES {
         let height = Height::try_from(expected.height).expect("fixture height");

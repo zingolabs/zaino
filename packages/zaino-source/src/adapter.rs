@@ -1,13 +1,12 @@
 //! The ports over zebrad's JSON-RPC
 
 use std::path::Path;
-use std::sync::Arc;
 
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 
 use crate::rpc::{
-    auth_from_parts, validator_url, Call, EndpointError, Lane, LinkLimits, RpcClient,
-    RpcClientConfig, RpcError, Timeouts,
+    auth_from_parts, validator_url, Call, EndpointError, LinkLimits, RpcClient, RpcClientConfig,
+    RpcError, Timeouts,
 };
 use crate::{
     decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
@@ -16,23 +15,14 @@ use crate::{
     SendRawTransactionError, TransactionResponse,
 };
 
-/// One validator's link + the lane this handle's calls use; single attempt per call (callers
-/// own their retry)
-///
-/// - every handle on one validator shares one link (one connection budget): [`on`](Self::on)
-#[derive(Clone)]
+/// One validator's link; single attempt per call (retries, concurrency = the caller's balancer)
 pub struct ZebraRpcAdapter {
-    rpc: Arc<RpcClient>,
-    lane: Lane,
+    rpc: RpcClient,
 }
 
 impl ZebraRpcAdapter {
-    pub fn new(rpc: RpcClient) -> Self {
-        Self { rpc: Arc::new(rpc), lane: Lane::Control }
-    }
-
-    /// Validator at `address` (`host:port`) on [`Lane::Control`], unprobed (down at boot = the
-    /// first call's failure + the caller's retry, never a boot failure)
+    /// Validator at `address` (`host:port`), unprobed (down at boot = the first call's failure +
+    /// the caller's retry, never a boot failure)
     pub fn at(
         address: &str,
         cookie_path: Option<&Path>,
@@ -47,15 +37,9 @@ impl ZebraRpcAdapter {
             auth: auth_from_parts(cookie_path, user, password)?,
             timeouts,
             limits,
-            ..RpcClientConfig::default()
         })
         .map_err(EndpointError::Client)?;
-        Ok(Self::new(rpc))
-    }
-
-    /// Same validator + budget, calls on `lane`
-    pub fn on(&self, lane: Lane) -> Self {
-        Self { rpc: Arc::clone(&self.rpc), lane }
+        Ok(Self { rpc })
     }
 
     /// `getblock <id> 0` → bytes → [`decode::block`]
@@ -70,7 +54,7 @@ impl ZebraRpcAdapter {
         let params = vec![id.into(), serde_json::Value::Number(0.into())];
         let parse::HexBytes(raw) = self
             .rpc
-            .call_as(self.lane, "getblock", params)
+            .call_as("getblock", params)
             .await
             .map_err(|error| absent_or_fetch(error, absent))?;
         decode::block(&raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
@@ -87,7 +71,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call(self.lane, method, params).await.map_err(classify)?;
+        let value = self.rpc.call(method, params).await.map_err(classify)?;
         parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 }
@@ -185,7 +169,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
                     params: vec![u32::from(*height).to_string().into(), false.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch::<parse::HexBytes>(self.lane, calls).await?;
+            let replies = self.rpc.call_batch::<parse::HexBytes>(calls).await?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
                 links.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
@@ -209,8 +193,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         if metadata {
             calls.extend(["getpeerinfo", "getinfo", "getdeprecationinfo"].map(|m| call(m, vec![])));
         }
-        let mut replies =
-            self.rpc.call_batch::<serde_json::Value>(self.lane, calls).await?.into_iter();
+        let mut replies = self.rpc.call_batch::<serde_json::Value>(calls).await?.into_iter();
         let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
         let info = parse::parse_blockchain_info(&next()?).map_err(from_parse)?;
@@ -258,7 +241,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
                     params: vec![entry.txid.to_string().into(), 0.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch(self.lane, calls).await?;
+            let replies = self.rpc.call_batch(calls).await?;
             for (entry, reply) in batch.iter().zip(replies) {
                 let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
                 fetched.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
@@ -313,7 +296,7 @@ where
 /// Raw bytes per `getrawtransaction` batch (hex doubles it: 16 MiB reply, under
 /// `MAX_RESPONSE_BYTES` and zebra's 50 MiB `max_response_body_size` default)
 const RAW_BATCH_BYTES: u64 = 8 << 20;
-/// Calls per batch (one batch holds one control-lane connection for its whole reply)
+/// Calls per batch (one batch holds one connection for its whole reply)
 const RAW_BATCH_CALLS: usize = 100;
 
 /// `listed` cut in order into batches within both budgets (an entry over the byte budget alone)

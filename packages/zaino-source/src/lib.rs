@@ -23,7 +23,7 @@ pub use queries::{
     TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
-pub use rpc::{EndpointError, Lane, LinkLimits, RpcClient, RpcClientConfig, RpcError, Timeouts};
+pub use rpc::{EndpointError, LinkLimits, RpcClient, RpcClientConfig, RpcError, Timeouts};
 
 /// `cfg(test)` too (a crate's own features don't self-enable)
 #[cfg(any(test, feature = "testing"))]

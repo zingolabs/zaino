@@ -13,7 +13,7 @@ use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch};
 use zaino_header_chain::{HeaderChain, HeaderStore, Params};
 use zaino_persistence::fs::Fs;
 use zaino_primitives::types::{Height, ReorgDepth};
-use zaino_source::{IndexerWatch, Lane, ZebraRpcAdapter};
+use zaino_source::{IndexerWatch, ZebraRpcAdapter};
 use zaino_traffic::{TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
@@ -41,7 +41,7 @@ pub(crate) fn connect(config: &DaemonConfig, fs: Arc<dyn Fs>) -> Result<Wiring, 
     let validators = &config.trusted_validators;
     let trusted = validators.iter().map(|validator| {
         let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
-        let source = Arc::new(adapter(validator)?.on(Lane::Sync));
+        let source = Arc::new(adapter(validator)?);
         Ok(Trusted { source, priority: validator.priority, limits })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
@@ -100,14 +100,13 @@ fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
 }
 
 fn adapter(validator: &TrustedValidatorConfig) -> Result<ZebraRpcAdapter, IndexerError> {
-    let limits = validator.link().ok_or_else(|| too_few_connections(validator))?;
     ZebraRpcAdapter::at(
         &validator.jsonrpc_address,
         validator.cookie_path.as_deref(),
         validator.user.clone(),
         validator.password.clone(),
         validator.into(),
-        limits,
+        validator.link(),
     )
     .map_err(IndexerError::from)
 }
