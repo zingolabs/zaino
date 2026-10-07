@@ -12,7 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-# `testing::Chain`: regtest chains with real header bytes, for downstream tests
+# `testing::MockChain` (+ `Chain`): regtest block trees with real header bytes, for every test
 testing = []
 
 [dependencies]

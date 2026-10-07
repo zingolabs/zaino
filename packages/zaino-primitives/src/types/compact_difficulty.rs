@@ -57,6 +57,16 @@ impl CompactDifficulty {
     pub(crate) fn bits(self) -> u32 {
         self.0
     }
+
+    /// `2^256 / (target + 1)`
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn work(self) -> u128 {
+        expand(self.0)
+            .ok()
+            .and_then(U256::work)
+            .expect("validated at construction: work fits")
+            .get()
+    }
 }
 
 /// nBits → 256-bit target, validator check order: sign bit, exponent normalised (> 256 bits
