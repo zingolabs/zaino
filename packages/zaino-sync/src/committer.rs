@@ -160,7 +160,7 @@ mod tests {
         fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema,
         SequenceId, SequenceRead, Width,
     };
-    use zaino_primitives::testing::Chain;
+    use zaino_primitives::testing::MockChain;
     use zaino_primitives::types::BlockRef;
     use zcash_protocol::consensus::NetworkType;
 
@@ -184,9 +184,9 @@ mod tests {
             "rows",
             Width::fixed(4),
         );
-        let mut chain = Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 6);
-        let blocks: Vec<Arc<Block>> = chain.path(tip.hash).into_iter().map(Arc::new).collect();
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(6);
+        let blocks = chain.blocks(tip);
         let row = |height: Height, mark: u32| {
             let block = blocks[u32::from(height) as usize].header();
             let mut changes = Changes::new(BlockRef { hash: block.hash, height }, &schema);
