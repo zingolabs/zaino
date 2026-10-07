@@ -17,12 +17,12 @@
 //!
 //! # #[tokio::main(flavor = "current_thread")]
 //! # async fn main() {
-//! let budget = NonZeroUsize::new(1 << 20).unwrap();
+//! let budget = NonZeroUsize::new(1 << 20).expect("non-zero");
 //! let mut sink = IndexerDataSink::new("blobs");
 //! let mut first = sink.subscribe("first", budget);
 //! let mut second = sink.subscribe("second", budget);
 //!
-//! let height = Height::try_from(7).unwrap();
+//! let height = Height::try_from(7u32).expect("below the height cap");
 //! sink.send(Step::Apply { height, data: Arc::new(Blob) }).await;
 //! sink.shutdown();
 //!
