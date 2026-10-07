@@ -7,6 +7,8 @@ mod params;
 mod rules;
 mod store;
 mod target;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod verified;
 
 #[cfg(test)]

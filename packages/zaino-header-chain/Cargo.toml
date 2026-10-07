@@ -19,7 +19,7 @@ zaino-primitives.workspace = true
 zcash_protocol.workspace = true
 
 [features]
-# `Params::with_genesis` + `HeaderChain::{regtest_in_memory, insert_blocks}`, for consumers' tests
+# `testing::{HeaderViews, insert}` (+ `regtest_in_memory`, `insert_blocks`, `with_genesis`)
 testing = ["zaino-primitives/testing", "zaino-persistence/testing"]
 
 [lints.rust]
