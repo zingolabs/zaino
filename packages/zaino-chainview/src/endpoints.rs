@@ -1,10 +1,8 @@
-//! Who the endpoints are, and what the quorum needs to know about each
+//! Who the endpoints are, and what the view needs to know about each
 
 use std::time::{Duration, Instant};
 
-use zaino_primitives::types::{BlockRef, BlockchainInfo, PeerInfo};
-
-use crate::chain::EndpointChain;
+use zaino_primitives::types::{BlockRef, BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 
 /// Position in the configured endpoint list, `< EndpointSet::MAX` (keeps `insert` infallible)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -48,6 +46,16 @@ impl EndpointSet {
         self.0 == 0
     }
 
+    /// Every endpoint in `other` is in `self`
+    pub fn covers(&self, other: EndpointSet) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// `self` minus every endpoint in `other`
+    pub fn without(self, other: EndpointSet) -> EndpointSet {
+        EndpointSet(self.0 & !other.0)
+    }
+
     /// Positions in the configured endpoint list, ascending
     pub fn positions(self) -> impl Iterator<Item = usize> {
         (0..Self::MAX).filter(move |position| self.0 & (1u64 << position) != 0)
@@ -75,7 +83,7 @@ impl FromIterator<EndpointIndex> for EndpointSet {
     }
 }
 
-/// Where one endpoint stands with its poller (`Live` + `CatchingUp` vote)
+/// Where one endpoint stands with its poller (`Live` + `CatchingUp` answer, so can hold the tip)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum EndpointState {
     /// No successful poll yet
@@ -86,17 +94,11 @@ pub enum EndpointState {
     Degraded,
     /// Ejected: failure ceiling hit, or no mempool
     Down,
-    /// Node says it is not ready to report a tip
-    Syncing,
-    /// Tip voted, mempool off (node behind the network tip)
+    /// Chain read, mempool off (node behind the network tip; an empty state reports genesis)
     CatchingUp,
 }
 
 impl EndpointState {
-    pub(crate) fn votes(self) -> bool {
-        matches!(self, Self::Live | Self::CatchingUp)
-    }
-
     /// Metric label + status text
     pub const fn label(self) -> &'static str {
         match self {
@@ -104,16 +106,17 @@ impl EndpointState {
             Self::Live => "live",
             Self::Degraded => "degraded",
             Self::Down => "down",
-            Self::Syncing => "syncing",
             Self::CatchingUp => "catching_up",
         }
     }
 }
 
-/// This endpoint's chain vs the quorum tip, right now
+/// Its chain vs the verified best block, as of its last answered poll (`verified-chain.md` §7)
 ///
-/// - `Ahead` = quorum tip on its chain, below its tip; `Behind` = its tip on the quorum's chain
-/// - `Unknown` = no quorum tip, no chain yet, or too far apart for either window to place
+/// - `Ahead` = holds best, claims higher
+/// - `Behind` = its claim on the verified chain, below best
+/// - `Diverged` = neither (a losing branch: an alarm, never an error, zebra #11133)
+/// - `Unknown` = nothing verified yet, or no answer since its last failure
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Agreement {
     #[default]
@@ -133,24 +136,6 @@ impl Agreement {
             Self::Ahead => "ahead",
             Self::Behind => "behind",
             Self::Diverged => "diverged",
-        }
-    }
-
-    /// `agreer` = any chain holding the quorum tip
-    pub(crate) fn of(theirs: &EndpointChain, quorum: BlockRef, agreer: &EndpointChain) -> Self {
-        let tip = theirs.tip();
-        let spans =
-            |chain: &EndpointChain, height| (chain.floor()..=chain.tip().height).contains(&height);
-        if tip == quorum {
-            Self::Agreed
-        } else if theirs.holds(quorum) {
-            Self::Ahead
-        } else if tip.height < quorum.height && agreer.holds(tip) {
-            Self::Behind
-        } else if spans(theirs, quorum.height) || spans(agreer, tip.height) {
-            Self::Diverged
-        } else {
-            Self::Unknown
         }
     }
 }
@@ -178,10 +163,9 @@ impl Ewma {
     }
 }
 
-/// One configured validator as last observed: the quorum reads `chain` + `state`; `peers` =
-/// telemetry only, never a vote (§11)
+/// One configured validator as last observed (`peers` = telemetry only, never gates serving)
 ///
-/// - `info` = its last `getblockchaininfo` (clock-based tip estimate, upgrade schedule, branch)
+/// - `info` = its last `getblockchaininfo` (its tip, clock estimate, upgrade schedule, branch)
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorMetadata {
     pub address: String,
@@ -191,8 +175,10 @@ pub struct ValidatorMetadata {
     pub latency: Ewma,
     pub failures: u32,
     pub peers: imbl::Vector<PeerInfo>,
+    pub release: Option<NodeRelease>,
+    /// Push stream up as of its last answered tick
+    pub streaming: bool,
     pub(crate) info: Option<BlockchainInfo>,
-    pub(crate) chain: Option<EndpointChain>,
 }
 
 impl ValidatorMetadata {
@@ -205,14 +191,24 @@ impl ValidatorMetadata {
             latency: Ewma::default(),
             failures: 0,
             peers: imbl::Vector::new(),
+            release: None,
+            streaming: false,
             info: None,
-            chain: None,
         }
     }
 
-    /// Its own last-observed tip, not the quorum's (`agreement` says which)
+    /// Blocks its own tip has left before its release halts (`None` = no halt known, or no tip)
+    pub fn blocks_to_end_of_service(&self) -> Option<u32> {
+        let EndOfService::At { height, .. } = self.release.as_ref()?.end_of_service else {
+            return None;
+        };
+        Some(u32::from(height).saturating_sub(u32::from(self.tip()?.height)))
+    }
+
+    /// Its own last-observed tip, not the verified one (`agreement` says how they relate)
     pub fn tip(&self) -> Option<BlockRef> {
-        self.chain.as_ref().map(EndpointChain::tip)
+        let info = self.info.as_ref()?;
+        Some(BlockRef { hash: info.best_block_hash, height: info.blocks })
     }
 
     /// Blocks its tip trails its own clock estimate by (an eclipsed or stalled node's tell)

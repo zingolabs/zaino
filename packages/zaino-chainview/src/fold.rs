@@ -2,22 +2,55 @@
 //!
 //! - Publish **before** waking tails (a woken tail must read what woke it)
 
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use imbl::Vector;
+use imbl::{OrdSet, Vector};
 use tokio::sync::watch;
-use zaino_primitives::types::{BlockchainInfo, PeerInfo, TransactionId, Zatoshis};
+use tokio::time::Instant;
+use zaino_header_chain::VerifiedChain;
+use zaino_primitives::types::{
+    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
+};
 
-use crate::chain::EndpointChain;
-use crate::endpoints::{Agreement, EndpointIndex, EndpointState, ValidatorMetadata};
-use crate::error::BelowQuorum;
+use crate::endpoints::{EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
 use crate::feed::Epoch;
-use crate::quorum::{tally, Quorum, QuorumTip};
+use crate::holders::Holders;
+use crate::ports::Heard;
 use crate::snapshot::{ChainViewSnapshot, MempoolView, Sighting};
-use crate::telemetry;
+use crate::telemetry::{self, Alarms};
+use crate::tip::{ChainTip, Unserved};
+
+/// What a fold compares against once it has changed the state
+struct Before {
+    tip: Option<ChainTip>,
+    alarms: Alarms,
+    readers: EndpointSet,
+}
+
+impl Before {
+    fn of(state: &ChainViewSnapshot) -> Self {
+        Self { tip: state.tip, alarms: state.alarms, readers: state.mempool_readers() }
+    }
+}
+
+/// Header sync → view: `served` = a validator whose best chain just served a header run ending at
+/// that block
+#[derive(Debug, Clone)]
+pub(crate) struct HeaderReport {
+    pub(crate) verified: Option<Arc<VerifiedChain>>,
+    pub(crate) served: Option<(EndpointIndex, BlockRef)>,
+    pub(crate) finality_paused: bool,
+}
+
+/// Tip (block or holders) carried by one publish
+enum TipUpdate {
+    Unchanged,
+    Set(Option<ChainTip>),
+}
 
 /// One txid a poller listed, with bytes iff this poller had to fetch them.
 ///
@@ -31,14 +64,19 @@ pub(crate) struct Sighted {
 }
 
 /// What every answering tick read, mempool on or off
+///
+/// - `held` = its `getblockhash` answers at the asked heights (`holders.rs`)
 #[derive(Debug, Clone)]
 pub(crate) struct Reading {
-    /// Poller's held chain after this tick's walk (`None` until one completes)
-    pub(crate) chain: Option<EndpointChain>,
+    pub(crate) held: Vec<BlockRef>,
     pub(crate) info: BlockchainInfo,
+    /// Poll batch round trip
     pub(crate) latency: Duration,
-    /// `Some` only on a peer-refresh tick the validator answered
+    /// `Some` only on a metadata tick whose half answered (else the last is kept)
     pub(crate) peers: Option<Vec<PeerInfo>>,
+    pub(crate) release: Option<NodeRelease>,
+    /// Push stream up as of this tick
+    pub(crate) streaming: bool,
 }
 
 /// One endpoint's poll-to-poll mempool change
@@ -52,11 +90,9 @@ pub(crate) struct Listing {
 #[derive(Debug, Clone)]
 pub(crate) enum EndpointReport {
     Observed(Reading, Listing),
-    /// Node says it is not ready to report a tip: polled, never counted.
-    Syncing,
     /// Chain counted, mempool off: sightings retracted
     CatchingUp(Reading),
-    /// Transport failure, still on the ladder (last observation retained, no vote)
+    /// Transport failure, still on the ladder (last observation retained, holds no tip)
     Failed {
         consecutive: u32,
     },
@@ -72,26 +108,27 @@ pub(crate) struct ChainViewCore {
     /// Fold working copy. `imbl` throughout, so cloning it to publish is `O(1)`.
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
-    /// Level-triggered quorum tip (`agreed_by` changes too: fetch routing reads it)
-    tip: watch::Sender<Option<QuorumTip>>,
+    /// Level-triggered tip (`held_by` changes too: fetch routing reads it)
+    tip: watch::Sender<Option<ChainTip>>,
     /// Sent iff the epoch moved or an arrival landed (tails sleep through every other fold)
     tails: watch::Sender<()>,
+    /// Sent on every publish (a submission watching for its transaction's spread)
+    published_tx: watch::Sender<()>,
     /// Feed for the current tip block, or why there is none; written only under `state`'s lock
-    epoch: ArcSwap<Result<Arc<Epoch>, BelowQuorum>>,
-    quorum: Quorum,
+    epoch: ArcSwap<Result<Arc<Epoch>, Unserved>>,
 }
 
 impl ChainViewCore {
-    pub(crate) fn new(endpoints: Vector<ValidatorMetadata>, quorum: Quorum) -> Self {
-        let empty = ChainViewSnapshot::empty(endpoints, quorum);
-        let below = empty.mempool().expect_err("an empty view has no tip");
+    pub(crate) fn new(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
+        let empty = ChainViewSnapshot::empty(endpoints, depth);
+        let unserved = empty.mempool().expect_err("an empty view has no tip");
         Self {
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
             tip: watch::Sender::new(None),
             tails: watch::Sender::new(()),
-            epoch: ArcSwap::from_pointee(Err(below)),
-            quorum,
+            published_tx: watch::Sender::new(()),
+            epoch: ArcSwap::from_pointee(Err(unserved)),
         }
     }
 
@@ -99,7 +136,7 @@ impl ChainViewCore {
         self.published.load_full()
     }
 
-    pub(crate) fn subscribe_tip(&self) -> watch::Receiver<Option<QuorumTip>> {
+    pub(crate) fn subscribe_tip(&self) -> watch::Receiver<Option<ChainTip>> {
         self.tip.subscribe()
     }
 
@@ -107,8 +144,8 @@ impl ChainViewCore {
         self.tails.subscribe()
     }
 
-    pub(crate) fn quorum(&self) -> Quorum {
-        self.quorum
+    pub(crate) fn subscribe_published(&self) -> watch::Receiver<()> {
+        self.published_tx.subscribe()
     }
 
     /// Does the view already hold this transaction's bytes?
@@ -130,7 +167,7 @@ impl ChainViewCore {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let mut touched: Vec<TransactionId> = Vec::new();
         let mut unadmitted: Vec<TransactionId> = Vec::new();
-        let (previous_tip, previous_alarms) = (guard.tip, guard.alarms);
+        let before = Before::of(&guard);
 
         let state = &mut *guard;
         let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
@@ -140,7 +177,7 @@ impl ChainViewCore {
         match report {
             EndpointReport::Observed(reading, listing) => {
                 meta.state = EndpointState::Live;
-                read(meta, reading);
+                read(meta, &mut state.holders, endpoint, reading);
                 for txid in &listing.removed {
                     if let Some(sighting) = state.mempool.get_mut(txid) {
                         sighting.unsight(endpoint);
@@ -150,12 +187,19 @@ impl ChainViewCore {
                 for sighted in listing.added {
                     match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
                         (Some(sighting), _) => {
+                            let verified = sighting.timeline().first_trusted.is_some();
                             sighting.sight(endpoint);
                             sighting.listed_fee(sighted.fee);
+                            if !verified {
+                                telemetry::first_trusted(sighting);
+                            }
                         }
                         (None, Some(raw)) => {
-                            let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
+                            let overheard = state.overheard.take(&sighted.txid);
+                            let mut sighting =
+                                Sighting::new(raw, Some(sighted.fee), false, overheard);
                             sighting.sight(endpoint);
+                            telemetry::first_trusted(&sighting);
                             state.mempool.insert(sighted.txid, sighting);
                         }
                         // Held at the fetch-once check, gone by the time the fold ran.
@@ -167,77 +211,144 @@ impl ChainViewCore {
                     touched.push(sighted.txid);
                 }
             }
-            EndpointReport::Syncing => {
-                meta.state = EndpointState::Syncing;
-                touched.extend(retract(&mut state.mempool, endpoint));
-            }
             EndpointReport::CatchingUp(reading) => {
                 meta.state = EndpointState::CatchingUp;
-                read(meta, reading);
+                read(meta, &mut state.holders, endpoint, reading);
                 touched.extend(retract(&mut state.mempool, endpoint));
             }
             EndpointReport::Failed { consecutive } => {
                 meta.state = EndpointState::Degraded;
                 meta.failures = consecutive;
+                state.holders.lost(endpoint);
             }
             EndpointReport::Down => {
                 meta.state = EndpointState::Down;
-                meta.chain = None;
+                meta.info = None;
                 meta.peers = Vector::new();
+                state.holders.lost(endpoint);
                 touched.extend(retract(&mut state.mempool, endpoint));
             }
         }
 
-        let voters = state.endpoints.iter().enumerate().filter(|(_, meta)| meta.state.votes());
-        let counted = tally(
-            self.quorum,
-            voters.filter_map(|(index, meta)| {
-                Some((EndpointIndex::new(index)?, meta.chain.as_ref()?))
-            }),
-        );
-        (state.tip, state.agreeing) = (counted.tip, counted.agreeing);
-        let agreer = counted
-            .tip
-            .and_then(|tip| tip.agreed_by.positions().next())
-            .and_then(|position| state.endpoints.get(position)?.chain.clone());
-        for meta in state.endpoints.iter_mut() {
-            meta.agreement = match (counted.tip, &meta.chain, &agreer) {
-                (Some(quorum), Some(theirs), Some(agreer)) => {
-                    Agreement::of(theirs, quorum.block, agreer)
-                }
-                _ => Agreement::Unknown,
-            };
-        }
-        state.alarms = telemetry::alarms(&state.endpoints);
+        self.settle(guard, before, touched);
+        unadmitted
+    }
 
-        let tip_changed = state.tip != previous_tip;
-        let tip_moved = state.tip.map(|tip| tip.block) != previous_tip.map(|tip| tip.block);
+    /// One batch of peer announcements (each stamped on arrival) + the live peer set; publishes
+    /// only on a change
+    ///
+    /// - held txid → its sighting's announcers; else overheard (bounded: `peers.rs`)
+    pub(crate) fn apply_heard(
+        &self,
+        batch: Vec<(Instant, Heard)>,
+        live: Vec<SocketAddr>,
+        now: Instant,
+    ) {
+        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
+        let before = Before::of(&guard);
+        let state = &mut *guard;
+        let live: OrdSet<SocketAddr> = live.into_iter().collect();
+        let mut changed = live != state.peers_live;
+        state.peers_live = live;
+        let overheard = state.overheard.len();
+        let mut touched = Vec::new();
+        for (at, heard) in batch {
+            for txid in heard.txids {
+                match state.mempool.get_mut(&txid) {
+                    Some(sighting) => {
+                        if sighting.hear(heard.peer) {
+                            touched.push(txid);
+                        }
+                    }
+                    None => changed |= state.overheard.hear(txid, heard.peer, at),
+                }
+            }
+        }
+        state.overheard.expire(now);
+        changed |= !touched.is_empty() || state.overheard.len() != overheard;
+        if changed {
+            self.settle(guard, before, touched);
+        }
+    }
+
+    /// Header sync's word: the verified chain, who just served a run of it, finality paused
+    pub(crate) fn apply_headers(&self, report: HeaderReport) {
+        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
+        let before = Before::of(&guard);
+        guard.holders.verified(report.verified);
+        if let Some((endpoint, block)) = report.served {
+            guard.holders.served(endpoint, block);
+        }
+        guard.finality_paused = report.finality_paused;
+        self.settle(guard, before, Vec::new());
+    }
+
+    /// After any change: tip + holders, agreement, alarms, spreads, drops, epoch, publish
+    fn settle(
+        &self,
+        mut guard: std::sync::MutexGuard<'_, ChainViewSnapshot>,
+        before: Before,
+        touched: Vec<TransactionId>,
+    ) {
+        let state = &mut *guard;
+        if cfg!(debug_assertions) {
+            state.holders.check();
+        }
+        let best = state.holders.best();
+        let held_by = best.map(|best| state.holders.holders(best)).unwrap_or_default();
+        state.tip = best.filter(|_| !held_by.is_empty()).map(|block| ChainTip { block, held_by });
+        for (index, meta) in state.endpoints.iter_mut().enumerate() {
+            let index = EndpointIndex::new(index).expect("configured below EndpointSet::MAX");
+            meta.agreement = state.holders.agreement(index);
+        }
+        state.alarms = telemetry::alarms(&state.endpoints, state.finality_paused);
+
+        // a reader joining or leaving can complete anyone's spread; otherwise only `touched`
+        let readers = state.mempool_readers();
+        let spreading: Vec<TransactionId> = match readers == before.readers {
+            true => touched.clone(),
+            false => state.mempool.keys().copied().collect(),
+        };
+        for txid in spreading {
+            if let Some(sighting) = state.mempool.get_mut(&txid) {
+                if sighting.reached_all(readers) {
+                    telemetry::all_trusted(sighting);
+                }
+            }
+        }
+
+        let tip_changed = state.tip != before.tip;
+        let tip_moved = state.tip.map(|tip| tip.block) != before.tip.map(|tip| tip.block);
         // Unsighted entries do not survive a tip move (an `ours` nobody lists after a block =
         // mined or gone).
         let dropped: Vec<TransactionId> = state
             .mempool
             .iter()
             .filter(|(_, sighting)| {
-                sighting.seen_at().is_empty() && (tip_moved || !sighting.ours())
+                sighting.trusted().is_empty() && (tip_moved || !sighting.ours())
             })
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {
-            state.mempool.remove(txid);
+            if let Some(gone) = state.mempool.remove(txid) {
+                telemetry::left(&gone, tip_moved);
+            }
         }
 
         if tip_moved {
             self.rotate(state);
-        } else if let Err(below) = state.mempool() {
-            // the refusal stays current as voters come and go
-            self.epoch.store(Arc::new(Err(below)));
+        } else if let Err(unserved) = state.mempool() {
+            // the refusal stays current as holders come and go
+            self.epoch.store(Arc::new(Err(unserved)));
         }
         let new_tip = state.tip;
         let arrived = self.record_arrivals(state, &touched);
-        let published = self.publish(guard, tip_changed.then_some(new_tip), tip_moved || arrived);
-        telemetry::emit(&published, previous_alarms);
-
-        unadmitted
+        let tip = match tip_changed {
+            true => TipUpdate::Set(new_tip),
+            false => TipUpdate::Unchanged,
+        };
+        let published = self.publish(guard, tip, tip_moved || arrived);
+        telemetry::emit(&published, before.alarms);
     }
 
     /// Mark a transaction as relayed by us, admitting it before it has propagated (§6).
@@ -247,16 +358,17 @@ impl ChainViewCore {
         match state.mempool.get_mut(&txid) {
             Some(sighting) => sighting.mark_ours(),
             None => {
-                state.mempool.insert(txid, Sighting::new(raw, None, true));
+                let overheard = state.overheard.take(&txid);
+                state.mempool.insert(txid, Sighting::new(raw, None, true, overheard));
             }
         }
 
         let arrived = self.record_arrivals(&mut state, &[txid]);
-        self.publish(state, None, arrived);
+        self.publish(state, TipUpdate::Unchanged, arrived);
     }
 
     /// New tip block: the old epoch sealed (its tails drain, then end), a new one opened on the
-    /// servable mempool (none below quorum)
+    /// servable mempool (none while unserved)
     fn rotate(&self, state: &ChainViewSnapshot) {
         let opened =
             state.mempool().map(|mempool| Arc::new(Epoch::open(mempool.entries().collect())));
@@ -284,29 +396,28 @@ impl ChainViewCore {
         arrived
     }
 
-    /// Feed for the current tip block, or the shortfall below quorum
-    pub(crate) fn epoch(&self) -> Result<Arc<Epoch>, BelowQuorum> {
+    /// Feed for the current tip block, or why there is none
+    pub(crate) fn epoch(&self) -> Result<Arc<Epoch>, Unserved> {
         self.epoch.load().as_ref().clone()
     }
 
     /// Store, then signal (a woken reader must find what woke it)
-    ///
-    /// - `tip = Some(_)` = the quorum tip (block or agreers) changed to it
     fn publish(
         &self,
         state: std::sync::MutexGuard<'_, ChainViewSnapshot>,
-        tip: Option<Option<QuorumTip>>,
+        tip: TipUpdate,
         wake_tails: bool,
     ) -> Arc<ChainViewSnapshot> {
         let published = Arc::new(state.clone());
         drop(state);
         self.published.store(Arc::clone(&published));
-        if let Some(tip) = tip {
+        if let TipUpdate::Set(tip) = tip {
             self.tip.send_replace(tip);
         }
         if wake_tails {
             self.tails.send_replace(());
         }
+        self.published_tx.send_replace(());
         published
     }
 }
@@ -314,22 +425,25 @@ impl ChainViewCore {
 impl std::fmt::Debug for ChainViewCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let pinned = self.published.load();
-        f.debug_struct("ChainViewCore")
-            .field("tip", &pinned.tip())
-            .field("quorum", &self.quorum)
-            .finish_non_exhaustive()
+        f.debug_struct("ChainViewCore").field("tip", &pinned.tip()).finish_non_exhaustive()
     }
 }
 
-/// An answering tick: chain, clock estimate, latency, peers (a failed peer read keeps the last)
-fn read(meta: &mut ValidatorMetadata, reading: Reading) {
+/// An answering tick: claim + held (→ `holders`), clock estimate, latency, peers (a failed peer
+/// read keeps the last)
+fn read(meta: &mut ValidatorMetadata, holders: &mut Holders, at: EndpointIndex, reading: Reading) {
+    let claim = BlockRef { hash: reading.info.best_block_hash, height: reading.info.blocks };
+    holders.polled(at, claim, reading.held);
     meta.failures = 0;
-    meta.chain = reading.chain;
     meta.info = Some(reading.info);
-    meta.observed_at = Some(Instant::now());
+    meta.observed_at = Some(std::time::Instant::now());
+    meta.streaming = reading.streaming;
     meta.latency.observe(reading.latency);
     if let Some(peers) = reading.peers {
         meta.peers = peers.into_iter().collect();
+    }
+    if let Some(release) = reading.release {
+        meta.release = Some(release);
     }
 }
 
@@ -340,7 +454,7 @@ fn retract(
 ) -> Vec<TransactionId> {
     let held: Vec<TransactionId> = mempool
         .iter()
-        .filter(|(_, sighting)| sighting.seen_at().contains(endpoint))
+        .filter(|(_, sighting)| sighting.trusted().contains(endpoint))
         .map(|(txid, _)| *txid)
         .collect();
     for txid in &held {

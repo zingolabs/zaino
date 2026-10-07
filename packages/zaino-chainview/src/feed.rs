@@ -36,7 +36,7 @@ impl Logged {
 
 /// Servable mempool at one tip block, then each transaction turned servable after it
 ///
-/// - `sealed` = the tip block moved (or quorum was lost): readers drain, then end
+/// - `sealed` = the tip block moved (or the tip went unserved): readers drain, then end
 #[derive(Debug)]
 pub(crate) struct Epoch {
     opening: Vec<MempoolEntry>,
@@ -127,7 +127,8 @@ impl MempoolTail {
     }
 
     /// Identity of the epoch (tails opened on one block share it)
-    pub fn same_epoch(&self, other: &MempoolTail) -> bool {
+    #[cfg(test)]
+    pub(crate) fn same_epoch(&self, other: &MempoolTail) -> bool {
         Arc::ptr_eq(&self.epoch, &other.epoch)
     }
 }

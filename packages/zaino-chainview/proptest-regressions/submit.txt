@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 6dedfd764a339ff4970a2db7f82c16029d331a95342f4c1a48c4aa13ee35eb4a # shrinks to nodes = [Relays { delay_ms: 0 }, Relays { delay_ms: 1 }], threshold_ms = 1000, max_attempts = 2, seed = 7646556507045934570
+cc 5c7b357955e97208d0688aa283163198b0ab25c13ea5bf2f74cd5467ae025929 # shrinks to nodes = [Relays { delay_ms: 0 }, Relays { delay_ms: 0 }], threshold_ms = 1000, max_attempts = 2, seed = 0

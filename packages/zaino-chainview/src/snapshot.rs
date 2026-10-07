@@ -1,4 +1,4 @@
-//! The published view: quorum tip, sighted transactions, per-endpoint metadata.
+//! The published view: verified tip, sighted transactions, per-endpoint metadata.
 //!
 //! - `imbl` collections, so republishing on every fold clones in `O(1)` with structural sharing
 //! - reader takes **one `ArcSwap` load per request or stream**, pinning a coherent view — a fold
@@ -6,14 +6,19 @@
 //! - raw bytes only, never a decoded transaction (parsing = the wire adapter's job, and
 //!   `zaino-proto` must not reach this crate)
 
-use bytes::Bytes;
-use imbl::{OrdMap, Vector};
-use zaino_primitives::types::{BlockchainInfo, TransactionId, Zatoshis};
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
 
-use crate::endpoints::{EndpointIndex, EndpointSet, ValidatorMetadata};
-use crate::error::BelowQuorum;
-use crate::quorum::{Quorum, QuorumTip};
+use bytes::Bytes;
+use imbl::{OrdMap, OrdSet, Vector};
+use tokio::time::Instant;
+use zaino_primitives::types::{BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis};
+
+use crate::endpoints::{EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
+use crate::holders::Holders;
+use crate::peers::{Overheard, Pending};
 use crate::telemetry::Alarms;
+use crate::tip::{ChainTip, Unserved};
 
 /// One unconfirmed transaction, as served
 ///
@@ -24,34 +29,149 @@ pub struct MempoolEntry {
     pub txid: TransactionId,
     pub raw: Bytes,
     pub fee: Option<Zatoshis>,
+    pub projection: Projection,
+}
+
+/// Serving layer's encoding of one (`raw`, `fee`), rendered once and shared by every snapshot
+/// holding the sighting (`GetMempoolTx` = consensus parse per tx otherwise, per request)
+///
+/// - cache, never identity: always equal
+#[derive(Debug, Clone, Default)]
+pub struct Projection(Arc<OnceLock<Bytes>>);
+
+impl Projection {
+    /// Racing first readers may both render (same bytes; one kept); a failed render is not kept
+    pub fn get_or_render<E>(&self, render: impl FnOnce() -> Result<Bytes, E>) -> Result<Bytes, E> {
+        if let Some(rendered) = self.0.get() {
+            return Ok(rendered.clone());
+        }
+        let rendered = render()?;
+        Ok(self.0.get_or_init(|| rendered).clone())
+    }
+}
+
+impl PartialEq for Projection {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Projection {}
+
+/// `seen` of the `of` sources whose mempool is being read right now
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Count {
+    pub seen: usize,
+    pub of: usize,
+}
+
+impl std::fmt::Display for Count {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.seen, self.of)
+    }
+}
+
+/// When one transaction reached each milestone (tokio clock: paused tests advance it)
+///
+/// - `all_trusted` = first moment every mempool-reading trusted validator listed it at once
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Timeline {
+    pub(crate) first_seen: Instant,
+    pub(crate) first_trusted: Option<Instant>,
+    pub(crate) all_trusted: Option<Instant>,
+}
+
+/// How far one transaction has spread (§5 `peers: x/y, trusted: x/y`), and how it got there
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Spread {
+    pub peers: Count,
+    pub trusted: Count,
+    pub ours: bool,
+    pub servable: bool,
+    pub(crate) timeline: Timeline,
 }
 
 /// One transaction and where it has been seen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sighting {
-    seen_at: EndpointSet,
+    trusted: EndpointSet,
+    /// Every peer that announced it (live or not: `spread` counts the live ones)
+    peers: OrdSet<SocketAddr>,
     ours: bool,
     raw: Bytes,
     fee: Option<Zatoshis>,
+    projection: Projection,
+    timeline: Timeline,
 }
 
 impl Sighting {
-    pub(crate) fn new(raw: Bytes, fee: Option<Zatoshis>, ours: bool) -> Self {
-        Self { seen_at: EndpointSet::default(), ours, raw, fee }
+    /// `overheard` = peers' announcements from before the view held it
+    pub(crate) fn new(
+        raw: Bytes,
+        fee: Option<Zatoshis>,
+        ours: bool,
+        overheard: Option<Pending>,
+    ) -> Self {
+        let projection = Projection::default();
+        let now = Instant::now();
+        let first_seen = overheard.as_ref().map_or(now, |pending| pending.first.min(now));
+        let timeline = Timeline { first_seen, first_trusted: None, all_trusted: None };
+        let peers = overheard.map(|pending| pending.peers).unwrap_or_default();
+        Self { trusted: EndpointSet::default(), peers, ours, raw, fee, projection, timeline }
+    }
+
+    /// `true` = a new announcer
+    pub(crate) fn hear(&mut self, peer: SocketAddr) -> bool {
+        self.peers.insert(peer).is_none()
+    }
+
+    pub(crate) fn announcers(&self) -> &OrdSet<SocketAddr> {
+        &self.peers
+    }
+
+    pub(crate) fn timeline(&self) -> Timeline {
+        self.timeline
+    }
+
+    /// Records `all_trusted` the first time `readers` (non-empty) all list it; `true` = now
+    pub(crate) fn reached_all(&mut self, readers: EndpointSet) -> bool {
+        let everywhere = !readers.is_empty() && self.trusted.covers(readers);
+        let first = everywhere && self.timeline.all_trusted.is_none();
+        if first {
+            self.timeline.all_trusted = Some(Instant::now());
+        }
+        first
+    }
+
+    fn spread(&self, readers: EndpointSet, live: &OrdSet<SocketAddr>) -> Spread {
+        let heard = self.peers.iter().filter(|peer| live.contains(*peer)).count();
+        Spread {
+            peers: Count { seen: heard, of: live.len() },
+            trusted: Count { seen: self.trusted.count(), of: readers.count() },
+            ours: self.ours,
+            servable: self.servable(),
+            timeline: self.timeline,
+        }
     }
 
     /// First listed fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
+    ///
+    /// - priced at last → fresh projection (the old one rendered `fee: None`)
     pub(crate) fn listed_fee(&mut self, fee: Zatoshis) {
-        self.fee.get_or_insert(fee);
+        if self.fee.is_none() {
+            self.fee = Some(fee);
+            self.projection = Projection::default();
+        }
     }
 
     fn entry(&self, txid: TransactionId) -> MempoolEntry {
-        MempoolEntry { txid, raw: self.raw.clone(), fee: self.fee }
+        let projection = self.projection.clone();
+        MempoolEntry { txid, raw: self.raw.clone(), fee: self.fee, projection }
     }
 
-    /// Which endpoints report it.
-    pub(crate) fn seen_at(&self) -> EndpointSet {
-        self.seen_at
+    /// Trusted validators listing it now
+    pub(crate) fn trusted(&self) -> EndpointSet {
+        self.trusted
     }
 
     /// Relayed by us, so known before it propagated anywhere.
@@ -61,15 +181,16 @@ impl Sighting {
 
     /// Listed by any trusted validator (each admits only after full validation), or ours
     pub(crate) fn servable(&self) -> bool {
-        self.ours || !self.seen_at.is_empty()
+        self.ours || !self.trusted.is_empty()
     }
 
     pub(crate) fn sight(&mut self, endpoint: EndpointIndex) {
-        self.seen_at.insert(endpoint);
+        self.trusted.insert(endpoint);
+        self.timeline.first_trusted.get_or_insert_with(Instant::now);
     }
 
     pub(crate) fn unsight(&mut self, endpoint: EndpointIndex) {
-        self.seen_at.remove(endpoint);
+        self.trusted.remove(endpoint);
     }
 
     pub(crate) fn mark_ours(&mut self) {
@@ -77,38 +198,72 @@ impl Sighting {
     }
 }
 
-/// One coherent answer from N validators.
+/// One coherent answer: the verified tip, the mempool, every trusted validator's metadata
 ///
-/// [`tip`](Self::tip) is `None` below quorum — no answer rather than a weak one — and
-/// [`mempool`](Self::mempool) refuses on the same condition.
-///
-/// - `agreeing` = largest group holding one common block (= `tip.agreed_by` at quorum)
-#[derive(Debug, Clone, PartialEq)]
+/// [`tip`](Self::tip) is `None` without a verified best block a trusted validator holds — no
+/// answer rather than a weak one — and [`mempool`](Self::mempool) refuses on the same condition.
+#[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
-    pub(crate) tip: Option<QuorumTip>,
-    pub(crate) agreeing: EndpointSet,
+    /// The verified chain + who holds what of it
+    pub(crate) holders: Holders,
+    pub(crate) tip: Option<ChainTip>,
     /// Ordered, so two readers of one view walk the mempool identically.
     pub(crate) mempool: OrdMap<TransactionId, Sighting>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
     pub(crate) alarms: Alarms,
-    quorum: Quorum,
+    pub(crate) finality_paused: bool,
+    /// Connected peers as of the last peer fold (`peers: x/y`'s `y`)
+    pub(crate) peers_live: OrdSet<SocketAddr>,
+    pub(crate) overheard: Overheard,
 }
 
 impl ChainViewSnapshot {
-    pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, quorum: Quorum) -> Self {
+    pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
         Self {
+            holders: Holders::new(endpoints.len(), depth),
             tip: None,
-            agreeing: EndpointSet::default(),
             mempool: OrdMap::new(),
             endpoints,
             alarms: Alarms::default(),
-            quorum,
+            finality_paused: false,
+            peers_live: OrdSet::new(),
+            overheard: Overheard::default(),
         }
     }
 
-    /// Highest block ≥threshold voters' chains hold. `None` below quorum.
-    pub(crate) fn tip(&self) -> Option<QuorumTip> {
+    /// Peers that announced `txid`, held or only overheard (submission's watch)
+    pub(crate) fn announcers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
+        match (self.mempool.get(txid), self.overheard.get(txid)) {
+            (Some(sighting), _) => sighting.announcers().clone(),
+            (None, Some(pending)) => pending.peers.clone(),
+            (None, None) => OrdSet::new(),
+        }
+    }
+
+    /// The verified best block and its trusted holders; `None` = [`unserved`](Self::unserved)
+    pub fn tip(&self) -> Option<ChainTip> {
         self.tip
+    }
+
+    /// The header chain's best block, whether or not a trusted validator holds it
+    pub fn best(&self) -> Option<BlockRef> {
+        self.holders.best()
+    }
+
+    /// Why there is no tip (`None` = there is one)
+    pub fn unserved(&self) -> Option<Unserved> {
+        match (self.tip, self.best()) {
+            (Some(_), _) => None,
+            (None, None) => Some(Unserved::NoBestTip),
+            (None, Some(best)) => Some(Unserved::NotHeld {
+                height: u32::from(best.height),
+                configured: self.endpoints.len(),
+            }),
+        }
+    }
+
+    fn served(&self) -> Result<ChainTip, Unserved> {
+        self.tip.ok_or_else(|| self.unserved().unwrap_or(Unserved::NoBestTip))
     }
 
     /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry, never a vote)
@@ -121,16 +276,16 @@ impl ChainViewSnapshot {
         &self.endpoints
     }
 
-    /// `getblockchaininfo` of the first validator holding the quorum tip (`BelowQuorum` = none)
+    /// `getblockchaininfo` of the first trusted validator holding the tip
     ///
-    /// - agreers share the tip block → one schedule, one branch; every voter has stored one
-    pub fn validator_info(&self) -> Result<&BlockchainInfo, BelowQuorum> {
-        let shortfall = || self.quorum.shortfall(self.agreeing);
-        let tip = self.tip.ok_or_else(shortfall)?;
-        tip.agreed_by
-            .positions()
-            .find_map(|position| self.endpoints.get(position)?.info.as_ref())
-            .ok_or_else(shortfall)
+    /// - holders share the tip block → one schedule, one branch; every holder has stored one
+    pub fn validator_info(&self) -> Result<&BlockchainInfo, Unserved> {
+        let tip = self.served()?;
+        let info = tip.held_by.positions().find_map(|at| self.endpoints.get(at)?.info.as_ref());
+        info.ok_or(Unserved::NotHeld {
+            height: u32::from(tip.block.height),
+            configured: self.endpoints.len(),
+        })
     }
 
     /// Where one transaction has been seen, regardless of whether it is servable.
@@ -141,19 +296,39 @@ impl ChainViewSnapshot {
         self.mempool.get(txid)
     }
 
-    /// The mempool, or the refusal that stands in for it below quorum.
+    /// Trusted validators whose mempool is read now (`Live`: catching-up and down ones list none)
+    pub fn mempool_readers(&self) -> EndpointSet {
+        self.endpoints
+            .iter()
+            .enumerate()
+            .filter(|(_, meta)| meta.state == EndpointState::Live)
+            .filter_map(|(position, _)| EndpointIndex::new(position))
+            .collect()
+    }
+
+    /// One transaction's spread, servable or not (telemetry; never gates serving)
+    pub fn spread(&self, txid: &TransactionId) -> Option<Spread> {
+        Some(self.mempool.get(txid)?.spread(self.mempool_readers(), &self.peers_live))
+    }
+
+    /// Every held transaction's spread, in txid order
+    pub fn spreads(&self) -> impl Iterator<Item = (TransactionId, Spread)> + '_ {
+        let readers = self.mempool_readers();
+        self.mempool
+            .iter()
+            .map(move |(txid, sighting)| (*txid, sighting.spread(readers, &self.peers_live)))
+    }
+
+    /// The mempool, or the refusal that stands in for it without a tip
     ///
-    /// A `Result` rather than an empty answer: below quorum there is no honest answer to give,
+    /// A `Result` rather than an empty answer: with no tip there is no honest answer to give,
     /// and a caller must not be able to forget that (§5, fail closed).
-    pub fn mempool(&self) -> Result<MempoolView<'_>, BelowQuorum> {
-        match self.tip {
-            Some(_) => Ok(MempoolView(self)),
-            None => Err(self.quorum.shortfall(self.agreeing)),
-        }
+    pub fn mempool(&self) -> Result<MempoolView<'_>, Unserved> {
+        self.served().map(|_| MempoolView(self))
     }
 }
 
-/// The servable mempool of a snapshot that has quorum.
+/// The servable mempool of a snapshot that has a tip.
 ///
 /// Every method here applies the per-transaction rule — listed by any validator, or `ours` —
 /// so nothing below it can leak out.

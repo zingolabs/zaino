@@ -7,11 +7,16 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
-description = "One view over N validators: quorum tip, quorum mempool, broadcast fan-out"
+description = "The best chain by proof of work, the mempool and submission, over trusted validators"
+
+[features]
+# `ChainView::set_verified`: consumers' tests standing in for header sync
+testing = []
 
 [dependencies]
 arc-swap.workspace = true
 bytes.workspace = true
+fastrand = "2"
 futures.workspace = true
 imbl.workspace = true
 metrics.workspace = true
@@ -19,11 +24,20 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tokio-util.workspace = true
 tracing.workspace = true
+zaino-header-chain.workspace = true
+zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+
+[lints.rust]
+unreachable_pub = "warn"

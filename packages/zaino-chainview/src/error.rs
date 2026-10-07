@@ -17,7 +17,8 @@ pub enum ConfigError {
 /// Two classes, split on retryability:
 ///
 /// - [`Unavailable`](Self::Unavailable) — statement about the *node*: `Down` at once
-/// - [`Source`](Self::Source) — transport: backoff, `Down` at the failure ceiling
+/// - [`Source`](Self::Source) — transport or a garbled answer: backoff, `Down` at the failure
+///   ceiling
 ///
 /// `GetRawMempoolTransactionError::NotFound` is neither: the listing/fetch race is normal, and
 /// the poller skips that txid.
@@ -30,27 +31,21 @@ pub(crate) enum EndpointPollError {
     Source(#[from] NonDomainError),
 }
 
-/// Fewer than [`Quorum::threshold`](crate::Quorum::threshold) endpoints agree on a tip.
-///
-/// Fail closed: no answer rather than a weak one. Maps to gRPC `UNAVAILABLE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("{agreeing} of {configured} validators agree on a tip; {threshold} required")]
-pub struct BelowQuorum {
-    pub agreeing: usize,
-    pub threshold: usize,
-    pub configured: usize,
-}
-
-/// No endpoint accepted a relayed transaction.
-///
-/// A *mixed* result is not an error: a node rejecting what another accepted usually means a
-/// stricter local policy (a fee filter), not an invalid transaction.
+/// Final headers not durable: header sync ends, the process with it (never warn-and-continue)
 #[derive(Debug, thiserror::Error)]
-pub enum BroadcastError {
-    /// Unanimous domain rejection — the real one.
-    #[error("every validator rejected the transaction: {0}")]
+#[error("header store commit failed: {0}")]
+pub struct HeaderStoreFailed(#[from] zaino_persistence::StoreError);
+
+/// A submission no trusted validator accepted or listed (§6)
+///
+/// - one rejecting, another accepting = success (a refusal is usually local policy)
+#[derive(Debug, thiserror::Error)]
+pub enum SubmitError {
+    /// The precheck's refusal, or the first trusted validator's rejection (none accepted)
+    #[error("transaction rejected: {0}")]
     Rejected(SendRawTransactionError),
 
-    #[error("no validator accepted the transaction; {attempted} attempted, last failure: {cause}")]
+    /// Neither a rejection nor an acceptance: `attempted` entries, the last failure
+    #[error("no trusted validator accepted the transaction; {attempted} attempted, last failure: {cause}")]
     Unreachable { attempted: usize, cause: NonDomainError },
 }

@@ -1,46 +1,44 @@
-//! What this crate asks of one validator.
+//! [`ValidatorP2pSource`], and how this crate uses a validator's
+//! [`ChainDataSource`](zaino_source::ChainDataSource) (two round trips at most per tick)
 //!
-//! - `getbestblockheightandhash` — readiness: the only port that can say `NotReady`
-//! - `getrawmempool true` — the listing the diff runs over, each entry's fee included (the
-//!   validator resolved its prevouts admitting it)
-//! - `getrawtransaction(txid, 0)` — bytes for what the diff added, fetched once per txid
-//! - `getblockchaininfo` — the top of this endpoint's quorum vote (same source as the listing) +
-//!   the estimate and upgrade schedule `GetLightdInfo` serves
-//! - `getblockheader <h> false` — the vote's ancestry, walked down by `prev_hash`
-//! - `sendrawtransaction` — the broadcast fan-out (§6)
-//! - `getpeerinfo` — each validator's peers (partition / eclipse telemetry, never a vote)
+//! - poll batch: `getblockchaininfo` (its claim, the estimate and schedule `GetLightdInfo`
+//!   serves) + `getrawmempool true` (the listing the diff runs over, fees included) +
+//!   `getblockhash` at the final boundary and the best (what it holds: `holders.rs`); every
+//!   `METADATA_REFRESH`, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
+//! - bytes batch: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
+//! - header sync: `getblockheader <h> false` batches (its headers)
+//! - `sendrawtransaction`: one submission attempt or the verdict (§6)
 //!
 //! - Retry = this crate's own per-endpoint ladder (`config.rs`)
 
-/// Every question the endpoint poller and the broadcast fan-out ask a validator.
-///
-/// Blanket-impl'd, so a production adapter and a test fake earn it the same way.
-///
-/// Not `Clone`: an adapter may own connections. Shared behind an `Arc`.
-pub trait EndpointSource:
-    zaino_source::GetChainTip
-    + zaino_source::GetBlockLink
-    + zaino_source::GetMempoolListing
-    + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetBlockchainInfo
-    + zaino_source::SendRawTransaction
-    + zaino_source::GetPeerInfo
-    + Send
-    + Sync
-    + 'static
-{
+use std::net::SocketAddr;
+
+use bytes::Bytes;
+use futures::future::BoxFuture;
+use futures::stream::BoxStream;
+use zaino_primitives::types::{Height, TransactionId};
+use zaino_source::NonDomainError;
+
+/// Txids one peer announced (`inv`), attributed by the p2p layer
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Heard {
+    pub peer: SocketAddr,
+    pub txids: Vec<TransactionId>,
 }
 
-impl<T> EndpointSource for T where
-    T: zaino_source::GetChainTip
-        + zaino_source::GetBlockLink
-        + zaino_source::GetMempoolListing
-        + zaino_source::GetRawMempoolTransaction
-        + zaino_source::GetBlockchainInfo
-        + zaino_source::SendRawTransaction
-        + zaino_source::GetPeerInfo
-        + Send
-        + Sync
-        + 'static
-{
+/// The Zcash p2p network as the view uses it (§5, §6): sightings and submission entries, never
+/// a vote; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
+///
+/// - object-safe (`dyn`): the view's type stays the same with or without peers
+pub trait ValidatorP2pSource: Send + Sync + 'static {
+    /// A fresh subscription per call: every `inv` of transactions from now on (lagging drops
+    /// some: telemetry undercounts)
+    fn heard(&self) -> BoxStream<'static, Heard>;
+    /// Connected peers whose announcements arrive now (`peers: x/y`'s `y`)
+    fn live(&self) -> Vec<SocketAddr>;
+    /// Submission entry candidates at `tip`: live, on a protocol version accepted there
+    fn entries(&self, tip: Option<Height>) -> Vec<SocketAddr>;
+    /// One isolated push (delivery only: a peer answers a push with nothing)
+    fn push(&self, entry: SocketAddr, raw: Bytes)
+        -> BoxFuture<'static, Result<(), NonDomainError>>;
 }

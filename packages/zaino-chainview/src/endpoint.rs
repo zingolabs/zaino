@@ -1,9 +1,9 @@
 //! One validator's poller: read, diff, report.
 //!
-//! One tick = readiness, tip + its ancestry (headers only, `O(new blocks)`), peers every
-//! `PEER_REFRESH`, listing, bytes for what *this endpoint* added, one report into the fold. The
-//! diff is against this poller's own previous listing, so it reports `O(change)` rather than a
-//! whole mempool per endpoint per tick.
+//! One tick = one poll batch (tip + listing + what it holds of the verified chain, metadata every
+//! `METADATA_REFRESH`), one bytes batch for what *this endpoint* added, one report into the fold.
+//! The diff is against this poller's own previous listing, so it reports `O(change)` rather than
+//! a whole mempool per endpoint per tick.
 //!
 //! Each poller owns its interval, backoff and failure count, so a slow or dead validator
 //! degrades alone (`docs/design/chainview.md` §7).
@@ -17,30 +17,30 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::StreamExt;
 // tokio's clock (paused-runtime tests advance the cadences)
+use tokio::sync::Notify;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
-use zaino_primitives::types::{BlockRef, Height, PeerInfo, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo, TransactionId};
 use zaino_source::{
-    GetBlockLinkError, GetChainTipError, GetMempoolListingError, GetRawMempoolTransactionError,
-    QueryError,
+    GetBlockError, GetMempoolListingError, GetRawMempoolTransactionError, MempoolListed,
+    MetadataReading, NonDomainError, PollReading, QueryError,
 };
 
-use crate::chain::{EndpointChain, Walk};
 use crate::config::{
-    CATCHING_UP_WARN_INTERVAL, INITIAL_BACKOFF, LINK_BATCH, LINK_FETCH_CONCURRENCY, MAX_BACKOFF,
-    MAX_CONSECUTIVE_FAILURES, PEER_REFRESH, POLL_INTERVAL,
+    CATCHING_UP_WARN_INTERVAL, INITIAL_BACKOFF, MAX_BACKOFF, MAX_CONSECUTIVE_FAILURES,
+    METADATA_REFRESH, MIN_POLL_SPACING, POLL_INTERVAL, STREAMED_POLL_INTERVAL,
 };
 use crate::endpoints::EndpointIndex;
 use crate::error::EndpointPollError;
 use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
-use crate::ports::EndpointSource;
+use zaino_source::ChainDataSource;
 
 /// What one tick found
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,27 +51,72 @@ pub(crate) enum Polled {
         tip: BlockRef,
         network: Height,
     },
-    Syncing,
 }
 
 /// The poll loop for one configured endpoint.
 ///
 /// Construction does no I/O — an empty mempool is a valid answer — so the fold's first published
 /// snapshot is empty with no tip.
-pub struct EndpointPoller<S: EndpointSource> {
+pub struct EndpointPoller<S: ChainDataSource> {
     index: EndpointIndex,
     address: String,
     source: Arc<S>,
     view: Arc<ChainViewCore>,
-    depth: ReorgDepth,
     /// What this endpoint listed last tick — the diff's left side.
     listed: std::sync::Mutex<BTreeSet<TransactionId>>,
-    /// Its chain as of the last completed walk — the next walk's join point
-    chain: std::sync::Mutex<Option<EndpointChain>>,
-    peers_read_at: std::sync::Mutex<Option<Instant>>,
+    metadata_read_at: std::sync::Mutex<Option<Instant>>,
+    waker: PollWaker,
 }
 
-impl<S: EndpointSource> std::fmt::Debug for EndpointPoller<S> {
+/// Wakes one poller early: a push stream's events, or anything else that knows a change happened
+///
+/// - `wake` coalesces: one pending wake at most, `MIN_POLL_SPACING` between polls
+/// - streaming: reconcile every `STREAMED_POLL_INTERVAL` instead of `POLL_INTERVAL`; either edge
+///   polls at once (events may have fallen in the gap)
+#[derive(Debug, Clone, Default)]
+pub struct PollWaker(Arc<Wake>);
+
+#[derive(Debug, Default)]
+struct Wake {
+    notify: Notify,
+    streaming: AtomicBool,
+}
+
+impl PollWaker {
+    pub fn wake(&self) {
+        self.0.notify.notify_one();
+    }
+
+    pub fn streaming(&self, up: bool) {
+        self.0.streaming.store(up, Ordering::Relaxed);
+        self.0.notify.notify_one();
+    }
+
+    pub(crate) fn is_streaming(&self) -> bool {
+        self.0.streaming.load(Ordering::Relaxed)
+    }
+
+    /// Until the next poll: the floor, then the interval or a wake (`Break` = cancelled)
+    async fn wait(&self, cancel: &CancellationToken) -> ControlFlow<()> {
+        sleep_or_cancel(MIN_POLL_SPACING, cancel).await?;
+        let interval = match self.is_streaming() {
+            true => STREAMED_POLL_INTERVAL,
+            false => POLL_INTERVAL,
+        };
+        let woken = async {
+            tokio::select! {
+                () = tokio::time::sleep(interval.saturating_sub(MIN_POLL_SPACING)) => {}
+                () = self.0.notify.notified() => {}
+            }
+        };
+        match cancel.run_until_cancelled(woken).await {
+            Some(()) => ControlFlow::Continue(()),
+            None => ControlFlow::Break(()),
+        }
+    }
+}
+
+impl<S: ChainDataSource> std::fmt::Debug for EndpointPoller<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EndpointPoller")
             .field("index", &self.index.get())
@@ -80,67 +125,59 @@ impl<S: EndpointSource> std::fmt::Debug for EndpointPoller<S> {
     }
 }
 
-impl<S: EndpointSource> EndpointPoller<S> {
+impl<S: ChainDataSource> EndpointPoller<S> {
     pub(crate) fn new(
         index: EndpointIndex,
         address: String,
         source: Arc<S>,
         view: Arc<ChainViewCore>,
-        depth: ReorgDepth,
     ) -> Self {
         Self {
             index,
             address,
             source,
             view,
-            depth,
             listed: std::sync::Mutex::new(BTreeSet::new()),
-            chain: std::sync::Mutex::new(None),
-            peers_read_at: std::sync::Mutex::new(None),
+            metadata_read_at: std::sync::Mutex::new(None),
+            waker: PollWaker::default(),
         }
+    }
+
+    /// This poller's wake handle (a push stream's subscriber holds one)
+    pub fn waker(&self) -> PollWaker {
+        self.waker.clone()
     }
 
     /// One poll
     #[instrument(name = "EndpointPoller::tick", skip_all, fields(endpoint = %self.address))]
     pub(crate) async fn tick(&self) -> Result<Polled, EndpointPollError> {
         let started = Instant::now();
-        // Readiness only (vote = the tip coherent with the listing = get_blockchain_info, whose
-        // Infallible domain cannot report NotReady)
-        match self.source.get_chain_tip().await {
-            Ok(_) => {}
-            Err(QueryError::Domain(GetChainTipError::NotReady)) => {
-                debug!("Validator not ready, vote withheld");
-                self.view.apply(self.index, EndpointReport::Syncing);
-                self.listed.lock().expect("endpoint listing mutex poisoned").clear();
-                return Ok(Polled::Syncing);
-            }
-            Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
-        }
+        let due = self
+            .metadata_read_at
+            .lock()
+            .expect("metadata mutex poisoned")
+            .is_none_or(|at| at.elapsed() >= METADATA_REFRESH);
+        let asked = self.view.current().holders.asked();
+        let PollReading { info, listing, held, metadata } =
+            self.source.get_poll_reading(due, &asked).await.map_err(EndpointPollError::Source)?;
+        let latency = started.elapsed();
+        let (peers, release) = self.metadata(metadata);
 
-        let info = match self.source.get_blockchain_info().await {
-            Ok(info) => info,
-            Err(QueryError::Domain(never)) => match never {},
-            Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
-        };
         let tip = BlockRef { hash: info.best_block_hash, height: info.blocks };
         let network = info.estimated_height;
-        let chain = self.follow(tip).await?;
-        let peers = self.read_peers().await;
-        let reading = |started: Instant| Reading { chain, info, latency: started.elapsed(), peers };
+        let held = self.answered(&asked, held);
+        let streaming = self.waker.is_streaming();
+        let reading = Reading { held, info, latency, peers, release, streaming };
 
-        let listing: BTreeMap<TransactionId, Zatoshis> =
-            match self.source.get_mempool_listing().await {
-                Ok(entries) => entries.into_iter().map(|entry| (entry.txid, entry.fee)).collect(),
-                Err(QueryError::Domain(GetMempoolListingError::Unavailable)) => {
-                    return Err(EndpointPollError::Unavailable)
-                }
-                Err(QueryError::Domain(GetMempoolListingError::Inactive)) => {
-                    self.view.apply(self.index, EndpointReport::CatchingUp(reading(started)));
-                    self.listed.lock().expect("endpoint listing mutex poisoned").clear();
-                    return Ok(Polled::CatchingUp { tip, network });
-                }
-                Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
-            };
+        let listing: BTreeMap<TransactionId, MempoolListed> = match listing {
+            Ok(entries) => entries.into_iter().map(|entry| (entry.txid, entry)).collect(),
+            Err(GetMempoolListingError::Unavailable) => return Err(EndpointPollError::Unavailable),
+            Err(GetMempoolListingError::Inactive) => {
+                self.view.apply(self.index, EndpointReport::CatchingUp(reading));
+                self.listed.lock().expect("endpoint listing mutex poisoned").clear();
+                return Ok(Polled::CatchingUp { tip, network });
+            }
+        };
 
         let previous = self.listed.lock().expect("endpoint listing mutex poisoned").clone();
         let removed: Vec<TransactionId> =
@@ -149,30 +186,39 @@ impl<S: EndpointSource> EndpointPoller<S> {
         let mut added: Vec<Sighted> = Vec::new();
         let mut admitted: BTreeSet<TransactionId> =
             listing.keys().filter(|txid| previous.contains(txid)).copied().collect();
-        for (txid, fee) in listing.iter().filter(|(txid, _)| !previous.contains(txid)) {
-            // Fetch-once: bytes = a round trip, paid only by the first endpoint to report (§5)
-            if self.view.holds(txid) {
-                added.push(Sighted { txid: *txid, raw: None, fee: *fee });
-                admitted.insert(*txid);
-                continue;
+        let mut unheld: Vec<MempoolListed> = Vec::new();
+        for entry in listing.values().filter(|entry| !previous.contains(&entry.txid)) {
+            // Fetch-once: bytes paid only by the first endpoint to report (§5)
+            if self.view.holds(&entry.txid) {
+                added.push(Sighted { txid: entry.txid, raw: None, fee: entry.fee });
+                admitted.insert(entry.txid);
+            } else {
+                unheld.push(*entry);
             }
-            match self.source.get_raw_mempool_transaction(*txid).await {
+        }
+        let fetched = if unheld.is_empty() {
+            Vec::new()
+        } else {
+            let fetch = self.source.get_raw_mempool_transactions(&unheld);
+            fetch.await.map_err(EndpointPollError::Source)?
+        };
+        for (entry, raw) in unheld.iter().zip(fetched) {
+            match raw {
                 Ok(raw) => {
-                    added.push(Sighted { txid: *txid, raw: Some(Bytes::from(raw)), fee: *fee });
-                    admitted.insert(*txid);
+                    let raw = Some(Bytes::from(raw));
+                    added.push(Sighted { txid: entry.txid, raw, fee: entry.fee });
+                    admitted.insert(entry.txid);
                 }
-                // Listed then mined/evicted before the fetch — the race the port documents.
-                Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
+                // listed then mined/evicted before the fetch (the race the port documents)
+                Err(GetRawMempoolTransactionError::NotFound(txid)) => {
                     debug!(%txid, "Mempool transaction gone before fetch")
                 }
-                Err(QueryError::NonDomain(cause)) => return Err(EndpointPollError::Source(cause)),
             }
         }
 
-        let unadmitted = self.view.apply(
-            self.index,
-            EndpointReport::Observed(reading(started), Listing { added, removed }),
-        );
+        let unadmitted = self
+            .view
+            .apply(self.index, EndpointReport::Observed(reading, Listing { added, removed }));
         for txid in unadmitted {
             admitted.remove(&txid);
         }
@@ -182,82 +228,61 @@ impl<S: EndpointSource> EndpointPoller<S> {
         Ok(Polled::Listed(size))
     }
 
-    /// The endpoint's chain down from `tip`, walked onto the one held last tick
-    ///
-    /// - `getblockheader` by height, [`LINK_FETCH_CONCURRENCY`] in flight, each checked against
-    ///   its child's `prev_hash`
-    /// - endpoint reorged mid-walk → last tick's chain kept (a race, not a failure)
-    async fn follow(&self, tip: BlockRef) -> Result<Option<EndpointChain>, EndpointPollError> {
-        let held = self.chain.lock().expect("endpoint chain mutex poisoned").clone();
-        let mut walk = Walk::new(tip, self.depth);
-        loop {
-            if let Some(chain) = walk.finish(held.as_ref()) {
-                *self.chain.lock().expect("endpoint chain mutex poisoned") = Some(chain.clone());
-                return Ok(Some(chain));
-            }
-            let lowest = match held.as_ref().map(|held| held.tip().height.next()) {
-                // above the held tip: every height new
-                Some(above) if above <= walk.next() => above,
-                // under the held tip (a reorg): a batch at a time until it joins
-                Some(_) => walk.next().saturating_sub(LINK_BATCH - 1),
-                None => walk.lowest(),
-            }
-            .max(walk.lowest());
-            let heights: Vec<Height> = lowest.up_to(walk.next()).collect();
-            let mut links = futures::stream::iter(heights.into_iter().rev())
-                .map(|height| self.source.get_block_link(height))
-                .buffered(LINK_FETCH_CONCURRENCY);
-            while let Some(link) = links.next().await {
-                let link = match link {
-                    Ok(link) => link,
-                    Err(QueryError::Domain(GetBlockLinkError::HeightNotFound(height))) => {
-                        debug!(?height, "Validator's tip retreated mid-walk, chain kept");
-                        return Ok(held);
-                    }
-                    Err(QueryError::NonDomain(cause)) => {
-                        return Err(EndpointPollError::Source(cause))
-                    }
-                };
-                if walk.descend(link).is_err() {
-                    debug!(?tip, "Validator reorged mid-walk, chain kept");
-                    return Ok(held);
-                }
-                if walk.finish(held.as_ref()).is_some() {
-                    break;
-                }
-            }
-        }
-    }
-
-    /// `getpeerinfo` at its own slower cadence; telemetry only, so a refusal or a failure keeps
-    /// the last answer and never fails the tick
-    async fn read_peers(&self) -> Option<Vec<PeerInfo>> {
-        {
-            let mut read_at = self.peers_read_at.lock().expect("peer refresh mutex poisoned");
-            if read_at.is_some_and(|at| at.elapsed() < PEER_REFRESH) {
-                return None;
-            }
-            *read_at = Some(Instant::now());
-        }
-
-        match self.source.get_peer_info().await {
-            Ok(peers) => Some(peers),
-            Err(QueryError::Domain(refused)) => {
-                debug!(%refused, "Peer list refused, last one kept");
-                None
-            }
+    /// Its best-chain blocks at the `asked` heights (above its tip or an item failed = no fact)
+    fn answered(
+        &self,
+        asked: &[Height],
+        held: Vec<Result<BlockHash, QueryError<GetBlockError>>>,
+    ) -> Vec<BlockRef> {
+        let answers = asked.iter().zip(held).filter_map(|(height, answer)| match answer {
+            Ok(hash) => Some(BlockRef { hash, height: *height }),
+            Err(QueryError::Domain(GetBlockError::HeightNotFound(_))) => None,
             Err(QueryError::NonDomain(cause)) => {
-                warn!(endpoint = %self.address, %cause, "Peer list read failed, last one kept");
+                debug!(endpoint = %self.address, ?height, %cause, "getblockhash unanswered");
                 None
             }
-        }
+        });
+        answers.collect()
     }
 
-    /// Poll until `cancel`; a validator failing never ends it (only quorum loss stops serving)
+    /// Telemetry halves of a metadata tick: a failed half keeps the last answer (`None`), warned
     ///
-    /// - mempool inactive → tip still voted, warned once per `CATCHING_UP_WARN_INTERVAL`
+    /// - read time recorded on any answered metadata tick (a failed half waits a full refresh)
+    fn metadata(
+        &self,
+        metadata: Option<MetadataReading>,
+    ) -> (Option<Vec<PeerInfo>>, Option<NodeRelease>) {
+        let Some(MetadataReading { peers, release }) = metadata else { return (None, None) };
+        *self.metadata_read_at.lock().expect("metadata mutex poisoned") = Some(Instant::now());
+        (kept(&self.address, "peer list", peers), kept(&self.address, "release", release))
+    }
+
+    /// A failed tick reported: `Failed` (degraded, holds no tip), or past the ceiling / with no
+    /// mempool `Down` (sightings retracted too); `true` = down
+    pub(crate) fn failed(&self, error: &EndpointPollError, consecutive: u32) -> bool {
+        let ejected = matches!(error, EndpointPollError::Unavailable)
+            || consecutive >= MAX_CONSECUTIVE_FAILURES;
+        if ejected {
+            warn!(
+                endpoint = %self.address, %error, attempts = consecutive, retry = ?MAX_BACKOFF,
+                "Validator down, holds no tip",
+            );
+            self.view.apply(self.index, EndpointReport::Down);
+            // the next answer must re-report everything listed
+            self.listed.lock().expect("endpoint listing mutex poisoned").clear();
+        } else {
+            warn!(endpoint = %self.address, %error, attempts = consecutive, "Validator poll failed");
+            self.view.apply(self.index, EndpointReport::Failed { consecutive });
+        }
+        ejected
+    }
+
+    /// Poll until `cancel`; a validator failing never ends it (serving stops only when no one holds
+    /// the verified tip)
+    ///
+    /// - mempool inactive → chain still read, warned once per `CATCHING_UP_WARN_INTERVAL`
     /// - transport failure → backoff + retry, last observation kept (`EndpointReport::Failed`)
-    /// - failure ceiling / no mempool → `Down` (sightings + vote retracted: never vote stale),
+    /// - failure ceiling / no mempool → `Down` (sightings + chain retracted: never held stale),
     ///   still retried at `MAX_BACKOFF`; the next answer brings it back
     pub async fn run(self, cancel: CancellationToken) {
         let mut backoff = INITIAL_BACKOFF;
@@ -301,34 +326,15 @@ impl<S: EndpointSource> EndpointPoller<S> {
                                 catching_up_warned = Some(Instant::now());
                             }
                         }
-                        Polled::Syncing => {}
                     }
-                    if sleep_or_cancel(POLL_INTERVAL, &cancel).await.is_break() {
+                    if self.waker.wait(&cancel).await.is_break() {
                         return;
                     }
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    let ejected = matches!(error, EndpointPollError::Unavailable)
-                        || consecutive_failures >= MAX_CONSECUTIVE_FAILURES;
-                    if ejected && !down {
-                        warn!(
-                            endpoint = %self.address,
-                            %error,
-                            attempts = consecutive_failures,
-                            retry = ?MAX_BACKOFF,
-                            "Validator down, vote withdrawn",
-                        );
-                        self.view.apply(self.index, EndpointReport::Down);
-                        // sightings retracted: the next answer must re-report everything listed
-                        self.listed.lock().expect("endpoint listing mutex poisoned").clear();
-                        down = true;
-                    } else if !down {
-                        warn!(endpoint = %self.address, %error, attempts = consecutive_failures, "Validator poll failed");
-                        self.view.apply(
-                            self.index,
-                            EndpointReport::Failed { consecutive: consecutive_failures },
-                        );
+                    if !down {
+                        down = self.failed(&error, consecutive_failures);
                     }
                     let delay = if down { MAX_BACKOFF } else { backoff };
                     if sleep_or_cancel(delay, &cancel).await.is_break() {
@@ -339,6 +345,12 @@ impl<S: EndpointSource> EndpointPoller<S> {
             }
         }
     }
+}
+
+/// A telemetry read's answer, or `None` (last kept) with a warning
+fn kept<T>(endpoint: &str, what: &str, read: Result<T, NonDomainError>) -> Option<T> {
+    read.inspect_err(|cause| warn!(endpoint, %cause, "Validator {what} read failed, last kept"))
+        .ok()
 }
 
 async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) -> ControlFlow<()> {
