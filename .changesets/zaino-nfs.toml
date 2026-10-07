@@ -9,10 +9,13 @@ follows the header chain's `VerifiedChain`, fetches every block by hash from any
 checks it against its verified header (hash, coinbase height, merkle root, CVE-2012-2459), folds \
 each block joining the verified best through every enabled index in dependency order, sends every \
 final block once on each index's final stream (`subscribe(kind, committed, queue)`), and keeps a \
-node until every index holds it durably. `run(cancel)` stops on `NfsError::{Diverged, Fold, \
-ChainGone, WriterGone}`. `NfsHandle::snapshot()` returns a `Snapshot`: the served tip (the \
-deepest folded best block, so a reorg moves it at once), its `VerifiedChain`, `ChainParams` and \
-`Views` with a typed reader per enabled index; `changed()` awaits the next. Metrics and logs for \
-the tip, reorgs and fetch progress (`describe_metrics`). Feature `testing`: \
-`NfsHandle::{fixed, unpublished}`.
+node until every index holds it durably (side nodes: while the header chain `holds` them). \
+`run(cancel)` stops on `NfsError::{Diverged, Fold, ChainGone, WriterGone}`. \
+`NfsHandle::snapshot()` returns a `Snapshot`: the served tip (the deepest folded best block, so a \
+reorg moves it at once), its `VerifiedChain`, `ChainParams` and `Views` with a typed reader per \
+enabled index; `changed()` awaits the next. A snapshot is republished per index commit too \
+(`durable()` current), and `at(hash)` answers as of any folded block, side branches included \
+(`At`, `Branch`), or the root; `Nfs::indexed()` = the same publications as a watch; `INDEXES` = \
+every kind folded. Metrics and logs for the tip, reorgs and fetch progress (`describe_metrics`). \
+Feature `testing`: `Snapshot::fixed`, `NfsHandle::{fixed, unpublished}`.
 """

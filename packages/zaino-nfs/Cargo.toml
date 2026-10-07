@@ -12,7 +12,6 @@ homepage.workspace = true
 description = "Zaino's non-finalized state: one folded node per block above the durable root, one final stream"
 
 [dependencies]
-arc-swap.workspace = true
 imbl.workspace = true
 metrics.workspace = true
 thiserror.workspace = true

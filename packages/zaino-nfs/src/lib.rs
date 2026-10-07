@@ -30,9 +30,9 @@ use crate::report::Progress;
 use crate::snapshot::Publisher;
 
 pub use crate::emit::describe_metrics;
-pub use crate::fold::{schema, FoldError};
+pub use crate::fold::{schema, FoldError, INDEXES};
 pub use crate::report::REPORT_INTERVAL;
-pub use crate::snapshot::{ChainParams, NfsHandle, Snapshot, Views};
+pub use crate::snapshot::{At, Branch, ChainParams, NfsHandle, Published, Snapshot, Views};
 
 /// Core re-asked at this pace (retries, hedges)
 const TICK: Duration = Duration::from_secs(1);
@@ -62,7 +62,6 @@ pub struct Nfs<S, V> {
     sources: Vec<Arc<S>>,
     params: ChainParams,
     lookahead: NonZeroUsize,
-    depth: ReorgDepth,
     sink: IndexerDataSink<Final>,
     committed: PerIndex<watch::Receiver<V>>,
     root: PerIndex<Layer>,
@@ -75,20 +74,19 @@ pub struct Nfs<S, V> {
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     /// - `sources` = everything serving blocks by hash (each answer checked)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
-    /// - `depth` = the header chain's reorg depth (side-node bound)
+    /// - `_depth`: unread (side nodes = what `chain` holds, its H4 bound); goes with zainod's call
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         sources: Vec<Arc<S>>,
         params: ChainParams,
         lookahead: NonZeroUsize,
-        depth: ReorgDepth,
+        _depth: ReorgDepth,
     ) -> Self {
         Self {
             chain,
             sources,
             params,
             lookahead,
-            depth,
             sink: IndexerDataSink::new("final"),
             committed: PerIndex::default(),
             root: PerIndex::default(),
@@ -122,6 +120,11 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         self.published.handle()
     }
 
+    /// Every publish as a watch: served tip moved or a durable tip moved
+    pub fn indexed(&self) -> Published<V> {
+        self.published.subscribe()
+    }
+
     /// Last height handed to the indexes (sync progress between their commits)
     pub fn subscribe_handed(&self) -> watch::Receiver<Option<Height>> {
         self.handed.subscribe()
@@ -152,7 +155,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         }
         let durable = committed.iter().map(|(_, view)| view.tip()).collect();
         let (sources, lookahead) = (self.sources.len(), self.lookahead.get());
-        let mut core = NfsCore::new(sources, lookahead, self.depth, durable);
+        let mut core = NfsCore::new(sources, lookahead, durable);
         let mut work = JoinSet::new();
         let mut ticks = tokio::time::interval(TICK);
         ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -221,10 +224,11 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                 let data = Arc::new(Final { block, folds });
                 self.sink.send(Step::Apply { height, data }).await;
             }
-            Output::Publish(SnapshotTip { chain, tip, folded }) => {
+            Output::Publish(SnapshotTip { chain, tip, root, graph }) => {
                 self.log_served(&chain, tip);
-                let views = self.views(committed, folded.as_deref());
-                self.published.publish(Snapshot { chain, tip, params: self.params, views });
+                let durable = committed.clone();
+                let snapshot = Snapshot::new(chain, tip, root, self.params, durable, graph);
+                self.published.publish(snapshot);
             }
             Output::Misanswered { from, at, why } => {
                 let height = u32::from(at.height);
@@ -245,8 +249,13 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     }
 
     /// Served tip moved: a reorg (the last one off `chain`'s best), or a new best tip (~75 s apart)
+    ///
+    /// - same tip (a durable-only republish): silent
     fn log_served(&mut self, chain: &VerifiedChain, tip: BlockRef) {
         let last = self.served.replace(tip);
+        if last == Some(tip) {
+            return;
+        }
         let left = last.filter(|last| chain.hash_at(last.height) != Some(last.hash));
         if let Some(left) = left {
             emit::reorg();

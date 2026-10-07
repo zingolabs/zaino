@@ -24,7 +24,8 @@ tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold |
 
 - `Nfs::new`: the `VerifiedChain` watch, the block sources (any may serve any block: each answer
   checked against the verified header), the chain params, `lookahead` (bodies fetched or folding
-  ahead of the next one needed), the header chain's reorg depth.
+  ahead of the next one needed), the header chain's reorg depth (unread: side nodes are bounded
+  by what the chain `holds`).
 - `subscribe(kind, committed, queue)`: enables `kind`. `committed` is a
   `watch::Receiver<V>` of the index store's committed view, sent after every commit: its tip is
   the index's durable tip, and the view is what snapshots and root folds read. Panics on a kind
@@ -72,11 +73,41 @@ snapshots.changed().await?;                             // next publish (Err: dr
   a reorg moves it to the fork point at once and forward as the new branch folds.
 - At the root (bulk sync), an index ahead of the root reads past `tip()`: serve at `tip()`.
 - `chain()` = the `VerifiedChain` it was cut from, `params()` = network + pool activations.
-- Feature `testing`: `NfsHandle::unpublished()` (nothing served yet) and
-  `NfsHandle::fixed(chain, tip, params, [(kind, committed view)])` (one snapshot for good, no
-  layers): consumers' route tests without a driver. `ChainParams::of(&mock_chain, tip)`: the
-  network label + pool activations a validator following that `MockChain` at `tip` reports
+- `served()` = the served tip as an `At` (`tip()`, `branch()`, `params()`, `views()`); `tip()`,
+  `params()`, `views()` on the snapshot are its shorthands.
+- Published again per served-tip move **and** per index commit: `durable()` (each index's
+  durable tip) is current as of the publish.
+- Feature `testing`: `Snapshot::fixed(chain, tip, params, [(kind, committed view)])` (the root at
+  `tip`, no layers), `NfsHandle::unpublished()` (nothing served yet) and `NfsHandle::fixed(..)`
+  (that snapshot for good): consumers' tests without a driver. `ChainParams::of(&mock_chain, tip)`:
+  the network label + pool activations a validator following that `MockChain` at `tip` reports
   (`PoolActivations::from_validator` over its `blockchain_info`), never hard-coded.
+
+### Any folded block: `at`
+
+```rust,ignore
+let at = snap.at(&hash).ok_or_else(not_folded)?;       // a folded node (best or side) or the root
+match at.branch() { Branch::Best => {}, Branch::Side { from } => {} }
+let trees = at.views().tree_state();                    // index state as of `hash`, no I/O
+```
+
+| `hash`                                    | `snap.at(hash)`                                    |
+| ----------------------------------------- | -------------------------------------------------- |
+| served tip                                | = `served()`                                       |
+| best node above the root                  | its views (`Branch::Best`)                         |
+| side node                                 | its views (`Branch::Side { from }`, `from` = its best parent) |
+| root (lowest durable tip)                 | committed views alone                              |
+| final below the root / never folded / unknown | `None`                                         |
+
+- An index durable at or past the block reads its committed view alone (heights `<=` the block).
+- `folded(hash)` = a node of this snapshot (the root excluded); side nodes = those the header
+  chain still `holds` (forking at or above the final tip, its H4 bound): no bound of the NFS's own.
+
+### The publication watch: `indexed()`
+
+`nfs.indexed()` = every publish as a `watch::Receiver<Option<Arc<Snapshot<V>>>>` (`Published<V>`):
+the one input `zaino-snapshot`'s publisher reads. `INDEXES` = every kind the NFS folds, fold
+order.
 
 ## Observability
 
@@ -101,17 +132,20 @@ compact-block → block-hash → tree-state → transparent-address, each only i
 ## The core: `NfsCore<F>`
 
 Pure (no I/O, time as input): `step(input, now) -> Result<Vec<Output>, Diverged>` and `check()`
-(N1–N5, `nfs.md` §9), crate-internal. The driver feeds it the verified chain, checked bodies,
-fold results and durable tips, and carries out fetches, folds, sends and publishes.
+(N1–N5, `nfs.md` §9; G8, `global-snapshot.md` §6), crate-internal. The driver feeds it the
+verified chain, checked bodies, fold results and durable tips, and carries out fetches, folds,
+sends and publishes.
 
 ## Tests
 
 - `core/model.rs`: random verified-chain evolutions, lying and silent sources, delayed folds and
-  commits, restarts, against naive writers and a fold-from-genesis oracle; `core/fire_drills.rs`
-  plants one bug per check and precondition.
+  commits, restarts, against naive writers and a fold-from-genesis oracle; every publish's `at`
+  for each node, the root, a block below it and a stranger against a naive answer (G7);
+  `core/fire_drills.rs` plants one bug per check and precondition.
 - `tests.rs`: the driver end to end with all five real folds over `SimFs` stores and mock
   validators, through bulk, reorgs (longer, same height, retreat), finality and a crash restart;
-  every snapshot seen = each index folded from genesis along best; the driver's refusals.
+  every snapshot seen: `at` of every mined block, side branches included, = each index folded
+  from genesis along that block's path; the driver's refusals.
 - `fold.rs`: `fold_block` golden (fees in the compact-block record, disabled indexes absent).
 
 ```bash

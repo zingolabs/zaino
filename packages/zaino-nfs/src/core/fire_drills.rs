@@ -23,7 +23,7 @@ fn depth() -> ReorgDepth {
     ReorgDepth::new(NonZeroU32::new(3).expect("nz"))
 }
 
-/// Trunk A 0..=9, side S 5..=17 off A4, side Q 4..=7 off A3
+/// Trunk A 0..=9, side S 5..=8 off A4, side Q 4..=7 off A3
 struct World {
     builder: Chain,
     a: Vec<BlockHash>,
@@ -39,9 +39,9 @@ impl World {
         };
         let a9 = builder.extend(builder.genesis().hash, 9).hash;
         let a = hashes(&builder, a9);
-        let s17 = builder.extend(a[4], 13).hash;
+        let s8 = builder.extend(a[4], 4).hash;
         let q7 = builder.extend(a[3], 4).hash;
-        let (s, q) = (hashes(&builder, s17)[5..].to_vec(), hashes(&builder, q7)[4..].to_vec());
+        let (s, q) = (hashes(&builder, s8)[5..].to_vec(), hashes(&builder, q7)[4..].to_vec());
         Self { builder, a, s, q }
     }
 
@@ -102,7 +102,7 @@ impl World {
     fn valid(&self) -> NfsCore<Height> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
-        let mut core = NfsCore::new(2, 4, depth(), vec![None, None]);
+        let mut core = NfsCore::new(2, 4, vec![None, None]);
         self.drive(&mut core, Input::Chain(self.verified(&a[..=4], 1)), all);
         for index in 0..2 {
             let tip = Some(self.at(a[1]));
@@ -177,12 +177,12 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         ("N2: nodes only above the root", Box::new(|c| c.graph.insert(world.node(a[2])))),
         ("N2: every node folds on a held parent", Box::new(|c| c.graph.remove(&a[5]))),
         (
-            "graph: every side node forks at or above the final tip",
+            "G8: every node on the best chain or a side branch it holds",
             Box::new(|c| c.graph.insert(world.node(q[0]))),
         ),
         (
-            "graph: 13 side nodes past the bound",
-            Box::new(|c| s[2..].iter().for_each(|hash| c.graph.insert(world.node(*hash)))),
+            "G8: every node on the best chain or a side branch it holds",
+            Box::new(|c| c.graph.insert(world.node(s[2]))),
         ),
         (
             "N3: a node sent final stays until every index holds it durably",
@@ -228,11 +228,8 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     };
     let durable = |index, tip: BlockHash| Input::Durable { index, tip: Some(world.at(tip)) };
     let preconditions = [
-        (
-            "at least one block in flight",
-            fired(|| drop(NfsCore::<Height>::new(1, 0, depth(), vec![None]))),
-        ),
-        ("an index to feed", fired(|| drop(NfsCore::<Height>::new(1, 1, depth(), vec![])))),
+        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(1, 0, vec![None])))),
+        ("an index to feed", fired(|| drop(NfsCore::<Height>::new(1, 1, vec![])))),
         ("H2: the final tip never moves back", step(&|_| {}, Input::Chain(rewound))),
         (
             "H2: a final block never changes",
@@ -252,7 +249,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
 
     // bad input (not a bug): durable tip off the final chain → `Err(Diverged)`, no panic
-    let mut core = NfsCore::<Height>::new(1, 1, depth(), vec![None, Some(world.at(q[0]))]);
+    let mut core = NfsCore::<Height>::new(1, 1, vec![None, Some(world.at(q[0]))]);
     let diverged = core.step(Input::Chain(world.verified(a, 4)), now).map(drop);
     let expected = Diverged { index: 1, height: h(4), expected: q[0], got: a[4] };
     assert_eq!(diverged, Err(expected));

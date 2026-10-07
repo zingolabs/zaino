@@ -5166,7 +5166,6 @@ dependencies = [
 name = "zaino-nfs"
 version = "0.1.0"
 dependencies = [
- "arc-swap",
  "imbl",
  "metrics",
  "proptest",

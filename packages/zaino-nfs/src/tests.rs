@@ -2,8 +2,8 @@
 //! index (`nfs.md` §10)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
-//! - Every snapshot seen: tip on its best; each index = the oracle at its view's tip; R12 = every
-//!   view at the snapshot tip (a durable-only view ahead of it: root snapshots only)
+//! - Every snapshot seen: tip on its best; `at` of every mined block (served, side, root): each
+//!   index = the oracle at its view's tip, that tip = the block's (R12: a durable-only view ahead)
 //! - Final stream, per index and run: each height once, ascending, final, folded once folded
 
 use std::collections::HashMap;
@@ -20,8 +20,8 @@ use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{
-    fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, LayeredView, PersistenceEngine, Schema,
-    Store, View, Width,
+    fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store, View,
+    Width,
 };
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
@@ -209,38 +209,59 @@ async fn commit(
     }
 }
 
-/// Tip on its chain's best; each index = the oracle at its view's tip, that tip = the snapshot's
-/// (R12) unless the snapshot is the root and the view durable-only
+/// - N4: tip on its chain's best = the lowest index view (a root snapshot: its lowest index)
+/// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
+///   block's path vs the chain's; each index reads through the block, or (durable at or past it)
+///   its durable tip alone (R12); either = the oracle there
 fn verify(
     snapshot: &Snapshot<DiskView>,
     blocks: &Chain,
+    mined: &[BlockHash],
     oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
     context: &str,
 ) {
     let (chain, tip) = (snapshot.chain(), snapshot.tip());
     assert_eq!(chain.hash_at(tip.height), Some(tip.hash), "{context}: N4 tip {tip:?} off best");
-    let views: Vec<(IndexKind, LayeredView<DiskView>)> = INDEXES
-        .iter()
-        .map(|&(kind, ..)| (kind, snapshot.views().view(kind).expect("every index enabled")))
-        .collect();
-    let root = views.iter().any(|(_, view)| view.tip() != Some(tip));
-    for (kind, view) in &views {
-        let name = kind.name();
-        let Some(at) = view.tip().filter(|at| at.height >= tip.height) else {
-            panic!("{context}: N4 {name} at {:?} below the tip {tip:?}", view.tip());
+    assert_eq!(snapshot.served().branch(), Branch::Best, "{context}: N4 served on the best");
+    let durable: Vec<(IndexKind, Option<BlockRef>)> = snapshot.durable().collect();
+    let root = durable.iter().filter_map(|(_, tip)| *tip).min_by_key(|tip| tip.height);
+    let lowest = INDEXES.iter().filter_map(|&(kind, ..)| snapshot.views().view(kind)?.tip());
+    let lowest = lowest.map(|at| at.height).min();
+    assert_eq!(lowest, Some(tip.height), "{context}: N4 the tip = the lowest index view");
+
+    for hash in mined {
+        let Some(at) = snapshot.at(hash) else {
+            let held = snapshot.folded(hash) || root.is_some_and(|root| root.hash == *hash);
+            assert!(!held, "{context}: G7 at({hash:?}) = None for a folded block or the root");
+            continue;
         };
-        assert_eq!(chain.hash_at(at.height), Some(at.hash), "{context}: {name} at {at:?} off best");
-        if root {
-            let durable = view.durable().tip();
-            assert_eq!(durable, Some(at), "{context}: R12 {name} ahead of {tip:?} non-final");
+        let block = at.tip();
+        let path: Vec<BlockHash> = blocks.path(*hash).iter().map(|b| b.header().hash).collect();
+        let shared = (0..path.len()).take_while(|&h| chain.hash_at(height(h)) == Some(path[h]));
+        let branch = match shared.count() {
+            all if all == path.len() => Branch::Best,
+            shared => Branch::Side {
+                from: BlockRef { hash: path[shared - 1], height: height(shared - 1) },
+            },
+        };
+        assert_eq!((block.hash, at.branch()), (*hash, branch), "{context}: G7 at({hash:?})");
+        for (kind, durable) in &durable {
+            let name = kind.name();
+            let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
+            let view = at.views().view(*kind).expect("every index enabled");
+            assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
+            let expected =
+                oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.path(through.hash)));
+            let (_, expected) =
+                expected.iter().find(|(each, _)| each == kind).expect("every index");
+            let got = tables(&view, &schema(*kind, NETWORK));
+            assert!(got == *expected, "{context}: N6 {name} at {through:?} != folded from genesis");
         }
-        let expected = oracles.entry(at.hash).or_insert_with(|| oracle(&blocks.path(at.hash)));
-        let (_, expected) = expected.iter().find(|(each, _)| each == kind).expect("every index");
-        let got = tables(view, &schema(*kind, NETWORK));
-        assert!(got == *expected, "{context}: N6 {name} at {at:?} != folded from genesis");
     }
-    let lowest = views.iter().filter_map(|(_, view)| view.tip()).map(|at| at.height).min();
-    assert_eq!(lowest, Some(tip.height), "{context}: N4 a root snapshot = its lowest index");
+}
+
+fn height(h: usize) -> Height {
+    Height::try_from(h as u32).expect("small chain")
 }
 
 /// Block tree (mined up front), then two NFS runs over the same stores, each move settled (every
@@ -275,6 +296,8 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let e = mine(&mut blocks, d12, 12);
     let (c13, d12) = (blocks.block(c13).clone(), blocks.block(d12).clone());
     let blocks = blocks;
+    let tree = [&a[..], &b, &[c13.clone(), d12.clone()], &e];
+    let mined: Vec<BlockHash> = tree.iter().flat_map(|run| run.iter().map(hash)).collect();
     // (headers added, finalize)
     let runs: [&[(&[Block], bool)]; 2] = [
         &[
@@ -374,7 +397,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
                         !seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, latest))
                     };
                     if let Some(latest) = handle.snapshot().filter(new) {
-                        verify(&latest, &blocks, &mut oracles, &context);
+                        verify(&latest, &blocks, &mined, &mut oracles, &context);
                         seen = Some(latest);
                     }
                     let durable = durable_heights() == settled_heights;

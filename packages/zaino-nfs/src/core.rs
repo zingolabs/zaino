@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use zaino_header_chain::{Record, VerifiedChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 
 use crate::fetch::{Answer, Checked, Fetcher, Misanswer};
 use crate::graph::{on_best, Graph, Node};
@@ -29,6 +29,7 @@ pub(crate) struct NfsCore<F> {
     folding: HashMap<BlockHash, Checked>,
     fetcher: Fetcher,
     served: Option<BlockRef>,
+    served_durable: Vec<Option<BlockRef>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,12 +66,13 @@ pub(crate) struct Final<F> {
     pub(crate) folded: Option<Arc<F>>,
 }
 
-/// `folded` = `None`: the root, read from the committed stores alone
+/// `tip` = a node of `graph`, or `root` (read from the committed stores alone)
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotTip<F> {
     pub(crate) chain: Arc<VerifiedChain>,
     pub(crate) tip: BlockRef,
-    pub(crate) folded: Option<Arc<F>>,
+    pub(crate) root: Option<BlockRef>,
+    pub(crate) graph: Graph<F>,
 }
 
 /// Index `index`'s durable block off the final chain (resync required)
@@ -85,20 +87,16 @@ pub(crate) struct Diverged {
 impl<F> NfsCore<F> {
     /// - `durable` = each enabled index's durable tip (`Durable.index` = its position)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
-    pub(crate) fn new(
-        sources: usize,
-        lookahead: usize,
-        depth: ReorgDepth,
-        durable: Vec<Option<BlockRef>>,
-    ) -> Self {
+    pub(crate) fn new(sources: usize, lookahead: usize, durable: Vec<Option<BlockRef>>) -> Self {
         assert!(lookahead > 0, "at least one block in flight");
         assert!(!durable.is_empty(), "an index to feed");
         let mut core = Self {
             lookahead,
             chain: None,
+            served_durable: durable.clone(),
             durable,
             sent: None,
-            graph: Graph::new(depth.get()),
+            graph: Graph::new(),
             ready: BTreeMap::new(),
             folding: HashMap::new(),
             fetcher: Fetcher::new(sources),
@@ -269,23 +267,24 @@ impl<F> NfsCore<F> {
         self.root().map_or(Height::GENESIS, |root| root.height.next())
     }
 
-    /// Served tip moved → published (deepest folded best block, else the root)
+    /// Served tip or a durable tip moved → published (durable tips current per publish)
     fn publish(&mut self, chain: &Arc<VerifiedChain>, out: &mut Vec<Output<F>>) {
-        let (tip, folded) = self.serving(chain);
-        if tip == self.served {
+        let tip = self.serving(chain);
+        if tip == self.served && self.durable == self.served_durable {
             return;
         }
         self.served = tip;
+        self.served_durable.clone_from(&self.durable);
         if let Some(tip) = tip {
-            out.push(Output::Publish(SnapshotTip { chain: Arc::clone(chain), tip, folded }));
+            let (chain, root, graph) = (Arc::clone(chain), self.root(), self.graph.clone());
+            out.push(Output::Publish(SnapshotTip { chain, tip, root, graph }));
         }
     }
 
-    fn serving(&self, chain: &VerifiedChain) -> (Option<BlockRef>, Option<Arc<F>>) {
-        match self.graph.best_top(chain, self.root()) {
-            Some(top) => (Some(top.at), Some(Arc::clone(&top.folded))),
-            None => (self.root(), None),
-        }
+    /// Deepest folded best block, else the root
+    fn serving(&self, chain: &VerifiedChain) -> Option<BlockRef> {
+        let top = self.graph.best_top(chain, self.root());
+        top.map(|top| top.at).or(self.root())
     }
 
     /// First `lookahead` best heights from the next send with no node: each held, folding or
@@ -330,7 +329,7 @@ impl<F> NfsCore<F> {
                 assert!(held, "N3: a node sent final stays until every index holds it durably");
             }
         }
-        let serving = if self.restarting(chain) { None } else { self.serving(chain).0 };
+        let serving = if self.restarting(chain) { None } else { self.serving(chain) };
         assert_eq!(self.served, serving, "N4: served tip = the deepest folded best block");
 
         let next = self.next_send();

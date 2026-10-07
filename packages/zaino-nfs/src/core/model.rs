@@ -24,6 +24,7 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use super::{Final, Input, NfsCore, Output, SnapshotTip};
 use crate::fetch::{check_block, Answer, HEDGE};
 use crate::graph::on_best;
+use crate::snapshot::Branch;
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const SOURCES: usize = 4;
@@ -374,16 +375,19 @@ impl Sim<'_> {
         }
     }
 
-    /// N4: on its chain's best; folded = the oracle, unfolded = durable in every index
+    /// - N4: on its chain's best; folded = the oracle, unfolded = durable in every index
+    /// - G7: `at` of every node, the root, a block below it and the decoy = the naive answer
     fn served(&mut self, tip: SnapshotTip<Toy>, context: &str) {
         let at = tip.tip;
         assert!(on_best(&tip.chain, at), "{context}: N4 served {at:?} off its best");
-        match tip.folded {
+        let served = tip.graph.at(&tip.chain, tip.root, &at.hash);
+        match served.and_then(|served| served.folded) {
             Some(folded) => {
                 let expected = self.oracle(at.hash);
                 assert_eq!(*folded, expected, "{context}: N4 served {at:?} folded wrong");
             }
             None => {
+                assert_eq!(tip.root, Some(at), "{context}: N4 served {at:?} = a node or the root");
                 let durable = self
                     .writers
                     .iter()
@@ -391,7 +395,43 @@ impl Sim<'_> {
                 assert!(durable, "{context}: N4 served {at:?} unfolded and not durable");
             }
         }
+        let below = tip.root.and_then(|root| tip.chain.hash_at(root.height.checked_sub(1)?));
+        let nodes = tip.graph.nodes().map(|node| node.at.hash);
+        let asked: Vec<BlockHash> =
+            nodes.chain(tip.root.map(|root| root.hash)).chain(below).chain([self.decoy]).collect();
+        for hash in asked {
+            let got = tip.graph.at(&tip.chain, tip.root, &hash);
+            let got = got.map(|base| (base.at, base.branch, base.folded.map(|folded| *folded)));
+            let expected = self.at(&tip, hash);
+            assert_eq!(got, expected, "{context}: G7 at {hash:?}");
+        }
         self.published = Some(at);
+    }
+
+    /// Naive `at`: the root unfolded; a node = its oracle fold, branch = its path vs the chain's
+    fn at(
+        &mut self,
+        tip: &SnapshotTip<Toy>,
+        hash: BlockHash,
+    ) -> Option<(BlockRef, Branch, Option<Toy>)> {
+        if let Some(root) = tip.root.filter(|root| root.hash == hash) {
+            return Some((root, Branch::Best, None));
+        }
+        if !tip.graph.contains(&hash) {
+            return None;
+        }
+        let path: Vec<BlockRef> = self
+            .builder
+            .path(hash)
+            .iter()
+            .map(|block| BlockRef { hash: block.header().hash, height: block.header().height })
+            .collect();
+        let shared = path.iter().take_while(|at| on_best(&tip.chain, **at)).count();
+        let branch = match path.get(shared) {
+            None => Branch::Best,
+            Some(_) => Branch::Side { from: path[shared - 1] },
+        };
+        Some((path[path.len() - 1], branch, Some(self.oracle(hash))))
     }
 
     /// After every step: the served tip on the best, every node = the oracle, every node sent
@@ -456,7 +496,7 @@ impl Sim<'_> {
             writer.applied.truncate(writer.durable);
         }
         let durable = self.writers.iter().map(Writer::tip).collect();
-        self.core = NfsCore::new(self.kinds.len(), self.lookahead, DEPTH, durable);
+        self.core = NfsCore::new(self.kinds.len(), self.lookahead, durable);
         self.pending.clear();
         self.published = None;
         self.sent_folded.clear();
@@ -509,7 +549,7 @@ fn run(moves: &[Move], kinds: &[Kind], delays: &[u64], lookahead: usize, seed: u
         decoy,
         kinds,
         lookahead,
-        core: NfsCore::new(kinds.len(), lookahead, DEPTH, vec![None; writers.len()]),
+        core: NfsCore::new(kinds.len(), lookahead, vec![None; writers.len()]),
         given: None,
         pending: Vec::new(),
         writers,

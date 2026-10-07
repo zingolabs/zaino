@@ -1,16 +1,16 @@
 //! Folded blocks above the root: one [`Node`] per block, keyed by hash (`nfs.md` §6)
 //!
 //! - Best nodes = one contiguous run from the root (folded parent first)
-//! - Side nodes = earlier best runs, kept while the header chain can still pick them (fork at or
-//!   above the final tip), at most [`SIDE_NODES_PER_DEPTH`] · depth
+//! - Side nodes = earlier best runs, kept while the header chain holds them (`holds`: side
+//!   branches forking at or above the final tip, its own H4 bound)
 
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use zaino_header_chain::{VerifiedChain, SIDE_NODES_PER_DEPTH};
+use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 
 use crate::fetch::merkle_root;
+use crate::snapshot::Branch;
 
 #[derive(Debug)]
 pub(crate) struct Node<F> {
@@ -20,14 +20,29 @@ pub(crate) struct Node<F> {
     pub(crate) folded: Arc<F>,
 }
 
+/// O(1) clone: one per published snapshot
+#[derive(Debug)]
 pub(crate) struct Graph<F> {
     nodes: imbl::HashMap<BlockHash, Arc<Node<F>>>,
-    max_side: usize,
+}
+
+impl<F> Clone for Graph<F> {
+    fn clone(&self) -> Self {
+        Self { nodes: self.nodes.clone() }
+    }
+}
+
+/// `at()`'s answer: `folded` = `None` at the root (committed views alone)
+#[derive(Debug)]
+pub(crate) struct Base<F> {
+    pub(crate) at: BlockRef,
+    pub(crate) branch: Branch,
+    pub(crate) folded: Option<Arc<F>>,
 }
 
 impl<F> Graph<F> {
-    pub(crate) fn new(depth: u32) -> Self {
-        Self { nodes: imbl::HashMap::new(), max_side: SIDE_NODES_PER_DEPTH * depth as usize }
+    pub(crate) fn new() -> Self {
+        Self { nodes: imbl::HashMap::new() }
     }
 
     pub(crate) fn get(&self, hash: &BlockHash) -> Option<&Arc<Node<F>>> {
@@ -82,52 +97,41 @@ impl<F> Graph<F> {
         run.map_while(|hash| self.nodes.get(&hash?)).last()
     }
 
-    /// Nodes at or below `root` gone (every index holds them), then dead and surplus side nodes
+    /// Kept iff above `root` (every index holds the rest) and held by `chain` (G8)
     pub(crate) fn prune(&mut self, chain: &VerifiedChain, root: Option<BlockRef>) {
         let root_height = root.map(|root| root.height);
-        self.nodes.retain(|_, node| Some(node.at.height) > root_height);
-        let held = self.held(chain, root);
-        self.nodes.retain(|hash, _| held.contains(hash));
-        while self.side(chain).count() > self.max_side {
-            let parents: HashSet<BlockHash> = self.nodes.values().map(|node| node.parent).collect();
-            let leaves = self.side(chain).filter(|node| !parents.contains(&node.at.hash));
-            let lowest = leaves.map(|node| (node.at.height, node.at.hash)).min();
-            let (_, hash) = lowest.expect("past the bound: a side leaf exists");
-            self.nodes.remove(&hash);
+        self.nodes.retain(|_, node| Some(node.at.height) > root_height && chain.holds(node.at));
+    }
+
+    /// `hash` = the root or a node (`None` = neither: final below the root, never folded, unknown)
+    pub(crate) fn at(
+        &self,
+        chain: &VerifiedChain,
+        root: Option<BlockRef>,
+        hash: &BlockHash,
+    ) -> Option<Base<F>> {
+        if let Some(root) = root.filter(|root| root.hash == *hash) {
+            return Some(Base { at: root, branch: Branch::Best, folded: None });
         }
+        let node = self.nodes.get(hash)?;
+        let folded = Some(Arc::clone(&node.folded));
+        Some(Base { at: node.at, branch: self.branch(chain, node), folded })
     }
 
-    /// Best nodes + side nodes forking at or above the final tip (lower = the header chain pruned
-    /// their branch)
-    fn held(&self, chain: &VerifiedChain, root: Option<BlockRef>) -> HashSet<BlockHash> {
-        let final_height = chain.final_tip().map(|tip| tip.height);
-        let mut nodes: Vec<&Arc<Node<F>>> = self.nodes.values().collect();
-        nodes.sort_by_key(|node| node.at.height);
-        let mut held = HashSet::new();
-        for node in nodes {
-            let keep = on_best(chain, node.at)
-                || match self.nodes.get(&node.parent) {
-                    Some(parent) if on_best(chain, parent.at) => {
-                        Some(parent.at.height) >= final_height
-                    }
-                    Some(parent) => held.contains(&parent.at.hash),
-                    None => {
-                        root.is_some_and(|root| root.hash == node.parent)
-                            && root == chain.final_tip()
-                    }
-                };
-            if keep {
-                held.insert(node.at.hash);
-            }
+    /// Best, or side from its first ancestor on `chain`'s best (a best node or the root: N2)
+    fn branch(&self, chain: &VerifiedChain, node: &Node<F>) -> Branch {
+        if on_best(chain, node.at) {
+            return Branch::Best;
         }
-        held
+        let mut lowest = node;
+        while let Some(parent) = self.nodes.get(&lowest.parent).filter(|p| !on_best(chain, p.at)) {
+            lowest = parent;
+        }
+        let height = lowest.at.height.checked_sub(1).expect("a side node sits above the root");
+        Branch::Side { from: BlockRef { hash: lowest.parent, height } }
     }
 
-    fn side<'a>(&'a self, chain: &'a VerifiedChain) -> impl Iterator<Item = &'a Arc<Node<F>>> {
-        self.nodes.values().filter(|node| !on_best(chain, node.at))
-    }
-
-    /// N1, N2 and the side bounds; panics naming the invariant broken
+    /// N1, N2, G8; panics naming the invariant broken
     pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>) {
         for node in self.nodes.values() {
             let header = node.block.header();
@@ -140,12 +144,9 @@ impl<F> Graph<F> {
             assert!(above, "N2: nodes only above the root");
             let held = self.holds_parent(root, node.parent, node.at.height);
             assert!(held, "N2: every node folds on a held parent");
+            let held = chain.holds(node.at);
+            assert!(held, "G8: every node on the best chain or a side branch it holds");
         }
-        let held = self.held(chain, root);
-        let forks = self.nodes.keys().all(|hash| held.contains(hash));
-        assert!(forks, "graph: every side node forks at or above the final tip");
-        let side = self.side(chain).count();
-        assert!(side <= self.max_side, "graph: {side} side nodes past the bound");
     }
 }
 

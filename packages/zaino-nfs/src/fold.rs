@@ -16,6 +16,15 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::snapshot::Views;
 
+/// Every index the NFS folds, in fold order
+pub const INDEXES: [IndexKind; 5] = [
+    IndexKind::ValueBalance,
+    IndexKind::CompactBlock,
+    IndexKind::BlockHash,
+    IndexKind::TreeState,
+    IndexKind::TransparentAddress,
+];
+
 /// One node's payload: what the final stream carries + each index's state as of the block
 #[derive(Debug)]
 pub(crate) struct Folded {
@@ -161,7 +170,7 @@ mod tests {
         let record = compact_block::encode_compact_block(block, &fees, &sizes);
 
         use IndexKind::*;
-        let all = [ValueBalance, CompactBlock, BlockHash, TreeState, TransparentAddress];
+        let all = INDEXES;
         for enabled in [&all[..], &[ValueBalance, CompactBlock, TreeState]] {
             let engine = DiskEngine::new(SimFs::new());
             let (mut stores, mut durable, mut root) =
