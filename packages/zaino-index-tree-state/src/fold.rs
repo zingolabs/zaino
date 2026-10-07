@@ -213,11 +213,8 @@ mod tests {
 
     use proptest::prelude::*;
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
-    use zaino_primitives::testing::linked;
-    use zaino_primitives::types::{
-        BlockHash, CompactCiphertext, OrchardAction, OrchardData, SaplingData, SaplingOutput,
-        Transaction, TransactionId,
-    };
+    use zaino_primitives::testing::{h, MockChain};
+    use zaino_primitives::types::BlockHash;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -352,60 +349,33 @@ mod tests {
         }
     }
 
-    /// Five real blocks (0, 1, many commitments per pool, both parities) folded in every split
-    /// into runs, each run on a parent holding the runs before it: every block's `Changes` =
-    /// folding it alone on its parent, table by table
+    /// Genesis + five real blocks (0, 1, many commitments per pool, both parities) folded in
+    /// every split into runs, each run on a parent holding the runs before it: every block's
+    /// `Changes` = folding it alone on its parent, table by table
     #[test]
     fn a_run_folds_to_the_same_changes_as_its_blocks_one_by_one() {
-        let commitment = |seed: u32| {
-            let mut bytes = [0u8; 32];
-            bytes[..4].copy_from_slice(&seed.to_le_bytes());
-            bytes
-        };
-        let action = |seed: &u32| OrchardAction {
-            nullifier: [4u8; 32].into(),
-            cmx: commitment(*seed).into(),
-            ephemeral_key: [6u8; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([7u8; CompactCiphertext::LENGTH]),
-        };
-        let chain: Vec<Arc<Block>> = linked(
-            [
-                (&[1, 2, 3][..], &[101][..], &[][..]),
-                (&[4], &[102, 103], &[201]),
-                (&[], &[], &[]),
-                (&[5, 6], &[104, 105, 106, 107], &[202, 203]),
-                (&[7, 8, 9, 10, 11], &[], &[204]),
-            ]
-            .into_iter()
-            .zip(0u32..)
-            .map(|((sapling, orchard, ironwood), seed)| {
-                vec![Transaction {
-                    txid: TransactionId::from(commitment(seed)),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: SaplingData {
-                        outputs: (sapling.iter())
-                            .map(|seed| SaplingOutput {
-                                cmu: commitment(*seed).into(),
-                                ephemeral_key: [2u8; 32].into(),
-                                enc_ciphertext: CompactCiphertext::from(
-                                    [3u8; CompactCiphertext::LENGTH],
-                                ),
-                            })
-                            .collect(),
-                        ..Default::default()
-                    },
-                    orchard: OrchardData {
-                        actions: orchard.iter().map(action).collect(),
-                        ..Default::default()
-                    },
-                    ironwood: OrchardData {
-                        actions: ironwood.iter().map(action).collect(),
-                        ..Default::default()
-                    },
-                }]
-            }),
-        );
+        let mut mock = MockChain::regtest();
+        // (sapling, orchard, ironwood) leaves per block; nullifier = the leaf byte repeated
+        #[rustfmt::skip]
+        let leaves: [(&[u8], &[u8], &[u8]); 5] = [
+            (&[1, 2, 3],         &[101],                &[]),
+            (&[4],               &[102, 103],           &[201]),
+            (&[],                &[],                   &[]),
+            (&[5, 6],            &[104, 105, 106, 107], &[202, 203]),
+            (&[7, 8, 9, 10, 11], &[],                   &[204]),
+        ];
+        for (sapling, orchard, ironwood) in leaves {
+            mock.mine(|b| {
+                b.tx(|t| {
+                    let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
+                    let t = orchard
+                        .iter()
+                        .fold(t, |t, &leaf| t.orchard_action([leaf; 32], leaf.into()));
+                    ironwood.iter().fold(t, |t, &leaf| t.ironwood_action([leaf; 32], leaf.into()))
+                })
+            });
+        }
+        let chain = mock.blocks(mock.tip());
         let schema = schema(NetworkType::Regtest);
         // (tip, every table's appends) per block
         let tables = |changes: &Changes| {
@@ -457,29 +427,21 @@ mod tests {
     /// Non-canonical commitment anywhere in a run → the run refused, naming its block
     #[test]
     fn an_uncommittable_note_commitment_refuses_the_run_naming_its_block() {
-        // 0x01.. < both moduli, 0xff.. above both
-        let chain: Vec<Arc<Block>> =
-            linked([[0x01; 32], [0xff; 32]].into_iter().zip(0u8..).map(|(cmu, tag)| {
-                let output = SaplingOutput {
-                    cmu: cmu.into(),
-                    ephemeral_key: [2u8; 32].into(),
-                    enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
-                };
-                vec![Transaction {
-                    txid: TransactionId::from([tag; 32]),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: SaplingData { outputs: vec![output], ..Default::default() },
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }]
-            }));
+        let mut chain = MockChain::regtest();
+        chain.mine(|b| b.tx(|t| t.sapling_output(1)));
+        let two = chain.mine(|b| b.tx(|t| t.sapling_output(2)));
+        // lie: 2's cmu edited to 0xff.. (above both moduli; the builder's leaves are canonical)
+        let mut txs = chain.block(two.hash).transactions().to_vec();
+        txs[1].sapling.outputs[0].cmu = [0xff; 32].into();
+        let uncommittable = Arc::new(Block::new(chain.block(two.hash).header().clone(), txs));
+        let mut blocks = chain.blocks(two);
+        blocks[2] = uncommittable;
         let store = DiskEngine::new(SimFs::new())
             .open(Path::new("/ts"), &schema(NetworkType::Regtest))
             .expect("empty store");
         let parent = TreeStateReader::new(store.staged(), NetworkType::Regtest);
-        let run: Vec<&Block> = chain.iter().map(|block| &**block).collect();
-        let refused = FoldError::Commitment { height: Height::GENESIS.next() };
+        let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
+        let refused = FoldError::Commitment { height: h(2) };
         assert_eq!(fold_run(&parent, &run).err(), Some(refused));
     }
 }

@@ -66,11 +66,9 @@ mod tests {
     use orchard::tree::MerkleHashOrchard;
     use proptest::strategy::Strategy as _;
     use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine};
-    use zaino_primitives::testing::linked;
+    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{
-        BlockRef, CommitmentTreeBytes, CompactCiphertext, Height, OrchardAction, OrchardData,
-        SaplingData, SaplingOutput, ShieldedPool, SubtreeRoot, Transaction, TransactionId,
-        TreeRoot,
+        BlockRef, CommitmentTreeBytes, NoteCommitment, ShieldedPool, SubtreeRoot, TreeRoot,
     };
     use zaino_sync::{Folds, IndexerDataSink, Step};
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree, HashSer};
@@ -124,52 +122,29 @@ mod tests {
         committed.wait_for(at).await.expect("writer alive");
     }
 
-    /// Canonical field element for every pool (small LE value < both moduli, unlike a
-    /// repeated-byte filler)
-    fn leaf(seed: u32) -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        bytes[..4].copy_from_slice(&seed.to_le_bytes());
-        bytes
+    type Trees = (CommitmentTreeBytes, CommitmentTreeBytes, CommitmentTreeBytes);
+
+    /// Oracle: the three trees both clients parse, every commitment of `blocks` appended in order
+    fn naive_trees(blocks: &[Arc<Block>]) -> Trees {
+        let txs = || blocks.iter().flat_map(|block| block.transactions());
+        let sapling = txs().flat_map(|tx| &tx.sapling.outputs).map(|output| output.cmu);
+        let orchard = txs().flat_map(|tx| &tx.orchard.actions).map(|action| action.cmx);
+        let ironwood = txs().flat_map(|tx| &tx.ironwood.actions).map(|action| action.cmx);
+        // ironwood reuses orchard's node
+        let sapling = naive_tree::<sapling_crypto::Node>(sapling);
+        (
+            sapling,
+            naive_tree::<MerkleHashOrchard>(orchard),
+            naive_tree::<MerkleHashOrchard>(ironwood),
+        )
     }
 
-    /// One transaction carrying each pool's commitment list, txid = `leaf(seed)`
-    fn pools(seed: u32, sapling: &[u32], orchard: &[u32], ironwood: &[u32]) -> Transaction {
-        let sapling_out = |seed: &u32| SaplingOutput {
-            cmu: leaf(*seed).into(),
-            ephemeral_key: [2u8; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
-        };
-        let action = |seed: &u32| OrchardAction {
-            nullifier: [4u8; 32].into(),
-            cmx: leaf(*seed).into(),
-            ephemeral_key: [6u8; 32].into(),
-            enc_ciphertext: CompactCiphertext::from([7u8; CompactCiphertext::LENGTH]),
-        };
-
-        Transaction {
-            txid: TransactionId::from(leaf(seed)),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: SaplingData {
-                outputs: sapling.iter().map(sapling_out).collect(),
-                ..Default::default()
-            },
-            orchard: OrchardData {
-                actions: orchard.iter().map(action).collect(),
-                ..Default::default()
-            },
-            ironwood: OrchardData {
-                actions: ironwood.iter().map(action).collect(),
-                ..Default::default()
-            },
-        }
-    }
-
-    /// Oracle: the tree both clients parse, every commitment appended from genesis
-    fn naive_tree<H: Hashable + HashSer + Clone>(leaves: &[u32]) -> CommitmentTreeBytes {
+    fn naive_tree<H: Hashable + HashSer + Clone>(
+        commitments: impl Iterator<Item = NoteCommitment>,
+    ) -> CommitmentTreeBytes {
         let mut frontier = Frontier::<H, 32>::empty();
-        for seed in leaves {
-            let node = H::read(&leaf(*seed)[..]).expect("canonical leaf");
+        for commitment in commitments {
+            let node = H::read(&<[u8; 32]>::from(commitment)[..]).expect("canonical leaf");
             assert!(frontier.append(node), "frontier full");
         }
 
@@ -179,51 +154,37 @@ mod tests {
         CommitmentTreeBytes::new(bytes)
     }
 
-    fn sapling_tree(leaves: &[u32]) -> CommitmentTreeBytes {
-        naive_tree::<sapling_crypto::Node>(leaves)
-    }
-
-    /// Orchard and ironwood (ironwood reuses orchard's node)
-    fn orchard_tree(leaves: &[u32]) -> CommitmentTreeBytes {
-        naive_tree::<MerkleHashOrchard>(leaves)
-    }
-
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
-    }
-
-    /// `(sapling, orchard, ironwood)` per height: 0, 1, many commitments per pool on both
-    /// parities (forces carries several levels up)
-    const CHAIN: [(&[u32], &[u32], &[u32]); 5] = [
-        (&[1, 2, 3], &[101], &[]),
-        (&[4], &[102, 103], &[201]),
-        (&[], &[], &[]),
-        (&[5, 6], &[104, 105, 106, 107], &[202, 203]),
-        (&[7, 8, 9, 10, 11], &[], &[204]),
-    ];
-
-    /// Oracle's three trees after `CHAIN[..through]`
-    fn seen(through: usize) -> (CommitmentTreeBytes, CommitmentTreeBytes, CommitmentTreeBytes) {
-        let mut pools = (Vec::new(), Vec::new(), Vec::new());
-        for (sapling, orchard, ironwood) in &CHAIN[..through] {
-            pools.0.extend_from_slice(sapling);
-            pools.1.extend_from_slice(orchard);
-            pools.2.extend_from_slice(ironwood);
-        }
-        (sapling_tree(&pools.0), orchard_tree(&pools.1), orchard_tree(&pools.2))
-    }
-
-    /// Four bulk blocks, each its own commit, crashed after every operation: each state reopens
-    /// to an acknowledged or attempted commit, the committed tip's trees equal the naive oracle's,
-    /// and the next block folds on correctly
+    /// Genesis + four bulk blocks, each its own commit, crashed after every operation: each state
+    /// reopens to an acknowledged or attempted commit, the committed tip's trees equal the naive
+    /// oracle's, and the next block folds on correctly
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {
         let fs = SimFs::recording();
-        let chain =
-            linked((0u32..).zip(&CHAIN).map(|(height, (s, o, i))| vec![pools(height, s, o, i)]));
+        let mut chain = MockChain::regtest();
+        // (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
+        // both parities (forces carries several levels up); nullifier = the leaf byte repeated
+        #[rustfmt::skip]
+        let leaves: [(&[u8], &[u8], &[u8]); 5] = [
+            (&[1, 2, 3],         &[101],                &[]),
+            (&[4],               &[102, 103],           &[201]),
+            (&[],                &[],                   &[]),
+            (&[5, 6],            &[104, 105, 106, 107], &[202, 203]),
+            (&[7, 8, 9, 10, 11], &[],                   &[204]),
+        ];
+        for (sapling, orchard, ironwood) in leaves {
+            chain.mine(|b| {
+                b.tx(|t| {
+                    let t = sapling.iter().fold(t, |t, &leaf| t.sapling_output(leaf.into()));
+                    let t = orchard.iter().fold(t, |t, &n| t.orchard_action([n; 32], n.into()));
+                    ironwood.iter().fold(t, |t, &n| t.ironwood_action([n; 32], n.into()))
+                })
+            });
+        }
+        let blocks = chain.blocks(chain.tip());
+        let seen = |through: u32| naive_trees(&blocks[..=through as usize]);
         {
             let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
-            for (acked, block) in (1u64..).zip(&chain[..4]) {
+            for (acked, block) in (1u64..).zip(&blocks[..5]) {
                 sink.send(step(block, None)).await;
                 reached(&mut committed, Some(u32::from(block.header().height))).await;
                 fs.set_tag(acked);
@@ -242,18 +203,18 @@ mod tests {
             let label = &state.label;
             let store = open(&state.fs);
             let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) + 1);
-            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(4) as u32);
+            let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as u32);
             assert!(acked.contains(&count), "{label}: recovered {count}");
             if let Some(tip) = count.checked_sub(1) {
-                assert_eq!(trees(store.view(), tip), seen(count as usize), "{label}: at {tip}");
+                assert_eq!(trees(store.view(), tip), seen(tip), "{label}: at {tip}");
             }
 
             let (sink, committed, running) = start(store, NonZeroUsize::MIN);
-            sink.send(step(&chain[count as usize], None)).await;
+            sink.send(step(&blocks[count as usize], None)).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let next = trees(committed.borrow().clone(), count);
-            assert_eq!(next, seen(count as usize + 1), "{label}: folding on after recovery");
+            assert_eq!(next, seen(count), "{label}: folding on after recovery");
         }
     }
 
@@ -301,39 +262,39 @@ mod tests {
         }
     }
 
-    /// Leaves unique per pool: sapling 1.., orchard 10_001.., ironwood 20_001..
+    /// Genesis, then one block per `counts` entry; leaves unique per pool: sapling 1.., orchard
+    /// 10_001.., ironwood 20_001.. (nullifier = the leaf, little-endian)
     async fn random_history(
         counts: Vec<(usize, usize, usize)>,
         moves: Vec<Move>,
         batch: NonZeroUsize,
     ) {
         let mut next = (1u32, 10_001u32, 20_001u32);
-        let take = |count: usize, from: &mut u32| -> Vec<u32> {
-            let taken = (*from..*from + count as u32).collect();
+        let take = |count: usize, from: &mut u32| {
+            let taken = *from..*from + count as u32;
             *from += count as u32;
             taken
         };
-        let leaves: Vec<(Vec<u32>, Vec<u32>, Vec<u32>)> = counts
-            .iter()
-            .map(|&(s, o, i)| {
-                let sapling = take(s, &mut next.0);
-                let orchard = take(o, &mut next.1);
-                let ironwood = take(i, &mut next.2);
-                (sapling, orchard, ironwood)
-            })
-            .collect();
-        let chain: Vec<Arc<Block>> =
-            linked((0u32..).zip(&leaves).map(|(height, (s, o, i))| vec![pools(height, s, o, i)]));
-        let folds = folded(&chain);
-        let trees_through = |height: usize| {
-            let (mut s, mut o, mut i) = (Vec::new(), Vec::new(), Vec::new());
-            for (sapling, orchard, ironwood) in &leaves[..=height] {
-                s.extend_from_slice(sapling);
-                o.extend_from_slice(orchard);
-                i.extend_from_slice(ironwood);
-            }
-            (sapling_tree(&s), orchard_tree(&o), orchard_tree(&i))
+        let nullifier = |leaf: u32| {
+            let mut nullifier = [0u8; 32];
+            nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
+            nullifier
         };
+        let mut mock = MockChain::regtest();
+        for &(sapling, orchard, ironwood) in &counts {
+            let (sapling, orchard) = (take(sapling, &mut next.0), take(orchard, &mut next.1));
+            let ironwood = take(ironwood, &mut next.2);
+            mock.mine(|b| {
+                b.tx(|t| {
+                    let t = sapling.fold(t, |t, leaf| t.sapling_output(leaf));
+                    let t = orchard.fold(t, |t, leaf| t.orchard_action(nullifier(leaf), leaf));
+                    ironwood.fold(t, |t, leaf| t.ironwood_action(nullifier(leaf), leaf))
+                })
+            });
+        }
+        let chain = mock.blocks(mock.tip());
+        let folds = folded(&chain);
+        let trees_through = |height: usize| naive_trees(&chain[..=height]);
 
         let fs = SimFs::new();
         let (mut sink, mut committed, mut running) = start(open(&fs), batch);
@@ -377,27 +338,35 @@ mod tests {
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block, whether folded by the writer (0, 1) or sent folded (2, 3);
+    /// height, named by that block, whether folded by the writer (0..=2) or sent folded (3, 4);
     /// resumable from any `start_index` (`start_index == count` = empty, pepper-sync's probe); a
     /// reopen appends the next boundary after the ones on disk
     #[tokio::test]
     async fn subtree_roots_resume_from_start_index() {
         const HALF: u32 = 1 << 15;
         let fs = SimFs::new();
-        let orchard = |first: u32, count: u32| (first..first + count).collect::<Vec<u32>>();
-        // orchard subtree 0 completes at height 1, subtree 1 at height 3, subtree 2 at 4 (sent
-        // after a reopen)
-        let blocks: Vec<Arc<Block>> = linked(
-            [
-                (0, orchard(1, HALF)),
-                (1, orchard(1 + HALF, HALF)),
-                (2, orchard(1 + 2 * HALF, 1)),
-                (3, orchard(2 + 2 * HALF, 2 * HALF - 1)),
-                (4, orchard(1 + 4 * HALF, 2 * HALF)),
-            ]
-            .into_iter()
-            .map(|(seed, leaves)| vec![pools(seed, &[], &leaves, &[])]),
-        );
+        let mut chain = MockChain::regtest();
+        // orchard leaves (first, count) per height 1..: subtree 0 completes at height 2, subtree 1
+        // at 4, subtree 2 at 5 (sent after a reopen); nullifier = the leaf, little-endian
+        let orchard = [
+            (1, HALF),
+            (1 + HALF, HALF),
+            (1 + 2 * HALF, 1),
+            (2 + 2 * HALF, 2 * HALF - 1),
+            (1 + 4 * HALF, 2 * HALF),
+        ];
+        for (first, count) in orchard {
+            chain.mine(|b| {
+                b.tx(|t| {
+                    (first..first + count).fold(t, |t, leaf| {
+                        let mut nullifier = [0u8; 32];
+                        nullifier[..4].copy_from_slice(&leaf.to_le_bytes());
+                        t.orchard_action(nullifier, leaf)
+                    })
+                })
+            });
+        }
+        let blocks = chain.blocks(chain.tip());
         let folds = folded(&blocks);
 
         let completing =
@@ -415,15 +384,15 @@ mod tests {
         };
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
-        for (at, block) in blocks[..4].iter().enumerate() {
-            sink.send(step(block, (at >= 2).then_some(&folds[at]))).await;
+        for (at, block) in blocks[..5].iter().enumerate() {
+            sink.send(step(block, (at >= 3).then_some(&folds[at]))).await;
         }
-        reached(&mut committed, Some(3)).await;
+        reached(&mut committed, Some(4)).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
         let view = TreeStateReader::new(open(&fs).view(), NETWORK);
         let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
-        let expected = [(1, &blocks[1]), (3, &blocks[3])].map(|(at, block)| SubtreeRoot {
+        let expected = [(2, &blocks[2]), (4, &blocks[4])].map(|(at, block)| SubtreeRoot {
             root: tree_root(&view, at),
             completing: completing(block),
         });
@@ -438,12 +407,12 @@ mod tests {
 
         // reopen rebuilds the subtree cursor from the files; the next boundary follows it
         let (sink, committed, running) = start(open(&fs), QUEUE);
-        sink.send(step(&blocks[4], None)).await;
+        sink.send(step(&blocks[5], None)).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
         let view = TreeStateReader::new(committed.borrow().clone(), NETWORK);
         let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
-        let third = SubtreeRoot { root: tree_root(&view, 4), completing: completing(&blocks[4]) };
+        let third = SubtreeRoot { root: tree_root(&view, 5), completing: completing(&blocks[5]) };
         assert_eq!(resumed_roots, [roots, vec![third]].concat(), "earlier entries untouched");
     }
 
@@ -454,12 +423,21 @@ mod tests {
         let fs = SimFs::new();
         let (sink, committed, running) = start(open(&fs), QUEUE);
         // ironwood-only block: sapling and orchard empty at this height
-        let genesis = linked([vec![pools(0, &[], &[], &[201, 202, 203])]]);
-        sink.send(step(&genesis[0], None)).await;
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| {
+            b.tx(|t| {
+                t.ironwood_action([1; 32], 201)
+                    .ironwood_action([2; 32], 202)
+                    .ironwood_action([3; 32], 203)
+            })
+        });
+        for block in chain.blocks(one) {
+            sink.send(step(&block, None)).await;
+        }
         sink.shutdown();
         running.await.expect("stops at Shutdown");
         let reader = TreeStateReader::new(committed.borrow().clone(), NETWORK);
-        let trees = reader.treestate(Height::GENESIS).expect("served");
+        let trees = reader.treestate(h(1)).expect("served");
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())
             .expect("the clients' own parser accepts it");
