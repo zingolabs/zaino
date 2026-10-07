@@ -2,7 +2,6 @@
 name = "zaino-grpc"
 version = "0.1.0"
 edition = "2021"
-publish = false
 description = "Lightwalletd-compatible gRPC (CompactTxStreamer) server routing each method to an index, the chain view or the validator."
 
 [dependencies]

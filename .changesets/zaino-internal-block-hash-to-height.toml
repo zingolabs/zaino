@@ -1,0 +1,11 @@
+id = "01a1181e-5384-7686-89b2-1321c6eb5d9b"
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "feature"
+description = """
+First release. The block hash → height index every by-hash request resolves through: one map \
+`by_hash` (`schema(network)`), one row per block (`fold`), read with \
+`BlockHashReader::height_of` over any view. `BlockHashIndexWriter::new(store, batch_bytes)` \
+follows the final stream.
+"""

@@ -6,9 +6,9 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set = every `packages/*` crate without `publish = false`, and nothing
-# else. The unpublished ones (e.g. zaino-grpc) and the separate
-# `live-tests` workspace are absent by that rule, not by exception.
+# Target set = every `packages/*` crate without `publish = false`, and nothing else
+# - today = every `packages/*` crate (none opts out)
+# - separate `live-tests` workspace absent by that rule, not by exception
 #
 # A target may not depend on a non-target through a path + version requirement:
 # `cargo publish` resolves that requirement against crates.io, so an ungoverned
@@ -36,6 +36,14 @@ name = "zaino-chainview"
 path = "packages/zaino-chainview"
 
 [[target]]
+name = "zaino-grpc"
+path = "packages/zaino-grpc"
+
+[[target]]
+name = "zaino-header-chain"
+path = "packages/zaino-header-chain"
+
+[[target]]
 name = "zaino-index-compact-block"
 path = "packages/zaino-index-compact-block"
 
@@ -48,8 +56,20 @@ name = "zaino-index-tree-state"
 path = "packages/zaino-index-tree-state"
 
 [[target]]
+name = "zaino-internal-block-hash-to-height"
+path = "packages/zaino-internal-block-hash-to-height"
+
+[[target]]
 name = "zaino-internal-value-balance"
 path = "packages/zaino-internal-value-balance"
+
+[[target]]
+name = "zaino-nfs"
+path = "packages/zaino-nfs"
+
+[[target]]
+name = "zaino-peers"
+path = "packages/zaino-peers"
 
 [[target]]
 name = "zaino-persistence"
@@ -66,10 +86,6 @@ path = "packages/zaino-proto"
 [[target]]
 name = "zaino-source"
 path = "packages/zaino-source"
-
-[[target]]
-name = "zaino-source-macros"
-path = "packages/zaino-source-macros"
 
 [[target]]
 name = "zaino-sync"

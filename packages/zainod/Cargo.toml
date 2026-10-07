@@ -28,7 +28,7 @@ zaino-index-tree-state = { workspace = true }
 zaino-index-transparent-address = { workspace = true }
 zaino-internal-block-hash-to-height = { workspace = true }
 zaino-internal-value-balance = { workspace = true }
-zaino-grpc = { path = "../zaino-grpc" }
+zaino-grpc = { version = "0.1.0", path = "../zaino-grpc" }
 zaino-source = { workspace = true }
 
 

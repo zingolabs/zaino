@@ -1,0 +1,13 @@
+id = "01a1181e-522a-751f-bd44-cde5b149038c"
+
+[[changes]]
+crate = "zaino-peers"
+kind = "feature"
+description = """
+First release. zebra-network embedded as Zaino's p2p layer: `PeerNetwork::start(PeerConfig)` \
+fetches headers, blocks and mempool transactions from peers, identifying each by the id zebra \
+recomputes from its bytes (an answer that was not asked for is dropped and its peer scored), \
+streams every transaction `inv` attributed to its sender (`announcements`), lists recently live \
+peers and submission entries, and pushes a transaction to one chosen address over a fresh \
+isolated connection (`push_isolated`).
+"""

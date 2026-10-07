@@ -1,0 +1,25 @@
+id = "01a1181e-5099-7015-8dc0-ac8b0329a2e6"
+
+[[changes]]
+crate = "zaino-proto"
+kind = "breaking"
+section = "removed"
+description = """
+Removed: the `heavy` (default) and `grpc_proxy_server` features (the crate no longer depends on \
+`zebra-state` or `zebra-chain`, nor re-exports `prost` / `tonic`), `proto::utils` \
+(`PoolTypeFilter`, `pool_types_from_vector`, `ValidatedBlockRangeRequest`, \
+`blockid_to_hashorheight`, …), `proto::indexed_tip` (`zaino.index.v1.IndexedTipService`, added \
+in 0.10.1) and `proto::proposal`. `CompactTxStreamer` no longer declares `GetBlockNullifiers` or \
+`Ping` (nor the `Duration` / `PingResponse` messages); `GetTaddressTxids` is marked deprecated.
+"""
+migration = "Depend on `prost` / `tonic` directly; parse `poolTypes` in the serving crate."
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+description = """
+Added: `frame` (`FRAME_HEADER`, `frame_into`, `framed_len`, `split_frame`), the gRPC \
+length-prefix framing; `LIGHTWALLET_PROTOCOL_VERSION`, the vendored lightwallet-protocol release \
+(`v0.5.0`); `proto::zebra_indexer`, zebrad's indexer service (`zebra.indexer.rpc`), client and \
+server.
+"""

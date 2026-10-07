@@ -1,0 +1,215 @@
+id = "01a1181e-4ff2-7260-9b10-78e984cd6ae1"
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+zainod is rebuilt as an indexer over its trusted validators' JSON-RPC. It verifies every block \
+header from genesis by proof of work (`[index.header_chain]`, about 280 MB on mainnet, never \
+taken from a snapshot), checks every block body against its verified header before any index \
+sees it, keeps its own indexes (compact blocks with their fees, block hash, tree state, \
+transparent address), holds the last `sync.finalised_depth` blocks (default and minimum 1000 \
+off regtest) in memory, and answers every gRPC request from one snapshot at the verified tip, \
+served only while a trusted validator holds it. The Direct (ReadState) backend, the LMDB \
+finalised-state database, the ephemeral passthrough mode and the block cache are gone.
+"""
+migration = """
+The old `storage.database` directory is not read: delete it. A first start verifies every \
+header from genesis and syncs each enabled index from the validators (or from `[snapshot]`) \
+before `/readyz` passes. Indexes default to `<cache dir>/zaino/indexes/<name>` (`/app/data/indexes` \
+in the container image).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The config schema is replaced and unknown keys are refused at load. Top-level tables: \
+`network`, `[metrics]`, `[[trusted_validators]]`, `[serve]` (+ `[serve.tls]`), `[grpc]` \
+(+ `[grpc.shutdown]`), `[submission]`, `[p2p]`, `[sync]`, `[index.*]` and `[snapshot]`. \
+Environment overrides take the `ZAINO_CONFIG_` prefix (`__` nesting) instead of `ZAINO_`. \
+`network` is `mainnet`, `testnet` or `regtest` (default `mainnet`), declared and never read off \
+the validator.
+"""
+migration = """
+Start from `zainod generate-config` or `docs/example_configs/zainod.toml`. Map: \
+`validator_settings` → one `[[trusted_validators]]` entry (`validator_jsonrpc_listen_address` → \
+`jsonrpc_address`, `validator_cookie_path` → `cookie_path`, `validator_user` / \
+`validator_password` → `user` / `password`); `grpc_settings.listen_address` → \
+`serve.grpc_listen_address`; `grpc_settings.tls` → `[serve.tls]` (same `cert_path`, \
+`key_path`); `metrics_endpoint` → `metrics.listen_address`; `network = "Testnet"` → \
+`"testnet"` (likewise `mainnet`, `regtest`). Delete `backend`, `zebra_db_path`, \
+`ephemeral_finalised_state`, `json_server_settings`, `service`, `storage`, `mempool`, \
+`donation_address` and `validator_grpc_listen_address`. Rename `ZAINO_*` environment \
+variables to `ZAINO_CONFIG_*`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "removed"
+description = """
+Zaino serves no JSON-RPC: the JSON-RPC server, its cookie auth and port 8237 are gone. The gRPC \
+service no longer offers `zaino.index.v1.IndexedTipService` (added in 0.10.1), \
+`GetBlockNullifiers` or `Ping`; each answers `UNIMPLEMENTED`.
+"""
+migration = """
+Send node queries to the validator's own JSON-RPC. Replace `GetBlockNullifiers` with \
+`GetBlockRange` and `poolTypes`, and `IndexedTipService` with polling `GetLatestBlock`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "removed"
+description = """
+Cargo features `prometheus`, `no_tls_use_unencrypted_traffic`, `no_tls_with_prometheus`, \
+`allow_unencrypted_public_json_rpc_bind`, `experimental_features`, \
+`transparent_address_history_experimental`, `test_dependencies` and `fast-test-seam` are \
+removed: metrics and the admin listener are always compiled in, and the transparent-address \
+methods are always available. The one feature is `snapshot`.
+"""
+migration = "Drop these from `--features` and from the Docker `CARGO_FEATURES` build argument."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+The container image drops `entrypoint.sh`: its entrypoint is `zainod` (default argument \
+`start`), reading `/app/config/zainod.toml`, and it exposes only the gRPC port (8137).
+"""
+migration = """
+Pass configuration through the mounted `zainod.toml` or `ZAINO_CONFIG_*` variables; \
+`ZAINO_STORAGE__DATABASE__PATH` and `ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR` are no longer read.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+Logs are one line per event: level, `[MM-DD|HH:MM:SS.mmm]` UTC, a component column, the message, \
+then logfmt fields. `ZAINOLOG_FORMAT` is `terminal` (default) or `json`; `stream` and `tree` \
+are removed. `ZAINOLOG_COLOR` defaults to `auto`, and an unrecognised `ZAINOLOG_*` value or a \
+malformed `RUST_LOG` fails startup. While syncing, each index logs `Syncing` every 30 s and \
+`Serving` once synced.
+"""
+migration = "Set `ZAINOLOG_FORMAT=terminal` (or `json`) where it was `stream` or `tree`."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+Failure policy: any panic aborts the process, and the first long-running task to end stops \
+zainod (no in-process restart). A failed index commit panics naming the index and its \
+directory.
+"""
+migration = "Run zainod under a service manager that restarts it."
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+`zainodlib` exposes `cli`, `error`, `logging`, `paths`, `verify` and `run`; `config`, `indexer` \
+and `metrics` are no longer public.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`[[trusted_validators]]`: every entry equal, at least one. Each is a link budget zainod never \
+exceeds (`max_connections`, default 32, split into chain-view, wallet-lookup and block-sync \
+lanes; optional `max_requests_per_sec` and `max_mib_per_sec`), with `connect_timeout_secs` (2) \
+and `read_timeout_secs` (30, silence rather than total duration). A validator down at boot or \
+later is retried every 30 s and never stops zainod. Optional `indexer_address` names zebrad's \
+indexer gRPC, whose tip and mempool push streams wake polling at once.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`SendTransaction` submits to one random entry per attempt and resubmits through another when \
+the transaction is not seen spreading within `[submission] propagation_threshold_secs` (15), up \
+to `max_attempts` (4). `[p2p]` (off by default: `enabled`, `peer_target`, `initial_peers`, \
+`cache_dir`) joins the Zcash p2p network: peers become submission entries before one trusted \
+validator's verdict, and their announcements are tracked per mempool transaction. Peers never \
+decide the tip.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`[index.compact_block]`, `[index.block_hash]`, `[index.tree_state]` and \
+`[index.transparent_address]` each take `enabled` (default true) and `path`; a disabled \
+index's methods answer `UNIMPLEMENTED`, and at least one must stay enabled. Compact-block's fee \
+index (`value_balance`, beside it) runs with it and fills every `CompactTx.fee`. `[sync]` holds \
+`finalised_depth`, `concurrency` (32), `batch_mib` (64) and `queue_mib` (256), shared by every \
+index.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+Admin listener (`[metrics] listen_address`, its own thread and runtime): `/metrics`, `/livez` \
+(fails once the serving runtime stops its heartbeat for 30 s), `/readyz` (`ready` plus reasons: \
+`draining`, `starting`, `heartbeat_stale`, `headers_syncing`, `tip_not_held`, `syncing`, the \
+`snapshot_*` phases) and `/statusz` (verified tip and its holders, header-chain best, fetch and \
+served heights, each validator, chain-view alarms, mempool spread, every index).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+gRPC serving limits under `[grpc]`: `max_connections`, `max_connections_per_ip`, \
+`max_streams_per_connection`, `max_streams`, `max_subscriptions` (`GetMempoolStream`, counted \
+apart), read lanes `max_point_reads` / `max_range_reads` / `max_scan_reads`, \
+`stall_timeout_secs` and `trusted_proxies` (PROXY protocol v1/v2). `[serve] max_address_rows` \
+(100,000) bounds one address request (`RESOURCE_EXHAUSTED` over it). Request bodies are capped \
+(64 KiB; 2 MB + 1 KiB for `SendTransaction`). TLS certificates are re-read on change.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`[grpc.shutdown]` (`enabled`, default false; `delay_secs`, 0; `timeout_secs`, 10): on \
+SIGTERM/SIGINT `/readyz` fails with `draining` while gRPC keeps serving for `delay_secs`, then \
+open connections get `timeout_secs` to finish. Under systemd `Type=notify` zainod sends \
+`READY=1` once `/readyz` first passes, `STATUS=` with the readiness reasons, start-timeout \
+extensions while a sync or snapshot bootstrap progresses and `STOPPING=1` on shutdown.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`zainod verify` checks every file each enabled index (and the header chain) has committed \
+against its page checksums, read-only and safe beside a running daemon; JSON report on stdout, \
+exit 0 clean, 1 lost or corrupt, 2 unreadable.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+`snapshot` feature: `[snapshot]` (`manifest`, `connections`) fills empty indexes from a \
+published snapshot before boot, downloading with aria2c (on `PATH`), verifying its sha256 and \
+installing each index directory; a restart resumes at the step it stopped in.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+description = """
+Wallet-facing behaviour: `CompactTx.fee` is filled (0 for a coinbase); `GetBlockRange` with \
+`start > end` streams in decreasing height order; `poolTypes` naming no pool is \
+`INVALID_ARGUMENT`, and `GetMempoolTx` filters by `poolTypes` as `GetBlockRange` does; \
+`GetLightdInfo` reports `lightwalletProtocolVersion` `v0.5.0` and the served snapshot height, \
+answered from the chain view without a validator call; `GetMempoolStream` encodes each \
+transaction once for every subscriber. `GetBlockRangeNullifiers` and `GetTaddressTxids` are \
+served as deprecated aliases for pepper-sync.
+"""

@@ -1,0 +1,37 @@
+id = "01a1181e-5107-75d4-b5a0-005b62cb5c3a"
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+description = """
+One port per trusted validator replaces the per-question trait catalogue: `ChainDataSource` \
+(`get_block_by_hash`, `get_block_links`, `get_poll_reading`, `get_raw_mempool_transactions`, \
+`get_transaction`, `send_raw_transaction`) with one domain error per question \
+(`GetBlockByHashError`, `GetBlockError`, `GetMempoolListingError`, \
+`GetRawMempoolTransactionError`, `GetTransactionError`, `SendRawTransactionError`) inside \
+`QueryError<E>`, whose transport side is `NonDomainError`. Every `Get*` / `OneShot*` trait, \
+`SourceLifecycle`, `ValidatorClient`, `RetryPolicy`, `PolledChainTip`, `SubscribeBlocks`, \
+`SubscribeChainTip`, `TipObservation`, `FetchError`, `SourceError`, `UnavailableError` and \
+`MempoolTxMeta` are removed, as is the `zaino-source-macros` dependency.
+"""
+migration = """
+Implement `ChainDataSource` where you implemented the per-question traits (a test fake answers \
+what its test asks and `unimplemented!()`s the rest) and bound on `S: ChainDataSource`. Read the \
+tip, mempool listing, peers and release from `get_poll_reading`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+The JSON-RPC implementation moves in (absorbing `zaino-rpc` and `zaino-source-zebra-rpc`): \
+`ZebraRpcAdapter::at(address, cookie_path, user, password, timeouts, limits)` builds an adapter \
+without probing the validator, and `on(Lane)` shares its `LinkLimits` budget per lane \
+(`Control`, `Serve`, `Sync`). `RpcClient` batches calls, re-sending only work-queue-full items, and times out on silence \
+(`Timeouts`), not total duration. Blocks and transactions decode once from consensus bytes \
+(`decode_transaction`, `prepare_transaction`). `TrafficBalancer::failover` asks validators \
+cheapest first (power of two choices over peak-EWMA load) until one answers. `IndexerWatch` \
+follows zebrad's indexer tip and mempool push streams. Per-validator metrics via \
+`describe_metrics`. Feature `testing`: `mock::MockChain` serves real `testing::Chain` blocks, \
+plus captured mainnet fixtures (`fixture_block`, `fixture_transactions`).
+"""

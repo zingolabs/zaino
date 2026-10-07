@@ -1,0 +1,15 @@
+id = "01a1181e-53cb-70aa-b412-38e0665ee8c9"
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "feature"
+description = """
+First release. The value-balance index: every transparent output's value in one insert-only map \
+`outputs` (`OutPoint` → zatoshis, `schema(network)`). `fold(parent, block)` resolves each \
+transaction's `Fee` (transparent in − out plus the Sprout, Sapling, Orchard and Ironwood value \
+balances) with one batched prevout lookup per run, read through `ValueBalanceReader`; a negative \
+fee on a non-coinbase transaction is consensus-invalid (`FoldError`). \
+`ValueBalanceIndexWriter::new(store, batch_bytes)` follows the final stream and publishes \
+`BlockFees` into a `zaino_sync::FeeSink` for the compact-block index (one per unfolded step; a \
+folded step's fees ride in its fold).
+"""

@@ -1,0 +1,17 @@
+id = "01a1181e-51c5-74f1-b643-54da397de4a7"
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "feature"
+description = """
+First release. One view over N trusted validators (`ChainView`, `ChainViewSubscriber`, one \
+`EndpointPoller` each over `zaino_source::ChainDataSource`): `HeaderSync` fetches every \
+validator's headers into a `zaino-header-chain` and publishes the most-work `VerifiedChain`; the \
+served tip is `ChainTip { block, held_by }`, failing closed with `Unserved` when no trusted \
+validator holds it, and finality moves only past a held block. A mempool transaction is servable \
+once any validator lists it, with its fee, its spread across validators and peers, and a shared \
+per-tip `MempoolTail` feed for `GetMempoolStream`. `submit` prechecks a transaction and sends it \
+to one random entry per attempt, resubmitting until it is seen spreading (`SubmitPolicy`). \
+Peers join through `ValidatorP2pSource` (`with_peers`, `PeerWatch`). Telemetry: \
+`describe_metrics` gauges and `Alarms` (stale, ending, partitioned, eclipsed, finality paused).
+"""

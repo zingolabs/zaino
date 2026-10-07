@@ -1,0 +1,17 @@
+id = "01a1181e-512e-7465-9ecc-2e8becfe4720"
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+First release. The persistence port every Zaino index stores through: `PersistenceEngine` \
+(`open`, `verify`), `Store` (`apply` buffers final changes, `commit` writes them in one atomic \
+commit, `view` / `staged` read), `View`, the read traits `SequenceRead` and `MapRead`, and \
+`Schema` / `Changes` (sequence and map tables, fixed or variable width). `Layer` and \
+`LayeredView` hold non-final data over a committed view by structural sharing. `DiskEngine` \
+implements it: positional files for sequences, an LSM with binary-fuse filters and fence keys \
+for maps, one two-slot `MANIFEST` commit per directory, a CRC per 4 KiB page checked on first \
+read, background merges, all through the `fs::Fs` port. `IndexKind` names every index. Feature \
+`testing`: `SimFs` crash-state simulation and the `conformance` suite (`history`, `contract`) any \
+engine runs.
+"""

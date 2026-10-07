@@ -1,0 +1,14 @@
+id = "01a1181e-5156-71f6-bc38-e957fb7dcf70"
+
+[[changes]]
+crate = "zaino-sync"
+kind = "feature"
+description = """
+First release. The plumbing between the non-finalized state and the index writers: \
+`IndexerDataSink<T>`, a byte-bounded broadcast queue (`subscribe(name, budget)`, all-or-nothing \
+`send`, `shutdown`) whose items are `Final { block, folds }` steps (`Step::Apply` in height \
+order, then `Shutdown`); `FeeSink` for one index's fees into another; `Committer`, the apply / \
+commit loop every writer runs (commits when the batch fills, after a folded run, or after 1 s \
+idle; `committed()` watches the durable view); `compute` for CPU work on the rayon pool; and the \
+`zaino_sink_queue_bytes` metric.
+"""

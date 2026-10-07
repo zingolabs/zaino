@@ -1,0 +1,55 @@
+id = "01a1181e-5045-7494-a13a-892805559773"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "removed"
+description = """
+Types only the removed JSON-RPC and finalised-state stack used are removed: the `types::rpc` \
+module, `AddressBalance`, `AddressDelta`, `BlockTxPosition`, `BlockVerbose`, `BlockTreeSizes`, \
+`ValuePoolBalance`, `ChainStateEpoch`, `CompactBlock`, `PreIndexCompactBlock`, \
+`PreIndexCompactTx`, `CompactCiphertextLength`, `BlockConfirmations`, `TxConfirmations`, \
+`ConfirmationsCodecError`, `IndexId`, `MempoolInfo`, `Outpoint`, `TransparentAddress`, \
+`TransparentAddressError`, `TransparentAddressKey`, `ScriptType`, `classify_script`, \
+`TreeRootInfo`, `TreeRoots`, `TxOutSetInfo`, `Utxo`, `ZatoshisFlowSum`, `BlockError` and the \
+`Difficulty`, `SubtreeIndex` and `TxIndex` aliases. The chain-work types (`AbsoluteChainWork`, \
+`SingleBlockWork`, `RelativeChainWork`, `WorkOverflow`, `WorkUnderflow`, \
+`ChainWorkBytesError`) and `CompactDifficulty::{to_work, as_bits, try_from_be_bytes}` are \
+removed too. `Height::{abs_diff, depth_from}` and `BlockRef::from_tip` are gone. The crate no \
+longer depends on `zcash_address`.
+"""
+migration = """
+Use `zcash_transparent`'s address types for transparent addresses, \
+`transaction::OutPoint` for `Outpoint`, and `CompactDifficulty::try_from_bits` to validate nBits.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+description = """
+Reshaped types. `Block`'s fields are private: `Block::new(header, transactions)` (asserts a \
+coinbase), `header()`, `transactions()`, and it no longer carries `ChainMetadata`, which \
+`PerPool<T>` / `TreeSizes` replace. `TransparentData` holds `coinbase` and `inputs: \
+Vec<OutPoint>` (`TransparentInput` removed) and `Transaction` gains `sprout: SproutData`. \
+`Treestate`'s trees are `CommitmentTreeBytes` (replacing `PoolTreestate` and `TreeBytes`). \
+`SubtreeRoot.completing` (a `BlockRef`) replaces `end_height`. `BlockchainInfo` keeps only what \
+Zaino reads (`blocks`, `estimated_height`, `best_block_hash`, `sapling_activation`, `upgrades`, \
+`consensus`).
+"""
+migration = """
+Build blocks with `Block::new` and read them through `header()` / `transactions()`; read tree \
+sizes from `TreeSizes`; match `SubtreeRoot.completing.height` where you read `end_height`.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+New: `Fee` and `BlockFees`; `NodeRelease` and `EndOfService`; `PeerInfo`; `ReorgDepth`; \
+`PerPool<T>` / `TreeSizes`; `OutPoint::{encode, decode}` (`txid ‖ vout`, big-endian, byte order = \
+`Ord`); `MerkleRoot::of_txids` (zcashd's merkle root, refusing a repeated pair, CVE-2012-2459); \
+`Block::footprint()`; `Height::{next, up_to}`; `TreeSize::checked_add`; `Script::as_bytes`; `network::{chain_name, \
+network_name}`; `protocol::{MAX_BLOCK_REORG_HEIGHT, MAX_BLOCK_BYTES}`. Feature `testing`: \
+`testing::Chain`, a regtest block-tree builder with real header bytes, plus `encode_header`, \
+`header_hash` and `linked`.
+"""

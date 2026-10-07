@@ -1,0 +1,15 @@
+id = "01a1181e-517d-72c1-bff2-6fbacf2afe5d"
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "feature"
+description = """
+First release. The proof-of-work verified header chain: `decode_header` recomputes each hash \
+from the bytes; `check` (version, nBits, solution, Equihash (200, 9), hash ≤ target; pure) and \
+`link_run` verify a run, then `HeaderChain::insert` attaches it (difficulty adjustment, median \
+time past, 2-hour future bound, cumulative work), keeps a bounded tree of valid branches above \
+the final boundary and tracks the most-work tip. `finalize` writes final headers to \
+`HeaderStore` (on `zaino-persistence`), from which `HeaderChain::open` resumes. `VerifiedChain` \
+is an immutable snapshot of the best chain (`best`, `final_tip`, `hash_at`, `header_at`, \
+`locator`). Feature `testing`: in-memory regtest chains.
+"""

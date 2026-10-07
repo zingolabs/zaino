@@ -1,0 +1,15 @@
+id = "01a1181e-52c0-71fb-a4db-e4f639845bbb"
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "feature"
+description = """
+First release. The compact-block index: one variable sequence of gRPC-framed `CompactBlock` \
+records (`schema(network)`), stored with every pool and every `CompactTx.fee` (from the \
+value-balance index; 0 for a coinbase or a fee of 2^32 zatoshis or more). `fold(parent, block, \
+fees)` derives one block's record; `CompactBlockReader` reads any view (`tip`, `block`, `range`, \
+`block_at`, `resident_block`); `RangeCursor` walks a range in ≤ 1 MiB windows, ascending or \
+descending, projected to the requested `Pools` (a transaction left with no component dropped, \
+as lightwalletd does). `CompactBlockIndexWriter::new(store, batch_bytes)` follows the final \
+stream through `zaino_sync::Committer`.
+"""
