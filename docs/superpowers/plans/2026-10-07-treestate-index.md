@@ -9,15 +9,15 @@ during sync with parallel hashing, byte-exact with zebra.
 **Architecture:** Three layers.
 1. **Engine.**
    - Fix `LocalBridge` to merge in chain order, and narrow `Monoidal` to non-commutative.
-   - Add a declarative `Carry` marker. Its `OrderedMonoid` variant lets the existing
-     S×A bridge build a batch in parallel with lift → ordered tree-reduce → per-height
+   - Add a carry-algebra parameter to the `SelfCumulative` scope. Its `OrderedMonoid`
+     variant lets the existing S×A bridge build a batch in parallel with lift → ordered tree-reduce → per-height
      projection.
    - Build the CrossIndex row: a real `DepsReader` over committed dependency state, and an
      X×A bridge.
 2. **Domain.** A commitment-tree `Segment` algebra (generic over the pool's node hash),
    plus the frontier ↔ legacy-encoding conversions.
 3. **Index and serving.**
-   - `tree_state` (S×A, `Carry = OrderedMonoid`): height → per-pool frontier + size.
+   - `tree_state` (`SelfCumulative<OrderedMonoid>` × Append): height → per-pool frontier + size.
    - `subtrees_{sapling,orchard,ironwood}` (X×A over `tree_state` + compact data).
    - Store and chain-head tier reads, a `Local` `TreestatePlacement`, the light-wallet-local
      routing flip, and a cluster validation run.
@@ -143,32 +143,58 @@ fn fold_merge_follows_chain_order_under_parallel_extraction() { /* same, ConcatF
 - [ ] **Step 4:** Rerun; PASS. Run the full zaino-sync gate.
 - [ ] **Step 5:** Commit (zaino) and commit `index-sync-model.md` (zaino-design).
 
-### Task 2: Declarative `Carry` marker
+### Task 2: Carry algebra as a parameter of the `SelfCumulative` scope
 
-**Why:** Spec §3.3 gap 1. The carry algebra becomes a type-level declaration the engine
-reads.
+**Why:** Spec §3.3 gap 1. The carry algebra is meaningful only for a cumulative scope, so
+the type system must make it impossible to declare elsewhere. No index of another scope
+may carry a nonsensical marker. It becomes a type parameter OF the scope marker,
+defaulting to today's behaviour.
 
 **Files:**
-- Modify: `packages/zaino-sync/src/descriptor.rs`: sealed markers `Sequential` and
-  `OrderedMonoid`, trait `CarryAlgebra` with a `const VALUE: CarryType`, enum `CarryType`
-  (strum Display), and `Descriptor::carry: Option<CarryType>` (`None` for non-cumulative
-  scopes).
-- Modify: `packages/zaino-sync/src/traits.rs`: `ExtractCumulative` gains
-  `type Carry: CarryAlgebra;` (no default). The bridge constructors that build the
-  descriptor fill `carry`.
-- Modify: every `ExtractCumulative` impl: `chain_metadata` (`Sequential`) and the toys
-  `cumulative_sum`, `cumulative_series` (`Sequential`). Let the compiler find them.
+- Modify: `packages/zaino-sync/src/descriptor.rs`:
+
+```rust
+/// How a cumulative index's carried state composes from block to block.
+pub trait CarryAlgebra: sealed::Carry + Send + Sync + 'static { const VALUE: CarryType; }
+/// The carry is an opaque step: `extract(ctx, prior)` one block at a time.
+pub struct Sequential;
+/// The carry is an ordered monoid with a measure (see `OrderedMonoidCarry`).
+pub struct OrderedMonoid;
+
+/// Extraction needs this index's own accumulated state; `C` says how that state composes.
+pub struct SelfCumulative<C: CarryAlgebra = Sequential>(core::marker::PhantomData<C>);
+
+pub enum InputScope { BlockLocal, SelfCumulative { carry: CarryType }, CrossIndex }
+pub enum CarryType { Sequential, OrderedMonoid }
+```
+
+  `impl<C: CarryAlgebra> Scope for SelfCumulative<C>` sets
+  `VALUE = InputScope::SelfCumulative { carry: C::VALUE }`. `BlockLocal` and `CrossIndex`
+  have no parameter. There is NO `carry` field on `Descriptor`.
+- Modify: `traits.rs` / `bridge.rs`. Bounds written `IndexDef<Scope = SelfCumulative>`
+  become generic: `ExtractCumulative: IndexDef<Scope = SelfCumulative<Self::Carry>>`
+  with `type Carry: CarryAlgebra`, or an equivalent shape the compiler accepts. Keep
+  `type Scope = SelfCumulative;` compiling unchanged in existing indexes through the
+  default parameter. `BridgeDispatch` impls become
+  `(SelfCumulative<Sequential>, Append | Monoidal | Fold)`; Task 4 adds
+  `(SelfCumulative<OrderedMonoid>, Append)`.
+- Existing indexes (`chain_metadata`, the cumulative toys) must need **no edit**. If the
+  default parameter can't achieve that in some bound, say why in the report and make the
+  minimal change.
 
 **Interfaces:**
-- Produces: `zaino_sync::descriptor::{Sequential, OrderedMonoid, CarryAlgebra,
-  CarryType}`; `ExtractCumulative::Carry`; `Descriptor::carry`.
+- Produces: `zaino_sync::descriptor::{CarryAlgebra, Sequential, OrderedMonoid,
+  CarryType}`; `SelfCumulative<C>`; `InputScope::SelfCumulative { carry }`.
 
-- [ ] **Step 1:** Failing test in `descriptor.rs` tests: `ChainMetadataIndex`'s descriptor
-  reports `carry == Some(CarryType::Sequential)`; `HeadersIndex` reports `None`.
-- [ ] **Step 2:** Run; FAIL (field missing).
-- [ ] **Step 3:** Implement the markers and the field; update all impls.
-- [ ] **Step 4:** Gate: zaino-sync, zaino-indexes, zaino-store (it builds descriptors),
-  zaino-runtime build.
+- [ ] **Step 1:** Failing tests in `descriptor.rs`:
+  - `ChainMetadataIndex`'s descriptor scope ==
+    `InputScope::SelfCumulative { carry: CarryType::Sequential }`;
+  - `HeadersIndex` == `InputScope::BlockLocal`;
+  - a compile-fail test (trybuild if available, else a doc-test with `compile_fail`): a
+    `BlockLocal` index cannot name a carry.
+- [ ] **Step 2:** Run; FAIL.
+- [ ] **Step 3:** Implement; existing index files untouched.
+- [ ] **Step 4:** Gate: zaino-sync, zaino-indexes, zaino-store; build zaino-runtime.
 - [ ] **Step 5:** Commit.
 
 ### Task 3: CrossIndex row: real `DepsReader` + X×A bridge
@@ -231,8 +257,8 @@ per-height projection by lookup, so every node is hashed once, in parallel, with
 seam pass.
 
 **Files:**
-- Modify: `packages/zaino-sync/src/traits.rs`: new trait, required when
-  `Carry = OrderedMonoid`:
+- Modify: `packages/zaino-sync/src/traits.rs`: new trait, required (by the bridge-dispatch bound) when
+  `Scope = SelfCumulative<OrderedMonoid>`:
 
 ```rust
 /// Carry threading as an ordered monoid with a measure (index-sync-model §6.3).
@@ -257,7 +283,7 @@ pub trait OrderedMonoidCarry: CumulativeAppend {
 ```
 
 - Modify: `packages/zaino-sync/src/bridge.rs` (`CumulativeAppendBridge`). Under
-  `Carry = OrderedMonoid`:
+  `Scope = SelfCumulative<OrderedMonoid>`:
   1. sequential measure prefix from `carry_measure(carry)`;
   2. `lift` each block in parallel (rayon `par_iter` over the batch);
   3. ordered tree-reduce with rayon `reduce(identity, combine)`, which preserves order for
@@ -266,15 +292,15 @@ pub trait OrderedMonoidCarry: CumulativeAppend {
   5. per-height values via `project(&full, end_measure_h)`, in parallel;
   6. new carry = the last height's value (PriorState = Value).
 
-  Selection is type-level in `BridgeDispatch` for `(SelfCumulative, Append)` on the
-  `Carry` marker. `Sequential` keeps today's path unchanged.
+  Selection is type-level: `BridgeDispatch` for `(SelfCumulative<OrderedMonoid>, Append)`.
+  `SelfCumulative<Sequential>` (the default) keeps today's path unchanged.
 - Create: `packages/zaino-sync/src/testing/toy_indexes/toy_merkle_index.rs`: a toy S×A
-  index with `Carry = OrderedMonoid` over a tiny binary Merkle tree of u64 leaves with a
+  index with `Scope = SelfCumulative<OrderedMonoid>` over a tiny binary Merkle tree of u64 leaves with a
   non-commutative toy hash (e.g. `blake2b(left || right)` truncated). This makes the bridge
   testable without the zcash crates.
 
 **Interfaces:**
-- Consumes: Task 2's `Carry` marker.
+- Consumes: Task 2's `SelfCumulative<OrderedMonoid>` scope.
 - Produces: the `OrderedMonoidCarry` trait; the S×A bridge's scan path.
 
 - [ ] **Step 1:** Failing property tests (proptest, already a dev-dep if present; else
@@ -337,13 +363,13 @@ legacy wire encoding.
 - [ ] **Step 4:** Gate zaino-indexes.
 - [ ] **Step 5:** Commit.
 
-### Task 6: `tree_state` index (S×A, `Carry = OrderedMonoid`)
+### Task 6: `tree_state` index (`SelfCumulative<OrderedMonoid>` × Append)
 
 **Files:**
 - Modify: `packages/zaino-indexes/src/indexes/tree_state.rs`: `TreeStateIndex`.
-  - `IndexDef`: `Scope = SelfCumulative`, `Composition = Append`, `NAME = "tree_state"`,
+  - `IndexDef`: `Scope = SelfCumulative<OrderedMonoid>`, `Composition = Append`, `NAME = "tree_state"`,
     `BlockContext = TreeStateCtx { height, sapling_cmus, orchard_cmxs, ironwood_cmxs }`.
-  - `ExtractCumulative`: `Carry = OrderedMonoid`, `PriorState = Value = TreeStateValue`
+  - `ExtractCumulative`: `PriorState = Value = TreeStateValue`
     (per-pool frontier + size).
   - `CumulativeAppend`; `OrderedMonoidCarry` with `Measure` = per-pool sizes and
     `Segment` = the three per-pool `TreeSegment`s.
