@@ -1,4 +1,4 @@
-//! `MANIFEST`: an index's one commit point (`docs/design/durability.md` §2)
+//! `MANIFEST`: index's one commit point (`docs/design/durability.md` §2)
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
@@ -7,10 +7,10 @@
 //! ```
 //!
 //! - little-endian throughout; CRC-32 (IEEE) over the slot's bytes before it
-//! - commit `seq` overwrites slot `seq % 2` in place, so the other slot always holds the commit
-//!   before it; the committed state = the valid slot with the highest `seq` ([`latest`])
-//! - in place, not a renamed file: an overwrite below EOF changes no metadata, so the commit's
-//!   `fdatasync` never waits on the filesystem journal (and on every other file's writeback)
+//! - commit `seq` overwrites slot `seq % 2` in place (other slot = the commit before it)
+//! - committed state = valid slot with the highest `seq` ([`latest`])
+//! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
+//!   waits on the filesystem journal or every other file's writeback)
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
@@ -19,10 +19,10 @@ const MAGIC: [u8; 8] = *b"ZAINOMS\0";
 const HEADER: usize = 24;
 const CRC: usize = 4;
 
-/// One slot's capacity (the largest body: a segment store's lists, a few KiB at most)
+/// Slot capacity (largest body = segment store's lists, a few KiB at most)
 pub(crate) const SLOT: usize = 64 << 10;
 
-/// The whole manifest file: both slots
+/// Both slots
 pub(crate) const FILE_LEN: u64 = 2 * SLOT as u64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl IndexKind {
     }
 }
 
-/// What a directory must have been written as: refusing any mismatch is the chain-identity check
+/// What a directory must have been written as (any mismatch refused = chain-identity check)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Identity {
     pub(crate) kind: IndexKind,
@@ -103,8 +103,8 @@ pub enum ManifestError {
     Unmanifested { path: String },
 }
 
-/// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; the rest of the slot is left as
-/// it was, outside the CRC)
+/// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; rest of the slot untouched,
+/// outside the CRC)
 pub(crate) fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
     assert!(
         HEADER + body.len() + CRC <= SLOT,
@@ -123,26 +123,22 @@ pub(crate) fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Where commit `seq` is written: alternating slots, so it never overwrites the commit before it
+/// Commit `seq`'s offset: alternating slots (never over the commit before it)
 pub(crate) fn slot_offset(seq: u64) -> u64 {
     (seq % 2) * SLOT as u64
 }
 
-/// What one slot holds
+/// - `Unwritten` = all zeros (no commit used it yet)
+/// - `Torn` = fails magic, length or CRC (write a crash interrupted; why, for the error)
 #[derive(Debug)]
 enum Slot<'a> {
-    /// All zeros: no commit has used it yet
     Unwritten,
-    /// Fails its magic, length or CRC: a write a crash interrupted (why, for the error)
     Torn(ManifestError),
-    Committed {
-        seq: u64,
-        body: &'a [u8],
-    },
+    Committed { seq: u64, body: &'a [u8] },
 }
 
-/// Reads one slot; `Err` = a whole, checksummed slot written as another index, format or
-/// network (refused outright, never mistaken for a torn write)
+/// `Err` = whole, checksummed slot of another index, format or network (refused outright, never
+/// mistaken for a torn write)
 fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestError> {
     if slot.iter().all(|byte| *byte == 0) {
         return Ok(Slot::Unwritten);
@@ -173,15 +169,13 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
     Ok(Slot::Committed { seq, body })
 }
 
-/// The committed `(seq, body)` of a whole manifest file; `None` = no commit ever completed
+/// Committed `(seq, body)` of a whole manifest file; `None` = no commit ever completed
 ///
-/// - both slots committed: the higher `seq` (the other = the commit before it)
-/// - one committed beside a torn one: the committed one (the torn write = a later commit a crash
-///   interrupted before it was acknowledged)
-/// - none committed, at most one torn: nothing committed yet (the first commit interrupted)
-/// - both torn: an error (the file is created zeroed and synced before any commit, and a crash
-///   tears only the slot being written, never the other)
-/// - any other length: an error (an older layout; this file is only ever created whole)
+/// - both committed → higher `seq` (other = the commit before it)
+/// - committed + torn → the committed one (torn = later commit interrupted before its ack)
+/// - none committed, <= 1 torn → nothing committed yet (first commit interrupted)
+/// - both torn → error (created zeroed + synced first; a crash tears only the slot written)
+/// - other length → error (older layout; file only ever created whole)
 pub(crate) fn latest(
     identity: Identity,
     file: &[u8],
@@ -207,8 +201,9 @@ pub(crate) fn latest(
     }
 }
 
-/// `dir`'s committed body, read offline (read only, no lock); `None` = never committed, a
-/// manifest that will not decode as `identity` = `InvalidData`
+/// `dir`'s committed body, read offline (read only, no lock)
+///
+/// - `None` = never committed; manifest not decoding as `identity` = `InvalidData`
 pub(crate) fn read(
     fs: &dyn crate::fs::Fs,
     dir: &std::path::Path,
@@ -222,8 +217,9 @@ pub(crate) fn read(
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
-/// Committed tip (`None` = nothing committed): every body's first 40 bytes, as the block count
-/// from genesis ‖ the tip hash (zeros when empty)
+/// Committed tip (`None` = nothing committed): every body's first 40 bytes
+///
+/// - block count from genesis ‖ tip hash (zeros when empty)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Committed {
     pub(crate) tip: Option<BlockRef>,
@@ -265,7 +261,7 @@ impl Committed {
     }
 }
 
-/// Cursor over a body; every read is bounds-checked, [`finish`](Self::finish) refuses a tail
+/// Cursor over a body: every read bounds-checked, [`finish`](Self::finish) refuses a tail
 pub(crate) struct BodyReader<'a> {
     rest: &'a [u8],
 }
@@ -317,8 +313,8 @@ mod tests {
         }
     }
 
-    /// A slot pinned byte for byte, alternating by `seq`, and the committed state read off every
-    /// shape a crash, a foreign directory or an older layout can leave in the two slots
+    /// - slot pinned byte for byte, alternating by `seq`
+    /// - committed state read off every slot pair a crash, foreign directory or older layout leaves
     #[test]
     fn manifest_slots_golden_bytes_and_which_commit_every_slot_pair_holds() {
         let identity =
@@ -348,7 +344,7 @@ mod tests {
             slot[HEADER] ^= 1;
             Some(slot)
         };
-        // body_len claims past the slot's end: torn on its length, before any CRC is read
+        // body_len past the slot's end: torn on its length, before any CRC read
         let mut overlong = encode(identity, 3, &[1]);
         overlong[20..24].copy_from_slice(&(SLOT as u32).to_le_bytes());
 
@@ -393,8 +389,8 @@ mod tests {
         assert!(matches!(network, Err(Network { expected: NetworkType::Main, found: 1 })));
     }
 
-    /// Tip presence follows the count on both sides of the codec; a zero hash is still a tip; on
-    /// disk = block count from genesis (tip height + 1) ‖ hash
+    /// - tip presence follows the count both ways; zero hash = still a tip
+    /// - on disk = block count from genesis (tip height + 1) ‖ hash
     #[test]
     fn committed_round_trips_and_refuses_a_tip_with_nothing_committed() {
         let tip = |height: u32, hash: u8| Committed {

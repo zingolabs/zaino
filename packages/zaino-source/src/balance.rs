@@ -144,11 +144,11 @@ impl<S> Candidate<S> {
 }
 
 impl<S: ChainDataSource> TrafficBalancer<S> {
-    /// Every validator in turn until one answers (a lagging one lacks a just-mined block or
-    /// transaction): a domain answer (every read's = absent) moves on; the result = the first
-    /// answer, else a transport failure (it may have held it), else the last absence
+    /// Every validator in turn until one answers (a lagging one lacks a just-mined block or tx)
     ///
-    /// - a transient failure retried on the same validator first (`ATTEMPTS_PER_VALIDATOR`)
+    /// - domain answer (every read's = absent) → next validator
+    /// - result = first answer, else a transport failure (it may have held it), else last absence
+    /// - transient failure retried on the same validator first (`ATTEMPTS_PER_VALIDATOR`)
     pub async fn failover<T, E, Fut>(&self, ask: impl Fn(Arc<S>) -> Fut) -> Result<T, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
@@ -185,8 +185,10 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
 mod tests {
     use super::*;
 
-    /// Paused clock: a source with requests piling up or a slow last answer loses the pick; idle
-    /// decay brings the slow one back; failover order covers every member once
+    /// Paused clock
+    ///
+    /// - requests piling up or a slow last answer → loses the pick; idle decay brings it back
+    /// - failover order covers every member once
     #[tokio::test(start_paused = true)]
     async fn the_cheaper_source_wins_and_a_slow_one_is_retried_once_idle() {
         let balanced = TrafficBalancer::new(vec![Arc::new("near"), Arc::new("far")]);

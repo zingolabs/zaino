@@ -19,8 +19,7 @@ use zaino_proto::proto::service as proto;
 /// One snapshot's compact-block records
 type Blocks<V> = CompactBlockReader<LayeredView<V>>;
 
-/// Maps an index error onto a gRPC status, keeping the kinds distinct: a miss is not a bad
-/// request, and corruption is not either.
+/// Kinds kept distinct (miss != bad request != corruption)
 fn to_status(error: ServeError) -> Status {
     match &error {
         ServeError::NotFound { .. } | ServeError::HashNotFound => {
@@ -30,7 +29,6 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-/// Dispatches a claimed compact-block path.
 pub(crate) async fn dispatch<V, B>(
     snap: &Snapshot<V>,
     blocks: Blocks<V>,
@@ -63,13 +61,10 @@ where
     }
 }
 
-/// A server-streaming response fed from the cursor, chunk by chunk.
+/// Server-streaming response, cursor chunk by chunk
 ///
-/// `grpc-status` goes in the trailers, never the headers: the headers are written before
-/// the range is walked, so the final status is not yet known (and a client reading one in
-/// the headers would treat the response as already complete).
-///
-/// `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
+/// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
+/// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
 fn range_response<V: SequenceRead>(
     cursor: RangeCursor<V>,
     reads: ReadLanes,
@@ -78,11 +73,8 @@ fn range_response<V: SequenceRead>(
     let frames = futures::stream::unfold(Some((cursor, reads)), move |state| async move {
         let (mut cursor, reads) = state?;
 
-        // The blocking pool is for steps that block. A refill faults in a cold mmap window,
-        // measured at ~11.7 ms (docs/design/persistence-architecture.md), which would stall
-        // every other task on that worker. Every other step is already in memory, and
-        // spawning for those would cost a task per *block* on a projected range — putting a
-        // bounded pool in front of the highest-volume RPC before the disk is even reached.
+        // - Blocking pool for disk steps only (cold mmap refill ~11.7 ms would stall the worker)
+        // - In-memory steps inline (else a task per block on the highest-volume RPC)
         let (cursor, chunk) = if cursor.next_touches_disk() {
             // - Range lane per disk step, not per request (layer reads never queue)
             // - Err = runtime shutting down → stream ends
@@ -120,13 +112,10 @@ fn latest<V>(snap: &Snapshot<V>) -> Bytes {
     wire::frame(&proto::BlockId { height: tip.height.into(), hash })
 }
 
-/// `GetBlock` answers one whole block, every pool included.
+/// `GetBlock`: one whole block, every pool
 ///
-/// TODO: Deprecate this asymmetry, pending ZIP updates to the light client protocol.
-/// `GetBlock` returns every pool while `GetBlockRange` defaults to shielded-only, so the
-/// same wallet asking for one block and for a range of one block gets two different
-/// answers. `BlockID` has no `poolTypes`, so there is no way to ask for less. Matching
-/// lightwalletd is the only reason to keep it.
+/// - TODO: deprecate pending light-client ZIP updates (`GetBlockRange` defaults shielded-only:
+///   one block != range of one; `BlockID` has no `poolTypes`; kept = lightwalletd parity)
 async fn block<V, B>(
     snap: &Snapshot<V>,
     blocks: Blocks<V>,
@@ -140,7 +129,7 @@ where
 {
     let id: proto::BlockId = wire::decode_request(body).await?;
 
-    // A hash, when given, wins: it names one block across a reorg, a height does not.
+    // Hash wins when given (names one block across a reorg; a height doesn't)
     if !id.hash.is_empty() {
         let (height, hash) = wire::locate(snap, &id.hash, "GetBlock")?;
         let read = move || blocks.block_at(height, &hash).map_err(to_status);
@@ -159,7 +148,7 @@ where
     reads.read(Lane::Point, move || blocks.block(height).ok_or_else(missing)).await?
 }
 
-/// `GetBlockRange`: the wallet-sync path, and the one that has to be cheap.
+/// `GetBlockRange` (wallet-sync path: must stay cheap)
 async fn range<V, B>(blocks: Blocks<V>, tip: Height, body: B) -> Result<RangeCursor<V>, Status>
 where
     V: SequenceRead,
@@ -350,7 +339,7 @@ mod tests {
         assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
     }
 
-    /// A populated index answers real requests, and the body is the stored bytes.
+    /// Body = the stored bytes
     #[tokio::test]
     async fn get_block_and_get_block_range_answer_from_stored_records() {
         use http_body_util::BodyExt as _;
@@ -365,7 +354,6 @@ mod tests {
             response.into_body().collect().await.expect("body").to_bytes()
         }
 
-        // GetBlock: one framed record, decodable as a CompactBlock.
         let id = proto::BlockId { height: 3, hash: Vec::new() };
         let response = router
             .call(framed_request(path::GET_BLOCK, id.encode_to_vec().into()))
@@ -378,8 +366,7 @@ mod tests {
         assert_eq!(decoded.height, 3);
         assert_eq!(decoded.vtx[0].vin.len(), 1, "GetBlock carries transparent");
 
-        // Data frames in order, then the trailers — a streaming body's `grpc-status` is not in
-        // the headers, so a client that never drains the body never sees a status at all.
+        // Data frames, then trailers (streamed `grpc-status` = trailers only: undrained = none)
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
             let mut body = std::pin::pin!(response.into_body());
             let mut chunks = Vec::new();
@@ -397,8 +384,8 @@ mod tests {
             (chunks, trailers.expect("a streaming body ends in trailers"))
         }
 
-        // GetBlockRange with the default (empty) poolTypes: shielded only, each file window
-        // projected whole (one data frame per window, ≤ 1 MiB), records still framed one by one
+        // Empty poolTypes = shielded only; one data frame per file window (<= 1 MiB), records
+        // still framed one by one
         let range = proto::BlockRange {
             start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
             end: Some(proto::BlockId { height: 4, hash: Vec::new() }),
@@ -418,7 +405,6 @@ mod tests {
         assert_eq!(chunks.len(), 1, "four committed records = one projected window");
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
 
-        // Walk the joined body as the client would: one framed message after another.
         let body = chunks.concat();
         let mut rest = &body[..];
         let mut heights = Vec::new();
@@ -433,7 +419,6 @@ mod tests {
         }
         assert_eq!(heights, vec![1, 2, 3, 4], "in order, none missing");
 
-        // An explicit poolTypes list is honoured.
         let range = proto::BlockRange {
             start: Some(proto::BlockId { height: 2, hash: Vec::new() }),
             end: Some(proto::BlockId { height: 2, hash: Vec::new() }),
@@ -549,8 +534,8 @@ mod tests {
         let reversed: Vec<cf::CompactBlock> = full.iter().rev().cloned().collect();
         assert_eq!(decoded_all(descending.concat().into()), reversed, "4..=1 = 1..=4 reversed");
 
-        // Malformed ranges are refused at the boundary, never reaching the index's asserts.
-        // grpc-message = percent-encoded
+        // - Malformed ranges refused at the boundary (never reach the index's asserts)
+        // - grpc-message = percent-encoded
         let invalid = HeaderValue::from_static("3");
         let at = |height: u64| Some(proto::BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {

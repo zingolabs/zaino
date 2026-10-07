@@ -1,4 +1,4 @@
-//! `zainod verify`: every file each enabled index's manifest seals, against its page checksums.
+//! `zainod verify`: every file each enabled index's manifest seals, against its page checksums
 //!
 //! - read-only: no index opened for writing, no directory created, no lock taken
 //! - one check for every index (`DiskEngine::verify` with the index's schema)
@@ -139,9 +139,9 @@ mod tests {
     use zaino_sync::{FeeSink, Final, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
 
-    /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
-    /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no
-    /// config = 2
+    /// Five indexes from one chain, scrubbed through the daemon's own config:
+    /// - clean = 0; flipped committed byte = its page named + 1; lost file = 1
+    /// - disabled = skipped; no config = 2
     #[tokio::test]
     async fn verify_scrubs_every_sealed_file_and_exits_by_the_corruption_rule() {
         let root = tempfile::tempdir().expect("tempdir");

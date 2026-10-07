@@ -20,53 +20,29 @@ use crate::endpoints::{Agreement, EndpointIndex};
 const DEPTH: u32 = 3;
 const VALIDATORS: usize = 4;
 
+/// - `Relay` = `to` adopts `from`'s chain iff longer; `Fork` = top `drop` invalidated, `mine`
+///   mined on the rest (`mine < drop` = retreat)
+/// - header sync: `Learn` verifies `node`'s chain; `Finalize` = the boundary (holders never
+///   consulted: the driver's call); `Serve` = a run off `node`'s best, ending `below` its tip
 #[derive(Debug, Clone)]
 enum Step {
-    Mine {
-        node: usize,
-        count: u32,
-    },
-    /// `to` adopts `from`'s chain iff longer
-    Relay {
-        from: usize,
-        to: usize,
-    },
-    /// Top `drop` invalidated, `mine` mined on what is left (`mine < drop` = a retreat)
-    Fork {
-        node: usize,
-        drop: u32,
-        mine: u32,
-    },
-    /// Header sync verifies `node`'s chain
-    Learn {
-        node: usize,
-    },
-    /// Header sync finalizes the boundary (holders never consulted: the driver's call)
+    Mine { node: usize, count: u32 },
+    Relay { from: usize, to: usize },
+    Fork { node: usize, drop: u32, mine: u32 },
+    Learn { node: usize },
     Finalize,
-    Poll {
-        node: usize,
-        answer: Answer,
-    },
-    /// Header sync reads a run off `node`'s best chain, ending `below` under its tip
-    Serve {
-        node: usize,
-        below: u32,
-    },
+    Poll { node: usize, answer: Answer },
+    Serve { node: usize, below: u32 },
 }
 
+/// - `Partial` = one `getblockhash` item failed
+/// - `Raced` = reorged between `getblockchaininfo` and the `getblockhash` items
+/// - `Failed` = timeout / transport: whole poll lost
 #[derive(Debug, Clone, Copy)]
 enum Answer {
     Full,
-    /// One `getblockhash` item failed
-    Partial {
-        dropped: usize,
-    },
-    /// It reorged between `getblockchaininfo` and the `getblockhash` items
-    Raced {
-        drop: u32,
-        mine: u32,
-    },
-    /// Timeout / transport: the whole poll lost
+    Partial { dropped: usize },
+    Raced { drop: u32, mine: u32 },
     Failed,
 }
 
@@ -94,10 +70,11 @@ fn steps() -> impl Strategy<Value = (u8, Vec<Step>)> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
 
-    /// After every step: holders ⊆ validators whose chain held the block when they answered
-    /// (never a stale holder), ⊇ those a fresh full poll found holding the boundary or the best,
-    /// none for a lost or silent validator; agreement = the naive §7 classification whenever its
-    /// poll is fresh and whole, the claim-only classes always
+    /// After every step
+    ///
+    /// - holders ⊆ validators whose chain held the block when they answered (never stale), ⊇
+    ///   those a fresh full poll found holding the boundary or the best; none if lost / silent
+    /// - agreement = naive §7 classification when the poll is fresh + whole; claim-only always
     #[test]
     fn holders_and_agreement_answer_like_the_naive_oracle(
         nodes in 1..=VALIDATORS,

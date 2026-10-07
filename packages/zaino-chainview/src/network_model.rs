@@ -21,31 +21,15 @@ use crate::{ChainView, Endpoint, EndpointSet, Unserved};
 const DEPTH: u32 = 3;
 const MAX_NODES: usize = 5;
 
+/// - `Mine` = `count` blocks on `node`'s own tip; `Relay` = `to` adopts `from`'s chain iff longer
+/// - `Fork` = top `drop` blocks invalidated, `mine` mined on the rest (`mine < drop` = retreat)
 #[derive(Debug, Clone)]
 enum Move {
-    /// `count` new blocks on `node`'s own tip
-    Mine {
-        node: usize,
-        count: u32,
-    },
-    /// `to` hears `from`'s chain: adopts it iff longer
-    Relay {
-        from: usize,
-        to: usize,
-    },
-    /// Top `drop` blocks invalidated, `mine` mined on what is left (`mine < drop` = a retreat)
-    Fork {
-        node: usize,
-        drop: u32,
-        mine: u32,
-    },
-    Reachable {
-        node: usize,
-        reachable: bool,
-    },
-    Poll {
-        node: usize,
-    },
+    Mine { node: usize, count: u32 },
+    Relay { from: usize, to: usize },
+    Fork { node: usize, drop: u32, mine: u32 },
+    Reachable { node: usize, reachable: bool },
+    Poll { node: usize },
 }
 
 fn moves() -> impl Strategy<Value = Vec<Move>> {
@@ -67,10 +51,11 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
-    /// After every poll, with the header chain's best as the tip: its holders ⊆ the reporting
-    /// validators whose polled chain holds it, ⊇ those whose claim is it or whose poll asked under
-    /// it; no holder = no tip (`NotHeld`); each endpoint's own tip = its polled chain's; the epoch
-    /// moves iff the tip block does
+    /// After every poll, tip = the header chain's best
+    ///
+    /// - holders ⊆ reporting validators whose polled chain holds it, ⊇ those claiming it or
+    ///   polled under it; no holder = no tip (`NotHeld`)
+    /// - each endpoint's own tip = its polled chain's; epoch moves iff the tip block does
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(
         nodes in 1..=MAX_NODES,
@@ -83,9 +68,9 @@ proptest! {
     }
 }
 
+/// `best` = genesis first
 struct Node {
     mock: Arc<MockChain>,
-    /// Its best chain, genesis first
     best: Vec<BlockHash>,
 }
 
@@ -111,8 +96,8 @@ impl Sim {
         }
     }
 
-    /// Mock re-served from genesis, genesis included (a zebrad always holds it; a reorg is just a
-    /// different best chain)
+    /// Mock re-served from genesis, genesis included (a zebrad always holds it; reorg = another
+    /// best chain)
     fn serve(&self, node: usize) {
         let node = &self.nodes[node];
         node.mock.extend_best(node.best.iter().map(|own| self.chain.block(*own).clone()));

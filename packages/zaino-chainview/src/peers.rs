@@ -1,8 +1,8 @@
 //! Peers' transaction announcements into the view (§5): `peers: x/y`, and submission's watch (§6)
 //!
 //! ```text
-//!   ValidatorP2pSource::heard ─▶ batch ─(every PEER_FOLD)─▶ fold: held txid → its sighting's announcers
-//!                                                       else → Overheard (bounded, expiring)
+//!   ValidatorP2pSource::heard ─▶ batch ─(each PEER_FOLD)─▶ fold: held txid → sighting's announcers
+//!                                                            else → Overheard (bounded, expiring)
 //!   sighting starts (trusted listing / ours) ◀── takes its Overheard announcers
 //! ```
 //!
@@ -34,10 +34,11 @@ pub(crate) const OVERHEARD_TTL: Duration = Duration::from_secs(60);
 pub(crate) const OVERHEARD_PER_PEER: usize = 2_000;
 
 /// Announcers of txids the view does not hold yet; `imbl` (published with the snapshot)
+///
+/// - `order` = insertion = age order (expiry pops the front)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Overheard {
     by_txid: OrdMap<TransactionId, Pending>,
-    /// Insertion order = age order (expiry pops the front)
     order: Vector<(Instant, TransactionId)>,
     per_peer: OrdMap<SocketAddr, usize>,
 }
@@ -173,8 +174,8 @@ mod tests {
     }
 
     proptest! {
-        /// Against a naive model (txid → first + announcers, per-peer cap by live count, expiry
-        /// by age): same txids held, same announcers, same takes, counters never drift
+        /// Naive model (txid → first + announcers, per-peer cap by live count, expiry by age):
+        /// same txids held, same announcers, same takes, counters never drift
         #[test]
         fn overheard_answers_like_a_naive_map(ops in proptest::collection::vec(op(), 1..400)) {
             const CAP: usize = OVERHEARD_PER_PEER;
@@ -224,7 +225,7 @@ mod tests {
         }
     }
 
-    /// One flooding peer fills its own budget and no more: another peer's txids still land
+    /// Flooding peer fills its own budget, no more (another peer's txids still land)
     #[test]
     fn a_flooding_peer_cannot_crowd_out_another() {
         let now = Instant::now();

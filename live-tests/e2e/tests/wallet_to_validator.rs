@@ -1,4 +1,4 @@
-//! In-process librustzcash wallet (faucet + recipient) → zainod pod over gRPC.
+//! In-process librustzcash wallet (faucet + recipient) → zainod pod over gRPC
 //!
 //! - Sends to each pool, `send_to_all`, shielding, mining-reward receipt, `get_info` smoke
 //! - `get_transaction` (mined / mempool), finalisation-seam address txids
@@ -17,29 +17,21 @@ use ztest::prelude::*;
 
 use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
-/// Indexer sync / pod-ready timeout.
 const READY: Duration = Duration::from_secs(120);
-/// Standard transfer amount (zatoshis).
 const SEND_AMOUNT: u64 = 250_000;
-/// zingolib's ZIP-317 fee for a single-note shield round under regtest.
+/// zingolib's ZIP-317 fee, one-note shield round
 const SHIELD_FEE: u64 = 15_000;
-/// Shielded funding pool for the faucet coinbase: the miner coinbase pays the
-/// Orchard receiver of a unified address. Under this file's NU6.3-active
-/// regtest schedule (Ironwood live from height 2), that note is credited to the
-/// Ironwood pool — hence `receives_mining_reward` asserts an Ironwood balance.
+/// Coinbase → unified address's Orchard receiver (credited to Ironwood: NU6.3 live from 2)
 const FUND: Pool = Pool::Orchard;
 /// Buries a transaction's block below the final boundary (regtest depth + margin)
 const SEAM_ADVANCE: u32 = ztest::backends::zainod::REGTEST_FINALISED_DEPTH + 5;
-/// Longest the finalised writer should need to commit up to a height the
-/// validator already serves. It commits per batch, so the frontier moves in
-/// steps rather than per block.
+/// Finalised writer's commit lag behind the validator (per batch: frontier moves in steps)
 const SEAM_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Wallet-driven flows.
 mod wallet {
     use super::*;
 
-    /// The faucet's synced wallet holds a spendable shielded coinbase note.
+    /// Faucet's synced wallet holds a spendable shielded coinbase note
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn receives_mining_reward() -> Result<()> {
@@ -58,8 +50,7 @@ mod wallet {
         Ok(())
     }
 
-    /// Smoke: faucet and recipient wallets connect and sync without error,
-    /// and the indexer reports node info.
+    /// Smoke: both wallets sync, indexer reports a chain name
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_to_node_get_info() -> Result<()> {
@@ -77,9 +68,7 @@ mod wallet {
         Ok(())
     }
 
-    /// The faucet sends 250_000 to the recipient's unified address, whose Orchard
-    /// receiver credits Ironwood from NU6.3 (Orchard is spend-locked) and Orchard
-    /// before it.
+    /// Unified address's Orchard receiver credits Ironwood (NU6.3: Orchard spend-locked)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_unified() -> Result<()> {
@@ -103,8 +92,6 @@ mod wallet {
         Ok(())
     }
 
-    /// The faucet sends 250_000 to the recipient's sapling address; the
-    /// recipient's synced wallet shows it.
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_sapling() -> Result<()> {
@@ -126,8 +113,6 @@ mod wallet {
         Ok(())
     }
 
-    /// The faucet sends 250_000 to the recipient's transparent address; the
-    /// recipient's synced wallet shows it.
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent() -> Result<()> {
@@ -149,8 +134,7 @@ mod wallet {
         Ok(())
     }
 
-    /// One faucet funds a send to all three pools; each recipient pool
-    /// reports 250_000.
+    /// One faucet → all three pools, each recipient pool credited once
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_all() -> Result<()> {
@@ -161,10 +145,9 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // Three notes — one per send (no chaining of unconfirmed change).
+        // One note per send (no chaining of unconfirmed change)
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 3).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
         for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
             let addr = recipient.address(pool.ztest()).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
@@ -174,17 +157,14 @@ mod wallet {
         recipient.sync().await?;
 
         let balances = recipient.balances().await?;
-        // From NU6.3 the unified-address output routes to Ironwood; the
-        // orchard pool must stay empty (a nonzero orchard here means the
-        // receipt was mislabelled, not merely misrouted).
+        // Nonzero orchard = receipt mislabelled (NU6.3: unified output → Ironwood)
         let (ironwood, orchard) = (balances.ironwood, balances.orchard);
         assert_eq!((ironwood, orchard), (SEND_AMOUNT, 0), "unified receipt → ironwood");
         assert_eq!((balances.sapling, balances.transparent), (SEND_AMOUNT, SEND_AMOUNT));
         Ok(())
     }
 
-    /// The recipient receives a transparent 250_000, shields it, and reports
-    /// 250_000 − 15_000 fee in the pool the chain's latest activation shields into.
+    /// Transparent receipt shielded → `SEND_AMOUNT - SHIELD_FEE` in the latest shielded pool
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn shield_for_validator() -> Result<()> {
@@ -217,11 +197,9 @@ mod wallet {
     /// Transparent send → same address txids from the non-finalized state and again once a
     /// seam-deep advance commits it to the durable compact-block index
     ///
-    /// - at the shipped depth (1000) `SEAM_ADVANCE` buries nothing → both reads come from
-    ///   the non-finalized state, compare passes vacuously
-    /// - `wait_for_finalised` = the loud check against exactly that
-    /// - Advance mined to `FILLER_ADDRESS`: on this file's `FUND` coinbase it is
-    ///   `SEAM_ADVANCE` halo2 proofs, past the tier's cap on the two cores it reserves
+    /// - Shipped depth (1000): `SEAM_ADVANCE` buries nothing → vacuous compare
+    ///   (`wait_for_finalised` = the loud check against that)
+    /// - Advance mined to `FILLER_ADDRESS` (to `FUND` = `SEAM_ADVANCE` halo2 proofs, past the cap)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent_finalization() -> Result<()> {
@@ -239,7 +217,6 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // Send's block, still non-finalized
         let height = indexer.latest_block_height().await?;
         let unfinalised_txs = indexer.get_taddress_txids(taddr.clone(), height, height).await?;
 
@@ -247,8 +224,7 @@ mod wallet {
         let tip = validator.generate_blocks(SEAM_ADVANCE).to(FILLER_ADDRESS).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // - Without it both reads may come from the non-finalized state (vacuous compare)
-        // - Compact-block `finalized_height` metric = only proof of the durable commit
+        // Compact-block `finalized_height` = only proof of the durable commit
         wait_for_finalised(&indexer, u32::from(height), SEAM_TIMEOUT).await?;
 
         let finalised_txs = indexer.get_taddress_txids(taddr, height, height).await?;
@@ -260,8 +236,7 @@ mod wallet {
         Ok(())
     }
 
-    /// Smoke: the indexer serves `get_transaction` for the mined orchard
-    /// send by txid.
+    /// Mined orchard send by txid → its block height + the validator's bytes
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_mined() -> Result<()> {
@@ -281,7 +256,6 @@ mod wallet {
         indexer.wait_for_block_num(tip, READY).await?;
 
         let served = indexer.get_transaction(txid).await?;
-        // A mined transaction reports its block height, not the mempool sentinel 0.
         assert_eq!(served.height, u64::from(u32::from(tip)));
         let raw = validator
             .json_rpc()
@@ -293,8 +267,7 @@ mod wallet {
         Ok(())
     }
 
-    /// `get_mempool_tx` returns the two unmined transactions, and the
-    /// exclude-by-txid-suffix filter drops one.
+    /// Both unmined txs listed; an exclude-by-txid-suffix filter drops one
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_tx() -> Result<()> {
@@ -312,13 +285,10 @@ mod wallet {
         let t_txid = faucet.send(&taddr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
         let u_txid = faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("txid");
 
-        // The validator fixes what the mempool holds before GetMempoolTx is
-        // asked; without it a count assertion only says zaino agrees with itself.
         let want = [t_txid.to_string(), u_txid.to_string()];
         let vrpc = validator.json_rpc().await?;
-        // Zaino's mempool is a polled mirror (500 ms cadence), so the two agree only
-        // eventually; `want` is the non-vacuity probe — a send that was built but never
-        // relayed leaves both sides empty and equal.
+        // - Polled mirror (500 ms): validator + zaino agree only eventually
+        // - `want` = non-vacuity probe (a never-relayed send leaves both sides empty and equal)
         let mempool = {
             let deadline = tokio::time::Instant::now() + READY;
             loop {
@@ -364,22 +334,15 @@ mod wallet {
         let txids: Vec<_> = all.iter().map(|tx| tx.txid.clone()).collect();
         assert_eq!(txids, want, "both unmined txs");
 
-        // Excluding the first by its txid suffix leaves only the second.
         let remaining = indexer.get_mempool_tx(vec![want[0][8..].to_vec()]).await?;
         assert_eq!(remaining.len(), 1, "excluding one leaves the other");
         assert_eq!(remaining[0].txid, want[1]);
         Ok(())
     }
 
-    /// The stream serves exactly the transaction bytes the validator holds
-    /// unmined.
+    /// Streamed bytes = validator's unmined txs verbatim (`getrawtransaction` oracle)
     ///
-    /// GetMempoolStream is bound to the chain tip the request was admitted
-    /// against and ends when that tip moves, so the drain can only complete
-    /// once a block is mined — hence the spawn-then-mine shape. The
-    /// per-transaction bytes come from the validator's `getrawtransaction`,
-    /// so this catches a mirror that is missing, over-full, or serving the
-    /// wrong bytes; `!is_empty()` alone caught none of those.
+    /// - Stream ends when its admitted tip moves → spawn the drain, then mine
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream() -> Result<()> {
@@ -405,9 +368,8 @@ mod wallet {
 
         let vrpc = validator.json_rpc().await?;
         let want = [t_txid.to_string(), u_txid.to_string()];
-        // Zaino's mempool is a polled mirror (500 ms cadence), so the two agree only
-        // eventually; `want` is the non-vacuity probe — a send that was built but never
-        // relayed leaves both sides empty and equal.
+        // - Polled mirror (500 ms): validator + zaino agree only eventually
+        // - `want` = non-vacuity probe (a never-relayed send leaves both sides empty and equal)
         let mempool = {
             let deadline = tokio::time::Instant::now() + READY;
             loop {
@@ -443,8 +405,6 @@ mod wallet {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         };
-        // The validator's own bytes for each mirrored txid: the independent oracle for
-        // what zaino streams.
         let mut expected = Vec::with_capacity(mempool.len());
         for txid in &mempool {
             expected.push(
@@ -461,13 +421,8 @@ mod wallet {
             let indexer = indexer.clone();
             async move { indexer.get_mempool_stream().await }
         });
-        // Mining before the subscription is admitted leaves the drain waiting
-        // on the *next* tip change, by which point the mempool is empty.
-        // Nothing observable reports that the stream is open, so this is a
-        // grace period rather than a handshake. The missing seam is a
-        // stream-established signal, e.g.
-        //   let (ready, drain) = indexer.get_mempool_stream_handle().await?;
-        //   ready.await?; // resolves once zaino has admitted the subscription
+        // Grace period, not a handshake (no stream-open signal; mining first = drain waits a tip
+        // past an empty mempool)
         tokio::time::sleep(Duration::from_secs(5)).await;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -481,11 +436,9 @@ mod wallet {
         Ok(())
     }
 
-    /// Broadcast two unmined sends, observe them in zaino's mirror of the
-    /// validator's mempool, then mine them in and confirm the balances. The
-    /// *unconfirmed* (mempool) pool-balance split under test cannot be
-    /// asserted — ztest's librustzcash wallet exposes no pending/unconfirmed
-    /// pool-balance accessor — so the confirmed balances stand in.
+    /// Two unmined sends mirrored, then mined → confirmed balances
+    ///
+    /// - Unconfirmed split unasserted (ztest's librustzcash wallet: no pending-balance accessor)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn monitor_unverified_mempool() -> Result<()> {
@@ -496,7 +449,7 @@ mod wallet {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // Two shielded notes — one per unmined send.
+        // One shielded note per unmined send
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 2).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let ua = recipient.address(Pool::Ironwood.ztest()).await?;
@@ -512,9 +465,8 @@ mod wallet {
 
         let want = [ua_txid.to_string(), sapling_txid.to_string()];
         let vrpc = validator.json_rpc().await?;
-        // Zaino's mempool is a polled mirror (500 ms cadence), so the two agree only
-        // eventually; `want` is the non-vacuity probe — a send that was built but never
-        // relayed leaves both sides empty and equal.
+        // - Polled mirror (500 ms): validator + zaino agree only eventually
+        // - `want` = non-vacuity probe (a never-relayed send leaves both sides empty and equal)
         let mempool = {
             let deadline = tokio::time::Instant::now() + READY;
             loop {
@@ -552,8 +504,7 @@ mod wallet {
         };
         assert_eq!(mempool.len(), 2, "the two broadcast txs, nothing else: {mempool:?}");
 
-        // `PoolBalances` is confirmed-only, so an unmined send must credit
-        // nothing however visible it is in the mempool mirror above.
+        // `PoolBalances` = confirmed-only (mirrored ≠ credited)
         recipient.sync().await?;
         let unconfirmed = recipient.balances().await?;
         assert_eq!((unconfirmed.ironwood, unconfirmed.sapling), (0, 0), "unmined ≠ confirmed");
@@ -640,15 +591,13 @@ mod wallet {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // A subtree completes every 2^16 notes, which no regtest chain reaches;
-        // a synthesised root would fail this.
+        // Subtree = 2^16 notes, never reached on regtest (a synthesised root fails this)
         let roots = indexer.get_subtree_roots(0, ShieldedProtocol::Orchard, 0).await?;
         assert!(roots.is_empty(), "regtest completes no subtree: {roots:?}");
         Ok(())
     }
 
-    /// Smoke: `get_taddress_txids` over the recipient's taddr and a range
-    /// around the send succeeds.
+    /// Span around the send → exactly the send, validator's bytes
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_txids() -> Result<()> {
@@ -683,7 +632,6 @@ mod wallet {
         Ok(())
     }
 
-    /// Smoke: `get_address_utxos` over the recipient's taddr succeeds.
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_utxos() -> Result<()> {
@@ -710,8 +658,7 @@ mod wallet {
         Ok(())
     }
 
-    /// Smoke: `get_address_utxos_stream` over the recipient's taddr
-    /// succeeds.
+    /// Streamed utxos = unary reply
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_utxos_stream() -> Result<()> {
@@ -740,20 +687,8 @@ mod wallet {
         Ok(())
     }
 
-    /// `get_transaction` over an unmined orchard send, then over the same
-    /// transaction once mined — the mempool-to-mined transition, end to end.
-    ///
-    /// The invariants, in order:
-    /// - an unmined transaction carries the mempool height sentinel (`0`),
-    ///   not the current tip height. This is the whole point of the test:
-    ///   returning the tip would make an unconfirmed transaction look
-    ///   confirmed to every wallet on the other end of the wire.
-    /// - the bytes zaino serves are the transaction that was actually
-    ///   broadcast. The validator's `getrawtransaction` is the oracle —
-    ///   comparing against a hash zaino also computed would only prove
-    ///   zaino agrees with itself.
-    /// - once mined, the same query reports the real confirmation height,
-    ///   not the sentinel.
+    /// - Unmined → height sentinel `0`, never the tip (else unconfirmed reads as confirmed)
+    /// - Served bytes = validator's `getrawtransaction` (independent oracle); mined → its height
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_transaction_mempool() -> Result<()> {
@@ -773,7 +708,6 @@ mod wallet {
         let unmined = indexer.get_transaction(txid).await?;
         assert_eq!(unmined.height, 0, "unmined = mempool height sentinel, not the tip");
 
-        // The validator is the independent oracle for what was broadcast.
         let vrpc = validator.json_rpc().await?;
         let raw_hex = vrpc.call_value("getrawtransaction", json!([txid.to_string()])).await?;
         let raw_hex = raw_hex
@@ -782,8 +716,6 @@ mod wallet {
         let served = zaino_testutils::hex::encode(&unmined.data);
         assert_eq!(served, raw_hex, "{txid}: validator's bytes");
 
-        // Mine it: the same query must flip off the sentinel onto the real
-        // confirmation height.
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
@@ -793,7 +725,6 @@ mod wallet {
         Ok(())
     }
 
-    /// `GetTaddressBalance` over the recipient's taddr reports 250_000.
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_taddress_balance() -> Result<()> {
@@ -833,8 +764,6 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // fund_and_send(Orchard): one shielded coinbase note, then send it to the
-        // recipient's unified address and mine the send in.
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
@@ -852,7 +781,6 @@ mod zebrad {
 
         let compact_block = default.last().expect("non-empty range");
         assert_eq!(BlockHeight::from(compact_block.height as u32), end);
-        // The tip block holds the shielded coinbase and the send.
         assert_eq!(compact_block.vtx.len(), 2);
         assert_eq!(compact_block.vtx.last().expect("send tx").index, 1);
         for tx in &compact_block.vtx {
@@ -874,13 +802,10 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // Three shielded coinbase notes (one per send below), then one send to
-        // each pool's recipient address, mined into a single block.
+        // One note per send, all three sends mined into one block
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 3).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let mut txids = Vec::new();
-        // NU6.3: the unified-address (Orchard-receiver) send emits Ironwood
-        // actions, so the compact block carries them under `ironwood_actions`.
         for pool in [Pool::Transparent, Pool::Sapling, Pool::Ironwood] {
             let addr = recipient.address(pool.ztest()).await?;
             let txid = faucet.send(&addr, SEND_AMOUNT).await?.into_iter().next().expect("txid");
@@ -897,13 +822,12 @@ mod zebrad {
 
         let compact_block = range.last().expect("non-empty range");
         assert_eq!(BlockHeight::from(compact_block.height as u32), end);
-        // coinbase + the three sends
         assert_eq!(compact_block.vtx.len(), 4);
 
         assert_pool_present(compact_block, &txids[0], Pool::Transparent);
         assert_pool_present(compact_block, &txids[1], Pool::Sapling);
         assert_pool_present(compact_block, &txids[2], Pool::Ironwood);
-        // The unified-address send must carry no Orchard actions from NU6.3.
+        // NU6.3: unified-address send = Ironwood actions only
         assert_pool_absent(compact_block, &txids[2], Pool::Orchard);
         Ok(())
     }
@@ -924,8 +848,7 @@ mod zebrad {
 
         // `PoolType` wire codes: transparent=1, sapling=2, orchard=3, ironwood=4.
         let all_pools = vec![1, 2, 3, 4];
-        // Zaino cannot serve the non-standard genesis coinbase script in compact blocks, so
-        // this starts at height 1, not 0 (zingolabs/zaino#818).
+        // From 1 (non-standard genesis coinbase script unservable: zingolabs/zaino#818)
         let start = BlockHeight::from(1u32);
         let range = indexer.get_block_range_with_pools(start, chain_height, all_pools).await?;
         let heights = u32::from(chain_height) as usize;

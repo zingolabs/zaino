@@ -22,7 +22,6 @@ use crate::{
     SendRawTransactionError, TransactionResponse,
 };
 
-/// Fee every mempool entry is listed at
 pub(crate) const MEMPOOL_FEE: u64 = 1_000;
 
 pub struct MockChain {
@@ -98,8 +97,8 @@ impl MockChain {
         self.reachable.store(reachable, Ordering::SeqCst);
     }
 
-    /// Puts `blocks` on the best chain in order, each becoming the tip (a reorg when a height was
-    /// already held: that height and everything above it leave the best chain)
+    /// `blocks` onto the best chain in order, each the new tip (height already held = reorg: it
+    /// and everything above leave the best chain)
     pub fn extend_best(&self, blocks: impl IntoIterator<Item = Block>) {
         let mut held = self.held.write().expect("mock chain lock");
         for block in blocks {
@@ -278,7 +277,7 @@ impl crate::ChainDataSource for MockChain {
     }
 }
 
-/// A captured mainnet block's consensus bytes (`tests/fixtures/block_<height>.hex`)
+/// Captured mainnet block's consensus bytes (`tests/fixtures/block_<height>.hex`)
 pub(crate) fn fixture_block(height: u32) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/block_{height}.hex", env!("CARGO_MANIFEST_DIR"));
     let hex = std::fs::read_to_string(&path).expect("fixture readable");

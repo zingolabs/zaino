@@ -128,7 +128,7 @@ impl FramedRoots {
     }
 }
 
-/// Maps an index error onto a gRPC status: a miss is not corruption
+/// Miss != corruption
 fn to_status(error: ServeError) -> Status {
     match &error {
         ServeError::NotFound { .. } => Status::not_found(error.to_string()),
@@ -136,7 +136,6 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-/// Dispatches a claimed tree-state path.
 pub(crate) async fn dispatch<V, B>(answering: Answering<V>, path: &str, body: B) -> Response<Body>
 where
     V: SequenceRead + MapRead,
@@ -163,9 +162,8 @@ async fn latest<V: SequenceRead + MapRead>(answering: &Answering<V>) -> Result<B
     answering.once(|memos| &memos.states, State::Latest, state).await?
 }
 
-/// A hash, when given, wins (it names one block across a reorg): the block-hash index locates
-/// its height, this index answers there only if it holds that same block
-///
+/// - Hash wins when given (one block across a reorg): block-hash index locates, this index
+///   answers only if it holds that same block
 /// - by height, in the snapshot's layer (the synced wallets' tip asks): once per snapshot
 async fn treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
@@ -242,7 +240,7 @@ where
         }
     };
 
-    // Depth-32 tree = ≤ 2^16 subtrees, so anything wider names none.
+    // Depth-32 tree = <= 2^16 subtrees (anything wider names none)
     let ceiling = |field: &str| {
         Status::invalid_argument(format!("{field} is above the 2^16 subtree ceiling"))
     };
@@ -293,9 +291,8 @@ mod tests {
     use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
     use crate::wire::path;
 
-    /// Any `start` inclusive to `start + max` exclusive of the pre-framed list = exactly those
-    /// roots, framed as one per record; past the last root = empty (pepper-sync's probe), never
-    /// a panic
+    /// - `start..start + max` of the pre-framed list = exactly those roots, one frame each
+    /// - Past the last root = empty (pepper-sync's probe), never a panic
     #[test]
     fn a_root_request_is_one_slice_of_the_framed_list() {
         let roots: Vec<SubtreeRoot> = (0..5u8)
@@ -434,14 +431,13 @@ mod tests {
         let state = tree_state_of(response).await;
         assert_eq!(state.height, 0);
         assert_eq!(state.time, block.header().time);
-        // Display order, like every hash-bearing string field on this wire.
+        // Display order (every hash-bearing string field on this wire)
         assert_eq!(state.hash, block.header().hash.to_string());
         assert_ne!(state.sapling_tree, "000000", "the one commitment landed in sapling");
         assert_eq!(state.orchard_tree, "000000", "a real empty tree, not \"\"");
         assert_eq!(state.ironwood_tree, "000000");
 
-        // Tip = the same answer, asked for differently; framed once per snapshot, so a second
-        // ask is the same allocation
+        // Tip = same answer; framed once per snapshot (second ask = same allocation)
         let latest = || async {
             use http_body_util::BodyExt as _;
             let response = router

@@ -6,14 +6,13 @@ use zcash_protocol::consensus::NetworkType;
 use crate::target::{expand, to_compact, U256};
 
 /// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
-/// or [`regtest`](Self::regtest)
+/// or [`regtest`](Self::regtest); `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Params {
     pub(crate) network: NetworkType,
     pub(crate) genesis: BlockHash,
     pub(crate) blossom: Height,
     pub(crate) nu7: Option<Height>,
-    /// `PoWLimit`, compact-rounded (zcashd compares against the compact form)
     pub(crate) pow_limit: U256,
     pub(crate) pow: bool,
     pub(crate) difficulty: Difficulty,
@@ -55,8 +54,8 @@ impl Params {
             pow: true,
             difficulty: Difficulty::Adjusted,
             min_difficulty_from: None,
-            // protocol spec §7.6 "block height 2 or greater" (block 1 = genesis + 8.4 h breaks it;
-            // zebra's `is_max_block_time_enforced` says every height, never reached under checkpoints)
+            // - protocol spec §7.6 "block height 2 or greater" (block 1 = genesis + 8.4 h: fails)
+            // - zebra `is_max_block_time_enforced`: every height (never reached under checkpoints)
             max_time_from: Some(height(2)),
         }
     }
@@ -147,7 +146,7 @@ impl Params {
         self.max_time_from.is_some_and(|from| at >= from)
     }
 
-    /// The compact nBits of the limit (regtest's every block, testnet's minimum)
+    /// Limit as compact nBits (regtest's every block, testnet's minimum)
     pub(crate) fn limit_bits(&self) -> u32 {
         to_compact(self.pow_limit)
     }

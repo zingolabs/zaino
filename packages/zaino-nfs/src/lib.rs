@@ -52,8 +52,7 @@ pub enum NfsError {
     WriterGone(&'static str),
 }
 
-/// [`NfsCore`] run against real sources, folds, writers and readers
-///
+/// `NfsCore` run against real sources, folds, writers and readers
 /// - Inputs: the verified chain, fetched bodies, fold results, each index's committed view
 /// - Outputs: fetches (tasks), folds (compute pool), the final stream, [`Snapshot`]s
 /// - `handed` = last block handed to the indexes (folded, or sent unfolded); `served` = last
@@ -307,7 +306,7 @@ async fn fetch<S: ChainDataSource>(
     Input::Body { from, at: BlockRef { hash: record.hash, height }, answer }
 }
 
-/// A task's value; its panic resumed here (a fold or fetch never half-done)
+/// Task's value; its panic resumed here (a fold or fetch never half-done)
 fn joined<T>(done: Result<T, JoinError>) -> T {
     match done {
         Ok(value) => value,

@@ -1,9 +1,8 @@
-//! Merkle root of the transaction tree.
+//! Transaction-tree merkle root
 
 use super::TransactionId;
 use crate::sha256d;
 
-/// Transaction merkle root (32 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct MerkleRoot([u8; 32]);
 

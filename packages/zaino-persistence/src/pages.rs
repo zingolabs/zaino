@@ -6,18 +6,13 @@
 //! MANIFEST     per file: committed length, the tail page's CRC, a digest of <file>.crc (`Sealed`)
 //! ```
 //!
-//! A complete page never changes, so its checksum lives in `<file>.crc`. The tail page still
-//! grows, so its checksum rides the manifest, and a crash never leaves a committed page with a
-//! stale checksum.
-//!
-//! Each page's checksum covers its page index as well as its bytes, so a page and its checksum
-//! moved together to another position still fail. The manifest also holds a digest of the whole
-//! `<file>.crc`, checked at open: the manifest (itself checksummed, two slots) pins
-//! every page checksum, and each checksum pins its page. A data page and its checksum that are
-//! both stale, for example after a lost write, therefore fail too.
-//!
-//! This is integrity only: what the bytes mean was settled before they were written. Open checks
-//! lengths, the tail page and the digest; a read checks each page the first time it touches it.
+//! - complete page never changes → its CRC in `<file>.crc`; growing tail page → CRC in manifest
+//!   (no committed page ever left with a stale CRC)
+//! - CRC covers page index + bytes (page moved with its CRC still fails)
+//! - manifest digest of `<file>.crc`, checked at open: manifest pins every CRC, each CRC its page
+//!   (stale page + stale CRC after a lost write still fails)
+//! - integrity only (meaning settled before the write)
+//! - open checks lengths, tail page, digest; a read checks each page on first touch
 
 use std::{
     io,
@@ -44,7 +39,7 @@ const SUM: usize = 4;
 /// Dirty bytes per file before writeback starts (RocksDB `bytes_per_sync` recommendation)
 const WRITE_BEHIND: u64 = 1 << 20;
 
-/// Smallest and largest step a [`Reserve`] grows by (the file's size, clamped)
+/// [`Reserve`] growth step bounds (step = file's size, clamped)
 const MIN_RESERVE: u64 = 64 << 10;
 const MAX_RESERVE: u64 = 64 << 20;
 
@@ -54,7 +49,7 @@ static ZEROS: [u8; 1 << 20] = [0; 1 << 20];
 /// Operator remedy in a checksum-mismatch panic
 const CORRUPTION: &str = "on-disk corruption: stop zainod, run `zainod verify`, resync";
 
-/// A file's committed state, as its owner's manifest records it
+/// File's committed state, as its owner's manifest records it
 ///
 /// - `tail` = [`page_sum`] of the bytes after the last complete page
 /// - `sums` = CRC-32 of `<file>.crc` through the last complete page (CRC of nothing when none)
@@ -66,7 +61,7 @@ pub(crate) struct Sealed {
 }
 
 impl Sealed {
-    /// A file with nothing committed
+    /// Nothing committed
     pub(crate) const EMPTY: Self = Self { len: 0, tail: 0, sums: 0 };
 
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
@@ -92,7 +87,7 @@ fn page_sum(index: u64, bytes: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// The tail page's checksum, 0 when there is no tail (so [`Sealed::EMPTY`] can be a constant)
+/// Tail page's checksum; 0 = no tail (so [`Sealed::EMPTY`] can be a constant)
 fn tail_sum(index: u64, bytes: &[u8]) -> u32 {
     match bytes.is_empty() {
         true => 0,
@@ -100,7 +95,7 @@ fn tail_sum(index: u64, bytes: &[u8]) -> u32 {
     }
 }
 
-/// `digest` (the CRC-32 of the checksums so far) extended by `more` checksum bytes
+/// `digest` (CRC-32 of the checksums so far) extended by `more` checksum bytes
 fn extend_digest(digest: u32, more: &[u8]) -> u32 {
     let mut hasher = crc32fast::Hasher::new_with_initial(digest);
     hasher.update(more);
@@ -129,37 +124,29 @@ pub enum PageError {
     Sums { path: PathBuf },
 }
 
-/// What a paged file is, which decides how it grows and who makes its name durable
+/// How a paged file grows + who makes its name durable
+///
+/// - `Segment` = written once, sealed for good (LSM): grows by exactly the appends; caller syncs
+///   the linking directory
+/// - `Log` = appended commit after commit: linked durably at creation, grown into a [`Reserve`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileKind {
-    /// Written once, then sealed for good (an LSM segment): grows by exactly what is appended,
-    /// and the caller syncs the directory that links it
     Segment,
-    /// Appended to commit after commit (compact-block, tree-state): linked durably into its
-    /// directory when created, and grown into a [`Reserve`]
     Log,
 }
 
-/// Zeroed, flushed room past the end of a [`FileKind::Log`]
+/// Zeroed, flushed room past the end of a [`FileKind::Log`] (appends below EOF = no metadata
+/// change: seal's `fdatasync` never waits on the journal / other files' writeback)
 ///
-/// A seal's `fdatasync` is only cheap when the file's metadata has not changed. An append past
-/// EOF changes the inode's size (and, under delayed allocation, allocates blocks at writeback), so
-/// on ext4 and XFS the sync must commit the filesystem journal, and that commit first waits for
-/// every other file's dirty data: one index's seal stalls behind another's writeback. Appends into
-/// blocks that already exist below EOF change no metadata, so their sync flushes this file alone.
-///
-/// `fallocate` cannot provide that room: it leaves unwritten extents, and the first write into
-/// one is a metadata change again. So the room is written with zeros and flushed, one journal
-/// commit per step, each step the file's size again (64 KiB to 64 MiB): zeros written ≈ the data
-/// once over. Open truncates the file to its seal, dropping the reserve; the next append rebuilds
-/// it.
+/// - zeros, not `fallocate` (unwritten extents = metadata change on first write); usage.md
+///   "Write-ahead reserve"
 #[derive(Debug)]
 struct Reserve {
     end: u64,
 }
 
 impl Reserve {
-    /// Room for bytes up to `end`, growing (zero-filled, then flushed) if the reserve is short
+    /// Room up to `end`, grown (zero-filled, then flushed) when short
     fn cover(&mut self, file: &dyn FileHandle, end: u64) -> io::Result<()> {
         if end <= self.end {
             return Ok(());
@@ -178,11 +165,11 @@ impl Reserve {
     }
 }
 
-/// The write side of one append-only file and its checksums
+/// Write side of one append-only file + its checksums
 ///
 /// - `unsealed_sums` = CRCs of pages completed since the last seal, from page `sealed_pages`
 /// - `sums_digest` = CRC-32 of every sealed page checksum (what the next seal extends)
-/// - `reserves` = the data's and the checksums' [`Reserve`]s (`None` = a [`FileKind::Segment`])
+/// - `reserves` = data's + checksums' [`Reserve`]s (`None` = [`FileKind::Segment`])
 #[derive(Debug)]
 pub(crate) struct PagedFile {
     path: PathBuf,
@@ -198,12 +185,11 @@ pub(crate) struct PagedFile {
 }
 
 impl PagedFile {
-    /// Opens `path` at `sealed` (fresh = [`Sealed::EMPTY`]): bytes past it dropped, a shorter
-    /// file refused, the tail page and the checksums' digest read back and checked (the `.crc`
-    /// file is 1/1024 of the data)
+    /// `path` at `sealed` (fresh = [`Sealed::EMPTY`]): bytes past it dropped, shorter file
+    /// refused, tail page + checksums' digest read back and checked (`.crc` = 1/1024 of the data)
     ///
-    /// - a [`FileKind::Log`] with either file created here: the directory is synced, so the file
-    ///   outlives a crash before any manifest names it (a commit no longer syncs directories)
+    /// - [`FileKind::Log`] with either file created here → directory synced (survives a crash
+    ///   before any manifest names it; commits never sync directories)
     pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
@@ -254,7 +240,7 @@ impl PagedFile {
         self.len
     }
 
-    /// Appends at the end; neither durable nor sealed until [`seal`](Self::seal)
+    /// At the end; neither durable nor sealed until [`seal`](Self::seal)
     ///
     /// - writeback started per `WRITE_BEHIND` appended (`seal`'s fsync finds little dirty)
     pub(crate) fn append(&mut self, mut bytes: &[u8]) -> io::Result<()> {
@@ -281,8 +267,8 @@ impl PagedFile {
         Ok(())
     }
 
-    /// Data fsync → completed pages' CRCs written + fsynced; the seal the owner's next manifest
-    /// must carry (committed only once that manifest is durable)
+    /// Data fsync → completed pages' CRCs written + fsynced → seal for the owner's next manifest
+    /// (committed only once that manifest is durable)
     pub(crate) fn seal(&mut self) -> io::Result<Sealed> {
         self.data.sync_data()?;
         if !self.unsealed_sums.is_empty() {
@@ -318,10 +304,10 @@ fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageErr
     Ok(())
 }
 
-/// A sealed file, mapped: every page checked the first time a read touches it
+/// Sealed file, mapped: every page checked on a read's first touch
 ///
-/// - a failed check = bytes changed on disk after they were sealed: dies (never serves bytes
-///   it cannot vouch for; `docs/design/durability.md`)
+/// - failed check = bytes changed on disk after the seal → dies (never serves unverified bytes;
+///   `docs/design/durability.md`)
 #[derive(Clone)]
 pub(crate) struct Pages {
     inner: Arc<Mapped>,
@@ -346,10 +332,10 @@ impl std::fmt::Debug for Pages {
 }
 
 impl Pages {
-    /// An immutable sealed file (a segment): opened read-only, lengths and the checksums' digest
-    /// checked, nothing truncated
+    /// Immutable sealed file (segment): read-only, lengths + checksums' digest checked, nothing
+    /// truncated
     ///
-    /// - `access` = how this mapping is read (another mapping of the same file keeps its own)
+    /// - `access` = this mapping's read pattern (other mappings of the file keep their own)
     pub(crate) fn open(
         fs: &dyn Fs,
         path: &Path,
@@ -401,7 +387,7 @@ impl Pages {
         let checked: Box<[AtomicU64]> =
             (0..pages.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
         if let Some(previous) = previous {
-            // complete pages only: a tail page may have grown since
+            // complete pages only (tail page may have grown since)
             let carried = previous.inner.data.len() / PAGE;
             for page in 0..carried.min(pages) {
                 if previous.is_checked(page) {
@@ -487,7 +473,7 @@ impl Pages {
     }
 }
 
-/// Reads `dir/relative` up to `sealed` and checks every page against `<file>.crc` + the tail CRC
+/// `dir/relative` up to `sealed`, every page checked against `<file>.crc` + the tail CRC
 ///
 /// - read only, no lock: safe beside a live writer
 pub(crate) fn scrub(
@@ -543,8 +529,9 @@ mod tests {
     use super::*;
     use crate::fs::SimFs;
 
-    /// Appends across page boundaries seal to the same CRCs a from-scratch hash gives; reopen
-    /// continues the tail; a flipped committed byte = a panic on first touch and a scrub fault
+    /// - appends across page boundaries seal to a from-scratch hash's CRCs
+    /// - reopen continues the tail
+    /// - flipped committed byte = panic on first touch + scrub fault
     #[test]
     fn seals_reopen_and_every_committed_byte_is_checked() {
         let fs = SimFs::new();
@@ -577,7 +564,7 @@ mod tests {
         assert_eq!(pages.read(PAGE - 10..PAGE + 10), &bytes[PAGE - 10..PAGE + 10]);
         assert_eq!(pages.bytes(0..bytes.len()), bytes);
 
-        // a longer file: the uncommitted bytes past the seal are dropped at open
+        // longer file: uncommitted bytes past the seal dropped at open
         fs.corrupt(path, |data| data.extend_from_slice(&[9; 17]));
         drop(file);
         PagedFile::open(fs.as_ref(), path, sealed, FileKind::Segment).expect("reopen past orphans");
@@ -614,7 +601,7 @@ mod tests {
         fs.corrupt(path, |data| swap(data, PAGE));
         fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
 
-        // a checksum rewritten to match a changed page: the manifest's digest refuses it
+        // checksum rewritten to match a changed page: manifest's digest refuses it
         fs.corrupt(path, |data| data[5] ^= 1);
         let forged = page_sum(0, &fs.contents(path).expect("data")[..PAGE]).to_le_bytes();
         fs.corrupt(&sums_path(path), |sums| sums[..SUM].copy_from_slice(&forged));
@@ -638,8 +625,8 @@ mod tests {
         assert!(matches!(short, Err(PageError::Lost { have: 10, .. })));
     }
 
-    /// Open reads the tail page and the checksums back: a failing read there is the read's
-    /// `Err`, never a panic and never a file opened on bytes it could not read
+    /// Open's tail-page + checksum reads: failure = the read's `Err` (never a panic, never a file
+    /// opened on unread bytes)
     #[test]
     fn a_failed_read_at_open_surfaces_as_an_error() {
         let fs = SimFs::new();
@@ -662,10 +649,11 @@ mod tests {
             .expect("healthy reads open");
     }
 
-    /// A log beside a segment fed the same bytes: the log is linked durably at creation (either of
-    /// its two files missing counts), its appends land inside a zeroed reserve (the file's size
-    /// holds between growth steps, so a seal changes no metadata), its seals and reads match the
-    /// segment's, and a reopen drops the reserve that the next append rebuilds
+    /// Log beside a segment fed the same bytes:
+    ///
+    /// - log linked durably at creation (either of its two files missing counts)
+    /// - appends inside a zeroed reserve (size fixed between growth steps: seal = no metadata)
+    /// - seals + reads = the segment's; reopen drops the reserve, next append rebuilds it
     #[test]
     fn a_log_grows_into_a_reserve_its_seals_never_see() {
         let fs = SimFs::new();
@@ -674,7 +662,7 @@ mod tests {
         }
         fs.sync_dir(Path::new("/")).expect("link every directory");
 
-        // data durably linked, its checksums never created (a crash between the two): still linked
+        // data durably linked, checksums never created (crash between the two): still linked
         let half = Path::new("/half/data");
         fs.open(half).expect("data only");
         fs.sync_dir(Path::new("/half")).expect("link the data");
@@ -719,8 +707,8 @@ mod tests {
         assert!(rebuilt > sealed.len + 1 && rebuilt % PAGE as u64 == 0, "rebuilt: {rebuilt}");
     }
 
-    /// Offline scrub over a real file written past `WRITE_BEHIND` (writeback hint issued): clean,
-    /// a bad page named, orphans counted, a short file lost
+    /// Offline scrub, real file past `WRITE_BEHIND` (writeback hint issued): clean, bad page
+    /// named, orphans counted, short file lost
     #[test]
     fn scrub_names_bad_pages_orphans_and_losses() {
         let dir = tempfile::tempdir().expect("tempdir");

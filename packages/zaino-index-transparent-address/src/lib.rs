@@ -16,7 +16,7 @@
 //! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
 //! - non-final blocks = `zaino-nfs` layers (keyed as the maps), read through a `LayeredView`
 //!
-//! # Lookup ([`TransparentAddressReader::utxos`], as of the served tip)
+//! # Lookup ([`TransparentAddressReader::utxos_of`], as of the served tip)
 //!
 //! ```text
 //! address ──▶ receives:  `range(RECEIVES, (addr, start), (addr, tip + 1), budget)`

@@ -1,17 +1,12 @@
-//! Transaction hash (txid).
+//! Transaction id
 
 use core::{fmt, str::FromStr};
 
 use super::display_order::{self, ParseHashError};
 
-/// Transaction hash / txid (32 bytes, internal byte order).
+/// Internal byte order, display reversed (as [`super::BlockHash`])
 ///
-/// Same byte-order convention as [`super::BlockHash`]: internal
-/// little-endian, display big-endian.
-///
-/// NOTE: Transaction hash vs transaction ID
-/// - In pre V5 transactions this is the transaction hash (sha256 of serialized tx).
-/// - From V5 onwards this field is the transaction ID (as defined in [zip 224](https://github.com/zcash/zips/blob/main/zips/zip-0244.rst).
+/// - Pre-v5: SHA-256d of the bytes; v5+: [ZIP-244](https://zips.z.cash/zip-0244) id
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TransactionId([u8; 32]);
 

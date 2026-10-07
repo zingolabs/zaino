@@ -2,11 +2,11 @@
 
 use super::{Block, BlockHash, Height, Zatoshis};
 
-/// What a transaction leaves in the transparent transaction value pool for the miner
-/// (protocol.pdf#transactions §3.4)
+/// Left in the transparent value pool for the miner (protocol.pdf §3.4)
+///
+/// - `Coinbase`: collects fees + subsidy, pays none (protocol.pdf §3.11)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fee {
-    /// Collects fees and subsidy, pays none (protocol.pdf#coinbasetransactions §3.11)
     Coinbase,
     Paid(Zatoshis),
 }

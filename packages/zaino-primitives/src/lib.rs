@@ -1,7 +1,6 @@
-//! Zaino primitives — vocabulary types for the Zcash chain.
+//! Zcash chain vocabulary (heights, hashes, blocks) every Zaino crate shares
 //!
-//! All Zaino crates that need chain-level types (heights, hashes) depend on this crate instead of
-//! on each other.
+//! - Crates needing chain types depend on this, never on each other
 
 use sha2::{Digest, Sha256};
 

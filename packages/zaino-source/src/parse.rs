@@ -98,7 +98,7 @@ pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, Pars
     Ok(as_str(value)?.parse()?)
 }
 
-/// Hex-string `result` decoded straight off the body (borrowed `&str`, one const-hex pass)
+/// Hex-string `result` decoded straight off the body (borrowed `&str`, one hex pass)
 pub(crate) struct HexBytes(pub(crate) Vec<u8>);
 
 impl<'de> serde::Deserialize<'de> for HexBytes {
@@ -281,10 +281,12 @@ mod tests {
     /// Reads differently forwards and backwards (a mirrored decode cannot pass by coincidence)
     const ASYMMETRIC_HEX: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddee01";
 
-    /// Zebra's verbose listing (`fee` = lossy `f64` ZEC): each key reversed into a txid, each fee
-    /// back to its exact zatoshis (ZIP-317 minimum, sub-zat float noise, the whole supply), `size`
-    /// as the encoded length; a negative or past-supply fee, a missing fee or size, a size past
-    /// `u32` and an over-cap listing refused
+    /// Zebra's verbose listing (`fee` = lossy `f64` ZEC)
+    ///
+    /// - key reversed → txid; fee → exact zatoshis (ZIP-317 minimum, sub-zat noise, whole supply)
+    /// - `size` = encoded length
+    /// - refused: negative / past-supply fee, missing fee or size, size past `u32`, over-cap
+    ///   listing
     #[test]
     fn mempool_listing_reads_each_txid_and_its_exact_fee() {
         let mut reversed_bytes = [0u8; 32];
@@ -326,9 +328,9 @@ mod tests {
         assert!(matches!(oversized, Err(ParseError::ListingTooLarge { .. })));
     }
 
-    /// The fields read reach the domain (hash reversed, schedule keyed by branch id, Sapling's
-    /// activation lifted out); fields never read (lossy pool floats: the old mainnet-boot crash)
-    /// cannot fail the parse; an unknown status, a missing name or no Sapling entry fails it
+    /// - Fields read → domain (hash reversed, schedule keyed by branch id, Sapling's activation)
+    /// - Fields never read (lossy pool floats: the old mainnet-boot crash) never fail the parse
+    /// - Unknown status, missing name, no Sapling entry → parse fails
     #[test]
     fn blockchain_info_reads_the_tip_and_schedule_and_ignores_the_rest() {
         let info = json!({
@@ -385,8 +387,8 @@ mod tests {
         assert!(matches!(parse_blockchain_info(&no_sapling), Err(ParseError::NoSapling)));
     }
 
-    /// All three placements pinned (a side-chain tx reported as unmined reads as still
-    /// pending); an undefined negative height is refused; verbosity 0 is a bare string
+    /// - All three placements pinned (side-chain tx reported as unmined = reads as pending)
+    /// - Undefined negative height refused; verbosity 0 = bare string
     #[test]
     fn transactions_place_themselves_and_raw_bytes_are_a_bare_string() {
         use TransactionLocation::{BestChain, Mempool, NonBestChain};
@@ -404,8 +406,8 @@ mod tests {
         assert!(matches!(object, Err(ParseError::UnexpectedType { .. })));
     }
 
-    /// zebrad 6.4.2's shapes: mainnet names the halt height, other networks omit it, a release
-    /// before `getdeprecationinfo` says nothing (never read as "no halt")
+    /// zebrad 6.4.2's shapes: mainnet → halt height; other networks → omitted; release before
+    /// `getdeprecationinfo` → unknown (never read as "no halt")
     #[test]
     fn a_release_reads_its_build_and_where_it_halts() {
         let info = json!({

@@ -1,4 +1,4 @@
-//! Holds tonic generated code for the lightwallet service RPCs and compact formats.
+//! Tonic-generated lightwallet service RPCs + compact formats
 
 #[allow(clippy::all)]
 #[rustfmt::skip]

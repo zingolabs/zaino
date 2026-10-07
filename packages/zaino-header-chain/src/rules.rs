@@ -1,7 +1,7 @@
 //! Header rules: stage A (the header alone) and stage B (against its ancestors and the clock)
 //!
 //! - adjustment = zcashd `pow.cpp` (`CalculateNextWorkRequired`) + ZIP 218 (window by height)
-//! - time and order = zebra-state `src/service/check.rs` (`difficulty_threshold_and_time_are_valid`)
+//! - time and order = zebra-state `service/check.rs` (`difficulty_threshold_and_time_are_valid`)
 //!   + zebra-chain `src/block/header.rs` (`time_is_valid_at`)
 //! - stage A: cheap rules first, Equihash last (156 µs: a junk header never costs it)
 

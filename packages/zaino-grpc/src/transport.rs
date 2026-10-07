@@ -1,15 +1,14 @@
 //! [`GrpcService`]: hyper-util's HTTP/2 server around the path dispatch (`service.rs`)
 //! (`service.bind().await?` at boot, then `tokio::spawn(bound.run(cancel))`)
 //!
-//! The stack, outermost first:
+//! Stack, outermost first:
 //!
 //! ```text
 //!   accept ─ connection caps ─ PROXY header ─ TLS ─ h2 conn ─ metrics ─ admission ─ dispatch
 //! ```
 //!
-//! Serving hyper directly rather than `tonic::transport::Server` is what makes the caps
-//! reachable: the accept loop is ours, so a connection over a cap is closed before a task
-//! exists for it, and the h2 settings below are set per connection.
+//! - hyper, not `tonic::transport::Server` (own accept loop: over-cap closed before a task
+//!   exists; h2 settings per connection)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -36,8 +35,8 @@ use crate::report::{self, Held, INTERVAL};
 use crate::service::{Dispatch, Routes};
 use crate::{emit, GrpcLimits};
 
-/// Per-stream send buffer. Flow control paces each stream from here, so a slow wallet backs
-/// itself up rather than the server.
+/// Per-stream send buffer (flow control paces from here: a slow wallet backs up itself, not the
+/// server)
 const SEND_BUFFER: usize = 64 * 1024;
 
 /// Unsent bytes the kernel queues per socket before it reports the socket unwritable
@@ -56,15 +55,14 @@ const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
 /// TLS handshake deadline (a silent client holds a connection slot at most this long)
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Ping cadence on an idle connection, and how long a pong may take.
+/// Idle-connection ping cadence + pong deadline
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Locally-reset streams a peer may accumulate before the connection is closed (CVE-2023-44487).
+/// Locally-reset streams per peer before the connection closes (CVE-2023-44487)
 const RAPID_RESET_LIMIT: usize = 128;
 
-/// The `CompactTxStreamer` endpoint: the enabled [`Routes`], served on one listener, bounded by
-/// [`GrpcLimits`]
+/// `CompactTxStreamer` endpoint: enabled [`Routes`] on one listener, bounded by [`GrpcLimits`]
 pub struct GrpcService<S: ChainDataSource, V> {
     dispatch: Dispatch<S, V>,
     bind: SocketAddr,
@@ -73,10 +71,8 @@ pub struct GrpcService<S: ChainDataSource, V> {
     tls: Option<crate::Tls>,
 }
 
-/// Why the gRPC server could not run.
 #[derive(Debug, thiserror::Error)]
 pub enum GrpcServeError {
-    /// The server failed to bind or its serve loop errored.
     #[error("gRPC server error: {0}")]
     Serve(String),
 }
@@ -103,12 +99,11 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
     }
 }
 
-/// The h2 settings every connection is served with.
 fn http2(limits: &GrpcLimits) -> auto::Builder<TokioExecutor> {
     let mut builder = auto::Builder::new(TokioExecutor::new()).http2_only();
     builder
         .http2()
-        // Keepalive pings need a clock; hyper has none of its own.
+        // keepalive pings need a clock (hyper has none)
         .timer(TokioTimer::new())
         .max_concurrent_streams(limits.max_streams_per_connection.get())
         .max_send_buf_size(SEND_BUFFER)
@@ -136,7 +131,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
     }
 }
 
-/// The per-connection service stack (see the module doc)
+/// Per-connection service stack (module doc)
 type Stack<S, V> = TowerToHyperService<Measured<Admission<Dispatch<S, V>>>>;
 
 /// What every connection task shares
@@ -236,7 +231,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> BoundGrpcService<S, V> {
                 }
             };
 
-            // Over a cap: the socket is dropped here, so the refusal costs no task.
+            // Over a cap: dropped here (refusal costs no task)
             let Some(reserved) = shared.caps.reserve() else {
                 continue;
             };
@@ -303,7 +298,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
             return;
         };
 
-        // Bytes read past the header belong to the client's HTTP/2 stream: replayed first
+        // Bytes past the header = client's HTTP/2 stream: replayed first
         let (reader, writer) = socket.into_split();
         let io = tokio::io::join(std::io::Cursor::new(read_ahead).chain(reader), writer);
         self.secure(io, peer).await;

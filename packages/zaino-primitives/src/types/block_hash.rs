@@ -1,21 +1,15 @@
-//! SHA-256d block hash.
+//! SHA-256d block hash
 
 use core::{fmt, str::FromStr};
 
 use super::display_order::{self, ParseHashError};
 
-/// SHA-256d block hash (32 bytes, internal byte order).
-///
-/// Internal byte order = little-endian as produced by the double-SHA256
-/// digest. Display and RPC use reversed (big-endian) order.
-///
-/// The inner bytes are private. Use `From<[u8; 32]>` to construct and
-/// `From<BlockHash> for [u8; 32]` at boundaries that need raw bytes.
+/// Internal byte order (as the digest produces it); display / RPC reversed
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockHash([u8; 32]);
 
 impl BlockHash {
-    /// The zero hash, used as a sentinel (e.g. genesis `prev_hash`).
+    /// Sentinel (genesis `prev_hash`)
     pub const ZERO: Self = Self([0u8; 32]);
 }
 
@@ -33,7 +27,7 @@ impl From<BlockHash> for [u8; 32] {
 
 impl fmt::Debug for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // First 4 bytes in display (big-endian) order for log readability.
+        // first 4 display-order bytes (log readability)
         write!(
             f,
             "BlockHash({:02x}{:02x}{:02x}{:02x}…)",

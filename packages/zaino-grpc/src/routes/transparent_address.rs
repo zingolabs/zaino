@@ -38,7 +38,6 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-/// Dispatches a claimed transparent-address path.
 pub(crate) async fn dispatch<V: MapRead, B>(
     index: Addresses<V>,
     path: &str,
@@ -71,11 +70,10 @@ where
     }
 }
 
-/// `GetTaddressTransactions` — the index names them, the validator supplies them.
+/// `GetTaddressTransactions`: index names them, a validator supplies them
 ///
-/// Fetches **lazily**, one per poll: a busy address over a wide range could name thousands
-/// of transactions, and a client that stops reading stops the round trips rather than
-/// having paid for all of them up front. HTTP/2 flow control does the pacing.
+/// - Fetched lazily, one per poll (busy address = thousands; a client that stops reading stops
+///   the round trips; HTTP/2 flow control paces)
 pub(crate) async fn transactions<S: ChainDataSource, V: MapRead, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
@@ -91,7 +89,7 @@ where
         Err(status) => return status_response(status),
     };
 
-    // `None` state ends the stream, so the trailer frame is always last and always sent.
+    // `None` state ends the stream (trailer frame always last, always sent)
     let frames = futures::stream::unfold(Some(found.into_iter()), move |state| {
         let validators = validators.clone();
         async move {
@@ -117,7 +115,7 @@ where
     response
 }
 
-/// The txids the index says touched the address, in height order.
+/// Txids touching the address, height order
 async fn found_transactions<V: MapRead, B>(
     index: Addresses<V>,
     body: B,
@@ -163,7 +161,7 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
         })
 }
 
-/// `GetAddressUtxos` / `GetAddressUtxosStream` — the same walk, two response shapes.
+/// `GetAddressUtxos` / `GetAddressUtxosStream`: one walk, two response shapes
 async fn utxos<V: MapRead, B>(
     index: Addresses<V>,
     body: B,
@@ -196,8 +194,7 @@ where
         }
     }
 
-    // `GetAddressUtxosArg` documents results as height-ordered, which a per-address walk is
-    // only within one address.
+    // `GetAddressUtxosArg` = height-ordered results (a per-address walk is, per address only)
     found.sort_by(|left, right| {
         (left.height, &left.txid, left.index).cmp(&(right.height, &right.txid, right.index))
     });
@@ -237,8 +234,7 @@ where
     balance(index, &list.addresses, reads).await
 }
 
-/// `GetTaddressBalanceStream` is client-streaming: the body is one framed `Address` each,
-/// and the reply is still the single total.
+/// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), reply = one total
 async fn streamed_balance_of<V: MapRead, B>(
     index: Addresses<V>,
     body: B,
@@ -288,9 +284,9 @@ mod tests {
     use crate::testing::{dispatch, framed_request, indexed, routes, routes_over, snapshot};
     use crate::wire::path;
 
-    /// A populated t-address index answers all four of its methods from the same rows: the two
-    /// utxo shapes agree, the two balance shapes agree, and an address that will not parse is a
-    /// bad request rather than an empty answer a gap-limit walk would read as "no history".
+    /// - All four methods off the same rows: utxo shapes agree, balance shapes agree
+    /// - Unparseable address = bad request, never an empty answer (a gap-limit walk would read
+    ///   "no history")
     #[tokio::test]
     async fn a_populated_transparent_index_answers_utxos_and_balances_in_both_shapes() {
         use prost::Message as _;
@@ -302,13 +298,13 @@ mod tests {
         use zaino_proto::proto::service as proto;
         use zaino_source::mock::MockChain;
 
-        // `t1Hsc…` is hash160 `00…00`, `t3Mg6…` is p2sh `22…22` (base58check, mainnet prefixes).
+        // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         const BOB: &str = "t3Mg6o2UpMFVtrzqGs7f2VTS6DaiPnFT5rL";
         let alice_script = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
         let bob_script = [&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat();
 
-        // Height 0: alice 500 (vout 0), bob 70 (vout 1). Height 1: alice 300.
+        // 0: alice 500 (vout 0), bob 70 (vout 1); 1: alice 300
         let pays = |tag: u8, outputs: Vec<(Vec<u8>, u64)>| Transaction {
             txid: TransactionId::from([tag; 32]),
             transparent: TransparentData {
@@ -344,7 +340,6 @@ mod tests {
             response.into_body().collect().await.expect("body").to_bytes()
         }
 
-        // Data frames in order, then the trailers.
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
             use http_body_util::BodyExt as _;
 
@@ -364,7 +359,7 @@ mod tests {
             (chunks, trailers.expect("a streaming body ends in trailers"))
         }
 
-        // GetAddressUtxos: one list message, height-ordered, script and address rebuilt.
+        // GetAddressUtxos: one list message, height-ordered, script + address rebuilt
         let response = router
             .call(framed_request(
                 path::GET_ADDRESS_UTXOS,
@@ -402,7 +397,7 @@ mod tests {
         ];
         assert_eq!(list.address_utxos, alice_utxos);
 
-        // maxEntries caps the list, keeping the oldest.
+        // maxEntries caps the list (oldest kept)
         let response = router
             .call(framed_request(
                 path::GET_ADDRESS_UTXOS,
@@ -421,7 +416,7 @@ mod tests {
                 .expect("one framed message");
         assert_eq!(capped.address_utxos, list.address_utxos[..1]);
 
-        // GetAddressUtxosStream: the same records, one framed reply per data frame.
+        // GetAddressUtxosStream: same records, one framed reply per data frame
         let response = router
             .call(framed_request(
                 path::GET_ADDRESS_UTXOS_STREAM,
@@ -445,8 +440,7 @@ mod tests {
         let streamed: Vec<_> = chunks.iter().map(reply).collect();
         assert_eq!(streamed, list.address_utxos, "one reply per record, same as the list shape");
 
-        // GetTaddressBalance over both addresses (alice repeated: counted once), and the
-        // client-streaming shape of the same ask.
+        // GetTaddressBalance, both addresses (alice repeated: counted once) + client-streaming
         let response = router
             .call(framed_request(
                 path::GET_TADDRESS_BALANCE,
@@ -478,7 +472,6 @@ mod tests {
         let balance = proto::Balance::decode(&body_of(response).await[FRAME_HEADER..]);
         assert_eq!(balance.expect("balance"), proto::Balance { value_zat: 870 }, "= list shape");
 
-        // An unparseable address is a bad request, never a successful empty answer.
         let response = router
             .call(framed_request(
                 path::GET_TADDRESS_BALANCE,

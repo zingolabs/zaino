@@ -1,43 +1,27 @@
-//! A validator's JSON-RPC endpoint from config: its URL and the credentials it expects
+//! Validator JSON-RPC endpoint from config: URL + the credentials it expects
 //!
-//! - no probe: reachability = the caller's retry loop (a validator down at boot is not fatal)
+//! - no probe: reachability = the caller's retry loop (validator down at boot ≠ fatal)
 
 use std::path::Path;
 
 use super::RpcError;
 
-/// Why a configured validator endpoint is unusable.
 #[derive(Debug, thiserror::Error)]
 pub enum EndpointError {
-    /// The configured address is not a `host:port`.
     #[error("validator address {address} is not host:port: {reason}")]
-    Address {
-        /// The address as configured.
-        address: String,
-        /// What is wrong with it.
-        reason: String,
-    },
+    Address { address: String, reason: String },
 
-    /// The cookie file could not be read.
     #[error("cannot read validator cookie {path}: {source}")]
-    Cookie {
-        /// Path to the cookie file.
-        path: String,
-        /// The underlying read failure.
-        source: std::io::Error,
-    },
+    Cookie { path: String, source: std::io::Error },
 
-    /// The client could not be constructed.
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
 }
 
-/// Reads the credentials a validator expects from the configured parts.
+/// Credentials a validator expects, from the configured parts
 ///
-/// A cookie path wins over an explicit user/password pair: a validator
-/// configured for cookie auth will reject the pair. The cookie file's
-/// `__cookie__:` prefix is stripped when present and tolerated when absent,
-/// which is how older validators and some packagers write it.
+/// - cookie path wins over a user/password pair (a cookie-auth validator rejects the pair)
+/// - `__cookie__:` prefix stripped if present (older validators, some packagers omit it)
 pub(crate) fn auth_from_parts(
     cookie_path: Option<&Path>,
     user: Option<String>,
@@ -59,8 +43,8 @@ pub(crate) fn auth_from_parts(
     }
 }
 
-/// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection → follows a
-/// validator whose IP changes, e.g. a restarted pod)
+/// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection →
+/// follows a validator whose IP changes, e.g. a restarted pod)
 pub(crate) fn validator_url(address: &str) -> Result<String, EndpointError> {
     let invalid = |reason: &str| EndpointError::Address {
         address: address.to_string(),
@@ -83,9 +67,9 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// Cookie wins over a configured pair (a cookie-auth validator rejects the pair), user is
-    /// always `__cookie__`, the token is trimmed with or without its prefix (packagers write
-    /// both); no cookie = the pair; an unreadable cookie is an error, never a silent pair
+    /// - Cookie wins over a configured pair; user always `__cookie__`
+    /// - Token trimmed with or without its prefix (packagers write both)
+    /// - No cookie = the pair; unreadable cookie = error, never a silent pair
     #[test]
     fn credentials_come_from_the_cookie_first_then_the_pair() {
         let cookie = |contents: &str| {

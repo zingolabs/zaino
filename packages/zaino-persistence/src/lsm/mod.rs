@@ -4,11 +4,11 @@
 //!   one block) → no memtable, no WAL, no tombstones, no versions
 //! - Segment = one batch, sorted by key, **fixed stride, 100% packed**, then per-block fences and
 //!   a binary fuse filter (`layout.rs`)
-//! - Committed segments = the owner's manifest list ([`SegmentMeta`]: id, record count, file
-//!   seal); a segment file the manifest does not list is uncommitted and removed at open
+//! - Committed segments = owner's manifest list (`SegmentMeta`: id, record count, file seal)
+//! - Segment file the manifest does not list = uncommitted, removed at open
 //! - Integrity = the file's page checksums (`crate::pages`)
 //! - Merge = pure k-way merge on a background thread, one per size tier (Lucene
-//!   `TieredMergePolicy`), swapped in by the owner's next manifest ([`SegmentLog`])
+//!   `TieredMergePolicy`), swapped in by the owner's next manifest (`SegmentLog`)
 //!
 //! Design: `docs/design/index-data-structures.md`, `docs/design/durability.md`
 //!

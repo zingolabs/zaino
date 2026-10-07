@@ -1,6 +1,4 @@
-//! JSON-RPC 2.0 request/response envelope.
-//!
-//! Pure data: no IO, no HTTP, no retry. Testable in isolation.
+//! JSON-RPC 2.0 request/response envelope (pure data: no IO, no HTTP, no retry)
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -8,7 +6,6 @@ use serde_json::Value;
 use super::client::Call;
 use super::error::RpcError;
 
-/// Build a JSON-RPC 2.0 request body.
 pub(crate) fn build_request(method: &str, params: &[Value], id: i64) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
@@ -54,7 +51,6 @@ pub(crate) fn parse_batch<T: DeserializeOwned>(
     slots.into_iter().map(|slot| slot.ok_or(RpcError::BatchMismatch)).collect()
 }
 
-/// Raw JSON-RPC 2.0 response envelope.
 #[derive(serde::Deserialize)]
 struct RpcResponseEnvelope<T> {
     id: Option<i64>,
@@ -73,7 +69,6 @@ impl<T> RpcResponseEnvelope<T> {
     }
 }
 
-/// JSON-RPC error object within the envelope.
 #[derive(serde::Deserialize)]
 struct RpcErrorObject {
     code: i64,
@@ -94,8 +89,8 @@ mod tests {
         }
     }
 
-    /// An error object wins over `result: null` (zebrad sends both); `null` alone is a fault,
-    /// never an empty answer; an unparseable body is a fault
+    /// - Error object wins over `result: null` (zebrad sends both)
+    /// - `null` alone = fault, never an empty answer; unparseable body = fault
     #[test]
     fn a_reply_is_its_result_its_error_object_or_a_fault() {
         let cases: [(&[u8], &str); 4] = [
@@ -114,8 +109,8 @@ mod tests {
         }
     }
 
-    /// Replies land in call order whatever order they arrive in, each item its own outcome; a
-    /// reply set that does not answer exactly the ids sent fails the whole batch
+    /// - Replies in call order whatever their arrival order, one outcome per item
+    /// - Reply set != exactly the ids sent → whole batch fails
     #[test]
     fn batch_replies_are_matched_by_id_and_must_answer_every_call_once() {
         let calls = [

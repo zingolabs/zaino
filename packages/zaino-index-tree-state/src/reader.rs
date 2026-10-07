@@ -48,7 +48,7 @@ impl<V: View> TreeStateReader<V> {
     }
 }
 
-/// A snapshot's seam: its layer above the committed files
+/// Snapshot's seam: its layer above the committed files
 impl<V: View> TreeStateReader<LayeredView<V>> {
     /// `at` in the layer above the committed files: among the ~1000 heights every synced wallet
     /// asks about (bounded: a per-snapshot memo keyed on these stays small)

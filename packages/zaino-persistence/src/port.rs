@@ -1,8 +1,8 @@
-//! The persistence port: what an index may ask of storage (`docs/design/persistence-engine.md`)
+//! Persistence port: what an index may ask of storage (`docs/design/persistence-engine.md`)
 //!
 //! - final data only, insert only, buffered then one atomic commit, snapshot reads, verifiable
-//! - two kinds of table: a sequence (records at positions 0, 1, 2, ...) and a map (values under
-//!   unique keys); an engine's `View` implements the read trait of each kind it can hold
+//! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
+//! - engine's `View` implements the read trait of each table kind it can hold
 
 use std::{num::NonZeroU32, ops::Range, path::Path};
 
@@ -13,30 +13,30 @@ use zcash_protocol::consensus::NetworkType;
 
 use crate::{layer::LayeredView, manifest::IndexKind, StoreError};
 
-/// A storage backend: opens one store per index, verifies them offline
+/// Storage backend: one store per index, verified offline
 pub trait PersistenceEngine: Send + Sync + 'static {
     type Store: Store;
 
-    /// Creates the store at `path`, or resumes it at its committed tip
+    /// Store at `path`: created, or resumed at its committed tip
     ///
     /// - another identity there (kind, format, network) = error, never a reformat
-    /// - a table this engine cannot hold = panic naming the table (schemas = constants: a bug)
+    /// - table this engine cannot hold = panic naming it (schemas = constants: a bug)
     fn open(&self, path: &Path, schema: &Schema) -> Result<Self::Store, StoreError>;
 
     /// Every committed byte against its integrity data (read-only: safe beside a running writer)
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError>;
 }
 
-/// One index's store: the commit point of all its tables (one writer)
+/// Index's store = commit point of all its tables (one writer)
 ///
 /// - final data: [`apply`](Self::apply) buffers, [`commit`](Self::commit) makes it durable
 pub trait Store: Send + 'static {
     type View: View;
 
-    /// What it was opened with (what [`Changes::new`] shapes its buffers by)
+    /// As opened ([`Changes::new`] shapes its buffers by it)
     fn schema(&self) -> &Schema;
 
-    /// Where it was opened (a failed commit's panic names it)
+    /// As opened (named by a failed commit's panic)
     fn path(&self) -> &Path;
 
     /// `changes` buffered: in [`staged`](Self::staged), not in [`view`](Self::view), not durable
@@ -51,17 +51,17 @@ pub trait Store: Send + 'static {
     /// Every buffered change + the last applied tip, durable together (one fsync), then in `view`
     ///
     /// - nothing buffered = `Ok`, nothing written
-    /// - `Err` poisons the store: every later commit panics (a failed sync is never retried)
+    /// - `Err` poisons the store: every later commit panics (failed sync never retried)
     fn commit(&mut self) -> Result<(), StoreError>;
 
-    /// Committed only (what serving pins: a crash never takes back what a reader saw)
+    /// Committed only (what serving pins: no crash takes back what a reader saw)
     fn view(&self) -> Self::View;
 
     /// Committed + buffered (what a bulk fold reads its parent through)
     fn staged(&self) -> LayeredView<Self::View>;
 }
 
-/// One committed state: never changes while held; a clone shares it
+/// Committed state: fixed while held, shared by clones
 pub trait View: Clone + Send + Sync + 'static {
     /// Last committed block (`None` = nothing committed yet)
     fn tip(&self) -> Option<BlockRef>;
@@ -97,11 +97,11 @@ pub trait MapRead: View {
     ) -> Option<Vec<(Bytes, Bytes)>>;
 }
 
-/// A sequence table's handle: its position among the schema's sequences
+/// Sequence table's position among the schema's sequences
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SequenceId(pub u16);
 
-/// A map table's handle: its position among the schema's maps
+/// Map table's position among the schema's maps
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapId(pub u16);
 
@@ -122,19 +122,17 @@ impl Width {
     }
 }
 
-/// A sequence table: `name` = its place in the store (`/` = a sub-directory, where the engine
-/// has directories)
+/// `name` = place in the store (`/` = sub-directory, for engines with directories)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SequenceTable {
     pub name: String,
     pub record: Width,
 }
 
-/// A map table: keys compare as bytes (big-endian fields = numeric order)
+/// Keys compare as bytes (big-endian fields = numeric order)
 ///
-/// - `scope` = leading key bytes every range read shares (0 = keys read whole); a hint some
-///   engines index by (a partition key), others ignore
-/// - keys lead with >= 8 uniform bytes (a hash, a txid): an engine may shard on them
+/// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
+/// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapTable {
     pub(crate) name: String,
@@ -143,9 +141,7 @@ pub struct MapTable {
     pub(crate) scope: u32,
 }
 
-/// What a store holds and whose it is: declared at open, the same every time
-///
-/// - `format` = layout version of the index's records
+/// What a store holds + whose: declared at open, same every time (`format` = record layout version)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub kind: IndexKind,
@@ -174,13 +170,13 @@ impl Schema {
         self
     }
 
-    /// Panics on an id this schema never declared
+    /// Panics: `id` never declared
     pub fn sequence(&self, id: SequenceId) -> &SequenceTable {
         let found = self.sequences.get(usize::from(id.0));
         found.unwrap_or_else(|| panic!("{id:?} not in the {:?} schema", self.kind))
     }
 
-    /// Panics on an id this schema never declared
+    /// Panics: `id` never declared
     pub fn map(&self, id: MapId) -> &MapTable {
         let found = self.maps.get(usize::from(id.0));
         found.unwrap_or_else(|| panic!("{id:?} not in the {:?} schema", self.kind))
@@ -195,10 +191,10 @@ impl Schema {
     }
 }
 
-/// One commit's worth of changes: one buffer per table, shaped by the schema
+/// Commit's worth of changes: buffer per table, shaped by the schema
 ///
-/// - widths checked as each item arrives (a wrong one = a panic naming the table)
-/// - fixed-width tables hold their bytes only; variable ones add an end offset per item
+/// - widths checked per item on arrival (wrong = panic naming the table)
+/// - fixed-width tables: bytes only; variable: + end offset per item
 #[derive(Debug, Clone)]
 pub struct Changes {
     tip: BlockRef,
@@ -208,7 +204,7 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// Changes to a store of `schema`, committing through `tip`
+    /// For a store of `schema`, committing through `tip`
     pub fn new(tip: BlockRef, schema: &Schema) -> Self {
         Self {
             tip,
@@ -224,7 +220,7 @@ impl Changes {
         self.sequences[usize::from(table.0)].push(name, *width, record);
     }
 
-    /// `value` under `key` in `table` (keys unique: inserting one twice is a bug)
+    /// `value` under `key` in `table` (keys unique: second insert = bug)
     pub fn insert(&mut self, table: MapId, key: &[u8], value: &[u8]) {
         let MapTable { name, key: key_width, value: value_width, .. } = self.schema.map(table);
         let [keys, values] = &mut self.maps[usize::from(table.0)];
@@ -260,7 +256,7 @@ impl Changes {
     }
 }
 
-/// One table's items back to back; `ends` = where each ends (Variable only)
+/// Table's items back to back; `ends` = where each ends (Variable only)
 #[derive(Debug, Clone, Default)]
 struct Buffer {
     bytes: Vec<u8>,
@@ -298,11 +294,11 @@ impl Buffer {
 }
 
 /// What [`PersistenceEngine::verify`] found
+///
+/// - `heights` = tip height + 1 (0 = nothing committed); `units` = files, for the file engines
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Verification {
-    /// Blocks committed from genesis (tip height + 1, 0 = nothing committed)
     pub heights: u64,
-    /// Each stored unit checked (a file, for the file engines)
     pub units: Vec<Checked>,
 }
 
@@ -312,11 +308,11 @@ impl Verification {
     }
 }
 
-/// One stored unit, checked
+/// Stored unit, checked
 ///
-/// - `orphaned_bytes` = past what the commit claims (an interrupted commit's tail: harmless)
-/// - `lost` = shorter than committed; `bad_sums` = its checksum list does not match the commit;
-///   `bad_pages` = pages whose bytes do not match their checksum
+/// - `orphaned_bytes` = past what the commit claims (interrupted commit's tail: harmless)
+/// - `lost` = shorter than committed; `bad_sums` = checksum list != commit's
+/// - `bad_pages` = pages whose bytes != their checksum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Checked {
     pub(crate) name: String,

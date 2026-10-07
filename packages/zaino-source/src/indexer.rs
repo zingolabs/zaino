@@ -49,8 +49,10 @@ impl IndexerWatch {
         Ok(Self { address: address.to_owned(), endpoint })
     }
 
-    /// Until `cancel`: each event → `on_change`; edges only on `on_link`: `true` once both streams
-    /// are open, `false` when either ends after that (a refused connect is no edge)
+    /// Until `cancel`: each event → `on_change`
+    ///
+    /// - `on_link` edges only: `true` once both streams open, `false` when either ends after
+    ///   (refused connect = no edge)
     pub async fn run(
         self,
         cancel: CancellationToken,
@@ -184,9 +186,9 @@ mod tests {
         }
     }
 
-    /// Nothing listening = refused, retried, no edge; then up: one `link true`, every event a hint;
-    /// zebrad ending a lagged stream (error, then close) = one `link false`, and the watch
-    /// reconnects onto fresh streams
+    /// - Nothing listening = refused, retried, no edge
+    /// - Up: one `link true`, every event a hint
+    /// - zebrad ending a lagged stream (error, then close) = one `link false`, then reconnected
     #[tokio::test]
     async fn events_wake_and_a_lagged_stream_drops_the_link_then_reconnects() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");

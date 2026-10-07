@@ -42,12 +42,13 @@ impl PoolActivations {
 }
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
+///
+/// - `Inconsistent` = stored nodes rebuild no frontier (a fold bug, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("no tree state at height {height}")]
     NotFound { height: Height },
 
-    /// Stored nodes that will not rebuild a frontier (a fold bug, not a bad request)
     #[error("stored tree state at height {height} is inconsistent")]
     Inconsistent { height: Height },
 }

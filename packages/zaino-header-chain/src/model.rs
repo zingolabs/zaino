@@ -33,36 +33,19 @@ const SIDE_TIPS: usize = 32;
 /// Work ≈ 16 · 512 · 4096 a header
 const BITS: [u32; 3] = [0x200f_0f0f, 0x1f7f_ffff, 0x1f0f_ffff];
 
+/// - `Extend`: `bits.len()` headers on mined `parent`; `early` = first at its median time past
+/// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
+/// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
+/// - `Future`: a header `ahead` s past the clock's horizon (H7: deferred)
+/// - `Clock`: clock forward, every deferred header offered again (the driver's retry)
 #[derive(Debug, Clone)]
 enum Move {
-    /// `bits.len()` headers on mined header `parent`; `early` = the first at its median time past
-    Extend {
-        parent: usize,
-        gap: u32,
-        early: bool,
-        bits: Vec<usize>,
-    },
-    /// Two headers on `parent`, only the second offered (its parent unknown)
-    Orphan {
-        parent: usize,
-    },
-    /// `branches` single-header side branches off live nodes (prune pressure, H4)
-    Spray {
-        from: usize,
-        branches: usize,
-    },
-    /// A header `ahead` seconds past the clock's horizon (H7: deferred)
-    Future {
-        parent: usize,
-        ahead: u32,
-    },
-    /// Clock forward, then every deferred header offered again (the driver's retry)
-    Clock {
-        advance: u32,
-    },
-    Reinsert {
-        mined: usize,
-    },
+    Extend { parent: usize, gap: u32, early: bool, bits: Vec<usize> },
+    Orphan { parent: usize },
+    Spray { from: usize, branches: usize },
+    Future { parent: usize, ahead: u32 },
+    Clock { advance: u32 },
+    Reinsert { mined: usize },
     Finalize,
     Reopen,
 }
@@ -97,12 +80,12 @@ struct Alive {
     received: u64,
 }
 
+/// `finals[h]` = the final record at height `h`
 struct Model {
     genesis: BlockHash,
     mined: Vec<Header>,
     by_hash: HashMap<BlockHash, Header>,
     alive: HashMap<BlockHash, Alive>,
-    /// Index = height
     finals: Vec<Record>,
     received: u64,
     deferred: Vec<Header>,

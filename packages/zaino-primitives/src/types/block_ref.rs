@@ -1,22 +1,12 @@
-//! A block named by both hash and height.
+//! Block named by both hash and height
 
 use crate::types::{BlockHash, Height};
 
-/// A block named by both hash and height.
+/// Which block a value was computed against (a range answered, the tip a mempool set was read at)
 ///
-/// Used wherever a value has to identify *which* block it was computed against:
-/// a response echoing back the range it covered, so the caller can tell whether
-/// a reorg has moved that range underneath it, or a mempool set tagged with the
-/// tip it was read at, so a later reader can judge whether the set is still
-/// coherent with the chain.
-///
-/// A named pair rather than a tuple because the comparisons that matter are
-/// per-field — `tip.hash != other.hash` reads correctly where `tip.0 != other.0`
-/// invites the wrong field.
+/// - Named fields, not a tuple (`tip.hash != other.hash`, never the wrong `.0`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockRef {
-    /// The block's hash.
     pub hash: BlockHash,
-    /// The block's height.
     pub height: Height,
 }

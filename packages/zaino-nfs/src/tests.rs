@@ -48,7 +48,7 @@ const INDEXES: [(IndexKind, u64, u32); 5] = [
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
 
-/// A coinbase paying 10 000, + a spend of `funding`'s output 0 (fee 1 000) carrying one sapling
+/// Coinbase paying 10 000, + a spend of `funding`'s output 0 (fee 1 000) carrying one sapling
 /// output and one orchard action (none: genesis, or a funding coinbase paying nothing)
 fn transactions(funding: Option<&Transaction>, tag: u32) -> Vec<Transaction> {
     let id = |kind: u8| {

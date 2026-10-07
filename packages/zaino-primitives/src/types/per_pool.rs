@@ -1,4 +1,4 @@
-//! One value per shielded pool.
+//! One value per shielded pool
 
 use super::{Block, ShieldedPool, TreeSize, TreeSizeOutOfRange};
 

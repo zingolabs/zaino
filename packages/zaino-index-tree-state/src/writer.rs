@@ -85,7 +85,7 @@ mod tests {
         DiskEngine::new(fs.clone()).open(Path::new("/ts"), &schema(NETWORK)).expect("open")
     }
 
-    /// The writer over `store`, its final stream and committed view
+    /// Writer over `store`, its final stream and committed view
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,
@@ -202,7 +202,7 @@ mod tests {
         (&[7, 8, 9, 10, 11], &[], &[204]),
     ];
 
-    /// The oracle's three trees after `CHAIN[..through]`
+    /// Oracle's three trees after `CHAIN[..through]`
     fn seen(through: usize) -> (CommitmentTreeBytes, CommitmentTreeBytes, CommitmentTreeBytes) {
         let mut pools = (Vec::new(), Vec::new(), Vec::new());
         for (sapling, orchard, ironwood) in &CHAIN[..through] {
@@ -257,13 +257,13 @@ mod tests {
         }
     }
 
+    /// - `Send(n)`: next `n` blocks, unfolded until `Fold`, folded after it
+    /// - `Fold`: bulk → tip handoff; `Reopen`: shutdown, reopen, resend from one below the tip
+    ///   (held: skipped)
     #[derive(Debug, Clone)]
     enum Move {
-        /// Next blocks: unfolded until `Fold`, folded after it
         Send(usize),
-        /// Bulk → tip handoff: every later block folded
         Fold,
-        /// Shutdown, reopen, resend from one below the committed tip (held: skipped)
         Reopen,
     }
 

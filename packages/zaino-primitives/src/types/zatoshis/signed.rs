@@ -1,4 +1,4 @@
-//! A signed zatoshi value: a movement or a difference
+//! Signed zatoshi value: a movement or a difference
 
 use core::fmt;
 
@@ -41,8 +41,8 @@ impl fmt::Display for SignedZatoshis {
 mod tests {
     use super::*;
 
-    /// The supply magnitude either way is accepted; one past it (and `i64::MIN`) is refused,
-    /// reporting the rejected value
+    /// Supply magnitude either way accepted; one past it (and `i64::MIN`) refused, rejected value
+    /// reported
     #[test]
     fn bounded_by_the_supply_in_both_directions() {
         let max = i64::try_from(MAX_ZATOSHIS).expect("supply fits in i64");

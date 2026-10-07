@@ -5,7 +5,7 @@
 //!   view changed ─▶ each answering validator whose claim is off our best chain:
 //!                     first height = above its reach (highest verified block it holds), else
 //!                     above the final tip
-//!                     ─▶ batch fetch ─▶ stage A (each header alone, parallel) ─▶ stage B (in order)
+//!                     ─▶ batch fetch ─▶ stage A (each header alone, parallel) ─▶ stage B (ordered)
 //!                     ─▶ VerifiedChain → view + watch (+ the run's last header: it holds that)
 //!                     ─▶ finalize what is `depth` deep and held (`Holders`)
 //! ```
@@ -35,7 +35,7 @@ use crate::error::HeaderStoreFailed;
 use crate::fold::{ChainViewCore, HeaderReport};
 use crate::holders::Holders;
 
-/// Heights per fetch + verify step (memory: the tree holds at most `depth` + this before finalizing)
+/// Heights per fetch + verify step (memory: tree holds <= `depth` + this before finalizing)
 const HEADER_BATCH: u32 = 2_000;
 
 /// Pause after a round that could not reach every validator's tip

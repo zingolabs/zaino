@@ -298,8 +298,9 @@ mod tests {
     use zaino_primitives::types::{EquihashSolution, MerkleRoot};
     use zcash_primitives::block::BlockHeader as RawHeader;
 
-    /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard):
-    /// header decoded, BIP 34 height agrees, every pool present, standalone path = block path
+    /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard)
+    ///
+    /// - header decoded, BIP 34 height agrees, every pool present, standalone = block path
     #[test]
     fn a_mainnet_block_decodes_and_each_tx_decodes_alone_identically() {
         let raw = fixture(2_000_000);
@@ -422,7 +423,7 @@ mod tests {
     }
 
     proptest::proptest! {
-        // arb_tx filters ~80 draws per case (signing-key prop_filter): reject cap must scale w/ cases
+        // arb_tx filters ~80 draws per case (signing-key prop_filter): reject cap scales w/ cases
         #![proptest_config(proptest::prelude::ProptestConfig {
             max_local_rejects: u32::MAX,
             ..proptest::prelude::ProptestConfig::with_cases(64)
@@ -475,7 +476,7 @@ mod tests {
                 .map_or(vec![], |b| b.shielded_outputs().iter().map(|o| o.cmu().to_bytes()).collect());
             let sapling_balance = sapling.map_or(0, |b| i64::from(*b.value_balance()));
 
-            // the bytes are the truth: librustzcash's reference parse of them is the txid oracle
+            // bytes = the truth: librustzcash's reference parse of them = txid oracle
             let reference = zcash_primitives::transaction::Transaction::read(
                 &raw[..],
                 tx.consensus_branch_id(),
@@ -491,9 +492,11 @@ mod tests {
             prop_assert_eq!(decoded_actions(&decoded.ironwood), source_actions(tx.ironwood_bundle()));
         }
 
-        /// Across Sapling (v4), NU5 and NU6.3 (v5 + v6): the submission facts are the source's
-        /// own: txid, expiry (`0` = none), the branch id only where the format embeds one; an
-        /// expiry past ZIP-203's ceiling refused; trailing or truncated bytes refused
+        /// Sapling (v4), NU5, NU6.3 (v5 + v6)
+        ///
+        /// - submission facts = the source's own: txid, expiry (`0` = none), branch id only where
+        ///   the format embeds one
+        /// - refused: expiry past ZIP-203's ceiling, trailing or truncated bytes
         #[test]
         fn a_prepared_transaction_carries_its_own_txid_expiry_and_branch(
             tx in proptest::prop_oneof![

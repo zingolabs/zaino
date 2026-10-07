@@ -1,6 +1,5 @@
-//! Nullifier — marks a shielded note as spent.
+//! Nullifier: marks a shielded note spent (Sapling, Orchard, Ironwood)
 
-/// A nullifier (32 bytes). Used by both Sapling and Orchard pools.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Nullifier([u8; 32]);
 

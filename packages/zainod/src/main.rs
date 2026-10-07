@@ -1,4 +1,4 @@
-//! Zaino Indexer daemon.
+//! Zaino indexer daemon
 
 use clap::Parser;
 

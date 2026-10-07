@@ -1,7 +1,7 @@
 //! Reading across one map's committed segments
 //!
 //! - [`Snapshot`] = one committed list, mapped; immutable (a commit builds the next one)
-//! - a merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
+//! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 
 use std::{ops::Range, path::Path, sync::Arc};
 
@@ -24,7 +24,7 @@ use crate::{
 /// rows: 2-16 keys 5-10× slower on rayon (wake-up), crossover ≈ 64, 256 keys 3× faster)
 const PARALLEL_FROM: usize = 64;
 
-/// One map's committed segments, mapped for reads
+/// Map's committed segments, mapped for reads
 pub(crate) struct Snapshot {
     shape: Shape,
     segments: Vec<Arc<SegmentFile>>,
@@ -172,16 +172,14 @@ impl Snapshot {
         values
     }
 
-    /// Readahead for a batch of point lookups (`sorted` = ascending keys), in the order a seek
-    /// reads its pages; advisory, so it never changes an answer
+    /// Readahead for a batch of point lookups (`sorted` = ascending keys), in a seek's page order
+    /// (advisory: never changes an answer)
     ///
-    /// A cold seek faults twice in a row in each segment it searches: its fence group, then its
-    /// block of records. A faulting thread waits on each read, so across a batch the device only
-    /// ever sees one read per probing thread. `MADV_WILLNEED` queues reads without waiting, so the
-    /// device sees the whole batch at once: first every candidate's fence group, then (with those
-    /// reads in flight) every candidate's block of records.
-    ///
-    /// - candidate = a segment whose filter admits the key (≈ only the segment holding it)
+    /// - cold seek = two serial faults per segment (fence group, then record block): device sees
+    ///   one read per probing thread
+    /// - `MADV_WILLNEED` queues without waiting: every candidate's fence group, then (those in
+    ///   flight) every candidate's record block → device sees the whole batch at once
+    /// - candidate = segment whose filter admits the key (≈ only the segment holding it)
     /// - sorted keys give ascending ranges per segment, merged where they share a page
     fn prefetch(&self, sorted: &[(&[u8], usize)]) {
         for step in [Prefetch::Fences, Prefetch::Records] {
@@ -191,10 +189,10 @@ impl Snapshot {
         }
     }
 
-    /// One round of [`prefetch`](Self::prefetch): the byte ranges `step` reads for `sorted`, as
+    /// Round of [`prefetch`](Self::prefetch): byte ranges `step` reads for `sorted`, as
     /// `(segment's list index, range)`, candidates only, coalesced per segment
     ///
-    /// - a [`Prefetch::Records`] round reads fences: plan it after the fences round's advice
+    /// - [`Prefetch::Records`] round reads fences: plan it after the fences round's advice
     pub(super) fn prefetch_plan(
         &self,
         step: Prefetch,
@@ -211,8 +209,8 @@ impl Snapshot {
         plan
     }
 
-    /// Newest segment first: list ≈ data age (batches append, a merge takes its oldest input's
-    /// slot) and lookups skew recent; order never changes an answer (keys unique across segments)
+    /// Newest segment first: list ≈ data age (batches append, merge takes its oldest input's slot)
+    /// + lookups skew recent; order never changes an answer (keys unique across segments)
     fn find(&self, key: &[u8]) -> Option<Bytes> {
         assert_eq!(key.len(), self.shape.key_len, "a point lookup names a whole key");
         self.segments.iter().rev().find_map(|file| {
@@ -234,8 +232,8 @@ impl Snapshot {
 mod tests {
     use super::*;
 
-    /// Pages 0, 1 and 2 touched → one run; page 4 after the untouched page 3 → a run of its own;
-    /// empty ranges vanish
+    /// - pages 0, 1, 2 touched → one run; page 4 after untouched page 3 → its own run
+    /// - empty ranges vanish
     #[test]
     fn coalesced_widens_to_pages_and_merges_contiguous_runs() {
         let ranges = [0..10, 5..20, 20..20, 30..100, 4096..4100, 9000..9001, 17000..17001];

@@ -1,7 +1,7 @@
 //! Non-final data over a committed view (`docs/design/nfs.md` §4)
 //!
 //! - [`Layer`] = `Changes` above some durable tip, per table the items they add (`imbl`)
-//! - [`LayeredView`] = a layer over the committed view it sits on: layer first, then durable
+//! - [`LayeredView`] = layer over the committed view it sits on: layer first, then durable
 
 use std::{
     fmt,
@@ -15,7 +15,7 @@ use zaino_primitives::types::BlockRef;
 
 use crate::port::{Changes, MapId, MapRead, Schema, SequenceId, SequenceRead, View};
 
-/// One index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
+/// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
 ///
 /// - `deltas` = each `Changes` absorbed, oldest first ([`rebase`](Self::rebase) drops by them)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,7 +25,7 @@ pub struct Layer {
     maps: Vec<OrdMap<Bytes, Bytes>>,
 }
 
-/// One `Changes`' share: `(sequence, records)` per sequence it grew (sparse), keys per map
+/// `Changes`' share: `(sequence, records)` per sequence it grew (sparse), keys per map
 #[derive(Debug, PartialEq, Eq)]
 struct Delta {
     tip: BlockRef,
@@ -49,7 +49,7 @@ impl Layer {
 
     /// This layer + `changes`, sharing structure with `self`
     ///
-    /// - panics: a tip not above this one, another schema's tables, a map key held twice
+    /// - panics: tip not above this one, another schema's tables, map key held twice
     pub fn with(&self, changes: &Changes) -> Self {
         let mut next = self.clone();
         next.push(changes);
@@ -82,7 +82,7 @@ impl Layer {
         next
     }
 
-    /// [`with`](Self::with) in place (a store's buffer: unshared, so no node copied)
+    /// [`with`](Self::with) in place (store's buffer: unshared → no node copied)
     pub(crate) fn push(&mut self, changes: &Changes) {
         let (tip, last) = (changes.tip(), self.tip());
         let above = last.is_none_or(|last| tip.height > last.height);
@@ -117,7 +117,7 @@ impl Layer {
         self.deltas.push_back(Arc::new(Delta { tip, appends, keys }));
     }
 
-    /// Panics on a key `changes` inserts twice or this layer holds (before any state moves)
+    /// Panics: key `changes` inserts twice or this layer holds (before any state moves)
     fn assert_new_keys(&self, changes: &Changes) {
         let schema = changes.schema();
         for (table, held) in schema.map_ids().zip(&self.maps) {
@@ -167,7 +167,7 @@ fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> 
     records
 }
 
-/// A layer over the committed view it sits on: one state, never changes while held
+/// Layer over the committed view it sits on: one state, fixed while held
 #[derive(Clone)]
 pub struct LayeredView<V> {
     durable: V,
@@ -175,7 +175,7 @@ pub struct LayeredView<V> {
 }
 
 impl<V: View> LayeredView<V> {
-    /// Panics on a layer not above `durable`'s tip (rebase it first)
+    /// Panics: layer not above `durable`'s tip (rebase it first)
     pub fn new(durable: V, layer: Layer) -> Self {
         let first = layer.deltas.front().map(|delta| delta.tip.height);
         let floor = durable.tip().map(|tip| tip.height);

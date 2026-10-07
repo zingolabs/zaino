@@ -1,6 +1,6 @@
 //! Batches → segments, segments → merged segments
 //!
-//! - neither commits: a returned [`SegmentMeta`] reaches readers once the owner's manifest lists it
+//! - neither commits: returned [`SegmentMeta`] reaches readers once the owner's manifest lists it
 
 use std::{
     cmp::Reverse,
@@ -33,7 +33,7 @@ const CHUNK: usize = 1 << 20;
 /// `constants.verify`): tests and index test suites only
 const VERIFY: bool = cfg!(any(test, feature = "testing"));
 
-/// A merge input's next record: `(key, source, slot)`, min-first
+/// Merge input's next record: `(key, source, slot)`, min-first
 type Head<'a> = Reverse<(&'a [u8], usize, usize)>;
 
 /// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
@@ -44,7 +44,7 @@ pub(crate) struct SegmentWriter {
     shape: Shape,
 }
 
-/// One segment being written: records streamed out in key order, its navigation built alongside
+/// Segment mid-write: records streamed out in key order, its navigation built alongside
 ///
 /// - `digest` = CRC-32 over every row pushed ([`SegmentWriter::verify`] recomputes it from disk)
 struct SegmentOut {
@@ -69,7 +69,7 @@ impl SegmentOut {
         Ok(())
     }
 
-    /// Records, then navigation, sealed (fsynced): the meta a manifest would list + the rows' digest
+    /// Records, then navigation, sealed (fsynced) → meta a manifest would list + rows' digest
     fn finish(mut self) -> Result<(SegmentMeta, u32)> {
         self.file.append(&self.chunk)?;
         let id = self.id;
@@ -95,9 +95,9 @@ impl SegmentWriter {
 
     /// Sorts `rows` (`(key, value)`) and writes them as segment `id`, sealed; `None` for none
     ///
-    /// - uncommitted until listed in a manifest, and unlinked until [`sync_dir`](Self::sync_dir)
-    /// - duplicate keys panic (a batch projects distinct rows by construction)
-    /// - unique keys → an unstable sort is exact; parallel on the CPU pool
+    /// - uncommitted until listed in a manifest, unlinked until [`sync_dir`](Self::sync_dir)
+    /// - duplicate keys panic (batch projects distinct rows by construction)
+    /// - unique keys → unstable sort exact; parallel on the CPU pool
     pub(crate) fn write(
         &self,
         id: u32,
@@ -122,11 +122,11 @@ impl SegmentWriter {
     /// K-way merge of `inputs` into segment `id`, sealed (record count = inputs' sum); `None` once
     /// `cancel` is set (partial file unlisted → removed at open)
     ///
-    /// - inputs read through their page checksums (a corrupt input dies, never propagates)
-    /// - caller then commits a manifest listing it in their place, then [`remove`](Self::remove)s
-    ///   the inputs
-    /// - streams: memory = a few 1 MiB buffers, the summary and the filter's shard table, whatever
-    ///   the segments' size (fences and fingerprints spill to scratch files, `spill.rs`)
+    /// - inputs read through their page checksums (corrupt input dies, never propagates)
+    /// - caller then commits a manifest listing it in their place, then
+    ///   [`remove`](Self::remove)s the inputs
+    /// - streams: memory = a few 1 MiB buffers + summary + filter's shard table, whatever the
+    ///   segments' size (fences + fingerprints spill to scratch files, `spill.rs`)
     pub(crate) fn merge(
         &self,
         id: u32,
@@ -191,14 +191,14 @@ impl SegmentWriter {
         Ok(())
     }
 
-    /// Makes segments written since the last call durably linked
+    /// Segments written since the last call → durably linked
     pub(crate) fn sync_dir(&self) -> Result<()> {
         Ok(self.fs.sync_dir(&self.dir)?)
     }
 
     /// Unlinks segments (and their checksums) no committed manifest lists any more
     ///
-    /// - no dir sync: an unlink lost to a crash leaves an unlisted segment, removed at open
+    /// - no dir sync: unlink lost to a crash = unlisted segment, removed at open
     pub(crate) fn remove(&self, segments: &[SegmentMeta]) -> Result<()> {
         for segment in segments {
             let path = self.dir.join(file_name(segment.id));

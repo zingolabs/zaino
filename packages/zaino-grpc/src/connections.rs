@@ -1,4 +1,4 @@
-//! Accept-time caps. Over a cap → the socket is closed, never queued.
+//! Accept-time caps (over a cap → socket closed, never queued)
 //!
 //! - Total = at accept, before a task exists
 //! - Per client = once [`client`](crate::client) names it (behind a trusted proxy, only its PROXY
@@ -12,7 +12,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{emit, GrpcLimits};
 
-/// The two connection caps.
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionCaps {
     total: Arc<Semaphore>,
@@ -40,7 +39,7 @@ impl ConnectionCaps {
         (cap.saturating_sub(self.total.available_permits()), cap)
     }
 
-    /// `None` = at `max_connections`, and the caller drops the socket.
+    /// `None` = at `max_connections` (caller drops the socket)
     pub(crate) fn reserve(&self) -> Option<Reserved> {
         match Arc::clone(&self.total).try_acquire_owned() {
             Ok(permit) => Some(Reserved { _slot: permit }),
@@ -51,7 +50,7 @@ impl ConnectionCaps {
         }
     }
 
-    /// `None` = `client` at `max_connections_per_ip` (its reservation returns on drop).
+    /// `None` = `client` at `max_connections_per_ip` (its reservation returns on drop)
     pub(crate) fn admit(&self, reserved: Reserved, client: IpAddr) -> Option<ConnectionGuard> {
         {
             let mut per_client = self.per_client.lock().expect("per-client table poisoned");
@@ -68,7 +67,7 @@ impl ConnectionCaps {
     }
 }
 
-/// Holds one connection's slot in both caps for as long as it is served.
+/// One connection's slot in both caps, held while served
 #[derive(Debug)]
 pub(crate) struct ConnectionGuard {
     _total: Reserved,
@@ -79,7 +78,7 @@ pub(crate) struct ConnectionGuard {
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
         if let Ok(mut per_client) = self.per_client.lock() {
-            // Entry removed at zero (an unbounded IP table is the cap's own leak).
+            // Entry removed at zero (else an unbounded IP table = the cap's own leak)
             if let std::collections::hash_map::Entry::Occupied(mut held) =
                 per_client.entry(self.client)
             {

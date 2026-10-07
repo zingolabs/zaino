@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 
 use super::SegmentMeta;
 
-/// A merge the log swaps in: `tier` → `output`, `took` = its thread's wall time
+/// Merge the log swaps in: `tier` → `output`, `took` = its thread's wall time
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Landed {
     pub(super) tier: u32,

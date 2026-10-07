@@ -1,8 +1,8 @@
 //! File layer every index writes through: [`RealFs`] in production, `SimFs` under crash tests
 //!
 //! - positional I/O only (a partial write can never move where the next one lands)
-//! - a new file, rename or removal is durable only after [`Fs::sync_dir`] on its parent
-//! - maps are read-only; callers bound reads by committed lengths (see `docs/design/durability.md`)
+//! - new file / rename / removal durable only after [`Fs::sync_dir`] on its parent
+//! - maps read-only; callers bound reads by committed lengths (`docs/design/durability.md`)
 
 use std::{fmt, io, ops::Range, path::Path, sync::Arc};
 
@@ -43,7 +43,7 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
     fn lock(&self, path: &Path) -> io::Result<LockGuard>;
 }
 
-/// One open file
+/// Open file
 pub trait FileHandle: Send + Sync + fmt::Debug {
     fn len(&self) -> io::Result<u64>;
 
@@ -60,7 +60,7 @@ pub trait FileHandle: Send + Sync + fmt::Debug {
     /// Content and length durable on return
     fn sync_data(&self) -> io::Result<()>;
 
-    /// Starts writeback of `range`, no wait, no durability (bounds dirty pages ahead of
+    /// Writeback of `range` started: no wait, no durability (bounds dirty pages ahead of
     /// `sync_data`; RocksDB `bytes_per_sync`)
     fn write_behind(&self, range: Range<u64>) -> io::Result<()>;
 

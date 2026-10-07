@@ -129,6 +129,12 @@ report.is_clean();
   `.crc` ride the manifest, which binds every page to the commit.
 - **Write-ahead reserve:** sequence files grow into a zeroed, fsynced reserve,
   so a seal changes no metadata and never waits on the filesystem journal.
+  An append past EOF changes the inode's size (and allocates blocks at writeback),
+  so on ext4/XFS its sync commits the journal, which first waits on every other
+  file's dirty data. `fallocate` cannot help: its unwritten extents make the
+  first write a metadata change again. Each growth step is the file's size again
+  (64 KiB to 64 MiB), so zeros written ≈ the data once over; open truncates the
+  file to its seal and the next append rebuilds the reserve.
   Writeback starts every 1 MiB appended (`sync_file_range`), so seal-time fsyncs
   find little dirty data.
 
@@ -198,7 +204,7 @@ let child = child.rebase(&store.view());     // after a commit: what durable hol
   run, or 1 s idle); a bulk fold reads its parent through `staged()`.
 - Non-final blocks never reach a store: `zaino-nfs` holds one `Layer` per index
   per block and serves `LayeredView::new(view(), layer)` from its snapshots
-  ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-tiering)).
+  ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-layers-and-writers)).
 
 ## Conformance suite (feature `testing`)
 

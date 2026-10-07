@@ -75,6 +75,16 @@ tokio::spawn(bound.run(cancel.child_token()));
   whichever is first. Connections still open then are dropped with the runtime.
   The default `drain_timeout` is zero: return at once.
 
+### Why `GetTransaction` forwards
+
+Raw transaction bytes are consensus data the validator already stores. Indexing
+them would be a second copy of the chain, about ten times the compact store
+(compact blocks drop proofs, signatures and 528 of each 580-byte ciphertext), to
+serve a read that happens only for transactions a wallet already trial-decrypted.
+`GetAddressUtxos` and the other address methods are the opposite case: they are
+*derived*, so forwarding them would mean a second implementation that can
+disagree, or a dependency on a validator index Zebra need not have.
+
 ## Serve stack
 
 hyper-util's HTTP/2 server around the path dispatch, not

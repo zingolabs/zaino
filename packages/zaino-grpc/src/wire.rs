@@ -41,8 +41,8 @@ pub(crate) mod path {
     pub(crate) const GET_TADDRESS_BALANCE_STREAM: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressBalanceStream";
 
-    /// Needs both halves of the boundary: the index names the transactions, the validator holds
-    /// the bytes. See `docs/design/boundaries.md`.
+    /// Both halves of the boundary: index names the txs, validator holds the bytes
+    /// (`docs/design/boundaries.md`)
     pub(crate) const GET_TADDRESS_TRANSACTIONS: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTransactions";
     /// TODO: REMOVE THIS — deprecated alias of `GET_TADDRESS_TRANSACTIONS` (pepper-sync still
@@ -50,8 +50,8 @@ pub(crate) mod path {
     pub(crate) const GET_TADDRESS_TXIDS: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxids";
 
-    /// Submitted through one random entry per attempt, watched until it spreads (`chainview.md`
-    /// §6); marked ours on acceptance, so a wallet sees its own send before any listing
+    /// One random entry per attempt, watched until it spreads (`chainview.md` §6); marked ours on
+    /// acceptance (a wallet sees its own send before any listing)
     pub(crate) const SEND_TRANSACTION: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction";
     pub(crate) const GET_MEMPOOL_TX: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetMempoolTx";
@@ -87,7 +87,7 @@ pub(super) fn locate<V: zaino_persistence::MapRead>(
     Ok((height.ok_or_else(missing)?, hash))
 }
 
-/// Client `poolTypes` → [`Pools`] (empty = shielded default; unknown or `POOL_TYPE_INVALID` refused)
+/// Client `poolTypes` → [`Pools`] (empty = shielded default; unknown / `POOL_TYPE_INVALID` refused)
 pub(super) fn pools(raw: &[i32]) -> Result<Pools, Status> {
     use zaino_proto::proto::service::PoolType;
 
@@ -137,28 +137,25 @@ pub(super) fn frame_all<M: prost::Message>(messages: &[M]) -> bytes::Bytes {
     bytes::Bytes::from(framed)
 }
 
-/// Request body caps (gRPC framing included); over one = `RESOURCE_EXHAUSTED`, as tonic's own
-/// decode limit answers
+/// Request body caps (gRPC framing included); over one = `RESOURCE_EXHAUSTED` (= tonic's own)
 ///
-/// - claimed paths collect their own bodies, so tonic's 4 MiB default never applies to them
+/// - claimed paths collect their own bodies (tonic's 4 MiB default never applies)
 pub(super) mod request_limit {
-    /// Every claimed request but a transaction: ids, ranges, and address lists (~1.5k
-    /// t-addresses; clients send tens)
+    /// Every claimed request but a transaction: ids, ranges, address lists (~1.5k t-addresses;
+    /// clients send tens)
     pub(crate) const MESSAGE: usize = 64 * 1024;
 
-    /// `SendTransaction`: a transaction fits in a block, plus framing and the height field
+    /// `SendTransaction`: a block's worth + framing + the height field
     pub(crate) const TRANSACTION: usize = zaino_primitives::protocol::MAX_BLOCK_BYTES + 1024;
 
-    /// A whole body arrives within this (a peer trickling one holds its stream permit)
+    /// Whole-body deadline (a trickling peer holds its stream permit)
     pub(super) const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 }
 
-/// A unary gRPC response whose body is one already-framed record.
+/// Unary response, body = one already-framed record
 ///
-/// `grpc-status` rides in the headers rather than the trailers. That is legal only because the
-/// body is complete when the headers are written, and it keeps the whole answer to a single
-/// write — which is the point of storing records in wire shape. A streaming body cannot do
-/// this; see [`streamed_response`].
+/// - `grpc-status` in headers (legal: body complete when headers written → one write, the point
+///   of wire-shaped records; streams can't, [`streamed_response`])
 pub(super) fn unary_response(record: bytes::Bytes) -> Response<Body> {
     let mut response = Response::new(Body::new(Full::new(record)));
 
@@ -170,10 +167,9 @@ pub(super) fn unary_response(record: bytes::Bytes) -> Response<Body> {
     response
 }
 
-/// Final `grpc-status` trailers, as tonic's own encoder emits them.
+/// Final `grpc-status` trailers, as tonic's encoder emits them
 ///
-/// A non-header-safe message is dropped rather than the whole trailer: `grpc-status` MUST be
-/// present or the client reports a truncated stream.
+/// - non-header-safe message dropped, never the trailer (no `grpc-status` = truncated stream)
 pub(super) fn trailers(status: &Status) -> HeaderMap {
     let mut map = HeaderMap::new();
 
@@ -185,10 +181,9 @@ pub(super) fn trailers(status: &Status) -> HeaderMap {
     map
 }
 
-/// A server-streaming response over an already-materialised run of framed records.
+/// Server-streaming response over materialised framed records
 ///
-/// `grpc-status` goes in the trailers, never the headers: a client reading one in the headers
-/// treats the response as complete before the body arrives.
+/// - `grpc-status` in trailers only (one in headers = complete before the body arrives)
 pub(super) fn streamed_response(records: Vec<bytes::Bytes>) -> Response<Body> {
     use futures::StreamExt as _;
     use http_body::Frame;
@@ -238,7 +233,7 @@ where
     }
 }
 
-/// Decodes a unary request message from a gRPC request body (≤ [`request_limit::MESSAGE`])
+/// Unary request message (body <= [`request_limit::MESSAGE`])
 pub(super) async fn decode_request<M, B>(body: B) -> Result<M, Status>
 where
     M: prost::Message + Default,
@@ -248,9 +243,7 @@ where
     decode_request_within(body, request_limit::MESSAGE).await
 }
 
-/// Decodes a unary request message from a gRPC request body of at most `limit` bytes.
-///
-/// The body is exactly one framed message.
+/// Unary request message (body <= `limit` bytes, exactly one frame)
 pub(super) async fn decode_request_within<M, B>(body: B, limit: usize) -> Result<M, Status>
 where
     M: prost::Message + Default,
@@ -267,11 +260,8 @@ where
     M::decode(message).map_err(|error| Status::invalid_argument(error.to_string()))
 }
 
-/// Decodes every framed message in a client-streaming request body.
-///
-/// Collected rather than streamed: the one claimed client-streaming method
-/// (`GetTaddressBalanceStream`) answers a single total, so nothing can be emitted before the
-/// last address arrives anyway.
+/// Every frame of a client-streaming body, collected (sole user `GetTaddressBalanceStream`
+/// answers one total: nothing to emit before the last address)
 pub(super) async fn decode_request_stream<M, B>(body: B) -> Result<Vec<M>, Status>
 where
     M: prost::Message + Default,

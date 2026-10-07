@@ -20,10 +20,9 @@ mod names {
     pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
 }
 
-/// Installs the global recorder and serves it from [`crate::admin`], whose own thread answers a scrape or probe however busy the workers are.
+/// Global recorder, served from [`crate::admin`] (own thread: answers however busy the workers)
 pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
-    // Bind first: a recorder installed before its listener exists would record
-    // samples that nothing drains, so a bind failure fails startup instead
+    // Bind first (recorder before listener = undrained samples; bind failure fails startup)
     let listener = crate::admin::bind(endpoint)?;
     let builder = zaino_grpc::METRIC_BUCKETS
         .iter()
@@ -52,7 +51,7 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
     Ok(())
 }
 
-/// Samples process CPU, memory, and file descriptors on each scrape, so the sample is as old as the answer.
+/// Process CPU, memory, fds sampled per scrape (sample age = answer age)
 pub(crate) fn collect_process_metrics() {
     static COLLECTOR: std::sync::OnceLock<metrics_process::Collector> = std::sync::OnceLock::new();
     COLLECTOR

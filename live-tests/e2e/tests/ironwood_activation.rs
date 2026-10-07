@@ -1,39 +1,9 @@
-//! Wallet-tier predicates across the Orchard→Ironwood activation boundary.
+//! Wallet-observable predicates across a mid-chain Orchard → Ironwood boundary (NU6.3 at 6)
 //!
-//! Every test here runs a librustzcash wallet on a mid-chain NU6.3 schedule —
-//! the hermetic replay of what The Public Testnet did once at height
-//! 4,134,000: heights 2 through 5 are Orchard era, [`NU6_3_TRANSITION_BOUNDARY`]
-//! (6) onward is Ironwood era. The schedule is pinned in exactly one place, the
-//! `TestEnv` builder's [`activation_heights`], and the validator, indexer, and
-//! wallet all adopt it (zainod over `getblockchaininfo`, the wallet over the
-//! validator's activation heights); height drift between them is
-//! unrepresentable.
-//!
-//! # The predicates, and where each era's cell is covered
-//!
-//! | predicate (wallet-observable)                | Orchard era | Ironwood era |
-//! |----------------------------------------------|-------------|--------------|
-//! | unified-address receipt lands in Orchard     | here        | false — `wallet_to_validator.rs` `send_to_unified` asserts the Orchard pool stays empty |
-//! | unified-address receipt lands in Ironwood    | false (pool inactive) | `wallet_to_validator.rs` `send_to_unified` |
-//! | shielded-receiver coinbase pays the era pool | here (wallet view); wire tier in `compact_block_wire.rs` | `wallet_to_validator.rs` `receives_mining_reward`; wire tier in `compact_block_wire.rs` |
-//! | an Orchard note spends into an Ironwood receipt (ZIP 318 migration) | n/a (nothing to exit) | here |
-//! | `shield` deposits into the era pool             | here        | `wallet_to_validator.rs` `shield_for_validator` |
-//! | receipt pool flips between the last Orchard block and the activation block | here (boundary − 1) | here (exactly at the boundary) |
-//! | Orchard pool value grows only below the boundary; Ironwood holds value only from it | here (per-height value pools) | here |
-//!
-//! Era composition of the *served* chain (coinbase routing, compact-block
-//! action fields) is covered clientless in
-//! `clientless/tests/compact_block_consistency.rs` and over the real gRPC
-//! wire in `compact_block_wire.rs`; this file owns the cells that need a
-//! wallet on both sides of the boundary.
-//!
-//! The Public Testnet cannot host the migration cell for us: its pre-NU6.3
-//! epoch closed at height 4,134,000, no new value may enter Orchard from
-//! there (post-activation Orchard actions permit only same-receiver change
-//! or withdrawal — the cross-address restriction,
-//! <https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction>),
-//! and we hold no pre-activation Orchard TAZ — so this hermetic fixture is
-//! the only controlled venue for it.
+//! - Schedule pinned once (`TestEnv` activation heights); validator, zainod, wallet adopt it
+//! - Ironwood-era cells: `wallet_to_validator.rs`; served-chain era composition:
+//!   `compact_block_consistency.rs` + `compact_block_wire.rs`
+//! - Hermetic only (public testnet: no pre-activation Orchard TAZ, cross-address restriction)
 
 use std::time::Duration;
 
@@ -42,24 +12,18 @@ use ztest::prelude::*;
 
 use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
-/// Indexer sync / pod-ready timeout.
 const READY: Duration = Duration::from_secs(120);
-/// Standard transfer amount (zatoshis).
 const SEND_AMOUNT: u64 = 250_000;
-/// zingolib's ZIP-317 fee for a single-note shield round under regtest.
+/// zingolib's ZIP-317 fee, one-note shield round
 const SHIELD_FEE: u64 = 15_000;
-/// The mid-chain NU6.3 (Ironwood) activation height: heights 2 inclusive to 6
-/// exclusive are Orchard era, height 6 onward is Ironwood era.
+/// NU6.3 activation: `2..6` Orchard era, `6..` Ironwood era
 const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
 
 mod zebrad {
     use super::*;
 
-    /// Orchard-era receipt: with the tip still below the boundary, the
-    /// faucet's coinbase note is an Orchard note (not Ironwood), and a
-    /// unified-address send received before the boundary lands in the
-    /// recipient's Orchard pool with the Ironwood pool exactly empty — the
-    /// era-mirror of `wallet_to_validator.rs::send_to_unified`.
+    /// Below the boundary: coinbase note = Orchard, unified receipt = Orchard, Ironwood empty
+    /// (era-mirror of `wallet_to_validator.rs::send_to_unified`)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn unified_receipt_lands_in_orchard_before_boundary() -> Result<()> {
@@ -83,8 +47,7 @@ mod zebrad {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // Funding warms up to NU5 then mines one Orchard-era block (tip 2),
-        // well below the boundary, so the faucet holds an Orchard note.
+        // Funded at tip 2 (Orchard era)
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let faucet_balance = faucet.balances().await?;
         let notes = (faucet_balance.orchard > 0, faucet_balance.ironwood);
@@ -102,15 +65,10 @@ mod zebrad {
         Ok(())
     }
 
-    /// The ZIP 318 migration shape: an Orchard note minted before the
-    /// boundary is spent after it, to a unified address, and the receipt
-    /// lands in the Ironwood pool with the recipient's Orchard pool exactly
-    /// empty. The faucet's Orchard balance must shrink: from the boundary
-    /// the cross-address restriction limits each Orchard action to
-    /// same-receiver change or withdrawal, so a genuine Orchard spend nets
-    /// sent-amount-plus-fee out of the pool. The validator's per-height
-    /// `valuePools` totals witness the Orchard pool growing only below the
-    /// boundary and the Ironwood pool taking value only from it.
+    /// ZIP 318 migration: pre-boundary Orchard note spent past it → Ironwood receipt, Orchard empty
+    ///
+    /// - Faucet's Orchard balance shrinks (cross-address restriction: a real Orchard spend)
+    /// - Validator `valuePools`: Orchard grows only below the boundary, Ironwood only from it
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn orchard_note_spends_to_ironwood_across_boundary() -> Result<()> {
@@ -136,12 +94,10 @@ mod zebrad {
 
         let boundary = NU6_3_TRANSITION_BOUNDARY as usize;
         let migration_height = boundary + 1;
-        // Per-height validator value-pool totals, indexed by height; slots 0
-        // and 1 are pre-NU5 and never read.
+        // Validator value pools by height (0, 1 = pre-NU5, unread)
         let mut orchard = vec![0u64; migration_height + 1];
         let mut ironwood = vec![0u64; migration_height + 1];
-        // A missing pool or field is a failure, never a zero: the
-        // below-boundary ironwood assertions would pass vacuously.
+        // Missing pool = failure, never zero (else below-boundary ironwood checks pass vacuously)
         let pool_zats = |info: &serde_json::Value, pool_id: &str| -> Result<u64> {
             info.get("valuePools")
                 .and_then(serde_json::Value::as_array)
@@ -154,8 +110,6 @@ mod zebrad {
                 .with_context(|| format!("valuePools[{pool_id}].chainValueZat"))
         };
 
-        // Fund one Orchard note below the boundary (tip 2), then snapshot the
-        // funded tip's validator value pools.
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
         let vrpc = validator.json_rpc().await?;
         let info = vrpc.call_value("getblockchaininfo", serde_json::json!([])).await?;
@@ -165,9 +119,6 @@ mod zebrad {
         let pre_boundary = faucet.balances().await?;
         assert!(pre_boundary.orchard > 0, "pre-boundary coinbase = orchard: {pre_boundary:?}");
 
-        // Mine to the boundary one block at a time, recording each height's
-        // validator value pools. Each pre-boundary coinbase grows Orchard; the
-        // activation block's coinbase is the chain's first Ironwood value.
         for height in 3..=boundary {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -181,8 +132,7 @@ mod zebrad {
         let orchard_before_send = crossed.orchard;
         assert!(crossed.ironwood > 0, "boundary coinbase = ironwood: {crossed:?}");
 
-        // The migration send: built at the boundary tip, it spends an
-        // Orchard note into a unified-address (Ironwood) receipt.
+        // Migration send: Orchard note → unified-address (Ironwood) receipt
         let recipient = wallet.recipient(&validator, &indexer).await?;
         let ua = recipient.address(Pool::Orchard.ztest()).await?;
         faucet.send_from(&[Pool::Orchard.ztest()], &ua, SEND_AMOUNT).await?;
@@ -199,7 +149,6 @@ mod zebrad {
         let orchard_after_send = faucet.balances().await?.orchard;
         assert!(orchard_after_send < orchard_before_send, "migration send spends an orchard note");
 
-        // Per-height validator value-pool assertions, over the heights actually read.
         for (height, &value) in ironwood.iter().enumerate().take(boundary).skip(2) {
             assert_eq!(value, 0, "ironwood pool empty at {height} (below the boundary)");
         }
@@ -215,14 +164,8 @@ mod zebrad {
         Ok(())
     }
 
-    /// The receipt pool flips between adjacent blocks: a send confirmed in
-    /// the last Orchard-era block (boundary − 1) lands in Orchard, and a send
-    /// built one block below the boundary but confirmed in the activation
-    /// block itself lands in Ironwood. The second send is itself
-    /// migration-shaped: constructed while the tip is still Orchard-era, it
-    /// spends an Orchard note (the faucet's only spendable kind at that tip),
-    /// so the activation block carries the Orchard spend's data alongside the
-    /// Ironwood receipt.
+    /// - Confirmed at boundary − 1 → Orchard; built there, confirmed at the boundary → Ironwood
+    /// - Second send spends an Orchard note (activation block carries both pools' data)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
@@ -248,8 +191,7 @@ mod zebrad {
 
         let faucet = wallet.funded_faucet_with_notes(&validator, &indexer, 1).await?;
 
-        // Position the tip at boundary − 2, so the first send (built here)
-        // confirms in the last Orchard-era block (boundary − 1).
+        // Tip → boundary − 2 (first send confirms in the last Orchard block)
         let cur = u32::from(validator.chain_height().await?);
         let target = NU6_3_TRANSITION_BOUNDARY - 2;
         if cur < target {
@@ -270,8 +212,7 @@ mod zebrad {
         let receipt = (balance.orchard, balance.ironwood);
         assert_eq!(receipt, (SEND_AMOUNT, 0), "receipt at boundary - 1 = orchard: {balance:?}");
 
-        // The second send is built at boundary − 1 (still Orchard era,
-        // spending an Orchard note) but confirmed in the activation block.
+        // Built at boundary − 1 (spends an Orchard note), confirmed in the activation block
         faucet.sync().await?;
         let first_ironwood_txid =
             faucet.send(&ua, SEND_AMOUNT).await?.into_iter().next().expect("send returns a txid");
@@ -283,8 +224,6 @@ mod zebrad {
         let receipts = (balance.ironwood, balance.orchard);
         assert_eq!(receipts, (SEND_AMOUNT, SEND_AMOUNT), "pre-boundary receipt survives the flip");
 
-        // Served edge-block pool-presence: the last Orchard block and the
-        // activation block.
         let blocks = indexer.get_block_range(BlockHeight::from(1u32), tip).await?;
         let last_orchard_block = blocks
             .iter()
@@ -299,17 +238,13 @@ mod zebrad {
         assert_pool_present(last_orchard_block, &last_orchard_txid, Pool::Orchard);
         assert_pool_absent(last_orchard_block, &last_orchard_txid, Pool::Ironwood);
         assert_pool_present(activation_block, &first_ironwood_txid, Pool::Ironwood);
-        // The second send is migration-shaped: it spends an Orchard note, so
-        // its compact form carries the Orchard spend's data too.
+        // Migration-shaped: the Orchard spend's data rides along
         assert_pool_present(activation_block, &first_ironwood_txid, Pool::Orchard);
         Ok(())
     }
 
-    /// Below the boundary, `shield` deposits into the Orchard pool: the
-    /// faucet funds the recipient's transparent address, the recipient
-    /// shields, and the shielded balance (net of the ZIP-317 fee, mirroring
-    /// `wallet_to_validator.rs::shield_for_validator`) lands in Orchard with the Ironwood
-    /// pool exactly empty — the era-mirror of the Ironwood-era shield cell.
+    /// Below the boundary: `shield` → Orchard net of `SHIELD_FEE`, Ironwood empty
+    /// (era-mirror of `wallet_to_validator.rs::shield_for_validator`)
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn shield_deposits_to_orchard_before_boundary() -> Result<()> {
@@ -338,7 +273,7 @@ mod zebrad {
         let taddr = recipient.address(Pool::Transparent.ztest()).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
 
-        // Confirm the transparent receipt below the boundary (height 4).
+        // Transparent receipt confirmed at 4
         let cur = u32::from(validator.chain_height().await?);
         let target = NU6_3_TRANSITION_BOUNDARY - 2;
         let tip = validator.generate_blocks(target.saturating_sub(cur).max(1)).await?;
@@ -346,7 +281,6 @@ mod zebrad {
         recipient.sync().await?;
         assert_eq!(recipient.balances().await?.get(Pool::Transparent.ztest()), SEND_AMOUNT);
 
-        // The shield is built below the boundary, so it deposits to Orchard.
         recipient.shield().await?;
         let tip = validator.generate_blocks(1).await?; // height 5, still Orchard era
         indexer.wait_for_block_num(tip, READY).await?;

@@ -27,10 +27,10 @@ impl FailureMode {
     }
 }
 
-/// The validator did not answer the question
+/// No answer from the validator
 ///
-/// - `source()` = the concrete cause when there is an error value (boxed, never stringified)
-/// - `message` = the note when there is none (a coded refusal)
+/// - `source()` = concrete cause when one exists (boxed, never stringified)
+/// - `message` = the note otherwise (coded refusal)
 #[derive(Debug)]
 pub struct NonDomainError {
     pub mode: FailureMode,
@@ -67,9 +67,9 @@ impl std::error::Error for NonDomainError {
     }
 }
 
+/// `Domain` = the validator's answer; `NonDomain` = none
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError<E: fmt::Debug + fmt::Display> {
-    /// The validator's answer
     #[error("{0}")]
     Domain(E),
     #[error(transparent)]
@@ -91,8 +91,9 @@ mod tests {
     #[error("concrete transport cause")]
     struct Cause;
 
-    /// A wrapped cause stays reachable through `QueryError`; a coded refusal has no source and
-    /// displays its message; only no-answer classes asking again can change are transient
+    /// - Wrapped cause reachable through `QueryError`
+    /// - Coded refusal: no source, displays its message
+    /// - Transient = only the classes a re-ask can change
     #[test]
     fn causes_survive_wrapping_and_only_transient_modes_retry() {
         let wrapped: QueryError<String> =

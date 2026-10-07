@@ -1,4 +1,4 @@
-//! Tracing subscriber + panic-at-origin hook, configured from the environment.
+//! Tracing subscriber + panic-at-origin hook, configured from the environment
 //!
 //! - `RUST_LOG` (unset → zaino crates at `info`), `ZAINOLOG_FORMAT` = terminal / json
 //! - `ZAINOLOG_COLOR` = bool / auto (default auto), `ZAINOLOG_LOCATION` = bool (default off)
@@ -89,11 +89,11 @@ impl LogConfig {
     }
 }
 
-/// Install the global subscriber and the panic hook.
+/// Global subscriber + panic hook
 ///
 /// # Panics
 ///
-/// Panics if a global tracing subscriber has already been set.
+/// A global tracing subscriber already set
 pub fn init() -> Result<(), LogConfigError> {
     install(LogConfig::from_env()?, true)?;
     install_panic_logger();

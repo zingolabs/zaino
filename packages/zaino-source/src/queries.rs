@@ -13,10 +13,10 @@ use zaino_primitives::types::{
 
 use crate::{NonDomainError, QueryError};
 
-/// One trusted validator's RPC interface, as every Zaino consumer asks it
+/// One trusted validator's RPC, as every Zaino consumer asks it
 ///
-/// - production = `ZebraRpcAdapter` (all of it); a test fake answers what its test asks and
-///   `unimplemented!()`s the rest
+/// - production = `ZebraRpcAdapter`; a test fake answers what its test asks (`unimplemented!()`
+///   the rest)
 pub trait ChainDataSource: Send + Sync + 'static {
     /// `getblock <hash> 0`, decoded from consensus bytes
     fn get_block_by_hash(
@@ -58,7 +58,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
 
     /// `sendrawtransaction`: the one write
     ///
-    /// - not idempotent: an error does not prove an earlier attempt was not accepted
+    /// - not idempotent (an error ≠ proof an earlier attempt went unaccepted)
     fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -106,17 +106,17 @@ pub struct MetadataReading {
     pub release: Result<NodeRelease, NonDomainError>,
 }
 
+/// - `Unavailable` = no mempool on the node (`-32601`): stop asking
+/// - `Inactive` = off until the node reaches the network tip (its own tip still valid)
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetMempoolListingError {
-    /// Node exposes no mempool (`-32601`): about the node, so stop asking
     #[error("mempool unavailable")]
     Unavailable,
-    /// Mempool off until the node reaches the network tip (its own tip still valid)
     #[error("mempool inactive: validator catching up to the network tip")]
     Inactive,
 }
 
-/// One mempool entry: its fee = what the validator computed admitting it (its UTXO set, not ours)
+/// `fee` = what the validator computed admitting it (its UTXO set, not ours)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolListed {
     pub txid: TransactionId,
@@ -124,9 +124,9 @@ pub struct MempoolListed {
     pub encoded_len: u32,
 }
 
+/// `NotFound` = mined or evicted between listing and fetch (normal race: skip it)
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetRawMempoolTransactionError {
-    /// Mined or evicted between listing and fetch (normal race: skip it)
     #[error("transaction {0} not in mempool")]
     NotFound(TransactionId),
 }

@@ -1,8 +1,7 @@
-//! Binds the daemon's validator set to [`zaino_chainview`].
+//! Daemon's validator set → [`zaino_chainview`]
 //!
-//! Trust = `[[trusted_validators]]`, in configured order (`docs/design/chainview.md` §1:
-//! configured, never discovered); the tip = their headers, verified from genesis into the header
-//! chain's store.
+//! - Trust = `[[trusted_validators]]`, configured order (`chainview.md` §1: never discovered)
+//! - Tip = their headers, verified from genesis into the header chain's store
 
 use std::sync::Arc;
 
@@ -19,21 +18,21 @@ use zcash_protocol::consensus::NetworkType;
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
 
-/// The view's endpoints, paired with the pollers that drive them.
+/// View + the tasks driving it (spawn every one)
+///
+/// - `pollers`: each with its push streams when `indexer_address` names them
+/// - `sources`: configured order, one connection pool each (shared with fetch + serving)
+/// - `peers`: `[p2p]` on = network start + the view's announcement fold
 pub(crate) struct Wiring {
     pub(crate) view: Arc<ChainView<ZebraRpcAdapter>>,
-    /// Each with its validator's push streams, if `indexer_address` names them
     pub(crate) pollers: Vec<(EndpointPoller<ZebraRpcAdapter>, Option<IndexerWatch>)>,
-    /// Feeds the view its verified tip (run it beside the pollers)
     pub(crate) header_sync: HeaderSync<ZebraRpcAdapter>,
-    /// Configured order (one connection pool per validator, shared with fetch and serving)
     pub(crate) sources: Vec<Arc<ZebraRpcAdapter>>,
-    /// `[p2p]` on: the network's start + the view's announcement fold (spawn both)
     pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
 }
 
-/// One unprobed adapter per trusted validator, and the view over them (a validator down at boot
-/// is its poller's retry, never a boot failure)
+/// One unprobed adapter per trusted validator + the view over them (down at boot = its poller's
+/// retry, never a boot failure)
 pub(crate) fn connect(config: &DaemonConfig, fs: Arc<dyn Fs>) -> Result<Wiring, IndexerError> {
     let endpoints = config
         .trusted_validators

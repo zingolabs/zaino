@@ -161,7 +161,7 @@ mod tests {
             .collect()
     }
 
-    /// The writer as zainod runs it: the NFS's final stream, value-balance's fee stream (fees
+    /// Writer as zainod runs it: the NFS's final stream, value-balance's fee stream (fees
     /// per unfolded step, [`fees_of`]), its committed view
     struct Running {
         blocks: IndexerDataSink<Final>,
@@ -250,13 +250,13 @@ mod tests {
         assert_eq!(record(&view, 3), ((6, 4, 6), fees(3)), "folded onto 2's record");
     }
 
+    /// - `Send(n)`: next `n` blocks, unfolded until `Fold`, folded after it
+    /// - `Fold`: bulk → tip handoff; `Reopen`: shutdown, reopen, resend from one below the tip
+    ///   (held: fees popped, skipped)
     #[derive(Debug, Clone)]
     enum Move {
-        /// Next blocks: unfolded until `Fold`, folded after it
         Send(usize),
-        /// Bulk → tip handoff: every later block folded
         Fold,
-        /// Shutdown, reopen, resend from one below the committed tip (held: fees popped, skipped)
         Reopen,
     }
 

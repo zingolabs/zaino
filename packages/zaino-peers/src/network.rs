@@ -2,7 +2,7 @@
 //!
 //! ```text
 //!   requests ──▶ peer set (zebra's p2c over ready peers) ──▶ FindHeaders · BlocksByHash
-//!                                                            MempoolTransactionIds · TransactionsById
+//!                                                  MempoolTransactionIds · TransactionsById
 //!   peers ──▶ inbound service ──▶ AdvertiseTransactionIds(ids, peer) ──▶ announcements (broadcast)
 //!                                  everything else ──▶ Nil (Zaino serves no peer)
 //!   push_isolated(addr) ──▶ fresh connection, no node state ──▶ PushTransaction ──▶ closed
@@ -40,16 +40,16 @@ const LIED: u32 = 50;
 /// Announcements buffered per subscriber before the slowest one lags (and learns it did)
 const ANNOUNCED_BUFFER: usize = 4_096;
 
+/// - `listen_addr` = zebra's listener (Zaino serves no peer: keep it on loopback)
+/// - `initial_peers` `None` = the network's DNS seeders (regtest: loopback addresses only)
+/// - `cache_dir` = zebra's peer address cache (`None` = every start re-seeds)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerConfig {
     pub network: NetworkType,
-    /// zebra's listener (Zaino serves no peer: keep it on loopback)
     pub listen_addr: SocketAddr,
-    /// `None` = the network's DNS seeders; regtest takes loopback addresses only
     pub initial_peers: Option<Vec<String>>,
     pub peer_target: NonZeroUsize,
     pub request_timeout: Duration,
-    /// zebra's peer address cache; `None` = no cache (every start re-seeds)
     pub cache_dir: Option<PathBuf>,
 }
 
@@ -109,10 +109,10 @@ pub struct PeerNetwork {
 }
 
 impl PeerNetwork {
-    /// Returns once the seeds are dialed and crawled once (zebra's `init`: seconds, up to its
-    /// crawl timeout for a seed that never answers `getaddr`); crawling continues in the background
+    /// Back once the seeds are dialed + crawled once (zebra's `init`: seconds, up to its crawl
+    /// timeout for a seed never answering `getaddr`); crawling continues in the background
     ///
-    /// - needs a multi-thread runtime (zebra's codec parses in `block_in_place`)
+    /// - multi-thread runtime required (zebra's codec parses in `block_in_place`)
     pub async fn start(config: PeerConfig) -> Self {
         let network = match config.network {
             NetworkType::Main => Network::Mainnet,
@@ -144,7 +144,7 @@ impl PeerNetwork {
         self.announced.subscribe()
     }
 
-    /// Outbound peers live in the last few minutes: the ones whose `inv` arrives
+    /// Outbound peers live in the last few minutes (the ones whose `inv` arrives)
     pub fn live(&self) -> Vec<SocketAddr> {
         self.live_where(|_| true)
     }
@@ -182,8 +182,9 @@ impl PeerNetwork {
         }
     }
 
-    /// Each asked block's bytes, in `hashes` order (`None` = the peer did not supply it); a block
-    /// that hashes to something not asked for is dropped and its sender scored
+    /// Each asked block's bytes, in `hashes` order (`None` = not supplied)
+    ///
+    /// - block hashing to something not asked for → dropped, sender scored
     pub async fn blocks_by_hash(
         &self,
         hashes: &[BlockHash],
@@ -214,11 +215,10 @@ impl PeerNetwork {
         }
     }
 
-    /// Each asked transaction's bytes, in `ids` order (`None` = the peer did not supply it); one
-    /// whose bytes hash to an id not asked for is dropped and its sender scored
+    /// Each asked transaction's bytes, in `ids` order (`None` = not supplied)
     ///
-    /// - an unsolicited transaction ends zebra's request: the ones after it in that reply are
-    ///   lost too (`None`, asked again later)
+    /// - bytes hashing to an id not asked for → dropped, sender scored
+    /// - unsolicited tx ends zebra's request: later ones in that reply lost too (`None`, re-asked)
     pub async fn transactions_by_id(
         &self,
         ids: &[PeerTxId],
@@ -241,8 +241,8 @@ impl PeerNetwork {
         Ok(ids.iter().map(|id| (*id, found.remove(id))).collect())
     }
 
-    /// §6's per-attempt push: a fresh connection to `addr` sharing no state with this peer set,
-    /// `PushTransaction`, closed; the txid = the bytes' own (a peer answers a push with nothing)
+    /// §6's per-attempt push: fresh connection to `addr` (no state shared with this peer set),
+    /// `PushTransaction`, closed; txid = the bytes' own (a peer answers a push with nothing)
     pub async fn push_isolated(
         &self,
         addr: SocketAddr,
@@ -268,10 +268,10 @@ impl PeerNetwork {
         }
     }
 
-    /// An inventory request; `None` = the peer supplied nothing asked for
+    /// Inventory request; `None` = nothing asked for supplied
     ///
-    /// - zebra ends such a request in `SharedPeerError` (`notfound`, or an unsolicited reply
-    ///   first: `peer/connection.rs`), not a `Missing` list; any other error = it failed
+    /// - zebra ends one in `SharedPeerError` (`notfound` or an unsolicited reply first:
+    ///   `peer/connection.rs`), not a `Missing` list; any other error = failed
     async fn inventory(&self, request: Request) -> Result<Option<Response>, PeerError> {
         match self.call(request).await {
             Ok(answer) => Ok(Some(answer)),

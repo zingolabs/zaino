@@ -72,19 +72,19 @@ impl<T> Clone for Step<T> {
     }
 }
 
-/// A step and the share of its queue's budget it holds until popped (`None` = `Shutdown`: budget
+/// Step + its share of the queue's budget, held until popped (`None` = `Shutdown`: budget
 /// bypassed, a full queue never holds back the stop)
 pub(crate) struct Queued<T> {
     step: Step<T>,
     _held: Option<OwnedSemaphorePermit>,
 }
 
-/// One delivered block of a [`Subscription::run`]
+/// One delivered block of a `Subscription` run
 pub type Applied<T> = (Height, Arc<T>);
 
 /// One consumer's end: its queue, in stream order
 ///
-/// - `ended_run` = the step that ended the last [`run`](Self::run): the next one out
+/// - `ended_run` = the step that ended the last `run`: the next one out
 pub struct Subscription<T> {
     rx: mpsc::UnboundedReceiver<Queued<T>>,
     queued: QueueBytes,
@@ -150,13 +150,12 @@ impl<T: Weight> Subscription<T> {
 }
 
 /// Budget = semaphore permits (1 per byte) over an unbounded channel: the byte-bounded queue
-/// tokio lacks
+/// tokio lacks; `capacity` = largest acquire (a step heavier than the budget waits for empty)
 struct Subscriber<T> {
     name: &'static str,
     tx: mpsc::UnboundedSender<Queued<T>>,
     queued: QueueBytes,
     budget: Arc<Semaphore>,
-    /// Largest acquire: a step heavier than the whole budget waits for an empty queue
     capacity: u32,
 }
 
@@ -283,8 +282,8 @@ mod tests {
         }
     }
 
-    /// A run = the first `Apply` + those already queued, cut at its budget or at `Shutdown`; the
-    /// step ending it is the next one out
+    /// Run = first `Apply` + those already queued, cut at its budget or `Shutdown`; the step
+    /// ending it = the next one out
     #[tokio::test]
     async fn a_run_gathers_queued_applies_to_its_budget_and_hands_back_the_step_ending_it() {
         let mut sink = IndexerDataSink::<Blob>::new("test");
@@ -310,7 +309,7 @@ mod tests {
         assert!(matches!(sub.next().await, Step::Shutdown), "and stays");
     }
 
-    /// A subscriber holds its queue through `Shutdown`: dropping it sooner is a bug upstream
+    /// Queue held through `Shutdown` (dropped sooner = bug upstream)
     #[tokio::test]
     #[should_panic(expected = "subscriber one dropped its queue before Shutdown")]
     async fn a_queue_dropped_before_shutdown_panics_the_sink() {
@@ -319,7 +318,7 @@ mod tests {
         sink.send(apply(0, 1)).await;
     }
 
-    /// A sink ends with `Shutdown`: one dropped without it (its publisher panicked) is no clean stop
+    /// Sink dropped without `Shutdown` (its publisher panicked) = no clean stop
     #[tokio::test]
     #[should_panic(expected = "sink dropped without Shutdown")]
     async fn a_sink_dropped_without_shutdown_panics_the_subscriber() {

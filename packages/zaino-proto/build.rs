@@ -24,10 +24,9 @@ fn protoc_available() -> bool {
     env::var_os("PROTOC").is_some() || which::which("protoc").is_ok()
 }
 
-/// Copy a generated file into the source tree and force non-executable
-/// permissions so the working tree doesn't drift on build. Skip the write
-/// when the destination is already byte-identical, so its mtime is
-/// preserved and cargo doesn't re-invalidate this crate on the next build.
+/// Generated file → source tree, mode 0644 (no working-tree drift)
+///
+/// - byte-identical = no write (mtime kept, crate not re-invalidated)
 fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
     let new = fs::read(src)?;
     if fs::read(dst).ok().as_deref() == Some(new.as_slice()) {
@@ -45,9 +44,7 @@ fn copy_generated(src: &Path, dst: &str) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    // Without these, cargo's default is "rerun if any file in the package
-    // changes" — including the generated src/proto/*.rs files this script
-    // writes, which produces a self-perpetuating recompile loop.
+    // Explicit list (cargo's default = any package file, incl. the src/proto/*.rs written here)
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
@@ -57,7 +54,6 @@ fn main() -> io::Result<()> {
     let version = vendored_protocol_version(&fs::read_to_string(PROTOCOL_CHANGELOG)?)?;
     println!("cargo:rustc-env=LIGHTWALLET_PROTOCOL_VERSION={version}");
 
-    // Check and compile proto files if needed
     if Path::new(COMPACT_FORMATS_PROTO).exists() && protoc_available() {
         build()?;
     }
@@ -69,14 +65,10 @@ fn build() -> io::Result<()> {
     let out: PathBuf =
         env::var_os("OUT_DIR").expect("Cannot find OUT_DIR environment variable").into();
 
-    // Build the compact format types.
     compile_protos(COMPACT_FORMATS_PROTO)?;
-
-    // Copy the generated types into the source tree so changes can be committed.
     copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/compact_formats.rs")?;
 
-    // Build the gRPC types and client, remapping every compact-format type
-    // the service references onto the module compiled above.
+    // Service's compact-format types → the module compiled above
     const COMPACT_FORMAT_TYPES: [&str; 6] = [
         "ChainMetadata",
         "CompactBlock",
@@ -90,11 +82,8 @@ fn build() -> io::Result<()> {
         .fold(
             configure()
                 .build_server(true)
-                // Generate `Bytes` (not `Vec<u8>`) for the raw-transaction
-                // payload, so serving the same transaction to many streaming
-                // clients is a refcount bump instead of a copy per client.
-                // Scoped to this one field: it is the only payload large enough,
-                // and fanned out widely enough, for the copy to matter.
+                // - `Bytes`: one tx to many streams = refcount bump, not a copy per client
+                // - this field only (the one payload large + fanned out enough to matter)
                 .bytes(".cash.z.wallet.sdk.rpc.RawTransaction.data"),
             |builder, name| {
                 builder.extern_path(
@@ -109,9 +98,7 @@ fn build() -> io::Result<()> {
     configure().build_server(true).compile_protos(&[ZEBRA_INDEXER_PROTO], &["proto/"])?;
     copy_generated(&out.join("zebra.indexer.rpc.rs"), "src/proto/zebra_indexer.rs")?;
 
-    // Copy the generated types into the source tree so changes can be committed. The
-    // file has the same name as for the compact format types because they have the
-    // same package, but we've set things up so this only contains the service types.
+    // Same package name as compact formats → same file name; holds the service types only
     copy_generated(&out.join("cash.z.wallet.sdk.rpc.rs"), "src/proto/service.rs")?;
 
     Ok(())

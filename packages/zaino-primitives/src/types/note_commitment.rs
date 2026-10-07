@@ -1,6 +1,6 @@
-//! Note commitment — binds a shielded note to the commitment tree.
+//! Note commitment: a shielded note's leaf in the commitment tree
 
-/// A note commitment (32 bytes). Sapling `cmu` or Orchard `cmx`.
+/// Sapling `cmu` / Orchard `cmx`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NoteCommitment([u8; 32]);
 

@@ -1,4 +1,4 @@
-//! One segment file: packed records, then what a reader navigates by
+//! Segment file: packed records, then what a reader navigates by
 //!
 //! ```text
 //! records   records × STRIDE, keys strictly ascending
@@ -7,9 +7,8 @@
 //! filter    binary fuse over each key's first `filtered` bytes (`filter.rs`)
 //! ```
 //!
-//! A reader keeps the summary in memory (about 1/100 of the fences), so finding a key's block
-//! touches one page of fences instead of binary-searching all of them on disk.
-//!
+//! - summary in reader memory (≈ 1/100 of the fences): key's block = one page of fences touched,
+//!   not a binary search over all of them on disk
 //! - row = key ‖ value, both fixed width
 //! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
 
@@ -42,7 +41,7 @@ pub(crate) struct Shape {
 }
 
 impl Shape {
-    /// Panics on a map the LSM cannot hold (a schema = a constant: a mismatch is a bug)
+    /// Panics: map the LSM cannot hold (schema = constant: mismatch = bug)
     pub(crate) fn of(table: &MapTable) -> Self {
         let name = &table.name;
         let Width::Fixed(key) = table.key else { panic!("LSM map {name}: keys must be Fixed") };
@@ -147,11 +146,10 @@ fn last_at_most<'a>(count: usize, entry: impl Fn(usize) -> &'a [u8], key: &[u8])
     low.saturating_sub(1)
 }
 
-/// A segment's navigation sections, built while its records stream out in key order
+/// Segment's navigation sections, built while its records stream out in key order
 ///
-/// - fences and filter fingerprints go through [`Spill`]s, so memory stays bounded whatever the
-///   segment's size; only the summary (1/100 of the fences) and the filter's shard table stay
-///   in memory
+/// - fences + filter fingerprints via [`Spill`]s (memory bounded whatever the segment's size)
+/// - in memory: only the summary (1/100 of the fences) + the filter's shard table
 pub(crate) struct Navigation {
     shape: Shape,
     records: u64,
@@ -162,8 +160,8 @@ pub(crate) struct Navigation {
 }
 
 impl Navigation {
-    /// `records` = the exact count that will be pushed (sizes the filter's shards); scratch
-    /// files, if any, go beside segment `id` in `dir`
+    /// - `records` = exact count to be pushed (sizes the filter's shards)
+    /// - scratch files, if any, beside segment `id` in `dir`
     pub(crate) fn new(shape: Shape, records: u64, fs: &Arc<dyn Fs>, dir: &Path, id: u32) -> Self {
         let spill = |part| Spill::new(Arc::clone(fs), scratch_path(dir, id, part));
         Self {
@@ -176,9 +174,9 @@ impl Navigation {
         }
     }
 
-    /// One encoded record, strictly after the one before (asserted: a sort or merge bug)
+    /// Encoded record, strictly after the one before (asserted: else a sort or merge bug)
     ///
-    /// - the filter takes each distinct filtered prefix once (keys sharing one arrive together)
+    /// - filter takes each distinct filtered prefix once (keys sharing one arrive together)
     pub(crate) fn push(&mut self, row: &[u8]) -> Result<(), FilterError> {
         assert_eq!(row.len(), self.shape.stride, "record encodes to its stride");
         let key = &row[..self.shape.key_len];

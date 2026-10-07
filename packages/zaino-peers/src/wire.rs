@@ -12,14 +12,14 @@ use zebra_chain::block::{self, Block, CountedHeader};
 use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::{self, AuthDigest, UnminedTx, UnminedTxId, WtxId};
 
-/// A transaction as peers name it: its txid, and (v5+) its auth digest (`MSG_WTX` inventory)
+/// Transaction as peers name it: txid + (v5+) auth digest (`MSG_WTX` inventory)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PeerTxId {
     pub txid: TransactionId,
     pub auth_digest: Option<[u8; 32]>,
 }
 
-/// Bytes that are not one transaction zebra would accept off the wire
+/// Bytes zebra would not accept off the wire as one transaction
 #[derive(Debug, thiserror::Error)]
 pub enum WireError {
     #[error("transaction bytes: {0}")]
@@ -91,9 +91,11 @@ mod tests {
 
     use super::*;
 
-    /// Real mainnet blocks (pre-v5 at 1, NU5 v5 at 1,687,107): block and header bytes come back
-    /// byte-identical; every transaction re-parsed from its own bytes keeps its id (a witnessed
-    /// v5 id included); trailing or truncated bytes refused
+    /// Mainnet blocks (pre-v5 at 1, NU5 v5 at 1,687,107)
+    ///
+    /// - block + header bytes byte-identical
+    /// - each tx re-parsed from its own bytes keeps its id (witnessed v5 id included)
+    /// - trailing or truncated bytes refused
     #[test]
     fn real_blocks_and_their_transactions_round_trip_byte_identical() {
         let mut witnessed = 0;

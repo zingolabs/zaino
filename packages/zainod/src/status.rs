@@ -61,17 +61,17 @@ pub(crate) fn publish(sources: Sources) {
 }
 
 /// Snapshot bootstrap progress, written by [`crate::snapshot`] before the indexer boots
+///
+/// - `source` = archive host; `done` = bytes of `total` handled by `phase`; `rate` = bytes/s
+///   (`downloading` only)
 #[cfg(feature = "snapshot")]
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Snapshot {
     pub(crate) phase: Phase,
-    /// Host the archive downloads from
     pub(crate) source: String,
     pub(crate) height: u32,
-    /// Bytes of `total` handled by `phase`
     pub(crate) done: u64,
     pub(crate) total: u64,
-    /// Bytes/s (`downloading` only)
     pub(crate) rate: Option<u64>,
 }
 
@@ -107,6 +107,7 @@ fn not_booted() -> (Vec<String>, Option<serde_json::Value>) {
     (vec!["starting".to_owned()], None)
 }
 
+/// `/statusz` body (field meanings: usage.md "The admin listener")
 #[derive(Debug, Serialize, PartialEq)]
 pub(crate) struct Status {
     version: &'static str,
@@ -114,16 +115,10 @@ pub(crate) struct Status {
     uptime_s: u64,
     ready: bool,
     reasons: Vec<String>,
-    /// The verified tip and how many trusted validators hold it (`None` = unserved)
     tip: Option<Tip>,
-    /// The header chain's most-work verified height (header sync progress; above `tip` while no
-    /// trusted validator holds it yet)
     best_height: Option<u32>,
-    /// Last block handed to the indexes (sync progress between their commits)
     fetch_height: Option<u32>,
-    /// The snapshot every request answers at (`GetLatestBlock`)
     served_height: Option<u32>,
-    /// Served at the verified tip (`zaino.index.synced`)
     synced: bool,
     validators: Vec<Validator>,
     alarms: Alarms,
@@ -145,7 +140,10 @@ struct Tip {
     configured: usize,
 }
 
-/// Configured validator (may hold the tip) + the p2p peers it reports (telemetry only, chainview §1)
+/// Configured validator (may hold the tip) + its reported p2p peers (telemetry only, chainview §1)
+///
+/// - `streaming` = push streams up (polling at reconcile cadence); `release` = `None` until the
+///   first metadata read answers
 #[derive(Debug, Serialize, PartialEq)]
 struct Validator {
     address: String,
@@ -156,9 +154,7 @@ struct Validator {
     latency_ms: Option<u64>,
     failures: u32,
     observed_s_ago: Option<u64>,
-    /// Push streams up (polling at the reconcile cadence)
     streaming: bool,
-    /// `None` until its first metadata read answers
     release: Option<Release>,
     peers: Vec<Peer>,
 }
@@ -186,12 +182,12 @@ struct Peer {
     inbound: bool,
 }
 
+/// `ending` = validators whose release halts within a week of their tip
 #[derive(Debug, Serialize, PartialEq)]
 struct Alarms {
     partitioned: bool,
     eclipsed: bool,
     stale: Vec<String>,
-    /// Validators whose release halts within a week of their tip
     ending: Vec<String>,
 }
 
@@ -417,8 +413,7 @@ mod tests {
         assert_eq!(reasons(true, true, None, true), ["draining"], "healthy but draining");
     }
 
-    /// The status page's contract: one `status` tag per end-of-service case, fields only where
-    /// they exist
+    /// Status page contract: one `status` tag per end-of-service case, fields only where they exist
     #[test]
     fn a_release_serializes_its_end_of_service_by_status() {
         let release = |end_of_service| {

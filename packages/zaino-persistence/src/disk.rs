@@ -1,4 +1,4 @@
-//! The engine Zaino runs: sequences as positional files, maps as LSM segment sets, one manifest
+//! Zaino's engine: sequences as positional files, maps as LSM segment sets, one manifest
 //!
 //! ```text
 //! <dir>/
@@ -7,9 +7,9 @@
 //!   <map>/<id>.seg      one sorted segment per batch or merge   `lsm`
 //! ```
 //!
-//! - apply = into the buffer (a [`Layer`], RAM); commit = the buffer appended + sealed per table,
-//!   then the manifest (the commit point), then readable
-//! - a failed commit poisons the store (`docs/design/durability.md` §6): recovery = reopen
+//! - apply → buffer ([`Layer`], RAM)
+//! - commit → buffer appended + sealed per table → manifest (commit point) → readable
+//! - failed commit poisons the store (`docs/design/durability.md` §6): recovery = reopen
 
 use std::{
     io,
@@ -58,7 +58,7 @@ impl DiskEngine {
     }
 }
 
-/// One index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s item bytes
+/// Index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s item bytes
 #[derive(Debug)]
 pub struct DiskStore {
     dir: IndexDir,
@@ -71,7 +71,7 @@ pub struct DiskStore {
     failed: bool,
 }
 
-/// One committed state of a [`DiskStore`] (a clone shares it)
+/// Committed state of a [`DiskStore`] (shared by clones)
 #[derive(Debug, Clone)]
 pub struct DiskView {
     state: Arc<State>,
@@ -84,7 +84,7 @@ struct State {
     maps: Vec<Arc<Snapshot>>,
 }
 
-/// The manifest body: what one commit made durable
+/// Manifest body: what one commit made durable
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Body {
     committed: Committed,
@@ -219,8 +219,8 @@ impl PersistenceEngine for DiskEngine {
 
 /// Every file the manifest `committed` reads names, scrubbed
 ///
-/// - a live writer's merge may retire a listed segment mid-scrub: a lost file under a manifest
-///   that moved since = scrub again against the newer one
+/// - live writer's merge may retire a listed segment mid-scrub: lost file + manifest moved since
+///   = scrub again against the newer one
 fn verify_committed(
     fs: &dyn Fs,
     path: &Path,
@@ -250,7 +250,7 @@ fn verify_committed(
 }
 
 impl DiskStore {
-    /// Blocks until every running merge has finished (lands on the next commit)
+    /// Blocks until every running merge finishes (lands on the next commit)
     #[cfg(test)]
     pub(crate) fn settle(&self) {
         for log in &self.maps {
@@ -258,7 +258,7 @@ impl DiskStore {
         }
     }
 
-    /// The buffer's appends + rows written and sealed, the manifest at `tip`, then the new view
+    /// Buffer's appends + rows written and sealed → manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
         for (table, file) in self.schema.sequence_ids().zip(&mut self.sequences) {
             for record in self.buffer.records(table) {
@@ -337,7 +337,7 @@ impl Store for DiskStore {
     }
 }
 
-// names no caller's method shares (inherent methods win resolution, even private ones)
+// names unique vs callers' methods (inherent methods win resolution, even private ones)
 impl DiskView {
     fn sequence_pages(&self, table: SequenceId) -> &SequencePages {
         let at = usize::from(table.0);

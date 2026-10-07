@@ -1,4 +1,4 @@
-//! Admin surface: `/metrics`, `/livez`, `/readyz`, `/statusz`, on a runtime of its own.
+//! Admin surface: `/metrics`, `/livez`, `/readyz`, `/statusz`, on a runtime of its own
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
@@ -28,10 +28,10 @@ const UPKEEP_INTERVAL: Duration = Duration::from_secs(5);
 /// - Unbounded `spawn` per connection = fd exhaustion of the whole process (may bind non-private)
 const MAX_CONNECTIONS: usize = 32;
 
-/// Heartbeat age past which `/livez` fails, because a wedged serving runtime stops [`beat`] while this thread keeps answering.
+/// Heartbeat age failing `/livez` (wedged serving runtime stops [`beat`]; this thread answers)
 const HEARTBEAT_MAX_AGE: Duration = Duration::from_secs(30);
 
-/// How often [`beat`] republishes the heartbeat.
+/// [`beat`] cadence
 const HEARTBEAT_INTERVAL: Duration = Duration::from_millis(100);
 
 static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
@@ -41,7 +41,7 @@ fn heartbeat() {
     *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
 }
 
-/// Republishes the heartbeat from the serving runtime until `cancel` fires, so a wedged runtime fails `/livez`.
+/// Heartbeat from the serving runtime until `cancel` (wedged runtime → `/livez` fails)
 pub(crate) async fn beat(cancel: CancellationToken) -> Result<(), IndexerError> {
     let mut tick = tokio::time::interval(HEARTBEAT_INTERVAL);
     loop {
@@ -66,7 +66,7 @@ pub(crate) fn live() -> bool {
     is_fresh(last_heartbeat())
 }
 
-/// Binds the admin endpoint, which `metrics::init` calls before it installs the recorder so that no sample is ever recorded without a listener to drain it.
+/// Called by `metrics::init` before the recorder installs (no sample without a draining listener)
 pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
     let listener = std::net::TcpListener::bind(endpoint).map_err(|e| {
         IndexerError::MetricsError(format!("admin endpoint {endpoint} failed to bind: {e}"))
@@ -77,7 +77,7 @@ pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, Indexe
     Ok(listener)
 }
 
-/// Serves a bound admin listener on a thread and runtime of its own.
+/// Own thread + runtime
 pub(crate) fn spawn(
     listener: std::net::TcpListener,
     handle: PrometheusHandle,
@@ -96,8 +96,7 @@ pub(crate) fn spawn(
 }
 
 async fn serve(listener: std::net::TcpListener, handle: PrometheusHandle) {
-    // The listener was bound before the recorder was installed (`metrics::init`),
-    // so every sample recorded from here on has this loop, or a scrape, to drain it
+    // Bound before the recorder installed (`metrics::init`): this loop or a scrape drains all
     let upkeep = handle.clone();
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(UPKEEP_INTERVAL);
@@ -250,7 +249,7 @@ mod tests {
         assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
     }
 
-    /// A port held by another socket fails the bind with an error that names the endpoint.
+    /// Held port → bind error naming the endpoint
     #[test]
     fn a_port_in_use_fails_the_bind() {
         let holder = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback bind succeeds");

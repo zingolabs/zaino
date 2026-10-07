@@ -1,7 +1,7 @@
-//! Boots the Zaino daemon and composes its pipeline (`docs/design/nfs.md` §7).
+//! Daemon boot + pipeline composition (`docs/design/nfs.md` §7)
 //!
-//! The stack crates stay config-agnostic; this module is the only place daemon config crosses
-//! into them, and the only place the pipeline's shape is written down:
+//! - Only place daemon config crosses into the (config-agnostic) stack crates
+//! - Only place the pipeline's shape is written down:
 //!
 //! ```text
 //!   validators ──▶ HeaderSync ── VerifiedChain ─▶ Nfs ──▶ final stream ─┬─▶ value_balance ─fees─┐
@@ -51,10 +51,8 @@ use crate::logging::component;
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
 
-/// Start the Zaino daemon.
-///
-/// Returns a handle that resolves when the runtime exits: `Ok(())` on a shutdown signal, or the
-/// first task's failure (the process then exits; nothing restarts in-process).
+/// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits; nothing
+/// restarts in-process)
 pub(crate) async fn start_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
@@ -62,7 +60,7 @@ pub(crate) async fn start_indexer(
     spawn_indexer(config).await
 }
 
-/// Validate the config, then boot the runtime (no validator needs to answer first).
+/// Config validated, then boot (no validator needs to answer first)
 pub(crate) async fn spawn_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
@@ -71,7 +69,7 @@ pub(crate) async fn spawn_indexer(
     boot(config).await
 }
 
-/// The upgrade schedule from whichever trusted validator answers first, asking until one does
+/// Upgrade schedule from the first trusted validator to answer (retried until one does)
 ///
 /// - the one boot-time validator read (tree-state pool activations; never a compiled-in table)
 async fn upgrade_schedule(validators: &[Arc<ZebraRpcAdapter>]) -> BlockchainInfo {
@@ -89,7 +87,7 @@ async fn upgrade_schedule(validators: &[Arc<ZebraRpcAdapter>]) -> BlockchainInfo
     }
 }
 
-/// The chain view over the trusted validators, the pipeline over it, then every task spawned
+/// Chain view over the trusted validators → pipeline over it → every task spawned
 ///
 /// - One connection pool per validator; chainview on `Lane::Control`, fetch on `Sync`, serving on
 ///   `Serve` (a lane never borrows another's connections)
@@ -146,8 +144,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals(), shutdown)))
 }
 
-/// What the pipeline runs on (production: the chain view's header sync and the trusted
-/// validators, each on its lane; tests: mocks)
+/// Pipeline inputs (production: header sync + trusted validators, each on its lane; tests: mocks)
 struct Inputs<S: ChainDataSource> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
@@ -352,8 +349,8 @@ async fn supervise(
     failure.map_or(Ok(()), Err)
 }
 
-/// `/readyz` fails with `draining` while everything keeps serving for `shutdown.delay()` (a
-/// load balancer polling readiness stops routing here before the listener closes)
+/// `/readyz` = `draining`, everything still serving, for `shutdown.delay()` (a polling load
+/// balancer stops routing here before the listener closes)
 ///
 /// - cut short by a second signal; a task ending meanwhile = the failure it always was
 async fn drain(
@@ -421,8 +418,7 @@ fn shutdown_signals() -> mpsc::Receiver<&'static str> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        // Registering a signal handler only fails on a broken runtime/OS, which
-        // is an unrecoverable process-level invariant, not a runtime condition.
+        // Fails only on a broken runtime/OS (unrecoverable process-level invariant)
         let mut terminate = signal(SignalKind::terminate()).expect("register SIGTERM handler");
         let mut interrupt = signal(SignalKind::interrupt()).expect("register SIGINT handler");
         tokio::spawn(async move {
@@ -454,8 +450,8 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Any task ending first is the daemon's failure, named for what it was (clean end, its own
-    /// error, a panic), returned only after every other task saw the cancel and finished
+    /// - First task to end = the daemon's failure, named (clean end, own error, panic)
+    /// - Returned only after every other task saw the cancel and finished
     #[tokio::test]
     async fn a_task_ending_first_cancels_and_drains_the_rest_then_fails_the_daemon() {
         type Run = Pin<Box<dyn Future<Output = Result<(), IndexerError>> + Send>>;
@@ -497,9 +493,8 @@ mod tests {
         }
     }
 
-    /// A signal with `[grpc.shutdown]` on fails readiness at once while every task keeps
-    /// serving, until the delay runs out, a second signal cuts it short, or a task ending
-    /// meanwhile fails the daemon; only then is the rest cancelled
+    /// - Signal + `[grpc.shutdown]` on → readiness fails at once, every task still serving
+    /// - Until: delay out, a second signal, or a task ending (= failure); only then the cancel
     #[tokio::test(start_paused = true)]
     async fn a_signal_drains_while_serving_until_the_delay_a_second_signal_or_a_failure() {
         let secs = std::time::Duration::from_secs;
@@ -546,11 +541,11 @@ mod tests {
         }
     }
 
-    /// The whole pipeline over a mock validator (every index on `SimFs`, gRPC on localhost,
-    /// headers verified at depth 3): A 0..=8 at once (0..=5 final: bulk, committed once the
-    /// stream idles; 6..=8 folded at the tip), then B7 (heavier, off A6) + B8. Before and after
-    /// the reorg `GetLatestBlock`, the last block of `GetBlockRange` and `GetTreeState` at that
-    /// height name one block; the reorged heights then serve B's; cancel stops every task cleanly
+    /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3):
+    /// - A 0..=8 at once (0..=5 final: bulk, committed on idle; 6..=8 folded at the tip)
+    /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's
+    /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
+    /// - cancel stops every task cleanly
     #[tokio::test]
     async fn the_pipeline_follows_a_reorg_and_every_rpc_agrees_on_the_served_tip() {
         use std::num::NonZeroU32;

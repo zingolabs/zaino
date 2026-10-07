@@ -60,7 +60,7 @@ mod tests {
         store.expect("open")
     }
 
-    /// The writer on `fs`, its final stream and committed view
+    /// Writer on `fs`, its final stream and committed view
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,

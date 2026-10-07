@@ -1,4 +1,4 @@
-//! Zaino Indexer service.
+//! Zaino indexer daemon library
 
 #![forbid(unsafe_code)]
 
@@ -28,10 +28,10 @@ mod snapshot;
 mod status;
 pub mod verify;
 
-/// Runs the Zaino indexer until a shutdown signal (`Ok`) or the first failure (`Err`).
+/// Until a shutdown signal (`Ok`) or the first failure (`Err`)
 ///
-/// - no in-process restart: a failure ends the process, the service manager restarts it, and
-///   the next boot proves its state from disk (`docs/design/durability.md` §6)
+/// - no in-process restart: failure ends the process, the service manager restarts it, next boot
+///   proves its state from disk (`docs/design/durability.md` §6)
 /// - logging initialised by the caller
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     crate::logging::try_init()

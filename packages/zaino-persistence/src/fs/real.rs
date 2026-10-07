@@ -144,8 +144,8 @@ fn map_read_only(file: &File) -> io::Result<Mmap> {
     unsafe { Mmap::map(file) }
 }
 
-/// `sync_file_range(SYNC_FILE_RANGE_WRITE)`: queues dirty pages in `range`, returns without
-/// waiting (sound: fd borrowed from a live `File`, no memory passed)
+/// `sync_file_range(SYNC_FILE_RANGE_WRITE)`: dirty pages in `range` queued, no wait (sound: fd
+/// borrowed from a live `File`, no memory passed)
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 fn start_writeback(file: &File, range: Range<u64>) -> io::Result<()> {
@@ -166,12 +166,12 @@ fn start_writeback(_: &File, _: Range<u64>) -> io::Result<()> {
     Ok(())
 }
 
-/// Lowers the calling thread to background priority: CPU nice 10, and I/O best-effort at its
-/// lowest level (7), so merges yield the disk and cores to serving reads
+/// Calling thread → background priority: CPU nice 10, I/O best-effort level 7 (merges yield disk
+/// + cores to serving reads)
 ///
-/// A hint, so failures are ignored. The I/O class only takes effect under an I/O scheduler that
-/// honours it (BFQ, mq-deadline); `none`, common on NVMe, ignores it. Sound: plain syscalls on
-/// the calling thread's own id, no memory passed.
+/// - hint: failures ignored; I/O class honoured by BFQ / mq-deadline only (`none`, common on NVMe,
+///   ignores it)
+/// - sound: plain syscalls on the calling thread's own id, no memory passed
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 pub(crate) fn background_priority() {

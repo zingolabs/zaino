@@ -1,9 +1,6 @@
-//! Block commitments field (hashBlockCommitments / hashFinalSaplingRoot).
+//! Header commitments field
 
-/// Block commitments hash (32 bytes).
-///
-/// Pre-Sapling: `hashFinalSaplingRoot`. Post-Sapling: `hashBlockCommitments`
-/// digest covering multiple commitment tree roots.
+/// Pre-Sapling `hashFinalSaplingRoot`; post `hashBlockCommitments` (over several tree roots)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockCommitments([u8; 32]);
 

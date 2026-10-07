@@ -1,7 +1,7 @@
 //! One block of the final stream: what every index writer commits (`docs/design/nfs.md` §2)
 //!
 //! - every height once, ascending, never retracted
-//! - `folds` = `None` below the NFS root (the writer folds), `Some` above it (folded once by the NFS)
+//! - `folds` = `None` below the NFS root (writer folds), `Some` above it (folded once by the NFS)
 
 use std::sync::Arc;
 

@@ -66,7 +66,7 @@ pub fn describe_metrics() {
 
 /// Per tier `0..shape.len()`: `(segments listed, merge running)`
 ///
-/// - every tier re-sent, zeros included (an emptied tier never keeps a stale count)
+/// - every tier re-sent, zeros included (emptied tier never keeps a stale count)
 pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
     for (tier, &(segments, merging)) in shape.iter().enumerate() {
         let labels = [("set", set.to_owned()), ("tier", tier.to_string())];

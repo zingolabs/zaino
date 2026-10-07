@@ -1,4 +1,4 @@
-//! End-to-end over the real transport: a wallet's h2 connection, and the caps around it.
+//! End-to-end over the real transport: a wallet's h2 connection + the caps around it
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
@@ -11,8 +11,8 @@ use zaino_persistence::DiskView;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_source::mock::MockChain;
 
-/// Nothing served yet and a chain view never polled: no verified tip, so every `GetLightdInfo`
-/// here = `UNAVAILABLE` (what these transport tests read back)
+/// Nothing served, chain view never polled → every `GetLightdInfo` = `UNAVAILABLE` (what these
+/// transport tests read back)
 fn routes() -> Routes<MockChain, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let validator = Arc::new(MockChain::new());
@@ -32,11 +32,11 @@ fn routes() -> Routes<MockChain, DiskView> {
     }
 }
 
-/// A real wallet gets a real answer over the hyper-served h2, and a second connection from the
-/// same address is closed at accept rather than served.
+/// Real wallet → real answer over hyper-served h2; second connection from its address closed at
+/// accept
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused() {
-    // Bound, then released, so the server gets a port nothing else on the box holds.
+    // Bound then released (a port nothing else on the box holds)
     let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let bind = probe.local_addr().expect("local addr");
     drop(probe);
@@ -71,8 +71,8 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     .await
     .expect("the server binds and accepts");
 
-    // No verified tip → UNAVAILABLE (no stand-in branch or tip), decoded over h2 as a status
-    // rather than a dropped stream
+    // No verified tip → UNAVAILABLE (no stand-in), decoded over h2 as a status, not a dropped
+    // stream
     let refusal = wallet
         .get_lightd_info(zaino_proto::proto::service::Empty {})
         .await
@@ -80,8 +80,8 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     let named = refusal.message() == "no verified header chain tip yet";
     assert_eq!((refusal.code(), named), (tonic::Code::Unavailable, true), "{refusal:?}");
 
-    // The wallet holds the one per-address slot, so the next connection is closed unserved:
-    // it connects (the kernel completes the handshake) and immediately reads EOF.
+    // Wallet holds the one per-address slot → next connection closed unserved (kernel handshake
+    // completes, then EOF)
     let mut refused =
         tokio::net::TcpStream::connect(bind).await.expect("the listener is still accepting");
     let mut read = [0u8; 1];
@@ -94,9 +94,10 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
 }
 
-/// Behind a trusted proxy the per-address cap counts the client its PROXY header names: two
-/// clients through one proxy are both served, a second connection claiming a held client is
-/// closed, and a trusted peer that speaks HTTP/2 without a header is closed unserved.
+/// Behind a trusted proxy the per-address cap counts the PROXY header's client:
+/// - two clients through one proxy both served
+/// - second connection claiming a held client closed
+/// - trusted peer speaking HTTP/2 without a header closed unserved
 #[tokio::test(flavor = "multi_thread")]
 async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     use tokio::io::AsyncWriteExt as _;
@@ -162,9 +163,10 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
 }
 
-/// Cancel closes the listener at once, then `run` drains: an idle served wallet's connection
-/// closes on its GOAWAY (no wait for the deadline), and a connection that never finishes (a
-/// trusted peer silent inside the 5 s PROXY-header read) holds `run` exactly `drain_timeout`.
+/// Cancel closes the listener at once, then `run` drains:
+/// - idle served wallet closes on its GOAWAY (no deadline wait)
+/// - never-finishing connection (trusted peer silent in the 5 s PROXY read) holds `run` exactly
+///   `drain_timeout`
 #[tokio::test(flavor = "multi_thread")]
 async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_drain_timeout() {
     use tokio::io::AsyncWriteExt as _;
@@ -201,7 +203,7 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         let cancel = CancellationToken::new();
         let serving = tokio::spawn(server.run(cancel.clone()));
 
-        // Before the wallet: accept is FIFO, so the wallet's answer proves this one accepted
+        // Before the wallet (accept FIFO: the wallet's answer proves this one accepted)
         let _silent = match silent {
             true => Some(tokio::net::TcpStream::connect(bind).await.expect("accepting")),
             false => None,

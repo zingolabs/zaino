@@ -1,4 +1,4 @@
-//! The reorg depth: how far below the tip a block stays reorg-able
+//! Reorg depth: how far below the tip a block stays reorg-able
 
 use core::num::NonZeroU32;
 

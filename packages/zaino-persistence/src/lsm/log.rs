@@ -1,4 +1,4 @@
-//! A segment set's write side: batches → segments on the commit path, merges on background threads
+//! Segment set's write side: batches → segments on the commit path, merges on background threads
 //!
 //! - merge output rides the next batch's manifest (no commit of its own; LevelDB/RocksDB
 //!   `VersionEdit` via `LogAndApply`)
@@ -31,11 +31,10 @@ use crate::{fs::Fs, port::MapTable};
 /// (RocksDB `level0_stop_writes_trigger`: bounded segment count = bounded read fan-out)
 const STALL_WINDOWS: usize = 2;
 
-/// One map's committed list, the merges running under it, and the list staged for the next
-/// manifest
+/// Map's committed list + merges running under it + list staged for the next manifest
 ///
-/// - one merge per tier at a time, and at most `MERGE_SLOTS` doing work process-wide (lowest tier
-///   first: small merges never queue behind a large one)
+/// - one merge per tier at a time, <= `MERGE_SLOTS` working process-wide (lowest tier first:
+///   small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
     fs: Arc<dyn Fs>,
@@ -52,14 +51,14 @@ pub(crate) struct SegmentLog {
     shape_tiers: usize,
 }
 
-/// A list awaiting the owner's manifest, the merge inputs it no longer lists, the merges it lands
+/// List awaiting the owner's manifest + merge inputs it no longer lists + merges it lands
 struct Staged {
     segments: Vec<SegmentMeta>,
     retired: Vec<SegmentMeta>,
     landed: Vec<Landed>,
 }
 
-/// One background merge; thread yields `(output, wall time)`, `None` = cancelled
+/// Background merge; thread yields `(output, wall time)`, `None` = cancelled
 struct Merge {
     tier: u32,
     inputs: Vec<SegmentMeta>,
@@ -72,8 +71,8 @@ impl SegmentLog {
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
     /// - unlisted files removed ([`Snapshot::open`])
-    /// - merges launched on every idle tier holding `fanout` segments (a reopen cancelled the
-    ///   last process's: without them no stall bounds a tier until the next commit)
+    /// - merges launched on every idle tier holding `fanout` segments (reopen cancelled the last
+    ///   process's: else no stall bounds a tier until the next commit)
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         dir: &Path,
@@ -112,16 +111,16 @@ impl SegmentLog {
         &self.snapshot
     }
 
-    /// Committed list, ≈ data age (readers probe newest first; an answer never depends on order)
+    /// Committed list, ≈ data age (readers probe newest first; answers never depend on order)
     #[cfg(test)]
     pub(crate) fn segments(&self) -> &[SegmentMeta] {
         &self.segments
     }
 
     /// `rows` (`(key, value)`) as one segment (sealed, durably linked) + every finished merge
-    /// swapped in for its inputs: the list the owner's next manifest must carry
+    /// swapped in for its inputs = list for the owner's next manifest
     ///
-    /// - a merge panic resumes here, a merge error returns here
+    /// - merge panic resumes here, merge error returns here
     /// - waits only on a merging tier the staged list holds `STALL_WINDOWS` windows behind
     ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
     pub(crate) fn batch(&mut self, rows: Vec<(&[u8], &[u8])>) -> Result<Vec<SegmentMeta>> {
@@ -162,8 +161,8 @@ impl SegmentLog {
         Ok(segments)
     }
 
-    /// The owner's manifest carrying [`batch`](Self::batch)'s list is durable: mapped, retired
-    /// inputs unlinked, merges launched on every idle tier holding `fanout` segments
+    /// Owner's manifest with [`batch`](Self::batch)'s list durable → mapped, retired inputs
+    /// unlinked, merges launched on every idle tier holding `fanout` segments
     pub(crate) fn committed(&mut self) -> Result<()> {
         let staged = self.staged.take().expect("committed follows batch");
         self.segments = staged.segments;
@@ -177,7 +176,7 @@ impl SegmentLog {
         self.launch_merges()
     }
 
-    /// A merge on every idle tier listing `fanout` segments, then the tier shape published
+    /// Merge on every idle tier listing `fanout` segments, then the tier shape published
     fn launch_merges(&mut self) -> Result<()> {
         loop {
             let busy: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
@@ -190,7 +189,7 @@ impl SegmentLog {
         }
     }
 
-    /// Every tier up to the highest ever published (an emptied tier re-sent as zero)
+    /// Every tier up to the highest ever published (emptied tier re-sent as zero)
     fn publish_shape(&mut self) {
         let merging: Vec<u32> = self.merges.iter().map(|merge| merge.tier).collect();
         let shape = tier_shape(&self.segments, &merging, self.fanout, self.shape_tiers);
@@ -267,7 +266,7 @@ impl SegmentLog {
         self.merges.len()
     }
 
-    /// Blocks until every running merge has finished (lands on the next `batch`)
+    /// Blocks until every running merge finishes (lands on the next `batch`)
     #[cfg(test)]
     pub(crate) fn settle(&self) {
         while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
@@ -304,9 +303,9 @@ impl Staged {
     }
 }
 
-/// Cancels and joins every merge (a detached one could race the next open's id allocation)
+/// Cancels + joins every merge (detached one could race the next open's id allocation)
 ///
-/// - outcomes dropped: outputs unlisted, a merge panic already reported by the panic hook
+/// - outcomes dropped: outputs unlisted, merge panic already reported by the panic hook
 impl Drop for SegmentLog {
     fn drop(&mut self) {
         if !self.merges.is_empty() {

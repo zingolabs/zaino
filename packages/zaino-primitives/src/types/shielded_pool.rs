@@ -1,23 +1,15 @@
-//! Zcash shielded pool identifier.
+//! Zcash shielded pool identifier
 
-/// Which shielded pool a query targets.
+/// `Ironwood` activates at NU6.3
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShieldedPool {
-    /// Sapling shielded pool.
     Sapling,
-    /// Orchard shielded pool.
     Orchard,
-    /// Ironwood shielded pool (activates at NU6.3).
     Ironwood,
 }
 
 impl ShieldedPool {
-    /// Every shielded pool, in activation order.
-    ///
-    /// The single place the set is enumerated. A consumer that needs to act on
-    /// all of them — a filter over pools, a per-pool fold — iterates this
-    /// rather than listing the variants again, so adding a pool is one edit
-    /// here rather than one in every such consumer.
+    /// Activation order; the one enumeration (per-pool filters / folds iterate this)
     pub const ALL: [Self; 3] = [Self::Sapling, Self::Orchard, Self::Ironwood];
 }
 

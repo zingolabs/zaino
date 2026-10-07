@@ -45,12 +45,9 @@ impl From<RpcError> for crate::NonDomainError {
         let kind = e.failure_mode();
 
         match e {
-            // A coded refusal is the "no underlying error value" case: the
-            // server's message *is* the content (and adapters read it to build
-            // domain rejections), so it rides as the message, not a boxed cause.
+            // coded refusal: message = the content (adapters build domain rejections from it)
             RpcError::Rpc { message, .. } => crate::NonDomainError::new(kind, message),
-            // Every other variant is a real error value; keep its type and
-            // source() chain instead of flattening it to a string.
+            // real error value: type + source() chain kept, never stringified
             other => crate::NonDomainError::from_cause(kind, other),
         }
     }

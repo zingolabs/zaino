@@ -88,7 +88,7 @@ mod tests {
         store.expect("open")
     }
 
-    /// The writer over `store`: its final stream, committed view and fee stream
+    /// Writer over `store`: its final stream, committed view and fee stream
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,
@@ -179,9 +179,10 @@ mod tests {
     /// - 1: spends 0's output and one from earlier in its own block
     /// - 3: spends 1's outputs with value leaving sprout; 4: spends 3's and enters ironwood
     ///
-    /// Boot 1: 0..=2 unfolded (fees out), 3, 4 folded (no fees: the NFS folded compact-block).
-    /// Boot 2, compact-block durable at 0: 1..=4 resent unfolded, all held: re-folded, fees out
-    /// again, identical. Both batch sizes: 1 byte = one block per run, 1 MiB = one run
+    /// - Boot 1: 0..=2 unfolded (fees out), 3, 4 folded (no fees: the NFS folded compact-block)
+    /// - Boot 2, compact-block durable at 0: 1..=4 resent unfolded, all held → re-folded, fees
+    ///   out again, identical
+    /// - Both batch sizes: 1 byte = one block per run, 1 MiB = one run
     #[tokio::test(start_paused = true)]
     #[rustfmt::skip]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_held_heights_republish_them() {

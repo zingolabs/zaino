@@ -1,4 +1,4 @@
-//! One listed segment, mapped: what readers and merges hold
+//! Listed segment, mapped: what readers and merges hold
 
 use std::{ops::Range, path::Path};
 
@@ -15,7 +15,7 @@ use crate::{
     pages::Pages,
 };
 
-/// The two reads a seek makes, in order: its fence group, then its block of records
+/// Seek's two reads, in order: fence group, then block of records
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Prefetch {
     Fences,
@@ -50,8 +50,8 @@ impl SegmentFile {
         Ok(Self { meta: *meta, pages, sections, summary })
     }
 
-    /// Reads and checks the whole filter section up front, so no probe ever faults a cold filter
-    /// page in or checks one (a reader's copy; merges never probe)
+    /// Whole filter section read + checked up front (no probe ever faults in or checks a cold
+    /// filter page; reader's copy, merges never probe)
     pub(crate) fn warm_filter(&self) {
         let (at, layout) = &self.sections.filter;
         let range = *at..*at + layout.len();
@@ -90,9 +90,9 @@ impl SegmentFile {
 
     /// Bytes a [`seek`](Self::seek) for `needle` reads in `step`, for readahead ahead of it
     ///
-    /// - [`Prefetch::Fences`] = the fence group the in-memory summary picks (no read here)
-    /// - [`Prefetch::Records`] = the block of records those fences pick (reads the fences: ask
-    ///   for it once their readahead is in flight)
+    /// - [`Prefetch::Fences`] = fence group the in-memory summary picks (no read here)
+    /// - [`Prefetch::Records`] = block of records those fences pick (reads the fences: ask once
+    ///   their readahead is in flight)
     pub(crate) fn prefetch_range(&self, step: Prefetch, needle: &[u8]) -> Range<usize> {
         match step {
             Prefetch::Fences => {
@@ -112,15 +112,14 @@ impl SegmentFile {
         }
     }
 
-    /// `MADV_WILLNEED` over `range`: the kernel queues its reads, nothing waits (advisory)
+    /// `MADV_WILLNEED` over `range`: kernel queues its reads, nothing waits (advisory)
     pub(crate) fn will_need(&self, range: Range<usize>) {
         self.pages.will_need(range);
     }
 
-    /// First slot whose key is `>= needle` (the record count when every key is below it)
+    /// First slot whose key `>= needle` (record count when every key is below it)
     ///
-    /// - the in-memory summary picks a page of fences, a fence picks the block, and the search
-    ///   stays inside that block (≈ one page)
+    /// - in-memory summary → page of fences → fence → block; search stays inside it (≈ one page)
     pub(crate) fn seek(&self, needle: &[u8]) -> usize {
         let rows = self.sections.shape.block_rows;
         let fence = |b| self.pages.read(self.sections.fence(b));
@@ -136,8 +135,7 @@ impl SegmentFile {
         low
     }
 
-    /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) is in this
-    /// segment
+    /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) here
     ///
     /// - reads only pages [`warm_filter`](Self::warm_filter) already checked
     pub(crate) fn may_contain(&self, prefix: &[u8]) -> bool {

@@ -1,5 +1,5 @@
-//! One map's segments below the store: shape checks, open, corruption, seek arithmetic, prefetch
-//! plans, scope filters (the store end to end: `disk/tests.rs`)
+//! Map's segments below the store: shape checks, open, corruption, seek arithmetic, prefetch
+//! plans, scope filters (store end to end: `disk/tests.rs`)
 
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -61,8 +61,8 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// A map the LSM cannot hold panics at construction, naming the map and why; a batch row of
-/// the wrong widths panics naming the map
+/// - map the LSM cannot hold panics at construction, naming the map and why
+/// - batch row of the wrong widths panics naming the map
 #[test]
 fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
     let cases = [
@@ -85,9 +85,9 @@ fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
     assert!(message.contains("LSM map scanned: (key, value) widths"), "{message}");
 }
 
-/// Open removes unlisted segments (and their checksums) and any writer's scratch, and refuses a
-/// lost segment; a flipped committed byte passes open (lengths only) and dies on the first read or
-/// merge that touches its page
+/// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
+/// - flipped committed byte passes open (lengths only), dies on the first read / merge touching
+///   its page
 #[test]
 fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let fs = SimFs::new();
@@ -99,7 +99,7 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let rows = |owner| (0..600).map(move |seq| scanned_row(owner, seq)).collect::<Vec<_>>();
     let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
     let orphan = writer.write(1, borrowed(&[scanned_row(3, 0)])).expect("write").expect("rows");
-    // a merge cut short by a crash leaves its scratch, even under a listed segment's id
+    // merge cut short by a crash leaves its scratch, even under a listed segment's id
     for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
         fs.open(&dir.join(leftover)).expect("scratch").write_all_at(&[1; 9], 0).expect("write");
     }
@@ -132,7 +132,7 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
         snapshot.get(&scanned_row(1, 1).0);
     });
 
-    // same tier as `kept` at fanout 2 → opening both launches their merge, which reads the page
+    // same tier as `kept` at fanout 2 → opening both launches their merge (reads the page)
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
     let log = SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], 2).expect("merge");
     log.settle();
@@ -145,8 +145,8 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     let unsummed = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
 
-    // last byte = a filter fingerprint; a reader reads and checks its whole filter when it maps
-    // the segment, so opening it dies before any probe
+    // last byte = filter fingerprint; whole filter read + checked at map → open dies before
+    // any probe
     let ids = Path::new("/ids");
     fs.create_dir_all(ids).expect("dir");
     let id_shape = Shape::of(&probed());
@@ -164,10 +164,11 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
     assert!(message.contains(&format!("page {page}: checksum mismatch")), "{message}");
 }
 
-/// Several summary groups: `seek` finds every key's slot, the slot after a gap, and both ends,
-/// through the in-memory summary and one page of fences. For every key, the bytes a prefetch
-/// names are exactly the ones seek reads: the whole fence group of the key's block, then the
-/// key's whole block of records (the layout's arithmetic written out here independently)
+/// Several summary groups:
+///
+/// - `seek` finds every key's slot, the slot after a gap, both ends (summary + one fence page)
+/// - prefetch names exactly what seek reads: key block's whole fence group, then its whole block
+///   of records (layout arithmetic written out independently)
 #[test]
 fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() {
     let fs = SimFs::new();
@@ -207,9 +208,10 @@ fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() 
     }
 }
 
-/// A batch's prefetch plan over three segments, the keys asked held by the first and the last:
-/// each round covers, in the segment holding it, every asked key's fence group then its block of
-/// records, as whole pages, ascending and disjoint per segment
+/// Batch's prefetch plan over three segments, asked keys held by the first and the last
+///
+/// - each round covers, in the holding segment, every asked key's fence group, then its records
+/// - whole pages, ascending + disjoint per segment
 #[test]
 fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
     let fs = SimFs::new();
@@ -260,8 +262,8 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
     }
 }
 
-/// Ranges within one account return every row across segments; a segment's filter turns away
-/// accounts it never held at about its false-positive rate (2^-8)
+/// - ranges within one account → every row across segments
+/// - segment's filter turns away accounts it never held at ≈ its false-positive rate (2^-8)
 #[test]
 fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     let fs = SimFs::new();

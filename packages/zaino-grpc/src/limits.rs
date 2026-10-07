@@ -1,7 +1,7 @@
-//! Serving caps, and the one bounded wait in the serve path.
+//! Serving caps + the one bounded wait in the serve path
 //!
-//! Every cap refuses rather than queues, except the [`ReadLanes`]: a read that must fault index
-//! pages in waits for a permit of its lane, and at most `max_streams` streams can be waiting.
+//! - Every cap refuses, never queues, except [`ReadLanes`] (a page-faulting read waits for its
+//!   lane's permit; at most `max_streams` waiting)
 
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
@@ -11,12 +11,11 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::emit;
 
-/// What one zainod will serve at once.
+/// What one zainod serves at once
 ///
-/// - `stall_timeout`: a stream holding data its client has not pulled for this long closes
-///   its connection (a live peer that never reads would keep every permit it holds)
-/// - `drain_timeout`: after `run`'s cancel, how long open connections get to finish their
-///   in-flight streams (GOAWAY sent) before `run` returns and they are dropped (zero = at once)
+/// - `stall_timeout`: unpulled data this long → connection closed (else a never-reading peer
+///   keeps its permits)
+/// - `drain_timeout`: open connections' grace after `run`'s cancel + GOAWAY (zero = at once)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrpcLimits {
     pub max_connections: NonZeroUsize,
@@ -56,14 +55,13 @@ impl Default for GrpcLimits {
     }
 }
 
-/// Which kind of index read, each its own permit pool (a heavy kind never queues a light one)
+/// Index read kind, own permit pool each (heavy never queues light): `Point` = one record / tree
+/// state (µs warm), `Range` = one `GetBlockRange` window (<= 1 MiB), `Scan` = an address history
+/// (bounded by the row budget)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Lane {
-    /// One record or tree state: bounded, µs warm
     Point,
-    /// One `GetBlockRange` window (≤ 1 MiB)
     Range,
-    /// An address history (bounded by the row budget, not by the request)
     Scan,
 }
 
@@ -95,7 +93,7 @@ impl ReadLanes {
         }
     }
 
-    /// Waits for a permit of `lane`, recording the wait.
+    /// Permit of `lane`, wait recorded
     pub(crate) async fn acquire(&self, lane: Lane) -> ReadPermit {
         let pool = match lane {
             Lane::Point => &self.point,
@@ -109,9 +107,8 @@ impl ReadLanes {
         ReadPermit { _permit: permit }
     }
 
-    /// `read` on the blocking pool under a permit of `lane`: an index read faults mmapped pages
-    /// and walks segments, never on a runtime worker (metrics, other RPCs and the followers share
-    /// them)
+    /// `read` on the blocking pool under a `lane` permit (faults mmapped pages: never on a runtime
+    /// worker, shared by metrics + other RPCs)
     ///
     /// - a panic in `read` resumes here (a broken invariant: zainod aborts)
     /// - runtime shutting down → `unavailable`
@@ -128,7 +125,7 @@ impl ReadLanes {
     }
 }
 
-/// Held for one read; released on drop.
+/// Held for one read, released on drop
 #[derive(Debug)]
 pub(crate) struct ReadPermit {
     _permit: OwnedSemaphorePermit,

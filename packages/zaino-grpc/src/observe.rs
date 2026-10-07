@@ -1,7 +1,7 @@
-//! Per-stream measurement, timed over the whole stream.
+//! Per-stream measurement, timed over the whole stream
 //!
-//! Sits outside admission, so a refusal is counted as the request it was. The close-out runs in
-//! the body's `Drop`: a client that walks away mid-stream is measured like any other ending.
+//! - Outside admission (a refusal counted as the request it was)
+//! - Close-out in the body's `Drop` (a client walking away mid-stream = measured like any end)
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -16,7 +16,7 @@ use crate::admission::AtCapacity;
 use crate::emit::{self, Method};
 use crate::report;
 
-/// Times each request and counts what its body wrote.
+/// Each request timed, its body's writes counted
 #[derive(Clone, Debug)]
 pub(crate) struct Measured<Inner> {
     inner: Inner,
@@ -28,7 +28,7 @@ impl<Inner> Measured<Inner> {
     }
 }
 
-/// `grpc-status` as a code, when a header map carries one.
+/// `grpc-status` as a code, if present
 fn code_of(headers: &http::HeaderMap) -> Option<Code> {
     let status = headers.get("grpc-status")?.to_str().ok()?;
     Some(Code::from_i32(status.parse().ok()?))
@@ -63,13 +63,13 @@ where
         let method = Method::of(request.uri().path());
         let started = Instant::now();
 
-        // Clone-then-swap is tower's readiness contract: the clone polled ready is called.
+        // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
 
         Box::pin(async move {
             let response = inner.call(request).await?;
-            // Header-carried `grpc-status` = a unary answer or an error, complete already.
+            // Header-carried `grpc-status` = unary answer or error, already complete
             let (code, message) = status_of(response.headers()).unzip();
             let at_capacity = response.extensions().get::<AtCapacity>().is_some();
 
@@ -89,19 +89,19 @@ where
     }
 }
 
-/// A response body measured to its end, wherever that end comes from.
+/// Response body measured to its end, wherever that comes from
+///
+/// - `first_message` = admission → first DATA frame; `message` = non-`Ok` status message
+/// - `at_capacity` = admission refusal (counted, never logged one by one)
 pub(crate) struct Counted<Inner> {
     inner: Inner,
     method: Method,
     started: Instant,
-    /// Admission to the first DATA frame
     first_message: Option<Duration>,
     sent: u64,
     messages: Messages,
     code: Option<Code>,
-    /// The status message, when the status is not `Ok`
     message: Option<String>,
-    /// Refused by admission (counted, never logged one by one)
     at_capacity: bool,
     ended: bool,
 }
@@ -127,7 +127,7 @@ impl<Inner: Body<Data = bytes::Bytes> + Unpin> Body for Counted<Inner> {
                     self.sent += chunk.len() as u64;
                     self.messages.feed(chunk);
                 }
-                // Trailers are where a streaming answer's real status lands.
+                // Trailers = a streaming answer's real status
                 None => {
                     if let Some((code, message)) = frame.trailers_ref().and_then(status_of) {
                         (self.code, self.message) = (Some(code), message);
@@ -152,7 +152,7 @@ impl<Inner: Body<Data = bytes::Bytes> + Unpin> Body for Counted<Inner> {
 
 impl<Inner> Drop for Counted<Inner> {
     fn drop(&mut self) {
-        // No status anywhere and no clean end = the client went away mid-stream.
+        // No status, no clean end = client gone mid-stream
         let code = self.code.unwrap_or(match self.ended {
             true => Code::Ok,
             false => Code::Cancelled,
@@ -177,11 +177,11 @@ impl<Inner> Drop for Counted<Inner> {
     }
 }
 
-/// Counts whole gRPC messages across data chunks that need not split on a frame boundary.
+/// Whole gRPC messages across chunks not split on frame boundaries (`owed` = payload bytes left
+/// in the message being walked)
 #[derive(Debug, Default)]
 struct Messages {
     complete: u64,
-    /// Payload bytes still owed to the message being walked.
     owed: usize,
     header: [u8; FRAME_HEADER],
     seen: usize,
@@ -223,8 +223,7 @@ impl Messages {
 mod tests {
     use super::*;
 
-    /// A stream's message count is the messages, not the chunks it arrived in: one chunk can
-    /// carry a run of records, and a record can straddle two.
+    /// Messages, not chunks (one chunk = a run of records; a record may straddle two)
     #[test]
     fn messages_are_counted_across_chunk_boundaries() {
         let framed = |payload: &[u8]| {
@@ -233,13 +232,13 @@ mod tests {
             frame
         };
 
-        // Three records in one chunk, as a range walk hands them over.
+        // Three records in one chunk (as a range walk hands them over)
         let mut run = Messages::default();
         let packed: Vec<u8> = [framed(b"aa"), framed(b"bbbb"), framed(b"c")].concat();
         run.feed(&packed);
         assert_eq!(run.complete, 3);
 
-        // The same bytes, cut mid-header and mid-payload.
+        // Same bytes, cut mid-header + mid-payload
         let mut split = Messages::default();
         let (head, tail) = packed.split_at(3);
         split.feed(head);
@@ -249,7 +248,7 @@ mod tests {
         split.feed(rest);
         assert_eq!(split.complete, 3, "same run, same count");
 
-        // An empty message is still a message.
+        // Empty message = still a message
         let mut empty = Messages::default();
         empty.feed(&framed(b""));
         assert_eq!(empty.complete, 1);

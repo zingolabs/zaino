@@ -73,12 +73,11 @@ impl Netgroup {
     }
 }
 
-/// What one push answered
+/// One push's answer: `Accepted` = trusted validator admitted it; `Delivered` = a peer took the
+/// bytes (a peer answers nothing either way)
 #[derive(Debug)]
 pub(crate) enum Pushed {
-    /// A trusted validator admitted it
     Accepted,
-    /// A peer took the bytes (it answers nothing either way)
     Delivered,
     Rejected(SendRawTransactionError),
     Unreachable(NonDomainError),
@@ -87,8 +86,8 @@ pub(crate) enum Pushed {
 /// What the view shows of the transaction now
 ///
 /// - `listed` = any trusted validator lists it (each verified it)
-/// - `spread` = some source that was never an entry has it
-/// - `observable` = some source that was never an entry is being read (else spread is unknowable)
+/// - `spread` = some source never an entry has it
+/// - `observable` = some source never an entry is being read (else spread = unknowable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Seen {
     pub(crate) listed: bool,
@@ -100,7 +99,7 @@ impl Seen {
     /// `listing` ⊆ `readers`; `announcers` = peers that announced it; `live` = peers heard now
     ///
     /// - a peer entry's own announcement = nothing (a black hole can echo it to us alone)
-    /// - a trusted entry's p2p address is unknown: once one was tried, peers need two announcers
+    /// - trusted entry's p2p address unknown: once one tried, peers need two announcers
     pub(crate) fn of(
         listing: EndpointSet,
         readers: EndpointSet,
@@ -134,12 +133,11 @@ pub(crate) enum Step {
     Done,
 }
 
-/// How a job ended
+/// - `Spread` = accepted, then seen at a source never an entry
+/// - `Unconfirmed` = accepted, every readable source an entry (or every attempt spent unseen)
 #[derive(Debug)]
 pub(crate) enum Ended {
-    /// Accepted, then seen at a source that was never an entry
     Spread,
-    /// Accepted, but every readable source was an entry (or every attempt spent unseen)
     Unconfirmed,
     Rejected(SendRawTransactionError),
     Unreachable(Option<NonDomainError>),
@@ -283,20 +281,18 @@ mod tests {
     use super::*;
 
     /// One simulated node's behaviour toward the transaction
+    ///
+    /// - `Relays` = gossips to every honest node after `delay_ms` (a peer also announces it)
+    /// - `BlackHoles` = never gossips; `Echoes` (peer) = never gossips, announces to us alone
+    /// - `Rejects` (trusted) = domain rejection (stricter local policy, or a bad tx for it)
+    /// - `Unread` (trusted) = running, mempool not read (catching up, down)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Node {
-        /// Takes it, gossips to every honest node after `delay_ms` (a peer also announces it)
-        Relays {
-            delay_ms: u64,
-        },
-        /// Takes it, never gossips
+        Relays { delay_ms: u64 },
         BlackHoles,
-        /// Peer: takes it, never gossips, announces it to us alone
         Echoes,
-        /// Trusted: domain rejection (stricter local policy, or the tx is bad for it)
         Rejects,
         Unreachable,
-        /// Trusted: running, mempool not read (catching up, down)
         Unread,
     }
 
@@ -330,8 +326,8 @@ mod tests {
         ]
     }
 
-    /// The world: who holds the transaction at `at`, from who took it when (one gossip hop
-    /// from a relaying holder reaches everyone honest; a second hop adds nobody)
+    /// Who holds the transaction at `at`, from who took it when (one gossip hop from a relaying
+    /// holder reaches everyone honest; a second hop adds nobody)
     struct World {
         trusted: Vec<Node>,
         peers: BTreeMap<SocketAddr, Node>,
@@ -388,17 +384,17 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig { cases: 1_000, ..ProptestConfig::default() })]
 
-        /// Against simulated peers (relay, black-hole, echo, unreachable) and trusted validators
-        /// (relay, black-hole, reject, unreachable, unread), on a virtual clock until `Done`:
-        /// - privacy: with any peer candidate, the first entry is a peer; peer entries never
-        ///   share a netgroup; no entry twice
-        /// - bounded: ≤ max_attempts pushes, + 1 only for the trusted verdict (none tried yet,
+        /// Simulated peers + trusted validators (every `Node`), virtual clock until `Done`
+        ///
+        /// - privacy: any peer candidate → first entry a peer; peer entries never share a
+        ///   netgroup; no entry twice
+        /// - bounded: <= max_attempts pushes, + 1 only for the trusted verdict (none tried,
         ///   nothing accepted); ends within (max_attempts + 1) × threshold
-        /// - patience: no push inside a delivered / accepted push's threshold; none once it
-        ///   spread and was accepted
+        /// - patience: no push inside a delivered / accepted push's threshold; none once spread
+        ///   + accepted
         /// - answer: accepted iff a trusted entry accepted or a trusted reader listed it;
         ///   rejected only from a trusted rejection; unreachable only when no trusted answered
-        /// - a fast honest relay pushed with an honest reader outside the entries = spread
+        /// - fast honest relay pushed + honest reader outside the entries = spread
         #[test]
         fn a_job_samples_peers_first_waits_out_each_threshold_and_ends_on_a_trusted_verdict(
             trusted in prop::collection::vec(trusted_node(), 1..5),
@@ -508,8 +504,10 @@ mod tests {
         }
     }
 
-    /// `Seen::of`'s rules, case by case: entries never count as spread, a peer entry's echo is
-    /// nothing, a tried trusted entry (p2p address unknown) needs two outside announcers
+    /// `Seen::of` case by case
+    ///
+    /// - entries never count as spread; a peer entry's echo = nothing
+    /// - tried trusted entry (p2p address unknown) → two outside announcers needed
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
         let t = |i: usize| EndpointIndex::new(i).expect("< MAX");
@@ -590,8 +588,8 @@ mod tests {
         }
     }
 
-    /// Without peers the first entry is uniform over the trusted validators; with peers, uniform
-    /// over the peers and never a trusted validator (no validator singled out: the point of §6)
+    /// - No peers → first entry uniform over the trusted validators
+    /// - Peers → uniform over the peers, never a trusted validator (none singled out: §6's point)
     #[test]
     fn the_first_entry_is_uniform_and_a_peer_whenever_one_exists() {
         let index = |i: usize| EndpointIndex::new(i).expect("< MAX");

@@ -9,8 +9,8 @@
 //!   sectors out of order), zero- or garbage-filled, lost in one file while kept in the rest;
 //!   unsynced entries lost or kept)
 //! - [`SimFs::fail_from`] = `EIO` from the nth mutating call on (Pebble `errorfs`);
-//!   [`SimFs::fail_reads_from`] = the same for positional reads
-//! - [`SimFs::power_loss`] / [`SimFs::restarted`] = a crash / a process exit at any instant
+//!   `SimFs::fail_reads_from` = same for positional reads
+//! - `SimFs::power_loss` / [`SimFs::restarted`] = crash / process exit at any instant
 
 use std::{
     collections::{BTreeMap, HashSet},
@@ -26,7 +26,7 @@ use super::{FileHandle, Fs, LockGuard, Mapping};
 
 type FileId = usize;
 
-/// The unit a device writes atomically (a torn write tears on these boundaries)
+/// Device's atomic write unit (torn writes tear on these boundaries)
 const SECTOR: usize = 512;
 
 #[derive(Debug, Clone)]
@@ -112,8 +112,8 @@ impl Content {
             variants.push(torn("torn", bytes[..bytes.len() / 2].to_vec()));
             variants.push(torn("zero-filled", vec![0; bytes.len()]));
             variants.push(torn("garbage", vec![0xa5; bytes.len()]));
-            // a device promises sector atomicity only, and may persist a write's sectors in any
-            // order: tear it at sector boundaries, and keep every other sector
+            // device: sector atomicity only, sectors persisted in any order → torn at sector
+            // boundaries, every other sector kept
             if bytes.len() > SECTOR {
                 variants.push(torn("first sector only", bytes[..SECTOR].to_vec()));
                 let last = (bytes.len() - 1) / SECTOR * SECTOR;
@@ -217,8 +217,8 @@ impl Image {
         self.settle(&self.durable, |id| self.files[id].durable.clone())
     }
 
-    /// Every state a crash here could leave, labelled: power loss, nothing lost, then each
-    /// directory's pending entries alone, then each file's pending writes alone
+    /// Every state a crash here could leave, labelled: power loss, nothing lost, each directory's
+    /// pending entries alone, each file's pending writes alone
     fn crash_states(&self) -> Vec<(String, Image)> {
         let mut states = vec![
             ("nothing pending survives".to_owned(), self.power_loss()),
@@ -259,10 +259,11 @@ impl Image {
         states
     }
 
-    /// Per file with pending writes: each crash variant of it with every other file durable, and
-    /// the file losing its pending writes while every other file keeps theirs (writeback that
-    /// reached the data and the manifest but not the checksums, say); under the durable and the
-    /// current namespace
+    /// Per file with pending writes, under the durable and the current namespace:
+    ///
+    /// - each crash variant of it, every other file durable
+    /// - it losing its pending writes, every other file keeping theirs (e.g. writeback reached
+    ///   data + manifest, not the checksums)
     fn content_states(&self) -> Vec<(String, Image)> {
         let mut states = Vec::new();
         let spaces = [("durable", &self.durable), ("current", &self.volatile)];
@@ -331,7 +332,7 @@ struct Inner {
 }
 
 impl Inner {
-    /// Counts one positional read; `EIO` from [`SimFs::fail_reads_from`]'s read on
+    /// Counts one positional read; `EIO` from `SimFs::fail_reads_from`'s read on
     fn read(&mut self, path: &Path) -> io::Result<()> {
         let at = self.reads;
         self.reads += 1;
@@ -375,7 +376,7 @@ struct CrashPoint {
     image: Image,
 }
 
-/// One filesystem a crash could leave, ready to reopen
+/// Filesystem a crash could leave, ready to reopen
 ///
 /// - `tag` = [`SimFs::set_tag`] value when the crash hit (tests: commits acknowledged by then)
 pub struct CrashState {
@@ -410,7 +411,7 @@ impl SimFs {
     }
 
     /// Every distinct state a crash at any recorded point could leave (deduplicated on
-    /// `(tag, image)`: the tag decides what a recovery may land on)
+    /// `(tag, image)`: tag decides what a recovery may land on)
     pub fn crash_states(&self) -> Vec<CrashState> {
         let points =
             self.lock_inner().recorded.clone().expect("crash states need SimFs::recording");
@@ -436,9 +437,10 @@ impl SimFs {
         self.lock_inner().fail_from = Some(op);
     }
 
-    /// `EIO` from the nth positional read on (a failing disk surfacing on read). Mapped reads
-    /// are copies here and never fail: on a real disk those fault as `SIGBUS`, which kills the
-    /// process, and nothing in-process can test that
+    /// `EIO` from the nth positional read on (failing disk surfacing on read)
+    ///
+    /// - mapped reads = copies here, never fail (real disk: `SIGBUS` kills the process, untestable
+    ///   in-process)
     #[cfg(test)]
     pub(crate) fn fail_reads_from(&self, read: u64) {
         self.lock_inner().fail_reads_from = Some(read);
@@ -471,7 +473,7 @@ impl SimFs {
         }
     }
 
-    /// Rewrites a file durably, as bit rot or an operator would
+    /// Durable rewrite (bit rot, operator)
     #[cfg(test)]
     pub(crate) fn corrupt(&self, path: &Path, edit: impl FnOnce(&mut Vec<u8>)) {
         let mut inner = self.lock_inner();
@@ -706,8 +708,8 @@ mod tests {
 
     use super::*;
 
-    /// Synced name + bytes always survive; unsynced writes as prefix, reordered and torn; an
-    /// unsynced rename over the file whole or not at all
+    /// - synced name + bytes always survive; unsynced writes as prefix, reordered and torn
+    /// - unsynced rename over the file: whole or not at all
     #[test]
     fn crash_states_keep_what_was_synced_and_every_shape_of_what_was_not() {
         let fs = SimFs::recording();

@@ -43,11 +43,10 @@ const POLL_EVERY: Duration = Duration::from_secs(1);
 /// aria2c's RPC listener coming up
 const RPC_WAIT: Duration = Duration::from_secs(10);
 
-/// Published next to the archive (RUNBOOK "Index snapshot")
+/// Published next to the archive (RUNBOOK "Index snapshot"); `archive` = URL relative to its own
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
-    /// Archive URL, relative to the manifest's
     archive: String,
     bytes: u64,
     sha256: String,

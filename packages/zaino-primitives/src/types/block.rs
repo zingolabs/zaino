@@ -6,25 +6,23 @@ use super::{
     Height, MerkleRoot,
 };
 
-/// Every consensus field + the hash and height that name the block (carried whole: the hash
-/// commits to all of them)
+/// Every consensus field + the hash (SHA-256d of the header bytes) and height naming the block
+/// (carried whole: the hash commits to all of them)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHeader {
-    /// Double-SHA256 of the serialized header
     pub hash: BlockHash,
     pub version: u32,
     pub prev_hash: BlockHash,
     pub height: Height,
     pub time: BlockTime,
     pub merkle_root: MerkleRoot,
-    /// hashFinalSaplingRoot / hashBlockCommitments
     pub block_commitments: BlockCommitments,
     pub bits: CompactDifficulty,
     pub nonce: EquihashNonce,
     pub solution: EquihashSolution,
 }
 
-/// A block as decoded from its consensus bytes: the one parse every index consumes
+/// Decoded from its consensus bytes: the one parse every index consumes
 ///
 /// - Each index keeps what it needs and drops the rest (no per-consumer re-parse)
 /// - Position = block order (coinbase = slot 0); no cumulative indexed state

@@ -1,26 +1,8 @@
-//! The methods no index backs: `SendTransaction` and the mempool methods over the
-//! multi-validator view, `GetTransaction` and `GetLightdInfo`.
+//! Methods no index backs: `SendTransaction` + mempool methods (chain view), `GetTransaction`
+//! (forwarded: consensus bytes, usage.md "Why `GetTransaction` forwards"), `GetLightdInfo`
 //!
-//! Every *derived* answer comes from an index. What is left is a point lookup of a primary
-//! object and one question about the server itself.
-//!
-//! # Why `GetTransaction` forwards
-//!
-//! The boundary: consensus-critical data lives in the validator, key material lives in the
-//! wallet, everything else is the indexer's. Raw transaction bytes are consensus-critical — the
-//! validator stores them because it must — so indexing them here would be a second copy of the
-//! chain, ~10x the compact store (compact drops proofs, signatures and 528 of each 580-byte
-//! ciphertext), to serve a read that happens only for transactions a wallet already trial-
-//! decrypted. Store everything, read almost none of it, and never evict.
-//!
-//! That is the opposite of the index rule's case. `GetAddressUtxos` and friends are *derived*:
-//! forwarding them would mean a second implementation that can disagree, or a dependency on a
-//! validator index (`getaddressutxos`) Zebra need not have. This one computes nothing.
-//!
-//! `block_height` is what Zaino can actually serve, not what the validator has. A wallet gates
-//! its sync on this, so reporting the validator's tip while the index is still catching up
-//! would have it request blocks that are not there yet. `estimated_height` is the validator's
-//! estimate of the network tip, which is exactly the "how far behind am I" signal.
+//! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
+//! - `estimated_height` = the validator's network-tip estimate ("how far behind")
 
 use http::{HeaderValue, Response};
 use http_body::Frame;
@@ -61,12 +43,9 @@ where
     }
 }
 
-/// `GetMempoolTx`: the servable mempool minus what the client already holds, compacted.
+/// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
-/// Materialised rather than streamed lazily: the projection is CPU over bytes already in
-/// memory, so there is no round trip to defer, and the pinned view must not be held across
-/// awaits for the life of a stream.
-///
+/// - Materialised, not lazy (CPU over in-memory bytes; pinned view never held across awaits)
 /// - consensus parse once per entry ([`Projection`](zaino_chainview::Projection), slot 0, every
 ///   pool); per request only the slot and the pool selection, over the cached bytes
 /// - a transaction the selection leaves with no component is dropped, as from a block
@@ -98,10 +77,8 @@ fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
     Ok(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
 }
 
-/// Submitted (§6); a rejection is a domain answer, not a transport error.
-///
-/// A wallet must tell "the network said no" from "the network is unreachable", so only the
-/// latter is a status.
+/// Submitted (§6); rejection = domain answer, only unreachable = a status (wallet tells "no"
+/// from "unreachable")
 async fn send<S: ChainDataSource, B>(view: &ChainView<S>, body: B) -> Result<bytes::Bytes, Status>
 where
     B: http_body::Body,
@@ -112,10 +89,10 @@ where
     send_reply(view.submit(raw.data.to_vec()).await).map(|reply| frame(&reply))
 }
 
-/// A submission's outcome as lightwalletd answers it
+/// Submission outcome as lightwalletd answers it
 ///
-/// - accepted: `sendrawtransaction`'s raw JSON result, i.e. the display-order txid in quotes
-///   (lightwalletd relays the result string untouched)
+/// - accepted: `sendrawtransaction`'s raw JSON result = quoted display-order txid (lightwalletd
+///   relays it untouched)
 /// - rejected: gRPC OK, `-1` + the reason
 fn send_reply(outcome: Result<TransactionId, SubmitError>) -> Result<proto::SendResponse, Status> {
     match outcome {
@@ -134,11 +111,10 @@ fn unmined(entry: &MempoolEntry) -> proto::RawTransaction {
     proto::RawTransaction { data: entry.raw.clone(), height: 0 }
 }
 
-/// `GetMempoolStream`: the mempool at the tip block as one chunk, then each arrival, closing
-/// on a mined block (no held verified tip = `UNAVAILABLE`, never a silent stream)
+/// `GetMempoolStream`: mempool at the tip as one chunk, then each arrival, closed by a mined
+/// block (no held verified tip = `UNAVAILABLE`, never a silent stream)
 ///
-/// - every record encoded once, by whichever subscriber reaches it first; the rest share the
-///   bytes by refcount
+/// - each record encoded once (first subscriber to reach it); the rest share it by refcount
 fn stream(view: &ChainViewSubscriber) -> Response<Body> {
     let tail = match view.tail() {
         Ok(tail) => tail,
@@ -149,8 +125,7 @@ fn stream(view: &ChainViewSubscriber) -> Response<Body> {
     });
     let opening = (!opening.is_empty()).then(|| Ok::<_, Status>(Frame::data(opening)));
 
-    // The tail rides in the unfold state rather than being captured: it is borrowed mutably
-    // across an await, which a `FnMut` closure cannot hold.
+    // Tail in the unfold state, not captured (borrowed mutably across an await: `FnMut` can't)
     let arrivals = futures::stream::unfold(Some(tail), move |state| async move {
         let mut tail = state?;
 
@@ -171,8 +146,7 @@ fn stream(view: &ChainViewSubscriber) -> Response<Body> {
     response
 }
 
-/// `GetTransaction`: only the `hash` arm is answerable (`TxFilter`'s `(block, index)` arm is a
-/// positional locator no index maps)
+/// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
 pub(crate) async fn transaction<S: ChainDataSource, B>(
     validators: &TrafficBalancer<S>,
     body: B,
@@ -191,11 +165,10 @@ where
     Ok(frame(&found))
 }
 
-/// One transaction's consensus bytes from whichever validator holds it (`GetTransaction`, and
-/// the bytes half of `GetTaddressTransactions`)
+/// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
+/// bytes)
 ///
-/// - `height` = the mined height, or `0` for an unmined one: the wire's own "in the mempool",
-///   which is also what a `TransactionLocation` carrying no height means
+/// - `height` = mined height, or `0` = the wire's "in the mempool" (= no-height location)
 pub(super) async fn raw_transaction<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
     txid: TransactionId,
@@ -209,8 +182,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
         other => Status::unavailable(other.to_string()),
     })?;
 
-    // Orphaned reads as unmined: the wire has one "no height" value, and a client must not
-    // treat a branch the chain abandoned as confirmed.
+    // Orphaned → unmined (one wire "no height"; an abandoned branch must not read as confirmed)
     let height = match found.location {
         TransactionLocation::BestChain(at) => at.into(),
         TransactionLocation::NonBestChain | TransactionLocation::Mempool => 0,
@@ -219,7 +191,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
-/// Serving metadata, the served height, and the validators' view of the network
+/// Serving metadata + served height + validators' view of the network
 ///
 /// - `served` = the snapshot tip `GetLatestBlock` serves (`LightdInfo.blockHeight` agrees)
 /// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
@@ -287,11 +259,8 @@ mod tests {
 
     use crate::testing::{dispatch, framed_request, routes_over};
 
-    /// The request's `poolTypes` → the pools served (the pruning itself: compact-block's
-    /// projection); a value naming no pool is refused.
-    ///
-    /// Empty is the one case that is not "all": the wire pins it to the legacy shielded set,
-    /// so transparent must be withheld from a client that named no pool at all.
+    /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
+    /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
     #[test]
     fn pool_types_name_the_pools_empty_means_shielded_only_and_unknown_is_refused() {
         let pools = |named: &[PoolType]| {
@@ -325,9 +294,9 @@ mod tests {
         assert_eq!(pools(&every), Pools::ALL);
     }
 
-    /// Accepted = code 0 + `sendrawtransaction`'s JSON result as lightwalletd relays it (the
-    /// display-order txid, quoted), rejected = code -1 + the reason, unreachable = `UNAVAILABLE`
-    /// (never a reply a wallet would read as the network's answer)
+    /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
+    /// - Rejected = code -1 + reason
+    /// - Unreachable = `UNAVAILABLE` (never a reply a wallet reads as the network's answer)
     #[test]
     fn a_submission_answers_like_lightwalletd() {
         let mut internal = [0u8; 32];
@@ -408,9 +377,8 @@ mod tests {
         assert_eq!(upgrade, ("", 0), "none scheduled");
     }
 
-    /// No verified tip, then a verified tip nobody polled holds: UNAVAILABLE naming why (no
-    /// stand-in); once the holder polls: its `getblockchaininfo` + the served height (sync fn = no
-    /// validator call)
+    /// - No verified tip, then a verified tip no polled validator holds = `UNAVAILABLE` naming why
+    /// - Holder polled → its `getblockchaininfo` + served height (sync fn = no validator call)
     #[tokio::test]
     async fn lightd_info_refuses_without_a_held_tip_then_answers_from_the_holders_view() {
         let mut chain = Chain::new();
@@ -461,11 +429,11 @@ mod tests {
         }
     }
 
-    /// 1,000 subscribers on one thread, the way a block of wallets hits it: refused without a
-    /// verified tip; each gets the mempool at the block, then every arrival once and in order, every
-    /// record the *same* bytes (encoded once, shared by refcount); a late subscriber reads the same
-    /// log; the next block ends all of them in `OK` trailers, and a resubscribe opens on the
-    /// mempool as it now stands
+    /// 1,000 subscribers on one thread (a block of wallets):
+    /// - refused without a verified tip
+    /// - mempool at the block, then each arrival once, in order, same bytes (shared by refcount)
+    /// - late subscriber = same log; next block ends all in `OK` trailers
+    /// - resubscribe opens on the mempool as it now stands
     #[tokio::test(start_paused = true)]
     async fn a_thousand_mempool_streams_share_one_encoded_log_until_a_block() {
         use http_body_util::BodyExt as _;
@@ -587,11 +555,9 @@ mod tests {
         cancel.cancel();
     }
 
-    /// Real mainnet transactions (block 2,000,000: one Orchard, one Sapling, one transparent) in
-    /// the mempool: each answer numbers its own slots, prunes to its own pools (a transaction
-    /// left with none dropped) and leaves no gap for an excluded suffix; every pool carries what
-    /// the consensus parse found; each transaction parsed once (its cached projection already
-    /// rendered for every later request)
+    /// Mempool = 3 mainnet txs (block 2,000,000: Orchard, Sapling, transparent):
+    /// - each answer: own slots, own pools (tx left empty dropped), no gap for an excluded suffix
+    /// - each pool = what the consensus parse found; each tx parsed once (projection cached)
     #[tokio::test(start_paused = true)]
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
         use http_body_util::BodyExt as _;

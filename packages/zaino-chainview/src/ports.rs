@@ -31,8 +31,8 @@ pub struct Heard {
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers
 pub trait ValidatorP2pSource: Send + Sync + 'static {
-    /// A fresh subscription per call: every `inv` of transactions from now on (lagging drops
-    /// some: telemetry undercounts)
+    /// Fresh subscription per call: every transaction `inv` from now on (lag drops some:
+    /// telemetry undercounts)
     fn heard(&self) -> BoxStream<'static, Heard>;
     /// Connected peers whose announcements arrive now (`peers: x/y`'s `y`)
     fn live(&self) -> Vec<SocketAddr>;

@@ -20,7 +20,7 @@ use crate::{
 
 const END: usize = 8;
 
-/// One sequence's committed files, as the manifest records them (`ends` = `EMPTY` when Fixed)
+/// Sequence's committed files, as the manifest records them (`ends` = `EMPTY` when Fixed)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Seals {
     pub(crate) data: Sealed,
@@ -83,7 +83,7 @@ pub(crate) struct SequenceFile {
 }
 
 impl SequenceFile {
-    /// `table`'s files under `dir`, at `sealed` (bytes past it dropped, a shorter file refused)
+    /// `table`'s files under `dir`, at `sealed` (bytes past it dropped, shorter file refused)
     pub(crate) fn open(
         fs: &dyn Fs,
         dir: &Path,
@@ -122,8 +122,8 @@ impl SequenceFile {
         Ok(())
     }
 
-    /// Files fsynced if they grew (fsync cost ∝ files: tree-state holds ~100); the seals the next
-    /// manifest carries
+    /// Files fsynced if grown (fsync cost ∝ files: tree-state holds ~100) → seals for the next
+    /// manifest
     pub(crate) fn seal(&mut self) -> io::Result<Seals> {
         if self.grown {
             self.sealed.data = self.data.seal()?;

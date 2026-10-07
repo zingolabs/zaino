@@ -1,5 +1,5 @@
-//! What every Zaino index stores through: the persistence port (`port.rs`) and the engine behind
-//! it, [`DiskEngine`] (`docs/design/persistence-engine.md`, `docs/design/durability.md`)
+//! What every Zaino index stores through: persistence port (`port.rs`) + its engine,
+//! [`DiskEngine`] (`docs/design/persistence-engine.md`, `docs/design/durability.md`)
 
 // only `unsafe` = `fs::real::{map_read_only, start_writeback}` (mmap, sync_file_range)
 #![deny(unsafe_code)]

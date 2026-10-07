@@ -19,9 +19,10 @@ const DESCRIPTOR: usize = BinaryFuse8::DESCRIPTOR_LEN;
 /// Per-shard table entry: descriptor ‖ fingerprint count u32 LE
 const ENTRY: usize = DESCRIPTOR + 4;
 
-/// Filter input for one encoded key (distinct keys → distinct inputs w.h.p.; dups deduped per shard)
+/// Filter input for one encoded key (distinct keys → distinct inputs w.h.p.; dups deduped per
+/// shard)
 ///
-/// - first word = the key's own uniform prefix; later words folded through splitmix64's finalizer
+/// - first word = key's own uniform prefix; later words folded through splitmix64's finalizer
 pub(crate) fn probe_hash(key: &[u8]) -> u64 {
     let (first, rest) = key.split_at(key.len().min(8));
     let mut hash = word(first);
@@ -117,8 +118,8 @@ impl<S: Fingerprints> FilterWriter<S> {
         Ok(())
     }
 
-    /// The section's head, `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE)`, and the
-    /// fingerprints that follow it
+    /// Section head `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE)` + the fingerprints
+    /// after it
     pub(crate) fn finish(mut self) -> Result<(Vec<u8>, S), FilterError> {
         while self.current < 1 << self.bits {
             self.close()?;
@@ -177,7 +178,7 @@ impl FilterLayout {
         (at == len).then_some(Self { bits, len, shard_ranges })
     }
 
-    /// The whole section's length
+    /// Whole section's length
     pub(crate) fn len(&self) -> usize {
         self.len
     }
@@ -200,8 +201,8 @@ impl FilterLayout {
 mod tests {
     use super::*;
 
-    /// Golden inputs (a persisted filter is only readable while these stay byte-identical);
-    /// sharding monotone in key order; every written key found, strangers mostly refused
+    /// - golden inputs (persisted filter readable only while these stay byte-identical)
+    /// - sharding monotone in key order; every written key found, strangers mostly refused
     #[test]
     fn hashes_are_stable_shards_follow_key_order_and_written_keys_are_found() {
         assert_eq!(probe_hash(&[0x01; 8]), 0x0101_0101_0101_0101);

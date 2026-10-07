@@ -24,15 +24,14 @@ use super::emit;
 use super::envelope;
 use super::error::RpcError;
 
-/// Largest body buffered (a hostile or broken validator cannot OOM the process with one reply;
-/// the largest real answer, a full block, is far below)
+/// Largest body buffered (no OOM from one hostile reply; a full block = far below)
 pub(super) const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Zebra's "work queue full": busy, not broken
 const WORK_QUEUE_FULL: i64 = -1;
 
-/// Link limits to one validator (`read` = silence, never total duration: a multi-MB block over a
-/// slow link must finish; a total deadline below its transfer time = retry livelock)
+/// - `read` = silence, never total duration (a multi-MB block over a slow link must finish; a
+///   total deadline below its transfer time = retry livelock)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Timeouts {
     pub connect: Duration,
@@ -120,15 +119,14 @@ impl Default for LinkLimits {
     }
 }
 
+/// - `name` = metric label (the validator's configured address); `auth` = basic (user, password)
+/// - `max_retries` = re-sends after a work-queue-full refusal
 pub struct RpcClientConfig {
     pub url: String,
-    /// Metric label naming this validator (its configured address)
     pub name: String,
-    /// Basic auth (user, password)
     pub auth: Option<(String, String)>,
     pub timeouts: Timeouts,
     pub limits: LinkLimits,
-    /// Re-sends after a work-queue-full refusal
     pub max_retries: u32,
     pub retry_delay: Duration,
 }
@@ -147,6 +145,7 @@ impl Default for RpcClientConfig {
     }
 }
 
+/// `lanes` indexed `lane as usize` (`Lane::ALL` order)
 pub struct RpcClient {
     url: String,
     name: String,
@@ -155,7 +154,6 @@ pub struct RpcClient {
     id_counter: AtomicI64,
     max_retries: u32,
     retry_delay: Duration,
-    /// [`Lane::ALL`] order
     lanes: [Semaphore; 3],
     requests: Option<DefaultDirectRateLimiter>,
     bytes: Option<DefaultDirectRateLimiter>,
@@ -223,8 +221,7 @@ impl RpcClient {
         settled
     }
 
-    /// `calls` in one HTTP request, each item its own outcome (call order); `Err` = the batch as
-    /// a whole failed
+    /// `calls` in one HTTP request, one outcome per item (call order); `Err` = whole batch failed
     ///
     /// - one `lane` permit; request budget charged per item (validator work = items, not POSTs)
     /// - work-queue-full items re-sent as a smaller batch, settled items kept
@@ -338,8 +335,8 @@ impl RpcClient {
 /// Chunk-wise (never allocates an oversized body; a lying `Content-Length` is caught by the
 /// running total)
 ///
-/// - `bytes` charged per chunk as it is read: an exhausted budget stops reading, and TCP
-///   backpressure slows the sender (pacing, not after-the-fact accounting)
+/// - `bytes` charged per chunk as read: exhausted budget = reading stops, TCP backpressure slows
+///   the sender (pacing, not after-the-fact accounting)
 async fn read_body_capped(
     mut response: reqwest::Response,
     max: usize,
@@ -381,8 +378,7 @@ async fn charge(limiter: &DefaultDirectRateLimiter, n: usize) {
 mod tests {
     use super::*;
 
-    /// Control keeps 2 whatever the total; serve gets a quarter (at least 1); sync the rest; a
-    /// total below 4 cannot be split
+    /// Control 2 whatever the total; serve ¼ (>= 1); sync the rest; total < 4 = no split
     #[test]
     fn lanes_split_the_connection_cap_and_never_share_it() {
         let split = |total: u32| {
@@ -395,8 +391,8 @@ mod tests {
         assert_eq!(split(32), Some([2, 8, 22]));
     }
 
-    /// A chunk larger than the one-second burst is charged in burst-sized pieces (it would
-    /// otherwise be refused as `InsufficientCapacity` and never read)
+    /// Chunk > one-second burst → charged in burst-sized pieces (else `InsufficientCapacity`,
+    /// never read)
     #[tokio::test]
     async fn a_chunk_larger_than_the_burst_is_paced_not_refused() {
         let limiter = RateLimiter::direct(Quota::per_second(NonZeroU32::new(1_000).expect("nz")));
@@ -410,8 +406,10 @@ mod tests {
         assert!(took < Duration::from_secs(3), "{took:?}");
     }
 
-    /// Over real HTTP against a validator that answers out of order: a work-queue-full item is
-    /// re-sent alone, a settled refusal is kept (never re-sent), every outcome lands in call order
+    /// Real HTTP, validator answering out of order
+    ///
+    /// - work-queue-full item re-sent alone; settled refusal kept (never re-sent)
+    /// - every outcome in call order
     #[tokio::test]
     async fn a_batch_resends_only_its_busy_items_and_answers_in_call_order() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

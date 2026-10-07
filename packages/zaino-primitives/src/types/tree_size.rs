@@ -1,11 +1,11 @@
-//! Cumulative note-commitment tree size for a shielded pool.
+//! Cumulative note-commitment tree size for a shielded pool
 
 use core::fmt;
 
 /// Cumulative note-commitment count of one pool's tree, as of a block
 ///
 /// - `u32`-backed = every format's range; a full depth-32 tree (`2^32`) refused at
-///   [`TryFrom<u64>`] / [`checked_add`](Self::checked_add), never written as `0` (#549)
+///   [`TryFrom<u64>`] / `checked_add`, never written as `0` (#549)
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TreeSize(u32);
 

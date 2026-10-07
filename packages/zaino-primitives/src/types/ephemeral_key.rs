@@ -1,6 +1,5 @@
-//! Ephemeral key — used by recipients to detect and decrypt shielded notes.
+//! Ephemeral public key: a recipient's handle to detect + decrypt a shielded note
 
-/// An ephemeral public key (32 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EphemeralKey([u8; 32]);
 

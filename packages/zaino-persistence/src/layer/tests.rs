@@ -1,5 +1,5 @@
-//! Fire drills: each [`Layer::check`] invariant broken by hand, caught by name (a check that
-//! never fires = a silent pass after every conformance step)
+//! Fire drills: each [`Layer::check`] invariant broken by hand, caught by name (check never
+//! firing = silent pass after every conformance step)
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

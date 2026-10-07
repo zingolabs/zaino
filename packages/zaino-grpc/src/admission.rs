@@ -1,10 +1,7 @@
-//! Stream admission: a permit, or `UNAVAILABLE` with pushback. Never a queue.
+//! Stream admission: a permit, or `UNAVAILABLE` + pushback, never a queue
 //!
-//! The permit is owned by the response *body*, not by the handler future, so it is returned
-//! when the stream ends **or** when the client disconnects — hyper drops the body either way. A
-//! permit released when the handler returned would let unbounded streams accumulate behind a
-//! cap that reads as full.
-//!
+//! - Permit owned by the response *body*, not the handler (back on stream end or disconnect:
+//!   hyper drops the body either way; released at handler return = unbounded streams)
 //! - Two pools by [`Class`]: a subscription idles for a block, so it never holds a work permit
 //!   (one mempool stream per wallet would otherwise fill `max_streams` with idlers)
 
@@ -19,21 +16,17 @@ use tonic::Status;
 
 use crate::emit;
 
-/// Retry hint on a refusal, in ms.
-///
-/// Held streams are wallet syncs, so a permit frees in well under a second; a longer hint idles
-/// a wallet behind a cap that has already cleared.
+/// Refusal retry hint, ms (held streams = wallet syncs: a permit frees well under a second)
 const PUSHBACK_MS: &str = "250";
 
-/// gRPC's own "come back later" header (grpc-core: `grpc-retry-pushback-ms`).
+/// gRPC's own "come back later" header (grpc-core)
 const PUSHBACK_HEADER: &str = "grpc-retry-pushback-ms";
 
-/// Which cap a request counts against
+/// Cap a request counts against: `Work` = unary, ranges, scans; `Subscription` =
+/// `GetMempoolStream` (open until the next block, idle between arrivals)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
-    /// Bounded work: unary, ranges, scans
     Work,
-    /// Open until the next block, idle between arrivals (`GetMempoolStream`)
     Subscription,
 }
 
@@ -74,7 +67,7 @@ impl Permits {
     }
 }
 
-/// Takes a permit of the request's class, or refuses; one per connection (`stalls` = its watch).
+/// Permit of the request's class, or refusal; one per connection (`stalls` = its watch)
 #[derive(Clone, Debug)]
 pub(crate) struct Admission<Inner> {
     inner: Inner,
@@ -92,7 +85,7 @@ impl<Inner> Admission<Inner> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AtCapacity;
 
-/// `UNAVAILABLE` plus the pushback hint, written before any handler runs.
+/// `UNAVAILABLE` + pushback hint, before any handler runs
 fn refused(class: Class) -> Response<tonic::body::Body> {
     let message = match class {
         Class::Work => "stream limit reached",
@@ -127,7 +120,7 @@ where
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let class = Class::of(request.uri().path());
-        // `try_acquire_owned`, never `acquire`: excess load is refused immediately.
+        // `try_acquire_owned`, never `acquire` (excess load refused at once)
         let Ok(permit) = Arc::clone(self.permits.pool(class)).try_acquire_owned() else {
             emit::stream_rejected(class);
             return Box::pin(std::future::ready(Ok(
@@ -136,7 +129,7 @@ where
         };
         let held = Held { _permit: StreamPermit::new(permit, class), ticket: self.stalls.ticket() };
 
-        // Clone-then-swap is tower's readiness contract: the clone polled ready is called.
+        // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
         let mut inner = self.inner.clone();
         std::mem::swap(&mut self.inner, &mut inner);
 
@@ -146,7 +139,7 @@ where
     }
 }
 
-/// One admission permit, counted while held.
+/// Counted while held
 #[derive(Debug)]
 struct StreamPermit {
     _permit: OwnedSemaphorePermit,
@@ -173,9 +166,7 @@ struct Held {
     ticket: crate::stall::Ticket,
 }
 
-/// A response body that owns its stream permit.
-///
-/// `held` is `None` only on a refusal (which holds nothing) and once the stream has ended.
+/// Response body owning its stream permit (`held` = `None` only on a refusal or once ended)
 #[derive(Debug)]
 pub(crate) struct Admitted<Inner> {
     inner: Inner,
@@ -226,7 +217,7 @@ mod tests {
 
     use super::*;
 
-    /// `/open` never ends; `/data` is one frame then waits; `/short` is one frame and done.
+    /// `/open` never ends; `/data` = one frame then waits; `/short` = one frame, done
     #[derive(Clone)]
     struct Answers;
 
@@ -268,9 +259,8 @@ mod tests {
             .expect("request")
     }
 
-    /// A body that handed hyper a frame and is not polled again (its client stopped reading)
-    /// trips the connection's stall watch at the timeout; one waiting on nothing never does, and
-    /// a poll clears it
+    /// - Frame handed over, never polled again (client stopped reading) → stall at the timeout
+    /// - Waiting on nothing never trips; a poll clears it
     #[tokio::test(start_paused = true)]
     async fn an_unpulled_frame_trips_the_stall_watch_and_an_idle_stream_never_does() {
         use http_body_util::BodyExt as _;
@@ -308,10 +298,10 @@ mod tests {
         assert!(!cleared.is_finished(), "a pull clears it");
     }
 
-    /// A permit lives for as long as its *body*, so it comes back when a client walks away
-    /// mid-stream; a request that cannot get one is refused on the spot, with pushback, rather
-    /// than queued behind the stream holding it. Subscriptions draw on their own pool: a full
-    /// work pool admits one, and a full subscription pool refuses only subscriptions.
+    /// - Permit lives as long as its *body* (back when a client walks away mid-stream)
+    /// - No permit → refused on the spot + pushback, never queued
+    /// - Subscriptions = own pool (full work pool admits one; full subscription pool refuses only
+    ///   subscriptions)
     #[tokio::test]
     async fn a_stream_permit_outlives_its_handler_and_a_refusal_never_queues() {
         use http_body_util::BodyExt as _;
@@ -324,7 +314,7 @@ mod tests {
         let (streams, subscriptions) = (&permits.work, &permits.subscriptions);
         let mut admission = Admission::new(Answers, permits.clone(), Arc::default());
 
-        // Admitted: the handler has already returned, but the stream is still open.
+        // Admitted: handler returned, stream still open
         let open = admission.call(request("/open")).await.expect("infallible");
         assert_eq!(streams.available_permits(), 0, "the open stream holds it");
 
@@ -340,7 +330,7 @@ mod tests {
         drop(subscribed);
         assert_eq!(subscriptions.available_permits(), 1, "returned on disconnect");
 
-        // Refused while it is held — a queue would hang here instead.
+        // Refused while held (a queue would hang here)
         let refused =
             tokio::time::timeout(Duration::from_millis(500), admission.call(request("/open")))
                 .await
@@ -353,11 +343,11 @@ mod tests {
         assert_eq!((status, pushback), (Some(&unavailable), Some(&retry_after)), "refused + retry");
         assert_eq!(streams.available_permits(), 0, "a refusal takes no permit of its own");
 
-        // The client walks away: dropping the body is the only signal, and it must be enough.
+        // Client walks away: body drop = the only signal
         drop(open);
         assert_eq!(streams.available_permits(), 1, "returned on disconnect");
 
-        // A stream read to its end returns the permit at the end, not at the drop.
+        // Read to its end: permit back at the end, not at the drop
         let short = admission.call(request("/short")).await.expect("infallible");
         let mut body = std::pin::pin!(short.into_body());
         assert_eq!(streams.available_permits(), 0);

@@ -1,7 +1,8 @@
-//! Scenarios against fake endpoints: a `MockChain` serves each one's real chain (header bytes,
-//! linkage, `getblockhash`, reachability); [`FakeValidator`] adds what these tests are about
-//! (mempool listings and fees, metadata failures, relay verdicts, a reorg between its tip read and
-//! its `getblockhash` answers, counters)
+//! Scenarios against fake endpoints
+//!
+//! - `MockChain` = each one's real chain (header bytes, linkage, `getblockhash`, reachability)
+//! - [`FakeValidator`] = the rest under test (mempool listings + fees, metadata failures, relay
+//!   verdicts, a reorg between tip read and `getblockhash` answers, counters)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -28,23 +29,23 @@ use crate::{
     SubmitError, Unserved,
 };
 
-/// What one validator answers beyond its chain, mutated between ticks by the test
+/// One validator's answers beyond its chain, mutated between ticks by the test
+///
+/// - `network_tip` `None` = at its reported tip; `release` `None` = release read times out
+/// - `reorg_after_poll` = best chain after the next tip read (before its `getblockhash` answers)
+/// - `relay` `None` = accepts (listed from its next poll); `Some(Err)` = its rejection
 #[derive(Default)]
 struct FakeState {
     mempool_inactive: bool,
-    /// `None` = at the tip it reports
     network_tip: Option<Height>,
     listed: BTreeSet<TransactionId>,
     bytes: BTreeMap<TransactionId, Vec<u8>>,
     peers: Vec<PeerInfo>,
     peers_unreachable: bool,
-    /// `None` = the release read times out
     release: Option<NodeRelease>,
     polls: usize,
-    /// Best chain after the next poll's tip read (reorged before its `getblockhash` answers)
     reorg_after_poll: Option<Vec<Block>>,
     links_served: usize,
-    /// `None` accepts (lists it from its next poll); `Some(Err)` = its rejection
     relay: Option<Result<(), SendRawTransactionError>>,
     relay_unreachable: bool,
     pushes: usize,
@@ -90,9 +91,9 @@ fn verified(chain: &Chain, tip: BlockRef) -> Option<VerifiedChain> {
     Some(VerifiedChain::regtest(&chain.path(tip.hash)))
 }
 
-/// What the view asks: links, tip + `getblockhash` (its `MockChain`; reachability too), polls
-/// (estimate, listing with each tx's fee, metadata = peers and the release as set), mempool bytes,
-/// sends (accepting = into its own mempool, listed from its next poll, as a zebrad does)
+/// - links, tip + `getblockhash`, reachability = its `MockChain`
+/// - polls: estimate, listing with each tx's fee, metadata = peers + release as set
+/// - mempool bytes; sends (accepting = into its own mempool, listed from its next poll, as zebrad)
 impl ChainDataSource for FakeValidator {
     async fn get_block_by_hash(
         &self,
@@ -182,7 +183,7 @@ impl ChainDataSource for FakeValidator {
     }
 }
 
-/// A real, empty v4 transaction (no bundles), distinct per `lock_time`, and its txid
+/// Real empty v4 transaction (no bundles), distinct per `lock_time`, + its txid
 fn transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
     use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
     let tx = TransactionData::<Authorized>::from_parts(
@@ -202,9 +203,11 @@ fn transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
     (TransactionId::from(*tx.txid().as_ref()), raw)
 }
 
-/// N=1, its window holds the verified tip. A tail = the servable mempool at its tip block, then each later
-/// crossing once (never one the opening carried), silent on an empty mempool, ended by a mined
-/// block; a late subscriber gets the same opening + every arrival since (one log per block)
+/// N=1, its window holding the verified tip
+///
+/// - tail = servable mempool at its tip block, then each later crossing once (never one the
+///   opening carried); silent on an empty mempool; ended by a mined block
+/// - late subscriber = same opening + every arrival since (one log per block)
 #[tokio::test]
 async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival_once() {
     let mut chain = Chain::new();
@@ -251,9 +254,9 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let mut tail = reader.tail().expect("tip held");
     assert_eq!(tail.opening(), [entry(1, 1_000), entry(2, 2_000)], "the whole servable mempool");
 
-    // tx 2 flaps out and back: it rode the opening, so its re-crossing is not logged
-    // tx 1 is dropped (propagation churn): nothing to send
-    // tx 3 arrives, and ours (tx 9) is servable before any listing
+    // - tx 2 flaps out and back (rode the opening → re-crossing not logged)
+    // - tx 1 dropped (propagation churn: nothing to send); tx 3 arrives; ours (tx 9) servable
+    //   before any listing
     validator.edit(|fake| fake.listed.retain(|txid| *txid != TransactionId::from([2u8; 32])));
     pollers[0].tick().await.expect("second poll succeeds");
     validator.edit(|fake| {
@@ -276,15 +279,15 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let silent = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
     assert!(silent.is_err(), "nothing new, no block mined: a live, silent stream");
 
-    // A late subscriber: the same opening (tx 1 included: the stream never un-sends within a
-    // block) + every arrival since, from the same log
+    // late subscriber: same opening (tx 1 included: never un-sent within a block) + every arrival
+    // since, from the same log
     let mut late = reader.tail().expect("tip held");
     assert!(late.same_epoch(&tail), "one log per tip block");
     assert_eq!(late.opening(), [entry(1, 1_000), entry(2, 2_000)]);
     assert_eq!(next(&mut late).await, Some(entry(3, 3_000)));
     assert_eq!(next(&mut late).await, Some(unpriced));
 
-    // Block 11: the one thing that ends a stream, for every tail on the old tip
+    // block 11 = the one stream end, for every tail on the old tip
     let tip_11 = chain.mine(tip_10.hash);
     validator.serve(&chain, tip_11);
     pollers[0].tick().await.expect("fourth poll succeeds");
@@ -300,8 +303,8 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     assert_eq!(opened, current, "the new tip opens on the mempool as it now stands (ours listed)");
 }
 
-/// A validator whose mempool is off below the network tip still holds the verified tip (the
-/// NFS's input) and serves an empty mempool, then lists again once active.
+/// Mempool off below the network tip → verified tip still held (the NFS's input), empty mempool
+/// served, listings again once active
 #[tokio::test]
 async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     let mut chain = Chain::new();
@@ -367,9 +370,10 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     );
 }
 
-/// The tip is the verified best block, never a validator's claim: holders = every validator whose
-/// chain holds it (one is enough); a third claiming a far higher tip moves nothing, drops out of
-/// the holders, and never supplies the chain description served
+/// - Tip = the verified best block, never a validator's claim
+/// - Holders = every validator whose chain holds it (one = enough)
+/// - Third claiming a far higher tip: moves nothing, drops out of the holders, never supplies the
+///   chain description served
 #[tokio::test]
 async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_verified_block() {
     let validators: Vec<Arc<FakeValidator>> =
@@ -406,7 +410,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let reader = view.subscriber();
     view.set_verified(verified(&chain, agreed));
 
-    // One validator holding the verified block = a tip (one admission proves validity)
+    // one validator holding the verified block = a tip (one admission proves validity)
     pollers[0].tick().await.expect("endpoint a polls");
     let pinned = reader.current();
     let tip = pinned.tip().expect("a holds the verified block");
@@ -424,7 +428,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let tip = reader.current().tip().expect("a and b hold it");
     assert_eq!(tip.held_by, EndpointSet::at([0, 1]));
 
-    // Endpoint c claims a higher tip (a fork from 90, never verified): moves nothing, holds nothing
+    // c claims a higher tip (fork from 90, never verified): moves nothing, holds nothing
     let claimed = chain.extend(at_90.hash, 30);
     validators[2].serve(&chain, claimed);
     validators[2].edit(|fake| {
@@ -453,10 +457,11 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     assert!(again.is_err(), "a second sighting spreads it, never re-sends it");
 }
 
-/// One validator rejects, one is unreachable, one accepts: random entries until one accepts,
-/// each pushed at most once, and the accepted transaction is `ours` (servable before any
-/// listing, unpriced); a unanimous rejection is the rejection, none reachable is no answer, and
-/// an expired transaction is refused with no push at all
+/// One rejecting, one unreachable, one accepting validator
+///
+/// - random entries until one accepts, each pushed at most once
+/// - accepted tx = `ours` (servable before any listing, unpriced)
+/// - unanimous rejection = the rejection; none reachable = no answer; expired = refused, no push
 #[tokio::test]
 async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servable_at_once() {
     let validators: Vec<Arc<FakeValidator>> =
@@ -547,7 +552,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert!(timeline.first_trusted.is_some_and(|at| at >= timeline.first_seen), "{timeline:?}");
     assert_eq!(timeline.all_trusted, None, "b has not listed it");
 
-    // Unanimous domain rejection = the real one, after every validator was tried once
+    // unanimous domain rejection = the real one, after every validator tried once
     for validator in &validators {
         validator.edit(|fake| {
             fake.relay = Some(Err(SendRawTransactionError::Rejected("too low fee".to_string())));
@@ -559,7 +564,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert!(matches!(rejected, Err(SubmitError::Rejected(SendRawTransactionError::Rejected(_)))));
     assert_eq!(pushes(), [1, 1, 1]);
 
-    // None reachable != a rejection (nothing learnt about the transaction)
+    // none reachable != a rejection (nothing learnt about the transaction)
     for validator in &validators {
         validator.edit(|fake| fake.relay_unreachable = true);
     }
@@ -570,9 +575,10 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert!(matches!(garbage, Err(SubmitError::Rejected(SendRawTransactionError::Malformed(_)))));
 }
 
-/// Paused clock, every validator accepting, none gossiping on its own: the lone entry's listing
-/// is no spread, so after the threshold the job resubmits to another; once a validator that was
-/// never an entry lists it, the job ends and pushes nothing more
+/// Paused clock, every validator accepting, none gossiping on its own
+///
+/// - lone entry's listing ≠ spread → resubmitted to another after the threshold
+/// - a never-entry validator lists it → job ends, nothing more pushed
 #[tokio::test(start_paused = true)]
 async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outsider_lists_it() {
     let validators: Vec<Arc<FakeValidator>> =
@@ -637,8 +643,8 @@ fn reader_trusted(view: &ChainView<FakeValidator>, txid: TransactionId) -> Count
     view.subscriber().current().spread(&txid).expect("held").trusted
 }
 
-/// The p2p layer as a script: announcements the test sends, live peers, pushes recorded (a
-/// peer answers nothing; `dead` ones refuse the connection)
+/// Scripted p2p layer: test-sent announcements, live peers, pushes recorded (a peer answers
+/// nothing; `dead` ones refuse the connection)
 struct FakePeers {
     live: Vec<std::net::SocketAddr>,
     dead: BTreeSet<std::net::SocketAddr>,
@@ -676,13 +682,13 @@ impl crate::ValidatorP2pSource for FakePeers {
     }
 }
 
-/// Paused clock, two trusted validators, four live peers in four netgroups + one dead:
-/// - announcements before any trusted listing are overheard, then join the sighting: `peers:
-///   2/4, trusted: 1/2`, first seen = the first announcement
-/// - a submission goes to a peer, never a trusted validator first; a black hole is waited out,
-///   the next entry is another netgroup; an outside announcer + a trusted listing = the wallet's
-///   answer, with no trusted validator ever pushed to
-/// - every peer a black hole (or dead): the budget spent on peers, then one trusted verdict
+/// Paused clock, two trusted validators, four live peers in four netgroups + one dead
+///
+/// - announcements before any trusted listing: overheard, then join the sighting (`peers: 2/4,
+///   trusted: 1/2`, first seen = the first announcement)
+/// - submission → a peer first, never a trusted validator; black hole waited out, next entry in
+///   another netgroup; outside announcer + trusted listing = the wallet's answer, no trusted push
+/// - every peer a black hole (or dead): budget spent on peers, then one trusted verdict
 #[tokio::test(start_paused = true)]
 async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_verdict() {
     use crate::Heard;
@@ -805,7 +811,8 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
     cancel.cancel();
 }
 
-/// Holding re-asked every poll (`getblockhash`, never a walk):
+/// Holding re-asked every poll (`getblockhash`, never a walk)
+///
 /// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`
 /// - its only holder gone → no tip at all (fail closed: nothing proves the block valid)
 /// - holders-only change → tip watch moves, epoch doesn't
@@ -906,9 +913,10 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     assert_eq!(links, 0, "holding is asked by getblockhash in the poll: no header reads");
 }
 
-/// Peers and release ride the poll every `METADATA_REFRESH`: a failed half keeps the endpoint live
-/// and its last answer; a release halting within a week of the tip raises `ending`, an upgrade
-/// clears it
+/// Peers + release ride the poll every `METADATA_REFRESH`
+///
+/// - failed half → endpoint still live, last answer kept
+/// - release halting within a week of the tip raises `ending`; an upgrade clears it
 #[tokio::test(start_paused = true)]
 async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     let mut chain = Chain::new();
@@ -1029,9 +1037,9 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     polling.await.expect("only cancel ends the poller");
 }
 
-/// Unwoken = a poll a second; streaming = one reconcile per 15 s plus a poll per wake, a burst
-/// of wakes coalesced to at most two polls; either streaming edge polls at once and shows in the
-/// endpoint's metadata
+/// - Unwoken = a poll a second
+/// - Streaming = one reconcile per 15 s + a poll per wake (burst of wakes → at most two polls)
+/// - Either streaming edge = poll at once, shown in the endpoint's metadata
 #[tokio::test(start_paused = true)]
 async fn a_push_stream_wakes_the_poller_and_stretches_its_reconcile_interval() {
     let validator = Arc::new(FakeValidator::default());
@@ -1094,12 +1102,13 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never {what}");
 }
 
-/// Real regtest header bytes through header sync, three validators:
-/// - a: 5,000 headers, verified in batches and finalized as they go (the published chain's final
-///   tip = depth below its best), then its tip is the view's, held by a
-/// - c: extends a's chain at 4,999 with a header earlier than its median time past: refused,
-///   never moves the tip, holds nothing
-/// - b: forks a's chain above the final boundary with more work: the tip follows the work to b
+/// Real regtest header bytes through header sync, three validators
+///
+/// - a: 5,000 headers, verified in batches, finalized as they go (published final tip = depth
+///   below its best); then its tip = the view's, held by a
+/// - c: a's chain + a header at 4,999 earlier than its median time past → refused, never the
+///   tip, holds nothing
+/// - b: fork of a's above the final boundary with more work → tip follows the work to b
 #[tokio::test]
 async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_work() {
     use zaino_header_chain::{HeaderChain, HeaderStore, Params};
@@ -1166,12 +1175,13 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     assert!(ended.is_ok(), "cancel ends header sync cleanly: {ended:?}");
 }
 
-/// One validator whose chain ends in an invalid 80 (time at its median time past), any work:
-/// - first round: 0..=79 verified; its served run ends at the refused 80, off our chain, and no
-///   poll has asked about our boundary yet: nothing final, the alarm raised
-/// - next poll: `getblockhash` 76 / 79 = ours, so it holds the boundary: final through 76 (depth
-///   3 below 79), the alarm cleared
-/// - a valid fork above 79, the store failing its next commit: header sync ends with the error
+/// One validator, chain ending in an invalid 80 (time at its median time past), any work
+///
+/// - first round: 0..=79 verified; served run ends at the refused 80 (off our chain), no poll
+///   yet asked about our boundary → nothing final, alarm raised
+/// - next poll: `getblockhash` 76 / 79 = ours → boundary held, final through 76 (depth 3 below
+///   79), alarm cleared
+/// - valid fork above 79 + store failing its next commit → header sync ends with the error
 #[tokio::test]
 async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_header_sync() {
     use zaino_header_chain::{HeaderChain, HeaderStore, Params};

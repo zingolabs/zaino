@@ -18,6 +18,8 @@ use crate::{
 const WINDOW_BYTES: usize = 1 << 20;
 
 /// Small (transport maps these onto gRPC codes; this crate names no transport)
+///
+/// - `Malformed` = stored record that will not walk (corruption, not a bad request)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
     #[error("block {height} is not in the index")]
@@ -26,7 +28,6 @@ pub enum ServeError {
     #[error("block hash is not in the index")]
     HashNotFound,
 
-    /// Stored record that will not walk (corruption, not a bad request)
     #[error("stored record at height {height} is malformed")]
     Malformed { height: Height },
 }
@@ -44,7 +45,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     }
 }
 
-/// A snapshot's seam: its layer above the committed records
+/// Snapshot's seam: its layer above the committed records
 impl<V: SequenceRead> CompactBlockReader<LayeredView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
     fn committed(&self) -> Option<Height> {
@@ -57,9 +58,8 @@ impl<V: SequenceRead> CompactBlockReader<LayeredView<V>> {
     }
 }
 
-/// `GetBlockRange` walked one chunk at a time: a file window below the seam, one layer record
-/// above it; either direction
-///
+/// `GetBlockRange` one chunk at a time, either direction: file window below the seam, layer record
+/// above it
 /// - no `Iterator` impl (the caller routes a disk step to the blocking pool first)
 /// - `reader` held for the whole stream: committed records, layer and seam frozen
 /// - `next` `None` = spent; `last` = final height served, inclusive
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(shielded.len(), descending.len(), "same chunks as the unprojected range");
     }
 
-    /// A reader past the served tip (a root snapshot during bulk sync) serves to the tip only:
+    /// Reader past the served tip (root snapshot during bulk sync) → served to the tip only:
     /// clamped either direction, a range starting past it = a miss
     #[test]
     fn a_range_never_serves_past_the_snapshot_tip() {

@@ -61,15 +61,13 @@ fn ceiling(index: usize) -> u64 {
     ((sub as u64 + mantissa) << shift) + (1 << shift) - 1
 }
 
-/// Who a status code blames
+/// Who a status code blames: `Client` = request / client gone (4xx-like), `Refused` = not now
+/// (capacity, syncing, validator down), `Failed` = this server (5xx-like)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
     Ok,
-    /// The request itself, or its client walking away (4xx-like: never this server's error)
     Client,
-    /// Not served now: at capacity, index syncing, validator unreachable
     Refused,
-    /// This server's fault (5xx-like)
     Failed,
 }
 
@@ -105,13 +103,12 @@ impl MethodWindow {
     }
 }
 
-/// Everything counted since the last summary
+/// Everything counted since the last summary (`*_logged` = this window's first already logged)
 struct Window {
     methods: [MethodWindow; METHODS.len()],
     at_capacity: AtomicU64,
     connections_refused: AtomicU64,
     stalled: AtomicU64,
-    /// A failure / unavailable answer already logged this window
     failure_logged: AtomicBool,
     unavailable_logged: AtomicBool,
 }

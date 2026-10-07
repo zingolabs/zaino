@@ -1,4 +1,4 @@
-//! The verified header tree above the final boundary, and its most-work tip
+//! Verified header tree above the final boundary + its most-work tip
 //!
 //! ```text
 //!   final (store + last CONTEXT in memory)     tree (every valid branch, bounded)
@@ -7,7 +7,7 @@
 //! ```
 //!
 //! - pure core: no clock (time is an input), no lock; one owner (`HeaderSync`) drives it
-//! - invariants H1, H2, H4, H5 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
+//! - H1, H2, H4, H5 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -26,7 +26,7 @@ const SIDE_TIPS: usize = 32;
 /// Side-branch nodes held, per block of reorg depth (H4)
 pub const SIDE_NODES_PER_DEPTH: usize = 4;
 
-/// The best tip and the work behind it
+/// Best tip + the work behind it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BestTip {
     pub block: BlockRef,
@@ -34,22 +34,22 @@ pub struct BestTip {
 }
 
 /// What an accepted header did to the chain
+///
+/// - `Known` = held already (tree or final); `Side` = no more work than the best (maybe evicted
+///   at once: H4); `Best { reorg }` = new tip, `reorg` = not a child of the previous best
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inserted {
-    /// Held already (tree or final)
     Known,
-    /// Valid, on a branch with no more work than the best (possibly evicted at once: H4)
     Side,
-    /// New best tip; `reorg` = not a child of the previous best
     Best { reorg: bool },
 }
 
+/// `received` = arrival order (H1 tie: first received wins; eviction tie: last received goes)
 #[derive(Debug, Clone, Copy)]
 struct Node {
     record: Record,
     height: Height,
     parent: BlockHash,
-    /// Arrival order (H1 tie: first received wins; eviction tie: last received goes)
     received: u64,
     children: u32,
 }
@@ -214,7 +214,7 @@ impl HeaderChain {
         Ok(inserted)
     }
 
-    /// The best-chain block at the final boundary (`depth` below the best tip), once deep enough
+    /// Best-chain block at the final boundary (`depth` below the best tip), once deep enough
     pub fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
         let boundary = best.block.height.checked_sub(self.depth.get())?;

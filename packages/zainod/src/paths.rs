@@ -1,4 +1,4 @@
-//! Default on-disk locations (`dirs` = XDG base dirs on Linux, platform dirs elsewhere).
+//! Default on-disk locations (`dirs` = XDG base dirs on Linux, platform dirs elsewhere)
 
 use std::path::PathBuf;
 
@@ -9,10 +9,7 @@ pub fn default_config() -> PathBuf {
     under(dirs::config_dir(), ".config").join("zaino/zainod.toml")
 }
 
-/// `<cache dir>/zaino/indexes/<kind.name()>`
-///
-/// One directory per index, because they do not share a storage engine — compact blocks are
-/// append-only files, not a table in someone else's database.
+/// `<cache dir>/zaino/indexes/<kind.name()>` (one directory per index: each its own store)
 pub(crate) fn default_index(kind: IndexKind) -> PathBuf {
     under(dirs::cache_dir(), ".cache").join("zaino/indexes").join(kind.name())
 }

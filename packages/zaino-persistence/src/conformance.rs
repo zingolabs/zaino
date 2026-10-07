@@ -1,9 +1,9 @@
 //! What every [`PersistenceEngine`] must answer, through the port alone (feature `testing`)
 //!
-//! - an engine's crate implements [`Subject`] once, then runs [`history`] under proptest and
-//!   [`contract`] as a plain test; `PROPTEST_CASES=1000` = its heavy run
-//! - the store driven as a writer drives it (apply, commit), under [`Layer`]s kept as the NFS
-//!   keeps them (with, rebase), against `Vec` / `BTreeMap` models
+//! - engine crate implements [`Subject`] once, runs [`history`] under proptest + [`contract`] as
+//!   a plain test; `PROPTEST_CASES=1000` = its heavy run
+//! - store driven as a writer drives it (apply, commit), under [`Layer`]s kept as the NFS keeps
+//!   them (with, rebase), against `Vec` / `BTreeMap` models
 //! - storage-specific moves (power loss, background work, internal invariants) = [`Subject`]
 //!   hooks with no-op defaults
 //! - [`Model`] doubles as the expected state for an engine's own crash and fault tests
@@ -34,8 +34,8 @@ pub const NODES: SequenceId = SequenceId(2);
 pub const SCANNED: MapId = MapId(0);
 pub const PROBED: MapId = MapId(1);
 
-/// Every shape an index declares: a variable sequence, a fixed one, one in a sub-directory, a
-/// scoped map (`account ‖ seq`, read per account), a point-lookup map (hash-like ids)
+/// Every shape an index declares: variable sequence, fixed one, one in a sub-directory, scoped map
+/// (`account ‖ seq`, read per account), point-lookup map (hash-like ids)
 pub fn schema() -> Schema {
     Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest)
         .with_sequence(BLOCKS, "blocks", Width::Variable)
@@ -45,17 +45,17 @@ pub fn schema() -> Schema {
         .with_map(PROBED, "probed", Width::fixed(16), Width::fixed(4), 0)
 }
 
-/// One engine under test, over storage the suite can reopen (and, if it can, crash)
+/// Engine under test, over storage the suite can reopen (and, if it can, crash)
 pub trait Subject {
     type Engine: PersistenceEngine<Store: Store<View: SequenceRead + MapRead>>;
 
-    /// An engine over the storage as it stands now (a reopen = a fresh `open` through it)
+    /// Engine over the storage as it stands now (reopen = fresh `open` through it)
     fn engine(&self) -> Self::Engine;
 
     fn path(&self) -> &Path;
 
-    /// Storage replaced by what a crash right now would leave; `false` = no such image (the
-    /// step reopens instead)
+    /// Storage replaced by what a crash right now would leave; `false` = no such image (step
+    /// reopens instead)
     fn power_loss(&mut self) -> bool {
         false
     }
@@ -145,9 +145,8 @@ pub struct Model {
 }
 
 impl Model {
-    /// The next block: `records` blocks + twice as many nodes, one height record, one `scanned`
-    /// row per listed owner (fresh seqs), `ids` fresh `probed` ids; applied here, returned as
-    /// `Changes`
+    /// Next block, applied here, returned as `Changes`: `records` blocks + twice as many nodes,
+    /// one height record, one `scanned` row per listed owner (fresh seqs), `ids` fresh `probed` ids
     pub fn advance(&mut self, records: u8, owners: &[u8], ids: u16) -> Changes {
         self.advances += 1;
         let tip = salted_ref(self.advances, self.salt);
@@ -206,9 +205,9 @@ impl Model {
         scanned_key(owner, raw % (self.seq + 2))
     }
 
-    /// Every sequence record (one at a time and as ranges), full and per-owner scans, sampled
-    /// values + a miss, values over every id issued and as many never issued (each asked twice:
-    /// answers in caller order)
+    /// - every sequence record (one at a time + as ranges); full + per-owner scans
+    /// - sampled values + a miss; values over every id issued + as many never issued (each asked
+    ///   twice: answers in caller order)
     pub fn assert_view(&self, view: &(impl SequenceRead + MapRead), label: &str) {
         assert_eq!(view.tip(), self.tip, "{label}: tip");
         for (table, model) in
@@ -267,7 +266,7 @@ fn owned(rows: Vec<(Bytes, Bytes)>) -> Vec<(Vec<u8>, Vec<u8>)> {
     rows.into_iter().map(|(key, value)| (key.to_vec(), value.to_vec())).collect()
 }
 
-/// One block above durable, as the NFS holds it: its changes, the contents through it, its layer
+/// Block above durable, as the NFS holds it: its changes, contents through it, its layer
 struct Node {
     changes: Changes,
     model: Model,
@@ -275,7 +274,7 @@ struct Node {
 }
 
 /// Oracle for [`history`]: `nodes` = blocks above `committed`, oldest first, the first `applied`
-/// buffered in the store; `salt` = the branch the next node goes on
+/// buffered in the store; `salt` = branch of the next node
 #[derive(Default)]
 struct Oracle {
     committed: Model,
@@ -301,7 +300,7 @@ impl Oracle {
         LayeredView::new(durable, layer)
     }
 
-    /// A node on the current branch above the newest: parent's layer `.with` its changes
+    /// Node on the current branch above the newest: parent's layer `.with` its changes
     fn grow(&mut self, (records, owners, ids): (u8, &[u8], u16)) {
         let (mut model, layer) = match self.nodes.last() {
             Some(node) => (node.model.clone(), node.layer.clone()),
@@ -313,7 +312,7 @@ impl Oracle {
         self.nodes.push(Node { changes, model, layer });
     }
 
-    /// Every node rebased onto `durable` (a commit or reopen: what it now holds dropped)
+    /// Every node rebased onto `durable` (commit or reopen: what it now holds dropped)
     fn rebase(&mut self, durable: &impl View) {
         for node in &mut self.nodes {
             node.layer = node.layer.rebase(durable);
@@ -348,9 +347,9 @@ struct Pinned<V> {
     node: LayeredView<V>,
 }
 
-/// - `Grow`: a node above the newest (`records` blocks + nodes, one height, `owners` scanned
-///   rows, `ids` probed ids)
-/// - `Apply`: the oldest unapplied nodes into the store, `count` reduced at run time
+/// - `Grow`: node above the newest (`records` blocks + nodes, one height, `owners` scanned rows,
+///   `ids` probed ids)
+/// - `Apply`: oldest unapplied nodes into the store, `count` reduced at run time
 /// - `Commit`: every buffered node durable, then every node rebased onto the new view
 /// - `Reorg`: unapplied nodes cut to `keep` (reduced), later nodes on a new branch
 /// - `Settle`: background work finishes; `Reopen`: exit mid-work; `PowerLoss`: crash now (both:
@@ -414,7 +413,7 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
     })
 }
 
-/// One history against the subject and the [`Oracle`], after every step:
+/// History against the subject + `Oracle`, after every step:
 ///
 /// - `view()` = committed prefix; `staged()` = committed + buffered; buffered bytes = applied
 /// - each node's layer over the view = its contents; pinned views = their models
@@ -450,7 +449,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 oracle.salt = oracle.salt.wrapping_add(1);
             }
             Step::Settle => subject.settle(&store),
-            // a crash image taken while background work may still be writing: acked = durable
+            // crash image taken while background work may still be writing: acked = durable
             Step::Reopen | Step::PowerLoss => {
                 if matches!(step, Step::PowerLoss) {
                     subject.power_loss();
@@ -499,7 +498,7 @@ fn refused(what: &str, act: impl FnOnce()) {
     assert!(acted.is_err(), "{what}: done instead of panicking");
 }
 
-/// A view that is only a tip (what `Layer::rebase` and `LayeredView::new` read)
+/// View = only a tip (what `Layer::rebase` + `LayeredView::new` read)
 #[derive(Clone)]
 struct Tip(Option<BlockRef>);
 
@@ -509,10 +508,11 @@ impl View for Tip {
     }
 }
 
-/// Port's fixed promises, on a fresh subject: an empty open, apply buffered (staged, not in the
-/// view) until commit, an empty commit writing nothing, identity refused across kind, format and
-/// network, a reopen resuming at the tip, offline verify clean with every commit counted, and
-/// each store and layer misuse panicking with nothing buffered, work continuing after
+/// Port's fixed promises, on a fresh subject:
+///
+/// - empty open; apply buffered (staged, not in the view) until commit; empty commit = no write
+/// - identity refused across kind / format / network; reopen resumes at the tip; verify clean
+/// - each store + layer misuse panics with nothing buffered, work continuing after
 pub fn contract<S: Subject>(subject: S) {
     let engine = subject.engine();
     let mut model = Model::default();

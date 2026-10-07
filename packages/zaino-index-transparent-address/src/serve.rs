@@ -13,14 +13,13 @@ use crate::{key::AddressKey, TransparentAddressReader};
 
 /// - never an empty result (gap-limit walk must tell "no transactions" from "cannot tell")
 /// - transport maps these onto gRPC codes; this crate names no transport
+/// - `SupplyExceeded` = corrupt store; `TooManyRows` = an exchange's addresses, refused whole
+///   (never truncated: a short answer reads as a balance)
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ServeError {
-    /// Corrupt store, not a bad request
     #[error("unspent total for this address exceeds the money supply")]
     SupplyExceeded,
 
-    /// The request's addresses hold more receives than one request may walk (an exchange's,
-    /// not a light wallet's); refused whole, never truncated (a short answer reads as a balance)
     #[error("these addresses have more than {limit} receives, the per-request limit")]
     TooManyRows { limit: usize },
 }
@@ -208,9 +207,9 @@ mod tests {
         }
     }
 
-    /// 0 and 1 committed, 2 buffered (a snapshot's committed view + layer): 1 pays `paid` 42, 2
-    /// spends it. At tip 2 the spend counts, `as_of(1)` hides it (a view ahead of the served tip);
-    /// a stranger and heights past the tip answer empty, never an error
+    /// - 0, 1 committed, 2 buffered (committed view + layer): 1 pays `paid` 42, 2 spends it
+    /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
+    /// - Stranger + heights past the tip → empty, never an error
     #[test]
     fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
         let network = NetworkType::Regtest;
@@ -259,9 +258,9 @@ mod tests {
         }
     }
 
-    /// The row budget counts receives across every address of a request, committed and buffered
-    /// alike: at the limit every method answers, one over it every method refuses whole (never a
-    /// short list or a partial balance)
+    /// - Row budget = receives across every address of a request, committed + buffered alike
+    /// - At the limit every method answers; one over, every method refuses whole (never a short
+    ///   list or a partial balance)
     #[test]
     fn a_request_over_its_row_budget_is_refused_whole_by_every_method() {
         let network = NetworkType::Regtest;

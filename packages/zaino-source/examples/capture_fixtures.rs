@@ -1,10 +1,6 @@
-//! Capture raw JSON-RPC responses for test fixtures.
+//! `getblock <h> 0` hex per fixture height → stdout (`tests/fixtures/block_<height>.hex`)
 //!
-//! Usage:
-//!   cargo run -p zaino-source --example capture_fixtures
-//!
-//! Prints the raw hex string returned by `getblock` (verbosity=0) for each
-//! fixture height. These are stored as test fixtures for offline unit tests.
+//! - `cargo run -p zaino-source --example capture_fixtures` (zebrad at 127.0.0.1:8232)
 
 use zaino_source::{Lane, RpcClient, RpcClientConfig};
 

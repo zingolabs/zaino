@@ -1,10 +1,9 @@
-//! Process-wide merge slots: at most [`MERGE_SLOTS`] merges do work at once across every set of
-//! every index, and a waiting merge gets the next free slot lowest tier first.
+//! Process-wide merge slots: <= [`MERGE_SLOTS`] merges working at once across every set of every
+//! index; next free slot → lowest waiting tier
 //!
-//! Without a cap, each set could run a merge per tier at once, dozens of threads competing with
-//! serving reads for the disk. Lowest tier first keeps the small merges that bound a commit's
-//! stall from queueing behind a large one. A slot holder never waits on anything but its own
-//! I/O, so a waiting merge always gets a slot eventually.
+//! - cap: else a merge per tier per set = dozens of threads competing with serving reads for disk
+//! - lowest tier first: small merges (bound a commit's stall) never queue behind a large one
+//! - slot holder waits only on its own I/O → every waiting merge gets a slot eventually
 
 use std::{
     cmp::Reverse,
@@ -28,14 +27,14 @@ pub(super) struct Slots {
     capacity: usize,
 }
 
+/// `waiting` = `(tier, arrival)`: lowest waiting tier first, ties in arrival order
 struct State {
     running: usize,
-    /// `(tier, arrival)`: the lowest tier waiting goes first, ties in arrival order
     waiting: BinaryHeap<Reverse<(u32, u64)>>,
     arrivals: u64,
 }
 
-/// One held slot, returned on drop
+/// Held slot, returned on drop
 pub(super) struct Slot<'a> {
     slots: &'a Slots,
 }
@@ -90,8 +89,8 @@ mod tests {
 
     use std::{sync::Arc, thread};
 
-    /// Never more than the capacity at once; a freed slot goes to the lowest tier waiting; a
-    /// cancelled waiter leaves the queue without a slot
+    /// - never past capacity at once; freed slot → lowest waiting tier
+    /// - cancelled waiter leaves the queue without a slot
     #[test]
     fn slots_cap_concurrency_and_serve_the_lowest_tier_first() {
         let slots: &'static Slots = Box::leak(Box::new(Slots::new(1)));

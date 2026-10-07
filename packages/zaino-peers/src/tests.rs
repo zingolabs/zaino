@@ -21,7 +21,7 @@ use zebra_network::{BoxError, InventoryResponse, Request, Response};
 use crate::wire;
 use crate::{Announced, PeerConfig, PeerNetwork, PeerTxId, PushError};
 
-/// A real, empty v4 transaction, distinct per `lock_time`
+/// Real empty v4 transaction, distinct per `lock_time`
 fn transaction(lock_time: u32) -> Vec<u8> {
     use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
     let tx = TransactionData::<Authorized>::from_parts(
@@ -43,11 +43,11 @@ fn transaction(lock_time: u32) -> Vec<u8> {
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 
-/// A full zebra-network regtest node on a fresh loopback port, answering peers with `inbound`
-/// (no seeds: it only accepts); its peer set reaches whoever connected
+/// Full zebra-network regtest node on a fresh loopback port, answering peers with `inbound`
+/// (no seeds: accepts only); its peer set reaches whoever connected
 ///
-/// - a full node, not an isolated connection: those advertise no services, and a peer set
-///   refuses an outbound peer that serves nothing
+/// - full node, not an isolated connection (those advertise no services: a peer set refuses
+///   an outbound peer serving nothing)
 async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers)
 where
     S: Service<Request, Response = Response, Error = BoxError> + Clone + Send + Sync + 'static,
@@ -78,12 +78,12 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never {what}");
 }
 
-/// One fake peer holding mainnet blocks 1–3 and three mempool transactions, which lies when
-/// asked for transaction A (answers B):
-/// - headers and blocks arrive byte-identical, an unknown hash comes back `None`
-/// - the mempool listing is its three ids; the lie is an answer, not a failure (A = `None`, B
-///   never labelled A), an honest answer passes
-/// - its `inv` reaches Zaino attributed to its address; it is a submission entry candidate
+/// Fake peer: mainnet blocks 1–3 + three mempool txs, lying when asked for tx A (answers B)
+///
+/// - headers + blocks byte-identical, unknown hash → `None`
+/// - mempool listing = its three ids; lie = an answer, not a failure (A = `None`, B never
+///   labelled A); honest answer passes
+/// - its `inv` attributed to its address; peer = submission entry candidate
 // multi_thread required: zebra-network's codec parses blocks and txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_inv_is_attributed() {
@@ -190,8 +190,8 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     );
 }
 
-/// The push reaches exactly the chosen address with exactly the bytes, named by the bytes' own
-/// txid; malformed bytes never connect; a closed address is a connect failure, not a verdict
+/// - Push → exactly the chosen address, exactly the bytes, named by the bytes' own txid
+/// - Malformed bytes never connect; closed address = connect failure, not a verdict
 // multi_thread required: zebra-network's codec parses txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn an_isolated_push_delivers_the_exact_bytes_to_the_chosen_address() {

@@ -71,9 +71,9 @@ mod tests {
 
     use super::*;
 
-    /// Depth 3, chain A 0..=24, B22 forking after A21: closed below the best, open at it, open
-    /// within the depth, closed past it (a stalled NFS), closed once the best moves off the
-    /// served block's branch, reopened at the new best
+    /// Depth 3, chain A 0..=24, B22 forking after A21:
+    /// - closed below the best, open at it + within the depth, closed past it (stalled NFS)
+    /// - closed once the best leaves the served block's branch, reopened at the new best
     #[test]
     fn open_at_the_best_block_closed_past_the_depth_or_off_the_best_branch() {
         let mut chain = Chain::new();

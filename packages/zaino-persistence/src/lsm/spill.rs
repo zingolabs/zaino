@@ -1,11 +1,9 @@
-//! A byte stream a segment's navigation writes while its records stream out, copied into the
-//! segment after the records: held in memory up to [`SPILL_AT`], then on a scratch file beside
-//! the segment
+//! Byte stream a segment's navigation writes while its records stream out, copied in after the
+//! records: memory up to [`SPILL_AT`], then a scratch file beside the segment
 //!
-//! A large merge's fences and filter fingerprints run to hundreds of megabytes, so holding them
-//! until the records end would make merge memory grow with the segment. A small batch never
-//! reaches [`SPILL_AT`] and never touches a scratch file. Scratch files are never listed and are
-//! always removed when a set opens (a crash can leave one behind).
+//! - large merge's fences + fingerprints = hundreds of MB (held in memory: merge memory ∝ segment)
+//! - small batch never reaches [`SPILL_AT`], never touches a scratch file
+//! - scratch files never listed, always removed when a set opens (crash can leave one)
 
 use std::{
     io,
@@ -20,18 +18,18 @@ use crate::{
 
 /// Bytes held in memory before the stream moves to its scratch file (and the copy chunk size)
 ///
-/// - tests spill from 4 KiB, so every test that writes a segment, crash states included, runs
-///   through the scratch files too
+/// - tests spill from 4 KiB (every segment-writing test, crash states included, runs through the
+///   scratch files too)
 const SPILL_AT: usize = match cfg!(any(test, feature = "testing")) {
     true => 4096,
     false => 1 << 20,
 };
 
+/// `file` = scratch file + bytes already written to it, once spilled
 pub(crate) struct Spill {
     fs: Arc<dyn Fs>,
     path: PathBuf,
     buffer: Vec<u8>,
-    /// Scratch file and the bytes already written to it, once spilled
     file: Option<(Arc<dyn FileHandle>, u64)>,
 }
 
@@ -78,7 +76,7 @@ impl Spill {
     fn write_out(&mut self) -> io::Result<()> {
         if self.file.is_none() {
             let file = self.fs.open(&self.path)?;
-            // a scratch name can be reused after a crash (open removes it, this makes sure)
+            // scratch name reusable after a crash (open removes it; belt and braces)
             file.set_len(0)?;
             self.file = Some((file, 0));
         }
@@ -95,7 +93,7 @@ pub(crate) fn scratch_path(dir: &Path, id: u32, part: &str) -> PathBuf {
     dir.join(format!("{id:010}.{part}.scratch"))
 }
 
-/// A scratch file (removed whenever a set opens)
+/// Scratch file (removed whenever a set opens)
 pub(crate) fn is_scratch(name: &str) -> bool {
     name.ends_with(".scratch")
 }
@@ -108,8 +106,8 @@ mod tests {
         pages::{FileKind, Sealed},
     };
 
-    /// Past the threshold the stream moves to its scratch file; appended, the bytes are exactly
-    /// what was pushed, and the scratch file is gone. Below it, nothing touches the disk.
+    /// - past the threshold → scratch file; appended bytes = exactly what was pushed, scratch gone
+    /// - below it: nothing touches the disk
     #[test]
     fn a_spill_appends_every_byte_in_order_and_removes_its_scratch() {
         let fs = SimFs::new();

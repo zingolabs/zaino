@@ -1,9 +1,6 @@
-//! Offline parity test: replay canned Zebra RPC responses through the adapter
-//! and assert the deserialized block matches known-good block explorer data.
+//! Canned zebrad `getblock` replies through the adapter → decoded block = block-explorer data
 //!
-//! Fixtures in `tests/fixtures/block_<height>.hex` were captured from a synced
-//! Zebra node via `examples/capture_fixtures.rs` and cross-checked against
-//! Blockchair on 2026-07-11.
+//! - `tests/fixtures/block_<height>.hex` = `examples/capture_fixtures.rs` output
 
 use std::collections::HashMap;
 
@@ -89,7 +86,7 @@ const FIXTURES: &[Expected] = &[
     },
 ];
 
-/// Load hex fixtures into a hash (display hex)→hex-string map.
+/// Display-hex hash → block hex
 fn load_fixtures() -> HashMap<String, String> {
     let mut map = HashMap::new();
     for expected in FIXTURES {
@@ -104,8 +101,7 @@ fn load_fixtures() -> HashMap<String, String> {
     map
 }
 
-/// Minimal HTTP server that responds to JSON-RPC `getblock` requests with
-/// canned hex fixtures. Runs until the sender is dropped.
+/// Minimal HTTP server: `getblock` → canned fixture hex, unknown hash → `-8`
 async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>) {
     loop {
         let (mut stream, _) = match listener.accept().await {
@@ -121,7 +117,6 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
             };
             let body_str = String::from_utf8_lossy(&buf[..n]);
 
-            // Find the JSON body after the blank line.
             let json_body = body_str.split("\r\n\r\n").nth(1).unwrap_or(&body_str);
 
             let req: serde_json::Value =
@@ -177,14 +172,10 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
 async fn block_parity_with_explorer_offline() {
     let fixtures = load_fixtures();
 
-    // Bind to a random port.
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
     let port = listener.local_addr().expect("local addr").port();
-
-    // Start mock server.
     tokio::spawn(mock_zebra_rpc(listener, fixtures));
 
-    // Point the adapter at the mock.
     let rpc = RpcClient::new(RpcClientConfig {
         url: format!("http://127.0.0.1:{port}"),
         auth: None,

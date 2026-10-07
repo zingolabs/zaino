@@ -31,9 +31,8 @@ impl ZebraRpcAdapter {
         Self { rpc: Arc::new(rpc), lane: Lane::Control }
     }
 
-    /// The validator at `address` (`host:port`), unprobed (whether it answers is the first
-    /// call's question: a validator down at boot is the caller's retry, never a boot failure),
-    /// on [`Lane::Control`]
+    /// Validator at `address` (`host:port`) on [`Lane::Control`], unprobed (down at boot = the
+    /// first call's failure + the caller's retry, never a boot failure)
     pub fn at(
         address: &str,
         cookie_path: Option<&Path>,
@@ -54,12 +53,12 @@ impl ZebraRpcAdapter {
         Ok(Self::new(rpc))
     }
 
-    /// The same validator and budget, its calls on `lane`
+    /// Same validator + budget, calls on `lane`
     pub fn on(&self, lane: Lane) -> Self {
         Self { rpc: Arc::clone(&self.rpc), lane }
     }
 
-    /// `getblock <id> 0` → bytes (const-hex) → [`decode::block`]
+    /// `getblock <id> 0` → bytes → [`decode::block`]
     async fn raw_block<E>(
         &self,
         id: String,
@@ -99,8 +98,7 @@ fn from_parse(e: parse::ParseError) -> NonDomainError {
 
 /// zebrad's "no such object": `-8` on `getblock <height>`, `-5` on hash/txid lookups
 ///
-/// - Both also mean "malformed parameter" upstream; safe here (every param rendered from a
-///   domain type, so none can be malformed)
+/// - both also "malformed parameter" upstream (safe: every param rendered from a domain type)
 const NOT_FOUND_CODES: [i64; 2] = [-5, -8];
 
 /// `getblockhash` above the tip: zebrad `-32602` (index past the tip), zcashd `-8` (out of range)
@@ -145,12 +143,13 @@ fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionErro
 
 /// zebrad's `-1` on `getrawmempool true` below the network tip
 ///
-/// - `-1` = zebra's catch-all `Misc`, so the message is the only discriminant
+/// - `-1` = zebra's catch-all `Misc` (message = only discriminant)
 /// - zebrad/src/components/mempool.rs (`Request::FullTransactions` while disabled)
 const MEMPOOL_INACTIVE: &str = "mempool is not active";
 
-/// `getrawmempool` answers about the node, not transient failures:
-/// `-32601` = no mempool at all, `-1` + [`MEMPOOL_INACTIVE`] = none until caught up
+/// `getrawmempool` answers about the node, not transient failures
+///
+/// - `-32601` = no mempool at all; `-1` + [`MEMPOOL_INACTIVE`] = none until caught up
 fn mempool_unavailable_or_fetch(error: RpcError) -> QueryError<GetMempoolListingError> {
     let error: NonDomainError = error.into();
     match error.mode {
@@ -299,7 +298,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
     }
 }
 
-/// A port's answer apart from its failure: `Ok(Err(domain))` = the validator's answer
+/// Port's answer apart from its failure: `Ok(Err(domain))` = the validator's answer
 fn split<T, E>(result: Result<T, QueryError<E>>) -> Result<Result<T, E>, NonDomainError>
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -344,8 +343,8 @@ mod tests {
         RpcError::Rpc { code, message: message.to_string() }
     }
 
-    /// Batches keep listing order and cover it exactly; a batch closes at 100 calls or before
-    /// passing 8 MiB, and an entry over the byte budget still goes (alone)
+    /// - Batches keep listing order, cover it exactly
+    /// - Batch closes at 100 calls or before passing 8 MiB; entry over the byte budget = alone
     #[test]
     fn raw_batches_split_in_order_on_either_budget() {
         let entry = |encoded_len: u32| MempoolListed {
@@ -365,11 +364,11 @@ mod tests {
         assert_eq!(sizes(&[entry(1), entry(9 * mib), entry(1)]), [1, 1, 1]);
     }
 
-    /// Both not-found codes = the port's absent answer (a missing block misfiled as a failure
-    /// stalls sync against a healthy validator); `getblockhash` above the tip likewise, with
-    /// zebrad's `-32602` (a validator behind = holds nothing there, never a failed poll); every
-    /// other code and every transport failure stays a failure (an outage must never read as an
-    /// empty chain)
+    /// - Both not-found codes = absent answer (missing block as a failure = sync stalls on a
+    ///   healthy validator)
+    /// - `getblockhash` above the tip likewise, zebrad's `-32602` too (validator behind ≠ failed
+    ///   poll)
+    /// - Every other code + every transport failure = failure (outage never reads as empty chain)
     #[test]
     fn only_not_found_codes_are_absent_answers() {
         let absent = || GetAtHeightError::HeightNotFound(Height::try_from(42u32).expect("h"));
@@ -396,8 +395,8 @@ mod tests {
         );
     }
 
-    /// Rejections carry the reason (the only useful part); a warming-up node has not
-    /// considered the transaction at all
+    /// - Rejections carry the reason (the only useful part)
+    /// - Warming-up node = transaction never considered
     #[test]
     fn submission_rejections_carry_their_reason() {
         use SendRawTransactionError::{Malformed, Rejected};
@@ -410,8 +409,9 @@ mod tests {
         assert!(submission_rejection(&rpc(-28, "warming up").into()).is_none());
     }
 
-    /// `-32601` = no mempool on this node (stop asking); zebrad's own `-1` below the network tip
-    /// = inactive; every other code, a bare `-1` included, stays a failure worth re-polling
+    /// - `-32601` = no mempool on this node (stop asking)
+    /// - zebrad's own `-1` below the network tip = inactive
+    /// - every other code (bare `-1` included) = failure worth re-polling
     #[test]
     fn mempool_answers_are_a_missing_method_or_an_inactive_mempool() {
         let missing = mempool_unavailable_or_fetch(rpc(METHOD_NOT_FOUND, "Method not found"));

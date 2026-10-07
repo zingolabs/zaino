@@ -1,6 +1,6 @@
 //! Zaino's validator source: the questions Zaino asks a validator, answered over JSON-RPC
 //!
-//! - [`queries`](crate::GetBlock): one trait per question, each with its own domain error
+//! - [`ChainDataSource`]: one port, each question with its own domain error
 //! - [`ZebraRpcAdapter`]: the one implementation (blocks decoded once, from consensus bytes)
 //! - [`TrafficBalancer`]: the least-loaded of N validators first, failover through the rest
 

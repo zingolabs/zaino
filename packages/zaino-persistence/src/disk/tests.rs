@@ -1,6 +1,6 @@
-//! `DiskEngine` under the conformance suite (`crate::conformance`), then what only files on a
-//! filesystem can show: every crash state, every failed I/O call, open's trimming and refusals,
-//! golden manifest bytes, offline verify, the LSM's own guards
+//! `DiskEngine` under the conformance suite (`crate::conformance`), then files-only concerns:
+//! every crash state, every failed I/O call, open's trimming + refusals, golden manifest bytes,
+//! offline verify, the LSM's own guards
 
 use std::{
     collections::BTreeMap,
@@ -29,8 +29,8 @@ fn open(engine: &DiskEngine) -> DiskStore {
     engine.open(Path::new(ROOT), &schema()).expect("open")
 }
 
-/// `DiskEngine` on `SimFs`: a crash = `SimFs::power_loss`, background work = merges, internal
-/// invariants = each map's tiers and files + the buffer layer's
+/// `DiskEngine` on `SimFs`: crash = `SimFs::power_loss`, background work = merges, internal
+/// invariants = each map's tiers + files, the buffer layer's
 struct SimDisk {
     fs: Arc<SimFs>,
     fanout: usize,
@@ -69,8 +69,8 @@ impl Subject for SimDisk {
     }
 }
 
-/// Each map's tiers within `fanout` inputs + `STALL_WINDOWS` (2) idle windows; with `just_opened`:
-/// every listed segment + sums on disk, beyond them only running merges' outputs
+/// - each map's tiers within `fanout` inputs + `STALL_WINDOWS` (2) idle windows
+/// - `just_opened`: every listed segment + sums on disk, beyond them only running merges' outputs
 fn assert_tiers(store: &DiskStore, fs: &SimFs, fanout: usize, just_opened: bool, label: &str) {
     for (table, log) in schema().maps.iter().zip(&store.maps) {
         let name = &table.name;
@@ -98,7 +98,7 @@ proptest! {
     // 64 cases ≈ seconds; heavy run after any change: root CLAUDE.md
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// The conformance history at fanouts that merge every few commits and rarely
+    /// Conformance history at fanouts merging every few commits and rarely
     #[test]
     fn random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss(
         fanout in prop_oneof![Just(2usize), Just(3), Just(8)],
@@ -113,7 +113,7 @@ fn the_disk_engine_keeps_the_port_contract() {
     conformance::contract(SimDisk::new(2));
 }
 
-/// Fanout 2, merges launched and landed mid-history; per crash state: recovered = an acked or the
+/// Fanout 2, merges launched + landed mid-history; per crash state: recovered = an acked or the
 /// attempted commit, every table = the model at that commit, only listed files, commits continue
 #[test]
 fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
@@ -229,8 +229,9 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
     assert!(failures > 40, "only {failures} failure points exercised");
 }
 
-/// Read 0, 1, 2, … failed while reopening a committed store until the open succeeds: each
-/// failure surfaces as the injected `Err`, never a panic; the open that succeeds finds every commit
+/// Read 0, 1, 2, … failed while reopening a committed store until the open succeeds
+///
+/// - each failure = the injected `Err`, never a panic; successful open finds every commit
 #[test]
 fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
     let fs = SimFs::new();
@@ -267,8 +268,8 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
     assert!(failures > 0, "open reads through positional reads (the manifest at least)");
 }
 
-/// Each guard fires on the bug it guards, naming it (RocksDB: a check never seen firing = not
-/// known to work)
+/// Each guard fires on the bug it guards, naming it (RocksDB: check never seen firing = not known
+/// to work)
 #[test]
 fn invariant_checks_fire_on_the_bugs_they_guard() {
     let fires = |expected: &str, bug: &dyn Fn()| {
@@ -314,7 +315,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         committed(&mut store, one_row(2));
         store.view().range(SCANNED, &[0; 12], &[0xff; 12], usize::MAX);
     });
-    // two 1-row segments at fanout 2 = a merge; its duplicate panics on its thread, resumed here
+    // two 1-row segments at fanout 2 = merge; its duplicate panics on its thread, resumed here
     fires("strictly ascending", &|| {
         let mut store = store();
         committed(&mut store, one_row(1));
@@ -324,8 +325,8 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
     });
 }
 
-/// Open drops bytes past the manifest, refuses a lost file and a torn tail page, and refuses data
-/// in a directory that never committed
+/// - open drops bytes past the manifest
+/// - refused: lost file, torn tail page, data in a directory that never committed
 #[test]
 fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let populated = || {
@@ -363,8 +364,8 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     assert!(matches!(opened, Err(StoreError::Manifest(ManifestError::Unmanifested { .. }))));
 }
 
-/// The manifest body pinned byte for byte: committed tip, then each sequence's seals in schema
-/// order (two for a variable one), then each map's segment list
+/// Manifest body pinned byte for byte: committed tip, each sequence's seals in schema order (two
+/// for a variable one), each map's segment list
 #[test]
 fn a_manifest_body_is_its_golden_bytes() {
     let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest)
@@ -408,8 +409,8 @@ fn a_manifest_body_is_its_golden_bytes() {
     assert!(matches!(partial, Err(ManifestError::Body(_))), "6 bytes is not whole 4-byte records");
 }
 
-/// `verify` over a real directory: clean, a flipped byte names its page, a missing file is lost,
-/// and a file a merge retired between the manifest read and the scrub is scrubbed again
+/// `verify` over a real directory: clean, flipped byte names its page, missing file lost, file a
+/// merge retired between manifest read and scrub scrubbed again
 #[test]
 fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     let root = tempfile::tempdir().expect("tempdir");

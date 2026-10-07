@@ -1,4 +1,4 @@
-//! A committed segment as its manifest records it, and the merge policy over a segment list
+//! Committed segment as its manifest records it + merge policy over a segment list
 
 use std::collections::BTreeMap;
 
@@ -7,7 +7,7 @@ use crate::{
     pages::Sealed,
 };
 
-/// One committed segment: file id, record count, its file's seal
+/// Committed segment: file id, record count, its file's seal
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SegmentMeta {
     pub(crate) id: u32,
@@ -37,7 +37,7 @@ pub(crate) fn encode_list(segments: &[SegmentMeta], out: &mut Vec<u8>) {
     }
 }
 
-/// Refuses a duplicate id or an empty segment (neither is ever committed)
+/// Duplicate id or empty segment refused (neither ever committed)
 pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>, ManifestError> {
     let count = body.u32()?;
     let mut segments = Vec::new();
@@ -61,9 +61,10 @@ pub(crate) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
     segment.records.ilog(u64::try_from(fanout).expect("fanout fits u64"))
 }
 
-/// Next size-tiered merge: lowest tier outside `busy` listing `fanout` segments → its oldest `fanout`
+/// Next size-tiered merge: lowest tier outside `busy` listing `fanout` segments → its oldest
+/// `fanout`
 ///
-/// - peers need not be adjacent (keys unique across segments → list order never changes an answer)
+/// - peers need not be adjacent (keys unique across segments → order never changes an answer)
 /// - lowest first: cheapest merge, most segments retired per byte
 pub(crate) fn merge_candidates(
     segments: &[SegmentMeta],
@@ -85,7 +86,7 @@ pub(crate) fn merge_candidates(
     })
 }
 
-/// Per tier `(segments listed, a merge running)`, `0..` the highest occupied tier or `floor`
+/// Per tier `(segments listed, merge running)`, `0..` highest occupied tier or `floor`
 pub(crate) fn tier_shape(
     segments: &[SegmentMeta],
     merging: &[u32],
@@ -122,7 +123,7 @@ mod tests {
         }
     }
 
-    /// List codec round trip; a duplicate id or an empty segment in a manifest is refused
+    /// List codec round trip; duplicate id or empty segment in a manifest refused
     #[test]
     fn segment_lists_round_trip_and_refuse_duplicates_and_empties() {
         let segments = vec![segment(4, 10), segment(9, 1), segment(2, 1 << 40)];
@@ -151,7 +152,7 @@ mod tests {
             (0u32..).zip(sizes).map(|(id, &n)| segment(id, n)).collect()
         };
 
-        // (records per segment, busy tiers) → (tier, ids merged); fanout 4: tier 0 < 4 ≤ tier 1 < 16
+        // (records/segment, busy tiers) → (tier, ids merged); fanout 4: tier 0 < 4 ≤ tier 1 < 16
         for (records, busy, expected) in [
             (vec![], vec![], None),
             (vec![1, 1, 1], vec![], None),
@@ -171,14 +172,14 @@ mod tests {
     }
 
     /// Counts + merging flags per tier; length = highest occupied or merging tier, never below
-    /// `floor` (an emptied tier stays published as zero)
+    /// `floor` (emptied tier stays published as zero)
     #[test]
     fn tier_shape_counts_every_tier_and_never_shrinks_below_the_floor() {
         let sizes = |sizes: &[u64]| -> Vec<SegmentMeta> {
             (0u32..).zip(sizes).map(|(id, &n)| segment(id, n)).collect()
         };
 
-        // (records per segment, merging tiers, floor) → shape; fanout 4: tier 0 < 4 ≤ tier 1 < 16
+        // (records/segment, merging tiers, floor) → shape; fanout 4: tier 0 < 4 ≤ tier 1 < 16
         for (records, merging, floor, expected) in [
             (vec![], vec![], 0, vec![]),
             (vec![], vec![], 3, vec![(0, false); 3]),

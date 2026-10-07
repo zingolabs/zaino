@@ -1,4 +1,4 @@
-//! `zaino-grpc` — the lightwalletd-compatible `CompactTxStreamer` endpoint.
+//! lightwalletd-compatible `CompactTxStreamer` endpoint
 //!
 //! - [`GrpcService`] = every method, dispatched by path over [`Routes`] (the NFS's snapshots, the
 //!   chain view, the validators); compact blocks = stored bytes, never re-encoded

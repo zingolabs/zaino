@@ -28,13 +28,13 @@ use crate::{
 /// Level whose completion = one `GetSubtreeRoots` entry (2^16 leaves, the protocol's shard)
 const SUBTREE_LEVEL: u8 = 16;
 
+/// - `Inconsistent` = parent's nodes rebuild no frontier of its recorded size (a fold bug)
+/// - `Commitment` = non-canonical field element off the wire
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FoldError {
-    /// Parent's nodes will not rebuild a frontier of its recorded size (a fold bug)
     #[error("tree-state store is inconsistent at size {size}")]
     Inconsistent { size: u64 },
 
-    /// Non-canonical field element off the wire
     #[error("block {height} carries an uncommittable note commitment")]
     Commitment { height: Height },
 }

@@ -110,7 +110,7 @@ pub(super) fn request(path: &str) -> Request<Full<bytes::Bytes>> {
     framed_request(path, bytes::Bytes::new())
 }
 
-/// A gRPC request whose body is one framed message.
+/// gRPC request, body = one framed message
 pub(super) fn framed_request(path: &str, message: bytes::Bytes) -> Request<Full<bytes::Bytes>> {
     let mut framed = Vec::with_capacity(FRAME_HEADER + message.len());
     frame_into(&mut framed, |out| out.extend_from_slice(&message));

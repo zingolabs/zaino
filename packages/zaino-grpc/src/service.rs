@@ -1,13 +1,7 @@
-//! The `CompactTxStreamer` service: every method dispatched by path, over [`Routes`]
+//! `CompactTxStreamer` service: every method dispatched by path, over [`Routes`]
 //!
-//! Why by hand rather than tonic's generated trait: that trait takes and returns decoded
-//! messages, so a compact-block record would be decoded only for tonic to encode it again. Those
-//! records are *already* gRPC-framed (`[0x00][len][message]`), which is exactly the shape of an
-//! HTTP/2 response body — a unary response is one record and a server-streaming response is the
-//! records concatenated, so the bytes go out as the body and no `CompactBlock` is constructed.
-//! The other routes answer with domain values, so their dispatch builds the proto message and
-//! frames it ([`crate::wire`]).
-//!
+//! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
+//!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
 //! - one [`Snapshot`] per index request or stream, pinned for its life: every index answers at
 //!   heights `<=` its tip (`GetLatestBlock` = that tip)
 //! - no snapshot yet (a booting NFS) = every index method `UNAVAILABLE`
@@ -34,7 +28,7 @@ use crate::limits::ReadLanes;
 use crate::routes::{blocks, chain, transparent_address, tree_state};
 use crate::wire::{frame, path, status_response, unary_response};
 
-/// What one `GrpcService` answers from: the chain view, the validators, the NFS's snapshots
+/// What one `GrpcService` answers from: chain view, validators, the NFS's snapshots
 ///
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
 /// - `max_address_rows` = receives one transparent-address request may walk
@@ -46,10 +40,11 @@ pub struct Routes<S: ChainDataSource, V> {
     pub max_address_rows: NonZeroUsize,
 }
 
-/// The routes + what every request shares, behind one `Arc` (a request clones one pointer)
+/// Routes + what every request shares, one `Arc` (a request clones one pointer)
+///
+/// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
 struct Wired<S: ChainDataSource, V> {
     routes: Routes<S, V>,
-    /// Process-wide: every index read runs on the blocking pool under a permit of its lane
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
 }
@@ -147,7 +142,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
         }
     }
 
-    /// The current snapshot (`UNAVAILABLE` before the first: retry, the indexes are opening)
+    /// Current snapshot (`UNAVAILABLE` before the first: retry, indexes opening)
     fn snapshot(&self) -> Result<Arc<Snapshot<V>>, Status> {
         let snap = self.routes.nfs.snapshot();
         snap.ok_or_else(|| Status::unavailable("the indexes are syncing: nothing served yet"))
@@ -198,9 +193,9 @@ mod tests {
     use crate::testing::{dispatch, framed_request, indexed, request, routes, snapshot};
     use crate::wire::path;
 
-    /// Nothing published yet: every index method `UNAVAILABLE` (retry), `GetLightdInfo` with no
-    /// verified tip too; an unknown path `UNIMPLEMENTED`. A snapshot with only compact-block: an
-    /// index the config left off = `UNIMPLEMENTED` naming that index
+    /// - Nothing published: every index method `UNAVAILABLE` (retry), `GetLightdInfo` without a
+    ///   verified tip too; unknown path `UNIMPLEMENTED`
+    /// - Compact-block-only snapshot: a disabled index = `UNIMPLEMENTED` naming it
     #[tokio::test]
     async fn a_disabled_index_or_unknown_path_is_unimplemented_and_nothing_served_says_retry() {
         use tonic::Code::{Unavailable, Unimplemented};
@@ -250,10 +245,10 @@ mod tests {
         }
     }
 
-    /// R12: one snapshot answers every RPC at one tip. Compact-block and tree-state hold 0..=3,
-    /// the snapshot serves 2 (a root snapshot during bulk sync: views ahead of its tip):
-    /// `GetLatestBlock` = 2, `GetBlockRange` 0..=9 stops at 2, `GetLatestTreeState` = 2's,
-    /// `GetTreeState` 3 = a miss (never past the served tip), each block's hash = its tree state's
+    /// R12: one snapshot, every RPC at one tip
+    /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip)
+    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 stops at 2, `GetLatestTreeState` = 2's
+    /// - `GetTreeState` 3 = a miss (never past the served tip); block hash = its tree state's
     #[tokio::test]
     async fn get_latest_block_get_block_range_and_get_tree_state_agree_on_the_snapshot_tip() {
         use prost::Message as _;
@@ -369,7 +364,6 @@ mod tests {
             assert!(ok.contains(&status), "{path}: {status:?}");
         }
 
-        // Data frames in order, then the trailers.
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
             use http_body_util::BodyExt as _;
 

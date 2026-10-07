@@ -1,4 +1,4 @@
-//! One index directory: its lock, its manifest, and the files under it
+//! Index directory: lock, manifest, files under it
 
 use std::{
     io,
@@ -14,12 +14,12 @@ use crate::{
 const LOCK: &str = "LOCK";
 pub(crate) const MANIFEST: &str = "MANIFEST";
 
-/// A manifest being created: zeroed and synced here, then renamed to [`MANIFEST`] whole
+/// Manifest mid-creation: zeroed + synced here, then renamed to [`MANIFEST`] whole
 const CREATING: &str = "MANIFEST.creating";
 
 /// Locked for the life of this value; see `docs/design/durability.md` §2
 ///
-/// - `seq` = the last committed manifest's sequence number (0 = nothing committed yet)
+/// - `seq` = last committed manifest's sequence number (0 = nothing committed yet)
 #[derive(Debug)]
 pub(crate) struct IndexDir {
     fs: Arc<dyn Fs>,
@@ -30,7 +30,7 @@ pub(crate) struct IndexDir {
     _lock: LockGuard,
 }
 
-/// A freshly opened directory: its committed manifest body, or `None` when never committed
+/// Freshly opened directory + committed manifest body (`None` = never committed)
 #[derive(Debug)]
 pub(crate) struct Opened {
     pub(crate) dir: IndexDir,
@@ -38,11 +38,11 @@ pub(crate) struct Opened {
 }
 
 impl IndexDir {
-    /// Creates `path` if absent (durably in its parent), locks it, and reads its manifest
+    /// `path` created if absent (durably in its parent), locked, manifest read
     ///
-    /// - a missing manifest is created as two zeroed slots under a temporary name, synced, then
-    ///   renamed in: `MANIFEST` only ever exists whole, and every later commit overwrites blocks
-    ///   that already exist (a creation a crash interrupted = a leftover temporary, removed here)
+    /// - missing manifest → two zeroed slots under `CREATING`, synced, renamed in (`MANIFEST`
+    ///   only ever whole; later commits overwrite existing blocks)
+    /// - leftover `CREATING` = creation a crash interrupted → removed
     pub(crate) fn open(
         fs: Arc<dyn Fs>,
         path: &Path,
@@ -88,12 +88,11 @@ impl IndexDir {
         Ok(dir)
     }
 
-    /// Makes `body` the committed state: written over the slot the last commit did not use, then
-    /// `fdatasync`ed
+    /// `body` committed: written over the slot the last commit did not use, then `fdatasync`ed
     ///
-    /// - a crash before the sync completes leaves the other slot, the last commit, intact
-    /// - no rename, no truncate, no directory sync: the write lands in existing blocks below EOF,
-    ///   so the sync flushes this file only and never commits the filesystem journal
+    /// - crash before the sync → other slot (last commit) intact
+    /// - no rename / truncate / directory sync (write below EOF: sync flushes this file only, never
+    ///   the filesystem journal)
     pub(crate) fn commit(&mut self, body: &[u8]) -> io::Result<()> {
         let seq = self.seq + 1;
         let slot = manifest::encode(self.identity, seq, body);
@@ -103,7 +102,7 @@ impl IndexDir {
         Ok(())
     }
 
-    /// Fresh-directory check: `relative` absent or empty, else it holds uncommitted data
+    /// Fresh-directory check: `relative` absent or empty (else uncommitted data)
     pub(crate) fn ensure_empty(&self, relative: &str) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
@@ -115,8 +114,8 @@ impl IndexDir {
         Ok(())
     }
 
-    /// Fresh-directory check for a subdirectory: absent, or holding only empty files (a crash
-    /// between creating them and the first commit)
+    /// Fresh-directory check for a subdirectory: absent, or empty files only (crash between
+    /// creating them and the first commit)
     pub(crate) fn ensure_empty_dir(&self, relative: &str) -> Result<(), ManifestError> {
         let names = match self.fs.list(&self.path.join(relative)) {
             Ok(names) => names,
@@ -130,8 +129,9 @@ impl IndexDir {
     }
 }
 
-/// Bytes every file under `path` takes, subdirectories included (plain `stat`s, no lock); a file
-/// removed mid-walk counts as gone
+/// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
+///
+/// - file removed mid-walk = gone
 pub fn disk_bytes(path: &Path) -> io::Result<u64> {
     let mut total = 0;
     for entry in std::fs::read_dir(path)? {
@@ -160,9 +160,9 @@ mod tests {
     const IDENTITY: Identity =
         Identity { kind: IndexKind::CompactBlock, format: 1, network: NetworkType::Regtest };
 
-    /// Fresh → commit → reopen reads it back, and commits after a reopen continue the sequence
-    /// (never overwrite the live slot); the manifest never grows past its two slots; a second
-    /// opener is locked out; a foreign network never counts as committed state
+    /// - fresh → commit → reopen reads it back; commits after a reopen continue the sequence
+    ///   (never over the live slot); manifest never past its two slots
+    /// - second opener locked out; foreign network never committed state
     #[test]
     fn commits_survive_reopen_the_lock_excludes_and_identity_is_enforced() {
         let fs = SimFs::new();
@@ -199,8 +199,8 @@ mod tests {
         assert!(matches!(foreign, Err(ManifestError::Network { .. })));
     }
 
-    /// Every crash state of a commit reopens to the old body or the new one, never neither; the
-    /// third commit is the first to overwrite a used slot (commit 1's)
+    /// - every crash state of a commit reopens to the old body or the new one, never neither
+    /// - commit 3 = first overwrite of a used slot (commit 1's)
     #[test]
     fn a_commit_is_atomic_under_every_crash_state() {
         let fs = SimFs::recording();
@@ -225,9 +225,9 @@ mod tests {
         }
     }
 
-    /// The offline reader (`zainod verify`, read only, no lock) sees what `IndexDir` sees:
-    /// nothing before a manifest exists or before its first commit, then the newest commit; an
-    /// older layout is `InvalidData`
+    /// - offline reader (`zainod verify`, read only, no lock) = what `IndexDir` sees
+    /// - nothing before a manifest or its first commit, then the newest commit
+    /// - older layout = `InvalidData`
     #[test]
     fn the_offline_reader_answers_the_newest_commit() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -249,7 +249,7 @@ mod tests {
         assert_eq!(older.kind(), io::ErrorKind::InvalidData, "{older}");
     }
 
-    /// Every file counts, nested ones included; a missing directory is an error
+    /// Every file counted, nested included; missing directory = error
     #[test]
     fn disk_bytes_sums_every_file_under_the_directory() {
         let root = tempfile::tempdir().expect("tempdir");
