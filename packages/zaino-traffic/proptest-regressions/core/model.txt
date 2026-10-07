@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 424060fcc34a781f67fb012b2bdbde01ca22f10b1e1ae205bd0da8efc636dadf # shrinks to trusted = [(Honest, 0)], moves = [Ask { class: 172, pick: 0, cost: 0 }], swarm = [false, false, false, false, false, false, false], seed = 0
+cc ca18d1066e700fdde0df4a4216d0629140fb71ae8a46fd89d1089dbebb3bcd9a # shrinks to trusted = [(Lagging, 0)], moves = [Join(Lying), Ask { class: 0, pick: 0, cost: 0 }, Ask { class: 43, pick: 0, cost: 0 }, Ask { class: 97, pick: 0, cost: 0 }, Ask { class: 104, pick: 223, cost: 0 }, Advance(0)], swarm = [false, false, true, false, false, false, false], seed = 0
+cc 925ca192feb59fa65ed98413f0f86736c749289a523c5d406116a29bce8c832a # shrinks to trusted = [(Slow, 0)], moves = [Join(Silent), Join(Silent), Advance(13197), Advance(13289), Advance(1983), Ask { class: 105, pick: 0, cost: 0 }, Ask { class: 1, pick: 0, cost: 0 }, Advance(14889), Join(Lying), Advance(17494), Ask { class: 127, pick: 0, cost: 0 }, Join(Flapping), Advance(17148), Ask { class: 175, pick: 0, cost: 0 }, Ask { class: 25, pick: 0, cost: 0 }, Ask { class: 145, pick: 0, cost: 0 }, Advance(12000)], swarm = [false, true, true, false, false, false, true], seed = 6629877801700165962
+cc 558eec15e50072ad482d7223d7d387774738db7545a13b539f46e974fce9ca03 # shrinks to trusted = [(Lagging, 0)], moves = [Abandon(0), Ask { class: 0, pick: 0, cost: 0 }, Ask { class: 89, pick: 0, cost: 0 }, Advance(5300), Ask { class: 33, pick: 0, cost: 0 }], swarm = [false, false, false, true, false, false, false], seed = 0

@@ -1,0 +1,32 @@
+[package]
+name = "zaino-traffic"
+description = "Zaino's one traffic balancer: every request to trusted validators and peers, one scheduler."
+version = "0.1.0"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+fastrand = "2"
+futures.workspace = true
+metrics.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tokio-util.workspace = true
+tracing.workspace = true
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"

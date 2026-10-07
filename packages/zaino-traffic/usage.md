@@ -1,0 +1,94 @@
+# `zaino-traffic` — usage
+
+One scheduler for every request Zaino sends to its trusted validators and to peers
+(`docs/design/traffic-balancer.md`): one member table, request classes with reserved and
+ceiling-capped permits, one hedge / retry / blame policy under one retry budget, and the poll
+loop of every trusted validator.
+
+## Wiring
+
+```rust,ignore
+use zaino_traffic::{Limits, TrafficBalancer, Trusted};
+
+let trusted = validators
+    .iter()
+    .map(|v| Trusted {
+        source: Arc::new(ZebraRpcAdapter::new(v.client())),
+        priority: v.priority,                                  // 0 before 1 before …
+        limits: Limits::new(v.max_connections, v.max_requests_per_sec)?,  // None below 6
+    })
+    .collect();
+let (balancer, driver) = TrafficBalancer::new(trusted, Some(peer_transport));
+tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is polled
+```
+
+- `trusted[i]` is `ValidatorId(i)`: configured order, at most `ValidatorId::MAX` (64).
+- `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `MockChain` in tests.
+- `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
+  `None` = trusted only.
+- `Limits::MIN_CONNECTIONS` = 6: every class reserve (5) + one shared permit, so a class with no
+  reserve (headers, bytes) still runs.
+- `TrafficBalancer` is `Clone` (one `Arc`); hand the same one to every consumer.
+
+## Asking
+
+Every answer is `Answered { value, from, ticket }`: `from` names the member that sent it.
+
+| Method | Class | Reaches | Ends |
+| --- | --- | --- | --- |
+| `block(hash, Urgency::Tip / Bulk)` | `TipBlock` / `BulkBlock` | trusted by tier, then peers | never unanswered: every member tried → next round after 1 s |
+| `headers(HeaderAsk::Pinned { member, heights })` | `Headers` | that trusted member only | unanswered if it fails or is out |
+| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` | any peer | unanswered when every peer is tried |
+| `bytes(listed, prefer)` | `Bytes` | best tier, `prefer` first within it | one batch from one member |
+| `transaction(txid)` | `Lookup` | trusted only, absent → next | unanswered once every one is tried |
+| `submit(member, raw)` | `Submit` | that trusted member only | one attempt |
+
+- `Unanswered { last }`: the first transport failure, else the last domain answer (absent,
+  rejected); `None` = no eligible member to ask at all (benched, down, none of that kind).
+- Dropping the future abandons the ask: its sends are dropped and their permits return. There is
+  no cancel API.
+- Hedges (`TipBlock` 2 s, `Lookup` 1 s, `BulkBlock` 15 s floor, else the member's p95 for that
+  class) go to another member; the first value wins and the rest are dropped.
+- Retries after a transport failure and hedges both draw on one budget (10 % of first attempts
+  + 1 per second, 10 at most). Do not resend in the transport.
+
+## Blame: `report`
+
+The balancer cannot judge a value; the caller does (`check_block`, header rule H8, txid
+recomputed from bytes). On failure:
+
+```rust,ignore
+let checked = loop {
+    let answered = balancer.block(hash, Urgency::Tip).await;
+    match check_block(answered.value, height, &record) {
+        Ok(checked) => break checked,
+        // benches `answered.from` alone; the re-ask never reaches it while benched
+        Err(why) => balancer.report(answered.ticket, &why),
+    }
+};
+```
+
+- Bench = 60 s × 2^(times − 1), at most 1 h; even the last trusted member (finality pausing is
+  the right answer to a lying validator). Counted in `zaino_traffic_misanswers_total{member,class}`.
+- Absent is never blame: a lagging validator lacks a fresh block. A header from the future (H7)
+  or an orphan run is not a misanswer either.
+
+## Polling and observations
+
+- Each trusted member is polled every 1 s (every 15 s while its push stream is up), never closer
+  than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
+  failures) is probed at 30 s and nothing else is sent to it.
+- `ask_each_poll(heights)`: every poll asks `getblockhash` of these; setting them wakes every
+  poller. `observe(member)` is a `watch` of the latest `Observation { polled, asked, at,
+  streaming }` (latest only: a slow consumer never stalls a poll).
+- `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an
+  event polls within 200 ms.
+- `members()`: `watch` of the `MemberTable` (health, bench, latency estimate, in flight) for
+  `/statusz` and metrics. `entries()`: trusted members a submission may enter by (live, not
+  benched).
+
+## Health
+
+`Pending` (never polled) → `Live` / `CatchingUp` (polled; catching up = no mempool, so never
+asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `Down` (10).
+`Benched` is orthogonal: a fast liar is `Live` and benched.

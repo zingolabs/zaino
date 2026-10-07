@@ -5290,6 +5290,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-traffic"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "futures",
+ "metrics",
+ "proptest",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-primitives",
+ "zaino-source",
+]
+
+[[package]]
 name = "zainod"
 version = "0.10.1"
 dependencies = [
