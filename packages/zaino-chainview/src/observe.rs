@@ -13,7 +13,7 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo, TransactionId};
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError,
@@ -216,12 +216,11 @@ impl<S: ChainDataSource> Member<'_, S> {
     fn metadata(
         &self,
         metadata: Option<&MetadataReading>,
-    ) -> (
-        Option<Vec<zaino_primitives::types::PeerInfo>>,
-        Option<zaino_primitives::types::NodeRelease>,
-    ) {
+    ) -> (Option<Vec<PeerInfo>>, Option<NodeRelease>) {
         let Some(MetadataReading { peers, release }) = metadata else { return (None, None) };
-        let kept = |what: &str, cause: &NonDomainError| warn!(endpoint = self.address, %cause, "Validator {what} read failed, last kept");
+        let kept = |what: &str, cause: &NonDomainError| {
+            warn!(endpoint = self.address, %cause, "Validator {what} read failed, last kept");
+        };
         let peers = peers.as_ref().inspect_err(|cause| kept("peer list", cause)).ok().cloned();
         let release = release.as_ref().inspect_err(|cause| kept("release", cause)).ok().cloned();
         (peers, release)

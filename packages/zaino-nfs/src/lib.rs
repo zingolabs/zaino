@@ -289,8 +289,8 @@ async fn next_commit<V>(
     (index, watch, open)
 }
 
-/// Fetches in flight, each abandoned by its block (`ids`: a re-want's task never taken for the
-/// abandoned one's)
+/// Fetches in flight, by block (`ids` = each block's live task: an abandoned task ending never
+/// unlists its re-want's)
 #[derive(Default)]
 struct Fetches {
     tasks: JoinSet<Checked>,
