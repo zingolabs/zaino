@@ -108,7 +108,7 @@ impl<V> Core<V> {
     }
 }
 
-/// [`Core`] fed by the NFS's publication watch and the chain view's (I4: its only inputs)
+/// `Core` fed by the NFS's publication watch and the chain view's (I4: its only inputs)
 pub struct Publisher<V> {
     core: Core<V>,
     indexed: Published<V>,
