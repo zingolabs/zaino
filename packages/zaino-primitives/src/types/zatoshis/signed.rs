@@ -12,7 +12,7 @@ pub struct SignedZatoshis(i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("signed zatoshi value {got} exceeds supply magnitude {MAX_ZATOSHIS}")]
 pub struct SignedZatoshisOverflow {
-    pub got: i64,
+    pub(crate) got: i64,
 }
 
 impl SignedZatoshis {

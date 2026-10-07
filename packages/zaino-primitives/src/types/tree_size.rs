@@ -17,14 +17,14 @@ pub struct TreeSizeOutOfRange {
 }
 
 impl TreeSize {
-    pub const ZERO: Self = Self(0);
+    pub(crate) const ZERO: Self = Self(0);
 
     pub const fn get(self) -> u32 {
         self.0
     }
 
     /// Size after one block's `count` new commitments
-    pub fn checked_add(self, count: u64) -> Result<Self, TreeSizeOutOfRange> {
+    pub(crate) fn checked_add(self, count: u64) -> Result<Self, TreeSizeOutOfRange> {
         let total =
             u64::from(self.0).checked_add(count).ok_or(TreeSizeOutOfRange { got: count })?;
         Self::try_from(total)

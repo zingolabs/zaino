@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zaino_primitives::types::{Height, TransactionId, Zatoshis};
+use zaino_primitives::types::{Height, OutPoint, TransactionId, Zatoshis};
 use zcash_transparent::address::TransparentAddress;
 
 use crate::{key::AddressKey, TransparentAddressReader};
@@ -33,17 +33,21 @@ pub const DEFAULT_MAX_ADDRESS_ROWS: NonZeroUsize =
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AddressUtxo {
-    pub height: u32,
-    pub txid: TransactionId,
-    pub vout: u32,
+    pub outpoint: OutPoint,
+    pub height: Height,
     pub value: Zatoshis,
 }
 
 /// Transaction paying the queried address or spending from it
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TransactionRef {
-    pub height: u32,
+    pub(crate) height: Height,
     pub txid: TransactionId,
+}
+
+/// Stored height → [`Height`] (rows = sealed, checksummed `fold` output, written from a `Height`)
+fn stored(height: u32) -> Height {
+    Height::try_from(height).expect("transparent-address rows: height written from a Height")
 }
 
 impl<V: MapRead> TransparentAddressReader<V> {
@@ -51,8 +55,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
         ServeError::TooManyRows { limit: self.max_rows().get() }
     }
 
-    /// `GetAddressUtxos`: unspent receives from height `start` (inclusive) to the tip, oldest first
-    pub fn utxos(
+    #[cfg(test)]
+    pub(crate) fn utxos(
         &self,
         address: &TransparentAddress,
         start: Height,
@@ -61,8 +65,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
         Ok(utxos.pop().expect("one list per address"))
     }
 
-    /// [`utxos`](Self::utxos) of each of `addresses`, in `addresses` order (one batched spend
-    /// lookup across all of them)
+    /// `GetAddressUtxos`: unspent receives from height `start` (inclusive) to the tip, oldest
+    /// first, per address in `addresses` order (one batched spend lookup across all of them)
     pub fn utxos_of(
         &self,
         addresses: &[TransparentAddress],
@@ -77,9 +81,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .map(|rows| {
                 rows.into_iter()
                     .map(|row| AddressUtxo {
-                        height: row.key.height,
-                        txid: row.key.txid,
-                        vout: row.key.vout,
+                        outpoint: OutPoint { txid: row.key.txid, vout: row.key.vout },
+                        height: stored(row.key.height),
                         value: row.value,
                     })
                     .collect()
@@ -87,19 +90,20 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .collect())
     }
 
-    /// `GetTaddressBalance`: sum of everything unspent, all of history
-    pub fn balance(&self, address: &TransparentAddress) -> Result<Zatoshis, ServeError> {
+    #[cfg(test)]
+    pub(crate) fn balance(&self, address: &TransparentAddress) -> Result<Zatoshis, ServeError> {
         self.balance_of(address.into())
     }
 
-    /// [`balance`](Self::balance) of each of `addresses`, in `addresses` order (one batched spend
-    /// lookup across all of them)
+    /// `GetTaddressBalance`: sum of everything unspent, all of history, per address in
+    /// `addresses` order (one batched spend lookup across all of them)
     pub fn balances(&self, addresses: &[TransparentAddress]) -> Result<Vec<Zatoshis>, ServeError> {
         let keys: Vec<AddressKey> = addresses.iter().map(AddressKey::from).collect();
         self.balances_of(&keys)
     }
 
-    /// [`balance`](Self::balance) by storage key (reaches the opaque key no address parses to)
+    /// One balance by storage key (reaches the opaque key no address parses to)
+    #[cfg(test)]
     pub(crate) fn balance_of(&self, key: AddressKey) -> Result<Zatoshis, ServeError> {
         Ok(self.balances_of(&[key])?.pop().expect("one balance per key"))
     }
@@ -136,14 +140,14 @@ impl<V: MapRead> TransparentAddressReader<V> {
         let mut found = Vec::new();
         for (row, spend) in received.iter().zip(self.spends_of(&keys)) {
             if (start..=end).contains(&row.key.height) {
-                found.push(TransactionRef { height: row.key.height, txid: row.key.txid });
+                found.push(TransactionRef { height: stored(row.key.height), txid: row.key.txid });
             }
 
             let Some(spend) = spend else {
                 continue;
             };
             if (start..=end).contains(&spend.height) {
-                found.push(TransactionRef { height: spend.height, txid: spend.spender });
+                found.push(TransactionRef { height: stored(spend.height), txid: spend.spender });
             }
         }
 
@@ -230,13 +234,12 @@ mod tests {
         let at_two = TransparentAddressReader::new(store.staged(), network);
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
-            height: 1,
-            txid: TransactionId::from([0x77; 32]),
-            vout: 0,
+            outpoint: OutPoint { txid: TransactionId::from([0x77; 32]), vout: 0 },
+            height: h(1),
             value: zat(42),
         };
-        let paying = TransactionRef { height: 1, txid: TransactionId::from([0x77; 32]) };
-        let spending = TransactionRef { height: 2, txid: TransactionId::from([0x78; 32]) };
+        let paying = TransactionRef { height: h(1), txid: TransactionId::from([0x77; 32]) };
+        let spending = TransactionRef { height: h(2), txid: TransactionId::from([0x78; 32]) };
 
         assert_eq!(at_two.balance(&paid), Ok(Zatoshis::ZERO), "spent at 2");
         assert_eq!(at_two.utxos(&paid, h(0)), Ok(Vec::new()));

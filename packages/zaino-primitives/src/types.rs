@@ -23,7 +23,7 @@ mod reorg_depth;
 mod script;
 mod shielded_pool;
 mod subtree_root;
-pub mod transaction;
+mod transaction;
 mod transaction_hash;
 mod transaction_location;
 mod tree_root;

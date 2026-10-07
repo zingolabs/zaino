@@ -23,9 +23,9 @@ pub enum EquihashSolution {
 }
 
 impl EquihashSolution {
-    /// The solution's bytes, without the length prefix its wire encoding
-    /// carries.
-    pub fn as_bytes(&self) -> &[u8] {
+    /// Without the wire encoding's length prefix
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         match self {
             Self::Standard(bytes) => bytes,
             Self::Regtest(bytes) => bytes,

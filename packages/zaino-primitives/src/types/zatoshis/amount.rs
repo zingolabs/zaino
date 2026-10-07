@@ -15,8 +15,7 @@ pub struct Zatoshis(u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("zatoshi amount {got} exceeds maximum {MAX_ZATOSHIS}")]
 pub struct ZatoshisOverflow {
-    /// The value that was rejected.
-    pub got: u64,
+    pub(crate) got: u64,
 }
 
 impl Zatoshis {

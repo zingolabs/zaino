@@ -439,7 +439,8 @@ impl SimFs {
     /// `EIO` from the nth positional read on (a failing disk surfacing on read). Mapped reads
     /// are copies here and never fail: on a real disk those fault as `SIGBUS`, which kills the
     /// process, and nothing in-process can test that
-    pub fn fail_reads_from(&self, read: u64) {
+    #[cfg(test)]
+    pub(crate) fn fail_reads_from(&self, read: u64) {
         self.lock_inner().fail_reads_from = Some(read);
     }
 
@@ -455,12 +456,14 @@ impl SimFs {
 
     /// Image after a power loss right now (only synced entries + bytes; background threads
     /// mid-write included), healthy
-    pub fn power_loss(&self) -> Arc<SimFs> {
+    #[cfg(test)]
+    pub(crate) fn power_loss(&self) -> Arc<SimFs> {
         SimFs::from_image(self.lock_inner().image.power_loss())
     }
 
     /// Current volatile content, `None` when absent
-    pub fn contents(&self, path: &Path) -> Option<Vec<u8>> {
+    #[cfg(test)]
+    pub(crate) fn contents(&self, path: &Path) -> Option<Vec<u8>> {
         let inner = self.lock_inner();
         match inner.image.volatile.get(path) {
             Some(Node::File(id)) => Some(inner.image.files[*id].current.clone()),
@@ -469,7 +472,8 @@ impl SimFs {
     }
 
     /// Rewrites a file durably, as bit rot or an operator would
-    pub fn corrupt(&self, path: &Path, edit: impl FnOnce(&mut Vec<u8>)) {
+    #[cfg(test)]
+    pub(crate) fn corrupt(&self, path: &Path, edit: impl FnOnce(&mut Vec<u8>)) {
         let mut inner = self.lock_inner();
         let Some(Node::File(id)) = inner.image.volatile.get(path).copied() else {
             panic!("corrupt: {} is not a file", path.display());

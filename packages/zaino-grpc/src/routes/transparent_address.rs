@@ -215,8 +215,8 @@ fn reply(
 ) -> Result<proto::GetAddressUtxosReply, Status> {
     Ok(proto::GetAddressUtxosReply {
         address: encoded.to_owned(),
-        txid: <[u8; 32]>::from(utxo.txid).to_vec(),
-        index: i32::try_from(utxo.vout)
+        txid: <[u8; 32]>::from(utxo.outpoint.txid).to_vec(),
+        index: i32::try_from(utxo.outpoint.vout)
             .map_err(|_| Status::internal("stored vout is above the protocol ceiling"))?,
         script: address.script().to_bytes(),
         value_zat: utxo.value.as_i64(),

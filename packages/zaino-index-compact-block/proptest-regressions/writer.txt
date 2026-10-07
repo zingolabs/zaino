@@ -4,5 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc fe4d9892690e795cef42785acd9a18068cc80dac1e9fdaa108a95a70e81b8b31 # shrinks to counts = [(0, 0, 0), (0, 0, 0), (0, 0, 0)], steps = [Apply, Apply, Apply, Finalize(1)]
 cc 73f1f56cf8d7e25c8d7c9f5ed390c360c8586aa557a54d8ec102ebc6d759aeeb # shrinks to counts = [(0, 0, 0)], moves = [Finalize(1), Reopen, Reorg]

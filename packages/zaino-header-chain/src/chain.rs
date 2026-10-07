@@ -30,7 +30,7 @@ const SIDE_NODES_PER_DEPTH: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BestTip {
     pub block: BlockRef,
-    pub cumulative_work: u128,
+    pub(crate) cumulative_work: u128,
 }
 
 /// What an accepted header did to the chain

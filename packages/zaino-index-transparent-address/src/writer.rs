@@ -167,7 +167,7 @@ mod tests {
 
         let expected = |count: u64| match count {
             0 => (Vec::new(), Zatoshis::ZERO),
-            count => (vec![(count as u32 - 1, count)], zat(count)),
+            count => (vec![(h(count as u32 - 1), count)], zat(count)),
         };
         let observed = |view: DiskView| {
             let reader = TransparentAddressReader::new(view, NETWORK);
@@ -225,12 +225,13 @@ mod tests {
         let at_two = reader(&committed);
         assert_eq!(at_two.balance(&alice), Ok(zat(300)), "2's spend retires 0's receive");
         let utxos = at_two.utxos(&alice, h(0)).expect("utxos");
-        let utxos: Vec<_> = utxos.iter().map(|utxo| (utxo.height, utxo.txid, utxo.value)).collect();
-        assert_eq!(utxos, [(1, txid(0x11), zat(300))], "only the unspent receive");
+        let utxos: Vec<_> =
+            utxos.iter().map(|utxo| (utxo.height, utxo.outpoint.txid, utxo.value)).collect();
+        assert_eq!(utxos, [(h(1), txid(0x11), zat(300))], "only the unspent receive");
         // paying and spending transactions both alice's, each once
         let touching = at_two.transactions(&alice, h(0), h(2)).expect("transactions");
         let expected = [(0, 0x10), (1, 0x11), (2, 0x20)]
-            .map(|(height, tag)| TransactionRef { height, txid: txid(tag) });
+            .map(|(height, tag)| TransactionRef { height: h(height), txid: txid(tag) });
         assert_eq!(touching, expected);
         // opaque outputs stored, not dropped (same fold answers for them)
         assert_eq!(at_two.balance_of(AddressKey::opaque()), Ok(zat(1)));
@@ -357,10 +358,10 @@ mod tests {
                 if owner != tag || !visible(received) {
                     continue;
                 }
-                touched.push(TransactionRef { height: received, txid });
+                touched.push(TransactionRef { height: h(received), txid });
                 match spent.filter(|&(height, _)| visible(height)) {
                     Some((height, spender)) => {
-                        touched.push(TransactionRef { height, txid: spender })
+                        touched.push(TransactionRef { height: h(height), txid: spender })
                     }
                     None => utxos.push((received, txid, vout, zats)),
                 }
@@ -402,7 +403,10 @@ mod tests {
                 let served = reader.utxos(&address(tag), h(0)).expect("utxos");
                 let served: Vec<_> = served
                     .into_iter()
-                    .map(|utxo| (utxo.height, utxo.txid, utxo.vout, utxo.value.as_u64()))
+                    .map(|utxo| {
+                        let OutPoint { txid, vout } = utxo.outpoint;
+                        (u32::from(utxo.height), txid, vout, utxo.value.as_u64())
+                    })
                     .collect();
                 assert_eq!(served, utxos, "move {at} {next:?}: utxos of {tag}");
                 let served = reader.balance(&address(tag)).expect("balance").as_u64();
@@ -424,7 +428,10 @@ mod tests {
                 .map(|utxos| {
                     utxos
                         .into_iter()
-                        .map(|utxo| (utxo.height, utxo.txid, utxo.vout, utxo.value.as_u64()))
+                        .map(|utxo| {
+                            let OutPoint { txid, vout } = utxo.outpoint;
+                            (u32::from(utxo.height), txid, vout, utxo.value.as_u64())
+                        })
                         .collect()
                 })
                 .collect();

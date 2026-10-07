@@ -107,11 +107,8 @@ impl Params {
         Self { difficulty: Difficulty::Any, ..self }
     }
 
-    pub fn network(&self) -> NetworkType {
-        self.network
-    }
-
-    pub fn genesis(&self) -> BlockHash {
+    #[cfg(test)]
+    pub(crate) fn genesis(&self) -> BlockHash {
         self.genesis
     }
 

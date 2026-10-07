@@ -130,7 +130,7 @@ impl<T: Weight> Subscription<T> {
     /// never a wait)
     ///
     /// - step ending the run = the next [`next`](Self::next)'s
-    pub fn run(&mut self, first: Applied<T>, budget: NonZeroUsize) -> Vec<Applied<T>> {
+    pub(crate) fn run(&mut self, first: Applied<T>, budget: NonZeroUsize) -> Vec<Applied<T>> {
         let mut bytes = first.1.weight();
         let mut run = vec![first];
         while bytes < budget.get() {

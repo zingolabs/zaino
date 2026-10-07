@@ -56,7 +56,7 @@ mod serve;
 mod subtrees;
 mod writer;
 
-pub use fold::{fold, fold_run, FoldError};
+pub use fold::{fold, FoldError};
 pub use reader::TreeStateReader;
 pub use serve::{PoolActivations, ServeError};
 pub use writer::TreeStateIndexWriter;

@@ -268,7 +268,7 @@ impl SegmentLog {
     }
 
     /// Blocks until every running merge has finished (lands on the next `batch`)
-    #[cfg(any(test, feature = "testing"))]
+    #[cfg(test)]
     pub(crate) fn settle(&self) {
         while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
             thread::sleep(std::time::Duration::from_millis(1));

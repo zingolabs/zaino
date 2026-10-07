@@ -10,7 +10,7 @@ use zaino_persistence::{IndexKind, SequenceRead, Store, View};
 use zaino_primitives::types::Block;
 use zaino_sync::{held, Committer, Final, Subscription};
 
-use crate::{fold_run, TreeStateReader, HEIGHTS};
+use crate::{fold::fold_run, TreeStateReader, HEIGHTS};
 
 const NAME: &str = IndexKind::TreeState.name();
 

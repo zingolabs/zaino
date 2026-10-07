@@ -32,8 +32,8 @@ pub struct Record {
     pub hash: BlockHash,
     pub merkle_root: MerkleRoot,
     pub time: u32,
-    pub bits: u32,
-    pub cumulative_work: u128,
+    pub(crate) bits: u32,
+    pub(crate) cumulative_work: u128,
 }
 
 /// hash 32 · merkle root 32 · time u32 LE · bits u32 LE · cumulative work u128 LE
@@ -100,7 +100,7 @@ impl HeaderStore {
     }
 
     /// Last final header (`None` = nothing final yet)
-    pub fn tip(&self) -> Option<BlockRef> {
+    pub(crate) fn tip(&self) -> Option<BlockRef> {
         self.view.tip()
     }
 

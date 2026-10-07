@@ -12,7 +12,7 @@ use std::sync::RwLock;
 
 use zaino_primitives::testing::{encode_header, header_hash};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
+    Block, BlockHash, BlockRef, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
     NodeRelease, TransactionId, TransactionLocation, Zatoshis,
 };
 
@@ -23,7 +23,7 @@ use crate::{
 };
 
 /// Fee every mempool entry is listed at
-pub const MEMPOOL_FEE: u64 = 1_000;
+pub(crate) const MEMPOOL_FEE: u64 = 1_000;
 
 pub struct MockChain {
     held: RwLock<Held>,
@@ -56,8 +56,8 @@ impl Held {
         self.blocks.insert(header.hash, block);
     }
 
-    fn tip(&self) -> Option<(BlockHash, Height)> {
-        self.best.last_key_value().map(|(height, hash)| (*hash, *height))
+    fn tip(&self) -> Option<BlockRef> {
+        self.best.last_key_value().map(|(&height, &hash)| BlockRef { hash, height })
     }
 
     fn best_at(&self, height: Height) -> Option<&Block> {
@@ -108,7 +108,8 @@ impl MockChain {
     }
 
     /// Best chain cut back to `tip` (`invalidateblock` above it)
-    pub fn rewind_to(&self, tip: Height) {
+    #[cfg(test)]
+    pub(crate) fn rewind_to(&self, tip: Height) {
         let mut held = self.held.write().expect("mock chain lock");
         held.best.split_off(&tip.next());
     }
@@ -119,7 +120,8 @@ impl MockChain {
     }
 
     /// Next `count` calls fail with `mode` (any port)
-    pub fn fail_next(self, count: u32, mode: FailureMode) -> Self {
+    #[cfg(test)]
+    pub(crate) fn fail_next(self, count: u32, mode: FailureMode) -> Self {
         self.failures_remaining.store(count, Ordering::SeqCst);
         Self { failure_mode: mode, ..self }
     }
@@ -148,12 +150,12 @@ impl MockChain {
     ///
     /// - Schedule empty, branch 0, Sapling at genesis (no fabricated upgrade a test could pass on)
     fn info(held: &Held) -> BlockchainInfo {
-        let (hash, height) = held.tip().unwrap_or((BlockHash::ZERO, Height::GENESIS));
+        let tip = held.tip().unwrap_or(BlockRef { hash: BlockHash::ZERO, height: Height::GENESIS });
         let sprout = ConsensusBranchId::new(0);
         BlockchainInfo {
-            blocks: height,
-            estimated_height: height,
-            best_block_hash: hash,
+            blocks: tip.height,
+            estimated_height: tip.height,
+            best_block_hash: tip.hash,
             sapling_activation: Height::GENESIS,
             upgrades: Vec::new(),
             consensus: ConsensusBranchIds { chain_tip: sprout, next_block: sprout },
@@ -277,7 +279,7 @@ impl crate::ChainDataSource for MockChain {
 }
 
 /// A captured mainnet block's consensus bytes (`tests/fixtures/block_<height>.hex`)
-pub fn fixture_block(height: u32) -> Vec<u8> {
+pub(crate) fn fixture_block(height: u32) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/block_{height}.hex", env!("CARGO_MANIFEST_DIR"));
     let hex = std::fs::read_to_string(&path).expect("fixture readable");
     const_hex::decode(hex.trim()).expect("fixture is hex")

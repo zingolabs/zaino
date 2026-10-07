@@ -64,7 +64,7 @@ impl Lane {
     const ALL: [Lane; 3] = [Lane::Control, Lane::Serve, Lane::Sync];
 
     /// Metric label
-    pub const fn label(self) -> &'static str {
+    pub(crate) const fn label(self) -> &'static str {
         match self {
             Lane::Control => "control",
             Lane::Serve => "serve",

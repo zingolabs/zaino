@@ -181,10 +181,6 @@ impl Model {
         changes
     }
 
-    pub fn tip(&self) -> Option<BlockRef> {
-        self.tip
-    }
-
     /// `record` on this branch, at the end of `table` here and in `changes`
     fn append(&mut self, changes: &mut Changes, table: SequenceId, record: Vec<u8>) {
         let record = salted(record, self.salt);

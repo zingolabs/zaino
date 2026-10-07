@@ -10,15 +10,6 @@ pub struct PerPool<T> {
 }
 
 impl<T> PerPool<T> {
-    /// `f(pool)` for each pool, in [`ShieldedPool::ALL`] order
-    pub fn from_fn(mut f: impl FnMut(ShieldedPool) -> T) -> Self {
-        Self {
-            sapling: f(ShieldedPool::Sapling),
-            orchard: f(ShieldedPool::Orchard),
-            ironwood: f(ShieldedPool::Ironwood),
-        }
-    }
-
     pub fn get(&self, pool: ShieldedPool) -> &T {
         match pool {
             ShieldedPool::Sapling => &self.sapling,
@@ -27,15 +18,8 @@ impl<T> PerPool<T> {
         }
     }
 
-    pub fn get_mut(&mut self, pool: ShieldedPool) -> &mut T {
-        match pool {
-            ShieldedPool::Sapling => &mut self.sapling,
-            ShieldedPool::Orchard => &mut self.orchard,
-            ShieldedPool::Ironwood => &mut self.ironwood,
-        }
-    }
-
-    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerPool<U> {
+    #[cfg(test)]
+    pub(crate) fn map<U>(self, mut f: impl FnMut(T) -> U) -> PerPool<U> {
         PerPool { sapling: f(self.sapling), orchard: f(self.orchard), ironwood: f(self.ironwood) }
     }
 }
@@ -73,21 +57,6 @@ mod tests {
         CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
         SaplingData, SaplingOutput, Transaction, TransactionId,
     };
-
-    #[test]
-    fn from_fn_fills_each_pool_in_all_order() {
-        let mut visited = Vec::new();
-        let pools = PerPool::from_fn(|pool| {
-            visited.push(pool);
-            pool
-        });
-        let expected = PerPool {
-            sapling: ShieldedPool::Sapling,
-            orchard: ShieldedPool::Orchard,
-            ironwood: ShieldedPool::Ironwood,
-        };
-        assert_eq!((pools, visited), (expected, ShieldedPool::ALL.to_vec()));
-    }
 
     /// Per-pool commitment counts added onto the prior sizes; past `u32` = an error, not a wrap
     #[test]

@@ -137,21 +137,22 @@ pub struct SequenceTable {
 /// - keys lead with >= 8 uniform bytes (a hash, a txid): an engine may shard on them
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapTable {
-    pub name: String,
+    pub(crate) name: String,
     pub key: Width,
-    pub value: Width,
-    pub scope: u32,
+    pub(crate) value: Width,
+    pub(crate) scope: u32,
 }
 
 /// What a store holds and whose it is: declared at open, the same every time
+///
+/// - `format` = layout version of the index's records
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Schema {
     pub kind: IndexKind,
-    /// Layout version of the index's records
-    pub format: u16,
+    pub(crate) format: u16,
     pub network: NetworkType,
     pub sequences: Vec<SequenceTable>,
-    pub maps: Vec<MapTable>,
+    pub(crate) maps: Vec<MapTable>,
 }
 
 impl Schema {
@@ -235,7 +236,7 @@ impl Changes {
         self.tip
     }
 
-    pub fn schema(&self) -> &Schema {
+    pub(crate) fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -318,8 +319,8 @@ impl Verification {
 ///   `bad_pages` = pages whose bytes do not match their checksum
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Checked {
-    pub name: String,
-    pub committed_bytes: u64,
+    pub(crate) name: String,
+    pub(crate) committed_bytes: u64,
     pub orphaned_bytes: u64,
     pub lost: bool,
     pub bad_sums: bool,
@@ -327,7 +328,7 @@ pub struct Checked {
 }
 
 impl Checked {
-    pub fn is_clean(&self) -> bool {
+    pub(crate) fn is_clean(&self) -> bool {
         !self.lost && !self.bad_sums && self.bad_pages.is_empty()
     }
 }

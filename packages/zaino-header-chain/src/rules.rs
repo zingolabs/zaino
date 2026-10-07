@@ -84,7 +84,7 @@ pub struct Checked {
 }
 
 impl Checked {
-    pub fn header(&self) -> &Header {
+    pub(crate) fn header(&self) -> &Header {
         &self.header
     }
 

@@ -52,8 +52,8 @@ impl DiskEngine {
     }
 
     /// Merges after `fanout` same-tier segments (small = merges in a handful of commits)
-    #[cfg(any(test, feature = "testing"))]
-    pub fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
         Self { fs, fanout }
     }
 }
@@ -251,8 +251,8 @@ fn verify_committed(
 
 impl DiskStore {
     /// Blocks until every running merge has finished (lands on the next commit)
-    #[cfg(any(test, feature = "testing"))]
-    pub fn settle(&self) {
+    #[cfg(test)]
+    pub(crate) fn settle(&self) {
         for log in &self.maps {
             log.settle();
         }

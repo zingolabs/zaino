@@ -71,28 +71,29 @@ impl Header {
     }
 
     /// `int32` (zcashd `nVersion`): high bit set = negative
-    pub fn version(&self) -> i32 {
+    pub(crate) fn version(&self) -> i32 {
         i32::from_le_bytes(self.array_at(0))
     }
 
-    pub fn prev_hash(&self) -> BlockHash {
+    pub(crate) fn prev_hash(&self) -> BlockHash {
         BlockHash::from(self.array_at(4))
     }
 
-    pub fn merkle_root(&self) -> MerkleRoot {
+    pub(crate) fn merkle_root(&self) -> MerkleRoot {
         MerkleRoot::from(self.array_at::<32>(36))
     }
 
-    pub fn time(&self) -> u32 {
+    pub(crate) fn time(&self) -> u32 {
         self.u32_at(100)
     }
 
-    pub fn bits(&self) -> u32 {
+    pub(crate) fn bits(&self) -> u32 {
         self.u32_at(104)
     }
 
     /// Consensus bytes as received
-    pub fn bytes(&self) -> &[u8] {
+    #[cfg(test)]
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
 

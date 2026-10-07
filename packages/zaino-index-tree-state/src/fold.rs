@@ -54,7 +54,7 @@ pub fn fold<V: SequenceRead>(
 ///
 /// - bulk sync's runs spread one level's hashing over every core, not one block's few leaves
 /// - every leaf decoded and every frontier read before any hashing
-pub fn fold_run<V: SequenceRead>(
+pub(crate) fn fold_run<V: SequenceRead>(
     parent: &TreeStateReader<V>,
     blocks: &[&Block],
 ) -> Result<Vec<Changes>, FoldError> {

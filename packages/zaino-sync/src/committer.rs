@@ -27,7 +27,7 @@ pub struct Committer<S: Store> {
 /// One run of final steps, in height order: unfolded first (the writer folds), then folded
 pub struct Run {
     pub unfolded: Vec<(Height, Arc<Block>)>,
-    pub folded: Vec<(Height, Arc<Folds>)>,
+    pub(crate) folded: Vec<(Height, Arc<Folds>)>,
 }
 
 impl Run {

@@ -33,7 +33,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     }
 
     /// `None` = nothing held
-    pub fn tip(&self) -> Option<BlockRef> {
+    pub(crate) fn tip(&self) -> Option<BlockRef> {
         self.view.tip()
     }
 
@@ -47,7 +47,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
     ///
     /// - <= [`WINDOW_RECORDS`] read, cut to `budget` bytes: work per call bounded, not by the range
     /// - always >= 1 record (a caller looping on the reach makes progress)
-    pub fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height) {
+    pub(crate) fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height) {
         let descending = first > last;
         let far = match descending {
             false => first.checked_add(WINDOW_RECORDS - 1).map_or(last, |far| far.min(last)),
