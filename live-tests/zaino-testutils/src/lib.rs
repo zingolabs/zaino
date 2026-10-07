@@ -28,4 +28,4 @@ pub use json::{
 pub use rpc::assert_rpc_parity;
 
 /// The zebrad release (`zfnd/zebra:<version>` image) the live tests run against.
-pub const ZEBRAD_VERSION: &str = "6.4.2";
+pub const ZEBRAD_VERSION: &str = "7.0.0-rc.0";

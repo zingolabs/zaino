@@ -1406,6 +1406,42 @@ mod tests {
         assert_eq!(u64::from(info.chain_supply.chain_value), 1_000);
     }
 
+    /// The NU7 entry as zebrad 7 serves it on the public Testnet reaches the
+    /// domain keyed by its branch id, and the tip branches read as NU7 past
+    /// activation. Adoption keys on exactly these values.
+    #[test]
+    fn nu7_upgrade_entry_reaches_the_domain() {
+        let info = parse_blockchain_info(&serde_json::json!({
+            "chain": "test",
+            "blocks": 4_465_027,
+            "headers": 4_465_027,
+            "estimatedheight": 4_465_027,
+            "bestblockhash": "00".repeat(32),
+            "difficulty": 1.0,
+            "verificationprogress": 1.0,
+            "chainwork": "00",
+            "chainSupply": { "chainValueZat": 0u64 },
+            "valuePools": [],
+            "upgrades": {
+                "37a5165b": { "name": "NU6.3", "activationheight": 4_134_000, "status": "active" },
+                "77190ad9": { "name": "NU7", "activationheight": 4_465_026, "status": "active" },
+            },
+            "consensus": { "chaintip": "77190ad9", "nextblock": "77190ad9" },
+        }))
+        .expect("a zebrad 7 testnet getblockchaininfo parses");
+
+        let nu7 = info
+            .upgrades
+            .iter()
+            .find(|upgrade| u32::from(upgrade.branch_id) == 0x7719_0ad9)
+            .expect("the NU7 entry is kept");
+        assert_eq!(nu7.name, "NU7");
+        assert_eq!(u32::from(nu7.activation_height), 4_465_026);
+        assert_eq!(nu7.status, NetworkUpgradeStatus::Active);
+        assert_eq!(u32::from(info.consensus.chain_tip), 0x7719_0ad9);
+        assert_eq!(u32::from(info.consensus.next_block), 0x7719_0ad9);
+    }
+
     /// The wire reports each pool balance twice — an exact `chainValueZat` and a
     /// ZEC `chainValue` float. A large mainnet balance has a `chainValue` that
     /// does not round-trip to a whole zatoshi: real sapling `529544.04149098`

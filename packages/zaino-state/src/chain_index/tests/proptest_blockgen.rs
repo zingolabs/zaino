@@ -477,6 +477,13 @@ const IRONWOOD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
     nu7: None,
 };
 
+/// NU7 active from height 2: the Ironwood era under NU7 rules, with injected V6
+/// content versioned for the NU7 branch.
+const NU7_HEIGHTS: ActivationHeights = ActivationHeights {
+    nu7: Some(2),
+    ..IRONWOOD_ONLY_HEIGHTS
+};
+
 /// Per-block consistency between served compact-block content and its chain metadata.
 ///
 /// A compact block's `chainMetadata` tree sizes are cumulative note-commitment counts;
@@ -535,20 +542,47 @@ fn synced_index_metadata_consistency_orchard_to_ironwood_transition() {
     )
 }
 
+/// NU7 era: generated blocks and injected Ironwood content under NU7 rules from
+/// height 2. NU7 adds no transaction format (ZIP 259), so the served form must be
+/// exactly the Ironwood era's.
+#[test]
+fn synced_index_metadata_consistency_nu7() {
+    metadata_consistency_for_era(NU7_HEIGHTS, Some(2), false)
+}
+
+/// The NU7 transition: NU6.3 content below the boundary, NU7-branch content from it,
+/// with the boundary inside the walked window so both eras are observed.
+#[test]
+fn synced_index_metadata_consistency_ironwood_to_nu7_transition() {
+    let expected_tip = (2 * SEGMENT_LENGTH - 1) as u32;
+    let boundary = expected_tip - (OPERATIONAL_NFS_DEPTH / 2);
+    metadata_consistency_for_era(
+        ActivationHeights {
+            nu7: Some(boundary),
+            ..IRONWOOD_ONLY_HEIGHTS
+        },
+        Some(2),
+        false,
+    )
+}
+
 /// A structurally-valid (cryptographically fake) V6 transaction carrying a two-action
-/// Ironwood bundle. Injected because zebra's stock strategy generates V6 only
-/// probabilistically, so era content must be deterministic here
-/// (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
-fn fake_ironwood_transaction(seed: u64) -> zebra_chain::transaction::Transaction {
+/// Ironwood bundle, versioned for `upgrade` (NU6.3 or NU7). Injected because zebra's
+/// stock strategy generates V6 only probabilistically, so era content must be
+/// deterministic here (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
+fn fake_ironwood_transaction(
+    seed: u64,
+    upgrade: zebra_chain::parameters::NetworkUpgrade,
+) -> zebra_chain::transaction::Transaction {
     use zebra_chain::parameters::NetworkUpgrade;
     use zebra_chain::transaction::arbitrary::fake_v6_transaction;
 
-    let ironwood = fake_two_action_bundle(
-        zcash_protocol::consensus::BranchId::Nu6_3,
-        orchard::ValuePool::Ironwood,
-        seed,
-    );
-    fake_v6_transaction(NetworkUpgrade::Nu6_3, None, Some(ironwood))
+    let branch = match upgrade {
+        NetworkUpgrade::Nu7 => zcash_protocol::consensus::BranchId::Nu7,
+        _ => zcash_protocol::consensus::BranchId::Nu6_3,
+    };
+    let ironwood = fake_two_action_bundle(branch, orchard::ValuePool::Ironwood, seed);
+    fake_v6_transaction(upgrade, None, Some(ironwood))
 }
 
 /// A structurally-valid (cryptographically fake) V5 transaction carrying a two-action
@@ -596,6 +630,7 @@ fn metadata_consistency_for_era(
     ironwood_boundary: Option<u32>,
     orchard_below_boundary: bool,
 ) {
+    let nu7 = heights.nu7;
     let inject = move |blocks: &mut Vec<Arc<zebra_chain::block::Block>>| {
         for block in blocks.iter_mut() {
             let height = block
@@ -608,7 +643,12 @@ fn metadata_consistency_for_era(
             let fake_tx = match ironwood_boundary {
                 None => fake_orchard_transaction(u64::from(height)),
                 Some(boundary) if height >= boundary => {
-                    fake_ironwood_transaction(u64::from(height))
+                    let upgrade = if nu7.is_some_and(|nu7| height >= nu7) {
+                        zebra_chain::parameters::NetworkUpgrade::Nu7
+                    } else {
+                        zebra_chain::parameters::NetworkUpgrade::Nu6_3
+                    };
+                    fake_ironwood_transaction(u64::from(height), upgrade)
                 }
                 Some(_) if orchard_below_boundary => fake_orchard_transaction(u64::from(height)),
                 Some(_) => continue,

@@ -928,9 +928,29 @@ impl<T: ChainStoreSource> FinalisedState<T> {
     }
 
     /// Builds up to and including `target`, using the store's own validator.
+    ///
+    /// Returns only once the persistent database holds `target`: a gap wider
+    /// than `background_build_threshold` syncs in the background, and callers
+    /// write straight back (a freeze at `target + 1`), so that build is awaited
+    /// here. A build that cannot advance the database is an error, not a hang.
     pub async fn build_to(&self, target: Height) -> Result<(), StoreError> {
         let source = Arc::clone(&self.source);
-        self.sync_to_height(target, &source).await
+        let mut built = self.db.primary_backend().db_height().await?;
+        loop {
+            self.sync_to_height(target, &source).await?;
+            self.wait_until_synced().await;
+            let now = self.db.primary_backend().db_height().await?;
+            if now.is_some_and(|tip| tip >= target) {
+                return Ok(());
+            }
+            if now == built {
+                return Err(StoreError::Custom(format!(
+                    "build to {target} stalled at {now:?}: {:?}",
+                    self.db.status()
+                )));
+            }
+            built = now;
+        }
     }
 
     /// Discards every block above `height`.

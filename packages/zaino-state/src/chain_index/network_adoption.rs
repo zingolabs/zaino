@@ -359,6 +359,33 @@ mod verify_reported_upgrades {
         );
     }
 
+    /// The public Testnet's NU7 schedule, as a zebrad 7 validator reports it,
+    /// agrees with the compiled parameters: NU7 at 4,465,026 after NU6.3.
+    #[test]
+    fn accepts_the_public_testnet_nu7_schedule() {
+        let upgrades = [upgrade(NU6_3, 4_134_000), upgrade(NU7, 4_465_026)];
+
+        super::verify_reported_upgrades(
+            &zebra_chain::parameters::Network::new_default_testnet(),
+            &upgrades,
+        )
+        .expect("the public Testnet NU7 schedule matches the compiled one");
+    }
+
+    /// A validator placing NU7 one block off on the public Testnet is a
+    /// schedule drift, caught before a single block is indexed.
+    #[test]
+    fn rejects_a_wrong_public_testnet_nu7_height() {
+        let upgrades = [upgrade(NU7, 4_465_027)];
+
+        let reason = super::verify_reported_upgrades(
+            &zebra_chain::parameters::Network::new_default_testnet(),
+            &upgrades,
+        )
+        .expect_err("a wrong NU7 height must be rejected");
+        assert!(reason.contains("4465027"), "got: {reason}");
+    }
+
     /// An upgrade the compiled schedule disables on this network must be
     /// rejected when the validator reports a height for it. A regtest schedule
     /// with NU7 unset stands in for the compiled side, so the test does not

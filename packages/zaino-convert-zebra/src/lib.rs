@@ -337,6 +337,24 @@ mod consensus_agreement {
             zebra_chain::block::MAX_BLOCK_BYTES
         );
     }
+
+    /// NU7's deployment facts (ZIP 259 branch id and Testnet height, ZIP 218
+    /// block spacing) as zebra states them. A zebra bump that drops or moves
+    /// any of these would otherwise surface only on a live chain.
+    #[test]
+    fn nu7_deployment_agrees() {
+        use zebra_chain::parameters::{ConsensusBranchId, Network, NetworkUpgrade};
+
+        assert_eq!(
+            NetworkUpgrade::Nu7.branch_id(),
+            Some(ConsensusBranchId::from(0x7719_0ad9u32))
+        );
+        assert_eq!(
+            NetworkUpgrade::Nu7.activation_height(&Network::new_default_testnet()),
+            Some(zebra_chain::block::Height(4_465_026))
+        );
+        assert_eq!(NetworkUpgrade::Nu7.target_spacing().num_seconds(), 25);
+    }
 }
 
 /// The primitives difficulty pipeline against zebra's, as differential oracle.

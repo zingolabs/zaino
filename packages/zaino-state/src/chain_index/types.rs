@@ -198,6 +198,26 @@ mod tests {
         assert_eq!(domain_height(Height(u32::MAX)), None);
     }
 
+    /// The branch a transaction is validated under flips from NU6.3 to NU7 at
+    /// exactly the public Testnet activation height (ZIP 259), which is what
+    /// `getblockchaininfo.consensus` and `GetLightdInfo` report at the boundary.
+    #[test]
+    fn branch_id_flips_to_nu7_at_the_testnet_activation_height() {
+        const NU6_3: u32 = 0x37a5_165b;
+        const NU7: u32 = 0x7719_0ad9;
+        let testnet = zebra_chain::parameters::Network::new_default_testnet();
+        let at = |height: u32| {
+            branch_id(
+                &testnet,
+                domain::Height::try_from(height).expect("test height is in range"),
+            )
+        };
+
+        assert_eq!(at(4_465_025), Some(NU6_3));
+        assert_eq!(at(4_465_026), Some(NU7));
+        assert_eq!(at(4_465_027), Some(NU7));
+    }
+
     #[test]
     fn a_block_ref_becomes_a_block_index() {
         let index = block_index(domain_ref(5, 3));
