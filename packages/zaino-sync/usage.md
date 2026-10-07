@@ -20,6 +20,22 @@ commutative, and `Fold` is outright order-dependent; neither an index nor an eng
 optimisation may rely on a commutative merge. A commutative fast path, if ever
 wanted, must be a separately named composition.
 
+## Scope and carry algebra
+
+Orthogonally, an index declares a scope — `BlockLocal`, `SelfCumulative`, or
+`CrossIndex` — that says what an extraction needs beyond the current block.
+`SelfCumulative` needs the index's own accumulated state from prior blocks, and
+is parameterised by a **carry algebra** describing how that state composes:
+`SelfCumulative<C: CarryAlgebra = Sequential>`. The parameter defaults to
+`Sequential`, so `type Scope = SelfCumulative;` keeps today's block-at-a-time
+`extract(ctx, prior)` behaviour. `OrderedMonoid` is the opt-in for a carry that
+is an ordered monoid with a measure, letting a batch be built in parallel.
+
+The carry is a parameter of the scope marker precisely because it is meaningful
+only for a cumulative scope: `BlockLocal` and `CrossIndex` are not generic over
+a carry and cannot name one. The runtime mirror carries it as
+`InputScope::SelfCumulative { carry }`; see the `descriptor` module.
+
 ## Sync profiling (`sync-profile` feature)
 
 Off by default and compiled out entirely when off (no `Instant::now`, no extra
