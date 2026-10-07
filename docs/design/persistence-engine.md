@@ -283,7 +283,7 @@ impl<S: Store> Tiered<S> {
   their `Changes`, applied to the store when finalized).
 - **Staged and applied never coexist.** A final `Apply` arrives only when the producer's window is
   empty, and a tip block builds on durable: a writer finalizes its staged blocks first.
-- **`stage`'s `weight`** is the source block's bytes, so `[index] batch_mib` still means MiB of
+- **`stage`'s `weight`** is the source block's bytes, so `[sync] batch_mib` still means MiB of
   decoded blocks per commit, whatever an index's rows weigh.
 - **`finalize`** applies the held blocks through `through` to the store and commits them (one
   fsync), then rebases the layer. A failed commit panics naming the index and its directory: the

@@ -203,7 +203,7 @@ height is the one committed there (`ProduceError::Diverged`). Both are fatal and
 reorg deeper than the window, a validator reset or resynced onto another chain, or a directory
 reused across chains, none of which can be spliced onto the old durable prefix.
 
-The finalised depth, `fetch.finalised_depth`, defaults to Zebra's `MAX_BLOCK_REORG_HEIGHT` (1000).
+The finalised depth, `sync.finalised_depth`, defaults to Zebra's `MAX_BLOCK_REORG_HEIGHT` (1000).
 Config validation refuses less on mainnet and testnet, since a reorg the validator accepts could
 then reach committed blocks. Only regtest may configure a smaller depth.
 

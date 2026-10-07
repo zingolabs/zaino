@@ -25,7 +25,7 @@ use tracing::{debug, info};
 use zaino_persistence::IndexKind;
 use zaino_sync::Human;
 
-use crate::config::{DaemonConfig, SnapshotConfig, ZainoIndexConfig};
+use crate::config::{DaemonConfig, SnapshotConfig};
 use crate::error::IndexerError;
 use crate::logging::Size3;
 use crate::status::{self, Phase, Snapshot};
@@ -64,10 +64,10 @@ pub(crate) async fn bootstrap(
     snapshot: &SnapshotConfig,
     config: &DaemonConfig,
 ) -> Result<(), IndexerError> {
-    let empty: Vec<(&'static str, &Path)> = indexes(config)
+    let empty: Vec<(&'static str, PathBuf)> = SNAPSHOTTED
         .into_iter()
-        .filter(|(_, index)| index.enabled && is_empty(&index.path))
-        .map(|(dir, index)| (dir, index.path.as_path()))
+        .filter_map(|kind| Some((kind.name(), config.enabled(kind)?.path)))
+        .filter(|(_, path)| is_empty(path))
         .collect();
     if empty.is_empty() {
         debug!("Every index holds data; snapshot not needed");
@@ -179,24 +179,22 @@ pub(crate) async fn bootstrap(
     Ok(())
 }
 
-/// `(snapshot top-level directory, index config)` per index
-fn indexes(config: &DaemonConfig) -> [(&'static str, &ZainoIndexConfig); 5] {
-    let index = &config.index;
-    [
-        (IndexKind::CompactBlock.name(), &index.compact_block),
-        (IndexKind::ValueBalance.name(), &index.value_balance),
-        (IndexKind::BlockHash.name(), &index.block_hash),
-        (IndexKind::TreeState.name(), &index.tree_state),
-        (IndexKind::TransparentAddress.name(), &index.transparent_address),
-    ]
-}
+/// Archive top-level directories (`kind.name()`); header_chain never from a snapshot
+const SNAPSHOTTED: [IndexKind; 5] = [
+    IndexKind::CompactBlock,
+    IndexKind::ValueBalance,
+    IndexKind::BlockHash,
+    IndexKind::TreeState,
+    IndexKind::TransparentAddress,
+];
 
 fn is_empty(path: &Path) -> bool {
     std::fs::read_dir(path).map_or(true, |mut entries| entries.next().is_none())
 }
 
 fn staging(config: &DaemonConfig) -> Result<PathBuf, IndexerError> {
-    let index = &config.index.compact_block.path;
+    let (compact_block, _) = config.compact_block()?;
+    let index = &compact_block.path;
     index
         .parent()
         .map(|parent| parent.join(STAGING))

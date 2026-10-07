@@ -124,140 +124,95 @@ impl From<&TrustedValidatorConfig> for zaino_source::Timeouts {
     }
 }
 
-/// Per-index settings. The same shape for every served index.
-///
-/// Durability is not a knob here: an index commits on its own block boundary, never on a
-/// timer. `batch_mib` is that boundary during bulk sync; at the tip each final block commits.
-///
-/// `path` has no default: it is the one field that must differ per index, and a default would
-/// point a second index at the first one's files.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ZainoIndexConfig {
-    /// Build this index, and serve the methods it backs.
-    #[serde(default = "ZainoIndexConfig::enabled_default")]
-    pub(crate) enabled: bool,
-    /// Storage directory, created if absent.
+/// One enabled index, resolved: its directory + the shared `[sync]` budgets (boot's input)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexConfig {
     pub(crate) path: PathBuf,
-    /// MiB of decoded blocks per commit during bulk sync. Bigger means fewer fsyncs, more memory
-    /// held until the commit, and more to redo after a crash.
-    ///
-    /// Measured in bytes, not blocks, so a commit stays the same size from 1 KB early-chain
-    /// blocks to 2 MB full ones.
-    #[serde(default = "ZainoIndexConfig::batch_mib_default")]
-    pub(crate) batch_mib: NonZeroU32,
-    /// MiB of decoded blocks this index may fall behind the fetch before it throttles the whole
-    /// pipeline.
-    ///
-    /// Per index so a heavy one can absorb a burst without pacing a light one. Measured in bytes,
-    /// not blocks, so the slack holds steady from 1 KB early-chain blocks to 2 MB full ones.
-    #[serde(default = "ZainoIndexConfig::queue_mib_default")]
-    pub(crate) queue_mib: NonZeroU32,
+    pub(crate) batch_bytes: NonZeroUsize,
+    pub(crate) queue_bytes: NonZeroUsize,
 }
 
-impl ZainoIndexConfig {
-    fn enabled_default() -> bool {
-        true
-    }
+/// `[index.*]`: which indexes this daemon builds and serves, one directory each
+///
+/// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and value_balance)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(from = "IndexesToml")]
+pub(crate) struct Indexes {
+    compact_block: IndexTable,
+    block_hash: IndexTable,
+    tree_state: IndexTable,
+    transparent_address: IndexTable,
+    pub(crate) header_chain: HeaderChainConfig,
+}
 
-    fn batch_mib_default() -> NonZeroU32 {
-        NonZeroU32::new(64).expect("64 is non-zero")
+impl Default for Indexes {
+    fn default() -> Self {
+        IndexesToml::default().into()
     }
+}
 
-    fn queue_mib_default() -> NonZeroU32 {
-        NonZeroU32::new(256).expect("256 is non-zero")
+/// One `[index.<name>]` table
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct IndexTable {
+    /// Build this index and serve the methods it backs (off = they answer `UNIMPLEMENTED`)
+    enabled: bool,
+    /// Storage directory, created if absent
+    path: PathBuf,
+}
+
+/// `[index.*]` as written (omitted `path` = `<cache dir>/zaino/indexes/<kind.name()>`)
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct IndexesToml {
+    compact_block: IndexTableToml,
+    block_hash: IndexTableToml,
+    tree_state: IndexTableToml,
+    transparent_address: IndexTableToml,
+    header_chain: HeaderChainConfig,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct IndexTableToml {
+    enabled: bool,
+    path: Option<PathBuf>,
+}
+
+impl Default for IndexTableToml {
+    fn default() -> Self {
+        Self { enabled: true, path: None }
     }
+}
 
-    /// `batch_mib` in bytes (the index's bulk commit unit)
-    pub(crate) fn batch_bytes(&self) -> NonZeroUsize {
-        mib(self.batch_mib)
+impl IndexTableToml {
+    fn resolve(self, kind: IndexKind) -> IndexTable {
+        let path = self.path.unwrap_or_else(|| crate::paths::default_index(kind));
+        IndexTable { enabled: self.enabled, path }
     }
+}
 
-    /// `queue_mib` in bytes (the sink's budget unit)
-    pub(crate) fn queue_bytes(&self) -> NonZeroUsize {
-        mib(self.queue_mib)
-    }
-
-    /// Defaults for `kind`'s index (its directory = the only thing that differs between them)
-    fn for_index(kind: IndexKind) -> Self {
+impl From<IndexesToml> for Indexes {
+    fn from(toml: IndexesToml) -> Self {
         Self {
-            enabled: Self::enabled_default(),
-            path: crate::paths::default_index(kind),
-            batch_mib: Self::batch_mib_default(),
-            queue_mib: Self::queue_mib_default(),
+            compact_block: toml.compact_block.resolve(IndexKind::CompactBlock),
+            block_hash: toml.block_hash.resolve(IndexKind::BlockHash),
+            tree_state: toml.tree_state.resolve(IndexKind::TreeState),
+            transparent_address: toml.transparent_address.resolve(IndexKind::TransparentAddress),
+            header_chain: toml.header_chain,
         }
     }
-
-    fn compact_block() -> Self {
-        Self::for_index(IndexKind::CompactBlock)
-    }
-
-    fn block_hash() -> Self {
-        Self::for_index(IndexKind::BlockHash)
-    }
-
-    fn tree_state() -> Self {
-        Self::for_index(IndexKind::TreeState)
-    }
-
-    fn transparent_address() -> Self {
-        Self::for_index(IndexKind::TransparentAddress)
-    }
-
-    fn value_balance() -> Self {
-        Self::for_index(IndexKind::ValueBalance)
-    }
 }
 
-/// A MiB knob in bytes (saturating: past `usize` means "no limit" anyway)
+/// A MiB knob in bytes (saturating: past `usize` = no limit anyway)
 fn mib(value: NonZeroU32) -> NonZeroUsize {
     let bytes = usize::try_from(u64::from(value.get()) << 20).unwrap_or(usize::MAX);
     NonZeroUsize::new(bytes).expect("non-zero MiB → non-zero bytes")
 }
 
-/// The indexes this daemon builds and serves.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub(crate) struct IndexConfig {
-    /// Compact blocks: the light-wallet sync path.
-    #[serde(default = "ZainoIndexConfig::compact_block")]
-    pub(crate) compact_block: ZainoIndexConfig,
-    /// Block hash → height: `GetBlock` and `GetTreeState` by hash (off = those `Unimplemented`).
-    #[serde(default = "ZainoIndexConfig::block_hash")]
-    pub(crate) block_hash: ZainoIndexConfig,
-    /// Commitment trees: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots`.
-    #[serde(default = "ZainoIndexConfig::tree_state")]
-    pub(crate) tree_state: ZainoIndexConfig,
-    /// Transparent receives and spends: `GetAddressUtxos*`, `GetTaddressBalance*`.
-    #[serde(default = "ZainoIndexConfig::transparent_address")]
-    pub(crate) transparent_address: ZainoIndexConfig,
-    /// Every transparent output's value: each transaction's fee in `CompactTx.fee` (the
-    /// compact-block index reads it, so it cannot be disabled).
-    #[serde(default = "ZainoIndexConfig::value_balance")]
-    pub(crate) value_balance: ZainoIndexConfig,
-    /// Every final block header, verified from genesis (proof of work, difficulty, time,
-    /// linkage): the best chain everything else follows. Always on.
-    pub(crate) header_chain: HeaderChainConfig,
-}
-
-impl Default for IndexConfig {
-    fn default() -> Self {
-        Self {
-            compact_block: ZainoIndexConfig::compact_block(),
-            block_hash: ZainoIndexConfig::block_hash(),
-            tree_state: ZainoIndexConfig::tree_state(),
-            transparent_address: ZainoIndexConfig::transparent_address(),
-            value_balance: ZainoIndexConfig::value_balance(),
-            header_chain: HeaderChainConfig::default(),
-        }
-    }
-}
-
-/// Where the verified header chain lives (one 88-byte record per final height, ~280 MB mainnet).
+/// `[index.header_chain]`: every final header, verified from genesis (always on, ~280 MB mainnet)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct HeaderChainConfig {
-    /// Directory of the header store.
     pub(crate) path: PathBuf,
 }
 
@@ -424,24 +379,32 @@ impl From<&GrpcConfig> for GrpcLimits {
     }
 }
 
-/// The one block-fetch pipeline every index shares (sync = I/O bound on validator RPC).
+/// `[sync]`: the one block-fetch pipeline + the budgets every index shares
+///
+/// - `batch_mib` / `queue_mib` in bytes, not blocks (same size from 1 KB to 2 MB blocks)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
-pub(crate) struct FetchConfig {
-    /// Blocks below the tip kept reorg-able: in memory and served, written only once buried
-    /// this deep. Default and minimum on mainnet and testnet: Zebra's reorg bound (1000); only
-    /// regtest may set less.
+pub(crate) struct SyncConfig {
+    /// Blocks below the tip kept reorg-able: in memory and served, written once buried this
+    /// deep (default + minimum off regtest: Zebra's reorg bound, 1000)
     pub(crate) finalised_depth: NonZeroU32,
-    /// Block fetches (and decodes) kept in flight during bulk sync.
+    /// Block fetches (and decodes) in flight during bulk sync
     pub(crate) concurrency: NonZeroUsize,
+    /// MiB of decoded blocks per index commit in bulk sync (bigger = fewer fsyncs, more memory
+    /// held, more to redo after a crash; at the tip each final block commits)
+    batch_mib: NonZeroU32,
+    /// MiB of decoded blocks one index may trail the fetch before it throttles the pipeline
+    queue_mib: NonZeroU32,
 }
 
-impl Default for FetchConfig {
+impl Default for SyncConfig {
     fn default() -> Self {
         Self {
             finalised_depth: NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT)
                 .expect("the consensus reorg bound is non-zero"),
             concurrency: NonZeroUsize::new(32).expect("32 is non-zero"),
+            batch_mib: NonZeroU32::new(64).expect("64 is non-zero"),
+            queue_mib: NonZeroU32::new(256).expect("256 is non-zero"),
         }
     }
 }
@@ -569,14 +532,14 @@ pub(crate) struct DaemonConfig {
     pub(crate) serve: ServeConfig,
     /// What that server will serve at once.
     pub(crate) grpc: GrpcConfig,
-    /// The shared block-fetch pipeline.
-    pub(crate) fetch: FetchConfig,
     /// How submitted transactions are pushed into the network.
     pub(crate) submission: SubmissionConfig,
     /// Zaino's own peers (`[p2p]`), off by default.
     pub(crate) p2p: P2pConfig,
+    /// The shared block-fetch pipeline and index budgets.
+    pub(crate) sync: SyncConfig,
     /// The indexes this daemon builds and serves.
-    pub(crate) index: IndexConfig,
+    pub(crate) index: Indexes,
     /// Empty indexes bootstrapped from a snapshot. Absent = they sync from the validator.
     pub(crate) snapshot: Option<SnapshotConfig>,
 }
@@ -590,36 +553,66 @@ impl Default for DaemonConfig {
             trusted_validators: vec![TrustedValidatorConfig::default()],
             serve: ServeConfig::default(),
             grpc: GrpcConfig::default(),
-            fetch: FetchConfig::default(),
             submission: SubmissionConfig::default(),
             p2p: P2pConfig::default(),
-            index: IndexConfig::default(),
+            sync: SyncConfig::default(),
+            index: Indexes::default(),
             snapshot: None,
         }
     }
 }
 
 impl DaemonConfig {
-    /// Reject a config the pipeline cannot be composed from.
+    /// `kind`'s directory + the `[sync]` budgets; `None` = disabled
     ///
-    /// Refused: `index.compact_block.enabled = false` (its finalised height trims the chain head
-    /// and answers `GetLightdInfo.blockHeight`) and `index.value_balance.enabled = false` (the
-    /// compact-block index waits on its fees)
+    /// - value_balance = compact_block's fee index: on with it, `value_balance` beside its `path`
+    /// - header_chain = always on
+    pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
+        let index = &self.index;
+        let table = |table: &IndexTable| (table.enabled, table.path.clone());
+        let (enabled, path) = match kind {
+            IndexKind::CompactBlock => table(&index.compact_block),
+            IndexKind::ValueBalance => {
+                let compact_block = &index.compact_block;
+                (compact_block.enabled, compact_block.path.with_file_name(kind.name()))
+            }
+            IndexKind::BlockHash => table(&index.block_hash),
+            IndexKind::TreeState => table(&index.tree_state),
+            IndexKind::TransparentAddress => table(&index.transparent_address),
+            IndexKind::HeaderChain => (true, index.header_chain.path.clone()),
+        };
+        enabled.then(|| IndexConfig {
+            path,
+            batch_bytes: mib(self.sync.batch_mib),
+            queue_bytes: mib(self.sync.queue_mib),
+        })
+    }
+
+    /// `(compact_block, value_balance)`, both required (`Routes.compact_block` not optional)
+    pub(crate) fn compact_block(&self) -> Result<(IndexConfig, IndexConfig), IndexerError> {
+        let path = &self.index.compact_block.path;
+        if path.file_name().is_none() {
+            return Err(IndexerError::ConfigError(format!(
+                "index.compact_block.path = {}: no final directory name (value_balance sits \
+                 beside it)",
+                path.display()
+            )));
+        }
+        let disabled = || {
+            IndexerError::ConfigError(
+                "index.compact_block.enabled = false: required (block methods, GetLightdInfo \
+                 height)"
+                    .to_string(),
+            )
+        };
+        let compact_block = self.enabled(IndexKind::CompactBlock).ok_or_else(disabled)?;
+        let value_balance = self.enabled(IndexKind::ValueBalance).ok_or_else(disabled)?;
+        Ok((compact_block, value_balance))
+    }
+
+    /// Reject a config the pipeline cannot be composed from.
     pub(crate) fn validate(&self) -> Result<(), IndexerError> {
-        if !self.index.compact_block.enabled {
-            return Err(IndexerError::ConfigError(
-                "index.compact_block.enabled = false: the compact-block index is load-bearing \
-                 (GetLightdInfo height) and cannot be disabled"
-                    .to_string(),
-            ));
-        }
-        if !self.index.value_balance.enabled {
-            return Err(IndexerError::ConfigError(
-                "index.value_balance.enabled = false: the compact-block index reads every \
-                 transaction's fee from it, so it cannot be disabled"
-                    .to_string(),
-            ));
-        }
+        self.compact_block()?;
         if self.trusted_validators.is_empty() {
             return Err(IndexerError::ConfigError(
                 "no [[trusted_validators]]: at least one validator is needed".to_string(),
@@ -652,10 +645,10 @@ impl DaemonConfig {
                     .to_string(),
             ));
         }
-        let depth = self.fetch.finalised_depth.get();
+        let depth = self.sync.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::ConfigError(format!(
-                "fetch.finalised_depth = {depth} is below the validator's reorg bound \
+                "sync.finalised_depth = {depth} is below the validator's reorg bound \
                  {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach committed blocks \
                  (only regtest may set less)"
             )));
@@ -751,48 +744,121 @@ mod tests {
         path
     }
 
-    /// Defaults survive a TOML round trip, and every index gets its own directory — two
-    /// indexes sharing one would interleave unrelated records in the same files.
+    /// What boot reads per index: file over defaults, env over file, `[sync]` budgets in every
+    /// index, value_balance beside compact_block; a stale or misspelt key fails the load
     #[test]
-    fn defaults_round_trip_through_toml_with_one_directory_per_index() {
-        let original = DaemonConfig::default();
-        let toml = toml::to_string_pretty(&original).expect("serialise");
-        let parsed: DaemonConfig = toml::from_str(&toml).expect("deserialise");
-        assert_eq!(original, parsed);
+    fn a_config_resolves_every_index_through_defaults_file_and_env_and_refuses_stale_keys() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let toml = r#"
+network = "regtest"
 
-        let index = &original.index;
-        let paths = [
-            &index.compact_block.path,
-            &index.block_hash.path,
-            &index.tree_state.path,
-            &index.transparent_address.path,
-            &index.value_balance.path,
-        ];
-        let distinct: std::collections::BTreeSet<_> = paths.iter().collect();
-        assert_eq!(distinct.len(), 5, "{paths:?}");
-        assert!(index.compact_block.path.ends_with("indexes/compact_block"));
-        assert!(index.block_hash.path.ends_with("indexes/block_hash"));
-        assert!(index.tree_state.path.ends_with("indexes/tree_state"));
-        assert!(index.transparent_address.path.ends_with("indexes/transparent_address"));
-        assert!(index.value_balance.path.ends_with("indexes/value_balance"));
-        assert!(index.header_chain.path.ends_with("indexes/header_chain"));
+[[trusted_validators]]
+jsonrpc_address = "127.0.0.1:18232"
 
-        // Every index shares the rest of the shape, and a sub-table an operator omitted keeps
-        // its own default path rather than inheriting the first index's.
-        let partial: DaemonConfig = toml::from_str(
-            r#"
+[sync]
+finalised_depth = 100
+batch_mib = 32
+
 [index.compact_block]
-path = "/tmp/zaino-only-this-one"
-"#,
-        )
-        .expect("deserialise");
-        let mut only_path = ZainoIndexConfig::compact_block();
-        only_path.path = PathBuf::from("/tmp/zaino-only-this-one");
-        assert_eq!(partial.index.compact_block, only_path);
-        assert_eq!(partial.index.block_hash, index.block_hash);
-        assert_eq!(partial.index.tree_state, index.tree_state);
-        assert_eq!(partial.index.transparent_address, index.transparent_address);
-        assert_eq!(partial.index.value_balance, index.value_balance);
+path = "/srv/zaino/compact_block"
+
+[index.tree_state]
+path = "/srv/zaino/tree_state"
+
+[index.transparent_address]
+enabled = false
+"#;
+        let path = write(&dir, "zainod.toml", toml);
+        // nextest = one process per test (no leak into another test)
+        std::env::set_var("ZAINO_CONFIG_SYNC__QUEUE_MIB", "128");
+        std::env::set_var("ZAINO_CONFIG_INDEX__TREE_STATE__ENABLED", "false");
+        let loaded = load_config(&path);
+        std::env::remove_var("ZAINO_CONFIG_SYNC__QUEUE_MIB");
+        std::env::remove_var("ZAINO_CONFIG_INDEX__TREE_STATE__ENABLED");
+        let config = loaded.expect("load");
+        assert!(config.validate().is_ok());
+
+        let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
+        let sync = SyncConfig {
+            finalised_depth: n(100),
+            batch_mib: n(32),
+            queue_mib: n(128),
+            ..SyncConfig::default()
+        };
+        assert_eq!(config.sync, sync);
+        let at = |path: PathBuf| {
+            let bytes = |mib: usize| NonZeroUsize::new(mib << 20).expect("non-zero");
+            Some(IndexConfig { path, batch_bytes: bytes(32), queue_bytes: bytes(128) })
+        };
+        let kinds = [
+            IndexKind::CompactBlock,
+            IndexKind::ValueBalance,
+            IndexKind::BlockHash,
+            IndexKind::TreeState,
+            IndexKind::TransparentAddress,
+            IndexKind::HeaderChain,
+        ];
+        let expected = [
+            at("/srv/zaino/compact_block".into()),
+            at("/srv/zaino/value_balance".into()),
+            at(crate::paths::default_index(IndexKind::BlockHash)),
+            None,
+            None,
+            at(crate::paths::default_index(IndexKind::HeaderChain)),
+        ];
+        assert_eq!(kinds.map(|kind| config.enabled(kind)), expected);
+        let (compact_block, value_balance) = config.compact_block().expect("enabled");
+        assert_eq!([Some(compact_block), Some(value_balance)], expected[..2]);
+
+        let mut off = config.clone();
+        off.index.compact_block.enabled = false;
+        let err = off.validate().expect_err("compact_block off").to_string();
+        assert!(err.contains("index.compact_block.enabled = false"), "{err}");
+        let mut root = config;
+        root.index.compact_block.path = "/".into();
+        let err = root.validate().expect_err("no sibling for value_balance").to_string();
+        assert!(err.contains("index.compact_block.path = /"), "{err}");
+
+        for (stale, key) in [
+            ("[index.value_balance]\npath = \"/srv/zaino/vb\"\n", "value_balance"),
+            ("[fetch]\nconcurrency = 8\n", "fetch"),
+            ("[index.block_hash]\nqueue_mib = 256\n", "queue_mib"),
+        ] {
+            let path = write(&dir, &format!("{key}.toml"), &format!("{toml}\n{stale}"));
+            let err = load_config(&path).expect_err(key).to_string();
+            assert!(err.contains(&format!("unknown field `{key}`")), "{key}: {err}");
+        }
+    }
+
+    /// `generate-config` prints every key at its default, which parses back to the defaults
+    /// (each index under `<cache dir>/zaino/indexes/<name>`); the shipped example parses too
+    #[test]
+    fn generated_config_prints_every_key_at_its_default_and_the_example_parses() {
+        let generated = generate_default_config().expect("generate");
+        let body = generated.strip_prefix(GENERATED_CONFIG_HEADER).expect("header first");
+        let defaults = DaemonConfig::default();
+        assert_eq!(toml::from_str::<DaemonConfig>(body).expect("parses back"), defaults);
+        let printed = |table: &str, keys: &[&str]| {
+            let start = body.find(&format!("\n[{table}]\n")).expect(table);
+            let section = body[start + 1..].split("\n\n").next().unwrap_or_default();
+            let found: Vec<&str> =
+                section.lines().skip(1).filter_map(|l| l.split(" = ").next()).collect();
+            assert_eq!(found, keys, "[{table}]");
+        };
+        printed("sync", &["finalised_depth", "concurrency", "batch_mib", "queue_mib"]);
+        for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
+            printed(&format!("index.{table}"), &["enabled", "path"]);
+        }
+        printed("index.header_chain", &["path"]);
+        assert!(!body.contains("value_balance"), "internal: no table of its own");
+        for kind in [IndexKind::CompactBlock, IndexKind::ValueBalance, IndexKind::TreeState] {
+            let path = defaults.enabled(kind).map(|index| index.path);
+            assert_eq!(path, Some(crate::paths::default_index(kind)), "{kind:?}");
+        }
+
+        let example = include_str!("../../../docs/example_configs/zainod.toml");
+        let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
+        assert!(example.validate().is_ok());
     }
 
     /// The serve caps parse field by field: an operator who names one keeps the defaults for
@@ -878,50 +944,19 @@ path = "/tmp/zaino-compact-block"
         assert!(toml::from_str::<DaemonConfig>(r#"network = "main""#).is_err());
     }
 
-    /// The compact-block index cannot be turned off (the chain head and `GetLightdInfo` read its
-    /// finalised height), nor the value-balance index it reads fees from; the served-only
-    /// indexes are free to be, together or apart
-    #[test]
-    fn only_the_load_bearing_indexes_refuse_to_be_disabled() {
-        let disabled =
-            |toml: &str| toml::from_str::<DaemonConfig>(toml).expect("deserialise").validate();
-
-        for index in ["compact_block", "value_balance"] {
-            let err = disabled(&format!(
-                "[index.{index}]\nenabled = false\npath = \"/tmp/zaino-{index}\""
-            ))
-            .expect_err("load-bearing");
-            assert!(err.to_string().contains(&format!("index.{index}.enabled")), "{err}");
-        }
-
-        assert!(disabled(
-            r#"
-[index.tree_state]
-enabled = false
-path = "/tmp/zaino-ts"
-
-[index.transparent_address]
-enabled = false
-path = "/tmp/zaino-ta"
-"#
-        )
-        .is_ok());
-        assert!(DaemonConfig::default().validate().is_ok());
-    }
-
     /// Mainnet and testnet cannot finalise inside the validator's reorg bound (a reorg it
     /// accepts would reach committed blocks); regtest can, which keeps its tests fast
     #[test]
     fn a_finalised_depth_below_the_reorg_bound_is_refused_except_on_regtest() {
         let validated = |network: &str, depth: u32| {
             toml::from_str::<DaemonConfig>(&format!(
-                "network = \"{network}\"\n[fetch]\nfinalised_depth = {depth}\n"
+                "network = \"{network}\"\n[sync]\nfinalised_depth = {depth}\n"
             ))
             .expect("deserialise")
             .validate()
         };
 
-        let below = "fetch.finalised_depth = 999 is below the validator's reorg bound";
+        let below = "sync.finalised_depth = 999 is below the validator's reorg bound";
         for network in ["mainnet", "testnet"] {
             let err = validated(network, MAX_BLOCK_REORG_HEIGHT - 1).expect_err(network);
             assert!(err.to_string().contains(below), "{network}: {err}");
@@ -929,14 +964,6 @@ path = "/tmp/zaino-ta"
             assert!(validated(network, MAX_BLOCK_REORG_HEIGHT + 1).is_ok(), "{network}");
         }
         assert!(validated("regtest", 100).is_ok());
-    }
-
-    #[test]
-    fn generated_config_is_valid_toml_with_header() {
-        let content = generate_default_config().expect("generate");
-        assert!(content.starts_with(GENERATED_CONFIG_HEADER));
-        let body = content.strip_prefix(GENERATED_CONFIG_HEADER).expect("header present");
-        toml::from_str::<DaemonConfig>(body).expect("body parses");
     }
 
     #[test]
@@ -1079,39 +1106,5 @@ path = "/var/lib/zaino/header-chain"
         };
         let refused = seedless.validate().expect_err("regtest has no seeders").to_string();
         assert!(refused.contains("no DNS seeders"), "{refused}");
-    }
-
-    #[test]
-    fn env_overrides_a_scalar_field() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let toml = r#"
-[[trusted_validators]]
-jsonrpc_address = "127.0.0.1:8232"
-
-[index.compact_block]
-path = "/tmp/zaino-compact-block"
-"#;
-        let path = write(&dir, "env.toml", toml);
-        // A leaf scalar override applies over the file value. nextest runs each
-        // test in its own process, so this env var does not leak across tests.
-        std::env::set_var("ZAINO_CONFIG_FETCH__FINALISED_DEPTH", "42");
-        let config = load_config(&path).expect("load");
-        std::env::remove_var("ZAINO_CONFIG_FETCH__FINALISED_DEPTH");
-        assert_eq!(config.fetch.finalised_depth.get(), 42);
-        let path = config.index.compact_block.path.to_str();
-        assert_eq!(path, Some("/tmp/zaino-compact-block"), "another key's override leaves it");
-    }
-
-    #[test]
-    fn unknown_top_level_field_is_rejected() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let toml = r#"
-bogus_field = true
-
-[index.compact_block]
-path = "/tmp/zaino-compact-block"
-"#;
-        let path = write(&dir, "bogus.toml", toml);
-        assert!(load_config(&path).is_err());
     }
 }

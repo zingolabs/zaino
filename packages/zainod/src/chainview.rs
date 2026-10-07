@@ -50,7 +50,7 @@ pub(crate) fn connect(config: &DaemonConfig, fs: Arc<dyn Fs>) -> Result<Wiring, 
             Ok(Some(IndexerWatch::at(address, validator.into()).map_err(IndexerError::from)?))
         })
         .collect::<Result<Vec<_>, IndexerError>>()?;
-    let depth = ReorgDepth::new(config.fetch.finalised_depth);
+    let depth = ReorgDepth::new(config.sync.finalised_depth);
     let (view, pollers) = ChainView::new(endpoints, depth)?;
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;

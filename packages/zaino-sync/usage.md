@@ -244,7 +244,7 @@ self.tiered.blocking(move |tiered| tiered.finalize(through)).await;
 - A panic in either resumes on the awaiting task: zainod aborts rather than keep
   a half-built state.
 - Fetch and index writes overlap: while an index commits, the producer keeps
-  fetching into its subscription queue (`queue_mib`).
+  fetching into its subscription queue (zainod's `sync.queue_mib`).
 
 ### `Published`: what serving, metrics and status read
 

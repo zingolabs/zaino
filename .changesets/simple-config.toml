@@ -1,0 +1,19 @@
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+A simpler config. `[fetch]` is renamed `[sync]` and also holds the index budgets, `batch_mib` \
+(64) and `queue_mib` (256), now shared by every index. Each `[index.<name>]` table \
+(`compact_block`, `block_hash`, `tree_state`, `transparent_address`) takes only `enabled` \
+(default true) and `path` (default `$XDG_CACHE_HOME/zaino/indexes/<name>`, now also when the \
+table sets only `enabled`). `[index.value_balance]` is gone: the fee index runs with \
+compact-block, in a `value_balance` directory beside `index.compact_block.path`, refused when \
+that path has no final directory name. `index.compact_block.enabled = false` is still refused. \
+Default on-disk paths are unchanged.
+
+Migration: rename `[fetch]` to `[sync]` (`ZAINO_CONFIG_FETCH__*` to `ZAINO_CONFIG_SYNC__*`); \
+move one `batch_mib` / `queue_mib` into `[sync]` and delete them from every `[index.*]`; delete \
+`[index.value_balance]`, and if it set a `path` other than `value_balance` beside the \
+compact-block index, move that directory there. The old keys fail the load as unknown fields.
+"""

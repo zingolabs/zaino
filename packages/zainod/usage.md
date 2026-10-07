@@ -104,7 +104,8 @@ The manifest describes one archive (`archive` resolves against the manifest URL)
 ```
 
 The archive is a zstd tar holding one top-level directory per index, named like its default
-path: `compact_block`, `value_balance`, `block_hash`, `tree_state`, `transparent_address`.
+path: `compact_block`, `value_balance`, `block_hash`, `tree_state`, `transparent_address`
+(`value_balance` installs beside the compact-block index, which it runs with).
 
 - Only an enabled index whose directory is missing or empty is filled; one holding data is
   never touched, and with none empty the snapshot is skipped (no download).
@@ -198,7 +199,7 @@ zainod dies rather than serve from a state it cannot vouch for
   restarts it
 - an index directory built for another network or format, shorter than its
   seals, or whose tail page fails its checksum refuses to open: resync it
-- `fetch.finalised_depth` defaults to Zebra's reorg bound (1000,
+- `sync.finalised_depth` defaults to Zebra's reorg bound (1000,
   `MAX_BLOCK_REORG_HEIGHT`); below it is a config error on mainnet and testnet,
   allowed on regtest only
 

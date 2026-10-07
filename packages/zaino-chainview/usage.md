@@ -18,7 +18,7 @@ use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
 
 # fn wire<S: zaino_source::ChainDataSource>(source: Arc<S>, chain: HeaderChain) -> Result<(), Box<dyn std::error::Error>> {
-// depth = the header chain's finality depth (zainod passes `fetch.finalised_depth`)
+// depth = the header chain's finality depth (zainod passes `sync.finalised_depth`)
 let (view, pollers) = ChainView::new(
     vec![Endpoint { address: "127.0.0.1:8232".to_owned(), source: Arc::clone(&source) }],
     ReorgDepth::CONSENSUS,

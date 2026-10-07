@@ -14,7 +14,7 @@ use zaino_persistence::{
 };
 use zcash_protocol::consensus::NetworkType;
 
-use crate::config::{load_config, DaemonConfig, ZainoIndexConfig};
+use crate::config::{load_config, DaemonConfig, IndexConfig};
 
 /// Disabled index = `None`; `clean` = every sealed file present with every page intact
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -62,41 +62,24 @@ pub fn run(config_path: &Path) -> i32 {
 /// An index's tables, as its crate declares them
 type SchemaOf = fn(NetworkType) -> Schema;
 
-fn enabled(index: &ZainoIndexConfig) -> Option<&Path> {
-    index.enabled.then_some(index.path.as_path())
-}
-
 fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
-    let index = &config.index;
-    let indexes: [(IndexKind, Option<&Path>, SchemaOf); 6] = [
-        (IndexKind::CompactBlock, enabled(&index.compact_block), zaino_index_compact_block::schema),
-        (
-            IndexKind::ValueBalance,
-            enabled(&index.value_balance),
-            zaino_internal_value_balance::schema,
-        ),
-        (
-            IndexKind::BlockHash,
-            enabled(&index.block_hash),
-            zaino_internal_block_hash_to_height::schema,
-        ),
-        (IndexKind::TreeState, enabled(&index.tree_state), zaino_index_tree_state::schema),
-        (
-            IndexKind::TransparentAddress,
-            enabled(&index.transparent_address),
-            zaino_index_transparent_address::schema,
-        ),
-        (IndexKind::HeaderChain, Some(&index.header_chain.path), zaino_header_chain::schema),
+    let indexes: [(IndexKind, SchemaOf); 6] = [
+        (IndexKind::CompactBlock, zaino_index_compact_block::schema),
+        (IndexKind::ValueBalance, zaino_internal_value_balance::schema),
+        (IndexKind::BlockHash, zaino_internal_block_hash_to_height::schema),
+        (IndexKind::TreeState, zaino_index_tree_state::schema),
+        (IndexKind::TransparentAddress, zaino_index_transparent_address::schema),
+        (IndexKind::HeaderChain, zaino_header_chain::schema),
     ];
 
     let engine = DiskEngine::new(RealFs::shared());
     let mut reports = BTreeMap::new();
-    for (kind, path, schema) in indexes {
+    for (kind, schema) in indexes {
         let index = kind.name();
-        let report = path.map(|path| {
-            engine.verify(path, &schema(config.network)).map_err(|source| VerifyError::Index {
+        let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
+            engine.verify(&path, &schema(config.network)).map_err(|source| VerifyError::Index {
                 index,
-                path: path.to_owned(),
+                path,
                 source,
             })
         });
@@ -202,7 +185,7 @@ mod tests {
 
         let (cb, vb, bh, ts, ta) = (
             root.path().join("cb"),
-            root.path().join("vb"),
+            root.path().join(IndexKind::ValueBalance.name()),
             root.path().join("bh"),
             root.path().join("ts"),
             root.path().join("ta"),
@@ -252,7 +235,6 @@ mod tests {
             &config_path,
             format!(
                 "[index.compact_block]\npath = {cb:?}\n\
-                 [index.value_balance]\npath = {vb:?}\n\
                  [index.block_hash]\npath = {bh:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
                  [index.transparent_address]\npath = {ta:?}\n\
@@ -310,7 +292,6 @@ mod tests {
             &partial_path,
             format!(
                 "[index.compact_block]\nenabled = false\npath = {absent:?}\n\
-                 [index.value_balance]\nenabled = false\npath = {absent:?}\n\
                  [index.block_hash]\nenabled = false\npath = {absent:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
                  [index.transparent_address]\npath = {ta:?}\n\
@@ -322,8 +303,8 @@ mod tests {
             verify(&load_config(&partial_path).expect("load")).expect("verify"),
         )
         .expect("json");
-        let disabled = (&partial["compact_block"], &partial["block_hash"]);
-        assert_eq!((&partial["clean"], disabled), (&json!(true), (&Value::Null, &Value::Null)));
+        let disabled = ["compact_block", "value_balance", "block_hash"].map(|i| &partial[i]);
+        assert_eq!((&partial["clean"], disabled), (&json!(true), [&Value::Null; 3]));
         assert!(!absent.exists(), "verify created {}", absent.display());
 
         assert_eq!(run(&root.path().join("missing.toml")), 2, "unreadable → exit 2");

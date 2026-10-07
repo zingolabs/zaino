@@ -27,7 +27,7 @@ zainod verify [--config FILE] [--rehash]     # read-only index check (see usage.
 Layered, highest priority first:
 
 1. environment variables, prefix `ZAINO_CONFIG_`, `__` for nesting
-   (`ZAINO_CONFIG_FETCH__CONCURRENCY=64`)
+   (`ZAINO_CONFIG_SYNC__CONCURRENCY=64`)
 2. the TOML file
 3. built-in defaults
 
@@ -35,9 +35,10 @@ Unknown keys fail the load. The config has `[[trusted_validators]]` (Zebra
 JSON-RPC address and auth, at least one: the quorum tip is a majority of them,
 one listing admits a mempool transaction, and bulk sync spreads its fetches over
 all of them), `[serve]` (gRPC listen address, `max_address_rows`), `[grpc]`
-(serving caps), `[fetch]` (`finalised_depth`, `concurrency`), one `[index.<name>]` section per index
-(`compact_block`, `tree_state`, `transparent_address`, each with `path`,
-`batch`, `queue_mib` and `enabled`), a top-level `network` (`mainnet` /
+(serving caps), `[sync]` (`finalised_depth`, `concurrency`, and the `batch_mib` /
+`queue_mib` budgets every index shares), one `[index.<name>]` table per index
+(`compact_block`, `block_hash`, `tree_state`, `transparent_address`, each with `enabled`
+and `path`; `header_chain` with `path` only), a top-level `network` (`mainnet` /
 `testnet` / `regtest`, default `mainnet`) and an optional `[metrics]` admin
 listener (`listen_address`). Annotated
 example:
@@ -50,7 +51,8 @@ reports its chain as `"test"`. It is what `GetTreeState` reports as
 `index.<name>.enabled = false` builds nothing for that index (no store, no
 `BlockSink` subscription, no follower) and its methods answer `UNIMPLEMENTED`.
 `index.compact_block` cannot be disabled: `GetLightdInfo` reads its finalised
-height.
+height. Its fee index, value-balance, has no table of its own: it runs with
+compact-block, in a `value_balance` directory beside compact-block's `path`.
 
 ## Launching
 

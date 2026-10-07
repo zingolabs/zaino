@@ -39,8 +39,9 @@ A `BlockID` that carries a hash, in `GetBlock` or `GetTreeState`, is resolved to
 a height through the block-hash index. A hash wins over a height when both are
 given, because a hash names one block across a reorg and a height does not.
 
-The compact-block and value-balance indexes cannot be disabled, since
-`GetLightdInfo` and every `CompactTx.fee` depend on them. The tree-state,
+The compact-block index cannot be disabled, since `GetLightdInfo` depends on
+it; its fee index, value-balance (every `CompactTx.fee`), runs with it and has
+no switch of its own. The tree-state,
 transparent-address and block-hash indexes can. A disabled index's methods
 answer `UNIMPLEMENTED` (for the block-hash index, only the by-hash form of
 `GetBlock` and `GetTreeState`). Nothing falls back to the validator.

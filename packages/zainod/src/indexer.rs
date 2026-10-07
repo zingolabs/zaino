@@ -50,7 +50,7 @@ use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
 use zaino_source::{ChainDataSource as _, Lane, TrafficBalancer, ZebraRpcAdapter};
 use zaino_sync::{BlockSink, FeeSink, Producer, Published, Subscription};
 
-use crate::config::{DaemonConfig, ShutdownConfig, ZainoIndexConfig};
+use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
 use crate::error::IndexerError;
 use crate::index_report::Watched;
 
@@ -115,49 +115,49 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     // --- the indexes: each its own files, its own finalised height, its own sink subscription
     //
     // A disabled index is never opened, subscribed or spawned, and its methods answer
-    // UNIMPLEMENTED. compact-block and value-balance cannot be disabled (`DaemonConfig::validate`)
-    let depth = ReorgDepth::new(config.fetch.finalised_depth);
+    // UNIMPLEMENTED. compact-block + value-balance always on (`DaemonConfig::compact_block`)
+    let depth = ReorgDepth::new(config.sync.finalised_depth);
     let mut block_sink = BlockSink::new("blocks");
-    let (index, network) = (&config.index, config.network);
+    let network = config.network;
 
     // compact-block reads one fee step (value-balance's) per block step
     let mut fee_sink = FeeSink::new("fees");
-    let (config_cb, config_vb) = (&index.compact_block, &index.value_balance);
+    let (config_cb, config_vb) = config.compact_block()?;
     // the one engine every index stores through
     let engine = DiskEngine::new(Arc::clone(&fs));
     let schema = zaino_index_compact_block::schema(network);
-    let (compact_block_span, compact_block) = open_index(&engine, config_cb, schema, |store| {
-        Ok(CompactBlockIndexWriter::new(store, config_cb.batch_bytes()))
+    let (compact_block_span, compact_block) = open_index(&engine, &config_cb, schema, |store| {
+        Ok(CompactBlockIndexWriter::new(store, config_cb.batch_bytes))
     })?;
     let compact_block_feeds = (
-        block_sink.subscribe(IndexKind::CompactBlock.name(), config_cb.queue_bytes()),
-        fee_sink.subscribe(IndexKind::CompactBlock.name(), config_vb.queue_bytes()),
+        block_sink.subscribe(IndexKind::CompactBlock.name(), config_cb.queue_bytes),
+        fee_sink.subscribe(IndexKind::CompactBlock.name(), config_vb.queue_bytes),
     );
     let schema = zaino_internal_value_balance::schema(network);
-    let (value_balance_span, value_balance) = open_index(&engine, config_vb, schema, |store| {
-        Ok(ValueBalanceIndexWriter::new(store, config_vb.batch_bytes()))
+    let (value_balance_span, value_balance) = open_index(&engine, &config_vb, schema, |store| {
+        Ok(ValueBalanceIndexWriter::new(store, config_vb.batch_bytes))
     })?;
-    let value_balance_blocks = subscribe(&mut block_sink, IndexKind::ValueBalance, config_vb);
+    let value_balance_blocks = subscribe(&mut block_sink, IndexKind::ValueBalance, &config_vb);
+    let config_bh = config.enabled(IndexKind::BlockHash);
     let schema = zaino_internal_block_hash_to_height::schema(network);
-    let block_hash = open_optional(&engine, &index.block_hash, schema, |store, batch| {
+    let block_hash = open_optional(&engine, config_bh.as_ref(), schema, |store, batch| {
         Ok(BlockHashIndexWriter::new(store, batch))
     })?;
+    let config_ts = config.enabled(IndexKind::TreeState);
     let schema = zaino_index_tree_state::schema(network);
-    let tree_state = open_optional(&engine, &index.tree_state, schema, |store, batch| {
+    let tree_state = open_optional(&engine, config_ts.as_ref(), schema, |store, batch| {
         Ok(TreeStateIndexWriter::new(store, batch))
     })?;
-    let config_ta = &index.transparent_address;
+    let config_ta = config.enabled(IndexKind::TransparentAddress);
     let schema = zaino_index_transparent_address::schema(network);
-    let transparent = open_optional(&engine, config_ta, schema, |store, batch| {
+    let transparent = open_optional(&engine, config_ta.as_ref(), schema, |store, batch| {
         Ok(TransparentAddressIndexWriter::new(store, batch))
     })?;
     let sink = &mut block_sink;
-    let block_hash_blocks =
-        block_hash.as_ref().map(|_| subscribe(sink, IndexKind::BlockHash, &index.block_hash));
-    let tree_state_blocks =
-        tree_state.as_ref().map(|_| subscribe(sink, IndexKind::TreeState, &index.tree_state));
+    let block_hash_blocks = config_bh.as_ref().map(|c| subscribe(sink, IndexKind::BlockHash, c));
+    let tree_state_blocks = config_ts.as_ref().map(|c| subscribe(sink, IndexKind::TreeState, c));
     let transparent_blocks =
-        transparent.as_ref().map(|_| subscribe(sink, IndexKind::TransparentAddress, config_ta));
+        config_ta.as_ref().map(|c| subscribe(sink, IndexKind::TransparentAddress, c));
     // every subscriber's durable tip (production starts after the rearmost)
     let durable = [
         Some(compact_block.durable_tip()),
@@ -185,7 +185,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
 
     // --- the producer: the verified chain, every block fetched from any validator and checked
     let sync = chainview.sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
-    let (concurrency, durable) = (config.fetch.concurrency, durable.into_iter().flatten());
+    let (concurrency, durable) = (config.sync.concurrency, durable.into_iter().flatten());
     let producer = Producer::new(block_sink, sync, verified.clone(), concurrency, durable)
         .with_live_span(crate::logging::component("ZainoNFS"));
 
@@ -226,24 +226,23 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
         cancel: cancel.clone(),
         indexes: Vec::new(),
     };
-    let config_cb = &index.compact_block;
     let (published, name) = (compact_block.published(), IndexKind::CompactBlock.name());
-    watchers.watch(name, &compact_block_span, published, config_cb, true);
+    watchers.watch(name, &compact_block_span, published, &config_cb, true);
     // no service reads value-balance (compact-block takes its fees through the sink)
     let (published, span) = (value_balance.published(), &value_balance_span);
     let name = IndexKind::ValueBalance.name();
-    watchers.watch(name, span, published, &index.value_balance, false);
-    if let Some((span, writer)) = &block_hash {
+    watchers.watch(name, span, published, &config_vb, false);
+    if let (Some((span, writer)), Some(config)) = (&block_hash, &config_bh) {
         let name = IndexKind::BlockHash.name();
-        watchers.watch(name, span, writer.published(), &index.block_hash, true);
+        watchers.watch(name, span, writer.published(), config, true);
     }
-    if let Some((span, writer)) = &tree_state {
+    if let (Some((span, writer)), Some(config)) = (&tree_state, &config_ts) {
         let name = IndexKind::TreeState.name();
-        watchers.watch(name, span, writer.published(), &index.tree_state, true);
+        watchers.watch(name, span, writer.published(), config, true);
     }
-    if let Some((span, writer)) = &transparent {
+    if let (Some((span, writer)), Some(config)) = (&transparent, &config_ta) {
         let name = IndexKind::TransparentAddress.name();
-        watchers.watch(name, span, writer.published(), &index.transparent_address, true);
+        watchers.watch(name, span, writer.published(), config, true);
     }
     let disabled = [
         (IndexKind::BlockHash.name(), block_hash.is_none()),
@@ -416,7 +415,7 @@ fn spawn_index(
 /// span, logged; the span then carries the index's task
 fn open_index<W>(
     engine: &DiskEngine,
-    config: &ZainoIndexConfig,
+    config: &IndexConfig,
     schema: Schema,
     writer: impl FnOnce(DiskStore) -> Result<W, IndexerError>,
 ) -> Result<(Span, W), IndexerError> {
@@ -428,25 +427,26 @@ fn open_index<W>(
     Ok((span, opened))
 }
 
-/// Enabled → [`open_index`] (`writer` given the batch size); disabled → `None`, `config.path`
-/// never created
+/// Enabled → [`open_index`] (`writer` given the batch size); disabled → `None`, nothing created
 fn open_optional<W>(
     engine: &DiskEngine,
-    config: &ZainoIndexConfig,
+    config: Option<&IndexConfig>,
     schema: Schema,
     writer: impl FnOnce(DiskStore, NonZeroUsize) -> Result<W, IndexerError>,
 ) -> Result<Option<(Span, W)>, IndexerError> {
-    let open = |store| writer(store, config.batch_bytes());
-    config.enabled.then(|| open_index(engine, config, schema, open)).transpose()
+    let open = |config: &IndexConfig| {
+        open_index(engine, config, schema, |store| writer(store, config.batch_bytes))
+    };
+    config.map(open).transpose()
 }
 
 /// `index`'s own queue off `block_sink`
 fn subscribe(
     block_sink: &mut BlockSink,
     index: IndexKind,
-    config: &ZainoIndexConfig,
+    config: &IndexConfig,
 ) -> Subscription<Block> {
-    block_sink.subscribe(index.name(), config.queue_bytes())
+    block_sink.subscribe(index.name(), config.queue_bytes)
 }
 
 /// What every index runs beside its loop: metrics, the status report, the serving gate
@@ -466,7 +466,7 @@ impl Watchers<'_> {
         name: &'static str,
         span: &Span,
         published: &Published<V>,
-        config: &ZainoIndexConfig,
+        config: &IndexConfig,
         served: bool,
     ) {
         let watched = Watched {
@@ -541,7 +541,6 @@ fn shutdown_signals() -> mpsc::Receiver<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroU32;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -642,13 +641,6 @@ mod tests {
     #[test]
     fn a_disabled_index_is_never_constructed_and_creates_no_files() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let index = |name: &str, enabled: bool| ZainoIndexConfig {
-            enabled,
-            path: dir.path().join(name),
-            batch_mib: NonZeroU32::MIN,
-            queue_mib: NonZeroU32::MIN,
-        };
-
         let engine = DiskEngine::new(RealFs::shared());
         let net = zcash_protocol::consensus::NetworkType::Regtest;
         let optional = [
@@ -658,8 +650,13 @@ mod tests {
         ];
         for (name, schema) in optional {
             for enabled in [false, true] {
-                let config = index(&format!("{name}-{enabled}"), enabled);
-                let opened = open_optional(&engine, &config, schema.clone(), |store, _| Ok(store));
+                let config = IndexConfig {
+                    path: dir.path().join(format!("{name}-{enabled}")),
+                    batch_bytes: NonZeroUsize::MIN,
+                    queue_bytes: NonZeroUsize::MIN,
+                };
+                let given = enabled.then_some(&config);
+                let opened = open_optional(&engine, given, schema.clone(), |store, _| Ok(store));
                 let opened = opened.expect("opens when enabled").is_some();
                 let created = config.path.exists();
                 assert_eq!((opened, created), (enabled, enabled), "{name}, enabled = {enabled}");
