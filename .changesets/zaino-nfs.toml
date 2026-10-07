@@ -1,0 +1,17 @@
+[[changes]]
+crate = "zaino-nfs"
+kind = "feature"
+section = "Added"
+description = """
+New crate: the non-finalized state's pure core (`docs/design/nfs.md` §6). `NfsCore<F>` follows \
+the header chain's `VerifiedChain` and is the one sender of the final stream: it fetches every \
+height from any source (least loaded first, a misanswering source skipped 60 s, a silent one \
+hedged after 15 s, every block checked by `check_block`: hash, coinbase height, merkle root, \
+CVE-2012-2459), sends final blocks unfolded until a folded parent exists, folds each block as it \
+joins the verified best (parent first, through `Output::Fold`), sends it folded once final, and \
+keeps a node until every enabled index holds it durably (lockstep finality). The served tip \
+(`Output::Publish`) is the deepest folded best block, so a reorg moves it to the fork point at \
+once and forward as the new branch folds; side branches stay folded while the header chain can \
+still pick them. `step(input, now) -> Result<Vec<Output>, Diverged>` and `check()` (N1–N5); a \
+model test against naive writers and an oracle fold, and fire drills for every check.
+"""

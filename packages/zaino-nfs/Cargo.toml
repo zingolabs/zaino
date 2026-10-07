@@ -1,0 +1,27 @@
+[package]
+name = "zaino-nfs"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zaino's non-finalized state: one folded node per block above the durable root, one final stream"
+
+[dependencies]
+imbl.workspace = true
+thiserror.workspace = true
+zaino-header-chain.workspace = true
+zaino-primitives.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "warn"
+
+[dev-dependencies]
+proptest.workspace = true
+zaino-header-chain = { workspace = true, features = ["testing"] }
+zaino-primitives = { workspace = true, features = ["testing"] }

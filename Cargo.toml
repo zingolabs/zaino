@@ -8,6 +8,7 @@ members = [
     "packages/zaino-internal-block-hash-to-height",
     "packages/zaino-internal-value-balance",
     "packages/zaino-chainview",
+    "packages/zaino-nfs",
     "packages/zaino-header-chain",
     "packages/zaino-persistence",
     "packages/zaino-primitives",

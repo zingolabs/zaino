@@ -230,16 +230,17 @@ pub async fn run(mut self, mut blocks: Subscription<Final>) {
 ```text
 zaino-nfs/src/
   lib.rs        Nfs (driver), NfsHandle, Snapshot, re-exports
-  core.rs       NfsCore: pure state machine (no I/O, time as input), check()
-  graph.rs      Node, Folded, Layers; imbl::HashMap<BlockHash, Arc<Node>>
-  fold.rs       fold_block: the fold order, the one place indexes meet
-  fetch.rs      wants, hedging, blame (moved from zaino-sync's ProducerCore)
-  snapshot.rs   Snapshot<V>, Enabled
+  core.rs       NfsCore<F>: pure state machine (no I/O, time as input), check()
+  graph.rs      Node<F>; imbl::HashMap<BlockHash, Arc<Node<F>>>, side-node pruning
+  fold.rs       Folded, Layers, fold_block: the fold order, the one place indexes meet   (wave 2)
+  fetch.rs      check_block, wants, hedging, blame (moved from zaino-sync's ProducerCore)
+  snapshot.rs   Snapshot<V>, Enabled                                                     (wave 2)
   core/model.rs, core/fire_drills.rs
 ```
 
 ```rust
-pub struct Node { at: BlockRef, parent: BlockHash, block: Arc<Block>, folded: Arc<Folded> }
+// core: generic over the per-node payload F (wave 2: Folded; the model: a toy fold)
+pub(crate) struct Node<F> { at: BlockRef, parent: BlockHash, block: Arc<Block>, folded: Arc<F> }
 
 pub struct Folded {
     fees: Arc<BlockFees>,
@@ -251,33 +252,50 @@ pub struct Folded {
     layers: Layers,                          // per index: parent's layer.with(own changes)
 }
 
-pub enum Input {
+pub enum Input<F> {
     Chain(Arc<VerifiedChain>),
-    Body { at: BlockRef, from: SourceId, result: Result<Arc<Block>, Misanswer> },
-    Folded { at: BlockRef, folded: Arc<Folded> },
-    Durable { index: IndexKind, tip: Option<BlockRef> },
+    Body { from: usize, at: BlockRef, answer: Answer },    // Checked (check_block) | Misanswered | Failed
+    Folded { at: BlockRef, folded: Arc<F> },
+    Durable { index: usize, tip: Option<BlockRef> },       // index = position in `new`'s durable tips
     Tick,
 }
 
-pub enum Output {
-    Fetch { at: BlockRef, from: SourceId },
-    Fold { at: BlockRef, parent: Arc<Snapshot<V>>, block: Arc<Block> },   // run on the blocking pool
-    Send(Final),                                                          // to the BlockSink
-    Publish(Arc<Snapshot<V>>),
+pub enum Output<F> {
+    Fetch { from: usize, height: Height, record: Record },  // driver: getblock + check_block(record)
+    Misanswered { from: usize, at: BlockRef, why: Misanswer },
+    Unserved { height: Height },                            // every source out: retried after 1 s
+    Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block> },  // None = committed stores at the root
+    Send(Final<F>),                                         // to the BlockSink, in list order
+    Publish(SnapshotTip<F>),                                // driver builds the Snapshot from it
 }
 
-impl NfsCore {
-    pub fn step(&mut self, input: Input, now: Instant) -> Vec<Output>;
-    pub fn check(&self);                                                  // N1–N6, named panics
+pub struct Final<F> { pub block: Arc<Block>, pub folded: Option<Arc<F>> }
+pub struct SnapshotTip<F> { pub chain: Arc<VerifiedChain>, pub tip: BlockRef, pub folded: Option<Arc<F>> }
+
+impl<F> NfsCore<F> {
+    pub fn new(sources: usize, lookahead: usize, depth: ReorgDepth, durable: Vec<Option<BlockRef>>) -> Self;
+    pub fn step(&mut self, input: Input<F>, now: Instant) -> Result<Vec<Output<F>>, Diverged>;
+    pub fn check(&self);                                    // N1–N5, named panics (N6: model)
 }
 ```
+
+- `Err(Diverged)` = an index's durable block off the final chain (resync); a durable tip above
+  the final tip (a lost header store) holds sends, folds and publishes until the chain covers it.
+- **Lockstep emerges**: a block folds on the root only above the final tip, and root ≤ sent ≤
+  final, so the first tip fold waits for every index to hold everything sent. A writer therefore
+  commits when its stream idles, not only at `batch` bytes.
+- Between the root and the last sent block the stream is all folded or all unfolded: once a node
+  exists, the next final height is folded too (never sent unfolded over a folded parent).
+- Side nodes: `VerifiedChain` exposes only the best path, so the NFS applies the header chain's own
+  rules (H2, H4): a side node goes once its fork is below the final tip, and past `4 · depth` side
+  nodes the lowest side leaf goes.
 
 A block's life:
 
 ```text
 header verified ─▶ on best? ─▶ fetch (any source) ─▶ checked (hash_at + merkle)
-   ─▶ below root+final? ── yes ─▶ Send(Final{block, folded: None})            (bulk)
-                       └─ no ──▶ Fold (parent = its parent node) ─▶ node joins graph
+   ─▶ final, parent unfolded? ── yes ─▶ Send(Final{block, folded: None})       (bulk)
+                             └─ no ──▶ Fold (parent node, or the root) ─▶ node joins graph
                                   ─▶ Publish(snapshot at deepest folded best node)
    ─▶ final ─▶ Send(Final{block, folded: Some}) ─▶ every store acks ─▶ root advances,
        node pruned, live layers rebased
@@ -368,10 +386,10 @@ GrpcService::new(Routes::new(snapshots, chain_view, validators), &config.serve).
 | ID  | Invariant                                                                | Where                          |
 | --- | ------------------------------------------------------------------------ | ------------------------------ |
 | N1  | every node's block = `VerifiedChain::hash_at` + merkle root              | `check`, fetch acceptance      |
-| N2  | node layer = parent layer `.with(own Changes)`                           | `check`                        |
-| N3  | a node leaves only after every enabled store's durable tip ≥ it          | `check`                        |
-| N4  | `snap.tip` folded, on the verified best, ≥ root                          | `check`, before `Publish`      |
-| N5  | final stream: every height once, ascending, never retracted              | `check`, writer `apply` assert |
+| N2  | node above the root, folded on a held parent (node or root); layer = parent layer `.with(own Changes)` | `check`; layers: wave 2 |
+| N3  | a node leaves only after every enabled store's durable tip ≥ it          | `check`, `Durable` asserts, model |
+| N4  | `snap.tip` = deepest folded best block (else the root)                   | `check`, model                 |
+| N5  | final stream: every height once, ascending, never retracted              | `check`, model writers         |
 | N6  | every index read through a snapshot = folding it from genesis along best | model                          |
 | P1  | `view()` = committed prefix; `staged()` = committed + buffered           | conformance                    |
 

@@ -5180,6 +5180,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-nfs"
+version = "0.1.0"
+dependencies = [
+ "imbl",
+ "proptest",
+ "thiserror 2.0.18",
+ "zaino-header-chain",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-non-finalized-state"
 version = "0.2.0"
 dependencies = [
