@@ -60,13 +60,12 @@ mod tests {
     fn advance_adds_each_pools_commitments_and_refuses_the_u32_ceiling() {
         let mut chain = MockChain::regtest();
         let mined = chain.mine(|b| {
-            b.tx(|t| t.sapling_output(1).sapling_output(2).orchard_action([4; 32], 5))
-                .tx(|t| {
-                    t.sapling_output(3)
-                        .ironwood_action([6; 32], 7)
-                        .ironwood_action([8; 32], 9)
-                        .ironwood_action([10; 32], 11)
-                })
+            b.tx(|t| t.sapling_output(1).sapling_output(2).orchard_action([4; 32], 5)).tx(|t| {
+                t.sapling_output(3)
+                    .ironwood_action([6; 32], 7)
+                    .ironwood_action([8; 32], 9)
+                    .ironwood_action([10; 32], 11)
+            })
         });
         let block: &Block = chain.block(mined.hash);
 
