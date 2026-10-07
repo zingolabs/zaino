@@ -9,24 +9,15 @@ Related: the mempool, submission and telemetry ([chainview.md](./chainview.md)),
 promises the indexes ([data-sink.md](./data-sink.md), [nfs.md](./nfs.md)),
 who is trusted for what ([boundaries.md](./boundaries.md)).
 
-Status: **design, decisions taken 2026-10-06**; phases in §11.
+Status: **phases 0–4 built** (header chain, holders, `zaino-nfs`); peers as a header and block
+source (phase 5), the network simulation and the commitment auditor are still design. Phases in
+§11.
 
-## 1. What is wrong today
+## 1. What it replaced
 
-Measured against the code, not the intent (2026-10-06):
-
-| Gap                                                                                                                                                                 | Effect                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Bulk blocks are never checked against the verified header chain (`hash_at` has no caller in sync)                                                                   | a validator's stale or forked branch is delivered **final** before anything proves it leads to the verified tip; caught later, fatally (`BelowWindow`) |
-| A block's transactions are never checked against its header (merkle check is a `TODO`)                                                                              | a correct header with altered transactions passes                                                                                                      |
-| Fetches are restricted to the tip's holders, and bulk caches them                                                                                                   | if every cached holder is down, bulk retries forever while others hold the tip                                                                         |
-| Finality lives twice (`Publisher.final_tip`, `ChainHead.highest`)                                                                                                   | two rules that must agree; the window can hold 2·depth+1 blocks                                                                                        |
-| Holding is computed by walking each validator's window of links, plus `vouched`, which never expires                                                                | ~600 lines of walk machinery with its own races; a validator that reorged away can stay a holder                                                       |
-| `HeaderChain` sits behind a `std::Mutex` held across a 2,000-header verify, finalized on the runtime; a store error only logs and stops header sync                 | blocked runtime threads; a silent stall where the failure policy says crash                                                                            |
-| The branch tree is unbounded; first sync takes any valid chain                                                                                                      | cheap testnet headers grow memory; an eclipsed first sync follows a low-work chain                                                                     |
-| Header rules are constants: NU7 (Testnet 4,465,026) changes the spacing and the averaging window; `nVersion` is read unsigned; a non-minimal solution length passes | every Testnet header past NU7 is refused; two consensus mismatches                                                                                     |
-| Peers serve no headers or blocks; zaino-peers advertises a pre-NU7 protocol version                                                                                 | the p2p half of the design is unbuilt; v7 zebras will drop us after NU7                                                                                |
-| Headers are parsed and hashed twice; test doubles serve invented hashes                                                                                             | wasted work; nothing below the live suite exercises verification                                                                                       |
+The trust-routed sync this replaced delivered bulk blocks unchecked against the header chain or
+their merkle root, kept finality in two places, computed holders by walking validators' link
+windows, and ran header rules as pre-NU7 constants; phases 0–4 removed each of those.
 
 ## 2. Decisions
 
@@ -349,25 +340,27 @@ it is an `Err` that names the source.
    across 299,188 (minimum difficulty), 584,000 (Blossom) and 4,465,026 (NU7); zcashd's
    `pow_tests` vectors; the equihash crate's (200, 9) vectors; zebra's boundary blocks for the
    merkle check.
-1. **Heavy runs.** Like persistence: `PROPTEST_CASES=1000` loops of the core models and the
-   simulation for at least three minutes after any change to these crates, and an hour-long soak
-   before a release. The command goes in `CLAUDE.md` next to the persistence one.
+1. **Heavy runs.** Like persistence: `PROPTEST_CASES=1000` loops of the core models (and, once
+   built, the simulation) for at least three minutes after any change to these crates, and an
+   hour-long soak before a release: the `models` nextest profile, [testing.md](../testing.md)
+   "Model tests in bulk".
 1. **Live suite** (ztest): the integration and test plan (separate document) — multi-validator
    partitions, real peers, reorgs staged with `invalidateblock` + `generate`, wallets.
 
 ## 11. Phases
 
-0. **NU7 on Testnet (urgent).** Rebase the zebra fork onto upstream's primary branch (protocol
-   170,180, NU7 branch id `0x77190AD9`); header rules by height; `nVersion` signed; minimal
-   solution length; Testnet fixtures.
-1. **Test foundations**: the real-header chain builder, `MockChain` on it, `FakeNode` gone, headers
-   decoded once.
-1. **Header chain**: single owner, stages A/B, bounds, locator, `VerifiedChain`, finality alarm,
-   store error fatal; the header-chain model. (Minimum work moved to phase 5: decision 2.)
-1. **Holders by question** (§7) and the chain view on the `VerifiedChain`: `Holders` core and
-   model; walk machinery removed.
-1. **Fetch on the verified chain**: checked fetch from any source, one finality; done as
-   `zaino-nfs` ([nfs.md](./nfs.md)), which replaced the producer and its gates.
+0. **NU7 on Testnet**: **done**. Header rules by height (NU7 spacing and averaging window);
+   `nVersion` signed; minimal solution length; Testnet fixtures.
+1. **Test foundations**: **done**. The real-header chain builder
+   (`zaino_primitives::testing::Chain`), `MockChain` on it, headers decoded once
+   (`HeaderBytes`).
+1. **Header chain**: **done**. Single owner, stages A/B, bounds, locator, `VerifiedChain`,
+   finality alarm, store error fatal; the header-chain model. (Minimum work moved to phase 5:
+   decision 2.)
+1. **Holders by question** (§7) and the chain view on the `VerifiedChain`: **done**. `Holders`
+   core and model; walk machinery removed.
+1. **Fetch on the verified chain**: **done** as `zaino-nfs` ([nfs.md](./nfs.md)): checked fetch,
+   one finality.
 1. **Peers**: `WorkPool` (core, model, driver), `ChainTip`, block `inv`, headers, blocks and
    mempool bytes from peers, status and metrics, `[p2p]` on by default; minimum chain work
    (`credible`) gating a best no trusted validator holds.

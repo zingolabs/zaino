@@ -226,12 +226,12 @@ refusals, the manifest body's golden bytes, and verify (bad page, lost file, a f
 mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and filters.
 `layer.rs` fire-drills each `check` invariant by breaking it by hand.
 
-## 5. Tiering
+## 5. Layers and writers
 
 ### Buffer and layers
 
 Data above a durable tip has one shape, whether it is a store's buffer or a non-final block in
-`zaino-nfs` ([nfs.md §4](./nfs.md#4-persistence-port-target)):
+`zaino-nfs` ([nfs.md §4](./nfs.md#4-persistence-port)):
 
 ```rust
 impl Layer {

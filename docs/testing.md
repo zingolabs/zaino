@@ -6,12 +6,12 @@ network-free (`zaino-grpc`, for example, binds a loopback socket). The live test
 `live-tests/` run a deployed zainod against a real zebrad on Kubernetes, driven by
 [ztest](https://github.com/zingolabs/ztest).
 
-| Set                              | What it covers                                                                                                                                                                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `live-tests/clientless`          | zainod's gRPC answers checked against the validator as oracle, with no wallet.                                                                                                                                                        |
-| `live-tests/e2e`                 | A real wallet syncing and sending through zainod's gRPC to a live validator.                                                                                                                                                          |
+| Set | What it covers |
+|---|---|
+| `live-tests/clientless` | zainod's gRPC answers checked against the validator as oracle, with no wallet. |
+| `live-tests/e2e` | A real wallet syncing and sending through zainod's gRPC to a live validator. |
 | `live-tests/non-finalized-state` | Reorgs forced on a regtest zebrad and checked against the validator across every index, the served snapshot tip, restarts and the window edges. The design is in [non-finalized-state-tests.md](design/non-finalized-state-tests.md). |
-| `live-tests/sync`                | The long-running mainnet profiles `zaino_index_construction` and `zaino_index_crash_consistency`.                                                                                                                                     |
+| `live-tests/sync` | The long-running mainnet profiles `zaino_index_construction` and `zaino_index_crash_consistency`. |
 
 `live-tests/` is a standalone Cargo workspace, and `live-tests/sync/` is a second one
 nested inside it, each with its own lock. The rules for writing live tests are in
@@ -23,17 +23,18 @@ Beyond per-function unit tests, these tests prove what the on-disk indexes and t
 sync pipeline guarantee (see [durability.md](./design/durability.md) §7). Each is
 checked against an independent oracle.
 
-| Test                                                                                | Oracle                                                                                                                                                                                                                                                                                                                                                       |
-| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `every_crash_state_*` (persistence and each index)                                  | `SimFs` enumerates every state a power loss at each persistence point could leave. Each must reopen to an acknowledged or attempted commit and keep committing.                                                                                                                                                                                              |
-| `random_histories_*` (each index)                                                   | Random final streams (bulk runs, folded tip steps, restarts resending held heights) are checked against a naive model: summed tree sizes for compact blocks, `incrementalmerkletree` frontiers for tree state, and a recomputed UTXO set for transparent addresses.                                                                                          |
-| `the_tip_is_the_highest_block_a_majority_of_polled_chains_hold` (`zaino-chainview`) | One to five simulated zebrads mine, relay (longest chain wins, first seen on a tie, as on regtest), fork, retreat and go unready, and are polled in random order. After every poll the view's tip, its agreers, each endpoint's own tip, the epoch and the below-quorum shortfall must match a naive count over each endpoint's chain as it was last polled. |
-| `NfsCore` model (`zaino-nfs`, `core/model.rs`)                                      | Random verified-chain evolutions (extensions, reorgs at random depth, same-height replacements, retreats, finality, restarts), lying and silent sources, delayed folds and commits: every published snapshot must answer like folding each index from genesis along the best chain, and the final stream must send every height once.                        |
-| `every_snapshot_answers_like_folding_from_genesis_*` (`zaino-nfs`)                  | The driver with all five real folds over `SimFs` stores through bulk, reorgs, finality and a crash restart with indexes apart, against each index folded from genesis into fresh stores.                                                                                                                                                                     |
-| `the_pipeline_follows_a_reorg_*` (`zainod`)                                         | The whole pipeline over a mock validator and gRPC on localhost: `GetLatestBlock`, `GetBlockRange` and `GetTreeState` name one block before and after a reorg.                                                                                                                                                                                                |
-| `committed_tree_states_are_zebras` (both sync profiles, every 5 s)                  | On mainnet, `GetTreeState` at the tree-state index's durable tip must match zebrad's `z_gettreestate` byte for byte while the index builds, follows, and recovers from each kill.                                                                                                                                                                            |
-| `committed_blocks_are_zebras` (both sync profiles, every 5 s)                       | On mainnet, `GetBlock` at the compact-block index's durable tip must match the compact block implied by zebrad's `getblock 2`, field for field, with every fee recomputed from its prevouts. It runs while the index builds, so it samples blocks across the whole chain, and across each kill in the crash profile.                                         |
-| `index_files_verify_clean` (both sync profiles, at completion)                      | `zainod verify` runs in the pod and checks every committed byte of every index against its page checksums.                                                                                                                                                                                                                                                   |
+| Test | Oracle |
+|---|---|
+| `every_crash_state_*` (persistence and each index) | `SimFs` enumerates every state a power loss at each persistence point could leave. Each must reopen to an acknowledged or attempted commit and keep committing. |
+| `random_histories_*` (each index) | Random final streams (bulk runs, folded tip steps, restarts resending held heights) are checked against a naive model: summed tree sizes for compact blocks, `incrementalmerkletree` frontiers for tree state, and a recomputed UTXO set for transparent addresses. |
+| `the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it` (`zaino-chainview`) | Simulated zebrads mine, relay (longest chain wins, first seen on a tie, as on regtest), fork and go unreachable, and are polled in random order into a real header chain. After every poll the tip must be the header chain's best, its holders the validators whose last-polled chain holds it (none = `NotHeld`), each endpoint's own tip its polled chain's, and the epoch must move exactly when the tip block does. |
+| `random_header_trees_answer_like_the_naive_model` (`zaino-header-chain`) | Random header trees (forks, finality, restarts) against a naive best-chain and finality model. |
+| `NfsCore` model (`zaino-nfs`, `core/model.rs`) | Random verified-chain evolutions (extensions, reorgs at random depth, same-height replacements, retreats, finality, restarts), lying and silent sources, delayed folds and commits: every published snapshot must answer like folding each index from genesis along the best chain, and the final stream must send every height once. |
+| `every_snapshot_answers_like_folding_from_genesis_*` (`zaino-nfs`) | The driver with all five real folds over `SimFs` stores through bulk, reorgs, finality and a crash restart with indexes apart, against each index folded from genesis into fresh stores. |
+| `the_pipeline_follows_a_reorg_*` (`zainod`) | The whole pipeline over a mock validator and gRPC on localhost: `GetLatestBlock`, `GetBlockRange` and `GetTreeState` name one block before and after a reorg. |
+| `committed_tree_states_are_zebras` (both sync profiles, every 5 s) | On mainnet, `GetTreeState` at the tree-state index's durable tip must match zebrad's `z_gettreestate` byte for byte while the index builds, follows, and recovers from each kill. |
+| `committed_blocks_are_zebras` (both sync profiles, every 5 s) | On mainnet, `GetBlock` at the compact-block index's durable tip must match the compact block implied by zebrad's `getblock 2`, field for field, with every fee recomputed from its prevouts. It runs while the index builds, so it samples blocks across the whole chain, and across each kill in the crash profile. |
+| `index_files_verify_clean` (both sync profiles, at completion) | `zainod verify` runs in the pod and checks every committed byte of every index against its page checksums. |
 
 The simulated validators are `zaino_source::mock::MockChain`, which answers the
 way zebrad does: blocks by hash and headers by height come from the best chain only, and
@@ -59,10 +60,10 @@ done
 ```
 
 `PROPTEST_MAX_SHRINK_ITERS` shrinks a failure harder and `PROPTEST_VERBOSE=1`
-prints each case. Do not raise `PROPTEST_CASES` across the whole workspace:
-`nu6_3_transactions_decode_to_their_source` draws from librustzcash's `arb_tx`,
-which rejects most of what it generates and aborts ("too many local rejects")
-past a few hundred cases.
+prints each case. Raising `PROPTEST_CASES` across the whole workspace also scales
+`transactions_decode_to_their_source` (`zaino-source`), which draws from
+librustzcash's `arb_tx` and rejects ~80 draws per case: slow, though it no
+longer aborts.
 
 A new model suite joins the profile by its name: the test or its binary contains
 `model`, or the test starts with `random_histories`. Its oracle is written

@@ -8,15 +8,16 @@ height, hash, block or amount depends on this one.
 
 Anything added here lands in every crate above it. `zcash_protocol` is there
 for `NetworkType`, which every crate above already speaks; `sha2` for
-`MerkleRoot::of_txids`, the consensus merkle root a block's transactions must
-rebuild (the NFS's body check, and the chain builder's headers). In
-particular there is no serde: formats are owned by the boundary that speaks
-them.
+`sha256d`: block hashes (`HeaderBytes::hash`) and `MerkleRoot::of_txids`, the
+consensus merkle root a block's transactions must rebuild (the NFS's body
+check, and the chain builder's headers). In particular there is no serde:
+formats are owned by the boundary that speaks them.
 
 | Direction | Owner |
 |---|---|
 | validator JSON-RPC reply → domain | `zaino-source` (`parse.rs` for JSON, `decode.rs` for consensus bytes) |
-| domain → disk | each index crate's `Persistent*` records (`zaino-persistence`) |
+| consensus header bytes → fields | `HeaderBytes` here (shared by `zaino-source` and `zaino-header-chain`) |
+| domain → disk | each index crate's own `encode` / `decode` (`zaino-persistence` sees bytes only) |
 | domain → gRPC | `zaino-grpc` and the index crates, onto `zaino-proto` types |
 
 Fields may carry Zcash protocol bytes (raw blocks, transactions, serialized
@@ -28,26 +29,23 @@ values never belong here.
 ```rust
 use zaino_primitives::network::{chain_name, network_name};
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
-use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
-use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
+use zaino_primitives::sha256d;
+use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, TransactionId, Treestate};
 ```
 
-- `types` — the chain: `Block` (the one decoded block every index
-  consumes, inside each `zaino_sync::Final`), `BlockHeader`, `ChainMetadata` (cumulative tree sizes, derived by
-  the compact-block index), `Transaction` (and `types::transaction` parts,
-  Sprout's value balance included; `TransparentData::coinbase` marks the
-  coinbase), `Fee` (`Coinbase`, or `Paid` = what the transaction leaves in the
-  transparent pool) and `BlockFees` (one `Fee` per transaction, named by block
-  hash), `OutPoint`
+- `types` — the chain: `Block` (the one decoded block every index consumes,
+  inside each `zaino_sync::Final`), `BlockHeader`, `Transaction` and its parts
+  (`TransparentData`, `SaplingData`, `OrchardData`, `SproutData`, …; Sprout's
+  value balance included; `TransparentData::coinbase` marks the coinbase), `Fee`
+  (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool)
+  and `BlockFees` (one `Fee` per transaction, named by block hash), `OutPoint`
   (`txid` + `vout`: a transparent input is the outpoint it spends, and the key
-  both transparent indexes store under),
-  `BlockHash`, `TransactionId`, `Height`, `BlockRef`, `TreeSize`, `TreeRoot`,
-  `Treestate`, `SubtreeRoot`, `ShieldedPool`, `BlockchainInfo` and the
-  network-upgrade types, plus the zatoshi family and `CompactDifficulty` below.
-- `types::rpc` — domain answers to `zaino-source` ports for validator queries
-  (`BlockDeltas`, `BlockHeaderVerbose`, `BlockSubsidy`, `ChainTip`,
-  `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`, …). Only named,
-  typed fields; `Option` means "the validator may not report it".
+  both transparent indexes store under), `BlockHash`, `TransactionId`, `Height`,
+  `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
+  `TreeRoot`, `Treestate`, `SubtreeRoot`, `ShieldedPool`, `MerkleRoot`,
+  `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
+  `TransactionLocation` and the network-upgrade types, plus the zatoshi family
+  and `CompactDifficulty` below.
 - `network` — `NetworkType`'s two spellings: `chain_name` (`main` / `test` /
   `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
   `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and
@@ -55,44 +53,44 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000) and `MAX_BLOCK_BYTES`
   (2,000,000, the spec's `MAX_BLOCK_SIZE`). Stated as protocol facts, not
   borrowed from a node. Restating them elsewhere is a bug.
+- `sha256d` — SHA-256 twice, the one implementation (block hashes, merkle
+  nodes, pre-v5 txids).
 
 ## Invariants live in constructors
 
 ```rust
-let h = Height::try_from(800_000u32)?;                // ≤ 2^31 - 1
+let h = Height::try_from(800_000u32)?;                // ≤ 2^31 - 1 (also from u64)
 let z = Zatoshis::new(21_000_000)?;                   // ≤ money supply
-let b = Block::try_new(header, txs)?;                 // non-empty tx list
-let c = CompactCiphertext::try_new(&bytes)?;          // exactly 52 bytes
+let c = CompactCiphertext::prefix_of(&note);          // the 52-byte head of a note ciphertext
+let (header, rest) = HeaderBytes::split(&raw)?;       // one consensus header + what follows
 ```
 
-- `Height::checked_add` / `checked_sub` are checked, never wrapping.
-- `Transaction` stores no index: position is list order, and
-  `Block::coinbase()` is transaction 0.
-- `CompactCiphertext` is the 52-byte compact head of a note ciphertext;
-  once built it converts infallibly to `[u8; 52]`.
-- `TreeSize::checked_add` enforces the compact protocol's `u32` range
-  (`TreeSizeOutOfRange`); `TreeSizes::advance(&block)` = the cumulative sizes
+- `Height` converts from `u32` and `u64` (`HeightOverflow` names the rejected
+  value); `checked_add` / `checked_sub` are checked, never wrapping.
+- `Transaction` stores no index: position is list order, and transaction 0 is
+  the coinbase.
+- `TreeSize` is `u32`-backed (`TryFrom<u64>` refuses a full depth-32 tree,
+  `TreeSizeOutOfRange`); `TreeSizes::advance(&block)` = the cumulative sizes
   after a block (one commitment per Sapling output, Orchard or Ironwood action).
+- `HeaderBytes::split` checks the layout (fixed fields present, solution 1344
+  or regtest's 36 bytes behind a minimal compactsize; `HeaderError` names each
+  fault) and reads every field from the bytes; its `hash()` is SHA-256d of
+  those bytes, never a field taken on trust.
 
 ## Zatoshi family
 
 | Type | Range (both ends inclusive) | Is |
 |---|---|---|
 | `Zatoshis` | `0` to `supply` | an amount: balance, UTXO value, one movement |
-| `ZatoshisFlowSum` | `0` to `u128::MAX` | a sum of movements (not supply-bounded) |
-| `SignedZatoshis` | `-supply` to `supply` | a signed movement or difference |
+| `SignedZatoshis` | `-supply` to `supply` | a signed movement or difference (a value balance) |
 
 ```rust
-let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?; // None only past u128::MAX
-let lifetime = ZatoshisFlowSum::from_summed(total_u64);                    // source-summed total
-let net: Option<SignedZatoshis> = received.net(spent);                     // None if incoherent
-let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied()); // coexisting balances; None past supply
-let parsed = SignedZatoshis::new(value_i64)?;                          // boundary input
+let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied()); // None past supply
+let parsed = SignedZatoshis::new(value_i64)?;                                  // boundary input
 ```
 
-Movements recount the same coins, so their sum is its own type; coexisting
-balances cannot exceed the supply, so `sum_balances` lands back in `Zatoshis`
-and a total past the supply means double-counted input.
+Coexisting balances cannot exceed the supply, so `sum_balances` lands back in
+`Zatoshis` and a total past the supply means double-counted input.
 
 ## Difficulty
 
@@ -101,17 +99,15 @@ applies a validator's acceptance rules (sign bit clear, target within 256 bits,
 non-zero) plus the target's work fitting 128 bits, and reports each rejection
 as its own `CompactDifficultyError` variant. The work
 (`floor(2^256 / (target + 1))`) is computed for that check only and never
-exposed. Zaino holds no chain-work type and does no work-based fork choice:
-the tip is agreement by hash across the configured validators, until the
-header chain's most-work rule replaces it
+exposed: chain work and the most-work rule live in `zaino-header-chain`
 ([chainview §2](../../docs/design/chainview.md#2-the-best-chain-proof-of-work)).
 
 ## Byte order
 
 `BlockHash` and `TransactionId` hold internal (hash-output) byte order and
-convert via `From<[u8; 32]>` both ways. Their `Display` renders the reversed
-(RPC/explorer) hex; any other display-order rendering happens at the boundary
-that presents it.
+convert via `From<[u8; 32]>` both ways. `Display` renders the reversed
+(RPC/explorer) hex and `FromStr` parses it back (`ParseHashError`: not 64 hex
+digits); that pair is the one display-order conversion.
 
 ## Features
 
@@ -137,7 +133,7 @@ odd level's last duplicated; a repeated pair has no root, CVE-2012-2459), versio
 solution, each block 75 s after its parent. A mint counter sets each nonce and default
 coinbase txid, so siblings never collide and every run builds the same hashes.
 `Chain::with_genesis(transactions)` starts from a genesis holding chosen transactions;
-`linked(per_block)` builds one such branch whole, as the `Arc<Block>`s an index sink takes.
-`encode_header` is pinned against five mainnet headers (`zaino-source` decode tests) and
-the genesis bytes here; `zaino-header-chain`'s model inserts builder headers through
-every regtest rule.
+`mine_bits` mines under a chosen nBits; `linked(per_block)` builds one such branch whole, as
+the `Arc<Block>`s an index sink takes. `encode_header` is pinned against five mainnet headers
+(`zaino-source` decode tests) and read back field by field through `HeaderBytes::split`;
+`zaino-header-chain`'s model inserts builder headers through every regtest rule.

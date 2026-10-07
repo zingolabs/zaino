@@ -52,8 +52,9 @@ An RPC is served from a Zaino index when its answer is derived: something Zaino 
 validator is obliged to have. Forwarding those would mean either a second implementation that can
 disagree with the index, or a dependency on a validator feature such as `getaddressutxos` that
 Zebra need not implement. So the block, tree-state and transparent-address methods all come from
-an index, and while an index is still building they fail with `UNAVAILABLE` rather than falling
-back to a validator.
+an index, never falling back to a validator: while the indexes build they answer at the served
+snapshot's tip (which trails the chain), and only before the first snapshot are they
+`UNAVAILABLE`.
 
 An RPC goes to the validators when it is a consensus decision or a primary object they already
 hold for consensus reasons.
@@ -72,7 +73,8 @@ hold for consensus reasons.
 | `GetLightdInfo`                                         | chain view + compact-block index | network state from a validator holding the verified tip; the height Zaino serves                                                                  |
 
 The code enforces this in one place, `zaino-grpc`'s path dispatch (`service.rs`): each derived
-method maps to its index's service only, and the validators are reachable from exactly two routes,
+method reads its index's reader through the request's snapshot only, and the validators are
+reachable from exactly two routes,
 `GetTransaction` and `GetTaddressTransactions`' bytes. A disabled index's methods answer
 `UNIMPLEMENTED` naming the index, never a validator's answer instead; a test asserts that for
 every index-backed path.
@@ -127,8 +129,9 @@ cannot do without. Everything else is a concrete type.
 Deliberately not seams:
 
 - **The gRPC service.** One endpoint, one protocol, one implementation: `GrpcService` over
-  `Routes`, the enabled indexes as concrete services. A disabled index is `None`, not a stub.
-- **The index services and writers.** Each index is one concrete crate; what varies between them
+  `Routes`, the enabled indexes as concrete readers in each `Snapshot`. A disabled index is
+  `None`, not a stub.
+- **The index readers and writers.** Each index is one concrete crate; what varies between them
   is data, not an interface to swap.
 - **The validator set.** `TrafficBalancer` is the set of trusted validators (cheapest first, then
   failover) and is not itself a `ChainDataSource`; a pool is never mistaken for one validator.

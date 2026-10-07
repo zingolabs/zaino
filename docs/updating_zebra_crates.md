@@ -1,13 +1,17 @@
 # Updating Zebra
 
-Zaino links no Zebra crate. `zaino-source` fetches each block as consensus bytes with
-`getblock <height> 0` and decodes it with librustzcash (`zcash_primitives`'s
-`CompressedTransaction`), and it parses every other JSON-RPC result into
-`zaino-primitives` types in `packages/zaino-source/src/parse.rs`. `cargo tree -i zebra-chain` finds nothing. Zaino's coupling to Zebra is therefore the JSON-RPC
-surface of the zebrad release it runs against, and keeping up with Zebra means
-testing against new zebrad releases rather than bumping a dependency. We treat a
-spread between the latest zebrad and the one the live suite tests as high-priority
-tech debt.
+Zaino's validator path links no Zebra crate. `zaino-source` fetches each block by
+hash as consensus bytes (`getblock <hash> 0`), splits the header with
+`zaino_primitives::types::HeaderBytes` and decodes the transactions with
+librustzcash (`zcash_primitives`'s `CompressedTransaction`), and it parses every
+other JSON-RPC result into `zaino-primitives` types in
+`packages/zaino-source/src/parse.rs`. The one Zebra link is `zaino-peers`, which
+embeds `zebra-network` (and `zebra-chain`) as Zaino's p2p layer, pinned by git rev
+in the root `Cargo.toml` (`cargo tree -i zebra-chain` shows only it). Zaino's
+coupling to the node is therefore the JSON-RPC surface of the zebrad release it runs
+against, and keeping up with Zebra means testing against new zebrad releases, plus
+moving the `zebra-*` rev when the p2p layer needs it. We treat a spread between the
+latest zebrad and the one the live suite tests as high-priority tech debt.
 
 Node behaviour is decided by the `zebrad` release. When checking the shape of a
 JSON-RPC response, read the tagged Zebra source for the node version you target.
@@ -25,8 +29,9 @@ JSON-RPC response, read the tagged Zebra source for the node version you target.
 ## Pinning unreleased dependencies
 
 The crates that do track upstream closely are librustzcash's (`zcash_primitives`,
-`zcash_protocol`, `zcash_transparent`, `zcash_address`, `equihash`) and the crates
-under them (`orchard`, `sapling-crypto`, `incrementalmerkletree`, `halo2_*`, `zip32`).
+`zcash_protocol`, `zcash_transparent`, `zcash_address`, `zcash_encoding`,
+`equihash`) and the crates under them (`orchard`, `sapling-crypto`,
+`incrementalmerkletree`).
 We pin an unpublished change through the root `[patch.crates-io]`, by git rev, or by
 path to a sibling checkout while a change spans several repositories. Cargo honours
 `[patch.crates-io]` only in the workspace root. Patching one of these crates usually
@@ -36,5 +41,6 @@ version and when to drop it.
 
 The current patch set is the lazy point-decompression stack. It pins `orchard`,
 `sapling-crypto`, `incrementalmerkletree` and the librustzcash crates to forks by git
-rev, and `halo2_*` and `zip32` to the git revs librustzcash's main branch pins. Each
-entry is dropped once its change is released.
+rev; the `zebra-*` workspace dependencies point at a zebra fork built on the same
+forks, so both sides agree on one version of each type. Each entry is dropped once
+its change is released.

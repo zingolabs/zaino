@@ -8,7 +8,8 @@ all in [boundaries.md](./boundaries.md).
 
 ## 1. There is one input
 
-The only input is `getblock <height> 0`, the raw consensus bytes, which Zaino parses itself
+The only input is `getblock <hash> 0` (each hash named by the verified header chain), the raw
+consensus bytes, which Zaino parses itself
 (`zaino-source/src/decode.rs`). For each transaction that gives us:
 
 ```text
@@ -89,9 +90,10 @@ so it visits only the segments holding that address. Segments carry no height me
 range only narrows where the seek lands inside each visited segment. What remains is the live
 segment count, which bounds the filter checks per query, and that is why we merge.
 
-Commits are frequent. During bulk sync an index commits every `batch_mib` (64 MiB by default), and
-at the tip every 32 final blocks, so an unmerged set would still gain a segment every 40 minutes
-of mainnet blocks. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
+Commits are frequent. An index commits when its batch reaches `batch_mib` (64 MiB by default)
+during bulk sync, after every folded run at the tip (the NFS folded it already, usually one final
+block), and whenever the final stream is quiet for a second (`IDLE` in zaino-sync's
+`committer.rs`), so an unmerged set would gain a segment per mainnet block at the tip. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
 eight segments a background thread, one per tier, merges them into one segment of the tier above.
 The index's next manifest commit swaps the merged segment in, and the inputs are unlinked only once
 that manifest is durable. A commit never waits on a merge unless the merging tier falls two full

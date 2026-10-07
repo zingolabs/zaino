@@ -22,15 +22,17 @@ validators it trusts for exactly that, and nothing more.
 | `[[trusted_validators]]`, any-trusted admission, non-fatal validator failure (§5, §7, §10)     | built                                  |
 | Trusted-validator links: lanes, budgets, batched mempool bytes (§7)                            | built                                  |
 | `GetMempoolTx` projection rendered once per transaction (§5)                                   | built                                  |
-| `trusted: x/y` + spread timeline per transaction, tracked and on `/statusz` (§5, §11)          | built; `peers: x/y` lands with phase 6 |
+| `trusted: x/y` + spread timeline per transaction, tracked and on `/statusz` (§5, §11)          | built (`peers: x/y` with `[p2p]` on)   |
 | Validator release + end-of-service height, alarm a week ahead (§11)                            | built                                  |
-| Batched poll tick (holding asked by `getblockhash`), routing for blocks and mined txs (§7, §9) | built                                  |
+| Batched poll tick (holding asked by `getblockhash`), routing for mined txs (§7, §9)           | built                                  |
+| Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                |
 | `peers/trusted` on the extension service (§5)                                                  | planned                                |
 | Push streams (§7)                                                                              | built                                  |
 | Header chain: proof of work, most-work tip, holders, finality gate (§2–§4)                     | built; headers from trusted validators |
-| Submission: random entry, watched, resubmitted (§6)                                            | built, trusted entries only            |
-| `zaino-peers`: zebra-network, verified fetches, attributed `inv`, isolated push (§8)           | built, not wired into the view yet     |
-| Peers in the view: sightings, entries, headers and blocks (§5, §6, §8)                         | planned, rest of phase 6               |
+| Submission: random entry, watched, resubmitted (§6)                                            | built, peer + trusted entries          |
+| `zaino-peers`: zebra-network, attributed `inv`, isolated push (§8)                             | built                                  |
+| Peers in the view: mempool sightings, submission entries (§5, §6), via zainod `[p2p]`         | built                                  |
+| Peers as a header and block source (§2, §8)                                                    | planned                                |
 
 ## 1. Sources
 
@@ -42,7 +44,7 @@ validators it trusts for exactly that, and nothing more.
         │ broadcast                                 │ mined tx by id · broadcast
         ▼                                           ▼
    ┌──────────────┐                          ┌──────────────────┐
-   │   PeerSet    │                          │ ValidatorLink ×N │  lanes, budgets, batches
+   │   PeerSet    │                          │   RpcClient ×N   │  lanes, budgets, batches
    └──────┬───────┘                          └────────┬─────────┘
           └──────────────────┬────────────────────────┘
                              ▼
@@ -306,7 +308,7 @@ propagation_threshold_secs = 15   # per attempt; measured on mainnet before it i
 max_attempts = 4                  # then the verdict submit
 ```
 
-**Until peers exist (phase 6):** the candidates are the trusted validators, each attempt an RPC
+**With `[p2p]` off (or before the peer network is up):** the candidates are the trusted validators, each attempt an RPC
 `sendrawtransaction` to one of them (a verdict per attempt), and the others' listings are the
 watch. That is the same protocol over a sample space of 1–2.
 
@@ -316,14 +318,15 @@ long Zaino owns a wallet's transaction.
 
 ## 7. Talking to a trusted validator
 
-Each trusted validator gets one `ValidatorLink`, which owns everything Zaino sends it. A zebrad
-JSON-RPC server admits 100 connections in total; before links, Zaino's pool per validator was
-unbounded and wallet traffic went straight through it (`GetTaddressTransactions` fans one call
-out into one `getrawtransaction` per txid).
+Each trusted validator gets one `zaino_source::RpcClient`, which owns everything Zaino sends it
+(the chain view's `EndpointPoller` polls through it; the NFS fetches blocks and gRPC asks for
+transactions through it). A zebrad JSON-RPC server admits 100 connections in total; before
+these lanes, Zaino's pool per validator was unbounded and wallet traffic went straight through it
+(`GetTaddressTransactions` fans one call out into one `getrawtransaction` per txid).
 
 ```text
                      ┌─ Control  (tip, listing, headers, broadcast)   2 ─┐
-  ValidatorLink ─────┼─ Serve    (GetTransaction, address tx bytes)   ¼ ─┼──▶ ≤ max_connections ──▶ zebrad
+  RpcClient ─────────┼─ Serve    (GetTransaction, address tx bytes)   ¼ ─┼──▶ ≤ max_connections ──▶ zebrad
                      └─ Sync     (block fetch)                 the rest ─┘
                                  + request-rate and byte-rate limits (GCRA)
 ```
@@ -385,8 +388,10 @@ load = peak-EWMA latency × requests in flight (power-of-two-choices, as in Fina
 zebra-network's own peer set). A nearby source wins until it has hundreds of requests in flight,
 and a distant one becomes failover without anyone configuring a primary. Built as
 `zaino_source::TrafficBalancer` (tower's `PeakEwma` rule over ports, not `tower::Service`s):
-block fetch and `GetTransaction` route through it today; the remaining candidates, cheapest first,
-are the failover order. Reads only: submission is §6's.
+`GetTransaction` and address transaction bytes route through it; the remaining candidates,
+cheapest first, are the failover order. Block fetch is the NFS's own scheduler (`zaino-nfs`
+`fetch.rs`: least-loaded source first, every body checked against the verified header, a
+misanswering source benched, a silent one hedged). Reads only: submission is §6's.
 
 | Request             | Candidates                                     |
 | ------------------- | ---------------------------------------------- |
@@ -432,7 +437,7 @@ first-seen → first trusted listing, first → every trusted listing, and resid
 ## 12. `GetLightdInfo`
 
 The most frequent wallet call (50× any other on the mainnet fleet) never waits on a validator. It
-renders from one pinned view plus the compact-block index's served height: the network estimate,
+renders from one pinned view plus the served snapshot's tip (`blockHeight`): the network estimate,
 upgrade schedule and branch come from the last `getblockchaininfo` of a trusted validator holding
 the best tip, read by its poller. Below that, `UNAVAILABLE`.
 
@@ -457,7 +462,7 @@ shim; routing replaces `fetch.primary_validator`.
 ## Phases
 
 1. `GetLightdInfo` from the view (§12): **done**
-1. `ValidatorLink`, `[[trusted_validators]]`, non-fatal failure, any-trusted admission,
+1. Per-validator `RpcClient` lanes, `[[trusted_validators]]`, non-fatal failure, any-trusted admission,
    `peers/trusted` counts and the extension service (§5, §7, §10): **done** but the extension
    service
 1. Batched ticks, routing (§7, §9): **done**
@@ -465,7 +470,8 @@ shim; routing replaces `fetch.primary_validator`.
 1. Header chain: verification from genesis, header store, most-work tip driving sync, block
    checks, finality gate (§2–§4): **done**; submission's trusted-only form (§6): **done**
 1. Peers: headers, blocks, mempool sightings, submission entries, the unverified stream (§5, §6,
-   §8): the `zaino-peers` crate **done**; wiring it into the view next
+   §8): the `zaino-peers` crate, mempool sightings and submission entries **done**; headers and
+   blocks from peers next
 
 Phase 5 takes headers from trusted validators' RPC. The source carries no trust (every header is
 verified the same way); it lets the verifier be proven against mainnet before the p2p transport
