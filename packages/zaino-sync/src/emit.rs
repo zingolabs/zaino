@@ -23,10 +23,10 @@ mod names {
 pub fn describe_metrics() {
     use metrics::{describe_counter, describe_gauge};
 
-    describe_gauge!(names::BEST_TIP, "Quorum tip height the producer follows");
+    describe_gauge!(names::BEST_TIP, "Verified tip height the producer follows");
     describe_counter!(
         names::REORGS_TOTAL,
-        "Quorum tip moves that replaced non-final blocks rather than extending them"
+        "Verified tip moves that replaced non-final blocks rather than extending them"
     );
     // published from boot (unregistered until first reorg = indistinguishable from unemitted)
     metrics::counter!(names::REORGS_TOTAL).absolute(0);

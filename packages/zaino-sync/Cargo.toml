@@ -20,8 +20,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-util = { workspace = true }
 tracing.workspace = true
-zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
-zaino-non-finalized-state.workspace = true
+zaino-header-chain.workspace = true
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 
@@ -29,8 +28,10 @@ zaino-source.workspace = true
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
+zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 
 [lints.rust]
 unsafe_code = "forbid"
+unreachable_pub = "warn"

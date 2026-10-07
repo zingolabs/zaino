@@ -1,13 +1,14 @@
-//! Chain view → producer → followers against validators whose best chain moves at random, checked
-//! against a model of the best chain
+//! Header chain → producer → followers against validators whose best chain moves at random,
+//! checked against the header chain itself
 //!
-//! - Moves: extensions (some past the window), reorgs onto higher / equal / lower tips, bare
-//!   retreats, bursts that never settle, restarts with the chain moving while down, the leading
-//!   validator going unready (the quorum retreats onto what the other two share), the lagging one
-//!   stalling (its lag grows past the window)
-//! - Three validators behind a real `ChainView`: two serve the best chain, one the previous move's
-//! - Every commit checked as it lands: final under the model's highest tip, on the best chain
-//! - Paused clock: the view's 1 s poll cadence costs no wall time
+//! - Moves: extensions, reorgs onto heavier branches (longer, same height, retreats), bursts that
+//!   never settle, restarts with the chain moving while down, a validator unreachable, the
+//!   lagging one stalling
+//! - Three validators: two serve the best chain, one the previous move's (by hash, best chain
+//!   only, as zebrad: the producer has to route around it)
+//! - Header chain finalized after every move (depth `DEPTH`): the producer's one finality
+//! - Every commit checked as it lands: final in the header chain, on its best chain
+//! - Paused clock: retries and hedges cost no wall time
 
 use std::{
     num::{NonZeroU32, NonZeroUsize},
@@ -16,24 +17,35 @@ use std::{
 };
 
 use proptest::prelude::*;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use zaino_chainview::{ChainView, Endpoint};
-use zaino_primitives::types::{
-    Block, BlockHash, BlockHeader, BlockRef, Height, ReorgDepth, Transaction,
-};
-use zaino_source::{mock::MockChain, BlockFetchPool};
+use zaino_header_chain::{HeaderChain, VerifiedChain};
+use zaino_primitives::testing;
+use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_source::mock::MockChain;
 use zaino_sync::{BlockSink, ProduceError, Producer, Step, Subscription, Weight};
 
 const DEPTH: u32 = 4;
-/// Virtual time (paused clock): ~60 poll rounds
-const SETTLE: Duration = Duration::from_secs(60);
+/// Virtual time (paused clock)
+const SETTLE: Duration = Duration::from_secs(600);
 
-/// Validators' best chain + the highest tip it ever had (what bounds finality and legal forks)
-#[derive(Debug)]
+/// Header chain + the best path and final height it verified last
 struct Chain {
+    headers: HeaderChain,
     best: Vec<BlockHash>,
-    highest: usize,
+    final_height: Option<usize>,
+}
+
+impl Chain {
+    fn refresh(&mut self) -> Arc<VerifiedChain> {
+        let verified = self.headers.verified().expect("genesis verified");
+        let best = u32::from(verified.best().height);
+        let at = |h: u32| verified.hash_at(Height::try_from(h).expect("h")).expect("best path");
+        self.best = (0..=best).map(at).collect();
+        self.final_height = verified.final_tip().map(|tip| u32::from(tip.height) as usize);
+        Arc::new(verified)
+    }
 }
 
 /// What one index holds: committed hashes, and applied ones (committed prefix + non-finalized)
@@ -97,8 +109,8 @@ impl Recorder {
     }
 
     /// Every final block through `through` (bulk ones, then applied ones) committed: contiguous
-    /// from durable, on the applied branch where applied, final under the chain's highest tip, on
-    /// its best chain
+    /// from durable, on the applied branch where applied, final in the header chain, on its best
+    /// chain
     fn commit(&mut self, through: Height) {
         let bulk = std::mem::take(&mut self.bulk);
         self.bulk_bytes = 0;
@@ -124,7 +136,7 @@ impl Recorder {
         {
             let chain = self.chain.lock().expect("chain lock");
             for (at, hash) in (from..).zip(&hashes) {
-                assert!(at + DEPTH as usize <= chain.highest, "{at} committed before final");
+                assert!(Some(at) <= chain.final_height, "{at} committed before final");
                 assert_eq!(chain.best.get(at), Some(hash), "{at} committed off the best chain");
             }
         }
@@ -147,47 +159,22 @@ fn tip_of(hashes: &[BlockHash]) -> Option<Height> {
     Some(Height::try_from(last).expect("small chain"))
 }
 
-/// Hash = (height, branch): every branch's block at a height is distinct
-fn hash(height: u32, branch: u16) -> BlockHash {
-    let mut bytes = [0u8; 32];
-    bytes[..4].copy_from_slice(&height.to_le_bytes());
-    bytes[4..6].copy_from_slice(&branch.to_le_bytes());
-    BlockHash::from(bytes)
-}
-
-fn block(height: u32, own: BlockHash, parent: BlockHash) -> Block {
-    Block::new(
-        BlockHeader::for_tests(height, own.into(), parent.into(), 0),
-        vec![Transaction {
-            txid: <[u8; 32]>::from(own).into(),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }],
-    )
-}
-
+/// `Reorg` = top `depth` replaced by `len` heavier blocks (`len` < `depth` = a retreat)
 #[derive(Debug, Clone)]
 enum Change {
     Extend(u32),
-    /// Top `depth` blocks replaced by `len` on a new branch (`len` 0 = a retreat)
-    Reorg {
-        depth: u32,
-        len: u32,
-    },
+    Reorg { depth: u32, len: u32 },
 }
 
+/// - `Chain.yields`: `None` → wait for every index to reach the new chain, `Some(n)` → `n` yields
+/// - `Restart` = stop everything, move the chain while down, start from what is durable
+/// - `Lag` = first current validator unreachable for `yields`, then back (chain fixed)
+/// - `Stall(true)` = lagging validator stops following the chain (`false` = resumes)
 #[derive(Debug, Clone)]
 enum Move {
-    /// `yields` = `None` → wait for every index to reach the new chain; `Some(n)` → `n` yields
     Chain { change: Change, yields: Option<u8> },
-    /// Stop everything, move the chain while down, start again from what is durable
     Restart { down: Vec<Change> },
-    /// First current validator unready for `yields`, then ready again (chain fixed)
     Lag { yields: u8 },
-    /// Lagging validator stops (`true`) or resumes following the chain
     Stall(bool),
 }
 
@@ -201,7 +188,7 @@ struct Follower {
 fn change() -> impl Strategy<Value = Change> {
     prop_oneof![
         2 => (1u32..=DEPTH + 3).prop_map(Change::Extend),
-        3 => (1u32..=DEPTH, 0u32..=2 * DEPTH + 2)
+        3 => (1u32..=DEPTH, 1u32..=2 * DEPTH + 2)
             .prop_map(|(depth, len)| Change::Reorg { depth, len }),
     ]
 }
@@ -236,7 +223,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 48, ..ProptestConfig::default() })]
 
     /// After every settled move each index applies exactly the best chain; no index ever commits
-    /// a block that is not final under the highest tip, or that is not on the best chain
+    /// a block the header chain has not made final, or that is off its best chain
     #[test]
     fn followers_track_the_best_chain_through_random_reorgs_and_restarts(
         moves in moves(),
@@ -258,45 +245,43 @@ struct Validators {
     current: [Arc<MockChain>; 2],
     lagging: Arc<MockChain>,
     order: Vec<Arc<MockChain>>,
-    blocks: std::collections::HashMap<BlockHash, Block>,
-    branch: u16,
+    blocks: testing::Chain,
     stalled: bool,
 }
 
 impl Validators {
-    fn serve(
-        mock: &MockChain,
-        best: &[BlockHash],
-        blocks: &std::collections::HashMap<BlockHash, Block>,
-    ) {
+    fn serve(mock: &MockChain, best: &[BlockHash], blocks: &testing::Chain) {
         mock.rewind_to(Height::try_from(0u32).expect("h"));
-        mock.extend_best(best.iter().map(|own| blocks[own].clone()));
+        mock.extend_best(best.iter().map(|own| blocks.block(*own).clone()));
     }
 
-    /// `change` applied to `chain` (fork parent clamped to `highest − DEPTH`: deeper = past
-    /// finality, which halts); the lagging validator keeps the chain from before it (unless
-    /// stalled: then it keeps whatever it had)
+    /// `change` mined, verified and finalized (fork parent clamped to the final tip); the
+    /// lagging validator keeps the chain from before it (unless stalled: then whatever it had)
     fn apply(&mut self, chain: &Mutex<Chain>, change: &Change) {
         let mut chain = chain.lock().expect("chain lock");
         let before = chain.best.clone();
-        let tip = before.len() - 1;
-        let (keep, grow) = match *change {
-            Change::Extend(count) => (before.len(), count),
+        let (keep, tip) = match *change {
+            Change::Extend(count) => {
+                (before.len(), self.blocks.extend(before[before.len() - 1], count))
+            }
             Change::Reorg { depth, len } => {
-                self.branch += 1;
-                let depth =
-                    (depth as usize).min(tip - chain.highest.saturating_sub(DEPTH as usize));
-                (before.len() - depth, len)
+                let floor = chain.final_height.map_or(1, |h| h + 1);
+                let keep = before.len().saturating_sub(depth as usize).max(floor);
+                // nested reorgs past the u128 work range: skipped
+                let Some(heavy) = self.blocks.mine_heavier(before[keep - 1], &before[keep..])
+                else {
+                    return;
+                };
+                (keep, self.blocks.extend(heavy.hash, len - 1))
             }
         };
-        chain.best.truncate(keep);
-        for _ in 0..grow {
-            let (height, parent) = (chain.best.len() as u32, *chain.best.last().expect("genesis"));
-            let own = hash(height, self.branch);
-            self.blocks.insert(own, block(height, own, parent));
-            chain.best.push(own);
+        let tip = tip.hash;
+        chain.headers.insert_blocks(&self.blocks.path(tip)[keep..]).expect("valid headers");
+        if let Some(boundary) = chain.headers.finalizable() {
+            chain.headers.finalize(boundary).expect("in-memory store");
         }
-        chain.highest = chain.highest.max(chain.best.len() - 1);
+        chain.refresh();
+        assert_eq!(chain.best.last(), Some(&tip), "the heavier branch is best");
         for current in &self.current {
             Self::serve(current, &chain.best, &self.blocks);
         }
@@ -306,12 +291,10 @@ impl Validators {
     }
 }
 
-/// One running chain view + producer + its followers
+/// One running producer + its followers, fed the header chain
 struct Running {
-    /// Held for the run (as zainod's serving handles hold it): dropped = the tip channel closes
-    _view: ChainView<MockChain>,
+    verified: watch::Sender<Option<Arc<VerifiedChain>>>,
     cancel: CancellationToken,
-    pollers: Vec<JoinHandle<()>>,
     producer: JoinHandle<Result<(), ProduceError>>,
     followers: Vec<JoinHandle<()>>,
 }
@@ -323,23 +306,11 @@ fn start(
     followers: &[Follower],
     concurrency: usize,
 ) -> Running {
-    let weight = block(0, hash(0, 0), hash(0, 0)).weight();
-    let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));
+    // every block a bare coinbase: one weight
+    let weight = validators.blocks.block(validators.blocks.genesis().hash).weight();
     let mut block_sink = BlockSink::new("blocks");
-    let endpoints = (0..)
-        .zip(&validators.order)
-        .map(|(at, mock)| Endpoint { address: format!("v{at}"), source: Arc::clone(mock) })
-        .collect();
-    let (view, view_pollers) = ChainView::new(endpoints, depth).expect("three endpoints");
-    let tips_rx = view.subscriber().subscribe_tip();
+    let (verified, verified_rx) = watch::channel(Some(chain.lock().expect("lock").refresh()));
     let cancel = CancellationToken::new();
-    let pollers = view_pollers
-        .into_iter()
-        .map(|poller| {
-            let cancel = cancel.child_token();
-            tokio::spawn(poller.run(cancel))
-        })
-        .collect();
     let (mut spawned, mut durable) = (Vec::new(), Vec::new());
     for (held, follower) in held.iter().zip(followers) {
         durable.push(durable_tip(&held.lock().expect("lock")));
@@ -351,27 +322,25 @@ fn start(
             Recorder { held, chain, bulk: Vec::new(), bulk_bytes: 0, batch_bytes: batch };
         spawned.push((recorder, subscription));
     }
-    let pool = BlockFetchPool::new(
-        validators.order.clone(),
-        NonZeroUsize::new(concurrency).expect("1..=4"),
-    );
-    let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
+    let concurrency = NonZeroUsize::new(concurrency).expect("1..=4");
+    let sources = validators.order.clone();
+    let producer = Producer::new(block_sink, sources, verified_rx, concurrency, durable);
     let producer = tokio::spawn(producer.run(cancel.clone()));
     let followers =
         spawned.into_iter().map(|(recorder, blocks)| tokio::spawn(recorder.run(blocks))).collect();
-    Running { _view: view, cancel, pollers, producer, followers }
+    Running { verified, cancel, producer, followers }
 }
 
 async fn stop(running: Running, context: &str) {
     running.cancel.cancel();
     let produced = running.producer.await.expect("producer join");
     assert!(produced.is_ok(), "{context}: producer {produced:?}");
-    for task in running.followers.into_iter().chain(running.pollers) {
+    for task in running.followers {
         task.await.unwrap_or_else(|panic| panic!("{context}: task {panic:?}"));
     }
 }
 
-/// Every index applied the best chain, durable within the window + one batch of the tip
+/// Every index applied the best chain, durable through the final tip (within one batch)
 async fn settle(
     running: &mut Running,
     chain: &Mutex<Chain>,
@@ -379,13 +348,16 @@ async fn settle(
     followers: &[Follower],
     context: &str,
 ) {
-    let best = chain.lock().expect("lock").best.clone();
+    let (best, final_len) = {
+        let chain = chain.lock().expect("lock");
+        (chain.best.clone(), chain.final_height.map_or(0, |h| h + 1))
+    };
     let deadline = tokio::time::Instant::now() + SETTLE;
     loop {
         let converged = held.iter().zip(followers).all(|(held, follower)| {
             let held = held.lock().expect("lock");
-            let lag = best.len().saturating_sub(held.durable.len());
-            held.applied == best && lag <= DEPTH as usize + follower.batch
+            let lag = final_len.saturating_sub(held.durable.len());
+            held.applied == best && lag <= follower.batch
         });
         if converged {
             return;
@@ -410,42 +382,42 @@ async fn settle(
                 .collect();
             panic!("{context}: never applied {} blocks: {held:?}", best.len());
         }
-        tokio::time::sleep(Duration::from_millis(1)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
 async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, concurrency: usize) {
-    let genesis: Vec<BlockHash> = (0..6).map(|height| hash(height, 0)).collect();
-    let chain = Arc::new(Mutex::new(Chain { best: genesis.clone(), highest: genesis.len() - 1 }));
+    let mut blocks = testing::Chain::new();
+    let trunk = blocks.extend(blocks.genesis().hash, 5);
+    let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("depth"));
+    let mut headers = HeaderChain::regtest_in_memory(blocks.genesis().hash, depth);
+    headers.insert_blocks(&blocks.path(trunk.hash)).expect("valid headers");
+    if let Some(boundary) = headers.finalizable() {
+        headers.finalize(boundary).expect("in-memory store");
+    }
+    let mut start_chain = Chain { headers, best: Vec::new(), final_height: None };
+    start_chain.refresh();
+    let genesis = start_chain.best.clone();
+    let chain = Arc::new(Mutex::new(start_chain));
     let current = [Arc::new(MockChain::new()), Arc::new(MockChain::new())];
     let lagging = Arc::new(MockChain::new());
     let mut order = vec![Arc::clone(&current[0]), Arc::clone(&current[1])];
     order.insert(lagging_at, Arc::clone(&lagging));
-    let mut validators = Validators {
-        current,
-        lagging,
-        order,
-        blocks: Default::default(),
-        branch: 0,
-        stalled: false,
-    };
-    for (height, own) in (0u32..).zip(&genesis) {
-        let parent = height.checked_sub(1).map_or(hash(u32::MAX, 0), |up| hash(up, 0));
-        validators.blocks.insert(*own, block(height, *own, parent));
-    }
+    let mut validators = Validators { current, lagging, order, blocks, stalled: false };
     for mock in &validators.order {
         Validators::serve(mock, &genesis, &validators.blocks);
     }
     let held: Vec<Arc<Mutex<Held>>> = followers.iter().map(|_| Arc::default()).collect();
 
     let mut running = start(&validators, &chain, &held, &followers, concurrency);
-    settle(&mut running, &chain, &held, &followers, "initial bulk").await;
+    settle(&mut running, &chain, &held, &followers, "initial").await;
     let mut committed_ever: Vec<Vec<BlockHash>> = vec![Vec::new(); held.len()];
     for (step, change) in moves.iter().enumerate() {
         let context = format!("move {step} {change:?}");
         match change {
             Move::Chain { change, yields } => {
                 validators.apply(&chain, change);
+                running.verified.send_replace(Some(chain.lock().expect("lock").refresh()));
                 match yields {
                     None => settle(&mut running, &chain, &held, &followers, &context).await,
                     Some(count) => {
@@ -468,11 +440,11 @@ async fn run(moves: Vec<Move>, followers: Vec<Follower>, lagging_at: usize, conc
                 settle(&mut running, &chain, &held, &followers, &context).await;
             }
             Move::Lag { yields } => {
-                validators.current[0].set_ready(false);
+                validators.current[0].set_reachable(false);
                 for _ in 0..*yields {
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
-                validators.current[0].set_ready(true);
+                validators.current[0].set_reachable(true);
                 settle(&mut running, &chain, &held, &followers, &context).await;
             }
             Move::Stall(stalled) => validators.stalled = *stalled,

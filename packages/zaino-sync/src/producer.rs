@@ -1,117 +1,102 @@
-//! The one task that feeds the [`BlockSink`]: bulk from the indexes' resume point, then the
-//! quorum tip through the [`ChainHead`]
+//! The one task feeding the [`BlockSink`]: the [`VerifiedChain`] followed through a
+//! [`ProducerCore`], every block fetched from any source and checked before it is sent
 //!
-//! - Bulk = [`BlockFetchPool`] stream up to the final boundary (decoded on every core), the
-//!   boundary following the quorum tip mid-pass
-//! - Live = [`ChainHead::advance`] per quorum tip; reorg → `reset` + replay from the window
-//! - Quorum tip > depth ahead (startup race, long outage) → bulk again
-//! - Quorum tip below the window (lagging agreers) → wait for the next one
-//! - Validators failing (after the pool's own retries) → wait + retry, bulk and live alike
+//! ```text
+//!   watch<VerifiedChain> ──▶ ┌──────────────┐ ──▶ Apply / Finalized / Reorg ──▶ BlockSink
+//!   answer (checked)     ──▶ │ ProducerCore │ ──▶ Fetch (source, height, record)
+//!   tick (1 s)           ──▶ └──────────────┘                   │
+//!          ▲                                                     ▼
+//!          └──────────────────── task: getblock <hash> 0 + check_block
+//! ```
+//!
+//! - Driver = select over chain / answers / tick, outputs in order
+//! - Sink sends await backpressure (fetch tasks run on meanwhile)
+//! - Block-sink contract: `docs/design/data-sink.md` §"How the producer publishes"
 
-use std::collections::BTreeMap;
-use std::convert::Infallible;
-use std::pin::pin;
+mod checked;
+mod core;
+
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures::TryStreamExt;
 use tokio::sync::watch;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn, Instrument as _, Span};
-use zaino_chainview::QuorumTip;
-use zaino_non_finalized_state::{Advance, AdvanceError, ChainHead};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
-use zaino_source::{BlockFetchPool, GetBlock, GetBlockByHash};
+use tracing::{debug, info, warn, Span};
+use zaino_header_chain::{Record, VerifiedChain};
+use zaino_primitives::types::{BlockHash, BlockRef, Height};
+use zaino_source::ChainDataSource;
 
+use self::checked::check_block;
+use self::core::{Answer, Input, Output, ProducerCore};
 use crate::{
     emit,
-    publisher::Publisher,
-    report::{self, Human, Progress},
-    BlockSink,
+    report::{self, Progress},
+    BlockSink, Step,
 };
 
-/// Pause before re-reading the quorum tip after a failed fetch (paces an outage, not a blip)
-const RETRY_DELAY: Duration = Duration::from_secs(1);
+/// Core re-asked at this pace (retries, hedges)
+const TICK: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProduceError {
-    /// Validator agreeing on the quorum tip rewrote a final height (past the reorg bound), or its
-    /// chain does not extend the rearmost index's durable tip: resync required
-    #[error("block {height:?} does not link onto the block below it")]
-    Unlinked { height: Height },
-    /// Validators' block at an index's durable tip is not the one that index committed there (a
-    /// reset validator, a directory from another chain): resync required
     #[error(
-        "block {height:?} is {got}, but an index committed {expected} there; the validator's \
-         chain diverged below the durable tip (resync required)"
+        "block {height:?} is {got} on the verified chain, but an index committed {expected} \
+         there (resync required)"
     )]
     Diverged { height: Height, expected: BlockHash, got: BlockHash },
-    #[error(transparent)]
-    BelowWindow(AdvanceError),
-    #[error("chain view stopped publishing a tip")]
-    ChainViewGone,
+    #[error("header sync stopped publishing the verified chain")]
+    ChainGone,
 }
 
-/// - `durable` = every index's durable tip hash by height: each fetched block landing on one must
-///   be that block (the only chain-identity check; indexes trust the stream)
+/// One fetch's outcome, back from its task
+struct Answered {
+    source: usize,
+    height: Height,
+    hash: BlockHash,
+    answer: Answer,
+}
+
 pub struct Producer<S> {
-    sink: Publisher<Block>,
-    pool: BlockFetchPool<S>,
-    tips: watch::Receiver<Option<QuorumTip>>,
-    durable: BTreeMap<Height, BlockHash>,
+    sink: BlockSink,
+    sources: Vec<Arc<S>>,
+    chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+    core: ProducerCore,
     progress: Arc<Progress>,
-    /// Last block handed the sink (indexes publish `applied` only per batch commit)
     fetched: watch::Sender<Option<Height>>,
-    /// Span over following the quorum tip (bulk logs under the caller's)
     live: Span,
 }
 
-/// Blocks one chain-head step handed the sink
-struct Published {
-    blocks: u32,
-    txs: usize,
-    tip: Arc<Block>,
-}
-
-impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
-    /// - `depth` = blocks below the tip kept reorg-able
+impl<S: ChainDataSource> Producer<S> {
+    /// - `sources` = everything that serves blocks by hash, in a fixed order (any may serve any
+    ///   block: each is checked)
+    /// - `concurrency` = blocks in flight ahead of the next one sent
     /// - `durable` = every subscriber's durable tip (production starts after the rearmost)
     pub fn new(
         sink: BlockSink,
-        pool: BlockFetchPool<S>,
-        tips: watch::Receiver<Option<QuorumTip>>,
-        depth: ReorgDepth,
+        sources: Vec<Arc<S>>,
+        chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+        concurrency: NonZeroUsize,
         durable: impl IntoIterator<Item = Option<BlockRef>>,
     ) -> Self {
-        let durable: Vec<Option<BlockRef>> = durable.into_iter().collect();
-        let sink = Publisher::new(sink, depth, durable.iter().map(|tip| tip.map(|t| t.height)));
-        let durable = durable.into_iter().flatten().map(|tip| (tip.height, tip.hash)).collect();
+        let core = ProducerCore::new(sources.len(), concurrency.get(), durable);
         let fetched = watch::channel(None).0;
-        Self { sink, pool, tips, durable, progress: Arc::default(), fetched, live: Span::none() }
+        Self { sink, sources, chain, core, progress: Arc::default(), fetched, live: Span::none() }
     }
 
     pub fn subscribe_fetched(&self) -> watch::Receiver<Option<Height>> {
         self.fetched.subscribe()
     }
 
-    /// `block` = what the index durable at its height committed there, if any
-    fn matches_durable(&self, block: &Block) -> Result<(), ProduceError> {
-        let (height, got) = (block.header().height, block.header().hash);
-        match self.durable.get(&height) {
-            Some(&expected) if expected != got => {
-                Err(ProduceError::Diverged { height, expected, got })
-            }
-            _ => Ok(()),
-        }
-    }
-
-    /// Following the quorum tip logs under `span`
+    /// Reorgs and new tips log under `span`
     pub fn with_live_span(mut self, span: Span) -> Self {
         self.live = span;
         self
     }
 
-    /// Cancel → `Ok`; either way the sink ends with `Shutdown` (every index loop persists and stops)
+    /// - Cancel → `Ok`
+    /// - Either way: sink ends with `Shutdown` (every index loop persists, stops)
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), ProduceError> {
         let report = report::run(Arc::clone(&self.progress));
         let produce = async {
@@ -122,426 +107,171 @@ impl<S: GetBlock + GetBlockByHash + Send + Sync + 'static> Producer<S> {
         };
         let produced = cancel.run_until_cancelled(produce).await;
         self.sink.shutdown();
-        match produced {
-            None => Ok(()),
-            Some(Err(error)) => Err(error),
-        }
+        produced.unwrap_or(Ok(()))
     }
 
-    async fn produce(&mut self) -> Result<Infallible, ProduceError> {
-        let live = self.live.clone();
-        // the first block extends the rearmost index's durable tip
-        let resume = self.sink.next().checked_sub(1);
-        let parent = resume.and_then(|height| self.durable.get(&height).copied());
-        let mut head = self.bulk(parent).await?;
+    async fn produce(&mut self) -> Result<(), ProduceError> {
+        let mut fetches: JoinSet<Answered> = JoinSet::new();
+        let mut ticks = tokio::time::interval(TICK);
+        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut logged: Option<BlockRef> = None;
+        let current = self.chain.borrow_and_update().clone();
+        let mut input = current.map(Input::Chain).unwrap_or(Input::Tick);
         loop {
-            let tip = self.tip().await?;
-            if tip.block.height < head.next_floor() {
-                live.in_scope(|| self.below_window(tip.block, head.next_floor()))?;
-                self.changed().await?;
-                continue;
+            if let Input::Chain(chain) = &input {
+                self.progress.target(chain.best().height);
+                emit::tip(chain.best().height);
             }
-            let pool = self.agreeing(tip);
-            let ahead = u32::from(tip.block.height).saturating_sub(u32::from(head.tip().height));
-            if ahead <= self.sink.depth().get() {
-                if self.step(&mut head, tip.block, &pool).instrument(live.clone()).await? {
-                    self.changed().await?;
-                }
-                continue;
+            let now = tokio::time::Instant::now().into_std();
+            for output in self.core.step(input, now)? {
+                self.output(output, &mut fetches).await;
             }
-            // bulk's `set_tip` finalizes the window → only once the validator still holds our tip
-            // (then buried past the reorg bound); else step onto its block at our height = reorg
-            let ours = head.tip();
-            let theirs = block_at(&pool, ours.height).instrument(live.clone()).await.header().hash;
-            if theirs == ours.hash {
-                head = self.bulk(Some(ours.hash)).await?;
-            } else {
-                let theirs = BlockRef { hash: theirs, height: ours.height };
-                self.step(&mut head, theirs, &pool).instrument(live.clone()).await?;
+            if cfg!(debug_assertions) {
+                self.core.check();
             }
-        }
-    }
-
-    /// Quorum tip under the window = agreers lagging (ancestry vote, leader gone): waited out
-    ///
-    /// - Never a reorg (mainnet / testnet: `finalised_depth` ≥ consensus bound → every legal
-    ///   fork point in the window)
-    /// - Contradicts an index's durable block at its height → divergence proven, production stops
-    fn below_window(&self, tip: BlockRef, floor: Height) -> Result<(), ProduceError> {
-        match self.durable.get(&tip.height) {
-            Some(&expected) if expected != tip.hash => {
-                Err(ProduceError::Diverged { height: tip.height, expected, got: tip.hash })
-            }
-            _ => {
-                warn!(
-                    tip = u32::from(tip.height),
-                    floor = u32::from(floor),
-                    "Quorum tip below the non-final window (agreeing validators lag), waiting"
-                );
-                Ok(())
-            }
-        }
-    }
-
-    /// Validators agreeing on `tip`: the only ones trusted to answer by height
-    /// - another may serve a stale branch at a height `tip` made final (a lagging node)
-    fn agreeing(&self, tip: QuorumTip) -> BlockFetchPool<S> {
-        self.pool.among(tip.agreed_by.positions())
-    }
-
-    /// `head` advanced onto `tip`, the sink caught up (`false` = fetch failed, retry paced)
-    async fn step(
-        &mut self,
-        head: &mut ChainHead,
-        tip: BlockRef,
-        pool: &BlockFetchPool<S>,
-    ) -> Result<bool, ProduceError> {
-        let before = head.tip();
-        match head.advance(tip, pool).await {
-            // bulk may have announced a higher tip, since retreated onto its anchor
-            Ok(Advance::Unchanged) => {
-                self.sink.set_tip(tip.height).await;
-                emit::tip(tip.height);
-            }
-            Ok(Advance::Extended) => {
-                let published = self.publish(head, tip).await;
-                self.advanced(&published);
-            }
-            Ok(Advance::Reorg { fork }) => {
-                let resume = self.sink.reorg().await;
-                assert!(resume <= fork, "reorg at {fork:?} reaches final height {resume:?}");
-                emit::reorg();
-                let published = self.publish(head, tip).await;
-                warn!(
-                    fork = u32::from(fork),
-                    dropped = u32::from(before.height) + 1 - u32::from(fork),
-                    added = u32::from(tip.height) + 1 - u32::from(fork),
-                    height = u32::from(tip.height),
-                    hash = %tip.hash,
-                    "Chain reorg detected"
-                );
-                self.advanced(&published);
-            }
-            Err(error @ AdvanceError::BelowWindow { .. }) => {
-                return Err(ProduceError::BelowWindow(error))
-            }
-            Err(error) => {
-                warn!(%error, retry = %Human(RETRY_DELAY), "Chain tip fetch failed");
-                tokio::time::sleep(RETRY_DELAY).await;
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    /// New tip + where finality now stands (one line per chain-head step, ~75 s apart)
-    fn advanced(&self, published: &Published) {
-        let header = published.tip.header();
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
-        let age = Duration::from_secs(now.saturating_sub(u64::from(header.time)));
-        let finalized = self.sink.final_tip().map_or(0, u32::from);
-        info!(
-            height = u32::from(header.height),
-            hash = %header.hash,
-            blocks = published.blocks,
-            txs = published.txs,
-            age = %Human(age),
-            finalized,
-            "Chain tip advanced"
-        );
-    }
-
-    /// Heights `start` (the sink's next) to `end` (tip − depth), both inclusive, into the sink;
-    /// a fresh chain head anchored on the last block
-    ///
-    /// - `end` follows the quorum tip mid-pass (one pass per catch-up, not per tip snapshot)
-    /// - Stream exhausted below a raised `end` / failed fetch → reopened from what was added,
-    ///   from the validators agreeing on the tip that raised it
-    /// - `parent` = hash the first block must extend (`None` = genesis, nothing to extend)
-    async fn bulk(&mut self, mut parent: Option<BlockHash>) -> Result<ChainHead, ProduceError> {
-        let start = self.sink.next();
-        // final already (an index durable past `start`), whatever the tip says now
-        let owed = self.sink.final_tip();
-        let needed = owed.map_or(start, |owed| owed.max(start));
-        // indexes ahead of the validators (rolled back / resyncing) → wait for them
-        let mut tip = loop {
-            let tip = self.tip().await?;
-            if tip.block.height >= needed {
-                break tip;
-            }
-            self.changed().await?;
-        };
-        let mut end = tip.block.height.saturating_sub(self.sink.depth().get());
-        end = owed.map_or(end, |owed| owed.max(end));
-        // durable through the final boundary already (restart near the tip) → anchor on the
-        // durable tip, not re-added; everything above stays non-final, added live
-        if end < start {
-            let durable = start.checked_sub(1).expect("height 0 final under any tip");
-            let anchor = block_at(&self.agreeing(tip), durable).await;
-            self.matches_durable(&anchor)?;
-            return Ok(ChainHead::new(Arc::new(anchor), self.sink.depth()));
-        }
-        self.progress.start(start, end, tip.block.height);
-        self.sink.set_tip(tip.block.height).await;
-        emit::tip(tip.block.height);
-
-        let mut last = None;
-        while self.sink.next() <= end {
-            // this stream's end, inclusive (`end` may rise under it)
-            let pass_end = end;
-            let pool = self.agreeing(tip);
-            let mut blocks = pin!(pool.blocks(self.sink.next(), pass_end));
-            let fetched = loop {
-                match blocks.try_next().await {
-                    Ok(Some(block)) => {
-                        if parent.is_some_and(|parent| parent != block.header().prev_hash) {
-                            return Err(ProduceError::Unlinked { height: block.header().height });
-                        }
-                        self.matches_durable(&block)?;
-                        parent = Some(block.header().hash);
-                        let block = Arc::new(block);
-                        self.add(&block).await;
-                        last = Some(block);
-                        self.extend(&mut end, &mut tip).await;
+            self.log_tip(&mut logged);
+            input = tokio::select! {
+                changed = self.chain.changed() => {
+                    changed.map_err(|_| ProduceError::ChainGone)?;
+                    match self.chain.borrow_and_update().clone() {
+                        Some(chain) => Input::Chain(chain),
+                        None => Input::Tick,
                     }
-                    Ok(None) => break Ok(()),
-                    Err(error) => break Err(error),
                 }
+                Some(joined) = fetches.join_next() => {
+                    let Answered { source, height, hash, answer } = match joined {
+                        Ok(answered) => answered,
+                        Err(join) if join.is_panic() => std::panic::resume_unwind(join.into_panic()),
+                        Err(join) => panic!("block fetch task cancelled: {join}"),
+                    };
+                    Input::Answer { source, height, hash, answer }
+                }
+                _ = ticks.tick() => Input::Tick,
             };
-            match fetched {
-                Ok(()) => assert_eq!(self.sink.next(), pass_end.next(), "bulk stream ended early"),
-                Err(error) => {
-                    warn!(
-                        %error,
-                        next = u32::from(self.sink.next()),
-                        retry = %Human(RETRY_DELAY),
-                        "Block fetch failed"
-                    );
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-            }
         }
-        self.progress.finish(tip.block.height);
-        let anchor = last.expect("bulk range start..=end never empty");
-        Ok(ChainHead::new(anchor, self.sink.depth()))
     }
 
-    /// Quorum tip past `end` + depth → `end` raised, `target` = that tip
-    ///
-    /// - `set_tip` before the raise (every block up to the new `end` lands final)
-    async fn extend(&mut self, end: &mut Height, target: &mut QuorumTip) {
-        let Some(tip) = *self.tips.borrow_and_update() else {
+    async fn output(&mut self, output: Output, fetches: &mut JoinSet<Answered>) {
+        match output {
+            Output::Apply { block, finalized } => {
+                let height = block.header().height;
+                emit::added(&block);
+                self.progress.added(&block);
+                self.fetched.send_replace(Some(height));
+                self.sink.send(Step::Apply { height, finalized, data: block }).await;
+            }
+            Output::Finalized(height) => self.sink.send(Step::Finalized { height }).await,
+            Output::Reorg { fork, dropped } => {
+                emit::reorg();
+                let fork = u32::from(fork);
+                self.live.in_scope(|| warn!(fork, dropped, "Chain reorg detected"));
+                self.sink.send(Step::Reorg).await;
+            }
+            Output::Fetch { source, height, record } => {
+                fetches.spawn(fetch(Arc::clone(&self.sources[source]), source, height, record));
+            }
+            Output::Misanswered { source, height, why } => {
+                let height = u32::from(height);
+                warn!(source, height, %why, "Source misanswered a block, asking another");
+            }
+            Output::Unserved { height } => {
+                debug!(height = u32::from(height), "No source served the block, retrying");
+            }
+        }
+    }
+
+    /// One line per best tip reached (~75 s apart at the tip), with where finality stands
+    fn log_tip(&self, logged: &mut Option<BlockRef>) {
+        let Some(chain) = self.chain.borrow().clone() else { return };
+        let best = chain.best();
+        if self.core.delivered() != Some(best.height) || *logged == Some(best) {
             return;
-        };
-        let raised = tip.block.height.saturating_sub(self.sink.depth().get());
-        if raised > *end {
-            self.sink.set_tip(tip.block.height).await;
-            emit::tip(tip.block.height);
-            self.progress.extend(raised);
-            *end = raised;
-            *target = tip;
         }
-    }
-
-    /// Sink catches up to `head` (after an extension, or a reset that rewound it)
-    async fn publish(&mut self, head: &ChainHead, tip: BlockRef) -> Published {
-        self.sink.set_tip(tip.height).await;
-        emit::tip(tip.height);
-        let (mut blocks, mut txs) = (0, 0);
-        // retreat onto the final boundary → nothing non-final left to replay
-        for block in head.best_chain_from(self.sink.next()) {
-            self.add(block).await;
-            blocks += 1;
-            txs += block.transactions().len();
-        }
-        let past_tip = tip.height.checked_add(1).expect("tip below the height maximum");
-        assert_eq!(self.sink.next(), past_tip, "sink not at the chain head tip");
-        let tip = head.best_chain_from(tip.height).next().expect("window holds its tip");
-        Published { blocks, txs, tip: Arc::clone(tip) }
-    }
-
-    async fn add(&mut self, block: &Arc<Block>) {
-        emit::added(block);
-        self.progress.added(block);
-        self.fetched.send_replace(Some(block.header().height));
-        self.sink.add(block.header().height, Arc::clone(block)).await;
-    }
-
-    /// Latest quorum tip, waiting out a lost quorum
-    async fn tip(&mut self) -> Result<QuorumTip, ProduceError> {
-        loop {
-            if let Some(tip) = *self.tips.borrow_and_update() {
-                return Ok(tip);
-            }
-            self.changed().await?;
-        }
-    }
-
-    async fn changed(&mut self) -> Result<(), ProduceError> {
-        self.tips.changed().await.map_err(|_| ProduceError::ChainViewGone)
+        *logged = Some(best);
+        let time = chain.header_at(best.height).map_or(0, |record| record.time);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
+        let age = Duration::from_secs(now.saturating_sub(u64::from(time)));
+        let finalized = chain.final_tip().map_or(0, |tip| u32::from(tip.height));
+        let (height, hash) = (u32::from(best.height), best.hash);
+        let age = report::Human(age);
+        self.live.in_scope(|| info!(height, %hash, %age, finalized, "Chain tip advanced"));
     }
 }
 
-/// Block `height` off `pool`, retried (paced) until a validator answers
-async fn block_at<S>(pool: &BlockFetchPool<S>, height: Height) -> Block
-where
-    S: GetBlock + GetBlockByHash + Send + Sync + 'static,
-{
-    loop {
-        match pin!(pool.blocks(height, height)).try_next().await {
-            Ok(Some(block)) => return block,
-            Ok(None) => unreachable!("a one-height fetch yields its block or fails"),
-            Err(error) => {
-                warn!(%error, height = u32::from(height), retry = %Human(RETRY_DELAY), "Block fetch failed");
-                tokio::time::sleep(RETRY_DELAY).await;
-            }
+/// `getblock <hash> 0` off `source`, checked against `record` (on a task: decode + merkle spread
+/// across the runtime's threads)
+async fn fetch<S: ChainDataSource>(
+    source: Arc<S>,
+    index: usize,
+    height: Height,
+    record: Record,
+) -> Answered {
+    let answer = match source.get_block_by_hash(record.hash).await {
+        Ok(block) => match check_block(block, height, &record) {
+            Ok(checked) => Answer::Checked(checked),
+            Err(why) => Answer::Misanswered(why),
+        },
+        Err(error) => {
+            debug!(source = index, height = u32::from(height), %error, "Block fetch failed");
+            Answer::Failed
         }
-    }
+    };
+    Answered { source: index, height, hash: record.hash, answer }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use std::collections::HashMap;
 
-    use zaino_chainview::EndpointSet;
-    use zaino_primitives::types::{BlockHeader, Transaction};
+    use zaino_header_chain::HeaderChain;
+    use zaino_primitives::testing::Chain;
+    use zaino_primitives::types::{Block, ReorgDepth};
     use zaino_source::mock::MockChain;
 
     use super::*;
-    use crate::Step;
 
-    /// Depth 3, index empty, quorum tip A5 (inclusive end 2), one-step queue: tip moves to A8
-    /// mid-bulk → end raised to 5, 3 to 5 (both inclusive) final on arrival, then 6 to 8 (both
-    /// inclusive) live (non-final); tip moves to B9
-    /// (forks after A6) → reset, replay from the first non-final height out of the window, the
-    /// fork itself fetched; tip retreats to B7, then onto the final A6, then forward to B8;
-    /// cancel → `Shutdown` last in the queue
-    #[tokio::test]
-    async fn bulks_to_a_moving_final_boundary_then_follows_the_quorum_tip_through_reorgs() {
-        let block = |height: u32, byte: u8, parent: u8| {
-            Block::new(
-                BlockHeader::for_tests(height, [byte; 32], [parent; 32], 0),
-                vec![Transaction {
-                    txid: [byte; 32].into(),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: Default::default(),
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }],
-            )
-        };
-        let a: Vec<_> = (0..=8).map(|h| block(h, 0x10 + h as u8, 0x0f + h as u8)).collect();
-        let b = [block(7, 0x27, 0x16), block(8, 0x28, 0x27), block(9, 0x29, 0x28)];
-        let validator = |blocks: Vec<&Block>| {
-            Arc::new(
-                blocks
-                    .into_iter()
-                    .fold(MockChain::new(), |chain, block| chain.with_block(block.clone())),
-            )
-        };
-        let pool = BlockFetchPool::new(
-            vec![validator(a.iter().collect()), validator(a[..=6].iter().chain(&b).collect())],
-            NonZeroUsize::new(4).expect("nz"),
-        );
-        let quorum = |block: &Block, agreed_by: &[usize]| {
-            Some(QuorumTip {
-                block: BlockRef { hash: block.header().hash, height: block.header().height },
-                agreed_by: EndpointSet::at(agreed_by.iter().copied()),
-            })
-        };
-        let (tips, tips_rx) = watch::channel(quorum(&a[5], &[0, 1]));
+    /// Header chain depth 3, A 0..=8, B7 (heavier) forking after A6; validators on A and B: steps
+    /// traced through a moving final tip, a retreat onto B7, a poisoned b8 (refused, served by the
+    /// other), finality across the fork
+    #[tokio::test(start_paused = true)]
+    async fn follows_the_verified_chain_through_finality_reorgs_and_a_poisoned_source() {
+        let mut chain = Chain::new();
+        let a8 = chain.extend(chain.genesis().hash, 8);
+        let a: Vec<Block> = chain.path(a8.hash);
+        let b7 = chain.mine_bits(a[6].header().hash, a[7].header().time, 0x1f0f_0f0f);
+        let b10 = chain.extend(b7.hash, 3);
+        let b: Vec<Block> = chain.path(b10.hash)[7..].to_vec();
+        let b8 = b[1].header().hash;
+        let names: HashMap<BlockHash, String> = (a.iter().zip(0..))
+            .map(|(block, h)| (block.header().hash, format!("a{h}")))
+            .chain(b.iter().zip(7..).map(|(block, h)| (block.header().hash, format!("b{h}"))))
+            .collect();
         let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
-        let mut block_sink = BlockSink::new("blocks");
-        // budget 1 = one queued step (producer parks on the next add until the test takes)
-        let mut index = block_sink.subscribe("index", NonZeroUsize::new(1).expect("nz"));
-        let cancel = CancellationToken::new();
-        let producer = Producer::new(block_sink, pool, tips_rx, depth, [None]);
-        let producer = tokio::spawn(producer.run(cancel.clone()));
-
-        let mut steps = Vec::new();
-        // `count` block / finality / reset steps
-        let mut take = async |count: usize| {
-            for _ in 0..count {
-                let step = match index.next().await {
-                    Step::Apply { height, finalized, data } => {
-                        assert_eq!(data.header().height, height);
-                        let byte = <[u8; 32]>::from(data.header().hash)[0];
-                        format!("{byte:x}{}", if finalized { "f" } else { "" })
-                    }
-                    Step::Finalized { height } => format!("F{height}"),
-                    Step::Reorg => "R".to_owned(),
-                    Step::Shutdown => panic!("producer shut down uncancelled"),
-                };
-                steps.push(step);
+        let mut headers = HeaderChain::regtest_in_memory(chain.genesis().hash, depth);
+        let on_a = Arc::new(MockChain::serving(a.clone()));
+        let on_b = Arc::new(MockChain::serving(chain.path(b8)));
+        let (verified, verified_rx) = watch::channel(None);
+        let publish = |headers: &mut HeaderChain, blocks: &[Block], finalize: bool| {
+            headers.insert_blocks(blocks).expect("valid headers");
+            if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
+                headers.finalize(boundary).expect("in-memory store");
             }
+            verified.send_replace(headers.verified().map(Arc::new));
         };
-        take(1).await;
-        tips.send_replace(quorum(&a[8], &[0]));
-        take(8).await;
-        tips.send_replace(quorum(&b[2], &[1]));
-        take(5).await;
-        tips.send_replace(quorum(&b[0], &[1]));
-        take(2).await;
-        tips.send_replace(quorum(&a[6], &[0, 1]));
-        take(1).await;
-        tips.send_replace(quorum(&b[1], &[1]));
-        take(2).await;
-
-        // bulk final past the raised end, live non-final, reset replays from 6 (now final) onto B;
-        // retreat to B7 → reset + replay B7; retreat onto the final A6 → bare reset; B8 → forward
-        assert_eq!(steps.join(" "), "10f 11f 12f 13f 14f 15f 16 17 18 R 16f 27 28 29 R 27 R 27 28");
-        cancel.cancel();
-        producer.await.expect("join").expect("cancel = clean stop");
-        assert!(matches!(index.next().await, Step::Shutdown), "cancel → Shutdown");
-    }
-
-    /// - Depth 3, validator on A, indexes durable at A2 and A4
-    #[tokio::test]
-    async fn a_tip_below_the_window_waits_on_lag_and_stops_on_a_contradicted_durable_block() {
-        let block = |height: u32| {
-            Block::new(
-                BlockHeader::for_tests(
-                    height,
-                    [0x10 + height as u8; 32],
-                    [0x0f + height as u8; 32],
-                    0,
-                ),
-                vec![Transaction {
-                    txid: [0x10 + height as u8; 32].into(),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: Default::default(),
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }],
-            )
-        };
-        let a: Vec<Block> = (0..=9).map(block).collect();
-        let chain = Arc::new(
-            a[..=8].iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone())),
-        );
-        let pool = BlockFetchPool::new(vec![Arc::clone(&chain)], NonZeroUsize::new(4).expect("nz"));
-        let at = |height: u32, hash: BlockHash| BlockRef {
-            hash,
-            height: Height::try_from(height).expect("h"),
-        };
-        let quorum = |block: BlockRef| Some(QuorumTip { block, agreed_by: EndpointSet::at([0]) });
-        let ours = |h: u32| a[h as usize].header().hash;
-        let (tips, tips_rx) = watch::channel(quorum(at(8, ours(8))));
-        let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
         let mut block_sink = BlockSink::new("blocks");
         let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
-        let durable = [Some(at(2, ours(2))), Some(at(4, ours(4)))];
-        let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
-        let producer = tokio::spawn(producer.run(CancellationToken::new()));
+        let sources = vec![Arc::clone(&on_a), Arc::clone(&on_b)];
+        let lookahead = NonZeroUsize::new(4).expect("nz");
+        let producer = Producer::new(block_sink, sources, verified_rx, lookahead, [None]);
+        let cancel = CancellationToken::new();
+        let producer = tokio::spawn(producer.run(cancel.clone()));
         let mut drain = async || {
             let mut steps = Vec::new();
-            let idle = std::time::Duration::from_millis(50);
-            while let Ok(step) = tokio::time::timeout(idle, index.next()).await {
+            while let Ok(step) = tokio::time::timeout(Duration::from_secs(5), index.next()).await {
                 steps.push(match step {
-                    Step::Apply { height, finalized, .. } => {
-                        format!("{height}{}", if finalized { "f" } else { "" })
+                    Step::Apply { data, finalized, .. } => {
+                        let name = &names[&data.header().hash];
+                        format!("{name}{}", if finalized { "f" } else { "" })
                     }
                     Step::Finalized { height } => format!("F{height}"),
                     Step::Reorg => "R".to_owned(),
@@ -551,92 +281,92 @@ mod tests {
             steps.join(" ")
         };
 
-        assert_eq!(drain().await, "3f 4f 5f 6 7 8", "bulk to tip − depth, then the window");
-        tips.send_replace(quorum(at(3, ours(3))));
-        assert_eq!(drain().await, "", "lag below the floor (5): no reorg, no step");
-        assert!(!producer.is_finished(), "waiting, not halted");
+        publish(&mut headers, &a[..=6], true);
+        assert_eq!(drain().await, "a0f a1f a2f a3f a4 a5 a6", "final through 6 − 3, the rest held");
+        publish(&mut headers, &a[7..], true);
+        assert_eq!(drain().await, "F4 F5 a7 a8", "8 − 3 = 5 final");
+        // B7 alone outweighs A7 + A8 (one heavier block): the best retreats onto B7
+        publish(&mut headers, &b[..1], false);
+        assert_eq!(drain().await, "R a6 b7", "a6 replayed from the window, b7 fetched");
+        // a poisoned b8 on A's node (it serves B now): refused, B's node serves the real one
+        let txs = [b[1].transactions().to_vec(), a[1].transactions().to_vec()].concat();
+        let poisoned = Block::new(b[1].header().clone(), txs);
+        on_a.extend_best([b[0].clone(), poisoned]);
+        on_b.set_reachable(false);
+        publish(&mut headers, &b[1..2], false);
+        assert_eq!(drain().await, "", "only a poisoned b8 on offer: nothing sent");
+        on_b.set_reachable(true);
+        assert_eq!(drain().await, "b8", "the honest source, once back (the poisoner benched)");
+        on_b.extend_best(b[2..].to_vec());
+        publish(&mut headers, &b[2..], true);
+        assert_eq!(drain().await, "F6 F7 b9 b10", "10 − 3: final across the fork");
 
-        chain.extend_best([a[9].clone()]);
-        tips.send_replace(quorum(at(9, ours(9))));
-        assert_eq!(drain().await, "F6 9", "agreers caught up: 6 final under 9, the window extends");
-
-        let foreign = BlockHash::from([0xee; 32]);
-        tips.send_replace(quorum(at(4, foreign)));
-        let stopped = producer.await.expect("join").expect_err("a durable block contradicted");
-        assert!(
-            matches!(stopped, ProduceError::Diverged { height, expected, got }
-                if u32::from(height) == 4 && expected == ours(4) && got == foreign),
-            "{stopped}"
-        );
+        cancel.cancel();
+        producer.await.expect("join").expect("cancel = clean stop");
+        assert!(matches!(index.next().await, Step::Shutdown), "cancel → Shutdown");
     }
 
-    /// Validators serving chain A (0..=8), depth 3: an index whose durable tip is not A's block
-    /// there stops production before any block reaches an index, and says why
-    #[tokio::test]
-    async fn a_chain_that_does_not_hold_every_index_durable_tip_stops_production() {
-        let block = |height: u32| {
-            Block::new(
-                BlockHeader::for_tests(
-                    height,
-                    [0x10 + height as u8; 32],
-                    [0x0f + height as u8; 32],
-                    0,
-                ),
-                vec![Transaction {
-                    txid: [0x10 + height as u8; 32].into(),
-                    transparent: Default::default(),
-                    sprout: Default::default(),
-                    sapling: Default::default(),
-                    orchard: Default::default(),
-                    ironwood: Default::default(),
-                }],
-            )
+    /// Indexes durable at A2 and A4 (header store reset: nothing final): nothing sent until a
+    /// final tip covers A4, then the rearmost's next heights (4 skipped by the index ahead); a
+    /// durable tip off the final chain stops production before any step
+    #[tokio::test(start_paused = true)]
+    async fn durable_tips_wait_for_a_final_chain_covering_them_and_a_foreign_one_stops_production()
+    {
+        let mut chain = Chain::new();
+        let a8 = chain.extend(chain.genesis().hash, 8);
+        let a: Vec<Block> = chain.path(a8.hash);
+        let foreign_4 = chain.extend(a[2].header().hash, 2);
+        let at = |h: usize| BlockRef {
+            hash: a[h].header().hash,
+            height: Height::try_from(h as u32).expect("h"),
         };
-        let a: Vec<Block> = (0..=8).map(block).collect();
-        let tip = |height: u32, hash: BlockHash| {
-            Some(BlockRef { hash, height: Height::try_from(height).expect("h") })
-        };
-        let (ours, foreign) = (|h: usize| a[h].header().hash, BlockHash::from([0xee; 32]));
-
-        let cases = [
-            // rearmost durable 3 = another chain's block: A's 4 does not extend it
-            (vec![tip(3, foreign)], "Unlinked 4"),
-            // rearmost durable 2 = A's; the index ahead committed another block at 4
-            (vec![tip(2, ours(2)), tip(4, foreign)], "Diverged 4"),
-        ];
-        for (durable, want) in cases {
-            let chain =
-                a.iter().fold(MockChain::new(), |chain, block| chain.with_block(block.clone()));
-            let pool =
-                BlockFetchPool::new(vec![Arc::new(chain)], NonZeroUsize::new(4).expect("nz"));
-            let quorum = QuorumTip {
-                block: BlockRef { hash: ours(8), height: Height::try_from(8u32).expect("h") },
-                agreed_by: EndpointSet::at([0]),
-            };
-            let (_tips, tips_rx) = watch::channel(Some(quorum));
-            let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
-            let mut block_sink = BlockSink::new("blocks");
-            let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
-            let producer = Producer::new(block_sink, pool, tips_rx, depth, durable);
-            let stopped = producer.run(CancellationToken::new()).await.expect_err(want);
-            let got = match stopped {
-                ProduceError::Unlinked { height } => format!("Unlinked {height}"),
-                ProduceError::Diverged { height, expected, got } => {
-                    assert_eq!((expected, got), (foreign, ours(4)), "{want}: names both blocks");
-                    format!("Diverged {height}")
-                }
-                other => panic!("{want}: stopped with {other}"),
-            };
-            assert_eq!(got, want);
-            let mut delivered = Vec::new();
-            while let Step::Apply { height, .. } = index.next().await {
-                delivered.push(u32::from(height));
+        let depth = ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"));
+        let lookahead = NonZeroUsize::new(4).expect("nz");
+        let source = || vec![Arc::new(MockChain::serving(a.clone()))];
+        let verified = |tip: usize, finalize: bool| {
+            let mut headers = HeaderChain::regtest_in_memory(chain.genesis().hash, depth);
+            headers.insert_blocks(&a[..=tip]).expect("valid headers");
+            if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
+                headers.finalize(boundary).expect("in-memory store");
             }
-            let clean = if want.starts_with("Unlinked") { vec![] } else { vec![3] };
-            assert_eq!(
-                delivered, clean,
-                "{want}: only blocks proven on the durable chain reach an index"
-            );
+            headers.verified().map(Arc::new)
+        };
+        let trace = |step: Step<Block>| match step {
+            Step::Apply { height, finalized, .. } => {
+                format!("{height}{}", if finalized { "f" } else { "" })
+            }
+            Step::Finalized { height } => format!("F{height}"),
+            Step::Reorg => "R".to_owned(),
+            Step::Shutdown => "S".to_owned(),
+        };
+
+        let (chain_tx, chain_rx) = watch::channel(verified(8, false));
+        let mut block_sink = BlockSink::new("blocks");
+        let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
+        let durable = [Some(at(2)), Some(at(4))];
+        let producer = Producer::new(block_sink, source(), chain_rx, lookahead, durable);
+        let producer = tokio::spawn(producer.run(CancellationToken::new()));
+        let idle = tokio::time::timeout(Duration::from_secs(30), index.next()).await;
+        assert!(idle.is_err(), "nothing final yet: 4 unchecked, nothing sent");
+        chain_tx.send_replace(verified(8, true));
+        let mut steps = Vec::new();
+        while let Ok(step) = tokio::time::timeout(Duration::from_secs(5), index.next()).await {
+            steps.push(trace(step));
         }
+        assert_eq!(steps.join(" "), "3f 4f 5f 6 7 8", "final through 5, both tips checked");
+        assert!(!producer.is_finished(), "following");
+
+        let foreign = BlockRef { hash: foreign_4.hash, height: foreign_4.height };
+        let (_chain, chain_rx) = watch::channel(verified(8, true));
+        let mut block_sink = BlockSink::new("blocks");
+        let mut index = block_sink.subscribe("index", NonZeroUsize::new(1 << 20).expect("nz"));
+        let producer = Producer::new(block_sink, source(), chain_rx, lookahead, [Some(foreign)]);
+        let stopped = producer.run(CancellationToken::new()).await.expect_err("foreign durable 4");
+        assert!(
+            matches!(stopped, ProduceError::Diverged { height, expected, got }
+                if u32::from(height) == 4 && expected == foreign.hash && got == at(4).hash),
+            "{stopped}"
+        );
+        assert!(matches!(index.next().await, Step::Shutdown), "no step before the stop");
     }
 }

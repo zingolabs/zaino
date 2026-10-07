@@ -95,22 +95,31 @@ pub(crate) struct Queued<T> {
     _held: Option<OwnedSemaphorePermit>,
 }
 
+/// One delivered block of a [`Subscription::run`]: `(height, finalized, data)`
+pub type Applied<T> = (Height, bool, Arc<T>);
+
 /// One consumer's end: its queue, in stream order
+///
+/// - `ended_run` = the step that ended the last [`run`](Self::run): the next one out
 pub struct Subscription<T> {
     rx: mpsc::UnboundedReceiver<Queued<T>>,
     queued: QueueBytes,
     shut_down: bool,
+    ended_run: Option<Step<T>>,
 }
 
 impl<T> Subscription<T> {
     /// Next step, its bytes returned to the budget; `Shutdown` again on every call after it
     pub async fn next(&mut self) -> Step<T> {
+        if let Some(step) = self.ended_run.take() {
+            return step;
+        }
         let queued = self.rx.recv().await;
         self.popped(queued)
     }
 
     /// Next step if one is already queued (never waits)
-    pub fn try_next(&mut self) -> Option<Step<T>> {
+    fn try_next(&mut self) -> Option<Step<T>> {
         let queued = self.rx.try_recv().ok()?;
         Some(self.popped(Some(queued)))
     }
@@ -129,6 +138,30 @@ impl<T> Subscription<T> {
             None if self.shut_down => Step::Shutdown,
             None => panic!("sink dropped without Shutdown"),
         }
+    }
+}
+
+impl<T: Weight> Subscription<T> {
+    /// `first` + every `Apply` already queued behind it, to `budget` bytes (one batch of work,
+    /// never a wait)
+    ///
+    /// - step ending the run = the next [`next`](Self::next)'s
+    pub fn run(&mut self, first: Applied<T>, budget: NonZeroUsize) -> Vec<Applied<T>> {
+        let mut bytes = first.2.weight();
+        let mut run = vec![first];
+        while bytes < budget.get() {
+            match self.try_next() {
+                Some(Step::Apply { height, finalized, data }) => {
+                    bytes = bytes.saturating_add(data.weight());
+                    run.push((height, finalized, data));
+                }
+                other => {
+                    self.ended_run = other;
+                    break;
+                }
+            }
+        }
+        run
     }
 }
 
@@ -179,7 +212,7 @@ impl<T> IndexerDataSink<T> {
             budget: Arc::new(Semaphore::new(budget)),
             capacity: u32::try_from(budget).unwrap_or(u32::MAX),
         });
-        Subscription { rx, queued, shut_down: false }
+        Subscription { rx, queued, shut_down: false, ended_run: None }
     }
 
     /// `Shutdown` last in every queue; never waits (budget bypassed)
@@ -253,6 +286,37 @@ mod tests {
             assert!(matches!(sub.next().await, Step::Shutdown));
             assert!(matches!(sub.next().await, Step::Shutdown), "closed queue past Shutdown");
         }
+    }
+
+    /// A run = the first `Apply` + those already queued, cut at its budget or at the first other
+    /// step; that step is the next one out, then the queue resumes in order
+    #[tokio::test]
+    async fn a_run_gathers_queued_applies_to_its_budget_and_hands_back_the_step_ending_it() {
+        let mut sink = IndexerDataSink::<Blob>::new("test");
+        let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
+        for height in 0..4 {
+            sink.send(apply(height, 10)).await;
+        }
+        sink.send(Step::Finalized { height: h(3) }).await;
+        sink.send(apply(4, 10)).await;
+        sink.shutdown();
+        let first = |step: Step<Blob>| match step {
+            Step::Apply { height, finalized, data } => (height, finalized, data),
+            _ => panic!("expected an apply"),
+        };
+        let heights = |run: Vec<Applied<Blob>>| -> Vec<u32> {
+            run.into_iter().map(|(height, ..)| u32::from(height)).collect()
+        };
+        let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
+
+        let start = first(sub.next().await);
+        assert_eq!(heights(sub.run(start, twenty)), [0, 1], "cut at its 20-byte budget");
+        let start = first(sub.next().await);
+        assert_eq!(heights(sub.run(start, all)), [2, 3], "cut by the next non-apply step");
+        assert!(matches!(sub.next().await, Step::Finalized { height } if height == h(3)));
+        let start = first(sub.next().await);
+        assert_eq!(heights(sub.run(start, all)), [4]);
+        assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown ended the last run");
     }
 
     /// A subscriber holds its queue through `Shutdown`: dropping it sooner is a bug upstream

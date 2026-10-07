@@ -1,6 +1,5 @@
-//! Sync progress per [`REPORT_INTERVAL`]: `Syncing blocks` during the bulk pass, `Applying to tip`
-//! from its end until the non-final window reaches the tip, a stall warning when a whole interval
-//! adds nothing
+//! Sync progress per [`REPORT_INTERVAL`]: `Syncing blocks` while the blocks sent trail the
+//! verified best, a stall warning when a whole interval sends nothing; silent at the tip
 
 use std::{
     fmt,
@@ -13,24 +12,14 @@ use zaino_primitives::types::{Block, Height};
 
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Bulk fetch position: the producer advances it, the reporter samples it
+/// Last block sent vs the verified best: the producer advances it, the reporter samples it
 #[derive(Default)]
 pub(crate) struct Progress(Mutex<Tally>);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Tally {
-    pass: Option<Pass>,
-    /// Tip the window replay is catching up to (set by [`Progress::finish`])
-    catchup: Option<Height>,
+    target: Option<Height>,
     height: Option<Height>,
-    blocks: u64,
-}
-
-/// One bulk pass: `target` = finalized height it fetches to
-#[derive(Debug, Clone, Copy)]
-struct Pass {
-    target: Height,
-    started: Instant,
     blocks: u64,
 }
 
@@ -39,47 +28,15 @@ impl Progress {
         self.0.lock().expect("progress lock never held across a panic")
     }
 
-    /// Bulk pass from `start` to `target`, both inclusive, begins
-    pub(crate) fn start(&self, start: Height, target: Height, tip: Height) {
-        let mut tally = self.tally();
-        tally.pass = Some(Pass { target, started: Instant::now(), blocks: tally.blocks });
-        let (start, target, tip) = (u32::from(start), u32::from(target), u32::from(tip));
-        info!(start, target, tip, "Syncing to finalized target");
-    }
-
-    /// Quorum tip moved mid-pass
-    pub(crate) fn extend(&self, target: Height) {
-        if let Some(pass) = self.tally().pass.as_mut() {
-            pass.target = target;
-        }
+    /// Verified best moved
+    pub(crate) fn target(&self, best: Height) {
+        self.tally().target = Some(best);
     }
 
     pub(crate) fn added(&self, block: &Block) {
         let mut tally = self.tally();
-        let height = block.header().height;
-        if tally.catchup.is_some_and(|tip| height >= tip) {
-            tally.catchup = None;
-        }
-        tally.height = Some(height);
+        tally.height = Some(block.header().height);
         tally.blocks += 1;
-    }
-
-    /// Bulk pass reached its target; the window replay up to `tip` follows
-    pub(crate) fn finish(&self, tip: Height) {
-        let mut tally = self.tally();
-        let Some(pass) = tally.pass.take() else {
-            return;
-        };
-        tally.catchup = Some(tip);
-        let elapsed = pass.started.elapsed();
-        let blocks = tally.blocks - pass.blocks;
-        info!(
-            height = u32::from(pass.target),
-            blocks,
-            elapsed = %Human(elapsed),
-            bps = per_second(blocks, elapsed),
-            "Reached finalized target"
-        );
     }
 
     fn sample(&self) -> Sample {
@@ -93,7 +50,7 @@ struct Sample {
     tally: Tally,
 }
 
-/// Every [`REPORT_INTERVAL`]: a summary while a bulk pass runs, silent otherwise
+/// Every [`REPORT_INTERVAL`]: a summary while behind the best, silent at it
 pub(crate) async fn run(progress: Arc<Progress>) {
     let mut ticks = tokio::time::interval(REPORT_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -108,17 +65,15 @@ pub(crate) async fn run(progress: Arc<Progress>) {
 }
 
 fn summarise(last: &Sample, now: &Sample) {
-    let Some(height) = now.tally.height else {
+    let Some(target) = now.tally.target else {
         return;
     };
-    let (target, bulk) = match (now.tally.pass, now.tally.catchup) {
-        (Some(pass), _) => (pass.target, true),
-        (None, Some(tip)) => (tip, false),
-        (None, None) => return,
-    };
+    if now.tally.height >= Some(target) {
+        return;
+    }
     let elapsed = now.at - last.at;
     let blocks = now.tally.blocks - last.tally.blocks;
-    let (height, target) = (u32::from(height), u32::from(target));
+    let (height, target) = (now.tally.height.map_or(0, u32::from), u32::from(target));
     if blocks == 0 {
         warn!(height, target, stalled = %Human(elapsed), "Block fetch stalled");
         return;
@@ -126,10 +81,7 @@ fn summarise(last: &Sample, now: &Sample) {
     let rate = blocks as f64 / elapsed.as_secs_f64();
     let bps = per_second(blocks, elapsed);
     let eta = Human(Duration::from_secs_f64(f64::from(target.saturating_sub(height)) / rate));
-    match bulk {
-        true => info!(height, target, bps, eta = %eta, "Syncing blocks"),
-        false => info!(applied = height, tip = target, bps, eta = %eta, "Applying to tip"),
-    }
+    info!(height, target, bps, eta = %eta, "Syncing blocks");
 }
 
 /// Whole units per second

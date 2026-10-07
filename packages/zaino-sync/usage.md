@@ -6,9 +6,9 @@ each over its own subscription. New here? Read
 this whole crate is built on, with a worked reorg. Then
 [`docs/design/sync.md`](../../docs/design/sync.md) for the pipeline.
 
-- **Produce**: `Producer` (the one task that owns the `BlockSink`) bulk-fetches
-  through `zaino_source::BlockFetchPool`, then follows `zaino-chainview`'s
-  quorum tip through `zaino_non_finalized_state::ChainHead`
+- **Produce**: `Producer` (the one task that owns the `BlockSink`) follows the
+  header chain's `VerifiedChain`, fetching every block by hash from any source
+  and checking it against its verified header
 - **Stream**: `IndexerDataSink<T>` (one producer, N subscribers, keyed by block
   height); `BlockSink` = `IndexerDataSink<Block>`, the one stream every index
   subscribes to
@@ -26,69 +26,65 @@ let blocks = block_sink.subscribe(MyIndex::NAME, queue_bytes);
 let index = MyIndex::new(store, batch_bytes);
 let durable = [index.durable_tip()]; // every subscriber's durable tip (height + hash)
 let service = MyService::new(index.published().served());
-tokio::spawn(index.published().gate(tips.clone(), finalised_depth, cancel.child_token()));
+let verified = header_sync.subscribe(); // watch<Option<Arc<VerifiedChain>>>
+tokio::spawn(index.published().gate(verified.clone(), finalised_depth, cancel.child_token()));
 tokio::spawn(index.run(blocks)); // infallible: returns at Shutdown, panics on any failure
 
-let producer = Producer::new(block_sink, pool, tips, finalised_depth, durable);
+let producer = Producer::new(block_sink, sources, verified, concurrency, durable);
 tokio::spawn(producer.run(cancel.child_token()));
 ```
 
 ## `Producer`
 
-`Producer::new(sink, pool, tips, depth, durable)` takes the sink (at least one
-subscriber), a `BlockFetchPool` over every validator, chainview's
-level-triggered quorum tip (`watch<Option<QuorumTip>>`; `None` = quorum lost,
-waited out), the reorg depth, and every subscriber's durable tip (last block
-on disk, height + hash, `None` when empty). It decides every step the sink
-carries, and it is the only place chain identity is checked:
+`Producer::new(sink, sources, verified, concurrency, durable)` takes the sink
+(at least one subscriber), every source that serves blocks by hash (any
+`ChainDataSource`; none is trusted, every block is checked), the header
+chain's `watch<Option<Arc<VerifiedChain>>>` (`HeaderSync::subscribe`; `None`
+= nothing verified yet, waited out), how many blocks may be in flight, and
+every subscriber's durable tip (last block on disk, height + hash, `None` when
+empty). It follows that chain and nothing else, decides every step the sink
+carries, and is the only place chain identity is checked
+([verified-chain.md §9](../../docs/design/verified-chain.md#9-the-producer)).
+The full block-sink contract (finality, reorgs, retreats, a reorg and
+finality in one update) is in
+[data-sink.md](../../docs/design/data-sink.md#how-the-producer-publishes).
 
 - **start** = after the rearmost `durable`: **every** subscriber receives the
   same contiguous block sequence from there, so an index asserts on height
   instead of tolerating gaps. An index ahead of the rearmost (a crash between
   two indexes' commits, a newly enabled index on a synced node) receives
-  heights it already holds, and skips them
-- **chain identity**: the first bulk block must extend the rearmost durable
-  tip (`ProduceError::Unlinked`), and any fetched block at an index's durable
-  height must be the block that index committed (`ProduceError::Diverged`).
-  Either means the validators' chain diverged below a durable tip (a reset
-  validator, a directory from another chain): resync required
-- **finality**: the final tip (last final height, inclusive) = highest tip −
-  depth, never lowered, and at least the furthest `durable` (a lower tip after
-  a restart cannot un-finalise what an index holds). Each new tip sends a
-  `Step::Finalized` for every delivered non-final height it buries, oldest
-  first; each block is a `Step::Apply` whose `finalized` says whether it is
-  already final. The tip itself is not a step: an index's serving gate reads
-  it off chainview (see `Published::gate`)
-- **reorg**: `Step::Reorg`, then a replay from the first non-final height
-  (final is never resent)
+  heights it already holds, final, and skips them
+- **restart check**: nothing is sent until the chain's final tip covers every
+  `durable` tip and each is the chain's block at its height; one that is not
+  stops production with `ProduceError::Diverged` (a directory from another
+  chain, a reset header store on another chain): resync required
+- **fetch**: each wanted `(height, hash)` goes to the least-loaded source as
+  `get_block_by_hash` on its own task; `concurrency` blocks in flight ahead
+  of the next one sent, sent in height order
+- **check**: a block is accepted only if its hash = `hash_at(height)`, its
+  coinbase height = the height, and the merkle root rebuilt from its txids =
+  `header_at(height)`'s (a repeated txid pair refused too, CVE-2012-2459).
+  Anything else = that source misanswered (WARN `Source misanswered a block`),
+  never an invalid header: the source is skipped for 60 s and another asked.
+  A source silent for 15 s is hedged with another; a block every source
+  failed is asked again after 1 s
+- **finality**: one, the chain's final tip. Each block is a `Step::Apply`
+  whose `finalized` says whether it is at or below it; each non-final one
+  delivered gets a `Step::Finalized` once the final tip passes it, oldest
+  first. The best tip itself is not a step: an index's serving gate reads the
+  same chain (see `Published::gate`)
+- **reorg**: the first delivered non-final block that is no longer
+  `hash_at` its height (above the best counts: a retreat) is the fork →
+  `Step::Reorg`, then the still-best blocks below it again from memory (no
+  fetch), then the new branch (final is never resent)
+- header sync gone → `ProduceError::ChainGone`; cancel → `Ok`; either way it
+  ends the sink with `shutdown()`, so every index loop writes what is final
+  and stops
 
-- **bulk**: `next` to `tip − finalised_depth`, both inclusive, streamed from the pool (ordered,
-  concurrent, decoded on every core), every block final, each `prev_hash`
-  checked against the block before it; the chain head anchors on the last one.
-  The end follows the quorum tip mid-pass (finality moves before each raise, so
-  every bulk block stays final): one pass per catch-up. An index ahead of the
-  validators waits for them
-- **live**: each quorum tip → `ChainHead::advance` → the `Finalized` it buries
-  + an `Apply` per new block; a reorg sends `Reorg`, then the `Apply`s from the resume height out of
-  the window (no fetch; the resume height is asserted ≤ the fork)
-- by-height fetches (bulk, and the live extension) go only to the validators
-  in the quorum tip's `agreed_by` (`BlockFetchPool::among`). Every one of them
-  holds the tip on its best chain (some may be ahead of it), so they agree on
-  every height up to it, and no fetch goes above it. Another validator may
-  still serve a stale branch at a height the new tip has made final, and
-  publishing that block would finalize it in every index
-- a quorum tip more than `finalised_depth` ahead → bulk again
-- a quorum tip that retreats onto an ancestor inside the window → `Reorg`, then
-  the replay (chainview's vote counts ancestors, so a lagging majority can pull
-  the tip back); below the window (`ChainHead::next_floor`) → WARN and wait for
-  the next tip, never a reorg, unless it contradicts a block an index committed
-  at that height (`ProduceError::Diverged`)
-- a fetch failure (validators failed after the pool's retries), bulk or live →
-  WARN, retry after 1 s (bulk resumes from what was added); an unlinked bulk block, a fork
-  below the window or chainview gone → `ProduceError`, the task ends (zainod
-  exits)
-- cancel → `Ok`; either way it ends the sink with `shutdown()`, so every
-  index loop writes what is final and stops
+Inside, a pure `ProducerCore` (`step(input, now) -> outputs`: chain, answer or
+tick in; sink steps and fetches out; no I/O, no clock) under a thin async
+driver. `ProducerCore::check()` asserts P1–P6 after every step in tests and
+debug builds; its model test and fire drills live beside it.
 
 Metrics (`describe_metrics()`): `zaino_best_tip`,
 `zaino_reorgs_total`, `zaino_fetch_height`, the per-block
@@ -158,59 +154,65 @@ read by the compact-block index.
 Every index's `run` is the same loop over its subscription. Nothing drives it
 and nothing hides it; the arms are the whole policy:
 
+An index's storage tiers are `zaino_persistence::Tiered`
+([persistence-engine.md §5](../../docs/design/persistence-engine.md#5-tiering)):
+the loop encodes each block into one `Changes` and maps steps onto
+`stage` / `apply` / `finalize` / `reorg`:
+
 ```rust,ignore
 pub async fn run(mut self, mut blocks: Subscription<Block>) {
     loop {
         match blocks.next().await {
             Step::Apply { height, finalized: true, data } => {
-                if Some(height) <= self.durable.map(|tip| tip.height) {
+                if Some(height) <= self.durable_tip().map(|tip| tip.height) {
                     continue;                                   // replay: already on disk
                 }
-                self.bulk_bytes += data.weight();
-                self.bulk.push(data);
-                if self.bulk_bytes >= self.batch_bytes.get() {
-                    self.commit(height).await;                  // one bulk batch = one fsync
+                let full = self.tiered.get_mut().stage(self.changes(&data), data.weight());
+                self.published.merged(height);
+                if full {
+                    self.finalize(height).await;                // one bulk batch = one fsync
                 }
             }
-            Step::Apply { height, finalized: false, data } => {
-                if let Some(last) = self.bulk.last() {
-                    self.commit(last.header().height).await;    // bulk → tip handoff
-                }
-                // assert contiguous, then fold into the non-finalized state
+            Step::Apply { finalized: false, data, .. } => {
+                self.finalize_staged().await;                   // bulk → tip handoff
+                self.tiered.get_mut().apply(self.changes(&data));
+                self.publish();
             }
-            Step::Finalized { height } => self.commit(height).await,
-            Step::Reorg => { /* assert bulk empty, drop non-finalized, publish, reorged() */ }
-            Step::Shutdown => { /* commit bulk leftovers */ return; }
+            Step::Finalized { height } => self.finalize(height).await,
+            Step::Reorg => { /* tiered.reorg(), re-derive any carry, publish, reorged() */ }
+            Step::Shutdown => return self.finalize_staged().await,
         }
-        self.publish();
     }
 }
 ```
 
-`commit(through)` writes every final block through `through`: the bulk ones
-(never applied) and the applied ones in the non-finalized state. It asserts
-they run contiguously from the durable tip, writes them
-(`Offloaded::blocking`: the store hops to the blocking pool and back), drops
-them from memory, and publishes the view, then `Published::durable(height)`.
-It returns once the blocks are on disk: one write at a time, nothing in
-flight. Like `run`, it returns `()`: a failed write panics
+`finalize(through)` commits every held block through `through` as one
+`Changes` (`Offloaded::blocking`: the tiers hop to the blocking pool and back),
+publishes the view, then `Published::durable(height)`. It returns once the
+blocks are on disk: one write at a time, nothing in flight. Like `run`, it
+returns `()`: a failed write panics inside `Tiered::finalize`
 ([Failure](#failure-panic-never-err)). Each index keeps its loop in
-`src/index_writer.rs`; the arms repeat across indexes by design
-(`.dupes-ignore.toml`).
+`src/index_writer.rs`.
+
+An index that batches its derivation (value-balance's prevout probe,
+tree-state's Merkle hashing) takes `Subscription::run(first, budget)` on an
+`Apply`: `first` plus every `Apply` already queued behind it, up to `budget`
+bytes, never a wait; the step that ended the run is the next `next()`.
 
 Commit cadence follows from the arms. In bulk, final blocks stage until a
 batch fills. At the tip, every `Finalized` commits at once: the durable tip
 trails the chain tip by exactly the finality depth. The bulk → tip handoff
-commits what bulk staged before the first non-final block applies on it.
-Indexes do no chain-identity checks: the producer checks every block links
-onto the one before it and onto every index's durable tip.
+commits what was staged before the first non-final block applies on it.
+Indexes do no chain-identity checks: the producer checks every block against
+the verified header chain (hash, body) and every index's durable tip against
+its final part.
 
-A reorg and a restart are the same operation: the non-finalized state is
-dropped and blocks re-apply from the durable tip. `Step::Reorg` carries no
-height, so no index owns a reverse fold. `apply` receives strictly contiguous,
-ascending heights; assert it at the top of every index, because cumulative
-state (tree sizes, note positions, balances) goes plausibly wrong after a gap.
-See [`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
+A reorg and a restart are the same operation: every applied block is dropped
+and blocks re-apply from the durable tip. `Step::Reorg` carries no height, so
+no index owns a reverse fold. Blocks arrive strictly contiguous and ascending;
+`Tiered` asserts it on every block, because cumulative state (tree sizes, note
+positions, balances) goes plausibly wrong after a gap. See
+[`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
 
 
 ### Off the runtime
@@ -221,13 +223,9 @@ thread:
 ```rust,ignore
 use zaino_sync::{compute, Offloaded};
 
-// commit: fold on the CPU pool, then write on the blocking pool; the store comes back after
-let chunk = compute(move || fold(&blocks)).await;
-let written = self.store.blocking(move |store| store.write(&chunk)).await;
-let store = self.store.get();
-if let Err(error) = written {
-    error.commit_failed(Self::NAME, store.path()); // -> !
-}
+// fold on the CPU pool onto the carry, then commit on the blocking pool; each state comes back
+let changes = self.carries.compute(move |carries| carries.fold(&blocks, &view)).await?;
+self.tiered.blocking(move |tiered| tiered.finalize(through)).await;
 ```
 
 | helper | runs `f` on | for |
@@ -250,8 +248,9 @@ if let Err(error) = written {
 
 ### `Published`: what serving, metrics and status read
 
-`Published::new(view, durable)` at boot; the loop calls `view(v, applied)`
-after every step (view + applied height published together), `durable(h)` on
+`Published::new(view, durable)` at boot (`durable` = the durable tip block);
+the loop calls `view(v, applied)` after every step (view + applied block,
+height and hash, published together), `durable(h)` on
 each landing (**after** it is on disk: nothing is told of a height not
 written; never moves back), and `reorged()` after publishing the dropped view.
 
@@ -261,12 +260,15 @@ written; never moves back), and `reorged()` after publishing the dropped view.
   gate without pinning. `Served::fixed(view)` = a synced, never-republished
   handle
 - `reads()` = every view a `served()` handle pinned, shared across clones
-- `subscribe_finalized()` / `subscribe_applied()` / `subscribe_synced()` =
-  watches for metrics and the status report (and tests: `wait_for`)
-- `gate(tips, depth, cancel)` = the serving gate as its own task, off the loop:
-  it opens once the applied height reaches chainview's quorum tip, closes when
-  it falls more than `depth` behind (a producer stalled while the validators
-  moved on) or on a reorg until the replay is back at the tip. Each flip logs
+- `subscribe_finalized()` / `subscribe_applied()` (a `BlockRef`) /
+  `subscribe_synced()` = watches for metrics and the status report (and tests:
+  `wait_for`)
+- `gate(verified, depth, cancel)` = the serving gate as its own task, off the
+  loop, over the header chain's `watch<Option<Arc<VerifiedChain>>>`: it opens
+  once the applied block **is** the verified best (hash, not height), and
+  closes when the applied block leaves the best chain, falls more than `depth`
+  behind it (a producer stalled while the chain moved on), or on a reorg until
+  the replay is back at the best. Each flip logs
   `Serving` / `Syncing, requests refused`, or around a reorg `Reorg received,
   requests refused until replayed` / `Reorg replayed, serving` (`took`)
 
@@ -298,10 +300,10 @@ carried to the same exit. Every failure panics where it happens instead:
 | commit hits a full disk (`StorageFull` / `QuotaExceeded` anywhere in the error chain) | `<index> index commit failed: disk <dir> full` |
 | any other commit error | `<index> index commit failed at <dir>: <error>` |
 | chain data the index cannot take (an unrecorded prevout, a tree size past `u32`, a non-canonical commitment) | `<index> index: <error>` |
-| a broken invariant (a gap, a reorg with bulk staged, out-of-step fees) | the `assert!` message, prefixed with the index |
+| a broken invariant (a gap, a reorg with blocks staged, out-of-step fees) | the `assert!` message, prefixed with the index |
 
-`StoreError::commit_failed(index, dir) -> !` (in `zaino-persistence`) formats
-both commit messages, so every index reports a failed commit the same way.
+`Tiered::finalize` (in `zaino-persistence`) panics with both commit messages,
+so every index reports a failed commit the same way.
 
 In zainod the panic hook logs the panic as an `error` event and aborts the
 process at once. The service manager restarts it, and every index reopens at its
