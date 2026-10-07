@@ -3380,7 +3380,7 @@ mod zebrad {
         // shielded, so the 250_000 transparent send is the funding block's only
         // transparent output.
         //
-        // zebra must link the same orchard 0.15 / zcash_protocol 0.10 as the
+        // zebra must link the same orchard 0.16 / zcash_protocol 0.11 as the
         // wallet and miner to verify their proofs; an older 5.2.0 (orchard ~0.13)
         // rejects them with "could not validate orchard proof".
         let mut env = TestEnv::builder().ready_timeout(READY);

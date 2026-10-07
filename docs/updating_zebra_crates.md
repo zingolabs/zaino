@@ -54,10 +54,31 @@ The live tests run the `zfnd/zebra:<version>` image named by
 `zaino_testutils::ZEBRAD_VERSION` (`live-tests/zaino-testutils/src/lib.rs`).
 Set it to the zebrad release whose crates the workspaces now use.
 
+## Check the direct-reader database format
+
+`zebra-state` opens the state format it was built for (`state/v<N>/<network>`),
+and `zaino-source-zebra-readstate` is a read-only secondary that never migrates.
+A zebra bump that raises the format (zebra-state 15 / zebrad 7.0.0-rc.0 moved
+v28 → v29) is a deployment requirement for direct-reader users: zebrad must be
+upgraded and run first. Say so in the changeset and in that crate's `usage.md`.
+
+## Librustzcash pins follow zebra's
+
+Several `zcash_*` types cross into zebra's API, so their versions cannot
+diverge from the ones `zebra-chain` links: `incrementalmerkletree` and
+`zcash_primitives` (the treestate parser's `pool_root` bounds in
+`zaino-source-zebra-rpc`), `sapling-crypto` (`sapling_crypto::Node`),
+`orchard` (`orchard::Action` in the converters) and `zcash_protocol` (the
+`Parameters` impl on `zebra_chain::parameters::Network`). Read zebra-chain's
+manifest for the release and pin the same versions in the root `Cargo.toml`.
+When zebra pins a pre-release (`=0.11.0-pre.0`), write the full pre-release
+string: a caret on a pre-release only matches that series, and a plain `0.11`
+does not match it at all.
+
 ## Check the test-only workarounds
 
 `proptest_blockgen.rs` (`without_empty_transparent_bundle`) works around a
-zebra-chain 13 test-generator bug in `Transaction::with_transparent_inputs`.
+zebra-chain 13 and 14 test-generator bug in `Transaction::with_transparent_inputs`.
 Remove it once the upstream fix is released.
 
 ## Pinning to an unreleased zebra (git rev)
