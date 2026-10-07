@@ -5662,6 +5662,7 @@ dependencies = [
 name = "ztest"
 version = "0.1.29"
 dependencies = [
+ "anyhow",
  "async-trait",
  "base64 0.22.1",
  "bip0039",

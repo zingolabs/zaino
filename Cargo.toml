@@ -8,6 +8,7 @@ members = [
     "packages/zaino-internal-block-hash-to-height",
     "packages/zaino-internal-value-balance",
     "packages/zaino-chainview",
+    "packages/zaino-header-chain",
     "packages/zaino-persistence",
     "packages/zaino-primitives",
     "packages/zaino-sync",
@@ -15,6 +16,7 @@ members = [
     "packages/zaino-non-finalized-state",
     "packages/zainod",
     "packages/zaino-proto",
+    "packages/zaino-peers",
     # live-tests/ = standalone workspace (ztest harness, links no production crate)
 ]
 
@@ -40,14 +42,14 @@ categories = ["cryptography::cryptocurrencies"]
 [workspace.dependencies]
 
 # Librustzcash
-incrementalmerkletree = "0.8"
-orchard = { version = "0.15", default-features = false, features = ["multicore"] }
-sapling-crypto = "0.7"
-zcash_address = "0.13"
-zcash_protocol = "0.10"
-zcash_primitives = "0.30"
-zcash_script = { version = "0.4", default-features = false }
-zcash_transparent = "0.10"
+incrementalmerkletree = "0.9"
+orchard = { version = "0.16", default-features = false, features = ["multicore"] }
+sapling-crypto = "0.9"
+zcash_address = "0.14.0-pre.0"
+zcash_protocol = "=0.11.0-pre.0"
+zcash_primitives = "=0.31.0-pre.0"
+zcash_script = { version = "0.6", default-features = false }
+zcash_transparent = "0.11.0-pre.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -105,13 +107,18 @@ tempfile = "3.2"
 # Domain vocabulary (heights, hashes, blocks, transactions)
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
 zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
+# The best chain by proof of work: every header verified from genesis, most-work tip
+zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
-# ChainHead: the in-memory non-final window of the best chain (reorg replay without refetch)
-zaino-non-finalized-state = { path = "packages/zaino-non-finalized-state", version = "0.2.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
+zaino-peers = { path = "packages/zaino-peers", version = "0.1.0" }
+# p2p layer (zaino-peers): zebra main on the same librustzcash/orchard/sapling forks patched below
+zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
+zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
+zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "4.0.0" }
 # CompactBlockIndex's storage engine: gRPC-framed records in append-only files,
 # served as contiguous mmap spans.
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
@@ -146,22 +153,19 @@ debug = true
 # Lazy point decompression stack (`CompressedTransaction`: block decode w/o curve arithmetic)
 # - orchard = zcash/orchard#562 + perf/merkle-crh-weighted, sapling-crypto = zcash/sapling-crypto#204
 #   + perf/pedersen-windowed, incrementalmerkletree = perf/combine-pairs (batched tree hashing),
-#   librustzcash = elicbarbieri/librustzcash pr/lazy-point-decompression-v3 (on upstream main)
-# - Forks based on librustzcash main's pins; halo2, zip32 = its git pins (ff 0.14 releases pending)
+#   librustzcash = elicbarbieri/librustzcash pr/lazy-point-decompression-v4 (on zcash_keys-0.17.0-pre.0)
+# - Forks on the releases zebra main uses (orchard 0.16, sapling-crypto 0.9, incrementalmerkletree 0.9)
 # - drop each once released
 [patch.crates-io]
-halo2_gadgets = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
-halo2_poseidon = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
-halo2_proofs = { git = "https://github.com/zcash/halo2.git", rev = "232496b154e6332c88924e4affa8351ff92408b4" }
-zip32 = { git = "https://github.com/zcash/zip32.git", rev = "0399cd62dae9b3abe5dc8d5e761b8ef11b57b12a" }
-incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "65f28bfadc2dd0ee77a4c303d567fa87ddc5ea19" }
-orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "8c8e8ae802e93c786ca858c205b1e1012609a2e8" }
-sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "9dd80432983fc183d628f53ab7f9852ddcc9dada" }
-zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
-zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
-zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
-zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
-equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "208974e35af249bcc2451e8761de9c4022544589" }
+incrementalmerkletree = { git = "https://github.com/elicbarbieri/incrementalmerkletree.git", rev = "d5e07689456e0be0154934aa39d347a9e5f18765" }
+orchard = { git = "https://github.com/elicbarbieri/orchard.git", rev = "426f5c77a7e1eab302f1088db6ac7679865d7ee4" }
+sapling-crypto = { git = "https://github.com/elicbarbieri/sapling-crypto.git", rev = "3c14da616116271fdf48ec032bbf31195e5f6c7f" }
+zcash_primitives = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
+zcash_protocol = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
+zcash_transparent = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
+zcash_address = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
+zcash_encoding = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
+equihash = { git = "https://github.com/elicbarbieri/librustzcash.git", rev = "1818a449ece005aa6ebdaec414e341b21a4c7183" }
 
 # Release codegen a profiler can attribute to source lines (`release` stays lean)
 # - Frame pointers = other half, no Cargo key for them: pass
