@@ -28,8 +28,9 @@ pub use layer::{Layer, LayeredView};
 pub use manifest::{IndexKind, ManifestError};
 pub use pages::PageError;
 pub use port::{
-    Changes, Checked, MapId, MapRead, MapTable, PersistenceEngine, Schema, SequenceId,
-    SequenceRead, SequenceTable, Store, Verification, View, Width,
+    Changes, Checked, MapBuffer, MapId, MapRead, MapTable, MapView, PersistenceEngine, Schema,
+    SequenceBuffer, SequenceId, SequenceRead, SequenceTable, SequenceView, Store, Tables,
+    Verification, View, Width,
 };
 
 /// Why an index directory could not be opened, read, proven or committed

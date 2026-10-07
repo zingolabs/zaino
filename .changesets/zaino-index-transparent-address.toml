@@ -11,3 +11,17 @@ address) and `spent` (by outpoint) (`schema(network)`), each a pure projection o
 (`DEFAULT_MAX_ADDRESS_ROWS` = 100,000) rather than answering short. \
 `TransparentAddressIndexWriter::new(store, batch_bytes)` follows the final stream.
 """
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "changed"
+description = """
+`fold(parent, block, out: &mut Changes)` appends to a caller-opened delta (asserting it is the \
+block's and the block extends the parent); it moved into `writer.rs`. `schema(network)` is \
+replaced by `FORMAT` + `TABLES`; `TransparentAddressReader::new(view)` takes no network.
+"""
+migration = """
+Open the delta with `store.changes(block.at())` (or a layer's), open the store with \
+`Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES)`, drop the reader's network.
+"""

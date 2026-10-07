@@ -125,7 +125,8 @@ its caller must keep (H2, H3: a `Checked` from another network's rules).
 `HeaderStore` holds one 88-byte record per final height (`hash · merkle root · time
 · nBits · cumulative work`, `store::encode` / `decode` beside a golden test) in one
 checksummed log, committed through the `zaino-persistence` manifest as
-`IndexKind::HeaderChain`. It is written only with headers verified from genesis, so
+`IndexKind::HeaderChain` (its tables: `TABLES`, layout version `FORMAT`, both
+exported for `zainod verify`). It is written only with headers verified from genesis, so
 a reopen never re-verifies and never starts from a checkpoint someone supplied.
 
 ## Tests

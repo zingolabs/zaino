@@ -29,3 +29,10 @@ with none eligible.
 migration = """
 Pass the same `TrafficBalancer` the chain view was built over (`balancer.clone()`).
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "internal"
+description = """
+Route tests build their indexes through the new fold shape (store-opened deltas, linked chains).
+"""

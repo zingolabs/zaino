@@ -55,6 +55,7 @@ pub trait Store: Send + 'static {
     type View: View;
     fn schema(&self) -> &Schema;
     fn path(&self) -> &Path;
+    fn changes(&self, at: BlockRef) -> Changes;           // one block's empty delta (provided)
     fn apply(&mut self, changes: Changes);                // buffered: not durable, not in view()
     fn buffered_bytes(&self) -> usize;
     fn commit(&mut self) -> Result<(), StoreError>;      // every buffer, one atomic commit
@@ -64,12 +65,14 @@ pub trait Store: Send + 'static {
 
 pub trait View: Clone + Send + Sync + 'static {
     fn tip(&self) -> Option<BlockRef>;
+    fn schema(&self) -> &Schema;                          // the store's, as opened
 }
 
-pub trait SequenceRead: View {
+pub trait SequenceRead: View {                            // engine side: by position
     fn len(&self, table: SequenceId) -> u64;
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes>;
     fn records(&self, table: SequenceId, range: Range<u64>) -> Vec<Bytes>;
+    fn sequence(&self, table: SequenceTable) -> SequenceView<'_, Self>;   // index side (provided)
 }
 
 pub trait MapRead: View {
@@ -77,33 +80,47 @@ pub trait MapRead: View {
     fn values(&self, table: MapId, keys: &[&[u8]]) -> Vec<Option<Bytes>>;  // in `keys` order
     fn range(&self, table: MapId, start: &[u8], end: &[u8], limit: usize)
         -> Option<Vec<(Bytes, Bytes)>>;                                     // None = over `limit`
+    fn map(&self, table: MapTable) -> MapView<'_, Self>;                    // index side (provided)
 }
 ```
 
-An index declares its tables once, and builds each commit against them:
+An index declares its tables once, as constants; the store is opened by them, and each block's
+delta comes from the store (or a layer) and is filled table by table:
 
 ```rust
-let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network)
-    .with_map(RECEIVES, "receives", Width::fixed(61), Width::fixed(8), 21)
-    .with_map(SPENT, "spent", Width::fixed(36), Width::fixed(36), 0);
+const RECEIVES: MapTable = MapTable::new(0, "receives", Width::fixed(61), Width::fixed(8), 21);
+const SPENT: MapTable = MapTable::new(1, "spent", Width::fixed(36), Width::fixed(36), 0);
+pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
+
+let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
 let mut store = DiskEngine::new(fs).open(path, &schema)?;
 
-let mut changes = Changes::new(tip, store.schema());
-changes.insert(SPENT, &outpoint.encode(), &encode_spend(&spend));
+let mut changes = store.changes(block.at());
+changes.map(SPENT).insert(&outpoint.encode(), &encode_spend(&spend));
 store.apply(changes);
 store.commit()?;
-let view = store.view();
+let spend = store.view().map(SPENT).value(&outpoint.encode());
 ```
 
-- **`Width`** is `Fixed(NonZeroU32)` or `Variable`; ids (`SequenceId`, `MapId`) are declared in
-  order and index the schema.
+- **Tables** are `const` handles: `SequenceTable::new(id, name, record)`,
+  `MapTable::new(id, name, key, value, scope)`; `Tables::new` checks each id = its position at
+  compile time. `Schema` (kind, format, network, tables) is `Copy`: built once at open, never per
+  block. `SequenceId` / `MapId` stay behind the handles (the engine side of the read traits).
+- **`Width`** is `Fixed(NonZeroU32)` or `Variable`.
 - **`scope`** is the one hint: the leading key bytes every range read shares (0 = point lookups).
   It is a partition key, a general database idea; an engine may ignore it. Map keys compare as
   bytes and lead with at least 8 uniform bytes (a hash, a txid).
-- **`Changes`** owns one buffer per table, shaped by the schema: a fixed-width table holds its
-  bytes back to back with no per-item overhead, a variable one adds an end offset per item. Widths
-  are checked as each item arrives, so a wrong one panics at the call that made it, naming the
-  table. Callers encode into temporaries and never manage a lifetime.
+- **`Changes`** owns one buffer per table, shaped by the schema, and is opened only by
+  `Store::changes` / `Layer::changes`. `changes.sequence(T).append(&record)` and
+  `changes.map(T).insert(&key, &value)` hand out one table's buffer: a fixed-width table holds its
+  bytes back to back with no per-item overhead, a variable one adds an end offset per item. A
+  handle of another schema or an item of the wrong width panics at the call that made it, naming
+  the table. Callers encode into temporaries and never manage a lifetime.
+- **Reads mirror writes**: `view.sequence(T)` (`count`, `record`, `records`) and `view.map(T)`
+  (`value`, `values`, `range`) check the handle against `View::schema` and read by its position.
+- **Folds** check their preconditions with `Changes::assert_next(parent_tip, block)` (the delta
+  opened for `block`, `block` one height above `parent_tip` and linked to it by `prev_hash`,
+  genesis on an empty parent; `BlockHeader::extends`), or `Changes::assert_run` for a run.
 - **Apply** buffers one `Changes` (a `Layer`, §5): `staged()` reads it, `view()` does not, and
   nothing is durable yet. Its tip must be above the last applied one.
 - **Commit** makes every buffered change and the last applied tip durable together (one fsync),
@@ -119,15 +136,18 @@ schema is a constant in the index's code, so a mismatch is a bug, not a runtime 
 
 | Where                          | Panics on                                                                                |
 | ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `Schema::with_*`               | ids out of declaration order                                                             |
-| `Changes::append` / `insert`   | an undeclared id; a fixed-width item of the wrong size                                   |
+| `Tables::new`                  | an id != its position (a compile error when `const`)                                     |
+| `Changes::sequence` / `map`    | a table of another schema                                                                |
+| `append` / `insert`            | a fixed-width item of the wrong size                                                     |
+| `View::sequence` / `map`       | a table of another schema                                                                |
+| `Changes::assert_next` / `run` | a delta opened for another block; a block off the parent tip (an index's fold)           |
 | the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes       |
 | the LSM (each batch)           | a row of the wrong widths; a duplicate key                                               |
 | sequence files (each append)   | a fixed-width record of the wrong size                                                   |
 | `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice |
 | `Store::commit`                | a commit after a failed one                                                              |
 | `Layer::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks     |
-| `LayeredView::new`             | a layer not above the durable tip (not rebased)                                          |
+| `LayeredView::new`             | a layer not above the durable tip (not rebased); a layer of another schema               |
 
 | Port      | `DiskEngine`                                                     | LMDB                                   | SQLite                                 |
 | --------- | ---------------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -176,8 +196,9 @@ would add engines beside `DiskEngine`, not change the port.
 | value-balance       | `outputs`: Fixed(36) → Fixed(8)                                                             |
 
 Each index keeps only its record layouts (named encode/decode functions beside golden tests) and
-its schema. Manifest bodies, seals, empty-directory checks, snapshots and committed-file lists are
-the engine's. `zainod verify` runs `DiskEngine::verify` with each enabled index's schema.
+its `FORMAT` + `TABLES`. Manifest bodies, seals, empty-directory checks, snapshots and
+committed-file lists are the engine's. zainod opens and `zainod verify` scrubs each enabled index
+by `Schema::new(kind, FORMAT, network, TABLES)` (`zainod/src/stores.rs`).
 
 ## 4. Tests
 
@@ -237,6 +258,7 @@ Data above a durable tip has one shape, whether it is a store's buffer or a non-
 impl Layer {
     pub fn empty(schema: &Schema) -> Self;
     pub fn tip(&self) -> Option<BlockRef>;
+    pub fn changes(&self, at: BlockRef) -> Changes;       // the next block's empty delta
     pub fn with(&self, changes: &Changes) -> Self;        // parent + changes, structural sharing
     pub fn rebase(&self, durable: &impl View) -> Self;    // drop what `durable` now holds
 }
@@ -273,7 +295,7 @@ data. Each index writer drives its store through `zaino_sync::Committer`
 | Final step                       | Writer                                                      |
 | -------------------------------- | ----------------------------------------------------------- |
 | held (at or below `staged()`)    | skipped (a restart resends from the lowest durable tip)     |
-| unfolded (bulk)                  | fold onto `staged()` on the compute pool, `Store::apply`    |
+| unfolded (bulk)                  | `Store::changes`, fold onto `staged()` into it (compute pool), `Store::apply` |
 | folded (the tip)                 | `Store::apply` its `Changes` as the NFS sent them           |
 | batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS |
 | `Shutdown`                       | `Store::commit`, stop                                       |

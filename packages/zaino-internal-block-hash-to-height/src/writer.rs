@@ -1,19 +1,23 @@
-//! block_hash writer: the final stream → one [`fold`] row per block → its store
+//! block_hash writer: the final stream → one [`fold`] per block → its store
 
 use std::num::NonZeroUsize;
 
 use tokio::sync::watch;
-use zaino_persistence::{MapRead, Store};
+use zaino_persistence::{Changes, MapRead, Store};
+use zaino_primitives::types::Block;
 use zaino_sync::{Committer, Final, Subscription};
 
-use crate::fold;
+use crate::{
+    by_hash::{encode_height, BY_HASH},
+    BlockHashReader, HASH,
+};
 
 pub struct BlockHashIndexWriter<S: Store> {
     store: Committer<S>,
 }
 
 impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = buffered bytes per
+    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         Self { store: Committer::new(store, batch_bytes) }
@@ -28,36 +32,47 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
     pub async fn run(mut self, mut blocks: Subscription<Final>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
-                let network = store.schema().network;
-                run.apply(store, |_, block| fold(block, network));
+                run.apply(store, |store, block, out| {
+                    fold(&BlockHashReader::new(store.staged()), block, out)
+                });
             };
             self.store.compute(applied).await;
         }
     }
 }
 
+/// `block` onto `parent`: its one `by_hash` row (its own header only, nothing read)
+pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Changes) {
+    out.assert_next(parent.view().tip(), block);
+    let header = block.header();
+    out.map(BY_HASH).insert(&<[u8; HASH]>::from(header.hash), &encode_height(header.height));
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::{
+        panic::{catch_unwind, AssertUnwindSafe},
+        path::Path,
+        sync::Arc,
+    };
 
     use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, View,
     };
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_primitives::types::{Block, Height};
+    use zaino_primitives::types::{BlockHash, Height};
     use zaino_sync::{Folds, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{schema, BlockHashReader};
+    use crate::{FORMAT, TABLES};
 
     const NAME: &str = IndexKind::BlockHash.name();
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
+    const SCHEMA: Schema = Schema::new(IndexKind::BlockHash, FORMAT, NetworkType::Regtest, TABLES);
 
     fn open(fs: &Arc<SimFs>) -> DiskStore {
-        let store =
-            DiskEngine::new(fs.clone()).open(Path::new("/bh"), &schema(NetworkType::Regtest));
-        store.expect("open")
+        DiskEngine::new(fs.clone()).open(Path::new("/bh"), &SCHEMA).expect("open")
     }
 
     /// Writer on `fs`, its final stream and committed view
@@ -77,6 +92,46 @@ mod tests {
         Step::Apply { height, data: Arc::new(Final { block, folds: folds.map(Arc::new) }) }
     }
 
+    /// Each block → one golden row at its own tip; the reader locates every folded hash and
+    /// nothing else; a delta opened for another block or a block off the parent tip panics
+    #[test]
+    fn each_block_folds_to_its_golden_row_and_the_reader_locates_exactly_those() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(2);
+        let blocks = chain.blocks(tip);
+        let mut store = open(&SimFs::new());
+
+        for (height, block) in (0u8..).zip(&blocks) {
+            let hash = <[u8; HASH]>::from(block.header().hash);
+            let mut changes = store.changes(block.at());
+            fold(&BlockHashReader::new(store.staged()), block, &mut changes);
+            let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
+            assert_eq!(rows, [(&hash[..], &[0, 0, 0, height][..])], "block {height}: hash → BE");
+            store.apply(changes);
+        }
+
+        let reader = BlockHashReader::new(store.staged());
+        let located: Vec<_> =
+            blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
+        let expected: Vec<_> = (0..3u32).map(|n| Some(Height::try_from(n).expect("h"))).collect();
+        assert_eq!(located, expected);
+        assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
+
+        let next = chain.mine_empty(2);
+        let (three, four) = (chain.block(chain.at(h(3)).hash), chain.block(next.hash));
+        for (case, opened_for, block, expected) in [
+            ("another block", three, four, "changes opened for another block"),
+            ("a gap", four, four, "does not extend the parent tip"),
+        ] {
+            let mut changes = store.changes(opened_for.at());
+            let folded = catch_unwind(AssertUnwindSafe(|| fold(&reader, block, &mut changes)));
+            let payload = folded.expect_err(case);
+            let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
+            let named = message.starts_with("block_hash: ") && message.contains(expected);
+            assert!(named, "{case}: {message}");
+        }
+    }
+
     /// Bulk 0..=2 unfolded (committed once the stream idles), folded 3 (committed at once), then
     /// a restart resending 2 and 3 (held: skipped) before folded 4; every hash located at its
     /// height after a reopen, a never-sent one nowhere
@@ -87,11 +142,17 @@ mod tests {
         let tip = chain.mine_empty(4);
         let blocks = chain.blocks(tip);
         let sibling = chain.fork(h(3)).mine_empty(1).tip();
-        let folded = |block: &Block| {
-            let mut folds = Folds::default();
-            folds.insert(IndexKind::BlockHash, fold(block, NetworkType::Regtest));
-            Some(folds)
-        };
+        let mut scratch = open(&SimFs::new());
+        let folds: Vec<Folds> = (blocks.iter())
+            .map(|block| {
+                let mut changes = scratch.changes(block.at());
+                fold(&BlockHashReader::new(scratch.staged()), block, &mut changes);
+                scratch.apply(changes.clone());
+                let mut folds = Folds::default();
+                folds.insert(IndexKind::BlockHash, changes);
+                folds
+            })
+            .collect();
         let tip_of = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height));
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
@@ -99,7 +160,7 @@ mod tests {
             sink.send(step(block, None)).await;
         }
         committed.wait_for(|view| tip_of(view) == Some(2)).await.expect("writer alive");
-        sink.send(step(&blocks[3], folded(&blocks[3]))).await;
+        sink.send(step(&blocks[3], Some(folds[3].clone()))).await;
         committed.wait_for(|view| tip_of(view) == Some(3)).await.expect("writer alive");
         sink.shutdown();
         running.await.expect("stops at Shutdown");
@@ -108,7 +169,7 @@ mod tests {
         assert_eq!(tip_of(&committed.borrow()), Some(3), "resumes at the committed tip");
         sink.send(step(&blocks[2], None)).await;
         sink.send(step(&blocks[3], None)).await;
-        sink.send(step(&blocks[4], folded(&blocks[4]))).await;
+        sink.send(step(&blocks[4], Some(folds[4].clone()))).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 

@@ -14,12 +14,10 @@
 //! - tree sizes after a block = its record's `chainMetadata` ([`fold`] reads the parent's)
 //! - hash → height = `zaino-internal-block-hash-to-height` (record's own `hash` confirms a hit)
 
-use zaino_persistence::{IndexKind, Schema, SequenceId, Width};
+use zaino_persistence::{SequenceTable, Tables, Width};
 use zaino_primitives::types::Height;
-use zcash_protocol::consensus::NetworkType;
 
 mod build;
-mod fold;
 mod project;
 mod reader;
 mod serve;
@@ -29,28 +27,21 @@ mod writer;
 pub mod testing;
 
 pub use build::{compact_tx, encode_compact_block};
-pub use fold::fold;
 pub use project::{project_tx_at, Pools};
 pub use reader::CompactBlockReader;
 pub use serve::{RangeCursor, ServeError};
-pub use writer::CompactBlockIndexWriter;
+pub use writer::{fold, CompactBlockIndexWriter};
 
 /// On-disk layout version
-const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 1;
 
-pub(crate) const BLOCKS: SequenceId = SequenceId(0);
+/// What the store holds (`zainod` opens and verifies it by these)
+pub const TABLES: Tables = Tables::new(&[BLOCKS], &[]);
+
+pub(crate) const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
 
 /// Block hash width (`CompactBlock.hash`)
 pub(crate) const HASH: usize = 32;
-
-/// What a store holds for this index (opened and verified by it)
-pub fn schema(network: NetworkType) -> Schema {
-    Schema::new(IndexKind::CompactBlock, FORMAT, network).with_sequence(
-        BLOCKS,
-        "blocks",
-        Width::Variable,
-    )
-}
 
 /// `BLOCKS` position of `height`
 pub(crate) fn position(height: Height) -> u64 {

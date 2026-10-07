@@ -26,6 +26,7 @@ mod serving;
 #[cfg(feature = "snapshot")]
 mod snapshot;
 mod status;
+mod stores;
 pub mod verify;
 
 /// Until a shutdown signal (`Ok`) or the first failure (`Err`)

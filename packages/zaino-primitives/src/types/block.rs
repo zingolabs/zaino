@@ -2,8 +2,8 @@
 
 use super::transaction::Transaction;
 use super::{
-    BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
-    Height, MerkleRoot,
+    BlockCommitments, BlockHash, BlockRef, BlockTime, CompactDifficulty, EquihashNonce,
+    EquihashSolution, Height, MerkleRoot,
 };
 
 /// Every consensus field + the hash (SHA-256d of the header bytes) and height naming the block
@@ -20,6 +20,16 @@ pub struct BlockHeader {
     pub bits: CompactDifficulty,
     pub nonce: EquihashNonce,
     pub solution: EquihashSolution,
+}
+
+impl BlockHeader {
+    /// Next above `parent`: one height up, `prev_hash` = its hash (`None` = nothing below: genesis)
+    pub fn extends(&self, parent: Option<BlockRef>) -> bool {
+        match parent {
+            None => self.height == Height::GENESIS,
+            Some(parent) => parent.height.next() == self.height && parent.hash == self.prev_hash,
+        }
+    }
 }
 
 /// Decoded from its consensus bytes: the one parse every index consumes
@@ -41,6 +51,10 @@ impl Block {
 
     pub fn header(&self) -> &BlockHeader {
         &self.header
+    }
+
+    pub fn at(&self) -> BlockRef {
+        BlockRef { hash: self.header.hash, height: self.header.height }
     }
 
     /// Coinbase first, never empty
@@ -67,6 +81,32 @@ mod tests {
         CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, Script, TransactionId,
         Zatoshis,
     };
+
+    /// Block 1 extends genesis and nothing else: not an empty parent, a sibling, itself, or a gap
+    #[test]
+    fn a_header_extends_only_its_parent_and_genesis_only_nothing() {
+        use crate::testing::{h, MockChain};
+
+        let mut chain = MockChain::regtest();
+        let two = chain.mine_empty(2);
+        let sibling = chain.fork(h(0)).mine_empty(1).tip();
+        let (genesis, one) = (chain.genesis(), chain.at(h(1)));
+        let header = |at: BlockRef| chain.block(at.hash).header().clone();
+        let cases = [
+            (header(genesis), None, true),
+            (header(genesis), Some(genesis), false),
+            (header(one), Some(genesis), true),
+            (header(one), None, false),
+            (header(one), Some(sibling), false),
+            (header(one), Some(one), false),
+            (header(two), Some(genesis), false),
+            (header(two), Some(one), true),
+        ];
+        for (header, parent, expected) in cases {
+            assert_eq!(header.extends(parent), expected, "{:?} on {parent:?}", header.height);
+        }
+        assert_eq!(chain.block(two.hash).at(), two);
+    }
 
     /// Every allocation counted once at its capacity: transactions, each pool's vector, scripts
     #[test]

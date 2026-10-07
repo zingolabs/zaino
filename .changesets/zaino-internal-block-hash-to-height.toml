@@ -9,3 +9,18 @@ First release. The block hash → height index every by-hash request resolves th
 `BlockHashReader::height_of` over any view. `BlockHashIndexWriter::new(store, batch_bytes)` \
 follows the final stream.
 """
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "breaking"
+section = "changed"
+description = """
+`fold(parent: &BlockHashReader<V>, block, out: &mut Changes)` appends to a caller-opened delta \
+(asserting it is the block's and the block extends the parent), replacing \
+`fold(block, network) -> Changes`; it moved into `writer.rs`. `schema(network)` is replaced by \
+`FORMAT` + `TABLES`.
+"""
+migration = """
+Fold onto a `BlockHashReader` of the parent into `store.changes(block.at())` (or a layer's); \
+open the store with `Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)`.
+"""

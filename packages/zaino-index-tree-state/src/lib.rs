@@ -44,11 +44,9 @@
 //! Storage: `zaino_persistence` port (`docs/design/persistence-engine.md`),
 //! `docs/design/index-data-structures.md` §3
 
-use zaino_persistence::{IndexKind, Schema, SequenceId, Width};
+use zaino_persistence::{SequenceTable, Tables, Width};
 use zaino_primitives::types::ShieldedPool;
-use zcash_protocol::consensus::NetworkType;
 
-mod fold;
 mod heights;
 mod nodes;
 mod reader;
@@ -56,51 +54,90 @@ mod serve;
 mod subtrees;
 mod writer;
 
-pub use fold::{fold, FoldError};
 pub use reader::TreeStateReader;
 pub use serve::{PoolActivations, ServeError};
-pub use writer::TreeStateIndexWriter;
+pub use writer::{fold, FoldError, TreeStateIndexWriter};
 
 use nodes::{MERKLE_DEPTH, NODE};
 
 /// On-disk layout version
-const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 1;
 
-const HEIGHTS: SequenceId = SequenceId(0);
+/// What the store holds (`zainod` opens and verifies it by these)
+pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
+
+const HEIGHTS: SequenceTable =
+    SequenceTable::new(0, "heights", Width::fixed(heights::RECORD as u32));
+
 /// Level sequences + subtrees, per pool
-const POOL_TABLES: u16 = MERKLE_DEPTH as u16 + 1;
+const POOL_TABLES: usize = MERKLE_DEPTH as usize + 1;
 
-/// `pool`'s first table (pools in `ShieldedPool::ALL` order, after `HEIGHTS`)
-fn pool_base(pool: ShieldedPool) -> u16 {
-    let (at, _) = (0u16..).zip(ShieldedPool::ALL).find(|&(_, each)| each == pool).expect("in ALL");
-    1 + at * POOL_TABLES
+/// `heights`, then each pool's tables (`ShieldedPool::ALL` order)
+const SEQUENCES: [SequenceTable; 1 + 3 * POOL_TABLES] = {
+    let mut all = [HEIGHTS; 1 + 3 * POOL_TABLES];
+    let mut at = 0;
+    while at < POOL_TABLES {
+        all[1 + at] = SAPLING[at];
+        all[1 + POOL_TABLES + at] = ORCHARD[at];
+        all[1 + 2 * POOL_TABLES + at] = IRONWOOD[at];
+        at += 1;
+    }
+    all
+};
+
+/// `"<pool>/l00"` … `"<pool>/l31"` (`concat!`: names = `&'static str` in a `const`)
+macro_rules! level_names {
+    ($pool:literal) => {
+        level_names!($pool; l00 l01 l02 l03 l04 l05 l06 l07 l08 l09 l10 l11 l12 l13 l14 l15
+            l16 l17 l18 l19 l20 l21 l22 l23 l24 l25 l26 l27 l28 l29 l30 l31)
+    };
+    ($pool:literal; $($level:ident)*) => {
+        [$(concat!($pool, "/", stringify!($level))),*]
+    };
+}
+
+const SAPLING: [SequenceTable; POOL_TABLES] =
+    pool_tables(1, level_names!("sapling"), "sapling/subtrees");
+const ORCHARD: [SequenceTable; POOL_TABLES] =
+    pool_tables(1 + POOL_TABLES as u16, level_names!("orchard"), "orchard/subtrees");
+const IRONWOOD: [SequenceTable; POOL_TABLES] =
+    pool_tables(1 + 2 * POOL_TABLES as u16, level_names!("ironwood"), "ironwood/subtrees");
+
+/// One pool's tables from id `first`: level ℓ's retained nodes (slot = [`nodes::slot`]), then
+/// its completed subtrees (slot = subtree index)
+const fn pool_tables(
+    first: u16,
+    levels: [&'static str; MERKLE_DEPTH as usize],
+    subtrees: &'static str,
+) -> [SequenceTable; POOL_TABLES] {
+    let entry = Width::fixed(subtrees::ENTRY as u32);
+    let mut tables =
+        [SequenceTable::new(first + MERKLE_DEPTH as u16, subtrees, entry); POOL_TABLES];
+    let mut level = 0;
+    while level < levels.len() {
+        tables[level] =
+            SequenceTable::new(first + level as u16, levels[level], Width::fixed(NODE as u32));
+        level += 1;
+    }
+    tables
+}
+
+fn pool_tables_of(pool: ShieldedPool) -> &'static [SequenceTable; POOL_TABLES] {
+    match pool {
+        ShieldedPool::Sapling => &SAPLING,
+        ShieldedPool::Orchard => &ORCHARD,
+        ShieldedPool::Ironwood => &IRONWOOD,
+    }
 }
 
 /// `<pool>/l{level:02}`: retained nodes of `level`, slot = [`nodes::slot`]
-pub(crate) fn level_table(pool: ShieldedPool, level: u8) -> SequenceId {
-    SequenceId(pool_base(pool) + u16::from(level))
+pub(crate) fn level_table(pool: ShieldedPool, level: u8) -> SequenceTable {
+    pool_tables_of(pool)[usize::from(level)]
 }
 
 /// `<pool>/subtrees`: slot = subtree index
-pub(crate) fn subtree_table(pool: ShieldedPool) -> SequenceId {
-    SequenceId(pool_base(pool) + u16::from(MERKLE_DEPTH))
-}
-
-/// What a tree-state index directory holds (also what `zainod verify` checks it against)
-pub fn schema(network: NetworkType) -> Schema {
-    let schema = Schema::new(IndexKind::TreeState, FORMAT, network).with_sequence(
-        HEIGHTS,
-        "heights",
-        Width::fixed(heights::RECORD as u32),
-    );
-    ShieldedPool::ALL.into_iter().fold(schema, |schema, pool| {
-        let levels = (0..MERKLE_DEPTH).fold(schema, |schema, level| {
-            let name = format!("{pool}/l{level:02}");
-            schema.with_sequence(level_table(pool, level), &name, Width::fixed(NODE as u32))
-        });
-        let entry = Width::fixed(subtrees::ENTRY as u32);
-        levels.with_sequence(subtree_table(pool), &format!("{pool}/subtrees"), entry)
-    })
+pub(crate) fn subtree_table(pool: ShieldedPool) -> SequenceTable {
+    pool_tables_of(pool)[usize::from(MERKLE_DEPTH)]
 }
 
 #[cfg(test)]
@@ -109,22 +146,19 @@ mod tests {
 
     /// Table names = file layout (`zainod verify` and every existing directory read by them)
     #[test]
-    fn schema_lays_out_heights_then_each_pools_levels_and_subtrees() {
-        let schema = schema(NetworkType::Regtest);
+    fn tables_lay_out_heights_then_each_pools_levels_and_subtrees() {
         let tables: Vec<(&str, Width)> =
-            schema.sequences.iter().map(|table| (table.name.as_str(), table.record)).collect();
+            SEQUENCES.iter().map(|table| (table.name, table.record)).collect();
         assert_eq!(tables.len(), 1 + 3 * 33);
         assert_eq!(tables[0], ("heights", Width::fixed(48)));
         for (pool, base) in [("sapling", 1), ("orchard", 34), ("ironwood", 67)] {
             assert_eq!(tables[base], (&*format!("{pool}/l00"), Width::fixed(32)));
+            assert_eq!(tables[base + 9], (&*format!("{pool}/l09"), Width::fixed(32)));
             assert_eq!(tables[base + 31], (&*format!("{pool}/l31"), Width::fixed(32)));
             assert_eq!(tables[base + 32], (&*format!("{pool}/subtrees"), Width::fixed(36)));
         }
-        let orchard_l05 = schema.sequence(level_table(ShieldedPool::Orchard, 5));
-        assert_eq!(orchard_l05.name, "orchard/l05");
-        assert_eq!(
-            schema.sequence(subtree_table(ShieldedPool::Ironwood)).name,
-            "ironwood/subtrees"
-        );
+        assert_eq!(level_table(ShieldedPool::Orchard, 5), SEQUENCES[34 + 5]);
+        assert_eq!(level_table(ShieldedPool::Orchard, 5).name, "orchard/l05");
+        assert_eq!(subtree_table(ShieldedPool::Ironwood).name, "ironwood/subtrees");
     }
 }

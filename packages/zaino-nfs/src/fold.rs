@@ -1,6 +1,6 @@
 //! [`fold_block`]: one block through every enabled index, in dependency order (`nfs.md` §5)
 //!
-//! - The one place indexes meet: a new index = one line here + one in [`schema`]
+//! - The one place indexes meet: a new index = one line here
 
 use std::sync::Arc;
 
@@ -9,10 +9,9 @@ use zaino_index_transparent_address as transparent_address;
 use zaino_index_tree_state as tree_state;
 use zaino_internal_block_hash_to_height as block_hash;
 use zaino_internal_value_balance as value_balance;
-use zaino_persistence::{Changes, IndexKind, Layer, MapRead, Schema, SequenceRead};
+use zaino_persistence::{Changes, IndexKind, Layer, MapRead, SequenceRead};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
 use zaino_sync::{Folds, PerIndex};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::snapshot::Views;
 
@@ -42,47 +41,46 @@ pub enum FoldError {
     TreeState(#[from] tree_state::FoldError),
 }
 
-/// `block` folded by every index enabled in `parent`, each layer = parent's `.with(own Changes)`
+/// `block` folded by every index enabled in `parent`: each into a delta its parent layer opens,
+/// each layer = parent's `.with(delta)`
 pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     parent: &Views<V>,
     block: &Block,
 ) -> Result<Folded, FoldError> {
     let mut folds = Folds::default();
     let mut layers = PerIndex::default();
+    let open = |kind: IndexKind| parent.layer(kind).changes(block.at());
     let mut push = |kind: IndexKind, changes: Changes| {
         layers.insert(kind, parent.layer(kind).with(&changes));
         folds.insert(kind, changes);
     };
 
     if let Some(reader) = parent.value_balance() {
-        let (changes, fees) = value_balance::fold(&reader, block)?;
-        push(IndexKind::ValueBalance, changes);
+        let mut out = open(IndexKind::ValueBalance);
+        let fees = value_balance::fold(&reader, block, &mut out)?;
+        push(IndexKind::ValueBalance, out);
         if let Some(reader) = parent.compact_block() {
-            push(IndexKind::CompactBlock, compact_block::fold(&reader, block, &fees)?);
+            let mut out = open(IndexKind::CompactBlock);
+            compact_block::fold(&reader, block, &fees, &mut out)?;
+            push(IndexKind::CompactBlock, out);
         }
     }
-    if parent.enabled(IndexKind::BlockHash) {
-        push(IndexKind::BlockHash, block_hash::fold(block, parent.network()));
+    if let Some(reader) = parent.block_hash() {
+        let mut out = open(IndexKind::BlockHash);
+        block_hash::fold(&reader, block, &mut out);
+        push(IndexKind::BlockHash, out);
     }
     if let Some(reader) = parent.tree_state() {
-        push(IndexKind::TreeState, tree_state::fold(&reader, block)?);
+        let mut out = open(IndexKind::TreeState);
+        tree_state::fold(&reader, block, &mut out)?;
+        push(IndexKind::TreeState, out);
     }
     if let Some(reader) = parent.transparent_address() {
-        push(IndexKind::TransparentAddress, transparent_address::fold(&reader, block));
+        let mut out = open(IndexKind::TransparentAddress);
+        transparent_address::fold(&reader, block, &mut out);
+        push(IndexKind::TransparentAddress, out);
     }
     Ok(Folded { folds: Arc::new(folds), layers })
-}
-
-/// `kind`'s tables, as its crate declares them
-pub fn schema(kind: IndexKind, network: NetworkType) -> Schema {
-    match kind {
-        IndexKind::ValueBalance => value_balance::schema(network),
-        IndexKind::CompactBlock => compact_block::schema(network),
-        IndexKind::BlockHash => block_hash::schema(network),
-        IndexKind::TreeState => tree_state::schema(network),
-        IndexKind::TransparentAddress => transparent_address::schema(network),
-        IndexKind::HeaderChain => zaino_header_chain::schema(network),
-    }
 }
 
 #[cfg(test)]
@@ -108,7 +106,6 @@ mod tests {
     /// - disabled indexes: no `Changes`, no layer, no reader
     #[test]
     fn value_balance_folds_first_and_disabled_indexes_fold_nothing() {
-        let network = NetworkType::Regtest;
         let p2pkh = Script::new([&[0x76, 0xa9, 0x14][..], &[0xaa; 20], &[0x88, 0xac]].concat());
         let pays = |value: u64| TransparentOutput {
             value: Zatoshis::new(value).expect("in supply"),
@@ -176,16 +173,15 @@ mod tests {
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());
             for &kind in enabled {
-                let schema = schema(kind, network);
+                let schema = crate::tests::schema(kind);
                 let store = engine.open(Path::new(kind.name()), &schema).expect("fresh store");
                 durable.insert(kind, store.view());
                 root.insert(kind, Layer::empty(&schema));
                 stores.push(store);
             }
-            let folded = fold_block(&Views::new(network, &durable, &root), genesis).expect("folds");
-            let folded =
-                fold_block(&Views::new(network, &durable, &folded.layers), block).expect("folds");
-            let views = Views::new(network, &durable, &folded.layers);
+            let folded = fold_block(&Views::new(&durable, &root), genesis).expect("folds");
+            let folded = fold_block(&Views::new(&durable, &folded.layers), block).expect("folds");
+            let views = Views::new(&durable, &folded.layers);
 
             let reader = views.compact_block().expect("enabled");
             assert_eq!(

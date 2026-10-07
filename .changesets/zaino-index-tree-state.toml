@@ -11,3 +11,19 @@ hashing across cores; `TreeStateReader` answers `treestate` and `subtree_roots` 
 and a tree state writes a pool's tree only from its activation (`PoolActivations`). \
 `TreeStateIndexWriter::new(store, batch_bytes)` follows the final stream.
 """
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "changed"
+description = """
+`fold(parent, block, out: &mut Changes) -> Result<(), FoldError>` appends to a caller-opened \
+delta (asserting it is the block's and the block extends the parent); it and the run fold moved \
+into `writer.rs`, the run fold filling one caller-opened delta per block (same batched hashing). \
+`schema(network)` is replaced by `FORMAT` + `TABLES` (the 100 tables as constants); \
+`TreeStateReader::new(view)` takes no network.
+"""
+migration = """
+Open the delta with `store.changes(block.at())` (or a layer's), open the store with \
+`Schema::new(IndexKind::TreeState, FORMAT, network, TABLES)`, drop the reader's network.
+"""

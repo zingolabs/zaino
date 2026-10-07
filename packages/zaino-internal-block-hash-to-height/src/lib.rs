@@ -11,28 +11,22 @@
 //!   snapshot's `LayeredView`
 //! - segments, merges, filters, manifest, crash safety = the engine's
 
-use zaino_persistence::{IndexKind, Schema, Width};
-use zcash_protocol::consensus::NetworkType;
+use zaino_persistence::Tables;
 
-use by_hash::{BY_HASH, HEIGHT};
+use by_hash::BY_HASH;
 
 mod by_hash;
-mod fold;
 mod reader;
 mod writer;
 
-pub use fold::fold;
 pub use reader::BlockHashReader;
-pub use writer::BlockHashIndexWriter;
+pub use writer::{fold, BlockHashIndexWriter};
 
 /// Block hash width
 pub(crate) const HASH: usize = 32;
 
 /// On-disk layout version
-const FORMAT: u16 = 1;
+pub const FORMAT: u16 = 1;
 
-/// What the store holds (`zainod verify` reads by it)
-pub fn schema(network: NetworkType) -> Schema {
-    let (key, value) = (Width::fixed(HASH as u32), Width::fixed(HEIGHT as u32));
-    Schema::new(IndexKind::BlockHash, FORMAT, network).with_map(BY_HASH, "by_hash", key, value, 0)
-}
+/// What the store holds (`zainod` opens and verifies it by these)
+pub const TABLES: Tables = Tables::new(&[], &[BY_HASH]);

@@ -3,17 +3,22 @@
 use std::num::NonZeroUsize;
 
 use tokio::sync::watch;
-use zaino_persistence::{MapRead, Store};
+use zaino_persistence::{Changes, MapRead, Store};
+use zaino_primitives::types::Block;
 use zaino_sync::{Committer, Final, Subscription};
 
-use crate::{fold, TransparentAddressReader};
+use crate::{
+    address::address_key,
+    key::{encode_receive, encode_spend, ReceiveKey, ReceiveRow, Spend},
+    TransparentAddressReader, RECEIVES, SPENT,
+};
 
 pub struct TransparentAddressIndexWriter<S: Store> {
     store: Committer<S>,
 }
 
 impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = buffered bytes per
+    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         Self { store: Committer::new(store, batch_bytes) }
@@ -28,12 +33,34 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
     pub async fn run(mut self, mut blocks: Subscription<Final>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
-                let network = store.schema().network;
-                run.apply(store, |store, block| {
-                    fold(&TransparentAddressReader::new(store.staged(), network), block)
+                run.apply(store, |store, block, out| {
+                    fold(&TransparentAddressReader::new(store.staged()), block, out)
                 });
             };
             self.store.compute(applied).await;
+        }
+    }
+}
+
+/// `block` onto `parent`: its `receives` and `spent` rows
+///
+/// - projection, no lookups: a spend keyed by its outpoint (already in the block), never resolved
+///   to an address (`docs/design/index-data-structures.md` §5)
+pub fn fold<V: MapRead>(parent: &TransparentAddressReader<V>, block: &Block, out: &mut Changes) {
+    out.assert_next(parent.view().tip(), block);
+    let height = u32::from(block.header().height);
+    for tx in block.transactions() {
+        // coinbase inputs elided upstream (`zaino-source` decode.rs)
+        let mut spent = out.map(SPENT);
+        for input in &tx.transparent.inputs {
+            spent.insert(&input.encode(), &encode_spend(&Spend { height, spender: tx.txid }));
+        }
+        let mut receives = out.map(RECEIVES);
+        for (vout, output) in (0u32..).zip(&tx.transparent.outputs) {
+            let address = address_key(output.script.as_bytes());
+            let key = ReceiveKey { address, height, txid: tx.txid, vout };
+            let (key, value) = encode_receive(&ReceiveRow { key, value: output.value });
+            receives.insert(&key, &value);
         }
     }
 }
@@ -44,23 +71,24 @@ mod tests {
 
     use proptest::strategy::Strategy as _;
     use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, View,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, View,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::{Block, OutPoint, Script, TransactionId, Zatoshis};
+    use zaino_primitives::types::{OutPoint, Script, TransactionId, Zatoshis};
     use zaino_sync::{Folds, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
     use zcash_transparent::address::TransparentAddress;
 
     use super::*;
-    use crate::{key::AddressKey, schema, TransactionRef};
+    use crate::{key::AddressKey, TransactionRef, FORMAT, TABLES};
 
     const NAME: &str = IndexKind::TransparentAddress.name();
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
-    const NETWORK: NetworkType = NetworkType::Regtest;
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
     fn open(fs: &Arc<SimFs>) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/ta"), &schema(NETWORK)).expect("open")
+        DiskEngine::new(fs.clone()).open(Path::new("/ta"), &SCHEMA).expect("open")
     }
 
     /// Writer over `store`, its final stream and committed view
@@ -75,17 +103,79 @@ mod tests {
         (sink, committed, running)
     }
 
-    /// `block` as the NFS sends it: unfolded, or folded (its `Changes` = this index's own fold)
-    fn step(block: &Arc<Block>, folded: bool) -> Step<Final> {
-        let folds = folded.then(|| {
-            let mut folds = Folds::default();
-            let view = DiskEngine::new(SimFs::new()).open(Path::new("/x"), &schema(NETWORK));
-            let parent = TransparentAddressReader::new(view.expect("open").view(), NETWORK);
-            folds.insert(IndexKind::TransparentAddress, fold(&parent, block));
-            Arc::new(folds)
-        });
-        let (height, block) = (block.header().height, Arc::clone(block));
+    /// Each block's own fold from genesis, as the NFS folds it (the folded steps' payload)
+    fn folded(chain: &[Arc<Block>]) -> Vec<Arc<Folds>> {
+        let mut scratch = open(&SimFs::new());
+        (chain.iter())
+            .map(|block| {
+                let mut changes = scratch.changes(block.at());
+                fold(&TransparentAddressReader::new(scratch.staged()), block, &mut changes);
+                scratch.apply(changes.clone());
+                let mut folds = Folds::default();
+                folds.insert(IndexKind::TransparentAddress, changes);
+                Arc::new(folds)
+            })
+            .collect()
+    }
+
+    /// `block` as the NFS sends it: unfolded, or folded (`folds`)
+    fn step(block: &Arc<Block>, folds: Option<&Arc<Folds>>) -> Step<Final> {
+        let (height, block, folds) = (block.header().height, Arc::clone(block), folds.cloned());
         Step::Apply { height, data: Arc::new(Final { block, folds }) }
+    }
+
+    /// Block 1 spends alice's block-0 receive, paying bob: its `Changes` = the spend under the
+    /// outpoint + bob's receive (nothing looked up); read over the parent + it, alice's receive
+    /// spent by block 1, bob's two unspent, the opaque output kept
+    #[test]
+    fn a_spend_folded_on_its_parent_retires_the_receive_the_parent_holds() {
+        let zat = |n: u64| Zatoshis::new(n).expect("in supply");
+        let opaque = Script::new(vec![0x6a]);
+        let mut chain = MockChain::regtest().genesis_with(|b| {
+            b.coinbase(|c| {
+                c.txid([0x10; 32])
+                    .pay(&p2pkh([0xa1; 20]), 500)
+                    .pay(&p2pkh([0xb0; 20]), 70)
+                    .pay(&opaque, 1)
+            })
+        });
+        let paid = outpoint([0x10; 32], 0);
+        let one =
+            chain.mine(|b| b.tx(|t| t.txid([0x20; 32]).spend(paid).pay(&p2pkh([0xb0; 20]), 490)));
+        let blocks = chain.blocks(one);
+        let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
+
+        let mut store = open(&SimFs::new());
+        let reader = |store: &DiskStore| TransparentAddressReader::new(store.staged());
+        let mut genesis = store.changes(blocks[0].at());
+        fold(&reader(&store), &blocks[0], &mut genesis);
+        store.apply(genesis);
+        let mut changes = store.changes(blocks[1].at());
+        fold(&reader(&store), &blocks[1], &mut changes);
+
+        let spender = TransactionId::from([0x20; 32]);
+        let spend = encode_spend(&Spend { height: 1, spender });
+        let spent: Vec<_> = changes.inserts(SPENT).map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
+        assert_eq!(spent, vec![(paid.encode().to_vec(), spend.to_vec())], "spent row");
+        let bob_receive = ReceiveRow {
+            key: ReceiveKey { address: bob, height: 1, txid: spender, vout: 0 },
+            value: zat(490),
+        };
+        let (key, value) = encode_receive(&bob_receive);
+        let receives: Vec<_> = changes.inserts(RECEIVES).collect();
+        assert_eq!(receives, vec![(&key[..], &value[..])], "receives row");
+
+        store.apply(changes);
+        let read = reader(&store);
+        let unspent =
+            read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX).expect("rows");
+        let values: Vec<Vec<(u32, u64)>> = unspent
+            .iter()
+            .map(|rows| rows.iter().map(|row| (row.key.height, row.value.as_u64())).collect())
+            .collect();
+        assert_eq!(values, vec![vec![], vec![(0, 70), (1, 490)], vec![(0, 1)]], "unspent");
+        let alice_receive = read.receives(alice, 0, usize::MAX).expect("rows")[0].key;
+        assert_eq!(read.spends_of(&[alice_receive]), vec![Some(Spend { height: 1, spender })]);
     }
 
     /// `committed` at `tip` (`None` = nothing)
@@ -117,7 +207,7 @@ mod tests {
         {
             let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
             for (acked, block) in (1u64..).zip(&blocks[..10]) {
-                sink.send(step(block, false)).await;
+                sink.send(step(block, None)).await;
                 reached(&mut committed, Some(u32::from(block.header().height))).await;
                 fs.set_tag(acked);
             }
@@ -130,7 +220,7 @@ mod tests {
             count => (vec![(h(count as u32 - 1), count)], count),
         };
         let observed = |view: DiskView| {
-            let reader = TransparentAddressReader::new(view, NETWORK);
+            let reader = TransparentAddressReader::new(view);
             let utxos = reader.utxos(&alice, h(0)).expect("utxos");
             let utxos = utxos.into_iter().map(|utxo| (utxo.height, utxo.value.as_u64()));
             (utxos.collect::<Vec<_>>(), reader.balance(&alice).expect("balance").as_u64())
@@ -147,7 +237,7 @@ mod tests {
             assert_eq!(observed(store.view()), expected(count), "{label}");
 
             let (sink, _committed, running) = start(store, QUEUE);
-            sink.send(step(&blocks[count as usize], false)).await;
+            sink.send(step(&blocks[count as usize], None)).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let after = observed(open(&state.fs).view());
@@ -181,18 +271,19 @@ mod tests {
             b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
         });
         let blocks = chain.blocks(tip);
+        let folds = folded(&blocks);
         let reader = |committed: &watch::Receiver<DiskView>| {
-            TransparentAddressReader::new(committed.borrow().clone(), NETWORK)
+            TransparentAddressReader::new(committed.borrow().clone())
         };
         let zats = |balance: Result<Zatoshis, _>| balance.map(Zatoshis::as_u64);
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
         for block in &blocks[..2] {
-            sink.send(step(block, false)).await;
+            sink.send(step(block, None)).await;
         }
         reached(&mut committed, Some(1)).await;
         assert_eq!(zats(reader(&committed).balance(&alice)), Ok(800), "both receives unspent");
-        sink.send(step(&blocks[2], true)).await;
+        sink.send(step(&blocks[2], Some(&folds[2]))).await;
         reached(&mut committed, Some(2)).await;
         let at_two = reader(&committed);
         assert_eq!(zats(at_two.balance(&alice)), Ok(300), "2's spend retires 0's receive");
@@ -217,8 +308,10 @@ mod tests {
 
         let (sink, mut committed, running) = start(open(&fs), QUEUE);
         assert_eq!(zats(reader(&committed).balance(&bob)), Ok(560), "resumed at 2, no replay");
-        for (block, folded) in [(&blocks[1], false), (&blocks[2], true), (&blocks[3], true)] {
-            sink.send(step(block, folded)).await;
+        for (block, folds) in
+            [(&blocks[1], None), (&blocks[2], Some(&folds[2])), (&blocks[3], Some(&folds[3]))]
+        {
+            sink.send(step(block, folds)).await;
         }
         reached(&mut committed, Some(3)).await;
         let at_three = reader(&committed);
@@ -334,6 +427,7 @@ mod tests {
             chain.mine(|b| block(b, height, plan));
         }
         let blocks = chain.blocks(chain.tip());
+        let folds = folded(&blocks);
 
         // the model's answers once `held` blocks are indexed
         let expected = |tag: u8, held: u32| {
@@ -364,8 +458,8 @@ mod tests {
         for (at, next) in moves.iter().enumerate() {
             match *next {
                 Move::Send(count) => {
-                    for block in blocks.iter().skip(sent).take(count) {
-                        sink.send(step(block, folding)).await;
+                    for (block, block_folds) in blocks.iter().zip(&folds).skip(sent).take(count) {
+                        sink.send(step(block, folding.then_some(block_folds))).await;
                         sent += 1;
                     }
                 }
@@ -376,14 +470,14 @@ mod tests {
                     (sink, committed, running) = start(open(&fs), NonZeroUsize::MIN);
                     folding = false;
                     if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&blocks[held], false)).await;
+                        sink.send(step(&blocks[held], None)).await;
                     }
                 }
             }
             reached(&mut committed, sent.checked_sub(1).map(|last| last as u32)).await;
 
             let held = sent as u32;
-            let reader = TransparentAddressReader::new(committed.borrow().clone(), NETWORK);
+            let reader = TransparentAddressReader::new(committed.borrow().clone());
             for tag in 0..3u8 {
                 let (utxos, balance, touched) = expected(tag, held);
                 let served = reader.utxos(&address(tag), h(0)).expect("utxos");

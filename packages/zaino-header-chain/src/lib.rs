@@ -20,5 +20,5 @@ pub use chain::{BestTip, HeaderChain, Inserted};
 pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
 pub use rules::{check, link_run, Checked, Rejected};
-pub use store::{schema, HeaderStore, Record};
+pub use store::{HeaderStore, Record, FORMAT, TABLES};
 pub use verified::{Fork, VerifiedChain};

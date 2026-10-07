@@ -14,3 +14,10 @@ publication per change (`Snapshots::load`, never torn); `Unavailable` and `Unrea
 refusal. `Report::of` (the `/statusz` body) and `emit_gauges` (at scrape) derive from one \
 snapshot (`describe_metrics`).
 """
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "internal"
+description = """
+Tests fold the block-hash index through the new fold shape (store-opened deltas).
+"""

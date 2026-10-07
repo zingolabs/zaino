@@ -22,45 +22,52 @@ blocks.idx    end offset per record
   plus the message), stored with every pool so any `Pools` subset is servable.
 - Page checksums, the commit protocol, crash recovery and the open-time checks
   are the engine's ([`docs/design/durability.md`](../../docs/design/durability.md)).
-  This index owns only its record encoding and `schema(network)`.
+  This index owns only its record encoding, `FORMAT` and `TABLES`.
 - Hash → height lives in its own index,
   [`zaino-internal-block-hash-to-height`](../zaino-internal-block-hash-to-height/usage.md).
   This index answers a hash only by reading a record's own `hash` field.
 - The tree sizes after the tip are not stored apart: they are the tip record's
   `chainMetadata`.
-- `schema(network)` = what the store is opened with, and what
-  `DiskEngine::verify` checks this index's directory against, for
-  `zainod verify`.
+- `Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES)` = what the
+  store is opened with, and what `DiskEngine::verify` checks this index's
+  directory against, for `zainod verify`.
 
 ## Folding and reading
 
 ```rust,ignore
-let parent = CompactBlockReader::new(view, network); // any V: SequenceRead
-let changes = fold(&parent, &block, &fees)?;          // Result<Changes, TreeSizeOutOfRange>
+let parent = CompactBlockReader::new(view);           // any V: SequenceRead
+let mut out = store.changes(block.at());              // or the parent layer's `changes`
+fold(&parent, &block, &fees, &mut out)?;              // Result<(), TreeSizeOutOfRange>
 ```
 
-- `fold(parent, block, fees)` is the index's whole state transition, pure: the
-  block's one record, framed, with its `CompactTx.fee`s from `fees` (asserted
-  to be that block's) and its commitment-tree sizes (`chainMetadata`) = the
-  parent tip record's sizes plus what the block commits. Nothing is carried
-  between calls; the parent's sizes are read through the reader.
+- `fold(parent, block, fees, out)` is the index's whole state transition (in
+  `writer.rs`, beside the writer loop): it appends the block's one record to
+  `out`, framed, with its `CompactTx.fee`s from `fees` (asserted to be that
+  block's) and its commitment-tree sizes (`chainMetadata`) = the parent tip
+  record's sizes plus what the block commits. Nothing is carried between
+  calls; the parent's sizes are read through the reader.
 - `parent` must hold exactly the block's parent as its tip (genesis: an empty
-  view). Anything else panics ("does not extend the parent tip"): a fold onto
-  the wrong parent would silently mis-size every later record.
+  view), and `out` must be opened for `block`. Anything else panics
+  (`compact_block: … does not extend the parent tip` / `changes opened for
+  another block`): a fold onto the wrong parent would silently mis-size every
+  later record.
 - `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
 - `CompactBlockReader<V>` is generic over any `V: SequenceRead`: a store's
   committed view or a `zaino_persistence::LayeredView` over one (a snapshot's:
-  `snap.views().compact_block()`). `tip()`, `block(h)` (one framed record,
-  every pool) and `range(first, last, budget)` (one window: at most 256
-  records, cut to `budget` bytes, never fewer than one; either direction) are
-  its reads. Cloning it clones the view (pointer copies).
+  `snap.views().compact_block()`). `block(h)` (one framed record, every pool)
+  is its public read; the windowed range read backs `RangeCursor` (one window:
+  at most 256 records, cut to a byte budget, never fewer than one; either
+  direction). Cloning it clones the view (pointer copies).
 - At the tip the NFS folds this index after value-balance (its fees,
   `zaino-nfs::fold_block`).
 
 ## Building
 
 ```rust,ignore
-let store = DiskEngine::new(fs).open(&path, &zaino_index_compact_block::schema(network))?;
+use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES};
+
+let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
+let store = DiskEngine::new(fs).open(&path, &schema)?;
 let writer = CompactBlockIndexWriter::new(store, batch_bytes);
 let blocks = nfs.subscribe(IndexKind::CompactBlock, writer.committed(), queue_bytes);
 tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink subscription
@@ -75,7 +82,8 @@ tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink sub
   ([the shape every writer shares](../zaino-sync/usage.md#committer)): per run,
   one fee step off value-balance's `FeeSink` per unfolded step (held ones
   included), then on the CPU pool each unfolded step not held folded onto
-  `staged()` with its fees, each folded step applied as the NFS sent it.
+  `staged()` with its fees into the delta `Run::apply` opened for it, each
+  folded step applied as the NFS sent it.
   Commits: batch full, after each folded run, or 1 s idle. It ends after its
   stream's `Shutdown` and the fee stream's.
 - Fallible only at boot (the engine's `open` → `StoreError`). `run` panics on a

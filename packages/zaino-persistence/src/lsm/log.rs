@@ -91,7 +91,7 @@ impl SegmentLog {
             writer: SegmentWriter::open(Arc::clone(&fs), dir, shape),
             fs,
             dir: dir.to_path_buf(),
-            name: table.name.clone(),
+            name: table.name.to_owned(),
             shape,
             snapshot,
             fanout,

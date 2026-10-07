@@ -21,12 +21,12 @@ use crate::{
 
 /// `account ‖ seq → seq · 1000`, ranges read per account (scope = the account)
 fn scanned() -> MapTable {
-    MapTable { name: "scanned".into(), key: Width::fixed(12), value: Width::fixed(8), scope: 8 }
+    MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8)
 }
 
 /// Hash-like id → position, point lookups only
 fn probed() -> MapTable {
-    MapTable { name: "probed".into(), key: Width::fixed(16), value: Width::fixed(4), scope: 0 }
+    MapTable::new(0, "probed", Width::fixed(16), Width::fixed(4), 0)
 }
 
 /// Uniform 8 bytes per account (the filter shards on them)

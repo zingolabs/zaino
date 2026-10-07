@@ -13,11 +13,11 @@ use crate::{fold, CompactBlockReader, HASH};
 
 /// `store` with [`block`]`(0..count)` folded and committed (one commit), as the index holds them
 pub fn committed<S: Store<View: SequenceRead>>(mut store: S, count: u32) -> S {
-    let network = store.schema().network;
     for height in 0..count {
         let (block, fees) = block(height);
-        let parent = CompactBlockReader::new(store.staged(), network);
-        let changes = fold(&parent, &block, &fees).expect("one sample tx per block: far below u32");
+        let mut changes = store.changes(block.at());
+        let parent = CompactBlockReader::new(store.staged());
+        fold(&parent, &block, &fees, &mut changes).expect("one sample tx per block: far below u32");
         store.apply(changes);
     }
     store.commit().unwrap_or_else(|error| error.commit_failed("compact_block", store.path()));

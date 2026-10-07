@@ -24,6 +24,14 @@ use crate::service::{Dispatch, Routes};
 pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
     zcash_protocol::consensus::NetworkType::Main;
 
+/// Compact-block's store on [`MAINNET`]
+pub(super) const COMPACT_BLOCK: Schema = Schema::new(
+    IndexKind::CompactBlock,
+    zaino_index_compact_block::FORMAT,
+    MAINNET,
+    zaino_index_compact_block::TABLES,
+);
+
 /// `path` on a fresh in-memory filesystem, as `schema`'s store
 pub(super) fn store(path: &str, schema: &Schema) -> DiskStore {
     let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
@@ -39,30 +47,43 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
     use zaino_internal_block_hash_to_height as block_hash;
     use zaino_internal_value_balance as value_balance;
 
-    let mut index = store(kind.name(), &zaino_nfs::schema(kind, MAINNET));
-    let mut fees = store("fees", &zaino_nfs::schema(IndexKind::ValueBalance, MAINNET));
+    let (format, tables) = match kind {
+        IndexKind::CompactBlock => (compact_block::FORMAT, compact_block::TABLES),
+        IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
+        IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
+        IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
+        IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
+    };
+    let mut index = store(kind.name(), &Schema::new(kind, format, MAINNET, tables));
+    let fees =
+        Schema::new(IndexKind::ValueBalance, value_balance::FORMAT, MAINNET, value_balance::TABLES);
+    let mut fees = store("fees", &fees);
     for block in blocks {
         let parent = index.staged();
-        let changes = match kind {
+        let mut out = index.changes(block.at());
+        match kind {
             IndexKind::CompactBlock => {
-                let paid = value_balance::ValueBalanceReader::new(fees.staged(), MAINNET);
-                let (outputs, paid) = value_balance::fold(&paid, block).expect("prevouts held");
+                let mut outputs = fees.changes(block.at());
+                let paid = value_balance::ValueBalanceReader::new(fees.staged());
+                let paid = value_balance::fold(&paid, block, &mut outputs).expect("prevouts held");
                 fees.apply(outputs);
-                let parent = compact_block::CompactBlockReader::new(parent, MAINNET);
-                compact_block::fold(&parent, block, &paid).expect("small tree sizes")
+                let parent = compact_block::CompactBlockReader::new(parent);
+                compact_block::fold(&parent, block, &paid, &mut out).expect("small tree sizes");
             }
             IndexKind::TreeState => {
-                let parent = tree_state::TreeStateReader::new(parent, MAINNET);
-                tree_state::fold(&parent, block).expect("canonical commitments")
+                let parent = tree_state::TreeStateReader::new(parent);
+                tree_state::fold(&parent, block, &mut out).expect("canonical commitments");
             }
-            IndexKind::TransparentAddress => transparent_address::fold(
-                &transparent_address::TransparentAddressReader::new(parent, MAINNET),
-                block,
-            ),
-            IndexKind::BlockHash => block_hash::fold(block, MAINNET),
-            IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
-        };
-        index.apply(changes);
+            IndexKind::TransparentAddress => {
+                let parent = transparent_address::TransparentAddressReader::new(parent);
+                transparent_address::fold(&parent, block, &mut out);
+            }
+            IndexKind::BlockHash => {
+                block_hash::fold(&block_hash::BlockHashReader::new(parent), block, &mut out);
+            }
+            IndexKind::ValueBalance | IndexKind::HeaderChain => unreachable!("refused above"),
+        }
+        index.apply(out);
     }
     index.commit().expect("SimFs commit");
     (kind, index.view())

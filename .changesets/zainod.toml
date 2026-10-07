@@ -239,3 +239,11 @@ one shared), was 4; `max_requests_per_sec` counts each call of a batch.
 migration = """
 Raise any `max_connections` below 6.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "internal"
+description = """
+Boot and `zainod verify` open each index store from its crate's `FORMAT` + `TABLES` (one \
+`stores::schema(kind, network)`); folds no longer rebuild a schema per block.
+"""

@@ -12,3 +12,18 @@ commit loop every writer runs (commits when the batch fills, after a folded run,
 idle; `committed()` watches the durable view); `compute` for CPU work on the rayon pool; and the \
 `zaino_sink_queue_bytes` metric.
 """
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "changed"
+description = """
+`Run::apply(store, fold)` opens each unfolded step's delta (`store.changes(block)`) and hands it \
+to `fold(store, block, &mut changes)`; new `Run::apply_batch(store, fold)` folds the unfolded \
+steps a store lacks as one batch, one opened delta per block, returning `fold`'s answer. \
+`Run::apply_folded` is now private (both apply the folded steps).
+"""
+migration = """
+Fill the `&mut Changes` the closure receives instead of returning one; replace a run fold plus \
+`apply_folded` with `apply_batch`.
+"""

@@ -167,11 +167,13 @@ mod tests {
     use crate::{
         fold,
         reader::WINDOW_RECORDS,
-        schema,
         testing::{block, committed},
+        FORMAT, TABLES,
     };
     use prost::Message;
-    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Store};
+    use zaino_persistence::{
+        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, Store,
+    };
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zcash_protocol::consensus::NetworkType;
@@ -186,13 +188,13 @@ mod tests {
     }
 
     fn store() -> DiskStore {
-        let schema = schema(NetworkType::Regtest);
+        let schema = Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
         DiskEngine::new(SimFs::new()).open(std::path::Path::new("/cb"), &schema).expect("open")
     }
 
     /// `testing::block(0..count)` committed, read as a snapshot reads it (nothing above)
     fn reader(count: u32) -> CompactBlockReader<LayeredView<DiskView>> {
-        CompactBlockReader::new(committed(store(), count).staged(), NetworkType::Regtest)
+        CompactBlockReader::new(committed(store(), count).staged())
     }
 
     /// `testing::block(0..=3)` committed, `4..=6` in the layer above them
@@ -200,10 +202,12 @@ mod tests {
         let mut store = committed(store(), 4);
         for height in 4..7u32 {
             let (block, fees) = block(height);
-            let parent = CompactBlockReader::new(store.staged(), NetworkType::Regtest);
-            store.apply(fold(&parent, &block, &fees).expect("small tree sizes"));
+            let mut changes = store.changes(block.at());
+            let parent = CompactBlockReader::new(store.staged());
+            fold(&parent, &block, &fees, &mut changes).expect("small tree sizes");
+            store.apply(changes);
         }
-        CompactBlockReader::new(store.staged(), NetworkType::Regtest)
+        CompactBlockReader::new(store.staged())
     }
 
     /// Every framed record a chunk carries, decoded

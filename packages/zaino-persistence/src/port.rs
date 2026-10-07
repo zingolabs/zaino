@@ -2,13 +2,13 @@
 //!
 //! - final data only, insert only, buffered then one atomic commit, snapshot reads, verifiable
 //! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
-//! - engine's `View` implements the read trait of each table kind it can hold
+//! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
 
 use std::{num::NonZeroU32, ops::Range, path::Path};
 
 use bytes::Bytes;
 use serde::Serialize;
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{layer::LayeredView, manifest::IndexKind, StoreError};
@@ -20,7 +20,7 @@ pub trait PersistenceEngine: Send + Sync + 'static {
     /// Store at `path`: created, or resumed at its committed tip
     ///
     /// - another identity there (kind, format, network) = error, never a reformat
-    /// - table this engine cannot hold = panic naming it (schemas = constants: a bug)
+    /// - table this engine cannot hold = panic naming it (tables = constants: a bug)
     fn open(&self, path: &Path, schema: &Schema) -> Result<Self::Store, StoreError>;
 
     /// Every committed byte against its integrity data (read-only: safe beside a running writer)
@@ -33,11 +33,16 @@ pub trait PersistenceEngine: Send + Sync + 'static {
 pub trait Store: Send + 'static {
     type View: View;
 
-    /// As opened ([`Changes::new`] shapes its buffers by it)
+    /// As opened
     fn schema(&self) -> &Schema;
 
     /// As opened (named by a failed commit's panic)
     fn path(&self) -> &Path;
+
+    /// Empty delta for block `at`, one buffer per table of [`schema`](Self::schema)
+    fn changes(&self, at: BlockRef) -> Changes {
+        Changes::new(at, *self.schema())
+    }
 
     /// `changes` buffered: in [`staged`](Self::staged), not in [`view`](Self::view), not durable
     ///
@@ -65,9 +70,12 @@ pub trait Store: Send + 'static {
 pub trait View: Clone + Send + Sync + 'static {
     /// Last committed block (`None` = nothing committed yet)
     fn tip(&self) -> Option<BlockRef>;
+
+    /// Store's, as opened
+    fn schema(&self) -> &Schema;
 }
 
-/// Reads of sequence tables
+/// Reads of sequence tables (engine side: by position; index side: [`sequence`](Self::sequence))
 pub trait SequenceRead: View {
     /// Records held (= the next position)
     fn len(&self, table: SequenceId) -> u64;
@@ -77,9 +85,18 @@ pub trait SequenceRead: View {
 
     /// Records in `range`, in order (`range` within `len`)
     fn records(&self, table: SequenceId, range: Range<u64>) -> Vec<Bytes>;
+
+    /// `table`'s reads (panics: not in [`View::schema`])
+    fn sequence(&self, table: SequenceTable) -> SequenceView<'_, Self>
+    where
+        Self: Sized,
+    {
+        self.schema().sequence_at(table);
+        SequenceView { view: self, table: table.id }
+    }
 }
 
-/// Reads of map tables
+/// Reads of map tables (engine side: by position; index side: [`map`](Self::map))
 pub trait MapRead: View {
     /// Value under `key`
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes>;
@@ -95,15 +112,71 @@ pub trait MapRead: View {
         end: &[u8],
         limit: usize,
     ) -> Option<Vec<(Bytes, Bytes)>>;
+
+    /// `table`'s reads (panics: not in [`View::schema`])
+    fn map(&self, table: MapTable) -> MapView<'_, Self>
+    where
+        Self: Sized,
+    {
+        self.schema().map_at(table);
+        MapView { view: self, table: table.id }
+    }
 }
 
-/// Sequence table's position among the schema's sequences
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SequenceId(pub u16);
+/// One sequence table of one view
+#[derive(Debug, Clone, Copy)]
+pub struct SequenceView<'a, V> {
+    view: &'a V,
+    table: SequenceId,
+}
 
-/// Map table's position among the schema's maps
+impl<V: SequenceRead> SequenceView<'_, V> {
+    /// Records held (= the next position)
+    pub fn count(&self) -> u64 {
+        self.view.len(self.table)
+    }
+
+    /// `None` = at or past `count`
+    pub fn record(&self, at: u64) -> Option<Bytes> {
+        self.view.record(self.table, at)
+    }
+
+    /// In order (`range` within `count`)
+    pub fn records(&self, range: Range<u64>) -> Vec<Bytes> {
+        self.view.records(self.table, range)
+    }
+}
+
+/// One map table of one view
+#[derive(Debug, Clone, Copy)]
+pub struct MapView<'a, V> {
+    view: &'a V,
+    table: MapId,
+}
+
+impl<V: MapRead> MapView<'_, V> {
+    pub fn value(&self, key: &[u8]) -> Option<Bytes> {
+        self.view.value(self.table, key)
+    }
+
+    /// One answer per key, in `keys` order
+    pub fn values(&self, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
+        self.view.values(self.table, keys)
+    }
+
+    /// `(key, value)` for `start <= key < end`, in key order; `None` = more than `limit`
+    pub fn range(&self, start: &[u8], end: &[u8], limit: usize) -> Option<Vec<(Bytes, Bytes)>> {
+        self.view.range(self.table, start, end, limit)
+    }
+}
+
+/// Sequence table's position among its schema's sequences
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MapId(pub u16);
+pub struct SequenceId(pub(crate) u16);
+
+/// Map table's position among its schema's maps
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MapId(pub(crate) u16);
 
 /// Bytes per record, key or value
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,76 +195,105 @@ impl Width {
     }
 }
 
-/// `name` = place in the store (`/` = sub-directory, for engines with directories)
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Handle + declaration: `name` = place in the store (`/` = sub-directory, for engines with them)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceTable {
-    pub name: String,
+    pub(crate) id: SequenceId,
+    pub name: &'static str,
     pub record: Width,
 }
 
-/// Keys compare as bytes (big-endian fields = numeric order)
+impl SequenceTable {
+    /// `id` = position in its [`Tables`]
+    pub const fn new(id: u16, name: &'static str, record: Width) -> Self {
+        Self { id: SequenceId(id), name, record }
+    }
+}
+
+/// Handle + declaration; keys compare as bytes (big-endian fields = numeric order)
 ///
 /// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTable {
-    pub(crate) name: String,
+    pub(crate) id: MapId,
+    pub(crate) name: &'static str,
     pub key: Width,
     pub(crate) value: Width,
     pub(crate) scope: u32,
 }
 
+impl MapTable {
+    /// `id` = position in its [`Tables`]
+    pub const fn new(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
+        Self { id: MapId(id), name, key, value, scope }
+    }
+}
+
+/// One index's tables, declared once (`const`: positions checked at compile time)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tables {
+    sequences: &'static [SequenceTable],
+    maps: &'static [MapTable],
+}
+
+impl Tables {
+    /// Panics: an id != its position
+    pub const fn new(sequences: &'static [SequenceTable], maps: &'static [MapTable]) -> Self {
+        let mut at = 0;
+        while at < sequences.len() {
+            assert!(sequences[at].id.0 as usize == at, "sequence id != its position");
+            at += 1;
+        }
+        let mut at = 0;
+        while at < maps.len() {
+            assert!(maps[at].id.0 as usize == at, "map id != its position");
+            at += 1;
+        }
+        Self { sequences, maps }
+    }
+}
+
 /// What a store holds + whose: declared at open, same every time (`format` = record layout version)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schema {
     pub kind: IndexKind,
     pub(crate) format: u16,
     pub network: NetworkType,
-    pub sequences: Vec<SequenceTable>,
-    pub(crate) maps: Vec<MapTable>,
+    tables: Tables,
 }
 
 impl Schema {
-    pub fn new(kind: IndexKind, format: u16, network: NetworkType) -> Self {
-        Self { kind, format, network, sequences: Vec::new(), maps: Vec::new() }
+    pub const fn new(kind: IndexKind, format: u16, network: NetworkType, tables: Tables) -> Self {
+        Self { kind, format, network, tables }
     }
 
-    /// Declares sequence `id` (ids declared in order: 0, 1, 2, ...)
-    pub fn with_sequence(mut self, id: SequenceId, name: &str, record: Width) -> Self {
-        assert_eq!(usize::from(id.0), self.sequences.len(), "sequence {name}: ids in order");
-        self.sequences.push(SequenceTable { name: name.to_owned(), record });
-        self
+    pub fn sequences(&self) -> &'static [SequenceTable] {
+        self.tables.sequences
     }
 
-    /// Declares map `id` (ids declared in order: 0, 1, 2, ...)
-    pub fn with_map(mut self, id: MapId, name: &str, key: Width, value: Width, scope: u32) -> Self {
-        assert_eq!(usize::from(id.0), self.maps.len(), "map {name}: ids in order");
-        self.maps.push(MapTable { name: name.to_owned(), key, value, scope });
-        self
+    pub fn maps(&self) -> &'static [MapTable] {
+        self.tables.maps
     }
 
-    /// Panics: `id` never declared
-    pub fn sequence(&self, id: SequenceId) -> &SequenceTable {
-        let found = self.sequences.get(usize::from(id.0));
-        found.unwrap_or_else(|| panic!("{id:?} not in the {:?} schema", self.kind))
+    /// `table`'s position (panics: another schema's)
+    fn sequence_at(&self, table: SequenceTable) -> usize {
+        let at = usize::from(table.id.0);
+        let ours = self.tables.sequences.get(at) == Some(&table);
+        assert!(ours, "{}: sequence {} not in its schema", self.kind.name(), table.name);
+        at
     }
 
-    /// Panics: `id` never declared
-    pub fn map(&self, id: MapId) -> &MapTable {
-        let found = self.maps.get(usize::from(id.0));
-        found.unwrap_or_else(|| panic!("{id:?} not in the {:?} schema", self.kind))
-    }
-
-    pub fn sequence_ids(&self) -> impl Iterator<Item = SequenceId> {
-        (0..self.sequences.len()).map(|at| SequenceId(u16::try_from(at).expect("ids are u16")))
-    }
-
-    pub fn map_ids(&self) -> impl Iterator<Item = MapId> {
-        (0..self.maps.len()).map(|at| MapId(u16::try_from(at).expect("ids are u16")))
+    /// `table`'s position (panics: another schema's)
+    fn map_at(&self, table: MapTable) -> usize {
+        let at = usize::from(table.id.0);
+        let ours = self.tables.maps.get(at) == Some(&table);
+        assert!(ours, "{}: map {} not in its schema", self.kind.name(), table.name);
+        at
     }
 }
 
-/// Commit's worth of changes: buffer per table, shaped by the schema
+/// One block's delta: buffer per table, opened by [`Store::changes`] or `Layer::changes`
 ///
 /// - widths checked per item on arrival (wrong = panic naming the table)
 /// - fixed-width tables: bytes only; variable: + end offset per item
@@ -204,28 +306,13 @@ pub struct Changes {
 }
 
 impl Changes {
-    /// For a store of `schema`, committing through `tip`
-    pub fn new(tip: BlockRef, schema: &Schema) -> Self {
+    pub(crate) fn new(tip: BlockRef, schema: Schema) -> Self {
         Self {
             tip,
-            schema: schema.clone(),
-            sequences: vec![Buffer::default(); schema.sequences.len()],
-            maps: vec![[Buffer::default(), Buffer::default()]; schema.maps.len()],
+            schema,
+            sequences: vec![Buffer::default(); schema.sequences().len()],
+            maps: vec![[Buffer::default(), Buffer::default()]; schema.maps().len()],
         }
-    }
-
-    /// `record` at the end of `table` (after every earlier append to it)
-    pub fn append(&mut self, table: SequenceId, record: &[u8]) {
-        let SequenceTable { name, record: width } = self.schema.sequence(table);
-        self.sequences[usize::from(table.0)].push(name, *width, record);
-    }
-
-    /// `value` under `key` in `table` (keys unique: second insert = bug)
-    pub fn insert(&mut self, table: MapId, key: &[u8], value: &[u8]) {
-        let MapTable { name, key: key_width, value: value_width, .. } = self.schema.map(table);
-        let [keys, values] = &mut self.maps[usize::from(table.0)];
-        keys.push(name, *key_width, key);
-        values.push(name, *value_width, value);
     }
 
     pub fn tip(&self) -> BlockRef {
@@ -236,6 +323,40 @@ impl Changes {
         &self.schema
     }
 
+    /// Fold's preconditions, panic naming the index: opened for `block`, `block` next above
+    /// `parent` (`None` = empty parent: genesis)
+    pub fn assert_next(&self, parent: Option<BlockRef>, block: &Block) {
+        let (name, at) = (self.schema.kind.name(), block.at());
+        let tip = self.tip;
+        assert!(tip == at, "{name}: changes opened for another block ({tip:?}), folding {at:?}");
+        let extends = block.header().extends(parent);
+        assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
+    }
+
+    /// [`assert_next`](Self::assert_next) over a run: `out[i]` for `blocks[i]`, each block next
+    /// above the one before it (the first above `parent`)
+    pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[Changes]) {
+        assert_eq!(blocks.len(), out.len(), "one delta per block of the run");
+        let mut below = parent;
+        for (block, out) in blocks.iter().zip(out) {
+            out.assert_next(below, block);
+            below = Some(block.at());
+        }
+    }
+
+    /// `table`'s appends (panics: not in this schema)
+    pub fn sequence(&mut self, table: SequenceTable) -> SequenceBuffer<'_> {
+        let at = self.schema.sequence_at(table);
+        SequenceBuffer { table, buffer: &mut self.sequences[at] }
+    }
+
+    /// `table`'s inserts (panics: not in this schema)
+    pub fn map(&mut self, table: MapTable) -> MapBuffer<'_> {
+        let at = self.schema.map_at(table);
+        let [keys, values] = &mut self.maps[at];
+        MapBuffer { table, keys, values }
+    }
+
     /// Item bytes held, every table (end offsets not counted)
     pub fn bytes(&self) -> usize {
         let maps = self.maps.iter().flatten();
@@ -243,16 +364,44 @@ impl Changes {
     }
 
     /// `table`'s appends, in the order made
-    pub fn appends(&self, table: SequenceId) -> impl Iterator<Item = &[u8]> {
-        let width = self.schema.sequence(table).record;
-        self.sequences[usize::from(table.0)].items(width)
+    pub fn appends(&self, table: SequenceTable) -> impl Iterator<Item = &[u8]> {
+        self.sequences[self.schema.sequence_at(table)].items(table.record)
     }
 
     /// `table`'s inserts as `(key, value)`, in the order made
-    pub fn inserts(&self, table: MapId) -> impl Iterator<Item = (&[u8], &[u8])> {
-        let MapTable { key, value, .. } = self.schema.map(table);
-        let [keys, values] = &self.maps[usize::from(table.0)];
-        keys.items(*key).zip(values.items(*value))
+    pub fn inserts(&self, table: MapTable) -> impl Iterator<Item = (&[u8], &[u8])> {
+        let [keys, values] = &self.maps[self.schema.map_at(table)];
+        keys.items(table.key).zip(values.items(table.value))
+    }
+}
+
+/// One sequence table's appends in a [`Changes`]
+#[derive(Debug)]
+pub struct SequenceBuffer<'a> {
+    table: SequenceTable,
+    buffer: &'a mut Buffer,
+}
+
+impl SequenceBuffer<'_> {
+    /// `record` at the end of the table (after every earlier append to it)
+    pub fn append(&mut self, record: &[u8]) {
+        self.buffer.push(self.table.name, self.table.record, record);
+    }
+}
+
+/// One map table's inserts in a [`Changes`]
+#[derive(Debug)]
+pub struct MapBuffer<'a> {
+    table: MapTable,
+    keys: &'a mut Buffer,
+    values: &'a mut Buffer,
+}
+
+impl MapBuffer<'_> {
+    /// `value` under `key` (keys unique: second insert = bug, caught at apply)
+    pub fn insert(&mut self, key: &[u8], value: &[u8]) {
+        self.keys.push(self.table.name, self.table.key, key);
+        self.values.push(self.table.name, self.table.value, value);
     }
 }
 

@@ -53,3 +53,12 @@ network_name}`; `protocol::{MAX_BLOCK_REORG_HEIGHT, MAX_BLOCK_BYTES}`. Feature `
 `testing::Chain`, a regtest block-tree builder with real header bytes, plus `encode_header`, \
 `header_hash` and `linked`.
 """
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "added"
+description = """
+`Block::at()` (its `BlockRef`) and `BlockHeader::extends(parent: Option<BlockRef>)`: one height \
+above the parent and linked to it by `prev_hash`, genesis on `None`.
+"""

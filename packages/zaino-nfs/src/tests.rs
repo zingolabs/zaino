@@ -18,6 +18,7 @@ use zaino_header_chain::HeaderChain;
 use zaino_index_compact_block::CompactBlockReader;
 use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{PoolActivations, TreeStateReader};
+use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{
     fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store, View,
@@ -38,7 +39,6 @@ use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
 
 use super::*;
-use crate::fold::schema;
 
 const NETWORK: NetworkType = NetworkType::Regtest;
 /// Subscribe order = fold order: (index, commit lag s, last height run 0 commits before its crash)
@@ -161,47 +161,73 @@ fn transactions(funding: Option<&Transaction>, tag: u32) -> Vec<Transaction> {
     txs
 }
 
-/// `kind`'s own fold of `block` onto `parent` (`value_balance` = a state past the block's parent:
-/// compact-block's fees)
+/// `kind`'s store schema, as zainod opens it
+pub(crate) fn schema(kind: IndexKind) -> Schema {
+    use zaino_index_compact_block as compact_block;
+    use zaino_index_transparent_address as transparent_address;
+    use zaino_index_tree_state as tree_state;
+    use zaino_internal_block_hash_to_height as block_hash;
+    use zaino_internal_value_balance as value_balance;
+
+    let (format, tables) = match kind {
+        IndexKind::ValueBalance => (value_balance::FORMAT, value_balance::TABLES),
+        IndexKind::CompactBlock => (compact_block::FORMAT, compact_block::TABLES),
+        IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
+        IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
+        IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
+        IndexKind::HeaderChain => panic!("not an NFS index"),
+    };
+    Schema::new(kind, format, NETWORK, tables)
+}
+
+/// `kind`'s own fold of `block` onto `parent` into `out` (`value_balance` = a state at or past
+/// the block's parent: compact-block's fees)
 fn own_fold(
     kind: IndexKind,
     parent: impl SequenceRead + MapRead,
     value_balance: impl MapRead,
     block: &Block,
-) -> Changes {
+    out: &mut Changes,
+) {
     match kind {
         IndexKind::ValueBalance => {
-            let parent = ValueBalanceReader::new(parent, NETWORK);
-            zaino_internal_value_balance::fold(&parent, block).expect("prevouts held").0
+            let parent = ValueBalanceReader::new(parent);
+            zaino_internal_value_balance::fold(&parent, block, out).expect("prevouts held");
         }
         IndexKind::CompactBlock => {
-            let fees = ValueBalanceReader::new(value_balance, NETWORK);
-            let (_, fees) = zaino_internal_value_balance::fold(&fees, block).expect("held");
-            let parent = CompactBlockReader::new(parent, NETWORK);
-            zaino_index_compact_block::fold(&parent, block, &fees).expect("sizes in range")
+            let fees = ValueBalanceReader::new(value_balance);
+            let fees = zaino_internal_value_balance::fees(&fees, &[block]).expect("held");
+            let parent = CompactBlockReader::new(parent);
+            zaino_index_compact_block::fold(&parent, block, &fees[0], out).expect("sizes in range");
         }
-        IndexKind::BlockHash => zaino_internal_block_hash_to_height::fold(block, NETWORK),
+        IndexKind::BlockHash => {
+            let parent = BlockHashReader::new(parent);
+            zaino_internal_block_hash_to_height::fold(&parent, block, out);
+        }
         IndexKind::TreeState => {
-            let parent = TreeStateReader::new(parent, NETWORK);
-            zaino_index_tree_state::fold(&parent, block).expect("canonical commitments")
+            let parent = TreeStateReader::new(parent);
+            zaino_index_tree_state::fold(&parent, block, out).expect("canonical commitments");
         }
-        IndexKind::TransparentAddress => zaino_index_transparent_address::fold(
-            &TransparentAddressReader::new(parent, NETWORK),
-            block,
-        ),
+        IndexKind::TransparentAddress => {
+            let parent = TransparentAddressReader::new(parent);
+            zaino_index_transparent_address::fold(&parent, block, out);
+        }
         IndexKind::HeaderChain => panic!("not an NFS index"),
     }
 }
 
-fn tables(view: &(impl SequenceRead + MapRead), schema: &Schema) -> Tables {
-    let sequences = schema.sequence_ids().map(|table| {
-        let records = view.records(table, 0..view.len(table));
+/// Every record and row of `view`, table by table
+fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
+    let schema = *view.schema();
+    let sequences = schema.sequences().iter().map(|&table| {
+        let table = view.sequence(table);
+        let records = table.records(0..table.count());
         records.iter().map(|record| record.to_vec()).collect()
     });
-    let maps = schema.map_ids().map(|table| {
-        let Width::Fixed(key) = schema.map(table).key else { panic!("fixed-width keys") };
+    let maps = schema.maps().iter().map(|&table| {
+        let Width::Fixed(key) = table.key else { panic!("fixed-width keys") };
         let past = vec![0xff; key.get() as usize + 1];
-        let rows = view.range(table, &[], &past, usize::MAX).expect("under the limit");
+        let rows = view.map(table).range(&[], &past, usize::MAX).expect("under the limit");
         rows.iter().map(|(key, value)| [&key[..], &value[..]].concat()).collect()
     });
     sequences.chain(maps).collect()
@@ -210,20 +236,21 @@ fn tables(view: &(impl SequenceRead + MapRead), schema: &Schema) -> Tables {
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
 fn oracle(path: &[Block]) -> Vec<(IndexKind, Tables)> {
     let engine = DiskEngine::new(SimFs::new());
-    let open = |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind, NETWORK));
+    let open = |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind));
     let mut stores: Vec<(IndexKind, DiskStore)> =
         INDEXES.iter().map(|&(kind, ..)| (kind, open(kind).expect("fresh store"))).collect();
     for block in path {
         let value_balance = stores[0].1.staged();
         for (kind, store) in &mut stores {
-            let changes = own_fold(*kind, store.staged(), value_balance.clone(), block);
-            store.apply(changes);
+            let mut out = store.changes(block.at());
+            own_fold(*kind, store.staged(), value_balance.clone(), block, &mut out);
+            store.apply(out);
         }
     }
     let mut folded = Vec::new();
     for (kind, mut store) in stores {
         store.commit().expect("SimFs commit");
-        folded.push((kind, tables(&store.view(), &schema(kind, NETWORK))));
+        folded.push((kind, tables(&store.view())));
     }
     folded
 }
@@ -258,7 +285,9 @@ async fn commit(
                 let below = at.height.checked_sub(1);
                 let fees = value_balance.wait_for(|view| view.tip().map(|tip| tip.height) >= below);
                 let fees = fees.await.expect("value_balance committer alive").clone();
-                own_fold(kind, store.view(), fees, &data.block)
+                let mut out = store.changes(at);
+                own_fold(kind, store.view(), fees, &data.block, &mut out);
+                out
             }
         };
         store.apply(changes);
@@ -313,7 +342,7 @@ fn verify(
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.path(through.hash)));
             let (_, expected) =
                 expected.iter().find(|(each, _)| each == kind).expect("every index");
-            let got = tables(&view, &schema(*kind, NETWORK));
+            let got = tables(&view);
             assert!(got == *expected, "{context}: N6 {name} at {through:?} != folded from genesis");
         }
     }
@@ -394,7 +423,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let mut indexes: Vec<(IndexKind, DiskStore, watch::Sender<DiskView>)> = INDEXES
         .iter()
         .map(|&(kind, ..)| {
-            let store = engine.open(Path::new(kind.name()), &schema(kind, NETWORK));
+            let store = engine.open(Path::new(kind.name()), &schema(kind));
             let store = store.expect("fresh store");
             let committed = watch::channel(store.view()).0;
             (kind, store, committed)
@@ -539,7 +568,7 @@ async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a
         Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead, depth)
     };
     let engine = DiskEngine::new(SimFs::new());
-    let schema = schema(IndexKind::BlockHash, NETWORK);
+    let schema = schema(IndexKind::BlockHash);
     let mut store = engine.open(Path::new("/foreign"), &schema).expect("fresh store");
 
     let committed = watch::channel(store.view()).0;
@@ -562,8 +591,12 @@ async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a
         assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
     }
 
-    store.apply(zaino_internal_block_hash_to_height::fold(&a[0], NETWORK));
-    store.apply(zaino_internal_block_hash_to_height::fold(blocks.block(x1), NETWORK));
+    for block in [&a[0], blocks.block(x1)] {
+        let mut out = store.changes(block.at());
+        let parent = BlockHashReader::new(store.staged());
+        zaino_internal_block_hash_to_height::fold(&parent, block, &mut out);
+        store.apply(out);
+    }
     store.commit().expect("SimFs commit");
     committed.send_replace(store.view());
     let mut foreign = nfs();

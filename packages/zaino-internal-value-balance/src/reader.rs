@@ -2,23 +2,21 @@
 
 use zaino_persistence::{MapRead, View};
 use zaino_primitives::types::{OutPoint, Zatoshis};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::{decode_value, OUTPUTS, VALUE};
 
 #[derive(Clone)]
 pub struct ValueBalanceReader<V> {
     view: V,
-    network: NetworkType,
 }
 
 impl<V: MapRead> ValueBalanceReader<V> {
-    pub fn new(view: V, network: NetworkType) -> Self {
-        Self { view, network }
+    pub fn new(view: V) -> Self {
+        Self { view }
     }
 
-    pub(crate) fn network(&self) -> NetworkType {
-        self.network
+    pub(crate) fn view(&self) -> &V {
+        &self.view
     }
 
     /// One answer per outpoint, in order: one `values` probe (cold page faults overlap instead of
@@ -26,7 +24,7 @@ impl<V: MapRead> ValueBalanceReader<V> {
     pub(crate) fn values(&self, outpoints: &[OutPoint]) -> Vec<Option<Zatoshis>> {
         let keys: Vec<[u8; OutPoint::LEN]> = outpoints.iter().map(OutPoint::encode).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
-        let found = self.view.values(OUTPUTS, &keys).into_iter();
+        let found = self.view.map(OUTPUTS).values(&keys).into_iter();
         found
             .map(|found| {
                 let found = found?;
@@ -40,9 +38,6 @@ impl<V: MapRead> ValueBalanceReader<V> {
 
 impl<V: View> std::fmt::Debug for ValueBalanceReader<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ValueBalanceReader")
-            .field("tip", &self.view.tip())
-            .field("network", &self.network)
-            .finish()
+        f.debug_struct("ValueBalanceReader").field("tip", &self.view.tip()).finish()
     }
 }

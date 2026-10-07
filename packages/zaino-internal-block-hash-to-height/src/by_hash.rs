@@ -1,10 +1,13 @@
 //! `by_hash` map: block hash (protocol byte order) → height u32 BE
 
-use zaino_persistence::MapId;
+use zaino_persistence::{MapTable, Width};
 use zaino_primitives::types::{Height, HeightOverflow};
 
-pub(crate) const BY_HASH: MapId = MapId(0);
+use crate::HASH;
+
 pub(crate) const HEIGHT: usize = 4;
+pub(crate) const BY_HASH: MapTable =
+    MapTable::new(0, "by_hash", Width::fixed(HASH as u32), Width::fixed(HEIGHT as u32), 0);
 
 pub(crate) fn encode_height(height: Height) -> [u8; HEIGHT] {
     u32::from(height).to_be_bytes()

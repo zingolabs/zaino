@@ -272,14 +272,15 @@ mod tests {
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
 
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, store, MAINNET};
+    use crate::testing::{
+        dispatch, framed_request, indexed, routes, snapshot, store, COMPACT_BLOCK,
+    };
     use crate::wire::path;
 
     /// `testing::block(0..count)` committed as compact-block's only view, served at `count - 1`
     fn compact(count: u32) -> NfsHandle<zaino_persistence::DiskView> {
         use zaino_index_compact_block::testing;
-        let committed =
-            testing::committed(store("/cb", &zaino_index_compact_block::schema(MAINNET)), count);
+        let committed = testing::committed(store("/cb", &COMPACT_BLOCK), count);
         snapshot(&testing::chain(count), vec![(IndexKind::CompactBlock, committed.view())])
     }
 
@@ -293,13 +294,15 @@ mod tests {
         use zaino_index_compact_block::testing;
         use zaino_proto::proto::service as proto;
 
-        let committed =
-            testing::committed(store("/cb", &zaino_index_compact_block::schema(MAINNET)), 3);
-        // Locator's chain = the compact index's through 1, then another chain's block at 2
+        let committed = testing::committed(store("/cb", &COMPACT_BLOCK), 3);
+        // Locator's chain = the compact index's through 1 (same sample tx), then a sibling at 2
         let held = |at: u32| <[u8; 32]>::from(testing::block(at).0.header().hash);
-        let mut other = zaino_primitives::testing::Chain::new();
-        let other_2 = other.extend(other.genesis().hash, 2);
-        let located = [testing::block(0).0, testing::block(1).0, other.block(other_2.hash).clone()];
+        let sample = testing::block(0).0.transactions().to_vec();
+        let mut other = zaino_primitives::testing::Chain::with_genesis(sample.clone());
+        let one = other.mine_with(other.genesis().hash, sample);
+        let other_2 = other.mine(one.hash);
+        let located = other.path(other_2.hash);
+        assert_eq!(<[u8; 32]>::from(one.hash), held(1), "the compact index's block 1");
         let locator = indexed(IndexKind::BlockHash, &located);
         let other_2 = <[u8; 32]>::from(other_2.hash);
 

@@ -14,6 +14,7 @@ use zaino_persistence::{
 };
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
+use crate::stores::schema;
 
 /// Disabled index = `None`; `clean` = every sealed file present with every page intact
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -74,7 +75,7 @@ fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
         let index = kind.name();
         let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
             engine
-                .verify(&path, &zaino_nfs::schema(kind, config.network))
+                .verify(&path, &schema(kind, config.network))
                 .map_err(|source| VerifyError::Index { index, path, source })
         });
         reports.insert(index, report.transpose()?);
@@ -129,7 +130,6 @@ mod tests {
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::fs::RealFs;
-    use zaino_persistence::Schema;
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
         Block, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction, TransactionId,
@@ -197,16 +197,16 @@ mod tests {
         let tree_blocks = subscribe(IndexKind::TreeState);
         let transparent_blocks = subscribe(IndexKind::TransparentAddress);
         let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
-        let open = |path: &Path, schema: Schema| engine.open(path, &schema).expect("open");
-        let store = open(&cb, zaino_index_compact_block::schema(net));
+        let open = |path: &Path, kind| engine.open(path, &schema(kind, net)).expect("open");
+        let store = open(&cb, IndexKind::CompactBlock);
         let compact = CompactBlockIndexWriter::new(store, batch);
-        let store = open(&vb, zaino_internal_value_balance::schema(net));
+        let store = open(&vb, IndexKind::ValueBalance);
         let fees = ValueBalanceIndexWriter::new(store, batch);
-        let store = open(&bh, zaino_internal_block_hash_to_height::schema(net));
+        let store = open(&bh, IndexKind::BlockHash);
         let hashes = BlockHashIndexWriter::new(store, batch);
-        let store = open(&ts, zaino_index_tree_state::schema(net));
+        let store = open(&ts, IndexKind::TreeState);
         let trees = TreeStateIndexWriter::new(store, batch);
-        let store = open(&ta, zaino_index_transparent_address::schema(net));
+        let store = open(&ta, IndexKind::TransparentAddress);
         let transparent = TransparentAddressIndexWriter::new(store, batch);
 
         let mut loops = tokio::task::JoinSet::new();

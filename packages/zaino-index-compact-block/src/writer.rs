@@ -6,11 +6,11 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
 use tokio::sync::watch;
-use zaino_persistence::{IndexKind, SequenceRead, Store, View};
-use zaino_primitives::types::{Block, BlockFees};
+use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, View};
+use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
 use zaino_sync::{Committer, Final, Step, Subscription};
 
-use crate::{fold, position, CompactBlockReader, BLOCKS};
+use crate::{encode_compact_block, position, CompactBlockReader, BLOCKS};
 
 const NAME: &str = IndexKind::CompactBlock.name();
 
@@ -19,12 +19,12 @@ pub struct CompactBlockIndexWriter<S: Store> {
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
-    /// Over `store` (opened with [`schema`](crate::schema)); `batch_bytes` = buffered bytes per
+    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         let view = store.view();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
-        assert_eq!(view.len(BLOCKS), held, "{NAME}: one record per committed height");
+        assert_eq!(view.sequence(BLOCKS).count(), held, "{NAME}: one record per committed height");
         Self { store: Committer::new(store, batch_bytes) }
     }
 
@@ -41,14 +41,12 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
                 paid.push(next_fees(&mut fees, block).await);
             }
             let applied = move |store: &mut S| {
-                let network = store.schema().network;
                 let mut paid = paid.into_iter();
-                run.apply(store, |store, block| {
+                run.apply(store, |store, block, out| {
                     let height = block.header().height;
                     let fees = paid.find(|fees| fees.height == height).expect("one per step");
-                    let parent = CompactBlockReader::new(store.staged(), network);
-                    let folded = fold(&parent, block, &fees);
-                    folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"))
+                    let folded = fold(&CompactBlockReader::new(store.staged()), block, &fees, out);
+                    folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"));
                 });
             };
             self.store.compute(applied).await;
@@ -67,29 +65,49 @@ async fn next_fees(fees: &mut Subscription<BlockFees>, block: &Block) -> Arc<Blo
     data
 }
 
+/// `block` + its `fees` onto `parent`: its one record
+///
+/// - sizes after it = parent tip record's `chainMetadata` + what it commits ([`Block`] carries
+///   none; `z_gettreestate` = one round trip per block, unaffordable in a full sync)
+/// - `Err` = a tree past `u32` (#549)
+pub fn fold<V: SequenceRead>(
+    parent: &CompactBlockReader<V>,
+    block: &Block,
+    fees: &BlockFees,
+    out: &mut Changes,
+) -> Result<(), TreeSizeOutOfRange> {
+    out.assert_next(parent.tip(), block);
+    let sizes = parent.tip_sizes().advance(block)?;
+    out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{panic::AssertUnwindSafe, path::Path};
 
     use proptest::strategy::Strategy as _;
     use prost::Message as _;
     use tokio::task::JoinHandle;
-    use zaino_persistence::{fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine};
+    use zaino_persistence::{
+        fs::SimFs, DiskEngine, DiskStore, DiskView, Layer, PersistenceEngine, Schema,
+    };
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::Height;
+    use zaino_primitives::types::{Height, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats as cf;
     use zaino_sync::{FeeSink, Folds, IndexerDataSink};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::schema;
+    use crate::{FORMAT, TABLES};
 
-    const NETWORK: NetworkType = NetworkType::Regtest;
     const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
 
     fn open(fs: &Arc<SimFs>) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/cb"), &schema(NETWORK)).expect("open")
+        DiskEngine::new(fs.clone()).open(Path::new("/cb"), &SCHEMA).expect("open")
     }
 
     /// Genesis ..= tip, each block beside the fees value-balance derives for it
@@ -104,14 +122,101 @@ mod tests {
         chain
             .iter()
             .map(|(block, fees)| {
-                let parent = CompactBlockReader::new(scratch.staged(), NETWORK);
-                let changes = fold(&parent, block, fees).expect("small sizes");
+                let mut changes = scratch.changes(block.at());
+                let parent = CompactBlockReader::new(scratch.staged());
+                fold(&parent, block, fees, &mut changes).expect("small sizes");
                 let mut folds = Folds::default();
                 folds.insert(IndexKind::CompactBlock, changes.clone());
                 scratch.apply(changes);
                 Arc::new(folds)
             })
             .collect()
+    }
+
+    /// Genesis + three blocks folded one onto the next: each record = the block encoded with the
+    /// running sizes; a parent record claiming near-`u32::MAX` seeds the next fold (sizes read,
+    /// not carried), so one block more overflows; a gap or a fork panics
+    #[test]
+    fn sizes_advance_from_the_parent_record_and_a_non_parent_panics() {
+        let sizes = |sapling: u32, orchard: u32, ironwood: u32| TreeSizes {
+            sapling: TreeSize::from(sapling),
+            orchard: TreeSize::from(orchard),
+            ironwood: TreeSize::from(ironwood),
+        };
+        // coinbases commit (sapling, orchard, ironwood) = (2, 1, 0), (3, 0, 4), (0, 5, 1)
+        let mut chain = MockChain::regtest();
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.sapling_output(1).sapling_output(2).orchard_action([1; 32], 1))
+        });
+        let two = chain.mine(|b| {
+            b.coinbase(|c| {
+                let c = c.sapling_output(3).sapling_output(4).sapling_output(5);
+                let c = c.ironwood_action([1; 32], 1).ironwood_action([2; 32], 2);
+                c.ironwood_action([3; 32], 3).ironwood_action([4; 32], 4)
+            })
+        });
+        let three = chain.mine(|b| {
+            b.coinbase(|c| {
+                let c = c.orchard_action([2; 32], 2).orchard_action([3; 32], 3);
+                let c = c.orchard_action([4; 32], 4).orchard_action([5; 32], 5);
+                c.orchard_action([6; 32], 6).ironwood_action([5; 32], 5)
+            })
+        });
+        // height 3 on a sibling of `two`
+        let cousin = chain.fork(h(1)).mine_empty(2).tip();
+        let fees = |block: &Block| chain.fees(block.header().hash);
+        let folded = |store: &DiskStore, block: &Block| {
+            let mut changes = store.changes(block.at());
+            let parent = CompactBlockReader::new(store.staged());
+            fold(&parent, block, &fees(block), &mut changes).map(|()| changes)
+        };
+        let mut through_three = open(&SimFs::new());
+        for (at, after) in [
+            (chain.genesis(), sizes(0, 0, 0)),
+            (one, sizes(2, 1, 0)),
+            (two, sizes(5, 1, 4)),
+            (three, sizes(5, 6, 5)),
+        ] {
+            let block = chain.block(at.hash);
+            let changes = folded(&through_three, block).expect("far below u32");
+            let records: Vec<&[u8]> = changes.appends(BLOCKS).collect();
+            let expected = encode_compact_block(block, &fees(block), &after);
+            assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
+            through_three.apply(changes);
+            assert_eq!(CompactBlockReader::new(through_three.staged()).tip_sizes(), after);
+        }
+
+        // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
+        let mut seeded = open(&SimFs::new());
+        seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
+        let mut changes = Layer::empty(&SCHEMA).changes(one);
+        let near_full = sizes(u32::MAX - 1, 0, 0);
+        let block = chain.block(one.hash);
+        changes.sequence(BLOCKS).append(&encode_compact_block(block, &fees(block), &near_full));
+        seeded.apply(changes);
+        let overflow = folded(&seeded, chain.block(two.hash)).err();
+        assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
+
+        // parents: `through_three` = 0..=3, `seeded` = 0..=1, `through_two` = 0..=2
+        let mut through_two = open(&SimFs::new());
+        for at in [chain.genesis(), one, two] {
+            through_two.apply(folded(&through_two, chain.block(at.hash)).expect("small"));
+        }
+        for (case, parent, at) in [
+            ("gap", &seeded, three),
+            ("fork at the same height", &through_two, cousin),
+            ("below the tip", &through_three, two),
+        ] {
+            let block = chain.block(at.hash);
+            let refused = std::panic::catch_unwind(AssertUnwindSafe(|| folded(parent, block)));
+            let payload = refused.expect_err(case);
+            let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
+            let named = message.starts_with("compact_block: ");
+            assert!(
+                named && message.contains("does not extend the parent tip"),
+                "{case}: {message}"
+            );
+        }
     }
 
     /// Writer as zainod runs it: the NFS's final stream, value-balance's fee stream (fees
@@ -158,7 +263,7 @@ mod tests {
 
     /// `(sapling, orchard, ironwood)` sizes and per-tx fees of the record at `height`
     fn record(view: &DiskView, height: u32) -> ((u32, u32, u32), Vec<u32>) {
-        let reader = CompactBlockReader::new(view.clone(), NETWORK);
+        let reader = CompactBlockReader::new(view.clone());
         let record = reader.block(h(height)).expect("record");
         let decoded = cf::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
         let meta = decoded.chain_metadata.expect("carries metadata");
@@ -326,7 +431,7 @@ mod tests {
 
             let case = format!("move {at} {next:?}");
             let view = index.committed.borrow().clone();
-            let reader = CompactBlockReader::new(view.clone(), NETWORK);
+            let reader = CompactBlockReader::new(view.clone());
             let mut records = Vec::new();
             for height in 0..sent as u32 {
                 let (sizes, fees) = record(&view, height);
@@ -382,7 +487,7 @@ mod tests {
             fs.set_tag(acked);
         }
         let committed = index.stop().await;
-        let reader = CompactBlockReader::new(committed.borrow().clone(), NETWORK);
+        let reader = CompactBlockReader::new(committed.borrow().clone());
         let records: Vec<_> = (0..5).map(|n| reader.block(h(n))).collect();
 
         let states = fs.crash_states();
@@ -393,7 +498,7 @@ mod tests {
             let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
-            let reader = CompactBlockReader::new(store.view(), NETWORK);
+            let reader = CompactBlockReader::new(store.view());
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
             assert_eq!(served, records[..count], "{label}: byte-identical records");
 

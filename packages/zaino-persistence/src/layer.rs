@@ -20,6 +20,7 @@ use crate::port::{Changes, MapId, MapRead, Schema, SequenceId, SequenceRead, Vie
 /// - `deltas` = each `Changes` absorbed, oldest first ([`rebase`](Self::rebase) drops by them)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Layer {
+    schema: Schema,
     deltas: Vector<Arc<Delta>>,
     sequences: Vec<Vector<Bytes>>,
     maps: Vec<OrdMap<Bytes, Bytes>>,
@@ -36,15 +37,21 @@ struct Delta {
 impl Layer {
     pub fn empty(schema: &Schema) -> Self {
         Self {
+            schema: *schema,
             deltas: Vector::new(),
-            sequences: vec![Vector::new(); schema.sequences.len()],
-            maps: vec![OrdMap::new(); schema.maps.len()],
+            sequences: vec![Vector::new(); schema.sequences().len()],
+            maps: vec![OrdMap::new(); schema.maps().len()],
         }
     }
 
     /// Last block absorbed (`None` = empty: reads fall through to durable)
     pub fn tip(&self) -> Option<BlockRef> {
         self.deltas.last().map(|delta| delta.tip)
+    }
+
+    /// Empty delta for block `at`, shaped by this layer's schema (for [`with`](Self::with))
+    pub fn changes(&self, at: BlockRef) -> Changes {
+        Changes::new(at, self.schema)
     }
 
     /// This layer + `changes`, sharing structure with `self`
@@ -87,25 +94,21 @@ impl Layer {
         let (tip, last) = (changes.tip(), self.tip());
         let above = last.is_none_or(|last| tip.height > last.height);
         assert!(above, "layer: {tip:?} not above its tip {last:?}");
-        let schema = changes.schema();
-        let shape = (schema.sequences.len(), schema.maps.len());
-        assert_eq!(shape, (self.sequences.len(), self.maps.len()), "layer: another schema");
+        assert_eq!(changes.schema(), &self.schema, "layer: another schema");
         self.assert_new_keys(changes);
 
-        let appends = schema
-            .sequence_ids()
+        let appends = (self.schema.sequences().iter())
             .zip(&mut self.sequences)
             .enumerate()
-            .filter_map(|(at, (table, held))| {
+            .filter_map(|(at, (&table, held))| {
                 let before = held.len();
                 held.extend(changes.appends(table).map(Bytes::copy_from_slice));
                 (held.len() > before).then(|| (at, held.len() - before))
             })
             .collect();
-        let keys = schema
-            .map_ids()
+        let keys = (self.schema.maps().iter())
             .zip(&mut self.maps)
-            .map(|(table, held)| {
+            .map(|(&table, held)| {
                 let rows = changes.inserts(table).map(|(key, value)| {
                     let key = Bytes::copy_from_slice(key);
                     held.insert(key.clone(), Bytes::copy_from_slice(value));
@@ -119,13 +122,12 @@ impl Layer {
 
     /// Panics: key `changes` inserts twice or this layer holds (before any state moves)
     fn assert_new_keys(&self, changes: &Changes) {
-        let schema = changes.schema();
-        for (table, held) in schema.map_ids().zip(&self.maps) {
+        for (&table, held) in self.schema.maps().iter().zip(&self.maps) {
             let mut keys: Vec<&[u8]> = changes.inserts(table).map(|(key, _)| key).collect();
             keys.sort_unstable();
             let twice = keys.windows(2).any(|pair| pair[0] == pair[1])
                 || keys.iter().any(|key| held.contains_key(*key));
-            assert!(!twice, "{}: a map key held twice", schema.map(table).name);
+            assert!(!twice, "{}: a map key held twice", table.name);
         }
     }
 
@@ -175,8 +177,9 @@ pub struct LayeredView<V> {
 }
 
 impl<V: View> LayeredView<V> {
-    /// Panics: layer not above `durable`'s tip (rebase it first)
+    /// Panics: layer not above `durable`'s tip (rebase it first), or of another schema
     pub fn new(durable: V, layer: Layer) -> Self {
+        assert_eq!(&layer.schema, durable.schema(), "layer over another schema's view");
         let first = layer.deltas.front().map(|delta| delta.tip.height);
         let floor = durable.tip().map(|tip| tip.height);
         let above = first.is_none_or(|first| Some(first) > floor);
@@ -193,6 +196,10 @@ impl<V: View> LayeredView<V> {
 impl<V: View> View for LayeredView<V> {
     fn tip(&self) -> Option<BlockRef> {
         self.layer.tip().or_else(|| self.durable.tip())
+    }
+
+    fn schema(&self) -> &Schema {
+        self.durable.schema()
     }
 }
 

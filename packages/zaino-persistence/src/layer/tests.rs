@@ -4,17 +4,17 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use super::*;
-use crate::conformance::{panic_message, schema, Model, PROBED};
+use crate::conformance::{panic_message, Model, PROBED, SCHEMA};
 
 #[test]
 fn every_layer_invariant_broken_by_hand_is_caught_by_name() {
     let layer = || {
         let mut model = Model::default();
-        let layer = Layer::empty(&schema()).with(&model.advance(2, &[1, 2], 2));
+        let layer = Layer::empty(&SCHEMA).with(&model.advance(2, &[1, 2], 2));
         layer.with(&model.advance(1, &[3], 1))
     };
     fn probed(layer: &mut Layer) -> &mut OrdMap<Bytes, Bytes> {
-        &mut layer.maps[usize::from(PROBED.0)]
+        &mut layer.maps[usize::from(PROBED.id.0)]
     }
     type Drill = (&'static str, fn(&mut Layer));
     let drills: [Drill; 4] = [

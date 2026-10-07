@@ -9,10 +9,11 @@ is described in
 ## Wiring
 
 ```rust
-use zaino_index_tree_state::TreeStateIndexWriter;
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
+use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
-let store = DiskEngine::new(fs).open(&path, &zaino_index_tree_state::schema(network))?;
+let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
+let store = DiskEngine::new(fs).open(&path, &schema)?;
 let writer = TreeStateIndexWriter::new(store, batch_bytes);
 let blocks = nfs.subscribe(IndexKind::TreeState, writer.committed(), queue_bytes);
 tokio::spawn(writer.run(blocks));
@@ -23,7 +24,8 @@ tokio::spawn(writer.run(blocks));
 - `run` follows the final stream (`"tree_state"`) through `zaino_sync::Committer`
   ([the writer shape](../zaino-sync/usage.md#committer)): per run, the unfolded
   steps not held are folded as one [`fold_run`](#fold) onto `staged()` on the
-  CPU pool, folded steps applied as the NFS sent them (`Run::apply_folded`).
+  CPU pool into one delta per block (`Run::apply_batch` opens them), folded
+  steps applied as the NFS sent them.
   Commits: batch full, after each folded run, or 1 s idle. `committed()` = the
   committed-view watch the NFS reads.
 - Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
@@ -83,10 +85,11 @@ Routes read through one snapshot per request (`snap.views().tree_state()`,
     subtrees.dat             36 B/entry: root, completing height
 ```
 
-One `zaino_persistence` store (zainod: `DiskEngine`): `schema(network)` declares the
+One `zaino_persistence` store (zainod: `DiskEngine`): `TABLES` declares the
 100 fixed-width sequence tables (`heights`, then per pool `<pool>/l00` …
-`<pool>/l31` and `<pool>/subtrees`). The engine owns the manifest, checksums,
-crash safety and offline verify; this crate owns the record encodings.
+`<pool>/l31` and `<pool>/subtrees`), all `const`. The engine owns the manifest,
+checksums, crash safety and offline verify; this crate owns the record
+encodings.
 
 - Retained nodes: level 0 = every leaf, levels 1..31 = even indices only
   (48 B per commitment). That is exactly the set a frontier's ommers come from,
@@ -95,36 +98,40 @@ crash safety and offline verify; this crate owns the record encodings.
   frontiers through the same reconstruction serving uses.
 - Subtree roots are written by the same fold (an odd-index root never survives
   as an ommer, so it cannot be derived from stored nodes later).
-- One block = one `Changes`: its height record, the nodes whose last leaf it
-  holds and the subtree roots it closes, each asserted at its table's end
-  (slot = position). A commit merges the held blocks' `Changes` into one
+- One block = one delta (`Changes`): its height record, the nodes whose last
+  leaf it holds and the subtree roots it closes, each asserted at its table's
+  end (slot = position). A commit merges the held blocks' `Changes` into one
   `Store::commit`, which fsyncs only the tables that grew (~4 of 100 per
   batch).
 - `new` asserts one `heights` record per committed height.
 - Subtrees are the protocol's 2^16-leaf shards (`SUBTREE_LEVEL`, a constant).
-- `schema(network)` = what `zainod verify` passes to
-  `PersistenceEngine::verify` for this directory.
+- `Schema::new(IndexKind::TreeState, FORMAT, network, TABLES)` = what
+  `zainod verify` passes to `PersistenceEngine::verify` for this directory.
 - `heights` and `subtrees` records are fixed arrays with
   `encode`/`decode` beside their golden-bytes tests (`heights.rs`, `subtrees.rs`).
 
 ## Fold
 
 ```rust
-use zaino_index_tree_state::{fold, fold_run, FoldError, TreeStateReader};
+use zaino_index_tree_state::{fold, FoldError, TreeStateReader};
 
-let parent = TreeStateReader::new(view, network);  // any `V: SequenceRead` over this schema
-let changes: Changes = fold(&parent, &block)?;      // block = next above parent's tip
-let per_block: Vec<Changes> = fold_run(&parent, &[&a, &b, &c])?;  // contiguous run
+let parent = TreeStateReader::new(view);           // any `V: SequenceRead` over these tables
+let mut out = store.changes(block.at());           // or the parent layer's `changes`
+fold(&parent, &block, &mut out)?;                   // block = next above parent's tip
 ```
 
-- Pure: the parent's state (tree sizes from its tip record, each pool's
-  frontier, each table's length) is read through the reader; nothing is
-  carried between calls, so reorg and restart need no step.
+- `fold` lives in `writer.rs`, beside the writer loop and its crate-internal
+  `fold_run(parent, blocks, out: &mut [Changes])` (a contiguous run, one
+  caller-opened delta per block, the writer's via `Run::apply_batch`).
+- The parent's state (tree sizes from its tip record, each pool's frontier,
+  each table's length) is read through the reader; nothing is carried between
+  calls, so reorg and restart need no step. A delta opened for another block,
+  or a block off the parent tip, panics naming the index.
 - `fold_run` hashes the whole run level by level: one `combine_pairs` per tree
   level across every block (the node types split a wide level across every
   core), the three pools concurrently. A node or subtree root lands in the
-  `Changes` of the block holding its last leaf, so any split into runs yields
-  the same `Changes` (`fold::tests`, against a naive tree and block by block).
+  delta of the block holding its last leaf, so any split into runs yields the
+  same deltas (`writer::tests`, against a naive tree and block by block).
   `fold` = a run of one.
 - `FoldError` = `Inconsistent` (the parent's nodes will not rebuild a frontier)
   or `Commitment` (a non-canonical note commitment off the wire, naming its

@@ -39,3 +39,15 @@ Build one `zaino_traffic::TrafficBalancer` over the validators (`Trusted { sourc
 limits }`), spawn its `TrafficDriver::run`, and pass `balancer.clone()` where the source list \
 went.
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "breaking"
+section = "removed"
+description = """
+`zaino_nfs::schema(kind, network)` is gone: each index's layers take their schema from its \
+committed view (`View::schema`), and every fold fills the delta its parent layer opens.
+"""
+migration = """
+Build a store's schema from the index crate: `Schema::new(kind, FORMAT, network, TABLES)`.
+"""

@@ -55,20 +55,39 @@ impl Run {
         *first.or(self.folded.first().map(|(height, _)| height)).expect("a run holds a step")
     }
 
-    /// Every step `store` does not hold yet, applied in order: unfolded ones through `fold`
-    /// (parent = `store.staged()`), folded ones as sent
-    pub fn apply<S: Store>(&self, store: &mut S, mut fold: impl FnMut(&S, &Block) -> Changes) {
+    /// Every step `store` lacks, in order: each unfolded one folded by `fold` into the delta opened
+    /// for it (parent = `store.staged()`, earlier blocks applied), then folded ones as sent
+    pub fn apply<S: Store>(&self, store: &mut S, mut fold: impl FnMut(&S, &Block, &mut Changes)) {
         for (height, block) in &self.unfolded {
             if !held(store, *height) {
-                let changes = fold(store, block);
+                let mut changes = store.changes(block.at());
+                fold(store, block, &mut changes);
                 store.apply(changes);
             }
         }
         self.apply_folded(store);
     }
 
+    /// [`apply`](Self::apply) with the unfolded steps `store` lacks folded as one batch: `fold`
+    /// fills one delta per block (parent = `store.staged()` before the batch); its answer returned
+    pub fn apply_batch<S: Store, T>(
+        &self,
+        store: &mut S,
+        fold: impl FnOnce(&S, &[&Block], &mut [Changes]) -> T,
+    ) -> T {
+        let fresh = self.unfolded.iter().filter(|(height, _)| !held(store, *height));
+        let fresh: Vec<&Block> = fresh.map(|(_, block)| &**block).collect();
+        let mut out: Vec<Changes> = fresh.iter().map(|block| store.changes(block.at())).collect();
+        let answer = fold(store, &fresh, &mut out);
+        for changes in out {
+            store.apply(changes);
+        }
+        self.apply_folded(store);
+        answer
+    }
+
     /// Each folded step `store` does not hold yet, applied (its own index's `Changes`)
-    pub fn apply_folded<S: Store>(&self, store: &mut S) {
+    fn apply_folded<S: Store>(&self, store: &mut S) {
         let kind = store.schema().kind;
         for (height, folds) in &self.folded {
             if !held(store, *height) {
@@ -157,21 +176,23 @@ mod tests {
 
     use tokio::time::Instant;
     use zaino_persistence::{
-        fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema,
-        SequenceId, SequenceRead, Width,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, Layer, PersistenceEngine, Schema,
+        SequenceRead, SequenceTable, Tables, Width,
     };
     use zaino_primitives::testing::MockChain;
-    use zaino_primitives::types::BlockRef;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::IndexerDataSink;
 
-    const ROWS: SequenceId = SequenceId(0);
+    const ROWS: SequenceTable = SequenceTable::new(0, "rows", Width::fixed(4));
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, Tables::new(&[ROWS], &[]));
     /// Folded rows carry this bit: which path wrote a row stays visible
     const FOLDED: u32 = 1 << 31;
 
-    /// Toy index (one 4-byte row per block, its height) behind a `Committer`, as a writer runs it
+    /// Toy index (one 4-byte row per block, its height) behind a `Committer`, as a writer runs it,
+    /// folding block by block (`Run::apply`) and as one batch (`Run::apply_batch`)
     ///
     /// - Batch 8 bytes = two rows; paused clock: a commit's time shows its trigger (idle = +1 s)
     /// - Run 0: unfolded 0..=3 queued at once (batch, twice), unfolded 4 (idle), folded 5 (tip)
@@ -179,18 +200,21 @@ mod tests {
     /// - A gap or an unfolded step after a folded one panics the writer
     #[tokio::test(start_paused = true)]
     async fn a_writer_folds_unfolded_steps_applies_folded_ones_skips_held_and_commits_on_cue() {
-        let schema = Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest).with_sequence(
-            ROWS,
-            "rows",
-            Width::fixed(4),
-        );
+        for batched in [false, true] {
+            a_writer_run(batched).await;
+        }
+    }
+
+    async fn a_writer_run(batched: bool) {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(6);
         let blocks = chain.blocks(tip);
+        let bytes =
+            |block: &Block, mark: u32| (u32::from(block.header().height) | mark).to_le_bytes();
         let row = |height: Height, mark: u32| {
-            let block = blocks[u32::from(height) as usize].header();
-            let mut changes = Changes::new(BlockRef { hash: block.hash, height }, &schema);
-            changes.append(ROWS, &(u32::from(height) | mark).to_le_bytes());
+            let block = &blocks[u32::from(height) as usize];
+            let mut changes = Layer::empty(&SCHEMA).changes(block.at());
+            changes.sequence(ROWS).append(&bytes(block, mark));
             changes
         };
         let unfolded = |at: u32| {
@@ -209,7 +233,7 @@ mod tests {
         };
         let fs = SimFs::new();
         let engine = DiskEngine::new(fs.clone());
-        let open = || engine.open(Path::new("/toy"), &schema).expect("open");
+        let open = || engine.open(Path::new("/toy"), &SCHEMA).expect("open");
         let start = |store: DiskStore| {
             let mut committer = Committer::new(store, NonZeroUsize::new(8).expect("nonzero"));
             let committed = committer.committed();
@@ -217,17 +241,17 @@ mod tests {
             let mut blocks = sink.subscribe("toy", NonZeroUsize::MAX);
             let writer = tokio::spawn(async move {
                 while let Some(run) = committer.next(&mut blocks).await {
-                    committer
-                        .compute(move |store| {
-                            run.apply(store, |store, block| {
-                                let header = block.header();
-                                let at = BlockRef { hash: header.hash, height: header.height };
-                                let mut changes = Changes::new(at, store.schema());
-                                changes.append(ROWS, &u32::from(header.height).to_le_bytes());
-                                changes
-                            })
-                        })
-                        .await;
+                    let applied = move |store: &mut DiskStore| match batched {
+                        false => run.apply(store, |_, block, out| {
+                            out.sequence(ROWS).append(&bytes(block, 0));
+                        }),
+                        true => run.apply_batch(store, |_, blocks, out| {
+                            for (block, out) in blocks.iter().zip(out) {
+                                out.sequence(ROWS).append(&bytes(block, 0));
+                            }
+                        }),
+                    };
+                    committer.compute(applied).await;
                 }
             });
             (sink, committed, writer)
@@ -239,7 +263,8 @@ mod tests {
         };
         let rows = || {
             let view = open().view();
-            let rows = view.records(ROWS, 0..view.len(ROWS));
+            let rows = view.sequence(ROWS);
+            let rows = rows.records(0..rows.count());
             let rows = rows.iter().map(|row| u32::from_le_bytes(row[..].try_into().expect("4")));
             rows.collect::<Vec<u32>>()
         };
@@ -250,32 +275,35 @@ mod tests {
             sink.send(unfolded(height)).await;
         }
         let (now, idle) = (Duration::ZERO, Duration::from_secs(1));
-        assert_eq!(commit(&mut committed, at).await, (Some(1), now), "8 bytes: batch");
-        assert_eq!(commit(&mut committed, at).await, (Some(3), now), "8 bytes again");
+        assert_eq!(commit(&mut committed, at).await, (Some(1), now), "{batched}: 8 bytes: batch");
+        assert_eq!(commit(&mut committed, at).await, (Some(3), now), "{batched}: 8 bytes again");
         sink.send(unfolded(4)).await;
         let at = Instant::now();
-        assert_eq!(commit(&mut committed, at).await, (Some(4), idle), "4 of 8 bytes: idle");
+        let landed = commit(&mut committed, at).await;
+        assert_eq!(landed, (Some(4), idle), "{batched}: 4 of 8 bytes: idle");
         let at = Instant::now();
         sink.send(folded(5, FOLDED)).await;
-        assert_eq!(commit(&mut committed, at).await, (Some(5), now), "folded: at once");
+        let landed = commit(&mut committed, at).await;
+        assert_eq!(landed, (Some(5), now), "{batched}: folded: at once");
         sink.shutdown();
         writer.await.expect("writer stops at Shutdown");
 
         let (sink, committed, writer) = start(open());
-        assert_eq!(committed.borrow().tip().map(|tip| u32::from(tip.height)), Some(5), "reopened");
+        let reopened = committed.borrow().tip().map(|tip| u32::from(tip.height));
+        assert_eq!(reopened, Some(5), "{batched}: reopened");
         sink.send(unfolded(4)).await;
         sink.send(folded(5, FOLDED | 0x4000_0000)).await;
         sink.send(folded(6, FOLDED)).await;
         sink.shutdown();
         writer.await.expect("writer stops at Shutdown");
         let expected = [0, 1, 2, 3, 4, 5 | FOLDED, 6 | FOLDED];
-        assert_eq!(rows(), expected, "each row once: unfolded by the writer, folded as sent");
+        assert_eq!(rows(), expected, "{batched}: each row once, unfolded by the writer");
 
         for (case, steps, message) in [
             ("gap", vec![unfolded(1)], "block_hash: final stream gap: 1 sent, 0 next"),
             ("unfolded after folded", vec![folded(0, FOLDED), unfolded(1)], "unfolded 1 after"),
         ] {
-            let store = DiskEngine::new(SimFs::new()).open(Path::new("/toy"), &schema);
+            let store = DiskEngine::new(SimFs::new()).open(Path::new("/toy"), &SCHEMA);
             let (sink, _committed, writer) = start(store.expect("open"));
             for step in steps {
                 sink.send(step).await;
@@ -283,7 +311,7 @@ mod tests {
             sink.shutdown();
             let panic = writer.await.expect_err(case).into_panic();
             let got = panic.downcast_ref::<String>().cloned().unwrap_or_default();
-            assert!(got.contains(message), "{case}: {got}");
+            assert!(got.contains(message), "{batched}: {case}: {got}");
         }
     }
 }

@@ -13,15 +13,16 @@ spent      txid(32) ‖ vout u32                           ->  height u32, spend
 
 Keys are big-endian, so byte order is key order. `receives` declares the
 address as its scope: one address's history is one key range. `spent` is read
-by point lookups only. `schema(network)` returns the declared `Schema`.
+by point lookups only. `TABLES` declares both maps, `FORMAT` their layout
+version.
 
 ## Wiring
 
 ```rust
-use zaino_index_transparent_address::TransparentAddressIndexWriter;
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
+use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TABLES};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
-let schema = zaino_index_transparent_address::schema(network);
+let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
 let writer = TransparentAddressIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
 let blocks = nfs.subscribe(IndexKind::TransparentAddress, writer.committed(), queue_bytes);
 tokio::spawn(writer.run(blocks)); // returns at Shutdown
@@ -31,7 +32,8 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
   with `S::View: MapRead`; zainod picks `DiskEngine`.
 - `run` follows the final stream through `zaino_sync::Committer`
   ([the writer shape](../zaino-sync/usage.md#committer)): unfolded steps not
-  held are folded onto `staged()` on the CPU pool, folded steps applied as sent.
+  held are folded onto `staged()` on the CPU pool, each into the delta
+  `Run::apply` opened for it, folded steps applied as sent.
   `committed()` = the committed-view watch the NFS reads.
 - Fallible only at boot (the engine's `open` → `StoreError`); `run` panics on a
   failed commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
@@ -78,14 +80,16 @@ let balances = reader.balances(&addresses)?;               // Vec<Zatoshis>
 ```rust
 use zaino_index_transparent_address::{fold, TransparentAddressReader};
 
-let parent = TransparentAddressReader::new(view, network);  // any `V: View` over this schema
-let changes = fold(&parent, &block);                         // its receives + spent rows
+let parent = TransparentAddressReader::new(view);  // any `V: MapRead` over these tables
+let mut out = store.changes(block.at());           // or the parent layer's `changes`
+fold(&parent, &block, &mut out);                    // its receives + spent rows into `out`
 ```
 
 A spend is recorded under its outpoint, which the block carries, not under the
 spending address. There is no outpoint map, no UTXO set and nothing mutable:
-`fold` is a projection (the parent supplies only its network, for the schema)
-and the durable side never deletes. Queries compose the maps through a
+`fold` is a projection (the parent is read only for its tip: the block must
+extend it, the delta must be opened for the block, else a panic naming the
+index) and the durable side never deletes. Queries compose the maps through a
 `TransparentAddressReader`: scan `receives` for the address, probe `spent` per
 outpoint; unspent = the probes that miss. Cost is `O(received)` per address.
 See [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §5.
@@ -100,7 +104,7 @@ contiguous heights: a gap would leave spent outputs counted as balance.
 
 ## Storage
 
-- `new(store, batch_bytes)` takes a store opened with `schema(network)` at its
+- `new(store, batch_bytes)` takes a store opened with `TABLES` at its
   committed tip. Layout, merges, checksums and crash recovery are the engine's
   ([`zaino-persistence`](../zaino-persistence/usage.md)); a foreign network or
   format is refused at open.
@@ -108,8 +112,8 @@ contiguous heights: a gap would leave spent outputs counted as balance.
   `decode_receive`, `encode_spend` / `decode_spend`, keys via
   `OutPoint::encode`), each pinned by golden bytes. A stored row that fails to
   decode panics naming the invariant.
-- `zainod verify` scrubs a directory with
-  `DiskEngine::verify(path, &schema(network))`.
+- `zainod verify` scrubs a directory with `DiskEngine::verify(path, &schema)`,
+  `schema` = `Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES)`.
 
 ## Errors
 

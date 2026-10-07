@@ -5,12 +5,11 @@ use incrementalmerkletree::{
     Address, Hashable, Position, Source,
 };
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{LayeredView, SequenceId, SequenceRead, View};
+use zaino_persistence::{LayeredView, SequenceRead, SequenceTable, View};
 use zaino_primitives::types::{
     BlockRef, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
 };
 use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::{
     heights::{self, TreeStateHeight},
@@ -23,7 +22,6 @@ use crate::{
 #[derive(Clone)]
 pub struct TreeStateReader<V> {
     view: V,
-    network: NetworkType,
 }
 
 impl<V: View> std::fmt::Debug for TreeStateReader<V> {
@@ -33,13 +31,13 @@ impl<V: View> std::fmt::Debug for TreeStateReader<V> {
 }
 
 impl<V: View> TreeStateReader<V> {
-    /// `view` of a store opened with [`schema`](crate::schema)`(network)`
-    pub fn new(view: V, network: NetworkType) -> Self {
-        Self { view, network }
+    /// `view` of a store opened with [`TABLES`](crate::TABLES)
+    pub fn new(view: V) -> Self {
+        Self { view }
     }
 
-    pub(crate) fn network(&self) -> NetworkType {
-        self.network
+    pub(crate) fn view(&self) -> &V {
+        &self.view
     }
 
     /// Last height held, inclusive (`None` = nothing held)
@@ -97,7 +95,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
             0 => u64::MAX,
             entries => u64::from(entries),
         };
-        let count = self.view.len(subtree_table(pool));
+        let count = self.len(subtree_table(pool));
         let start = u64::from(start_index);
         let end = count.min(start.saturating_add(limit));
 
@@ -137,7 +135,7 @@ impl<V: SequenceRead> TreeStateReader<V> {
         let position = Position::from(last);
         let node = |addr| {
             let (level, index) = slot(addr)?;
-            let record = self.view.record(level_table(pool, level), index)?;
+            let record = self.view.sequence(level_table(pool, level)).record(index)?;
             nodes::decode::<H>(record[..].try_into().expect("NODE bytes"))
         };
 
@@ -154,13 +152,13 @@ impl<V: SequenceRead> TreeStateReader<V> {
     }
 
     /// Records in `table` (= the slot of its next append)
-    pub(crate) fn len(&self, table: SequenceId) -> u64 {
-        self.view.len(table)
+    pub(crate) fn len(&self, table: SequenceTable) -> u64 {
+        self.view.sequence(table).count()
     }
 
     /// `None` above the tip
     fn height_record(&self, at: Height) -> Option<TreeStateHeight> {
-        let bytes = self.view.record(HEIGHTS, u64::from(at))?;
+        let bytes = self.view.sequence(HEIGHTS).record(u64::from(at))?;
         Some(heights::decode(bytes[..].try_into().expect("RECORD bytes")))
     }
 

@@ -18,7 +18,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zaino_sync::PerIndex;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::fold::{schema, Folded};
+use crate::fold::Folded;
 use crate::graph::{Base, Graph};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +143,7 @@ impl<V> Snapshot<V> {
 
 fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -> At<V> {
     let layers = base.folded.as_deref().map(|folded| &folded.layers);
-    let views = Views::at(params.network, durable, layers, base.at.height);
+    let views = Views::at(durable, layers, base.at.height);
     At { block: base.at, branch: base.branch, params, views }
 }
 
@@ -152,34 +152,24 @@ fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -
 /// - Snapshot's state, and a fold's parent
 #[derive(Clone)]
 pub struct Views<V> {
-    network: NetworkType,
     durable: PerIndex<V>,
     layers: PerIndex<Layer>,
 }
 
 impl<V: View> Views<V> {
     /// Panics: an index without a layer, or a layer off `durable`'s chain (`Layer::rebase`)
-    pub(crate) fn new(
-        network: NetworkType,
-        durable: &PerIndex<V>,
-        layers: &PerIndex<Layer>,
-    ) -> Self {
+    pub(crate) fn new(durable: &PerIndex<V>, layers: &PerIndex<Layer>) -> Self {
         let mut rebased = PerIndex::default();
         for (kind, view) in durable.iter() {
             let layer = layers.get(kind).unwrap_or_else(|| panic!("{}: no layer", kind.name()));
             rebased.insert(kind, layer.rebase(view));
         }
-        Self { network, durable: durable.clone(), layers: rebased }
+        Self { durable: durable.clone(), layers: rebased }
     }
 
     /// As of the block at `height`: `layers` (`None` = the root), empty for an index durable at
     /// or past it (a layer rebases only onto one of its own blocks)
-    fn at(
-        network: NetworkType,
-        durable: &PerIndex<V>,
-        layers: Option<&PerIndex<Layer>>,
-        height: Height,
-    ) -> Self {
+    fn at(durable: &PerIndex<V>, layers: Option<&PerIndex<Layer>>, height: Height) -> Self {
         let mut chosen = PerIndex::default();
         for (kind, view) in durable.iter() {
             let holds = view.tip().is_some_and(|tip| tip.height >= height);
@@ -187,19 +177,11 @@ impl<V: View> Views<V> {
                 Some(layers) => {
                     layers.get(kind).unwrap_or_else(|| panic!("{}: no layer", kind.name())).clone()
                 }
-                None => Layer::empty(&schema(kind, network)),
+                None => Layer::empty(view.schema()),
             };
             chosen.insert(kind, layer);
         }
-        Self::new(network, durable, &chosen)
-    }
-
-    pub(crate) fn network(&self) -> NetworkType {
-        self.network
-    }
-
-    pub(crate) fn enabled(&self, kind: IndexKind) -> bool {
-        self.durable.get(kind).is_some()
+        Self::new(durable, &chosen)
     }
 
     /// Panics: `kind` disabled
@@ -216,11 +198,11 @@ impl<V: View> Views<V> {
 impl<V: SequenceRead> Views<V> {
     pub fn compact_block(&self) -> Option<CompactBlockReader<LayeredView<V>>> {
         let view = self.view(IndexKind::CompactBlock)?;
-        Some(CompactBlockReader::new(view, self.network))
+        Some(CompactBlockReader::new(view))
     }
 
     pub fn tree_state(&self) -> Option<TreeStateReader<LayeredView<V>>> {
-        Some(TreeStateReader::new(self.view(IndexKind::TreeState)?, self.network))
+        Some(TreeStateReader::new(self.view(IndexKind::TreeState)?))
     }
 }
 
@@ -231,13 +213,12 @@ impl<V: MapRead> Views<V> {
 
     pub fn transparent_address(&self) -> Option<TransparentAddressReader<LayeredView<V>>> {
         let view = self.view(IndexKind::TransparentAddress)?;
-        Some(TransparentAddressReader::new(view, self.network))
+        Some(TransparentAddressReader::new(view))
     }
 
     /// Fold parent only (no route reads value-balance)
     pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<LayeredView<V>>> {
-        let view = self.view(IndexKind::ValueBalance)?;
-        Some(ValueBalanceReader::new(view, self.network))
+        Some(ValueBalanceReader::new(self.view(IndexKind::ValueBalance)?))
     }
 }
 

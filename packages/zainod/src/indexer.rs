@@ -31,11 +31,11 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 use zaino_chainview::ChainView;
 use zaino_grpc::{GrpcLimits, GrpcService, Routes, Tls, TlsFiles, TrustedProxies};
 use zaino_header_chain::VerifiedChain;
-use zaino_index_compact_block::{self as compact_block, CompactBlockIndexWriter};
-use zaino_index_transparent_address::{self as transparent_address, TransparentAddressIndexWriter};
-use zaino_index_tree_state::{self as tree_state, PoolActivations, TreeStateIndexWriter};
-use zaino_internal_block_hash_to_height::{self as block_hash, BlockHashIndexWriter};
-use zaino_internal_value_balance::{self as value_balance, ValueBalanceIndexWriter};
+use zaino_index_compact_block::CompactBlockIndexWriter;
+use zaino_index_transparent_address::TransparentAddressIndexWriter;
+use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter};
+use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
+use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
@@ -48,6 +48,7 @@ use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
 use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
 use crate::error::IndexerError;
 use crate::logging::component;
+use crate::stores;
 
 /// Task name + outcome (name → log line for a task that ends early with `Ok`)
 type TaskExit = (&'static str, Result<(), IndexerError>);
@@ -185,32 +186,32 @@ async fn pipeline<S: ChainDataSource>(
         // compact-block folds after value-balance (its fees)
         let mut fee_sink = FeeSink::new("fees");
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
-        let schema = value_balance::schema(network);
+        let schema = stores::schema(IndexKind::ValueBalance, network);
         let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
         let run = writer.run(blocks, fee_sink);
         spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
-        let schema = compact_block::schema(network);
+        let schema = stores::schema(IndexKind::CompactBlock, network);
         let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
         let run = writer.run(blocks, fees);
         spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
-        let schema = block_hash::schema(network);
+        let schema = stores::schema(IndexKind::BlockHash, network);
         let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::BlockHash, writer.committed(), &bh, &span);
         spawn_infallible(&mut tasks, IndexKind::BlockHash.name(), span, writer.run(blocks));
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
-        let schema = tree_state::schema(network);
+        let schema = stores::schema(IndexKind::TreeState, network);
         let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::TreeState, writer.committed(), &ts, &span);
         spawn_infallible(&mut tasks, IndexKind::TreeState.name(), span, writer.run(blocks));
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
         let kind = IndexKind::TransparentAddress;
-        let schema = transparent_address::schema(network);
+        let schema = stores::schema(kind, network);
         let (span, writer) = open(&engine, &ta, schema, TransparentAddressIndexWriter::new)?;
         let blocks = indexes.subscribe(kind, writer.committed(), &ta, &span);
         spawn_infallible(&mut tasks, kind.name(), span, writer.run(blocks));

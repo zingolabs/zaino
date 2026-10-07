@@ -18,8 +18,12 @@ impl<V: MapRead> BlockHashReader<V> {
         Self { view }
     }
 
+    pub(crate) fn view(&self) -> &V {
+        &self.view
+    }
+
     pub fn height_of(&self, hash: &BlockHash) -> Option<Height> {
-        let value = self.view.value(BY_HASH, &<[u8; HASH]>::from(*hash))?;
+        let value = self.view.map(BY_HASH).value(&<[u8; HASH]>::from(*hash))?;
         let bytes: &[u8; HEIGHT] = value[..].try_into().expect("by_hash values: schema width");
         Some(decode_height(bytes).expect("by_hash heights: valid when committed"))
     }

@@ -34,7 +34,9 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
-  inside each `zaino_sync::Final`), `BlockHeader`, `Transaction` and its parts
+  inside each `zaino_sync::Final`; `at()` = its `BlockRef`), `BlockHeader`
+  (`extends(parent: Option<BlockRef>)` = one height above `parent` and linked to
+  it by `prev_hash`, genesis on `None`: every fold's precondition), `Transaction` and its parts
   (`TransparentData`, `SaplingData`, `OrchardData`, `SproutData`, …; Sprout's
   value balance included; `TransparentData::coinbase` marks the coinbase), `Fee`
   (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool)

@@ -6,7 +6,6 @@
 use bytes::Bytes;
 use zaino_persistence::{SequenceRead, View};
 use zaino_primitives::types::{BlockRef, Height, TreeSizes};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::{position, project::record_sizes, BLOCKS};
 
@@ -16,20 +15,15 @@ pub(crate) const WINDOW_RECORDS: u32 = 256;
 #[derive(Clone)]
 pub struct CompactBlockReader<V> {
     view: V,
-    network: NetworkType,
 }
 
 impl<V: SequenceRead> CompactBlockReader<V> {
-    pub fn new(view: V, network: NetworkType) -> Self {
-        Self { view, network }
+    pub fn new(view: V) -> Self {
+        Self { view }
     }
 
     pub(crate) fn view(&self) -> &V {
         &self.view
-    }
-
-    pub(crate) fn network(&self) -> NetworkType {
-        self.network
     }
 
     /// `None` = nothing held
@@ -39,7 +33,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 
     /// Framed, wire-ready, every pool
     pub fn block(&self, at: Height) -> Option<Bytes> {
-        self.view.record(BLOCKS, position(at))
+        self.view.sequence(BLOCKS).record(position(at))
     }
 
     /// Records from `first` toward `last` (both inclusive, both held, either direction) in walk
@@ -54,7 +48,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
             true => first.saturating_sub(WINDOW_RECORDS - 1).max(last),
         };
         let (low, high) = (first.min(far), first.max(far));
-        let mut records = self.view.records(BLOCKS, position(low)..position(high) + 1);
+        let mut records = self.view.sequence(BLOCKS).records(position(low)..position(high) + 1);
         if descending {
             records.reverse();
         }
@@ -86,9 +80,6 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 
 impl<V: View> std::fmt::Debug for CompactBlockReader<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CompactBlockReader")
-            .field("tip", &self.view.tip())
-            .field("network", &self.network)
-            .finish()
+        f.debug_struct("CompactBlockReader").field("tip", &self.view.tip()).finish()
     }
 }

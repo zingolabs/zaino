@@ -6,24 +6,20 @@
 use std::{path::Path, sync::Arc};
 
 use zaino_persistence::{
-    fs::Fs, Changes, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema,
-    SequenceId, SequenceRead, Store, StoreError, View, Width,
+    fs::Fs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, SequenceRead,
+    SequenceTable, Store, StoreError, Tables, View, Width,
 };
 use zaino_primitives::types::{BlockHash, BlockRef, Height, MerkleRoot};
 use zcash_protocol::consensus::NetworkType;
 
 /// On-disk layout version
-const FORMAT: u16 = 1;
-const HEADERS: SequenceId = SequenceId(0);
-pub(crate) const RECORD: usize = 88;
+pub const FORMAT: u16 = 1;
 
-pub fn schema(network: NetworkType) -> Schema {
-    Schema::new(IndexKind::HeaderChain, FORMAT, network).with_sequence(
-        HEADERS,
-        "headers",
-        Width::fixed(RECORD as u32),
-    )
-}
+/// What the store holds (`zainod verify` checks it by these)
+pub const TABLES: Tables = Tables::new(&[HEADERS], &[]);
+
+pub(crate) const RECORD: usize = 88;
+const HEADERS: SequenceTable = SequenceTable::new(0, "headers", Width::fixed(RECORD as u32));
 
 /// One header as the chain keeps it: identity, the fields later rules and block checks read, and
 /// the work of everything up to it
@@ -80,7 +76,7 @@ impl HeaderView {
     /// Records `from..=to` (heights committed), oldest first
     pub(crate) fn records(&self, from: Height, to: Height) -> Vec<Record> {
         let range = u64::from(u32::from(from))..u64::from(u32::from(to)) + 1;
-        let records = self.view.records(HEADERS, range);
+        let records = self.view.sequence(HEADERS).records(range);
         records.iter().map(|bytes| decode(bytes[..].try_into().expect("RECORD bytes"))).collect()
     }
 
@@ -92,10 +88,12 @@ impl HeaderView {
 impl HeaderStore {
     /// `path` at its committed state; fresh = empty
     pub fn open(fs: Arc<dyn Fs>, path: &Path, network: NetworkType) -> Result<Self, StoreError> {
-        let store = DiskEngine::new(fs).open(path, &schema(network))?;
+        let schema = Schema::new(IndexKind::HeaderChain, FORMAT, network, TABLES);
+        let store = DiskEngine::new(fs).open(path, &schema)?;
         let view = store.view();
         let held = view.tip().map_or(0, |tip| u64::from(u32::from(tip.height)) + 1);
-        assert_eq!(view.len(HEADERS), held, "header store: one record per committed height");
+        let records = view.sequence(HEADERS).count();
+        assert_eq!(records, held, "header store: one record per committed height");
         Ok(Self { store, view: HeaderView { view } })
     }
 
@@ -114,9 +112,10 @@ impl HeaderStore {
         let next = self.tip().map_or(Height::GENESIS, |tip| tip.height.next());
         assert_eq!(records[0].0, next, "final records off the committed tip");
         let tip = BlockRef { hash: last.hash, height: last_height };
-        let mut changes = Changes::new(tip, self.store.schema());
+        let mut changes = self.store.changes(tip);
+        let mut headers = changes.sequence(HEADERS);
         for (_, record) in records {
-            changes.append(HEADERS, &encode(record));
+            headers.append(&encode(record));
         }
         self.store.apply(changes);
         self.store.commit()?;

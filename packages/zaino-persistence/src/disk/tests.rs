@@ -15,18 +15,18 @@ use zcash_protocol::consensus::NetworkType;
 use super::*;
 use crate::{
     conformance::{
-        self, block, block_ref, panic_message, scanned_key, schema, Model, Subject, BLOCKS,
-        HEIGHTS, SCANNED,
+        self, block, block_ref, panic_message, scanned_key, Model, Subject, BLOCKS, HEIGHTS,
+        SCANNED, SCHEMA, TABLES,
     },
     fs::{RealFs, SimFs},
     manifest::IndexKind,
-    port::{MapRead, SequenceRead, Width},
+    port::{MapRead, MapTable, SequenceRead, SequenceTable, Tables, Width},
 };
 
 const ROOT: &str = "/idx";
 
 fn open(engine: &DiskEngine) -> DiskStore {
-    engine.open(Path::new(ROOT), &schema()).expect("open")
+    engine.open(Path::new(ROOT), &SCHEMA).expect("open")
 }
 
 /// `DiskEngine` on `SimFs`: crash = `SimFs::power_loss`, background work = merges, internal
@@ -72,8 +72,8 @@ impl Subject for SimDisk {
 /// - each map's tiers within `fanout` inputs + `STALL_WINDOWS` (2) idle windows
 /// - `just_opened`: every listed segment + sums on disk, beyond them only running merges' outputs
 fn assert_tiers(store: &DiskStore, fs: &SimFs, fanout: usize, just_opened: bool, label: &str) {
-    for (table, log) in schema().maps.iter().zip(&store.maps) {
-        let name = &table.name;
+    for (table, log) in SCHEMA.maps().iter().zip(&store.maps) {
+        let name = table.name;
         let mut per_tier = BTreeMap::<u32, usize>::new();
         for segment in log.segments() {
             *per_tier.entry(segment.records.ilog(fanout as u64)).or_default() += 1;
@@ -140,7 +140,7 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
     for state in states {
         let label = &state.label;
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
-            .open(Path::new(ROOT), &schema())
+            .open(Path::new(ROOT), &SCHEMA)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
         let recovered = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         let acked = usize::try_from(state.tag).expect("small");
@@ -175,7 +175,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
         fs.fail_from(fail_at);
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
         let mut acked = 0;
-        let error = match engine.open(Path::new(ROOT), &schema()) {
+        let error = match engine.open(Path::new(ROOT), &SCHEMA) {
             Err(error) => error,
             Ok(mut store) => {
                 let mut failed = None;
@@ -215,7 +215,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
 
         let fs = fs.restarted();
         let mut store = DiskEngine::with_fanout(fs.clone(), 2)
-            .open(Path::new(ROOT), &schema())
+            .open(Path::new(ROOT), &SCHEMA)
             .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
         let recovered = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         assert!(
@@ -250,7 +250,7 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
         let fs = fs.restarted();
         fs.fail_reads_from(fail_at);
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
-        let opened = catch_unwind(AssertUnwindSafe(|| engine.open(Path::new(ROOT), &schema())))
+        let opened = catch_unwind(AssertUnwindSafe(|| engine.open(Path::new(ROOT), &SCHEMA)))
             .unwrap_or_else(|payload| {
                 panic!("read {fail_at}: panicked: {}", panic_message(payload))
             });
@@ -277,21 +277,34 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
     };
     let store = || open(&DiskEngine::with_fanout(SimFs::new(), 2));
-    let changes = |n| Changes::new(block_ref(n), &schema());
+    let changes = |n| Changes::new(block_ref(n), SCHEMA);
     let committed = |store: &mut DiskStore, changes| {
         store.apply(changes);
         store.commit().expect("commit");
     };
+    let stray_sequence = SequenceTable::new(3, "stray", Width::Variable);
+    let stray_map = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(8), 0);
 
-    fires("heights: a 7-byte item, width 8", &|| changes(1).append(HEIGHTS, &[0; 7]));
-    fires("scanned: a 11-byte item, width 12", &|| changes(1).insert(SCANNED, &[0; 11], &[0; 8]));
-    fires("SequenceId(3) not in the CompactBlock schema", &|| {
-        changes(1).append(SequenceId(3), &[])
+    fires("heights: a 7-byte item, width 8", &|| changes(1).sequence(HEIGHTS).append(&[0; 7]));
+    fires("scanned: a 11-byte item, width 12", &|| {
+        changes(1).map(SCANNED).insert(&[0; 11], &[0; 8])
     });
-    fires("MapId(2) not in the CompactBlock schema", &|| changes(1).insert(MapId(2), &[], &[]));
+    fires("compact_block: sequence stray not in its schema", &|| {
+        changes(1).sequence(stray_sequence).append(&[])
+    });
+    fires("compact_block: map probed not in its schema", &|| {
+        changes(1).map(stray_map).insert(&[0; 16], &[0; 8])
+    });
+    fires("compact_block: map probed not in its schema", &|| {
+        store().view().map(stray_map).value(&[0; 16]);
+    });
+    static SKIPPED: [SequenceTable; 1] = [SequenceTable::new(1, "skipped", Width::Variable)];
+    fires("sequence id != its position", &|| {
+        Tables::new(&SKIPPED, &[]);
+    });
     fires("changes built for another schema", &|| {
-        let other = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest);
-        store().apply(Changes::new(block_ref(1), &other));
+        let other = Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, TABLES);
+        store().apply(Changes::new(block_ref(1), other));
     });
     fires("apply at height 0, not above the last applied Some(Height(0))", &|| {
         let mut store = store();
@@ -300,20 +313,20 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
     });
     fires("scanned: a map key held twice", &|| {
         let mut twice = changes(1);
-        twice.insert(SCANNED, &scanned_key(1, 0), &[0; 8]);
-        twice.insert(SCANNED, &scanned_key(1, 0), &[0; 8]);
+        twice.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
+        twice.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
         store().apply(twice);
     });
     let one_row = |n| {
         let mut changes = changes(n);
-        changes.insert(SCANNED, &scanned_key(1, 0), &[0; 8]);
+        changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
         changes
     };
     fires("a key listed in two committed segments", &|| {
         let mut store = store();
         committed(&mut store, one_row(1));
         committed(&mut store, one_row(2));
-        store.view().range(SCANNED, &[0; 12], &[0xff; 12], usize::MAX);
+        store.view().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
     });
     // two 1-row segments at fanout 2 = merge; its duplicate panics on its thread, resumed here
     fires("strictly ascending", &|| {
@@ -344,13 +357,14 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     fs.corrupt(&path("blocks.dat"), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
     let store = open(&DiskEngine::new(fs.clone()));
     assert_eq!(blocks_len(&fs), committed, "uncommitted tail truncated");
-    assert_eq!(store.view().records(BLOCKS, 0..4), (0..4).map(block).collect::<Vec<_>>());
+    let records = store.view().sequence(BLOCKS).records(0..4);
+    assert_eq!(records, (0..4).map(block).collect::<Vec<_>>());
     drop(store);
 
     let refused = |edit: &dyn Fn(&SimFs)| {
         let fs = populated();
         edit(&fs);
-        DiskEngine::new(fs).open(Path::new(ROOT), &schema()).expect_err("refused").to_string()
+        DiskEngine::new(fs).open(Path::new(ROOT), &SCHEMA).expect_err("refused").to_string()
     };
     let short = refused(&|fs| fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10)));
     assert_eq!(short, "/idx/pool/nodes.dat is 10 bytes, the committed state needs 32");
@@ -360,7 +374,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let bare = SimFs::new();
     bare.create_dir_all(Path::new(ROOT)).expect("dir");
     bare.open(&path("heights.dat")).expect("file").write_all_at(&[1], 0).expect("write");
-    let opened = DiskEngine::new(bare).open(Path::new(ROOT), &schema());
+    let opened = DiskEngine::new(bare).open(Path::new(ROOT), &SCHEMA);
     assert!(matches!(opened, Err(StoreError::Manifest(ManifestError::Unmanifested { .. }))));
 }
 
@@ -368,10 +382,11 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
 /// for a variable one), each map's segment list
 #[test]
 fn a_manifest_body_is_its_golden_bytes() {
-    let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest)
-        .with_sequence(SequenceId(0), "fixed", Width::fixed(4))
-        .with_sequence(SequenceId(1), "variable", Width::Variable)
-        .with_map(MapId(0), "map", Width::fixed(8), Width::fixed(1), 0);
+    const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(4));
+    const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
+    const MAP: MapTable = MapTable::new(0, "map", Width::fixed(8), Width::fixed(1), 0);
+    const TABLES: Tables = Tables::new(&[FIXED, VARIABLE], &[MAP]);
+    let schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
     let sealed =
         |n: u8| Sealed { len: u64::from(n), tail: u32::from(n) << 8, sums: u32::from(n) << 16 };
     let body = Body {
@@ -417,20 +432,20 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     let path = root.path().join("idx");
     let fs = RealFs::shared();
     let engine = DiskEngine::with_fanout(fs.clone(), 2);
-    let mut store = engine.open(&path, &schema()).expect("open");
+    let mut store = engine.open(&path, &SCHEMA).expect("open");
     let mut model = Model::default();
     store.apply(model.advance(3, &[1], 1));
     store.commit().expect("commit");
     store.apply(model.advance(1, &[2], 1));
     store.commit().expect("commit");
-    let read = || manifest::read(fs.as_ref(), &path, identity(&schema())).expect("read");
+    let read = || manifest::read(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
     let before = read();
     store.settle();
     store.apply(model.advance(0, &[], 0));
     store.commit().expect("the merge lands, its inputs unlinked");
     let after = read();
 
-    let clean = engine.verify(&path, &schema()).expect("verify");
+    let clean = engine.verify(&path, &SCHEMA).expect("verify");
     assert!(clean.is_clean(), "{clean:?}");
     assert_eq!(clean.heights, 3);
     let names: Vec<&str> = clean.units.iter().map(|unit| unit.name.as_str()).collect();
@@ -439,21 +454,21 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
 
     let mut reads = [before.clone(), after.clone()].into_iter().chain(std::iter::repeat(after));
     let rescrubbed =
-        verify_committed(fs.as_ref(), &path, &schema(), || Ok(reads.next().expect("endless")))
+        verify_committed(fs.as_ref(), &path, &SCHEMA, || Ok(reads.next().expect("endless")))
             .expect("verify");
     assert_eq!(rescrubbed, clean, "retired inputs: scrubbed again against the newer manifest");
     let stale =
-        verify_committed(fs.as_ref(), &path, &schema(), || Ok(before.clone())).expect("verify");
+        verify_committed(fs.as_ref(), &path, &SCHEMA, || Ok(before.clone())).expect("verify");
     assert!(stale.units.iter().any(|unit| unit.lost), "a listed file missing is lost: {stale:?}");
 
     let heights = path.join("heights.dat");
     let mut bytes = std::fs::read(&heights).expect("read");
     bytes[3] ^= 1;
     std::fs::write(&heights, &bytes).expect("write");
-    let corrupt = engine.verify(&path, &schema()).expect("verify");
+    let corrupt = engine.verify(&path, &SCHEMA).expect("verify");
     let unit = corrupt.units.iter().find(|unit| unit.name == "heights.dat").expect("listed");
     assert_eq!((corrupt.is_clean(), unit.bad_pages.clone()), (false, vec![0]));
 
-    let fresh = engine.verify(&root.path().join("absent"), &schema()).expect("verify");
+    let fresh = engine.verify(&root.path().join("absent"), &SCHEMA).expect("verify");
     assert_eq!(fresh, Verification { heights: 0, units: Vec::new() });
 }

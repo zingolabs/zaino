@@ -13,7 +13,9 @@ use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_index_tree_state::PoolActivations;
 use zaino_internal_block_hash_to_height as block_hash;
 use zaino_nfs::{ChainParams, Snapshot as Indexed};
-use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Store};
+use zaino_persistence::{
+    fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
+};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
 use zaino_source::mock::MockChain;
@@ -98,9 +100,18 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let chain = Arc::new(headers.verified().expect("verified"));
 
     let engine = DiskEngine::new(SimFs::new());
-    let schema = block_hash::schema(NetworkType::Regtest);
+    let schema = Schema::new(
+        IndexKind::BlockHash,
+        block_hash::FORMAT,
+        NetworkType::Regtest,
+        block_hash::TABLES,
+    );
     let mut store = engine.open(Path::new("block_hash"), &schema).expect("fresh store");
-    a.iter().for_each(|block| store.apply(block_hash::fold(block, NetworkType::Regtest)));
+    for block in &a {
+        let mut out = store.changes(block.at());
+        block_hash::fold(&block_hash::BlockHashReader::new(store.staged()), block, &mut out);
+        store.apply(out);
+    }
     store.commit().expect("SimFs commit");
     let durable = [(IndexKind::BlockHash, store.view())];
     let indexed = Indexed::fixed(Arc::clone(&chain), at(&a[5]), PARAMS, durable);

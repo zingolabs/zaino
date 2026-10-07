@@ -23,27 +23,22 @@ use crate::{
     layer::{Layer, LayeredView},
     manifest::IndexKind,
     port::{
-        Changes, MapId, MapRead, PersistenceEngine, Schema, SequenceId, SequenceRead, Store, View,
-        Width,
+        Changes, MapRead, MapTable, PersistenceEngine, Schema, SequenceRead, SequenceTable, Store,
+        Tables, View, Width,
     },
 };
 
-pub const BLOCKS: SequenceId = SequenceId(0);
-pub const HEIGHTS: SequenceId = SequenceId(1);
-pub const NODES: SequenceId = SequenceId(2);
-pub const SCANNED: MapId = MapId(0);
-pub const PROBED: MapId = MapId(1);
+pub const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
+pub const HEIGHTS: SequenceTable = SequenceTable::new(1, "heights", Width::fixed(8));
+pub const NODES: SequenceTable = SequenceTable::new(2, "pool/nodes", Width::fixed(4));
+pub const SCANNED: MapTable = MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8);
+pub const PROBED: MapTable = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(4), 0);
 
 /// Every shape an index declares: variable sequence, fixed one, one in a sub-directory, scoped map
 /// (`account ‖ seq`, read per account), point-lookup map (hash-like ids)
-pub fn schema() -> Schema {
-    Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest)
-        .with_sequence(BLOCKS, "blocks", Width::Variable)
-        .with_sequence(HEIGHTS, "heights", Width::fixed(8))
-        .with_sequence(NODES, "pool/nodes", Width::fixed(4))
-        .with_map(SCANNED, "scanned", Width::fixed(12), Width::fixed(8), 8)
-        .with_map(PROBED, "probed", Width::fixed(16), Width::fixed(4), 0)
-}
+pub const TABLES: Tables = Tables::new(&[BLOCKS, HEIGHTS, NODES], &[SCANNED, PROBED]);
+
+pub const SCHEMA: Schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
 
 /// Engine under test, over storage the suite can reopen (and, if it can, crash)
 pub trait Subject {
@@ -70,7 +65,7 @@ pub trait Subject {
 pub type StoreOf<S> = <<S as Subject>::Engine as PersistenceEngine>::Store;
 
 fn open<S: Subject>(subject: &S) -> StoreOf<S> {
-    subject.engine().open(subject.path(), &schema()).expect("open")
+    subject.engine().open(subject.path(), &SCHEMA).expect("open")
 }
 
 /// Record `n` of `blocks`: 0 to 22 bytes (empty records included)
@@ -151,7 +146,7 @@ impl Model {
         self.advances += 1;
         let tip = salted_ref(self.advances, self.salt);
         self.tip = Some(tip);
-        let mut changes = Changes::new(tip, &schema());
+        let mut changes = Changes::new(tip, SCHEMA);
         for _ in 0..records {
             let record = block(self.blocks.len() as u32);
             self.append(&mut changes, BLOCKS, record);
@@ -166,13 +161,13 @@ impl Model {
             self.seq += 1;
             let key = scanned_key(owner, self.seq);
             let value = salted(u64::from(self.seq).to_be_bytes().to_vec(), self.salt);
-            changes.insert(SCANNED, &key, &value);
+            changes.map(SCANNED).insert(&key, &value);
             self.bytes += key.len() + value.len();
             self.scanned.insert(key, value);
         }
         for n in self.ids..self.ids + u32::from(ids) {
             let value = salted(n.to_be_bytes().to_vec(), self.salt);
-            changes.insert(PROBED, &probed_key(n), &value);
+            changes.map(PROBED).insert(&probed_key(n), &value);
             self.bytes += 16 + value.len();
             self.probed.insert(probed_key(n), value);
         }
@@ -181,14 +176,16 @@ impl Model {
     }
 
     /// `record` on this branch, at the end of `table` here and in `changes`
-    fn append(&mut self, changes: &mut Changes, table: SequenceId, record: Vec<u8>) {
+    fn append(&mut self, changes: &mut Changes, table: SequenceTable, record: Vec<u8>) {
         let record = salted(record, self.salt);
-        changes.append(table, &record);
+        changes.sequence(table).append(&record);
         self.bytes += record.len();
-        let held = match table {
-            BLOCKS => &mut self.blocks,
-            HEIGHTS => &mut self.heights,
-            _ => &mut self.nodes,
+        let held = if table == BLOCKS {
+            &mut self.blocks
+        } else if table == HEIGHTS {
+            &mut self.heights
+        } else {
+            &mut self.nodes
         };
         held.push(record);
     }
@@ -213,39 +210,42 @@ impl Model {
         for (table, model) in
             [(BLOCKS, &self.blocks), (HEIGHTS, &self.heights), (NODES, &self.nodes)]
         {
+            let (name, read) = (table.name, view.sequence(table));
             let len = model.len() as u64;
-            assert_eq!(view.len(table), len, "{label}: {table:?} len");
-            let one_by_one: Vec<_> = (0..len).map(|at| view.record(table, at)).collect();
+            assert_eq!(read.count(), len, "{label}: {name} count");
+            let one_by_one: Vec<_> = (0..len).map(|at| read.record(at)).collect();
             let expected: Vec<_> =
                 model.iter().map(|record| Some(Bytes::from(record.clone()))).collect();
-            assert_eq!(one_by_one, expected, "{label}: {table:?} records");
-            assert_eq!(view.record(table, len), None, "{label}: {table:?} past the end");
-            assert_eq!(view.records(table, 0..len), *model, "{label}: {table:?} whole range");
+            assert_eq!(one_by_one, expected, "{label}: {name} records");
+            assert_eq!(read.record(len), None, "{label}: {name} past the end");
+            assert_eq!(read.records(0..len), *model, "{label}: {name} whole range");
             let middle = len / 3..len - len / 3;
             let expected = &model[middle.start as usize..middle.end as usize];
-            assert_eq!(view.records(table, middle), expected, "{label}: {table:?} middle range");
+            assert_eq!(read.records(middle), expected, "{label}: {name} middle range");
         }
 
+        let scanned = view.map(SCANNED);
         let every = self.scan(&[0; 12], &[0xff; 12]);
-        let scanned = view.range(SCANNED, &[0; 12], &[0xff; 12], usize::MAX).expect("unbounded");
-        assert_eq!(owned(scanned), every, "{label}: full scan");
+        let all = scanned.range(&[0; 12], &[0xff; 12], usize::MAX).expect("unbounded");
+        assert_eq!(owned(all), every, "{label}: full scan");
         for owner in [0u8, 3, 9] {
             let (from, to) = (scanned_key(owner, 0), scanned_key(owner, u32::MAX));
-            let answer = view.range(SCANNED, &from, &to, usize::MAX).expect("unbounded");
+            let answer = scanned.range(&from, &to, usize::MAX).expect("unbounded");
             assert_eq!(owned(answer), self.scan(&from, &to), "{label}: owner {owner}");
         }
         for (key, value) in self.scanned.iter().step_by(7) {
-            assert_eq!(view.value(SCANNED, key).as_deref(), Some(&value[..]), "{label}: {key:?}");
+            assert_eq!(scanned.value(key).as_deref(), Some(&value[..]), "{label}: {key:?}");
         }
-        assert_eq!(view.value(SCANNED, &scanned_key(1, self.seq + 1)), None, "{label}: miss");
+        assert_eq!(scanned.value(&scanned_key(1, self.seq + 1)), None, "{label}: miss");
 
+        let probed = view.map(PROBED);
         let asked: Vec<Vec<u8>> =
             (0..2 * self.ids + 2).flat_map(|n| [probed_key(n), probed_key(n)]).collect();
         let answers: Vec<Option<Bytes>> =
             asked.iter().map(|id| self.probed.get(id).cloned().map(Bytes::from)).collect();
         let keys: Vec<&[u8]> = asked.iter().map(Vec::as_slice).collect();
-        assert_eq!(view.values(PROBED, &keys), answers, "{label}: values");
-        let singles: Vec<_> = keys.iter().map(|id| view.value(PROBED, id)).collect();
+        assert_eq!(probed.values(&keys), answers, "{label}: values");
+        let singles: Vec<_> = keys.iter().map(|id| probed.value(id)).collect();
         assert_eq!(singles, answers, "{label}: value");
     }
 
@@ -255,7 +255,7 @@ impl Model {
         let expected = self.scan(from, to);
         let len = expected.len();
         for limit in [len.saturating_sub(1), len, len + 1, usize::from(raw) % (len + 2)] {
-            let answer = view.range(SCANNED, from, to, limit).map(owned);
+            let answer = view.map(SCANNED).range(from, to, limit).map(owned);
             let bounded = (len <= limit).then(|| expected.clone());
             assert_eq!(answer, bounded, "{label}: {from:?}..{to:?} at most {limit}");
         }
@@ -296,7 +296,7 @@ impl Oracle {
 
     /// Newest node's layer over `durable` (`durable` = committed)
     fn newest_view<V: View>(&self, durable: V) -> LayeredView<V> {
-        let layer = self.nodes.last().map_or_else(|| Layer::empty(&schema()), |n| n.layer.clone());
+        let layer = self.nodes.last().map_or_else(|| Layer::empty(&SCHEMA), |n| n.layer.clone());
         LayeredView::new(durable, layer)
     }
 
@@ -304,7 +304,7 @@ impl Oracle {
     fn grow(&mut self, (records, owners, ids): (u8, &[u8], u16)) {
         let (mut model, layer) = match self.nodes.last() {
             Some(node) => (node.model.clone(), node.layer.clone()),
-            None => (self.committed.clone(), Layer::empty(&schema())),
+            None => (self.committed.clone(), Layer::empty(&SCHEMA)),
         };
         model.salt = self.salt;
         let changes = model.advance(records, owners, ids);
@@ -506,6 +506,10 @@ impl View for Tip {
     fn tip(&self) -> Option<BlockRef> {
         self.0
     }
+
+    fn schema(&self) -> &Schema {
+        &SCHEMA
+    }
 }
 
 /// Port's fixed promises, on a fresh subject:
@@ -519,7 +523,8 @@ pub fn contract<S: Subject>(subject: S) {
     let mut store = open(&subject);
     model.assert_view(&store.view(), "fresh");
     model.assert_view(&store.staged(), "fresh staged");
-    assert_eq!(store.schema(), &schema(), "the store keeps its schema");
+    assert_eq!(store.schema(), &SCHEMA, "the store keeps its schema");
+    assert_eq!(store.view().schema(), &SCHEMA, "its views read by it");
     assert_eq!(store.path(), subject.path(), "the store keeps its path");
 
     let empty = model.clone();
@@ -537,9 +542,9 @@ pub fn contract<S: Subject>(subject: S) {
     drop(store);
 
     for (what, schema) in [
-        ("network", Schema { network: NetworkType::Main, ..schema() }),
-        ("kind", Schema { kind: IndexKind::TreeState, ..schema() }),
-        ("format", Schema { format: 2, ..schema() }),
+        ("network", Schema::new(IndexKind::CompactBlock, 1, NetworkType::Main, TABLES)),
+        ("kind", Schema::new(IndexKind::TreeState, 1, NetworkType::Regtest, TABLES)),
+        ("format", Schema::new(IndexKind::CompactBlock, 2, NetworkType::Regtest, TABLES)),
     ] {
         let refused = engine.open(subject.path(), &schema).map(|_| ());
         assert!(refused.is_err(), "another {what} opened as this store");
@@ -547,23 +552,34 @@ pub fn contract<S: Subject>(subject: S) {
 
     let mut store = open(&subject);
     model.assert_view(&store.view(), "reopened");
-    let verified = engine.verify(subject.path(), &schema()).expect("verify");
+    let verified = engine.verify(subject.path(), &SCHEMA).expect("verify");
     assert!(verified.is_clean() && verified.heights == 2, "{verified:?}");
 
     // store preconditions: each a panic before anything is buffered
-    let other = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest);
-    let at = |n, schema: &Schema| Changes::new(block_ref(n), schema);
-    refused("changes for another schema", || store.apply(at(3, &other)));
-    refused("a tip at the committed one", || store.apply(at(2, &schema())));
-    let mut twice = at(3, &schema());
-    twice.insert(PROBED, &probed_key(99), &[0; 4]);
-    twice.insert(PROBED, &probed_key(99), &[1; 4]);
+    let other = Layer::empty(&Schema::new(
+        IndexKind::CompactBlock,
+        1,
+        NetworkType::Regtest,
+        Tables::new(&[], &[]),
+    ));
+    let foreign = SequenceTable::new(0, "blocks", Width::fixed(1));
+    refused("changes for another schema", || store.apply(other.changes(block_ref(3))));
+    refused("a tip at the committed one", || store.apply(store.changes(block_ref(2))));
+    let mut twice = store.changes(block_ref(3));
+    twice.map(PROBED).insert(&probed_key(99), &[0; 4]);
+    twice.map(PROBED).insert(&probed_key(99), &[1; 4]);
     refused("a key twice in one changes", || store.apply(twice));
+    refused("a table of another schema", || {
+        store.changes(block_ref(3)).sequence(foreign).append(&[0]);
+    });
+    refused("a read of another schema's table", || {
+        store.view().sequence(foreign).record(0);
+    });
     let mut buffered = model.clone();
     store.apply(buffered.advance(1, &[3], 1));
-    refused("a tip at the buffered one", || store.apply(at(3, &schema())));
-    let mut held = at(4, &schema());
-    held.insert(PROBED, &probed_key(buffered.ids - 1), &[0; 4]);
+    refused("a tip at the buffered one", || store.apply(store.changes(block_ref(3))));
+    let mut held = store.changes(block_ref(4));
+    held.map(PROBED).insert(&probed_key(buffered.ids - 1), &[0; 4]);
     refused("a key the buffer holds", || store.apply(held));
     model.assert_view(&store.view(), "after misuse: view");
     buffered.assert_view(&store.staged(), "after misuse: staged");
@@ -572,19 +588,22 @@ pub fn contract<S: Subject>(subject: S) {
 
     // layer preconditions (pure: `with` and `rebase` leave the layer as it was)
     let mut nodes = buffered.clone();
-    let layer = Layer::empty(&schema()).with(&nodes.advance(1, &[4], 1));
-    let mut held = at(5, &schema());
-    held.insert(PROBED, &probed_key(nodes.ids - 1), &[0; 4]);
-    refused("with a tip not above the layer's", || drop(layer.with(&at(4, &schema()))));
-    refused("with another schema's tables", || drop(layer.with(&at(5, &other))));
+    let layer = Layer::empty(&SCHEMA).with(&nodes.advance(1, &[4], 1));
+    let mut held = layer.changes(block_ref(5));
+    held.map(PROBED).insert(&probed_key(nodes.ids - 1), &[0; 4]);
+    refused("with a tip not above the layer's", || drop(layer.with(&layer.changes(block_ref(4)))));
+    refused("with another schema's tables", || drop(layer.with(&other.changes(block_ref(5)))));
     refused("with a key the layer holds", || drop(layer.with(&held)));
     refused("rebase onto another branch", || drop(layer.rebase(&Tip(Some(salted_ref(4, 1))))));
     refused("rebase past the layer", || drop(layer.rebase(&Tip(Some(block_ref(5))))));
     refused("a layer under durable", || {
         drop(LayeredView::new(Tip(Some(block_ref(4))), layer.clone()))
     });
+    refused("a layer over another schema's view", || {
+        drop(LayeredView::new(store.view(), other.clone()))
+    });
     let view = LayeredView::new(store.view(), layer.rebase(&store.view()));
     nodes.assert_view(&view, "layers continue after misuse");
     let rebased = layer.rebase(&Tip(Some(block_ref(4))));
-    assert_eq!(rebased, Layer::empty(&schema()), "rebase onto its tip = empty");
+    assert_eq!(rebased, Layer::empty(&SCHEMA), "rebase onto its tip = empty");
 }

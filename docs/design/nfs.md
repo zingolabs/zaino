@@ -103,8 +103,10 @@ pub trait Store: Send + 'static {
   no map key is buffered twice, before buffering anything.
 - `commit` with nothing buffered = `Ok`, nothing written (a writer's final commit is
   unconditional).
-- `PersistenceEngine`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`, `Width` are
-  unchanged.
+- Deltas are opened by the store or a layer (`Store::changes(at)`, `Layer::changes(at)`), never
+  built by an index; tables are `const` handles (`SequenceTable`, `MapTable`, declared once per
+  index in `TABLES`), written through `changes.sequence(T)` / `changes.map(T)` and read through
+  `view.sequence(T)` / `view.map(T)` ([persistence-engine.md §2](./persistence-engine.md#2-the-port)).
 - `Tiered` is deleted: its non-final half became the NFS's layers, its staging `Store::apply`
   behind `zaino_sync::Committer`.
 
@@ -120,8 +122,9 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn empty(schema: &Schema) -> Self;
+    pub fn empty(schema: &Schema) -> Self;                // the committed view's schema
     pub fn tip(&self) -> Option<BlockRef>;                // last block absorbed
+    pub fn changes(&self, at: BlockRef) -> Changes;       // the child block's empty delta
     pub fn with(&self, changes: &Changes) -> Self;        // parent + changes, structural sharing
     pub fn rebase(&self, durable: &impl View) -> Self;    // drop what `durable` now holds
 }
@@ -150,64 +153,69 @@ impl<V: MapRead> MapRead for LayeredView<V> { /* layer key → layer, else disk;
 
 ## 5. Index crates
 
-Every index crate has the same four parts. Using compact-block:
+Every index crate has the same parts. Using compact-block:
 
 ```text
 zaino-index-compact-block/src/
-  lib.rs       schema(network), BLOCKS, FORMAT, re-exports
-  fold.rs      pub fn fold(parent, block, fees) -> Changes       (pure; golden tests beside it)
+  lib.rs       FORMAT, TABLES (BLOCKS), re-exports
   reader.rs    pub struct CompactBlockReader<V>                    (typed reads over LayeredView<V>)
-  writer.rs    pub struct CompactBlockIndexWriter<S: Store>        (final stream → apply → commit)
+  writer.rs    pub struct CompactBlockIndexWriter<S: Store>        (final stream → fold → apply → commit)
+               pub fn fold(parent, block, fees, out)               (the state transition, tests beside it)
   serve.rs     ServeError, block_at, resident_block, RangeCursor   (reads RPCs answer with)
   build.rs, project.rs                                            (wire encoding, unchanged)
 ```
 
 ```rust
-// fold.rs: parent state is read, never carried
+// writer.rs: parent state is read, never carried; the delta is opened by the caller
 pub fn fold<V: SequenceRead>(
     parent: &CompactBlockReader<V>,
     block: &Block,
     fees: &BlockFees,
-) -> Result<Changes, TreeSizeOutOfRange> {
-    // asserts `block` extends `parent.tip()` (a wrong parent mis-sizes every later record)
+    out: &mut Changes,                                           // store.changes / layer.changes
+) -> Result<(), TreeSizeOutOfRange> {
+    out.assert_next(parent.tip(), block);                        // a wrong parent mis-sizes every later record
     let sizes = parent.tip_sizes().advance(block)?;              // parent record's chainMetadata
-    let mut changes = Changes::new(at, &schema(parent.network()));
-    changes.append(BLOCKS, &encode_compact_block(block, fees, &sizes));
-    Ok(changes)
+    out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
+    Ok(())
 }
 
 // reader.rs: any view (a committed view, or a `LayeredView` over one)
-pub struct CompactBlockReader<V> { view: V, network: NetworkType }
+pub struct CompactBlockReader<V> { view: V }
 impl<V: SequenceRead> CompactBlockReader<V> {
-    pub fn new(view: V, network: NetworkType) -> Self;          // a route's: snap.views().compact_block()
-    pub fn tip(&self) -> Option<BlockRef>;
-    pub fn block(&self, at: Height) -> Option<Bytes>;
-    pub fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height);
+    pub fn new(view: V) -> Self;                                 // a route's: snap.views().compact_block()
+    pub fn block(&self, at: Height) -> Option<Bytes>;            // view.sequence(BLOCKS).record(h)
+    pub(crate) fn range(&self, first: Height, last: Height, budget: usize) -> (Vec<Bytes>, Height);
     pub(crate) fn tip_sizes(&self) -> TreeSizes;
 }
 ```
 
-| Index               | fold                          | inputs      | outputs                | reader (public)                                   |
-| ------------------- | ----------------------------- | ----------- | ---------------------- | ------------------------------------------------- |
-| value-balance       | resolve prevouts, fee per tx  | —           | `Changes`, `BlockFees` | (internal: fees only)                             |
-| compact-block       | encode record + tree sizes    | `BlockFees` | `Changes`              | `tip`, `block`, `range`                           |
-| block-hash          | hash → height row (no parent) | `network`   | `Changes`              | `height_of(&BlockHash)`                           |
-| tree-state          | append commitments, frontiers | —           | `Changes`              | `treestate(h)`, `subtree_roots(pool, start, max)` |
-| transparent-address | receives, spends (outpoint)   | —           | `Changes`              | `utxos`, `balance(s)`, `transactions`             |
+| Index               | fold                          | inputs      | fills `out` with                  | reader (public)                                   |
+| ------------------- | ----------------------------- | ----------- | --------------------------------- | ------------------------------------------------- |
+| value-balance       | resolve prevouts, fee per tx  | —           | `outputs` rows (returns fees)     | (internal: fees only)                             |
+| compact-block       | encode record + tree sizes    | `BlockFees` | one `blocks` record               | `block`, `block_at`, `RangeCursor`                |
+| block-hash          | hash → height row             | —           | one `by_hash` row                 | `height_of(&BlockHash)`                           |
+| tree-state          | append commitments, frontiers | —           | height record, nodes, subtrees    | `treestate(h)`, `subtree_roots(pool, start, max)` |
+| transparent-address | receives, spends (outpoint)   | —           | `receives` + `spent` rows         | `utxos`, `balance(s)`, `transactions`             |
 
+- **Every fold has one shape**: `fold(parent: &XReader<V>, block, [inputs,] out: &mut Changes)`.
+  It only appends to `out`; its first line, `out.assert_next(parent tip, block)`, panics (naming
+  the index) on a delta opened for another block or a block off the parent tip (genesis on an
+  empty parent). Readers carry no network: the schema is the store's, built once at open.
 - **Fold order = the dependency graph**, written once in `zaino-nfs::fold_block`: value-balance
-  first (its fees feed compact-block), then the rest.
+  first (its fees feed compact-block), then the rest. Each index folds into
+  `parent.layer(kind).changes(block.at())`.
 - Readers come from a snapshot (`snap.views().compact_block()`, `Option`: `None` = disabled), not
   an `XReader::at(&snap)`: `zaino-nfs` depends on the index crates, never the reverse.
 - Fallible folds return `Result`: value-balance `FoldError` (missing prevout, negative fee,
   overflow), compact-block `TreeSizeOutOfRange` (#549), tree-state `FoldError` (a non-canonical
-  note commitment, or parent nodes that will not rebuild a frontier). A compact-block fold onto a
-  non-parent panics (value-balance's parent may be any later state: insert only).
-- Runs: tree-state exports `fold_run(parent, blocks) -> Result<Vec<Changes>, FoldError>` (one
-  batched Merkle hashing per run, split per block); value-balance has a crate-internal `fold_run`
-  (one prevout probe per run). `fold` = a run of one. Bulk sync uses runs; the NFS folds one block.
+  note commitment, or parent nodes that will not rebuild a frontier).
+- Runs: tree-state's and value-balance's crate-internal `fold_run(parent, blocks, out: &mut
+  [Changes])` fill one caller-opened delta per block (`Changes::assert_run`): one batched Merkle
+  hashing per run, one prevout probe per run. `fold` = a run of one. Bulk sync uses runs; the NFS
+  folds one block. `value_balance::fees(parent, blocks)` = a run's fees alone (no rows), against
+  any state at or past its parent (insert only): held heights' fees, re-sent after a restart.
 - transparent-address's fold is a lookup-free projection (spends keyed by outpoint, unspent =
-  a read-time miss in `spent`); its parent reader supplies only the network.
+  a read-time miss in `spent`); block-hash's reads only its header.
 - Writers (`CompactBlockIndexWriter`, `ValueBalanceIndexWriter`, `BlockHashIndexWriter`,
   `TreeStateIndexWriter`, `TransparentAddressIndexWriter`): `new(store, batch_bytes)`,
   `committed()`, `run(blocks[, fees])`; one loop each, no reorg, no tiers, no gate. The store sits
@@ -223,9 +231,9 @@ pub async fn run(mut self, mut blocks: Subscription<Final>, mut fees: Subscripti
         }
         let applied = move |store: &mut S| {
             let mut paid = paid.into_iter();
-            run.apply(store, |store, block| {                         // held skipped, folded as sent
+            run.apply(store, |store, block, out| {                    // held skipped, folded as sent
                 let fees = paid.find(|fees| fees.height == block.header().height).expect("one per step");
-                fold(&CompactBlockReader::new(store.staged(), network), block, &fees).unwrap_or_else(..)
+                fold(&CompactBlockReader::new(store.staged()), block, &fees, out).unwrap_or_else(..)
             });
         };
         self.store.compute(applied).await;                             // CPU pool, never the loop
@@ -238,9 +246,11 @@ pub async fn run(mut self, mut blocks: Subscription<Final>, mut fees: Subscripti
   steps (the tip), and when the stream is quiet for 1 s (lockstep: the first tip fold waits for
   every index to hold all it was sent); `Shutdown` = a last commit, then `None`.
 - `committed()` = the `watch::Receiver` handed to `Nfs::subscribe`: its view's tip is the durable
-  tip, and the view itself is what snapshots and root folds read.
-- Tree-state and value-balance fold a run's unfolded steps with one `fold_run` and apply folded
-  ones with `Run::apply_folded`; the rest use `Run::apply` per block.
+  tip, the view itself is what snapshots and root folds read, and its schema shapes the NFS's
+  layers for the index.
+- `Run::apply(store, fold)` opens `store.changes(block)` per unfolded step and hands it to `fold`;
+  tree-state and value-balance use `Run::apply_batch(store, |store, blocks, out| fold_run(..))`
+  instead (one delta per fresh block, one batch); both then apply the folded steps as sent.
 - Fees in bulk: value-balance sends one per unfolded step, re-folding a height it holds (insert
   only: any later state resolves the same), compact-block pops one per unfolded step, one it
   skips included; both queues stay in step across a restart with either index ahead.
@@ -459,10 +469,12 @@ if let Some((cb, vb)) = config.compact_block()? {
     // compact-block folds after value-balance (its fees)
     let mut fee_sink = FeeSink::new("fees");
     let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
-    let (span, writer) = open(&engine, &vb, value_balance::schema(network), ValueBalanceIndexWriter::new)?;
+    let schema = stores::schema(IndexKind::ValueBalance, network);  // kind + FORMAT + TABLES
+    let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
     let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
     spawn_index(&mut tasks, IndexKind::ValueBalance, span, writer.run(blocks, fee_sink));
-    let (span, writer) = open(&engine, &cb, compact_block::schema(network), CompactBlockIndexWriter::new)?;
+    let schema = stores::schema(IndexKind::CompactBlock, network);
+    let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
     let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
     spawn_index(&mut tasks, IndexKind::CompactBlock, span, writer.run(blocks, fees));
 }

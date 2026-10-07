@@ -79,6 +79,7 @@ pub struct DiskView {
 
 #[derive(Debug)]
 struct State {
+    schema: Schema,
     tip: Option<BlockRef>,
     sequences: Vec<SequencePages>,
     maps: Vec<Arc<Snapshot>>,
@@ -96,8 +97,8 @@ impl Body {
     fn empty(schema: &Schema) -> Self {
         Self {
             committed: Committed::EMPTY,
-            sequences: vec![Seals::EMPTY; schema.sequences.len()],
-            maps: vec![Vec::new(); schema.maps.len()],
+            sequences: vec![Seals::EMPTY; schema.sequences().len()],
+            maps: vec![Vec::new(); schema.maps().len()],
         }
     }
 
@@ -105,7 +106,7 @@ impl Body {
     fn encode(&self, schema: &Schema) -> Vec<u8> {
         let mut out = Vec::new();
         self.committed.encode(&mut out);
-        for (table, seals) in schema.sequences.iter().zip(&self.sequences) {
+        for (table, seals) in schema.sequences().iter().zip(&self.sequences) {
             seals.encode(table.record, &mut out);
         }
         for list in &self.maps {
@@ -118,11 +119,12 @@ impl Body {
         let mut body = BodyReader::new(bytes);
         let committed = Committed::decode(&mut body)?;
         let sequences = schema
-            .sequences
+            .sequences()
             .iter()
             .map(|table| Seals::decode(table.record, &mut body))
             .collect::<Result<_, _>>()?;
-        let maps = schema.maps.iter().map(|_| decode_list(&mut body)).collect::<Result<_, _>>()?;
+        let maps =
+            schema.maps().iter().map(|_| decode_list(&mut body)).collect::<Result<_, _>>()?;
         body.finish()?;
         Ok(Self { committed, sequences, maps })
     }
@@ -130,11 +132,11 @@ impl Body {
     /// Every file this body seals, by path under the index directory
     fn files(&self, schema: &Schema) -> Vec<(String, Sealed)> {
         let sequences = schema
-            .sequences
+            .sequences()
             .iter()
             .zip(&self.sequences)
             .flat_map(|(table, seals)| sequence::files(table, seals));
-        let maps = schema.maps.iter().zip(&self.maps).flat_map(|(table, list)| {
+        let maps = schema.maps().iter().zip(&self.maps).flat_map(|(table, list)| {
             list.iter().map(|segment| {
                 (format!("{}/{}", table.name, file_name(segment.id)), segment.sealed)
             })
@@ -161,46 +163,47 @@ impl PersistenceEngine for DiskEngine {
         let body = match &opened.body {
             Some(bytes) => Body::decode(bytes, schema)?,
             None => {
-                for table in &schema.sequences {
+                for table in schema.sequences() {
                     for name in SequenceFile::names(table) {
                         dir.ensure_empty(&name)?;
                     }
                 }
-                for table in &schema.maps {
-                    dir.ensure_empty_dir(&table.name)?;
+                for table in schema.maps() {
+                    dir.ensure_empty_dir(table.name)?;
                 }
                 Body::empty(schema)
             }
         };
 
-        for parent in schema.sequences.iter().filter_map(|table| parent(&table.name)) {
+        for parent in schema.sequences().iter().filter_map(|table| parent(table.name)) {
             dir.subdir(parent)?;
         }
         let sequences = schema
-            .sequences
+            .sequences()
             .iter()
             .zip(&body.sequences)
             .map(|(table, seals)| SequenceFile::open(self.fs.as_ref(), dir.path(), table, *seals))
             .collect::<Result<Vec<_>, _>>()?;
         let map_dirs: Vec<PathBuf> =
-            schema.maps.iter().map(|table| dir.subdir(&table.name)).collect::<io::Result<_>>()?;
+            schema.maps().iter().map(|table| dir.subdir(table.name)).collect::<io::Result<_>>()?;
         if opened.body.is_none() {
             dir.commit(&body.encode(schema))?;
         }
 
-        let mut maps = Vec::with_capacity(schema.maps.len());
-        for ((table, list), map_dir) in schema.maps.iter().zip(&body.maps).zip(&map_dirs) {
+        let mut maps = Vec::with_capacity(schema.maps().len());
+        for ((table, list), map_dir) in schema.maps().iter().zip(&body.maps).zip(&map_dirs) {
             let fs = Arc::clone(&self.fs);
             maps.push(SegmentLog::open(fs, map_dir, table, list, self.fanout)?);
         }
         let state = State {
+            schema: *schema,
             tip: body.committed.tip,
             sequences: sequences.iter().map(|file| file.pages(None)).collect::<io::Result<_>>()?,
             maps: maps.iter().map(|log| Arc::clone(log.snapshot())).collect(),
         };
         Ok(DiskStore {
             dir,
-            schema: schema.clone(),
+            schema: *schema,
             sequences,
             maps,
             view: DiskView { state: Arc::new(state) },
@@ -260,14 +263,14 @@ impl DiskStore {
 
     /// Buffer's appends + rows written and sealed → manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
-        for (table, file) in self.schema.sequence_ids().zip(&mut self.sequences) {
-            for record in self.buffer.records(table) {
+        for (table, file) in self.schema.sequences().iter().zip(&mut self.sequences) {
+            for record in self.buffer.records(table.id) {
                 file.append(record)?;
             }
         }
         let mut lists = Vec::with_capacity(self.maps.len());
-        for (table, log) in self.schema.map_ids().zip(&mut self.maps) {
-            let rows = self.buffer.rows(table).iter();
+        for (table, log) in self.schema.maps().iter().zip(&mut self.maps) {
+            let rows = self.buffer.rows(table.id).iter();
             lists.push(log.batch(rows.map(|(key, value)| (&key[..], &value[..])).collect())?);
         }
         let sequences =
@@ -281,6 +284,7 @@ impl DiskStore {
 
         let previous = &self.view.state;
         let state = State {
+            schema: self.schema,
             tip: Some(tip),
             sequences: self
                 .sequences
@@ -353,6 +357,10 @@ impl DiskView {
 impl View for DiskView {
     fn tip(&self) -> Option<BlockRef> {
         self.state.tip
+    }
+
+    fn schema(&self) -> &Schema {
+        &self.state.schema
     }
 }
 

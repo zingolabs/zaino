@@ -14,3 +14,15 @@ is an immutable snapshot of the best chain (`best`, `final_tip`, `hash_at`, `hea
 `locator`) and of the side branches held beside it (`forks`, `branch`, `holds`). Feature \
 `testing`: in-memory regtest chains.
 """
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "breaking"
+section = "changed"
+description = """
+`schema(network)` is replaced by `FORMAT` + `TABLES` (the header store's layout version and its \
+one table); `HeaderStore::open` is unchanged.
+"""
+migration = """
+Verify a header store with `Schema::new(IndexKind::HeaderChain, FORMAT, network, TABLES)`.
+"""

@@ -16,19 +16,20 @@ outputs   OutPoint::encode() = txid(32) ‖ vout u32   ->  value_zat u64      po
 
 Keys and values are big-endian. Every transparent output is kept, spent or not
 (Shape B, insert only), so any height re-resolves identically.
-`schema(network)` is the store's `Schema`; `zainod verify` checks the directory
-against it (`PersistenceEngine::verify`).
+`TABLES` + `FORMAT` declare the store; `zainod verify` checks the directory
+against `Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES)`
+(`PersistenceEngine::verify`).
 
 ## Wiring
 
 ```rust
-use zaino_internal_value_balance::ValueBalanceIndexWriter;
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
+use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
-let schema = zaino_internal_value_balance::schema(network);
+let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
 let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
 // subscribed before compact_block (the NFS asserts it): its fees feed compact-block's fold
 let blocks = nfs.subscribe(IndexKind::ValueBalance, writer.committed(), queue);
@@ -52,21 +53,27 @@ tokio::spawn(writer.run(blocks, fee_sink));
 ## Folding
 
 ```rust,ignore
-let parent = ValueBalanceReader::new(view, network); // any V: MapRead
-let (changes, fees) = fold(&parent, &block)?;         // Result<_, FoldError>
+let parent = ValueBalanceReader::new(view);           // any V: MapRead
+let mut out = store.changes(block.at());              // or the parent layer's `changes`
+let fees = fold(&parent, &block, &mut out)?;          // Result<BlockFees, FoldError>
+let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, any later parent
 ```
 
-- `fold(parent, block)` is the index's whole state transition, pure: the
-  block's outputs as one `Changes` (one `outputs` row each) and its
-  `BlockFees`, every prevout resolved from the block itself or through
-  `parent`.
-- `parent` = any state at or past the block's parent: the map is insert only,
-  so a later state resolves the same block identically (a held height re-folds
-  against the state past it).
+- `fold(parent, block, out)` is the index's whole state transition (in
+  `writer.rs`, beside the writer loop): the block's outputs into `out` (one
+  `outputs` row each) and its `BlockFees` returned, every prevout resolved from
+  the block itself or through `parent`. `parent` must hold exactly the block's
+  parent (genesis: empty) and `out` must be opened for the block, else a panic
+  naming the index.
+- `fees(parent, blocks)` = a run's `BlockFees` alone, no rows: `parent` = any
+  state at or past the first block's parent (the map is insert only, so a later
+  state resolves the same blocks identically). The writer re-folds held heights
+  through it; the NFS tests price compact-block's fold with it.
 - `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
   internal (fees are the only consumer).
-- The writer folds a run's unfolded steps at once (`fold_run`, crate-internal): block
-  `k` resolves against `parent` plus the outputs of blocks `0..=k`, and every
+- The writer folds a run's unfolded steps at once (`fold_run`, crate-internal,
+  through `Run::apply_batch`: one caller-opened delta per block): block `k`
+  resolves against `parent` plus the outputs of blocks `0..=k`, and every
   prevout from outside the run is asked in one `MapRead::values` call. A
   sandblast transaction spends thousands of outputs, and one random lookup each
   is one cold page fault each. A block spending an output that only a later
@@ -78,8 +85,9 @@ let (changes, fees) = fold(&parent, &block)?;         // Result<_, FoldError>
 ## Resolved per run
 
 Each run (`Committer::next`, queued steps to `batch_bytes`) folds its unfolded
-steps as one `fold_run` onto `staged()` on the CPU pool. Each step it does not
-hold is applied; every unfolded step's fees go out, held ones too. Resolving at
+steps it does not hold as one `fold_run` onto `staged()` on the CPU pool and
+applies them; held ones (a restart's resend) are priced by `fees` with no rows.
+Every unfolded step's fees go out, held ones first. Resolving at
 commit time instead would deadlock, since compact-block waits on fees step by
 step while a commit waits for a whole batch.
 

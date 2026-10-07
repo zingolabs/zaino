@@ -7,33 +7,30 @@ above the durable root and every snapshot reads through), and the engine behind 
 maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
 crash protocol: [`docs/design/durability.md`](../../docs/design/durability.md).
 
-An index owns only its schema and its record layouts: fixed-width `encode` /
-`decode` functions beside a golden-bytes test (e.g.
-`zaino-index-tree-state/src/heights.rs`). The engine sees bytes.
+An index owns only its tables (`FORMAT` + `TABLES`, constants) and its record
+layouts: fixed-width `encode` / `decode` functions beside a golden-bytes test
+(e.g. `zaino-index-tree-state/src/heights.rs`). The engine sees bytes.
 
 ## Declaring, opening, committing, reading
 
 ```rust
 use zaino_persistence::{
-    Changes, DiskEngine, IndexKind, MapId, MapRead, PersistenceEngine, Schema, SequenceId,
-    SequenceRead, Store, View, Width,
+    DiskEngine, IndexKind, MapRead, MapTable, PersistenceEngine, Schema, SequenceRead,
+    SequenceTable, Store, Tables, View, Width,
 };
 
-const BLOCKS: SequenceId = SequenceId(0);
-const SPENT: MapId = MapId(0);
+const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable); // blocks.dat + .idx
+const SPENT: MapTable = MapTable::new(0, "spent", Width::fixed(36), Width::fixed(36), 0); // spent/
+pub const FORMAT: u16 = 1;
+pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]);   // ids = positions, checked at compile time
 
-pub fn schema(network: NetworkType) -> Schema {
-    Schema::new(IndexKind::CompactBlock, FORMAT, network)
-        .with_sequence(BLOCKS, "blocks", Width::Variable)               // blocks.dat + blocks.idx
-        .with_map(SPENT, "spent", Width::fixed(36), Width::fixed(36), 0) // spent/<id>.seg
-}
-
+let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES); // Copy, built once
 let engine = DiskEngine::new(fs);
-let mut store = engine.open(path, &schema(network))?;   // fresh = empty, else the committed tip
+let mut store = engine.open(path, &schema)?;              // fresh = empty, else the committed tip
 
-let mut changes = Changes::new(tip, store.schema());
-changes.append(BLOCKS, &record);                         // at the end, in call order
-changes.insert(SPENT, &outpoint.encode(), &spend);       // keys unique
+let mut changes = store.changes(block.at());              // one block's empty delta
+changes.sequence(BLOCKS).append(&record);                 // at the end, in call order
+changes.map(SPENT).insert(&outpoint.encode(), &spend);    // keys unique
 store.apply(changes);                                     // buffered: in staged(), not in view()
 if store.buffered_bytes() >= batch {
     store.commit()?;                                      // every buffer, one fsync, then in view()
@@ -42,27 +39,37 @@ if store.buffered_bytes() >= batch {
 let view = store.view();                                  // committed only (what serving pins)
 let staged = store.staged();                              // LayeredView: committed + buffered
 view.tip();                                               // Option<BlockRef>
-view.record(BLOCKS, h);  view.records(BLOCKS, a..b);      // zero-copy mmap slices
-view.value(SPENT, &key); view.values(SPENT, &keys);       // answers in `keys` order
-view.range(SPENT, &start, &end, limit);                   // [start, end); None = over `limit`
+let blocks = view.sequence(BLOCKS);                       // one table of one view
+blocks.count(); blocks.record(h); blocks.records(a..b);   // zero-copy mmap slices
+let spent = view.map(SPENT);
+spent.value(&key); spent.values(&keys);                   // answers in `keys` order
+spent.range(&start, &end, limit);                         // [start, end); None = over `limit`
 ```
 
 - **`IndexKind`** is the manifest's kind tag, and `IndexKind::name()` (`const`,
   snake_case: `compact_block`, …, `header_chain`) is the index's one spelling:
   sink subscription, metric label, statusz key, task name, default directory,
   snapshot entry and a writer's panic messages all read it.
-- **Ids** are declared in order (`SequenceId(0)`, `(1)`, …). A name with a `/`
-  puts the table's files in a sub-directory (`"sapling/l00"`).
+- **Tables** are `const` handles: `id` = position among the schema's sequences
+  (or maps), checked by `Tables::new`. A name with a `/` puts the table's files
+  in a sub-directory (`"sapling/l00"`). `SequenceId` / `MapId` are the engine
+  side of the read traits; an index never names one.
 - **Map keys** compare as bytes: encode numeric fields big-endian. They lead
   with at least 8 uniform bytes (a hash, a txid), because each segment's filter
   shards on them. `scope` gives the leading key bytes every range read shares:
   the filter covers that prefix, and a range whose bounds share it visits only
   the segments that may hold it. Scope 0 means point lookups, with whole keys
   filtered and segments mapped for random access.
-- **`Changes`** holds one buffer per table, shaped by the schema. Fixed-width
-  tables cost only their bytes; variable ones add an end offset per item. A
-  fixed-width item of the wrong size, or an undeclared id, panics at the
-  `append` or `insert` call, naming the table.
+- **`Changes`** holds one buffer per table, shaped by the schema, and is opened
+  only by `Store::changes(at)` or `Layer::changes(at)`. Fixed-width tables cost
+  only their bytes; variable ones add an end offset per item. A handle of
+  another schema panics at `sequence` / `map` (writes and reads alike), a
+  fixed-width item of the wrong size at `append` / `insert`, each naming the
+  table.
+- **Folds** open with `out.assert_next(parent_tip, block)` (or
+  `Changes::assert_run(parent_tip, blocks, outs)` for a run): panics naming the
+  index on a delta opened for another block, or a block that is not one height
+  above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
 - **`apply`** buffers final changes in RAM (a `Layer`): `staged()` reads them,
   `view()` and the disk do not until `commit`. It panics, buffering nothing,
   on changes built for another schema, a tip not above the last applied one,
@@ -100,7 +107,7 @@ view.range(SPENT, &start, &end, limit);                   // [start, end); None 
 ## Verifying offline
 
 ```rust
-let report = DiskEngine::new(fs).verify(path, &schema(network))?; // plain std::fs reads, no lock
+let report = DiskEngine::new(fs).verify(path, &schema)?;  // plain std::fs reads, no lock
 report.heights;          // blocks committed from genesis
 report.units;            // Vec<Checked { name, committed_bytes, orphaned_bytes, lost, bad_sums, bad_pages }>
 report.is_clean();
@@ -181,10 +188,12 @@ sequence the records past durable's length, per map the rows above durable
 `zaino-nfs` keeps one per non-final block.
 
 ```rust
-let root = Layer::empty(&schema);
+let root = Layer::empty(store.view().schema()); // the committed view's schema
+let mut changes = root.changes(block.at());      // the child block's empty delta
+fold(&parent, &block, &mut changes);
 let child = root.with(&changes);            // parent + changes, structural sharing
 let view = LayeredView::new(store.view(), child.clone()); // layer first, then durable
-view.record(BLOCKS, h); view.range(SPENT, &start, &end, limit); // same read traits
+view.sequence(BLOCKS).record(h); view.map(SPENT).range(&start, &end, limit); // same handles
 view.durable();                              // the committed view alone (the seam)
 let child = child.rebase(&store.view());     // after a commit: what durable holds dropped
 ```
@@ -194,12 +203,13 @@ let child = child.rebase(&store.view());     // after a commit: what durable hol
 - `rebase` drops every block through durable's tip; it panics when that tip is
   past the layer or not one of its blocks (another branch).
 - `LayeredView::new` panics on a layer that is not above durable's tip (an
-  un-rebased layer would read its blocks twice).
+  un-rebased layer would read its blocks twice) or of another schema.
 - `range` merges both runs and keeps the `None` = over `limit` rule.
 
 ## Who drives a store
 
-- Index writers buffer final blocks with `Store::apply` and commit through
+- Index writers fold each final block into `Store::changes(block)`, buffer it
+  with `Store::apply` and commit through
   [`zaino_sync::Committer`](../zaino-sync/usage.md) (batch full, after a folded
   run, or 1 s idle); a bulk fold reads its parent through `staged()`.
 - Non-final blocks never reach a store: `zaino-nfs` holds one `Layer` per index

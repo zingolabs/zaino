@@ -8,10 +8,10 @@ holds the same block there.
 ## Wiring
 
 ```rust
-use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
-use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
+use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES};
+use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
-let schema = zaino_internal_block_hash_to_height::schema(network);
+let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
 let writer = BlockHashIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
 let blocks = nfs.subscribe(IndexKind::BlockHash, writer.committed(), queue_bytes);
 tokio::spawn(writer.run(blocks));
@@ -21,13 +21,15 @@ tokio::spawn(writer.run(blocks));
   `S::View: MapRead`; zainod picks `DiskEngine`.
 - `run` follows the final stream (`"block_hash"`) through `zaino_sync::Committer`
   ([the writer shape](../zaino-sync/usage.md#committer)): each unfolded step not
-  held = `fold(&block, network)`, each folded step applied as sent.
-  `committed()` = the committed-view watch the NFS reads.
+  held = `fold` into the delta `Run::apply` opened for it, each folded step
+  applied as sent. `committed()` = the committed-view watch the NFS reads.
 
 ## Folding and reading
 
-- `fold(block, network) -> Changes` is the index's whole state transition,
-  pure: one `by_hash` row from the header. It reads no parent state.
+- `fold(parent, block, out)` is the index's whole state transition (in
+  `writer.rs`, beside the writer loop): one `by_hash` row from the header into
+  `out`. It reads only the parent's tip: the block must extend it and `out`
+  must be opened for the block, else a panic naming the index.
 - `BlockHashReader<V>` is generic over any `V: MapRead` (a store's committed
   view or a `LayeredView` over one): `height_of(&BlockHash)`.
 - Fallible only at boot (the engine's `open` → `StoreError`). `run` returns at
@@ -56,5 +58,6 @@ by_hash   hash 32 (protocol byte order) → height u32 BE      point lookups onl
 ```
 
 - Segments, merges, the manifest and crash recovery are the engine's.
-- `schema(network)` is the store's `Schema`; `zainod verify` checks the
-  directory against it (`PersistenceEngine::verify`).
+- `TABLES` + `FORMAT` declare the store; `zainod verify` checks the directory
+  against `Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)`
+  (`PersistenceEngine::verify`).

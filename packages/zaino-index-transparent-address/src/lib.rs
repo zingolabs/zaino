@@ -1,6 +1,6 @@
 //! Transparent address → received outputs, each with its spend (if any)
 //!
-//! # Data structure: two maps in one store (`zaino_persistence`, [`schema`])
+//! # Data structure: two maps in one store (`zaino_persistence`, [`TABLES`])
 //!
 //! ```text
 //! receives  addr 21 ([hash160][kind]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
@@ -19,50 +19,44 @@
 //! # Lookup ([`TransparentAddressReader::utxos_of`], as of the served tip)
 //!
 //! ```text
-//! address ──▶ receives:  `range(RECEIVES, (addr, start), (addr, tip + 1), budget)`
+//! address ──▶ receives:  `map(RECEIVES).range((addr, start), (addr, tip + 1), budget)`
 //!                        (layer rows merged over committed ones, by key)
 //!                           │
 //!                           ▼
-//! each received outpoint ──▶ spent:  one `values(SPENT, outpoints)` ──found ≤ tip──▶ spent
-//!                                    (layer first, then committed)  └──otherwise──▶ unspent
+//! each received outpoint ──▶ spent:  one `map(SPENT).values(outpoints)` ──found ≤ tip──▶ spent
+//!                                    (layer first, then committed)     └──otherwise──▶ unspent
 //! ```
 //!
 //! - balance = sum of the unspent; transactions = receiving txids + their spenders
 //! - `docs/design/index-data-structures.md` §5
 
 mod address;
-mod fold;
 mod key;
 mod reader;
 mod serve;
 mod writer;
 
-pub use fold::fold;
 pub use reader::TransparentAddressReader;
 pub use serve::{AddressUtxo, ServeError, TransactionRef, DEFAULT_MAX_ADDRESS_ROWS};
-pub use writer::TransparentAddressIndexWriter;
+pub use writer::{fold, TransparentAddressIndexWriter};
 
-use zaino_persistence::{IndexKind, MapId, Schema, Width};
-use zcash_protocol::consensus::NetworkType;
-
-use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND};
+use zaino_persistence::{MapTable, Tables, Width};
 use zaino_primitives::types::OutPoint;
 
-/// On-disk layout version
-const FORMAT: u16 = 1;
-const RECEIVES: MapId = MapId(0);
-const SPENT: MapId = MapId(1);
+use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND};
 
-/// What the index stores (`zainod verify` scrubs a directory against it)
-pub fn schema(network: NetworkType) -> Schema {
-    let width = |bytes: usize| Width::fixed(bytes as u32);
-    Schema::new(IndexKind::TransparentAddress, FORMAT, network)
-        .with_map(
-            RECEIVES,
-            "receives",
-            width(RECEIVE_KEY),
-            width(RECEIVE_VALUE),
-            AddressKey::LEN as u32,
-        )
-        .with_map(SPENT, "spent", width(OutPoint::LEN), width(SPEND), 0)
-}
+/// On-disk layout version
+pub const FORMAT: u16 = 1;
+
+/// What the store holds (`zainod` opens and verifies it by these)
+pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
+
+const RECEIVES: MapTable = MapTable::new(
+    0,
+    "receives",
+    Width::fixed(RECEIVE_KEY as u32),
+    Width::fixed(RECEIVE_VALUE as u32),
+    AddressKey::LEN as u32,
+);
+const SPENT: MapTable =
+    MapTable::new(1, "spent", Width::fixed(OutPoint::LEN as u32), Width::fixed(SPEND as u32), 0);

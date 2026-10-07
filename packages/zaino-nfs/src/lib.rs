@@ -33,7 +33,7 @@ use crate::report::Progress;
 use crate::snapshot::Publisher;
 
 pub use crate::emit::describe_metrics;
-pub use crate::fold::{schema, FoldError, INDEXES};
+pub use crate::fold::{FoldError, INDEXES};
 pub use crate::report::REPORT_INTERVAL;
 pub use crate::snapshot::{At, Branch, ChainParams, NfsHandle, Published, Snapshot, Views};
 
@@ -111,7 +111,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         let fees = self.root.get(IndexKind::ValueBalance).is_some();
         let ordered = kind != IndexKind::CompactBlock || fees;
         assert!(ordered, "compact_block folds on value_balance's fees: subscribe that first");
-        self.root.insert(kind, Layer::empty(&schema(kind, self.params.network)));
+        self.root.insert(kind, Layer::empty(committed.borrow().schema()));
         self.committed.insert(kind, committed);
         self.sink.subscribe(kind.name(), queue)
     }
@@ -270,7 +270,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     /// `folded` = `None`: the root (committed views alone)
     fn views(&self, committed: &PerIndex<V>, folded: Option<&Folded>) -> Views<V> {
         let layers = folded.map_or(&self.root, |folded| &folded.layers);
-        Views::new(self.params.network, committed, layers)
+        Views::new(committed, layers)
     }
 
     fn diverged(&self, diverged: Diverged) -> NfsError {

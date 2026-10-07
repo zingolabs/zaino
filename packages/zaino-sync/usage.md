@@ -23,8 +23,8 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
     pub async fn run(mut self, mut blocks: Subscription<Final>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
-                let network = store.schema().network;
-                run.apply(store, |store, block| fold(&MyReader::new(store.staged(), network), block));
+                // `out` = store.changes(block), opened by `apply` for each unfolded step
+                run.apply(store, |store, block, out| fold(&MyReader::new(store.staged()), block, out));
             };
             self.store.compute(applied).await;      // folds + applies on the CPU pool
         }
@@ -80,10 +80,13 @@ One writer's store + the committed-view `watch` the NFS reads.
 
 `Run { unfolded: Vec<(Height, Arc<Block>)>, folded: Vec<(Height, Arc<Folds>)> }`:
 
-- `run.apply(store, fold)`: each step `store` does not hold, in order; unfolded ones through
-  `fold(store, block)` (parent = `store.staged()`), folded ones as sent
-- `run.apply_folded(store)`: the folded steps only (a writer folding its unfolded steps as one run:
-  tree-state, value-balance)
+- `run.apply(store, fold)`: each step `store` does not hold, in order; each unfolded one through
+  `fold(store, block, &mut out)` into `out = store.changes(block)` (parent = `store.staged()`,
+  earlier blocks applied), then the folded ones as sent
+- `run.apply_batch(store, fold) -> T`: the same, with the unfolded steps `store` lacks folded as
+  one batch, `fold(store, &blocks, &mut outs)` filling one opened delta per block (parent =
+  `store.staged()` before the batch; tree-state's hashing, value-balance's prevout probe); `T` =
+  `fold`'s answer (value-balance: the fees)
 - `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip)
 
 ## Fees: `FeeSink`

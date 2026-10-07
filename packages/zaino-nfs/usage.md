@@ -30,8 +30,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold |
   bounded by what the chain `holds`).
 - `subscribe(kind, committed, queue)`: enables `kind`. `committed` is a
   `watch::Receiver<V>` of the index store's committed view, sent after every commit: its tip is
-  the index's durable tip, and the view is what snapshots and root folds read. Panics on a kind
-  twice, or `CompactBlock` before `ValueBalance`.
+  the index's durable tip, the view is what snapshots and root folds read, and its schema
+  (`View::schema`) shapes the index's layers. Panics on a kind twice, or `CompactBlock` before
+  `ValueBalance`.
 - `run(cancel)`: cancel → `Ok`; either way the final stream ends with `Shutdown`.
   `Diverged { index, .. }` = an index's durable block off the final chain (resync), `Fold` = an
   index's fold refused a verified block, `ChainGone` / `WriterGone(index)` = an input dropped.
@@ -47,7 +48,7 @@ ascending, never retracted. The writers' loop and commit cadence are
 
 | `Final.folds` | Meaning                                         | Writer                              |
 | ------------- | ----------------------------------------------- | ----------------------------------- |
-| `None`        | below the first folded parent (bulk sync)       | folds it itself (`fold`, `fold_run`) |
+| `None`        | below the first folded parent (bulk sync)       | folds it into `store.changes(block)` (`Run::apply` / `apply_batch`) |
 | `Some(folds)` | folded once by the NFS (the tip)                | `store.apply(folds.get(kind).clone())` |
 
 - Once one step is folded, every later one is too (until a restart).
@@ -129,8 +130,11 @@ breaks its sync probes):
 ## Folds: `fold_block`
 
 `fold.rs` is the one place indexes meet, in dependency order: value-balance (its fees) →
-compact-block → block-hash → tree-state → transparent-address, each only if enabled. A node's
-`Folded` = the final stream's `Folds` + one `Layer` per index (`parent layer.with(own Changes)`).
+compact-block → block-hash → tree-state → transparent-address, each only if enabled. Each index
+folds into the delta its parent layer opens (`parent.layer(kind).changes(block.at())`); a node's
+`Folded` = the final stream's `Folds` (those deltas) + one `Layer` per index
+(`parent layer.with(delta)`). Readers carry no network: each schema is its store's, read off the
+committed view.
 
 ## The core: `NfsCore<F>`
 

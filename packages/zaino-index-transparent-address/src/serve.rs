@@ -162,20 +162,22 @@ impl<V: MapRead> TransparentAddressReader<V> {
 mod tests {
     use std::path::Path;
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store};
+    use zaino_persistence::{fs::SimFs, DiskEngine, IndexKind, PersistenceEngine, Schema, Store};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
     use zaino_primitives::types::OutPoint;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
-    use crate::{fold, schema};
+    use crate::{fold, FORMAT, TABLES};
+
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
     /// - 0, 1 committed, 2 buffered (committed view + layer): 1 pays `paid` 42, 2 spends it
     /// - Tip 2: spend counts; `as_of(1)` hides it (view ahead of the served tip)
     /// - Stranger + heights past the tip → empty, never an error
     #[test]
     fn as_of_hides_rows_past_the_served_tip_and_an_unpaid_address_answers_empty() {
-        let network = NetworkType::Regtest;
         let (paid, stranger) = ([0x01; 20], [0xff; 20]);
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.coinbase(|c| c.txid([0x77; 32]).pay(&p2pkh(paid), 42)));
@@ -185,15 +187,16 @@ mod tests {
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
         let mut store =
-            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
+            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &SCHEMA).expect("open");
         for (height, block) in chain.blocks(two).iter().enumerate() {
-            let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
+            let mut changes = store.changes(block.at());
+            fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
             store.apply(changes);
             if height == 1 {
                 store.commit().expect("SimFs commit");
             }
         }
-        let at_two = TransparentAddressReader::new(store.staged(), network);
+        let at_two = TransparentAddressReader::new(store.staged());
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
             outpoint: OutPoint { txid: TransactionId::from([0x77; 32]), vout: 0 },
@@ -227,7 +230,6 @@ mod tests {
     ///   list or a partial balance)
     #[test]
     fn a_request_over_its_row_budget_is_refused_whole_by_every_method() {
-        let network = NetworkType::Regtest;
         let (first, second) = (
             TransparentAddress::PublicKeyHash([0x01; 20]),
             TransparentAddress::PublicKeyHash([0x02; 20]),
@@ -239,16 +241,17 @@ mod tests {
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10).pay(&pays_second, 10)));
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         let mut store =
-            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &schema(network)).expect("open");
+            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &SCHEMA).expect("open");
         for (height, block) in chain.blocks(three).iter().enumerate() {
-            let changes = fold(&TransparentAddressReader::new(store.staged(), network), block);
+            let mut changes = store.changes(block.at());
+            fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
             store.apply(changes);
             if height == 2 {
                 store.commit().expect("SimFs commit");
             }
         }
         let budget = |rows: usize| {
-            TransparentAddressReader::new(store.staged(), network)
+            TransparentAddressReader::new(store.staged())
                 .with_max_rows(NonZeroUsize::new(rows).expect("non-zero"))
         };
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });

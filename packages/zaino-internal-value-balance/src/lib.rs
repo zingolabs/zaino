@@ -22,29 +22,24 @@
 //!                                    └─────────▶ `FoldError::MissingPrevout`
 //! ```
 
-mod fold;
 mod reader;
 mod writer;
 
-pub use fold::{fold, FoldError};
 pub use reader::ValueBalanceReader;
-pub use writer::ValueBalanceIndexWriter;
+pub use writer::{fees, fold, FoldError, ValueBalanceIndexWriter};
 
-use zaino_persistence::{IndexKind, MapId, Schema, Width};
+use zaino_persistence::{MapTable, Tables, Width};
 use zaino_primitives::types::{OutPoint, Zatoshis, ZatoshisOverflow};
-use zcash_protocol::consensus::NetworkType;
 
 /// On-disk layout version
-const FORMAT: u16 = 1;
-const OUTPUTS: MapId = MapId(0);
-const VALUE: usize = 8;
+pub const FORMAT: u16 = 1;
 
-/// What the store holds (`zainod verify` reads by it)
-pub fn schema(network: NetworkType) -> Schema {
-    let (key, value) = (Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32));
-    Schema::new(IndexKind::ValueBalance, FORMAT, network)
-        .with_map(OUTPUTS, "outputs", key, value, 0)
-}
+/// What the store holds (`zainod` opens and verifies it by these)
+pub const TABLES: Tables = Tables::new(&[], &[OUTPUTS]);
+
+const VALUE: usize = 8;
+const OUTPUTS: MapTable =
+    MapTable::new(0, "outputs", Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32), 0);
 
 fn encode_value(value: Zatoshis) -> [u8; VALUE] {
     value.as_u64().to_be_bytes()

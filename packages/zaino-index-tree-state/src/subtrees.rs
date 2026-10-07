@@ -38,7 +38,7 @@ pub(crate) fn entry(
     pool: ShieldedPool,
     index: u64,
 ) -> Option<SubtreeEntry> {
-    let bytes = view.record(subtree_table(pool), index)?;
+    let bytes = view.sequence(subtree_table(pool)).record(index)?;
     Some(decode(bytes[..].try_into().expect("ENTRY bytes")))
 }
 
