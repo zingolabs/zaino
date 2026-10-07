@@ -21,4 +21,4 @@ pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
 pub use rules::{check, link_run, Checked, Rejected};
 pub use store::{schema, HeaderStore, Record};
-pub use verified::VerifiedChain;
+pub use verified::{Fork, VerifiedChain};

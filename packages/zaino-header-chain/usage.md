@@ -103,6 +103,12 @@ answers never change (H5), whatever the chain does after.
 | `final_tip()` | the last final block (`None` = nothing final); never moves back |
 | `hash_at(h)` / `header_at(h)` | the best chain at any `h ≤ best` (final heights from the store): hash, merkle root, time, nBits, cumulative work |
 | `locator()` | zcashd's `GetLocator`: the tip, consecutive ancestors, then doubling steps, ending at the final tip (genesis while nothing is final) |
+| `forks()` | one `Fork { from, tip, cumulative_work }` per side leaf (at most 32, H4), most work first; `from` = its best-chain parent, at or above the final tip |
+| `branch(tip)` | the side blocks above the fork's `from` up to `tip`, ascending (empty = `tip` not a side block) |
+| `holds(at)` | `at` on the best chain (final included), or a side block held above the final tip: what a consumer of side state may keep (the NFS prunes by it) |
+
+The tree above the final tip (`nodes`, `leaves`) is `imbl` too: `verified()` shares it, so a
+published chain's forks never change either.
 
 ## Invariants, checked
 
@@ -136,7 +142,8 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
 - Model (`random_header_trees_answer_like_the_naive_model`): random trees under
   any-nBits rules (work varies, most work ≠ highest) with orphan runs, side-branch
   sprays past the bounds, future headers then clock advances, finalizations and
-  reopens, against a naive tree; `check()` after every insert.
+  reopens, against a naive tree; `check()` after every insert; `forks` / `branch` /
+  `holds` against each side leaf's mined ancestry.
 - Fire drills: each check in `check()` and each precondition, seen firing on a
   planted bug.
 - Builder agreement (`testing::the_builders_best_tip_is_the_real_header_chains_best`):

@@ -2,18 +2,31 @@
 //!
 //! - clone = refcounts (`imbl` path, store view at the final tip): a holder's answers never change
 
+use std::cmp::Reverse;
+
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
-use crate::chain::BestTip;
+use crate::chain::{BestTip, Node};
 use crate::store::{HeaderView, Record};
 
-/// Above the final tip: `above[i]` = best branch at `final + 1 + i`; at or below: the store's view
+/// - `above[i]` = best branch at `final + 1 + i`; at or below the final tip: the store's view
+/// - `nodes`, `leaves` = the header tree above the final tip, every branch (side ones: [`Fork`])
 #[derive(Debug, Clone)]
 pub struct VerifiedChain {
     best: BestTip,
     final_tip: Option<BlockRef>,
     above: imbl::Vector<Record>,
     finals: HeaderView,
+    nodes: imbl::HashMap<BlockHash, Node>,
+    leaves: imbl::HashSet<BlockHash>,
+}
+
+/// Side branch held beside the best: `from` = its best-chain parent (at or above the final tip)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fork {
+    pub from: BlockRef,
+    pub tip: BlockRef,
+    pub cumulative_work: u128,
 }
 
 /// zcashd `CChain::GetLocator`: the step doubles once the locator holds more than this many
@@ -25,9 +38,55 @@ impl VerifiedChain {
         final_tip: Option<BlockRef>,
         above: imbl::Vector<Record>,
         finals: HeaderView,
+        nodes: imbl::HashMap<BlockHash, Node>,
+        leaves: imbl::HashSet<BlockHash>,
     ) -> Self {
         assert_eq!(finals.tip(), final_tip, "H5: the store view sits at the final tip");
-        Self { best, final_tip, above, finals }
+        Self { best, final_tip, above, finals, nodes, leaves }
+    }
+
+    /// One per side leaf (≤ `SIDE_TIPS`, H4), most work first, first received on a tie
+    pub fn forks(&self) -> Vec<Fork> {
+        let best = self.best.block.hash;
+        let mut leaves: Vec<&Node> = self
+            .leaves
+            .iter()
+            .filter(|leaf| **leaf != best)
+            .map(|leaf| &self.nodes[leaf])
+            .collect();
+        leaves.sort_by_key(|leaf| (Reverse(leaf.record.cumulative_work), leaf.received));
+        let fork = |leaf: &Node| {
+            let lowest = *self.off_best(leaf.record.hash).last().expect("a side leaf is off best");
+            let height = lowest.height.checked_sub(1).expect("genesis is on every best chain");
+            let from = BlockRef { hash: lowest.parent, height };
+            Fork { from, tip: leaf.at(), cumulative_work: leaf.record.cumulative_work }
+        };
+        leaves.into_iter().map(fork).collect()
+    }
+
+    /// Side blocks from the fork's `from` (exclusive) up to `tip`; empty = `tip` not a side block
+    pub fn branch(&self, tip: &BlockHash) -> Vec<BlockRef> {
+        self.off_best(*tip).iter().rev().map(|node| node.at()).collect()
+    }
+
+    /// On the best chain (final included), or a side block held above the final tip
+    pub fn holds(&self, at: BlockRef) -> bool {
+        let side = self.nodes.get(&at.hash).is_some_and(|node| node.height == at.height);
+        side || self.hash_at(at.height) == Some(at.hash)
+    }
+
+    /// Side nodes from `tip` down to the best chain, `tip` first
+    fn off_best(&self, tip: BlockHash) -> Vec<&Node> {
+        let mut walked = Vec::new();
+        let mut at = tip;
+        while let Some(node) = self.nodes.get(&at) {
+            if self.hash_at(node.height) == Some(at) {
+                break;
+            }
+            walked.push(node);
+            at = node.parent;
+        }
+        walked
     }
 
     pub fn best(&self) -> BlockRef {

@@ -11,5 +11,6 @@ time past, 2-hour future bound, cumulative work), keeps a bounded tree of valid 
 the final boundary and tracks the most-work tip. `finalize` writes final headers to \
 `HeaderStore` (on `zaino-persistence`), from which `HeaderChain::open` resumes. `VerifiedChain` \
 is an immutable snapshot of the best chain (`best`, `final_tip`, `hash_at`, `header_at`, \
-`locator`). Feature `testing`: in-memory regtest chains.
+`locator`) and of the side branches held beside it (`forks`, `branch`, `holds`). Feature \
+`testing`: in-memory regtest chains.
 """

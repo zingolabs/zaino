@@ -6,8 +6,10 @@
 //!   the final chain as a list; best = the max-work leaf (first received on a tie), eviction =
 //!   the lowest-work side leaf (last received on a tie), both recomputed from scratch
 //! - checked after every move: `check()`, best, final tip, boundary, tree size, every height of
-//!   the published chain (header fields, final ones from the store), its locator, and the chain
-//!   published one move earlier still answering as it did (H5)
+//!   the published chain (header fields, final ones from the store), its locator, its forks and
+//!   their branches, `holds` for every header ever mined, and the chain published one move earlier
+//!   still answering as it did (H5)
+//! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -23,8 +25,8 @@ use zcash_protocol::consensus::NetworkType;
 use crate::rules::{median_time, Rejected, CONTEXT, MAX_FUTURE, MEDIAN_SPAN};
 use crate::target::{expand, work};
 use crate::{
-    check, decode_header, BestTip, Header, HeaderChain, HeaderStore, Inserted, Params, Record,
-    VerifiedChain,
+    check, decode_header, BestTip, Fork, Header, HeaderChain, HeaderStore, Inserted, Params,
+    Record, VerifiedChain,
 };
 
 const DEPTH: u32 = 3;
@@ -281,6 +283,33 @@ impl Model {
         }
         locator
     }
+
+    /// Per side leaf: its fork (`from` = end of the common prefix of its mined ancestry and the
+    /// best path) + its branch above `from`; most work first, first received on a tie
+    fn forks(&self) -> Vec<(Fork, Vec<BlockRef>)> {
+        let path = self.best_path();
+        let best = self.best().map(|best| best.block.hash);
+        let mut forks: Vec<(u64, Fork, Vec<BlockRef>)> = Vec::new();
+        for leaf in self.leaves().into_iter().filter(|leaf| Some(*leaf) != best) {
+            let mut ascending = vec![leaf];
+            while let Some(header) = self.by_hash.get(ascending.last().expect("leaf")) {
+                if header.prev_hash() == BlockHash::ZERO {
+                    break;
+                }
+                ascending.push(header.prev_hash());
+            }
+            ascending.reverse();
+            let shared = ascending.iter().zip(&path).take_while(|(at, on)| **at == on.hash).count();
+            let at = |h: usize| BlockRef { hash: ascending[h], height: height(h as u32) };
+            let alive = self.alive[&leaf];
+            let work = alive.record.cumulative_work;
+            let tip = at(ascending.len() - 1);
+            let fork = Fork { from: at(shared - 1), tip, cumulative_work: work };
+            forks.push((alive.received, fork, (shared..ascending.len()).map(at).collect()));
+        }
+        forks.sort_by_key(|(received, fork, _)| (Reverse(fork.cumulative_work), *received));
+        forks.into_iter().map(|(_, fork, branch)| (fork, branch)).collect()
+    }
 }
 
 fn height(h: u32) -> Height {
@@ -300,7 +329,8 @@ proptest! {
 
     /// After every move the chain answers exactly like the model: every insert's outcome, best
     /// tip and work, final tip, boundary, live tree, every height and header of the published
-    /// chain and its locator; `check()` holds; old published chains never change
+    /// chain, its locator, forks, branches and `holds`; `check()` holds; old published chains
+    /// never change
     #[test]
     fn random_header_trees_answer_like_the_naive_model(moves in moves()) {
         run(moves);
@@ -329,7 +359,7 @@ fn run(moves: Vec<Move>) {
         deferred: Vec::new(),
         now: i64::from(genesis.time()) + 30 * 24 * 3600,
     };
-    let mut published: Option<(VerifiedChain, Vec<Record>)> = None;
+    let mut published: Option<(VerifiedChain, Vec<Record>, Vec<Fork>)> = None;
 
     let offer = |chain: &mut HeaderChain, model: &mut Model, header: &Header, context: &str| {
         let expected = model.offer(header);
@@ -435,14 +465,34 @@ fn run(moves: Vec<Move>) {
         assert_eq!(held, path.iter().copied().map(Some).collect::<Vec<_>>(), "{context}: path");
         assert_eq!(verified.hash_at(height(path.len() as u32)), None, "{context}: above best");
         assert_eq!(verified.locator(), model.locator(), "{context}: locator");
-        if let Some((old, old_path)) = &published {
+
+        let (forks, branches): (Vec<Fork>, Vec<Vec<BlockRef>>) = model.forks().into_iter().unzip();
+        assert_eq!(verified.forks(), forks, "{context}: forks");
+        let held: Vec<Vec<BlockRef>> = forks.iter().map(|f| verified.branch(&f.tip.hash)).collect();
+        assert_eq!(held, branches, "{context}: branch of each fork");
+        let best = verified.best();
+        assert_eq!(verified.branch(&best.hash), [], "{context}: the best tip = no side branch");
+        for header in &model.mined {
+            let hash = header.hash();
+            let at = BlockRef { hash, height: builder.block(hash).header().height };
+            let on_best = path.get(u32::from(at.height) as usize).is_some_and(|r| r.hash == hash);
+            let expected = on_best || model.alive.contains_key(&hash);
+            assert_eq!(verified.holds(at), expected, "{context}: holds {at:?}");
+            for height in at.height.checked_sub(1).into_iter().chain([at.height.next()]) {
+                let elsewhere = BlockRef { hash, height };
+                assert!(!verified.holds(elsewhere), "{context}: holds {elsewhere:?}");
+            }
+        }
+
+        if let Some((old, old_path, old_forks)) = &published {
             let answers: Vec<Option<Record>> =
                 (0..old_path.len() as u32).map(|at| old.header_at(height(at))).collect();
             let expected: Vec<Option<Record>> = old_path.iter().copied().map(Some).collect();
             assert_eq!(answers, expected, "{context}: H5, a published chain never changes");
+            assert_eq!(old.forks(), *old_forks, "{context}: H5, nor its forks");
             let final_height = |chain: &VerifiedChain| chain.final_tip().map(|tip| tip.height);
             assert!(final_height(&verified) >= final_height(old), "{context}: H2, final moves up");
         }
-        published = Some((verified, path));
+        published = Some((verified, path, forks));
     }
 }

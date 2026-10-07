@@ -10,7 +10,7 @@
 //! - H1, H2, H4, H5 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use zaino_persistence::StoreError;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
@@ -46,22 +46,29 @@ pub enum Inserted {
 
 /// `received` = arrival order (H1 tie: first received wins; eviction tie: last received goes)
 #[derive(Debug, Clone, Copy)]
-struct Node {
-    record: Record,
-    height: Height,
-    parent: BlockHash,
-    received: u64,
+pub(crate) struct Node {
+    pub(crate) record: Record,
+    pub(crate) height: Height,
+    pub(crate) parent: BlockHash,
+    pub(crate) received: u64,
     children: u32,
 }
 
-/// `best_path[i]` = the best branch at `base() + i`, up to the best tip
+impl Node {
+    pub(crate) fn at(&self) -> BlockRef {
+        BlockRef { hash: self.record.hash, height: self.height }
+    }
+}
+
+/// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
+/// - `nodes`, `leaves` = `imbl` (O(1) into each [`VerifiedChain`])
 pub struct HeaderChain {
     params: Params,
     depth: ReorgDepth,
     store: HeaderStore,
     finals: VecDeque<(Height, Record)>,
-    nodes: HashMap<BlockHash, Node>,
-    leaves: HashSet<BlockHash>,
+    nodes: imbl::HashMap<BlockHash, Node>,
+    leaves: imbl::HashSet<BlockHash>,
     best_path: imbl::Vector<Record>,
     received: u64,
 }
@@ -80,8 +87,8 @@ impl HeaderChain {
             depth,
             store,
             finals,
-            nodes: HashMap::new(),
-            leaves: HashSet::new(),
+            nodes: imbl::HashMap::new(),
+            leaves: imbl::HashSet::new(),
             best_path: imbl::Vector::new(),
             received: 0,
         }
@@ -116,7 +123,9 @@ impl HeaderChain {
     /// Immutable snapshot of the best chain (`None` = nothing verified yet)
     pub fn verified(&self) -> Option<VerifiedChain> {
         let best = self.best()?;
-        Some(VerifiedChain::new(best, self.final_tip(), self.best_path.clone(), self.store.view()))
+        let (above, finals) = (self.best_path.clone(), self.store.view());
+        let (nodes, leaves) = (self.nodes.clone(), self.leaves.clone());
+        Some(VerifiedChain::new(best, self.final_tip(), above, finals, nodes, leaves))
     }
 
     /// Headers held above the final tip, every branch
