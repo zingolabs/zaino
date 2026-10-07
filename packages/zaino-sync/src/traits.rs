@@ -7,8 +7,8 @@
 //! `combine` on an `Append` index.
 
 use crate::descriptor::{
-    Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, Monoidal, Scope, SelfCumulative,
-    SourceAccess,
+    Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, IsSelfCumulative, Monoidal,
+    Scope, SourceAccess,
 };
 use crate::primitives::IndexId;
 
@@ -155,7 +155,7 @@ pub trait ExtractLocal: IndexDef<Scope = BlockLocal> {
 /// [`MergeFold`] provides `initial_state` + `fold`. No separate
 /// `advance_state` method is needed — the composition axis already
 /// declares the algebra.
-pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
+pub trait ExtractCumulative: IndexDef<Scope: IsSelfCumulative> {
     /// The accumulated state threaded through extractions.
     ///
     /// For (S, M) indexes this is the same type as the monoidal

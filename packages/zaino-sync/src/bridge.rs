@@ -42,7 +42,9 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 
 use crate::backend::{BackendReader, Namespace, WriteOp};
-use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
+use crate::descriptor::{
+    Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative, Sequential,
+};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BlockHeight, BlockOffset};
 use crate::traits::{
@@ -75,9 +77,9 @@ impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
 
-impl sealed::Sealed for (SelfCumulative, Append) {}
-impl sealed::Sealed for (SelfCumulative, Monoidal) {}
-impl sealed::Sealed for (SelfCumulative, Fold) {}
+impl sealed::Sealed for (SelfCumulative<Sequential>, Append) {}
+impl sealed::Sealed for (SelfCumulative<Sequential>, Monoidal) {}
+impl sealed::Sealed for (SelfCumulative<Sequential>, Fold) {}
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Append)
 where
@@ -118,11 +120,11 @@ where
     }
 }
 
-impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Append)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative<Sequential>, Append)
 where
     I: CumulativeAppend
         + Schema<Vec<<I as IndexDef>::Delta>>
-        + IndexDef<Scope = SelfCumulative, Composition = Append>
+        + IndexDef<Scope = SelfCumulative<Sequential>, Composition = Append>
         + zaino_persistence_codec::EntryCodec<Key = BlockHeight>,
     I::PriorState: Clone,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
@@ -132,12 +134,12 @@ where
     }
 }
 
-impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Monoidal)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative<Sequential>, Monoidal)
 where
     I: ExtractCumulative<PriorState = <MonoidalStrategy as MergeStrategy<I>>::MergedState>
         + MergeMonoidal
         + Schema<<MonoidalStrategy as MergeStrategy<I>>::MergedState>
-        + IndexDef<Scope = SelfCumulative, Composition = Monoidal>,
+        + IndexDef<Scope = SelfCumulative<Sequential>, Composition = Monoidal>,
     <MonoidalStrategy as MergeStrategy<I>>::MergedState: Clone,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
@@ -146,12 +148,12 @@ where
     }
 }
 
-impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Fold)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative<Sequential>, Fold)
 where
     I: ExtractCumulative<PriorState = <FoldStrategy as MergeStrategy<I>>::MergedState>
         + MergeFold
         + Schema<<FoldStrategy as MergeStrategy<I>>::MergedState>
-        + IndexDef<Scope = SelfCumulative, Composition = Fold>,
+        + IndexDef<Scope = SelfCumulative<Sequential>, Composition = Fold>,
     <FoldStrategy as MergeStrategy<I>>::MergedState: Clone,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {

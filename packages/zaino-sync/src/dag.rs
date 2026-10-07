@@ -170,7 +170,7 @@ impl DependencyDag {
             parallel_merge: matches!(composition, CompositionType::Monoidal),
             sequential_merge: matches!(composition, CompositionType::Fold),
             requires_phase_gate: matches!(scope, InputScope::CrossIndex),
-            requires_self_feedback: matches!(scope, InputScope::SelfCumulative),
+            requires_self_feedback: matches!(scope, InputScope::SelfCumulative { .. }),
         }
     }
 }
