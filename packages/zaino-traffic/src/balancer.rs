@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 use zaino_source::{
-    BlockLink, BlockLinks, ChainDataSource, GetBlockError, GetRawMempoolTransactionError,
+    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
     GetTransactionError, MempoolListed, NonDomainError, PollReading, QueryError,
     RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
@@ -186,7 +186,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     pub async fn headers(
         &self,
         ask: HeaderAsk,
-    ) -> Result<Answered<BlockLinks>, Unanswered<GetBlockError>> {
+    ) -> Result<Answered<BlockLinks>, Unanswered<GetAtHeightError>> {
         let shared = Arc::clone(&self.shared);
         match ask {
             HeaderAsk::Pinned { member, heights } => {

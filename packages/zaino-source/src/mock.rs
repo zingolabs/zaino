@@ -22,7 +22,7 @@ use crate::{
     SendRawTransactionError, TransactionResponse,
 };
 
-pub(crate) const MEMPOOL_FEE: u64 = 1_000;
+pub const MEMPOOL_FEE: u64 = 1_000;
 
 pub struct MockChain {
     held: RwLock<Held>,

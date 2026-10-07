@@ -12,7 +12,7 @@ use zaino_primitives::testing::{encode_header, Chain};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Zatoshis};
 use zaino_source::mock::{fixture_transactions, MockChain, MEMPOOL_FEE};
 use zaino_source::{
-    BlockLink, ChainDataSource, FailureMode, GetBlockByHashError, GetBlockError,
+    BlockLink, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
     QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
@@ -122,7 +122,7 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     let pinned = HeaderAsk::Pinned { member: v(0), heights: vec![h(0), h(3), h(4)] };
     let links = balancer.headers(pinned).await.expect("ours answers");
     let link = |height: usize| Ok(BlockLink { header: encode_header(blocks[height].header()) });
-    let expected = vec![link(0), link(3), Err(GetBlockError::HeightNotFound(h(4)))];
+    let expected = vec![link(0), link(3), Err(GetAtHeightError::HeightNotFound(h(4)))];
     assert_eq!((links.from, links.value), (MemberId::Trusted(v(0)), expected));
     let fee = Zatoshis::new(MEMPOOL_FEE).expect("in supply");
     let listed = MempoolListed { txid, fee, encoded_len: raw.len() as u32 };
