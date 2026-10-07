@@ -1,10 +1,10 @@
 # zaino-internal-value-balance
 
 The value-balance index. Serves no RPC itself: it resolves every transaction's
-[`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block,
-which its loop republishes into a `zaino_sync::FeeSink` for downstream
-indexes. The compact-block index reads one fee step after each block step to
-fill `CompactTx.fee`.
+[`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block. In
+bulk sync its writer sends them into a `zaino_sync::FeeSink`, one per unfolded
+step, which compact-block reads to fill `CompactTx.fee`; at the tip the NFS
+folds this index first and hands compact-block's fold the fees directly.
 
 The only term a block does not carry is what each transparent input spends, so
 the index keeps one map on the
@@ -29,25 +29,25 @@ use zaino_sync::FeeSink;
 let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
 let schema = zaino_internal_value_balance::schema(network);
-let index = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
-let durable = index.durable_tip(); // for the producer's start and chain check
-let published = index.published(); // tips + gate for metrics and status
-let blocks = block_sink.subscribe(IndexKind::ValueBalance.name(), queue);
-tokio::spawn(index.run(blocks, fee_sink));
+let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
+// subscribed before compact_block (the NFS asserts it): its fees feed compact-block's fold
+let blocks = nfs.subscribe(IndexKind::ValueBalance, writer.committed(), queue);
+tokio::spawn(writer.run(blocks, fee_sink));
 ```
 
 - Generic over the persistence port: `ValueBalanceIndexWriter<S: Store>` with
-  `S::View: MapRead`; zainod picks `DiskEngine`.
-- `run` = the index's own loop over its `BlockSink` subscription, through
-  `Shutdown`. Fallible only at boot (the engine's `open` → `StoreError`). `new`
-  and `run` are infallible: a failed commit or an unresolvable fee panics
+  `S::View: MapRead`; zainod picks `DiskEngine`. zainod enables it with
+  `index.compact_block` (its directory beside compact-block's).
+- `run` follows the final stream through `zaino_sync::Committer`
+  ([the writer shape](../zaino-sync/usage.md#committer)), then ends the fee
+  sink. Fallible only at boot (the engine's `open` → `StoreError`); a failed
+  commit or an unresolvable fee panics
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- Every step it follows goes into the fee sink, 1:1, from the same start, with
-  `Shutdown` last. A consumer awaits one fee step after each of its own block
-  steps. On a panic the fee sink drops without `Shutdown`, so the consumer
-  panics on its next pop.
-- `published()` carries `()` as its view (no service reads this index), plus
-  its durable and applied tips.
+- One `BlockFees` per **unfolded** step goes into the fee sink, held heights
+  included; folded steps send nothing. On a panic the fee sink drops without
+  `Shutdown`, so compact-block panics on its next pop.
+- `committed()` = the committed-view watch the NFS reads (no route reads this
+  index; the NFS's folds read it through `ValueBalanceReader`).
 
 ## Folding
 
@@ -61,11 +61,11 @@ let (changes, fees) = fold(&parent, &block)?;         // Result<_, FoldError>
   `BlockFees`, every prevout resolved from the block itself or through
   `parent`.
 - `parent` = any state at or past the block's parent: the map is insert only,
-  so a later state resolves the same block identically (a replay below the
-  durable tip folds against the durable state).
+  so a later state resolves the same block identically (a held height re-folds
+  against the state past it).
 - `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
   internal (fees are the only consumer).
-- The loop folds a delivered run at once (`fold_run`, crate-internal): block
+- The writer folds a run's unfolded steps at once (`fold_run`, crate-internal): block
   `k` resolves against `parent` plus the outputs of blocks `0..=k`, and every
   prevout from outside the run is asked in one `MapRead::values` call. A
   sandblast transaction spends thousands of outputs, and one random lookup each
@@ -75,24 +75,21 @@ let (changes, fees) = fold(&parent, &block)?;         // Result<_, FoldError>
   index never recorded: it runs from genesis, so a foreign directory or a bug,
   never a gap to work around), `NegativeFee`, `ValueOverflow` (below).
 
-## Resolved per delivered run
+## Resolved per run
 
-Each `Apply` pulls every `Apply` already queued, to `batch_bytes`, into one
-run (`Subscription::run`). The whole run is folded onto everything held and
-committed, on the blocking pool. Then each block above the durable tip is held
-(its `Changes`: staged if final, applied if not, in
-`zaino_persistence::Tiered`) and every block's fees go out, for every block:
-bulk, replay and tip alike. Resolving at commit time instead would deadlock,
-since the consumer waits on fees block by block while a commit waits for a
-whole batch. A commit writes the outputs held through its height; a reorg
-drops the applied ones.
+Each run (`Committer::next`, queued steps to `batch_bytes`) folds its unfolded
+steps as one `fold_run` onto `staged()` on the CPU pool. Each step it does not
+hold is applied; every unfolded step's fees go out, held ones too. Resolving at
+commit time instead would deadlock, since compact-block waits on fees step by
+step while a commit waits for a whole batch.
 
-| Height delivered | Outputs | Derived + forwarded |
+| Step | Outputs | Fees on the sink |
 |---|---|---|
-| at or below this index's durable tip | already stored | yes (a consumer behind this index pairs it) |
-| above it | held (`Tiered`) | yes |
+| unfolded, held (a restart, this index ahead) | already stored | yes (compact-block may be behind) |
+| unfolded, new | applied | yes |
+| folded | applied as the NFS sent them | no |
 
-A fold error panics the loop (`value_balance index: ` + the `FoldError`).
+A fold error panics the writer (`value_balance index: ` + the `FoldError`).
 
 ## Fees
 

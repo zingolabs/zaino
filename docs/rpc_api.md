@@ -12,8 +12,8 @@ Zaino serves no JSON-RPC. Node queries go to the validator's own JSON-RPC.
 
 Which side a method falls on is not a per-method judgement. It follows from
 [design/boundaries.md](./design/boundaries.md): derived answers come from a
-Zaino index and fail while that index is building, and writes and point lookups
-of primary consensus objects are forwarded to the validator.
+Zaino index (never the validator), and writes and point lookups of primary
+consensus objects are forwarded to the validator.
 
 | Method                                                   | Answered by                                                                   |
 | -------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -25,7 +25,7 @@ of primary consensus objects are forwarded to the validator.
 | `GetTransaction`                                         | validator                                                                     |
 | `SendTransaction`                                        | relayed to every validator in the [chain view](./design/chainview.md)         |
 | `GetMempoolTx`, `GetMempoolStream`                       | chain view (quorum mempool)                                                   |
-| `GetLightdInfo`                                          | chain view (validators' last poll) + compact-block index for the served height |
+| `GetLightdInfo`                                          | chain view (validators' last poll) + the served snapshot tip                  |
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*   | compact-block index, re-projected to nullifiers                               |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)*          | as `GetTaddressTransactions`                                                  |
 
@@ -39,19 +39,23 @@ A `BlockID` that carries a hash, in `GetBlock` or `GetTreeState`, is resolved to
 a height through the block-hash index. A hash wins over a height when both are
 given, because a hash names one block across a reorg and a height does not.
 
-The compact-block index cannot be disabled, since `GetLightdInfo` depends on
-it; its fee index, value-balance (every `CompactTx.fee`), runs with it and has
-no switch of its own. The tree-state,
-transparent-address and block-hash indexes can. A disabled index's methods
-answer `UNIMPLEMENTED` (for the block-hash index, only the by-hash form of
-`GetBlock` and `GetTreeState`). Nothing falls back to the validator.
+Every index can be disabled (at least one stays on); compact-block's fee index,
+value-balance (every `CompactTx.fee`), runs with it and has no switch of its
+own. A disabled index's methods answer `UNIMPLEMENTED` (for the block-hash
+index, only the by-hash form of `GetBlock` and `GetTreeState`). Nothing falls
+back to the validator.
+
+Every index method reads one snapshot of every index, pinned for the request or
+stream, and answers at heights at or below its tip: `GetLatestBlock` is that
+tip, and `GetBlockRange`, `GetTreeState` and the address methods never answer
+past it, so they agree with each other within a request.
 
 `GetLightdInfo` takes `chainName` from config (lightwalletd's `main`, `test` or
 `regtest`) and `saplingActivationHeight`, `consensusBranchId`, `upgradeName`
 and `upgradeHeight` (the next pending upgrade), and `estimatedHeight` from the
 validator's `getblockchaininfo`, which it reuses for up to one second because
-every wallet polls it. `blockHeight` is the compact-block index's tip, not the
-validator's, because a wallet gates its sync on it. `lightwalletProtocolVersion`
+every wallet polls it. `blockHeight` is the served snapshot tip (0 before the
+first), not the validator's, because a wallet gates its sync on it. `lightwalletProtocolVersion`
 is the release of the vendored protos (currently `v0.5.0`), which pepper-sync
 requires before it syncs ([client-requirements.md](./client-requirements.md)).
 With the validator unreachable the call is `UNAVAILABLE`. We never substitute a
@@ -69,24 +73,24 @@ status when no validator accepted and at least one could not be reached.
 
 | Condition                                                                                        | Code                 | Read it as                                                   |
 | ------------------------------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------ |
-| index still syncing                                                                              | `UNAVAILABLE`        | back off and retry                                           |
+| nothing served yet (indexes opening at boot)                                                     | `UNAVAILABLE`        | back off and retry                                           |
 | stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                  | `UNAVAILABLE`        | retry after the hint                                         |
 | validators below quorum (`GetMempoolStream`, `GetMempoolTx`)                                     | `UNAVAILABLE`        | back off and retry                                           |
 | validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`)                     | `UNAVAILABLE`        | back off and retry                                           |
 | index disabled by config                                                                         | `UNIMPLEMENTED`      | never retry                                                  |
-| height, hash or txid not in the chain                                                            | `NOT_FOUND`          | ask for something else                                       |
+| height, hash or txid not in the chain, or above the served tip                                   | `NOT_FOUND`          | ask for something else                                       |
 | bad or oversized range, unparseable or foreign-network address                                   | `INVALID_ARGUMENT`   | fix the request                                              |
 | request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`)                        | `RESOURCE_EXHAUSTED` | send less per call                                           |
 | addresses with more receives than one request may walk (`serve.max_address_rows`)               | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
 | request body not complete within 30 s                                                            | `DEADLINE_EXCEEDED`  | resend                                                       |
 | stored record will not walk                                                                      | `INTERNAL`           | the server is broken                                         |
 
-A syncing index refuses **every** request with one error, carrying no height and
-no progress, so a client cannot tell "no such block" from "not indexed yet". The
-exceptions are `GetTreeState`, `GetBlock` and `GetBlockRange` at heights their
-index has already committed. Those answers are final, so we serve them while the
-index is still building. A range whose `end` is past the committed height is
-refused whole. Cutting it short would read as the end of the chain.
+While Zaino syncs, the served tip trails the chain: every index answers at it,
+as lightwalletd answers at what it has ingested, and `GetLatestBlock` /
+`GetLightdInfo.blockHeight` report it, so a wallet gating on them never asks
+past what is served. A range ending past the served tip is clamped to it. Before
+the first snapshot (indexes opening at boot) every index method is
+`UNAVAILABLE`.
 
 ## Pool filtering
 

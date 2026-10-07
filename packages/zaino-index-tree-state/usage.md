@@ -2,78 +2,58 @@
 
 The commitment-tree index for all three shielded pools (Sapling, Orchard,
 Ironwood). Backs `GetTreeState`, `GetLatestTreeState` and `GetSubtreeRoots`
-from one fold over the domain `Block`s the sync pipeline carries. The positional shape it instantiates
+from one fold over the domain `Block`s the NFS hands it. The positional shape it instantiates
 is described in
 [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §3.
 
 ## Wiring
 
 ```rust
-use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter, TreeStateService};
+use zaino_index_tree_state::TreeStateIndexWriter;
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine};
 
 let store = DiskEngine::new(fs).open(&path, &zaino_index_tree_state::schema(network))?;
-let index = TreeStateIndexWriter::new(store, batch_bytes);
-let blocks = block_sink.subscribe(IndexKind::TreeState.name(), queue);
-let activations = PoolActivations::from_validator(&validator.get_blockchain_info().await?);
-let service = TreeStateService::new(index.published().served(), network, activations);
-tokio::spawn(index.published().gate(tips, depth, cancel.child_token()));
-tokio::spawn(index.run(blocks));
+let writer = TreeStateIndexWriter::new(store, batch_bytes);
+let blocks = nfs.subscribe(IndexKind::TreeState, writer.committed(), queue_bytes);
+tokio::spawn(writer.run(blocks));
 ```
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
-  `S::View: SequenceRead`, serving `TreeStateReader<LayeredView<V>>` /
-  `TreeStateService<V>`; zainod picks `DiskEngine`.
-- `TreeStateIndexWriter` runs its own loop over the `zaino_sync::BlockSink`
-  subscription (`"tree_state"`): `run` follows it through `Shutdown`,
-  publishing through a `zaino_sync::Published<TreeStateReader<LayeredView<V>>>`.
-  Each `Apply` takes the run of blocks already queued behind it
-  (`Subscription::run`, up to `batch_bytes`) and folds it with
-  [`fold_run`](#fold) onto a reader over everything held. Final blocks (bulk)
-  are staged in `zaino_persistence::Tiered`, one commit per `batch_bytes`; once
-  following the tip, each `Finalized { height }` commits everything through
-  `height` as it arrives. `durable_tip()` = the last committed block, for the
-  producer's start and chain check.
-- Fallible only at boot, in the engine's `open` (`StoreError`); `new` is
-  infallible. `run` returns at `Shutdown` and panics on a failed commit or an
+  `S::View: SequenceRead`; zainod picks `DiskEngine`.
+- `run` follows the final stream (`"tree_state"`) through `zaino_sync::Committer`
+  ([the writer shape](../zaino-sync/usage.md#committer)): per run, the unfolded
+  steps not held are folded as one [`fold_run`](#fold) onto `staged()` on the
+  CPU pool, folded steps applied as the NFS sent them (`Run::apply_folded`).
+  Commits: batch full, after each folded run, or 1 s idle. `committed()` = the
+  committed-view watch the NFS reads.
+- Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
+  one record per committed height. `run` panics on a failed commit or an
   unfoldable block (`tree_state index: <FoldError>`,
   [Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- A published `TreeStateReader` binds the held blocks and the committed snapshot
-  into one publication: a request loads it once, so the seam between them
-  cannot move under it. `subtree_roots(..)` answers from it with no `synced`
-  gate; tree states are read only through `TreeStateService` (`treestate_in` /
-  `latest_in` on a pinned reader), which adds the gate and the Sapling floor.
-- `activations` = each pool's first height, from the validator's
+- `PoolActivations` = each pool's first height, from the validator's
   `getblockchaininfo` schedule keyed by branch id: Sapling, NU5 (Orchard),
   NU6.3 (Ironwood); an unscheduled upgrade = `None`. zainod reads it once at
-  boot (Zaino carries no compiled-in schedule).
-- Tests drive it as production does: steps sent into a `BlockSink`, `run`
-  spawned over its subscription, state read back through `published()`.
-- `network` is the operator-declared network, returned by `service.network()`
-  for `TreeState.network` (Zebra on regtest reports `"test"`, so it is never
-  read off the validator).
-- zainod builds it only when `index.tree_state.enabled`; `zaino-grpc`'s
-  `with_tree_state` claims the three methods.
+  boot (no compiled-in schedule) into the NFS's `ChainParams`.
+- zainod builds it only when `index.tree_state.enabled`; disabled = the three
+  methods `UNIMPLEMENTED`.
 
 ## Serving
 
-| Method | Returns |
-|---|---|
-| `treestate(height)` | `Treestate` with all three pools (`BeforeSapling` below Sapling activation) |
-| `latest()` | `treestate` at the highest applied height (non-finalized included) |
-| `activations()` | `PoolActivations`, for the transport's wire shape |
-| `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>` |
+Routes read through one snapshot per request (`snap.views().tree_state()`,
+`None` = disabled), at heights `≤ snap.tip()`:
 
-- While `synced` reads `false`, `treestate(height)` still answers any committed
-  height (final: the answer never changes); everything else, and any height
-  above the committed tip, is `ServeError::Syncing` (gRPC `UNAVAILABLE`): one
-  answer, no height or progress. `latest()` on an index holding no blocks is
-  `Empty` (also `UNAVAILABLE`). A height with no record is `NotFound`; stored
-  nodes that will not rebuild are `Inconsistent` (a fold bug).
-- Heights arrive as `Height` (range-checked by the caller).
-- Below Sapling activation there is no tree state: `BeforeSapling` (gRPC
-  `INVALID_ARGUMENT`, as lightwalletd: zebra's `z_gettreestate` returns no
-  Sapling tree there).
+| Reader method | Returns |
+|---|---|
+| `treestate(height)` | `Treestate` with all three pools; `NotFound` with no record, `Inconsistent` if stored nodes will not rebuild (a fold bug) |
+| `subtree_roots(pool, start_index, max_entries)` | `Vec<SubtreeRoot>` |
+| `is_non_finalized(height)` | `height` in the snapshot's layer above the committed files |
+
+- The route (`zaino-grpc`) adds what the reader does not know: past the
+  snapshot tip = `NOT_FOUND`; below Sapling activation = `INVALID_ARGUMENT`
+  (lightwalletd: zebra's `z_gettreestate` returns no Sapling tree there);
+  `GetLatestTreeState` = `treestate(snap.tip())`; subtree roots completing above
+  the tip are left out; `TreeState.network` = the declared network
+  (`snap.params().network`).
 - `Treestate` carries every pool as
   `zcash_primitives::merkle_tree::write_commitment_tree` of the real tree
   (`000000` when empty). `zaino-grpc` writes a pool's field only from its
@@ -88,11 +68,9 @@ tokio::spawn(index.run(blocks));
 - `GetTreeState` by `BlockID.hash` resolves through the block-hash index
   (`zaino-internal-block-hash-to-height`) in `zaino-grpc`; this index answers by
   height and the router confirms the hash it holds there.
-- `pin()` → the latest synced publication (`Arc<TreeStateReader<..>>`, one per
-  publication); `treestate_in(&view, h)` / `latest_in(&view)` answer from it.
-  `is_non_finalized(h)` names the ~1000 heights every synced wallet asks about.
-  `zaino-grpc` keys its per-publication memos on the `Arc`: tip tree states and
-  whole root lists are framed once per block, not once per wallet.
+- `is_non_finalized(h)` names the ~1000 heights every synced wallet asks about.
+  `zaino-grpc` keys its memos on the snapshot's `Arc`: layer tree states, the
+  tip and whole root lists are framed once per snapshot, not once per wallet.
 
 ## Storage
 
@@ -152,16 +130,15 @@ let per_block: Vec<Changes> = fold_run(&parent, &[&a, &b, &c])?;  // contiguous 
   or `Commitment` (a non-canonical note commitment off the wire, naming its
   block); every leaf is decoded before any hashing.
 
-## Held blocks and reorgs
+## Non-final blocks and reorgs
 
-Blocks above the durable tip are `zaino_persistence::Tiered`'s: staged
-(final, bulk) or applied (tip), keyed exactly as the files, read through the
-same `TreeStateReader`. A `Reorg` drops every applied block; the next fold
-reads its frontiers off the durable tip: no reverse fold, no hashing. Nothing
-reorg-able is ever fsynced. See
-[`docs/design/non-finalized-state.md`](../../docs/design/non-finalized-state.md).
+Blocks above the durable root are `zaino-nfs`'s: one `Layer` per block, keyed
+exactly as the files, read through the same `TreeStateReader` over a
+`LayeredView`. A reorg moves the snapshot to another node; a block folds onto
+its parent node's frontiers: no reverse fold. Nothing reorg-able is ever
+fsynced. See [`docs/design/nfs.md`](../../docs/design/nfs.md).
 
-The writer's `fold_run` runs under `zaino_sync::compute`, reading note
-commitments straight off the sink's shared `Arc<Block>`s; the commit runs under
-`zaino_sync::blocking` (the store in a `zaino_sync::Offloaded`). A panic in
-either re-raises on the caller (and aborts zainod).
+The writer's `fold_run` runs on the CPU pool (`Committer::compute`), reading
+note commitments straight off the stream's shared `Arc<Block>`s; the commit
+runs on the blocking pool. A panic in either re-raises on the caller (and
+aborts zainod).

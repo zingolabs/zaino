@@ -49,10 +49,12 @@ reports its chain as `"test"`. It is what `GetTreeState` reports as
 `TreeState.network` and `GetLightdInfo` as `chainName`.
 
 `index.<name>.enabled = false` builds nothing for that index (no store, no
-`BlockSink` subscription, no follower) and its methods answer `UNIMPLEMENTED`.
-`index.compact_block` cannot be disabled: `GetLightdInfo` reads its finalised
-height. Its fee index, value-balance, has no table of its own: it runs with
-compact-block, in a `value_balance` directory beside compact-block's `path`.
+final-stream subscription, no writer) and its methods answer `UNIMPLEMENTED`.
+Any index may be disabled, compact-block included, but at least one must stay
+enabled. `GetLightdInfo.blockHeight` is the served snapshot tip either way (0
+before the first). Compact-block's fee index, value-balance, has no table of its
+own: it runs with compact-block, in a `value_balance` directory beside
+compact-block's `path`.
 
 ## Launching
 

@@ -1,0 +1,201 @@
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Changed"
+description = """
+The data sink carries the NFS's final stream: `Step` = `Apply { height, data }` | `Shutdown` \
+(no `finalized` flag, no `Finalized` / `Reorg` steps), and an index sink's item is `Final { \
+block, folds }`, `folds` = the NFS's already-computed per-index folds (`None` = fold it \
+yourself). `IndexerDataSink::send` is all-or-nothing: every queue's permits are held before \
+any push, so a cancelled send delivers nowhere.
+"""
+migration = """
+Subscribe to `IndexerDataSink<Final>` instead of the producer's stream. Drop handling of \
+`Step::Finalized` and `Step::Reorg`: every `Apply` is final, in height order, and a restart \
+resends from the subscriber's committed height + 1.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "Removed"
+description = """
+The producer, `Published`, `Served`, `Reads`, `BlockSink` and the `Offloaded` / `blocking` \
+helpers (now private): the NFS (`zaino-nfs`) publishes snapshots and drives the final stream.
+"""
+migration = """
+Serve reads from `zaino_nfs::NfsHandle` snapshots; drive writers through `Committer`.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "feature"
+section = "Added"
+description = """
+`Committer`: one index writer's apply / commit loop over the final stream. `Run::{apply, \
+apply_folded}` apply a step (folded steps take the NFS's fold as is), `held` names the steps \
+a restart resends, and a commit happens when the batch fills, after each folded run, or after \
+1 s idle. `committed()` watches the durable view; `next` / `compute` run bulk folds on the \
+compute pool.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "Removed"
+description = """
+`Tiered` and its view: non-final data lives in the NFS's layers (`Layer` / `LayeredView`), and \
+writers commit through `Store::apply` / `staged` / `commit` under `zaino_sync::Committer`. \
+`StoreError::commit_failed` is public.
+"""
+migration = """
+Replace `Tiered` with a plain `Store` driven by `Committer`; read non-final data from an NFS \
+snapshot's `LayeredView`.
+"""
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "feature"
+section = "Added"
+description = """
+Observability and test hooks: `describe_metrics` and the metrics `zaino_best_tip`, \
+`zaino_reorgs_total` (the published tip leaving the best chain), `zaino_fetch_height` and \
+`zaino_fetch_*_total` (blocks handed on, folded or sent unfolded); the logs "Chain tip \
+advanced", "Chain reorg detected" (from, to), "Syncing blocks" and "Block fetch stalled"; \
+`subscribe_handed()`. Feature `testing`: `NfsHandle::unpublished()` (nothing served yet) and \
+`NfsHandle::fixed(chain, tip, params, durable)` for route tests.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "Changed"
+description = """
+`CompactBlockIndexWriter::new(store, batch_bytes)` runs over `Subscription<Final>` (plus the \
+value-balance fee feed) and exposes `committed()`; `durable_tip()` and `published()` are gone. \
+`CompactBlockService` is removed: reads are reader methods over a snapshot's view \
+(`block_at`, `resident_block`, `RangeCursor::new(reader, start, end, tip, pools)`), and \
+`ServeError` keeps only the variants a snapshot read can return. `testing::committed` returns \
+the store; `testing::chain` builds a final stream.
+"""
+migration = """
+Build the writer with `new(store, batch_bytes)` and `run(blocks, fees)`; watch `committed()` \
+for the durable view. Replace `CompactBlockService` calls with the reader methods on \
+`snapshot.views()`, passing the snapshot's tip to `RangeCursor::new`.
+"""
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "Changed"
+description = """
+`TreeStateIndexWriter::new(store, batch_bytes)` runs over `Subscription<Final>` and exposes \
+`committed()`; `durable_tip()` and `published()` are gone. `TreeStateService` is removed: \
+`TreeStateReader::treestate` is public, and `ServeError` = `NotFound` | `Inconsistent`.
+"""
+migration = """
+Build the writer with `new(store, batch_bytes)` and `run(blocks)`. Replace \
+`TreeStateService` with `TreeStateReader::treestate` on a snapshot's view.
+"""
+
+[[changes]]
+crate = "zaino-index-transparent-address"
+kind = "breaking"
+section = "Changed"
+description = """
+`TransparentAddressIndexWriter::new(store, batch_bytes)` runs over `Subscription<Final>` and \
+exposes `committed()`; `durable_tip()` and `published()` are gone. \
+`TransparentAddressService` is removed: `TransparentAddressReader::as_of(tip)` and \
+`with_max_rows(n)` bound a read, then `utxos`, `utxos_of`, `balance`, `balances` and \
+`transactions` answer it.
+"""
+migration = """
+Build the writer with `new(store, batch_bytes)` and `run(blocks)`. Replace \
+`TransparentAddressService` with `reader.as_of(snapshot.tip()).with_max_rows(..)`.
+"""
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "breaking"
+section = "Changed"
+description = """
+`BlockHashToHeightIndexWriter::new(store, batch_bytes)` runs over `Subscription<Final>` and \
+exposes `committed()`; `durable_tip()`, `published()` and the serve module are gone (lookups \
+go through a snapshot's view).
+"""
+migration = """
+Build the writer with `new(store, batch_bytes)` and `run(blocks)`; look hashes up through \
+`snapshot.views()`.
+"""
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "breaking"
+section = "Changed"
+description = """
+`ValueBalanceIndexWriter::new(store, batch_bytes)` runs over `Subscription<Final>` and \
+exposes `committed()`; `durable_tip()` and `published()` are gone. It publishes one \
+`BlockFees` per unfolded step, held steps included, and none for folded steps (their fees \
+ride in the fold).
+"""
+migration = """
+Build the writer with `new(store, batch_bytes)` and `run(blocks, fees)`.
+"""
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "Changed"
+description = """
+`Routes` = `{ chain, validators, network, nfs, max_address_rows }`: every request takes one \
+NFS snapshot and answers at or below its tip (subtree roots filtered to it, memos per \
+snapshot). No snapshot yet = `UNAVAILABLE`; a disabled index = `UNIMPLEMENTED`. The \
+compact-block index is optional. `GetLightdInfo.blockHeight` = the snapshot tip, 0 before the \
+first.
+"""
+migration = """
+Build `Routes` with an `NfsHandle` in place of the per-index services; tests use \
+`NfsHandle::fixed` / `unpublished` (`zaino-nfs` feature `testing`).
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "Removed"
+description = """
+`BlockFetchPool`, `TrafficBalancer::among` and `ChainDataSource::get_block`: the NFS fetches \
+block bodies by hash (`get_block_by_hash`) from any source, each checked against the verified \
+header.
+"""
+migration = """
+Fetch by hash with `get_block_by_hash`; a `ChainDataSource` fake no longer implements \
+`get_block`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "Changed"
+description = """
+One pipeline: the NFS, the index writers on its final stream, and gRPC on its snapshots. \
+`[indexes.compact_block]` may be disabled; at least one index must be enabled. `/statusz` \
+reports each index as `{ name, enabled, durable, size_bytes, tables }` plus top-level \
+`fetch_height`, `served_height` and `synced`; `/readyz` fails with reason `syncing` until the \
+served tip reaches the verified best (off again past the reorg depth or off the best chain), \
+and `zaino.index.synced` follows the same judgement. On-disk formats are unchanged.
+"""
+migration = """
+Re-read `/statusz` consumers against the new index fields and `served_height` / `synced`. A \
+config with every index disabled is now rejected.
+"""
+
+[[changes]]
+crate = "zaino-non-finalized-state"
+kind = "breaking"
+section = "Removed"
+description = """
+The crate: the NFS (`zaino-nfs`) holds the non-final chain and folds.
+"""
+migration = """
+Depend on `zaino-nfs` (`Nfs`, `NfsHandle`, `Snapshot`).
+"""

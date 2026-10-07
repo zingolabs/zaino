@@ -23,9 +23,9 @@ of repairing anything in place. Every index follows the same six rules.
 1. **Validate before durable, never after.** What the bytes mean is settled while the index is
    built, by cheap asserts on what is about to be written: heights contiguous, blocks linked,
    segment keys strictly ascending, appends landing at the end of their file. Once sealed, nothing
-   re-proves meaning. Checking block data against the chain belongs to the fetch layer and is not
-   done yet (the TODO in `zaino_source::fetch_pool` re-hashes every fetched block against the best
-   chain before any index sees it).
+   re-proves meaning. Checking block data against the chain belongs to the fetch layer: the NFS
+   checks every fetched block's hash and merkle root against the verified header chain before any
+   index sees it.
 1. **One disk check, the same everywhere.** Once data is durable, the only question left is
    whether the bytes on disk are the bytes that were sealed. Every file of every index answers it
    with page checksums (§3).
@@ -196,12 +196,12 @@ behind, the next batch waits for it, which bounds how many segments a read searc
 The manifest header records the network, so opening a mainnet index with a testnet configuration
 is refused.
 
-The manifest body records the tip hash, which every index hands the producer at boot. The
-producer checks that every block it fetches links to the one before it, the first onto the
-rearmost stored tip (`ProduceError::Unlinked`), and that a fetched block at any index's durable
-height is the one committed there (`ProduceError::Diverged`). Both are fatal and require a resync: they mean a
-reorg deeper than the window, a validator reset or resynced onto another chain, or a directory
-reused across chains, none of which can be spliced onto the old durable prefix.
+The manifest body records the tip hash, which every index hands the NFS at boot (its committed
+view's tip). The NFS checks every fetched block against the verified header chain, and that each
+index's durable block is the verified chain's block at its height (`NfsError::Diverged`). A
+divergence is fatal and requires a resync: it means a reorg deeper than the window, a validator
+reset or resynced onto another chain, or a directory reused across chains, none of which can be
+spliced onto the old durable prefix.
 
 The finalised depth, `sync.finalised_depth`, defaults to Zebra's `MAX_BLOCK_REORG_HEIGHT` (1000).
 Config validation refuses less on mainnet and testnet, since a reorg the validator accepts could

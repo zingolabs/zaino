@@ -15,9 +15,10 @@ let mut nfs = Nfs::new(header_sync.subscribe(), sync, params, lookahead, depth);
 // one per enabled index: its final stream out, its committed view in
 // value_balance before compact_block (its fees feed compact-block's fold)
 let blocks = nfs.subscribe(IndexKind::ValueBalance, writer.committed(), queue_bytes);
-// … each writer: `Subscription<Final>` → `Store::apply` → `commit` → `committed.send_replace(store.view())`
+tokio::spawn(writer.run(blocks, fee_sink));           // each writer: zaino_sync::Committer inside
 
 let snapshots = nfs.handle();                         // clone per route / stream
+let handed = nfs.subscribe_handed();                  // last block handed to the indexes
 tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold | ChainGone | WriterGone
 ```
 
@@ -36,8 +37,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold |
 
 ## Writers: the final stream
 
-Every `Step::Apply { height, finalized: true, data: Arc<Final> }` is one final block: every
-height once, ascending, never retracted.
+Every `Step::Apply { height, data: Arc<Final> }` is one final block: every height once,
+ascending, never retracted. The writers' loop and commit cadence are
+[`zaino-sync`](../zaino-sync/usage.md#committer)'s `Committer`.
 
 | `Final.folds` | Meaning                                         | Writer                              |
 | ------------- | ----------------------------------------------- | ----------------------------------- |
@@ -70,6 +72,23 @@ snapshots.changed().await?;                             // next publish (Err: dr
   a reorg moves it to the fork point at once and forward as the new branch folds.
 - At the root (bulk sync), an index ahead of the root reads past `tip()`: serve at `tip()`.
 - `chain()` = the `VerifiedChain` it was cut from, `params()` = network + pool activations.
+- Feature `testing`: `NfsHandle::unpublished()` (nothing served yet) and
+  `NfsHandle::fixed(chain, tip, params, [(kind, committed view)])` (one snapshot for good, no
+  layers): consumers' route tests without a driver.
+
+## Observability
+
+`describe_metrics()` registers the NFS's metrics (names = ztest's `zainod` families: a rename
+breaks its sync probes):
+
+| Signal | Meaning |
+|---|---|
+| `zaino_best_tip` | the verified best height the NFS follows |
+| `zaino_reorgs_total` (0 from boot) + WARN `Chain reorg detected` (`from`, `to`) | a published tip that left the best chain |
+| `zaino_fetch_height`, `zaino_fetch_{blocks,transactions,transparent_inputs,transparent_outputs,sapling_spends,sapling_outputs,orchard_actions,ironwood_actions}_total` | blocks handed to the indexes: folded, or sent unfolded (a reorg's branch or a restart counts again; the height rewinds on a reorg) |
+| `subscribe_handed()` | the same last handed height, as a watch (zainod's `/statusz` `fetch_height`) |
+| INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized`) | each published tip that is the verified best |
+| INFO `Syncing blocks` (`height`, `target`, `bps`, `eta`) / WARN `Block fetch stalled` | every 30 s while the handed height trails the best |
 
 ## Folds: `fold_block`
 

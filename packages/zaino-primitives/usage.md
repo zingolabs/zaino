@@ -9,7 +9,7 @@ height, hash, block or amount depends on this one.
 Anything added here lands in every crate above it. `zcash_protocol` is there
 for `NetworkType`, which every crate above already speaks; `sha2` for
 `MerkleRoot::of_txids`, the consensus merkle root a block's transactions must
-rebuild (the producer's body check, and the chain builder's headers). In
+rebuild (the NFS's body check, and the chain builder's headers). In
 particular there is no serde: formats are owned by the boundary that speaks
 them.
 
@@ -33,7 +33,7 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index
-  consumes, off `zaino_sync::BlockSink`), `BlockHeader`, `ChainMetadata` (cumulative tree sizes, derived by
+  consumes, inside each `zaino_sync::Final`), `BlockHeader`, `ChainMetadata` (cumulative tree sizes, derived by
   the compact-block index), `Transaction` (and `types::transaction` parts,
   Sprout's value balance included; `TransparentData::coinbase` marks the
   coinbase), `Fee` (`Coinbase`, or `Paid` = what the transaction leaves in the

@@ -157,7 +157,6 @@ What the port deliberately does not have:
 zaino-persistence/src/
   port.rs       the traits, Schema, Changes, Verification
   layer.rs      Layer / LayeredView: non-final data over a committed view (§5)
-  tiered.rs     Tiered: blocks above the committed tip, over any Store (§5, transitional)
   disk.rs       DiskEngine / DiskStore / DiskView: one manifest over both table kinds
   sequence.rs   sequence tables as positional files
   lsm/          map tables as size-tiered sorted segments
@@ -225,7 +224,7 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
 every failed I/O call, every failed read at open, its invariant checks firing, open's trimming and
 refusals, the manifest body's golden bytes, and verify (bad page, lost file, a file a merge retired
 mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and filters.
-`layer.rs` and `tiered.rs` fire-drill each `check` invariant by breaking it by hand.
+`layer.rs` fire-drills each `check` invariant by breaking it by hand.
 
 ## 5. Tiering
 
@@ -263,52 +262,23 @@ impl<V: View> LayeredView<V> {
   `LayeredView::new(view(), buffer)`, and `commit` writes the buffer's items (map rows already in
   key order) and empties it.
 
-### `Tiered` (transitional, deleted by `zaino-nfs`)
+### Writers and the NFS
 
-Every index holds the blocks above its durable tip the same way today, over any engine:
+Non-final data lives in `zaino-nfs`: one node per block above the durable root, each holding one
+`Layer` per index (its parent's `.with` its own `Changes`); a snapshot reads every index as
+`LayeredView::new(committed view, node layer rebased onto it)`. A store only ever holds final
+data. Each index writer drives its store through `zaino_sync::Committer`
+([data-sink.md](./data-sink.md)):
 
-```rust
-impl<S: Store> Tiered<S> {
-    pub fn new(store: S, batch: NonZeroUsize) -> Self;
-    pub fn apply(&mut self, changes: Changes);                     // tip block: a Layer, reorgable
-    pub fn stage(&mut self, changes: Changes, weight: usize) -> bool; // final block: Store::apply
-    pub fn finalize(&mut self, through: Height);                   // held through `through`: one commit
-    pub fn reorg(&mut self);                                       // every applied block dropped
-    pub fn view(&self) -> LayeredView<S::View>;                    // held first, then durable
-    pub fn durable_tip(&self) / applied(&self) / staged(&self) -> Option<BlockRef>;
-}
-```
+| Final step                     | Writer                                                              |
+| ------------------------------ | ------------------------------------------------------------------- |
+| held (at or below `staged()`)  | skipped (a restart resends from the lowest durable tip)             |
+| unfolded (bulk)                | fold onto `staged()` on the compute pool, `Store::apply`            |
+| folded (the tip)               | `Store::apply` its `Changes` as the NFS sent them                   |
+| batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS       |
+| `Shutdown`                     | `Store::commit`, stop                                               |
 
-- **Staged blocks are the store's buffer**, applied blocks a `Layer` over its committed view (plus
-  their `Changes`, applied to the store when finalized).
-- **Staged and applied never coexist.** A final `Apply` arrives only when the producer's window is
-  empty, and a tip block builds on durable: a writer finalizes its staged blocks first.
-- **`stage`'s `weight`** is the source block's bytes, so `[sync] batch_mib` still means MiB of
-  decoded blocks per commit, whatever an index's rows weigh.
-- **`finalize`** applies the held blocks through `through` to the store and commits them (one
-  fsync), then rebases the layer. A failed commit panics naming the index and its directory: the
+- A fold reads its parent's state off `staged()` (compact-block's tree sizes, tree-state's
+  frontiers) instead of carrying it: a restart needs no step of its own ([nfs.md](nfs.md) §5).
+- A failed commit panics naming the index and its directory (`StoreError::commit_failed`): the
   store is poisoned and a restart recovers.
-- **Restart and reorg leave the same state**: nothing held. A fold reads its parent's state off
-  the view (compact-block's tree sizes, tree-state's frontiers) instead of carrying it, so neither
-  needs a step of its own ([nfs.md](nfs.md) §5).
-
-Preconditions panic at the top of the call, naming the index, before any state moves:
-
-| Call             | Panics on                                                                   |
-| ---------------- | --------------------------------------------------------------------------- |
-| `apply`          | staged blocks held                                                          |
-| `stage`          | applied blocks held                                                         |
-| `apply`, `stage` | changes for another schema; a height other than the next; a map key twice   |
-| `finalize`       | `through` at or below durable, or above the last held; splitting the staged |
-| `reorg`          | staged blocks held (final never rolls back)                                 |
-
-An index writer is then its schema and its fold (`parent reader, block → Changes`); its own `run`
-loop maps the sink's steps (`docs/design/data-sink.md`) onto `Tiered`:
-
-| Step              | Writer                                                                    |
-| ----------------- | ------------------------------------------------------------------------- |
-| `Apply` final     | at or below durable = replay, skipped; else fold, `stage`; full → `finalize` |
-| `Apply`           | `finalize` the staged, fold, `apply`, publish                             |
-| `Finalized { h }` | `finalize(h)`, publish the view, then the durable tip                     |
-| `Reorg`           | `reorg`, publish, mark the gate                                           |
-| `Shutdown`        | `finalize` the staged                                                     |

@@ -130,7 +130,7 @@ Sync is headers-first: the header chain decides the chain, and block sync fills 
 
 ```text
   peers ─┐
-         ├─ headers ─▶ HeaderChain ── best tip (watch) ───────────▶ Producer ──▶ BlockSink ──▶ indexes
+         ├─ headers ─▶ HeaderChain ── best tip (watch) ───────────▶ Nfs ──▶ final stream ──▶ indexes
 trusted ─┘              │    │                                       ▲  │
                         │    └─ hash_at(h) ── is this block on it? ──┘  │
                         │                                               │
@@ -145,22 +145,20 @@ trusted ─┘
 functions, the branch tree in memory, and a store on `zaino-persistence`. It publishes the best
 tip on a `watch` channel and answers `hash_at(height)` on the best chain.
 
-The **producer** follows the header chain's `VerifiedChain` alone. Any source may serve any block:
-the producer checks each fetched block's hash against `hash_at(height)` and its merkle root
+The **NFS** (`zaino-nfs`) follows the header chain's `VerifiedChain` alone. Any source may serve
+any block: the NFS checks each fetched block's hash against `hash_at(height)` and its merkle root
 against `header_at(height)`, refuses one that differs, and asks another source. One finality (the
-header chain's final tip); a reorg is a hash comparison against the blocks it holds above it; the
-`BlockSink` steps are unchanged ([verified-chain.md §9](./verified-chain.md#9-the-producer),
-[data-sink.md](./data-sink.md#how-the-producer-publishes)).
+header chain's final tip); a reorg is a hash comparison against the nodes it holds above it; the
+indexes see final blocks only ([nfs.md](./nfs.md) §6, [data-sink.md](./data-sink.md)).
 
-The **header store** follows the same two watermarks as every index
-([non-finalized-state.md](./non-finalized-state.md)): the tree above the final boundary is
-memory, and a header is written once it is final. One fixed-size record per height (hash, time,
+The **header store** follows the same two watermarks as every index ([nfs.md](./nfs.md)): the
+tree above the final boundary is memory, and a header is written once it is final. One fixed-size record per height (hash, time,
 `nBits`, cumulative work: ~80 B, ~280 MB for mainnet), encoded by named functions next to a golden
 test, as every disk layout is.
 
 **Existing indexes are checked by their tip alone.** Every block hash commits to its parent's, so
 an index whose durable tip hash equals the verified chain's hash at that height holds exactly the
-verified chain below it. The producer already compares each index's durable tip against the
+verified chain below it. The NFS compares each index's durable tip against the
 chain it follows; under the header chain that comparison is against verified work.
 
 ## 4. Finality

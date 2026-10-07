@@ -1,8 +1,8 @@
 # Non-finalized state: test design
 
 `live-tests/non-finalized-state/` is the live suite for everything above `tip − finalised_depth`:
-the non-finalized state, reorg detection and replay, the serving gate, and every RPC whose answer
-depends on the tip. [non-finalized-state.md](./non-finalized-state.md) describes the machinery.
+the non-finalized state, reorg detection, the served snapshot tip, and every RPC whose answer
+depends on the tip. [nfs.md](./nfs.md) describes the machinery.
 This document covers what the suite asserts, and why it asserts it that way.
 
 ## Principles
@@ -34,20 +34,22 @@ between durable and non-finalized data and the window floor sit inside the fixtu
 tests then land exactly on `depth` and `depth + 1`.
 
 **Hash-aware convergence.** Tests wait with `IndexerBackend::wait_for_tip`, which checks height and
-hash and keeps polling through UNAVAILABLE while the gate is closed. Waiting on height alone passes
-on the losing branch.
+hash and keeps polling through UNAVAILABLE (nothing served yet at boot). Every request answers at
+its snapshot's tip, which trails the best while the NFS catches up, so waiting on height alone
+passes on the losing branch. `zaino_index_synced` = the served tip is the verified best (it stays
+on within `finalised_depth` behind, off once it leaves the best chain).
 
 **Down means frozen.** A test that needs Zaino absent while the validator reorgs uses
 `ComponentPod::freeze` (SIGSTOP), never a bare kill, because kubelet restarts a first crash at once
 and a killed zainod can be back before the reorg lands. `thaw` then resumes the same process (C18),
 and `kill` after a freeze restarts it (C13).
 
-**Every shape at unit level too.** `packages/zaino-sync/tests/reorg_model.rs` drives the real
-producer and followers against three validators, with a 2-of-3 quorum tip, whose best chain moves
-at random: extensions, some past the window, reorgs onto higher, equal and lower tips, bare
-retreats, bursts that never settle, and restarts while the chain moves. Every commit is checked
-against a model of the best chain. It runs in seconds, so we pin a shape there before we pin it
-here.
+**Every shape at unit level too.** `packages/zaino-nfs` pins the shapes first: the `NfsCore` model
+(`core/model.rs`) drives random verified-chain evolutions (extensions, reorgs at random depth,
+same-height replacements, retreats, finality, restarts) with lying and silent sources, checking
+every published snapshot against folding each index from genesis along the best chain; the driver
+test (`tests.rs`) does the same with all five real folds, and zainod's pipeline test follows a
+reorg end to end over gRPC. They run in seconds, so we pin a shape there before we pin it here.
 
 ## Contracts pinned
 
@@ -64,7 +66,7 @@ here.
 | C9  | Durable data is never rewritten: the finalised height is monotone and every durable hash is unchanged                                                                                                                       | `window`                                                             |
 | C10 | A reorg deeper than `finalised_depth` halts Zaino, which never serves after that point                                                                                                                                      | `window`, `restart`                                                  |
 | C11 | A tip retreat with no replacement block yet is followed, down to the durable boundary itself                                                                                                                                | `reorg_shapes::retreat*`, `transactions::remined_at_the_same_height` |
-| C12 | `zaino_reorgs_total` is published at 0 from boot and increases by exactly 1 per rollback                                                                                                                                    | `reorg_shapes`, `round_trip`                                         |
+| C12 | `zaino_reorgs_total` is published at 0 from boot and increases by exactly 1 per rollback (a published tip leaving the best chain)                                                                                         | `reorg_shapes`, `round_trip`                                         |
 | C13 | A restart after a reorg serves identically, and a reorg that happens while Zaino is down is followed on restart                                                                                                             | `restart`                                                            |
 | C14 | `GetMempoolStream` ends when a reorg moves the tip                                                                                                                                                                          | `mempool`                                                            |
 | C15 | A transaction orphaned by a reorg leaves every index: its lookup, its nullifier, and address rows equal to zebrad's before the reorg, after it and after a re-mine. If rebroadcast, it re-mines at the same height or later | `transactions`                                                       |

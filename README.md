@@ -32,15 +32,18 @@ packages/                          Cargo workspace members
   zaino-grpc/                        Lightwalletd-compatible gRPC: router + validator fallback
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
   # indexing
-  zaino-sync/                        Sync pipeline: producer → BlockSink → per-index loop
+  zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, snapshots
+  zaino-header-chain/                Proof-of-work verified header chain from genesis
+  zaino-sync/                        Final stream (sink + queues) + the writers' Committer
   zaino-index-compact-block/         CompactBlockIndex: framed records in append-only files
   zaino-internal-block-hash-to-height/  BlockHashIndex: hash ↔ height, the by-hash locator
+  zaino-internal-value-balance/      Outpoint → value: each transaction's fee for compact blocks
   zaino-index-tree-state/            TreeStateIndex: commitment-tree frontiers and subtree roots
   zaino-index-transparent-address/   TransparentAddressIndex: receives and spends as sorted segments
   zaino-persistence/                 Persistence port + DiskEngine (files for sequences, LSM for maps)
-  zaino-non-finalized-state/         Non-final window of the best chain, in memory: reorg replay
   # validator source
-  zaino-source/                      Driven ports + the Zebra JSON-RPC adapter, block decode, fetch pool
+  zaino-source/                      Driven ports + the Zebra JSON-RPC adapter, block decode
+  zaino-peers/                       zebra-network peer set: headers, blocks, mempool from peers
   # vocabulary
   zaino-primitives/                  Chain-level domain types and protocol constants
   zaino-proto/                       Lightwallet protocol buffers
@@ -118,9 +121,8 @@ Operating it:
 
 How it is built, and why:
 - [Where data lives](./docs/design/boundaries.md): the consensus / keys / everything-else rule that decides what Zaino indexes.
-- [The data sink](./docs/design/data-sink.md): one stream of blocks feeding every index, its four steps, a reorg step by step, and backpressure. Start here.
-- [Sync](./docs/design/sync.md): the Producer, the index loops, and the invariants between them.
-- [The non-finalized state](./docs/design/non-finalized-state.md): one fold, two watermarks, and why a reorg is the same operation as a restart.
+- [The non-finalized state](./docs/design/nfs.md): one folded node per block above the durable root, one final stream into the index writers, one `Snapshot` every request reads. Start here.
+- [The data sink](./docs/design/data-sink.md): the final stream feeding every index writer, its steps, the commit cadence, fees, and backpressure.
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
 - [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.
@@ -136,13 +138,12 @@ Releasing it:
 Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
-- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `ValidatorClient`, and the ordered multi-validator `BlockFetchPool`.
+- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `ValidatorClient`, and the least-loaded-first `TrafficBalancer`.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers, blocks and mempool from peers with every id re-derived from the bytes, attributed transaction announcements, and the isolated per-attempt submission push.
 - [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the proof-of-work verified header tree from genesis — which rules, the most-work tip, and why finality is the caller's gate.
 - [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the final stream (lockstep finality), and publishes one `Snapshot` across every index that moves to the fork point the moment a reorg lands.
-- [`zaino-non-finalized-state`](./packages/zaino-non-finalized-state/usage.md): the in-memory non-final window, how `advance` resolves an extension or a reorg, and why a reorg replays without fetching.
-- [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (the verified chain, every block checked), why every index is fed from the rearmost resume point, indexes publishing to other indexes, the loop every index runs, and what the committed height promises.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): the final stream (`Step`, `Final`), byte-bounded queues, fees from one index to another, and the `Committer` every writer commits through.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
 - [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash ↔ height locator every by-hash request resolves through, and why the serving index confirms it.

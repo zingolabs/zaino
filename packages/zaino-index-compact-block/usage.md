@@ -2,9 +2,9 @@
 
 The compact-block index: an append-only sequence of gRPC-framed `CompactBlock`
 records, the pure step that derives one block's record (`fold`), typed reads
-over any view of it (`CompactBlockReader`), the loop that builds it
-(`CompactBlockIndexWriter`), and the service `zaino-grpc` serves
-`GetLatestBlock` / `GetBlock` / `GetBlockRange` from.
+over any view of it (`CompactBlockReader`, plus the reads `GetBlock` and
+`GetBlockRange` answer with), and the writer that builds it from the final
+stream (`CompactBlockIndexWriter`).
 
 ## On disk
 
@@ -43,120 +43,77 @@ let changes = fold(&parent, &block, &fees)?;          // Result<Changes, TreeSiz
   block's one record, framed, with its `CompactTx.fee`s from `fees` (asserted
   to be that block's) and its commitment-tree sizes (`chainMetadata`) = the
   parent tip record's sizes plus what the block commits. Nothing is carried
-  between calls; the parent's sizes are read through the reader, so a fold
-  after a restart or a reorg reads the record it now builds on.
+  between calls; the parent's sizes are read through the reader.
 - `parent` must hold exactly the block's parent as its tip (genesis: an empty
   view). Anything else panics ("does not extend the parent tip"): a fold onto
   the wrong parent would silently mis-size every later record.
 - `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
 - `CompactBlockReader<V>` is generic over any `V: SequenceRead`: a store's
-  committed view or a `zaino_persistence::LayeredView` over one.
-  `tip()` (`Option<BlockRef>`), `block(h)` (one framed record, every pool) and
-  `range(first, last, budget)` (one window: at most 256 records, cut to
-  `budget` bytes, never fewer than one; either direction) are its reads.
-  Cloning it clones the view (pointer copies).
+  committed view or a `zaino_persistence::LayeredView` over one (a snapshot's:
+  `snap.views().compact_block()`). `tip()`, `block(h)` (one framed record,
+  every pool) and `range(first, last, budget)` (one window: at most 256
+  records, cut to `budget` bytes, never fewer than one; either direction) are
+  its reads. Cloning it clones the view (pointer copies).
+- At the tip the NFS folds this index after value-balance (its fees,
+  `zaino-nfs::fold_block`).
 
 ## Building
 
 ```rust,ignore
 let store = DiskEngine::new(fs).open(&path, &zaino_index_compact_block::schema(network))?;
-let index = CompactBlockIndexWriter::new(store, batch_bytes);
-let durable = index.durable_tip(); // for the producer's start and chain check
-let service = CompactBlockService::new(index.published().served());
-tokio::spawn(index.run(blocks, fees));
+let writer = CompactBlockIndexWriter::new(store, batch_bytes);
+let blocks = nfs.subscribe(IndexKind::CompactBlock, writer.committed(), queue_bytes);
+tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink subscription
 ```
 
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
   `S::View: SequenceRead`; zainod picks `DiskEngine`. Its name is
   `IndexKind::CompactBlock.name()` = `"compact_block"`.
-- `run(blocks, fees)` is its own loop over its `BlockSink` subscription and its
-  subscription to the value-balance index's `FeeSink`
-  ([`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)):
-  one step off each per step, the block step then its fee step. Every
-  `CompactTx.fee` comes from them. The two steps are asserted to match (kind,
-  height, `finalized`, fees of that block), so they end on the same `Shutdown`.
-- Fallible only at boot (the engine's `open` → `StoreError`); `new` is
-  infallible. `run` is infallible: it panics on a failed commit, on a tree size
-  past `u32` (#549), and when value-balance's fee sink drops
+- `new` asserts one record per committed height. `committed()` = the
+  committed-view watch the NFS reads (its durable tip).
+- `run(blocks, fees)` follows the final stream through `zaino_sync::Committer`
+  ([the shape every writer shares](../zaino-sync/usage.md#committer)): per run,
+  one fee step off value-balance's `FeeSink` per unfolded step (held ones
+  included), then on the CPU pool each unfolded step not held folded onto
+  `staged()` with its fees, each folded step applied as the NFS sent it.
+  Commits: batch full, after each folded run, or 1 s idle. It ends after its
+  stream's `Shutdown` and the fee stream's.
+- Fallible only at boot (the engine's `open` → `StoreError`). `run` panics on a
+  failed commit, a tree size past `u32` (#549), out-of-step fees, and when
+  value-balance's fee sink drops
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- Storage tiers are `zaino_persistence::Tiered`
-  ([§5](../../docs/design/persistence-engine.md#5-tiering)): each block is
-  `fold`ed onto a reader over everything held. A final block is staged (a
-  replay at or below the durable tip is skipped) and committed once
-  `batch_bytes` of source blocks are staged; a non-final block commits what is
-  staged, then is applied; `Finalized { h }` commits through `h`; `Reorg` drops
-  every applied block (the winner folds onto the durable tip record);
-  `Shutdown` commits what is staged. Commits run on the blocking pool; the loop
-  waits for them. Chain identity is the producer's check, not this index's.
-- `published()` (`zaino_sync::Published<CompactBlockReader<LayeredView<V>>>`) =
-  the reader, both tips and the serving gate (its task:
-  `published().gate(tips, depth, cancel)`).
-- Folding runs inline on the loop, once per block, staged or applied: serving
-  and the commit read the same bytes.
-- The committed tip hash is what the producer checks the final verified chain
-  against at boot (`ProduceError::Diverged`).
-- `encode_compact_block(&Block, &BlockFees, &TreeSizes)` returns the
-  framed record bytes `fold` stores. The block carries neither fees nor tree
-  sizes, so the caller supplies its fees (asserted to be that block's) and the
-  cumulative `TreeSizes`.
+- `encode_compact_block(&Block, &BlockFees, &TreeSizes)` returns the framed
+  record bytes `fold` stores.
 
 ## Serving
 
-```rust
-let service = CompactBlockService::new(index.published().served());
-```
+Routes read through one snapshot per request (`snap.views().compact_block()`,
+`None` = disabled), at heights `≤ snap.tip()`:
 
-- `published().served()` (`zaino_sync::Served<CompactBlockReader<LayeredView<V>>>`)
-  = the reader the loop republishes after every step and commit, gated on
-  `synced`. Until the
-  index reaches the tip, `block`, `resident_block`, `block_at_hash` and `range`
-  answer heights at or below the durable tip (final: the producer stops on a
-  contradiction and never rewrites one) and return `ServeError::Syncing` for
-  anything above it. A range is judged by the top it asked for (`end`, or
-  `start` when descending), so it is refused rather than cut at the durable
-  tip. `latest_id` stays `Syncing`.
-- A test with no loop serves committed records with
-  `Served::fixed(testing::committed(store, n))` (feature `testing`).
-- `block(h)` returns one framed record with every pool; `latest_id()` = the
-  tip's `(height, hash)`; `tip()` = the published tip, last height inclusive
-  (`None` = nothing held), synced or not.
-- RAM-only answers, for a transport to serve inline (no page read):
-  `latest_id()`, the view's tip block, and `resident_block(h)` →
-  `Ok(Some(record))` when `h` is held above the durable tip (`Ok(None)` = ask
-  `block`).
-- `block_at_hash(h, hash)` = `GetBlock` by hash, `h` located by the block-hash
-  index. It serves the record only if that record's own `hash` field is `hash`,
-  and otherwise returns `HashNotFound`. The two indexes publish independently,
-  so a reorg can land between the locate and the read.
-- `range(start, end, pools)` (heights, both inclusive) returns a
-  `RangeCursor<V>`. `start > end` walks it top down (the proto's "decreasing
-  height order": held blocks first, then file windows downward, records
-  reversed in each). The top is clamped to the tip; a bottom past the tip is
-  `NotFound`. There is no length cap: pepper-sync asks for a whole shard in one
-  call, and a shard (2^16 notes) spans any number of blocks. The work is
-  bounded per window instead (below).
+- `block(h)` = one framed record, every pool (`GetBlock` is never filtered).
+- `block_at(h, hash)` = `GetBlock` by hash, `h` located by the block-hash
+  index: the record only if its own `hash` field is `hash`, else
+  `ServeError::HashNotFound` (`Malformed` if the record will not walk).
+- `resident_block(h)` (on a `LayeredView` reader) = the record when `h` sits
+  in the snapshot's layer above the committed records: RAM, no page read, a
+  transport may answer inline; `None` = ask `block`.
+- `RangeCursor::new(reader, start, end, tip, pools)` = `GetBlockRange` of
+  heights `start` to `end`, both inclusive, never past `tip` (the snapshot's).
+  `start > end` walks top down (layer records first, then file windows
+  downward, records reversed in each). The top is clamped to the tip; a bottom
+  past it is `ServeError::NotFound`. No length cap: work is bounded per window.
 - `Pools::default()` = the shielded set (no transparent), matching an empty
   `poolTypes`; `Pools::ALL` = every pool. Pruning walks each record's framing,
-  without a decode. A transaction left with no pool component (no spends,
-  outputs, actions, `vin` or `vout`) is dropped, for every selection including
-  `Pools::ALL` (lightwalletd's `FilterTxPool`); the block itself is always
-  served. `block(h)` is never filtered.
+  without a decode. A transaction left with no pool component is dropped
+  (lightwalletd's `FilterTxPool`); the block itself is always served.
 
-Each request pins one `CompactBlockReader` (held blocks + durable mapping) for
-its whole life, so a commit landing mid-stream cannot move the held/committed
-seam. A
-record's `hash` field is read by walking its framing; the walk stops before
-`vtx`, so it never touches the transactions.
-
-A served record (`block`) is zero-copy: a refcounted `Bytes` slice of the mmap
-or of the held record. A range window is read the same way (one `records`
-read: at most 256 records, one `MADV_WILLNEED` over them), cut to 1 MiB of
-records (always at least one), then projected into one buffer.
-`RangeCursor::next_chunk()` yields one file window below the seam, and one held
-record above it, projected on read. `next_touches_disk()` says whether the next
-chunk reads the files; only that step belongs on the blocking pool (behind a
-range-lane permit). There is no RAM cache for the files; the page cache is the
-cache.
+The cursor holds its reader for the whole stream, so a commit or reorg landing
+mid-stream cannot move the layer/committed seam. `next_chunk()` yields one file
+window below the seam (one `records` read: at most 256 records, cut to 1 MiB,
+always at least one, then projected into one buffer) and one layer record above
+it, projected on read. `next_touches_disk()` says whether the next chunk reads
+the files; only that step belongs on the blocking pool (behind a range-lane
+permit). There is no RAM cache for the files; the page cache is the cache.
 
 ## Mempool rendering
 
@@ -170,11 +127,9 @@ write 0, "not provided", rather than a saturated wrong value.
 ## Features
 
 `testing` exposes `testing::block(height) -> (Block, BlockFees)`, a sample
-block carrying every pool and its fees (one tx, fee 5 000), and
-`testing::committed(store, n) -> CompactBlockReader<LayeredView<V>>`:
-`block(0..n)` folded and committed to `store` in one commit, served as the
-index serves them (tree sizes after `h` = `(h + 1) × (1, 1, 2)`).
-Blocks come from one deterministic `zaino_primitives::testing::Chain` (it
-enables `zaino-primitives/testing`), every block carrying the same sample
-transaction, so `block(h)` links onto `block(h - 1)` and its hash is real
-(never `[h; 32]`).
+block carrying every pool and its fees (one tx, fee 5 000),
+`testing::chain(n)` (`block(0..n)`, a `VerifiedChain::regtest` path) and
+`testing::committed(store, n) -> S`: `block(0..n)` folded and committed to
+`store` in one commit (tree sizes after `h` = `(h + 1) × (1, 1, 2)`). Blocks
+come from one deterministic `zaino_primitives::testing::Chain`, so `block(h)`
+links onto `block(h - 1)` and its hash is real.

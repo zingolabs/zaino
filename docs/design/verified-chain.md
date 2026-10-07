@@ -1,12 +1,12 @@
 # The verified chain: headers in, verified blocks out
 
 The end state of how Zaino follows the chain: headers from every source verified into one
-most-work chain, every block checked against it, one producer feeding the indexes through the
-`BlockSink`, and the p2p network as a first-class source. It replaces trust-routing (fetch only
+most-work chain, every block checked against it, one sender (`zaino-nfs`) feeding the indexes
+through the final stream, and the p2p network as a first-class source. It replaces trust-routing (fetch only
 from the validators that hold the tip) with verification (fetch from anyone, check what arrives).
 
 Related: the mempool, submission and telemetry ([chainview.md](./chainview.md)), what the sink
-promises the indexes ([data-sink.md](./data-sink.md), [non-finalized-state.md](./non-finalized-state.md)),
+promises the indexes ([data-sink.md](./data-sink.md), [nfs.md](./nfs.md)),
 who is trusted for what ([boundaries.md](./boundaries.md)).
 
 Status: **design, decisions taken 2026-10-06**; phases in §11.
@@ -34,7 +34,7 @@ Measured against the code, not the intent (2026-10-06):
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **No new zebra patches.** Attribution and everything sync-critical is done at Zaino's own boundary. The zebra fork is only rebased onto upstream's primary branch (for NU7 and protocol 170,180).                                                                                                                                                                                                                                                                   |
 | 2   | **Minimum chain work gates peer-only bests, never finality.** Finality needs a trusted holder (peers alone never finalize), so a work floor adds nothing there; dropped from finality 2026-10-06 (an unbounded in-memory first sync was its only effect). A per-network floor (zcashd's `nMinimumChainWork`) returns with peers (phase 5) as `credible`: below it a best no trusted validator holds is not followed or served. Not a checkpoint: it trusts no hash. |
-| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the producer follows proof of work; only finality waits for a holder.                                                                                                                                                                                                                                                                                                   |
+| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the NFS follows proof of work; only finality waits for a holder.                                                                                                                                                                                                                                                                                                   |
 | 4   | **`[p2p]` on by default.**                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 5   | **Block commitments are checked incrementally**, off the hot path, as their own follower (§8).                                                                                                                                                                                                                                                                                                                                                                      |
 
@@ -57,12 +57,12 @@ Measured against the code, not the intent (2026-10-06):
                               │ watch<Arc<VerifiedChain>>
           ┌───────────────────┼───────────────────────┬─────────────────┐
           ▼                   ▼                       ▼                 ▼
-      ChainView           Producer                 zebra ChainTip    CommitmentAuditor
+      ChainView           Nfs (zaino-nfs)          zebra ChainTip    CommitmentAuditor
       holders, mempool,   fetch (h, hash) from     (start height,    (history tree,
-      spread, submission  anyone → check → Steps   min peer version)  off the hot path)
+      spread, submission  anyone → check → fold    min peer version)  off the hot path)
                               │
                               ▼
-                          BlockSink ─▶ indexes (Step contract unchanged)
+                          final stream ─▶ index writers; snapshots ─▶ serving
 ```
 
 **`VerifiedChain`** is the one value everything downstream reads, published on a `watch` whenever
@@ -228,35 +228,25 @@ off the hot path:
 - the history tree is appended one leaf per block (O(log n) hashes, `zcash_history`), and resets
   at each upgrade; `authDataRoot` is the auth digests the parser already computes;
 - a mismatch halts finality and alarms (it means the tree-state fold or the parser disagrees with
-  consensus). It never blocks serving or the producer.
+  consensus). It never blocks serving or the NFS.
 
-## 9. The producer
+## 9. Following the chain: the NFS
 
-The producer follows the `VerifiedChain` and nothing else.
+Built as `zaino-nfs` ([nfs.md](./nfs.md) §6; the producer this section first described is
+deleted). The NFS follows the `VerifiedChain` and nothing else.
 
-```text
-  on each VerifiedChain c (borrow_and_update; never stale):
-    assert c.final_tip.height ≥ last final seen                       (finality never reverts)
-    fork = lowest delivered non-final height h with c.hash_at(h) ≠ delivered[h]
-    if fork: Reorg; resume at the first non-final height (replay from the window cache)
-    announce Finalized for every delivered non-final h ≤ c.final_tip
-    for h in next ..= c.best:
-        block = fetch(h, c.hash_at(h))                              (§5: checked)
-        Apply { h, finalized: h ≤ c.final_tip, block }
-```
-
-- **One finality**: the header chain's final tip. The publisher keeps no tip of its own.
+- **One finality**: the header chain's final tip. The NFS keeps no tip of its own.
 - **No walk-back**: the verified chain names every hash; a reorg's fork is a comparison.
 - **Impossible states are asserts**: a fork at or below the final tip cannot come from the header
   chain. A fetched block that fails its check is the source's fault, retried elsewhere.
 - **Restart**: each index's durable tip must be `c.hash_at(height)`; nothing is sent while the
-  final tip is below it; a mismatch is the one fatal case (`Diverged`).
-- **No bulk vs window**: one pipeline (`concurrency` blocks in flight ahead of the next one sent)
-  for every height; a block is final or not only by the final tip.
-- **The block sink's view of all this** (finality, reorgs, retreats, a reorg and finality in one
-  update) is written down in [data-sink.md](./data-sink.md#how-the-producer-publishes).
-- **The `Step` contract is unchanged**: `Finalized*`, `Reorg`?, `Apply*`.
-- **Gates compare hashes**: an index is served once its applied block **is** the verified best.
+  final tip is below it; a mismatch is the one fatal case (`NfsError::Diverged`).
+- **One pipeline**: `concurrency` blocks fetched or folding ahead of the next one needed, for
+  every height.
+- **Reorgs stay in the NFS**: the final stream carries final blocks only
+  ([data-sink.md](./data-sink.md)); a reorg moves the served snapshot to the fork point and on
+  along the new branch.
+- **Serving compares hashes**: a snapshot's tip is the deepest folded block on the verified best.
 
 ## 10. Engineering and tests
 
@@ -272,7 +262,7 @@ Every component is two halves:
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `HeaderChain`: insert run, finalize, prune, best, locator                           | `HeaderSync`: requests, stage A on the blocking pool, publish |
 | `Holders`: poll answers + `VerifiedChain` → holders, agreement, finality permission | the validator poller                                          |
-| `ProducerCore`: `VerifiedChain` + delivered window → steps to send, fetches wanted  | `Producer`: fetch, check, send                                |
+| `NfsCore`: `VerifiedChain` + bodies + folds + durable tips → sends, folds, fetches  | `Nfs`: fetch, check, fold, send, publish                      |
 | `WorkPoolCore`: members, scores, bans, refill and rotation choices                  | WorkPool: connect, request, time out                          |
 | mempool fold, `Overheard`, submission `Job` (exist today)                           | `ChainView`, `PeerWatch`, `Submission`                        |
 
@@ -300,14 +290,14 @@ it is an `Err` that names the source.
 | H7  | a header from the future is deferred, then accepted once the clock passes it                         |
 | H8  | an invalid header is blamed on its sender and never enters the tree                                  |
 
-**Producer and sink**
+**NFS and the final stream** (built as `NfsCore` N1–N6, [nfs.md](./nfs.md) §9)
 
-|     | Invariant                                                                                                                                                                       |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P1  | every `Apply`'d block is `c.hash_at(h)` for the chain it was sent under, with a matching merkle root                                                                            |
-| P2  | the `Step` contract (contiguous, `Finalized` monotone and only for delivered heights, a final `Apply` only with nothing pending, replay from the first non-final after `Reorg`) |
-| P3  | nothing at or below the final tip is ever replaced                                                                                                                              |
-| P4  | at quiescence every index's applied block = best, its durable block = the final tip (within one batch)                                                                          |
+|     | Invariant                                                                                                     |
+| --- | ------------------------------------------------------------------------------------------------------------- |
+| P1  | every sent or folded block is `c.hash_at(h)` for the chain it was taken under, with a matching merkle root    |
+| P2  | the final stream: every height once, ascending, final, never retracted                                        |
+| P3  | nothing at or below the final tip is ever replaced                                                            |
+| P4  | at quiescence the served tip = best, every index's durable block = the final tip (within one batch)          |
 | P5  | a lying source never causes a wrong delivery; a silent one never stalls a block another source has                                                                              |
 | P6  | on restart every durable tip is checked against the header chain; a diverged index halts                                                                                        |
 
@@ -336,8 +326,8 @@ it is an `Err` that names the source.
    — under a test `Params` whose difficulty rule accepts any `nBits` — varying work, so most work
    ≠ highest. `MockChain` serves it.
 1. **Core models (proptest, against naive oracles).** One per core: the header chain against a
-   naive tree (H1–H8), `Holders` against a set computation (V1, V2), `ProducerCore` against a
-   naive "what should the index hold" model (P1–P3), `WorkPoolCore` against a naive scoreboard
+   naive tree (H1–H8), `Holders` against a set computation (V1, V2), `NfsCore` against a
+   fold-from-genesis oracle (P1–P3), `WorkPoolCore` against a naive scoreboard
    (N1, N2), plus the existing mempool, `Overheard` and `Job` models. Swarm-style generation:
    whole input kinds switched off per case.
 1. **The network simulation.** All drivers wired as zainod wires them, over a simulated world, on
@@ -376,8 +366,8 @@ it is an `Err` that names the source.
    store error fatal; the header-chain model. (Minimum work moved to phase 5: decision 2.)
 1. **Holders by question** (§7) and the chain view on the `VerifiedChain`: `Holders` core and
    model; walk machinery removed.
-1. **Producer on the verified chain**: checked fetch from any source, one finality, hash gates;
-   `ProducerCore` and its model.
+1. **Fetch on the verified chain**: checked fetch from any source, one finality; done as
+   `zaino-nfs` ([nfs.md](./nfs.md)), which replaced the producer and its gates.
 1. **Peers**: `WorkPool` (core, model, driver), `ChainTip`, block `inv`, headers, blocks and
    mempool bytes from peers, status and metrics, `[p2p]` on by default; minimum chain work
    (`credible`) gating a best no trusted validator holds.

@@ -9,7 +9,6 @@ error. `ZebraRpcAdapter` answers all of it over zebrad's JSON-RPC; blocks come f
 
 | Method | RPC | Answer |
 |---|---|---|
-| `get_block(height)` | `getblock <h> 0` | `Block`, or `GetBlockError::HeightNotFound` |
 | `get_block_by_hash(hash)` | `getblock <hash> 0` | `Block`, or `GetBlockByHashError::NotFound` |
 | `get_block_links(heights)` | `getblockheader <h> false`, batched | `BlockLink` per height, or `GetBlockError::HeightNotFound` |
 | `get_poll_reading(metadata, holds)` | one poll batch (below) | `PollReading` |
@@ -98,24 +97,9 @@ operation, `failover(|validator| read)`, asks them in turn until one answers:
 - the result = the first answer, else a transport failure (that validator may
   have held it), else the last absence
 
-`among(positions)` is a subset sharing the same loads. Writes never go through
-it: submission belongs to the chain view.
-
-## `BlockFetchPool`: blocks from N validators
-
-`BlockFetchPool::new(sources, concurrency)` takes one adapter per validator
-(non-empty), on `Lane::Sync`.
-
-- `blocks(start, end)`, both bounds inclusive, returns an ascending `Stream` of
-  `Result<Block, _>`. Each height's fetch and decode is its own task, at most
-  `concurrency` in flight. The first error ends the stream.
-- Each height goes through a `TrafficBalancer` as it is dispatched (the
-  least-loaded validator first, its failover rules after).
-- `among(positions)` is the same pool over only the sources at `positions`.
-- `block_by_hash(hash)` tries every validator in turn, since a branch tip may be
-  on only some of them.
-- A validator answering with another height or hash counts as that validator's
-  failure, and the next one is tried.
+Writes never go through it: submission belongs to the chain view. Block bodies
+are fetched by the NFS (`zaino-nfs`), by hash, from any source, each checked
+against the verified header.
 
 ## Batched ports for one poller
 
@@ -139,8 +123,7 @@ then the bytes of what it newly lists); its header sync asks `get_block_links`:
 - `get_block_links(heights)` (`getblockheader <h> false` each):
   `BlockLink { header }` per height, the raw consensus header bytes, neither decoded nor
   hashed here: the consumer decodes once on receipt (`zaino_header_chain::decode_header`
-  recomputes the hash from the bytes). `GetBlockError::HeightNotFound` (the same error as
-  `get_block`) means a height above the tip.
+  recomputes the hash from the bytes). `GetBlockError::HeightNotFound` means a height above the tip.
 - `get_raw_mempool_transactions(listed)`: the bytes of listed entries, in batches of at most
   100 calls and 8 MiB of transactions by `encoded_len` (the hex reply stays under
   zebrad's response cap). `NotFound` on an item means it left the mempool after
@@ -177,19 +160,19 @@ It serves only real chains: every block it is given must come from
 `zaino_primitives::testing::Chain` (its hash = SHA-256d of its encoded header, its parent
 the best block below it), and `get_block_links` hands out those header bytes, so a
 header chain can verify what it serves. It answers the way zebrad does: blocks by
-height and by hash come from the best chain only, and nothing is served above the
-tip. It is a whole `ChainDataSource`: its tip; its mempool, each entry listed at
+hash and header links by height come from the best chain only, and nothing is
+served above the tip. It is a whole `ChainDataSource`: its tip; its mempool, each entry listed at
 `MEMPOOL_FEE`, a sent transaction (txid from its bytes, `Malformed` if they do not
 decode) listed from the next poll, a mined txid dropped; `get_transaction` locating a
 txid in the mempool or on the best chain; no peers; a release with no halt. One mock
-backs the chain view, the gRPC routes and the fetch pool alike.
+backs the chain view, the gRPC routes and the NFS alike.
 
 `mock::fixture_block(height)` / `mock::fixture_transactions(height)`: a captured
 mainnet block from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000,
 2,500,000), whole or as each transaction's own consensus bytes, for tests that need
 real transactions (every pool, every version).
-`zaino-sync/tests/reorg_model.rs` drives the real producer through reorgs with
-`extend_best` and `rewind_to`.
+`zaino-nfs`'s driver test and zainod's pipeline test drive the NFS through reorgs
+with `extend_best`.
 
 A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
 bare feature gate that nothing enables compiles nothing, and its tests silently

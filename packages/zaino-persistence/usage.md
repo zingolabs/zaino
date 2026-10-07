@@ -2,9 +2,8 @@
 
 What every index stores through: the persistence port (`PersistenceEngine`,
 `Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`), non-final
-data over a committed view (`Layer`, `LayeredView`), the tiering every index
-holds its uncommitted blocks in today (`Tiered`, over any `Store`), and the
-engine behind it, `DiskEngine`, which keeps sequences as positional files and
+data over a committed view (`Layer`, `LayeredView`: what `zaino-nfs` holds
+above the durable root and every snapshot reads through), and the engine behind it, `DiskEngine`, which keeps sequences as positional files and
 maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
 crash protocol: [`docs/design/durability.md`](../../docs/design/durability.md).
 
@@ -78,9 +77,10 @@ view.range(SPENT, &start, &end, limit);                   // [start, end); None 
   - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
     never retried; `durability.md` §6). Drop the store and reopen it: the
     buffer is gone with it.
-  - `Tiered::finalize` (below) turns the `Err` into a panic naming the index
-    and `store.path()`: `<index> index commit failed: disk <dir> full` when
-    `StorageFull` or `QuotaExceeded` sits anywhere in the error chain, else
+  - `StoreError::commit_failed(index, path)` turns the `Err` into a panic
+    naming the index and directory (`zaino_sync::Committer` calls it):
+    `<index> index commit failed: disk <dir> full` when `StorageFull` or
+    `QuotaExceeded` sits anywhere in the error chain, else
     `<index> index commit failed at <dir>: <error>`.
 - **Reads never error.** A page whose checksum fails **panics** on its first
   touch, telling the operator to run `zainod verify`. A `View` never changes
@@ -191,43 +191,14 @@ let child = child.rebase(&store.view());     // after a commit: what durable hol
   un-rebased layer would read its blocks twice).
 - `range` merges both runs and keeps the `None` = over `limit` rule.
 
-## Tiering: blocks above the committed tip (`Tiered`)
+## Who drives a store
 
-Every index holds its non-final and not-yet-committed blocks through one generic
-layer over any `Store`
-([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-tiering)):
-
-```rust
-let mut tiered = Tiered::new(store, batch_bytes);   // nothing held above the committed tip
-
-let mut changes = Changes::new(block_ref, tiered.schema()); // one block = one Changes
-changes.append(BLOCKS, &record);
-tiered.apply(changes);                               // tip block: RAM, reorgable
-if tiered.stage(final_changes, block_weight) {       // final block: true = a batch's bytes staged
-    tiered.finalize(height);                         // held through `height` → one commit
-}
-tiered.reorg();                                      // every applied block dropped
-
-let view = tiered.view();                            // LayeredView<S::View>: held first, then durable
-view.record(BLOCKS, h); view.value(SPENT, &key);     // the read traits the store's view has
-view.durable();                                      // the committed view alone (the seam)
-tiered.durable_tip(); tiered.applied(); tiered.staged(); // Option<BlockRef> each
-```
-
-- Staged blocks are the store's buffer (`Store::apply`, read through
-  `staged()`); applied blocks are a `Layer` over the committed view, applied
-  to the store when finalized.
-- Views are O(tables) pointer copies (`imbl` per table): publish one per block.
-- Staged and applied blocks never coexist: finalize the staged before applying
-  a tip block. Each precondition (a gap, apply over staged, stage over applied,
-  finalize outside (durable, held] or splitting the staged, reorg with staged,
-  changes for another schema, a key held twice) panics at the top of the call,
-  naming the index.
-- `stage`'s `weight` = the source block's bytes, so a batch means the same
-  whatever the index stores per block.
-- `finalize` applies the held blocks through `height` to the store and commits
-  them (one fsync); it panics naming the index and directory if the commit fails.
-- Transitional: `zaino-nfs` replaces it (`docs/design/nfs.md` §8).
+- Index writers buffer final blocks with `Store::apply` and commit through
+  [`zaino_sync::Committer`](../zaino-sync/usage.md) (batch full, after a folded
+  run, or 1 s idle); a bulk fold reads its parent through `staged()`.
+- Non-final blocks never reach a store: `zaino-nfs` holds one `Layer` per index
+  per block and serves `LayeredView::new(view(), layer)` from its snapshots
+  ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-tiering)).
 
 ## Conformance suite (feature `testing`)
 

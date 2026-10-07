@@ -1,7 +1,8 @@
 //! `zaino-grpc` — the lightwalletd-compatible `CompactTxStreamer` endpoint.
 //!
-//! - [`GrpcService`] = every method, dispatched by path over [`Routes`] (the enabled indexes,
-//!   the chain view, the validators); compact blocks = stored bytes, never re-encoded
+//! - [`GrpcService`] = every method, dispatched by path over [`Routes`] (the NFS's snapshots, the
+//!   chain view, the validators); compact blocks = stored bytes, never re-encoded
+//! - one snapshot per index request or stream: every answer at heights `<=` its tip
 //! - Domain → wire owned by the byte-producing crate (no domain crate depends on the schema)
 #![forbid(unsafe_code)]
 

@@ -1,9 +1,9 @@
 # zaino-grpc
 
 The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
-dispatched by path over the [`Routes`] the config enabled. The per-method table
-and the status codes a client must distinguish live in
-[`docs/rpc_api.md`](../../docs/rpc_api.md).
+dispatched by path over [`Routes`]. Every index method reads one `zaino_nfs::Snapshot`
+for the life of its request or stream. The per-method table and the status codes a
+client must distinguish live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
 ## Routes
 
@@ -11,11 +11,9 @@ and the status codes a client must distinguish live in
 let routes = Routes {
     chain: Arc::clone(&view),            // Arc<ChainView<S>>
     validators,                          // TrafficBalancer<S>
-    network,
-    compact_block: compact_block_service, // CompactBlockService<V>
-    block_hash: Some(block_hash_service),
-    tree_state: Some(tree_state_service),
-    transparent_address: None,           // [index.transparent_address] off
+    network,                             // declared (GetLightdInfo.chainName)
+    nfs: nfs.handle(),                   // NfsHandle<V>: one snapshot per request
+    max_address_rows,                    // receives one t-address request may walk
 };
 let bound = GrpcService::new(routes, grpc_listen_address, limits)
     .with_trusted_proxies(proxies)
@@ -25,29 +23,41 @@ let bound = GrpcService::new(routes, grpc_listen_address, limits)
 tokio::spawn(bound.run(cancel.child_token()));
 ```
 
-| Method | Answered by |
+| Method | Answered by (the snapshot's view) |
 |---|---|
-| `GetLatestBlock`, `GetBlock`, `GetBlockRange[Nullifiers]` | `compact_block` (always on: stored records, never re-encoded) |
+| `GetLatestBlock` | the snapshot tip itself (height + hash, no read) |
+| `GetBlock`, `GetBlockRange[Nullifiers]` | `compact_block` (stored records, never re-encoded) |
 | `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | `tree_state` |
 | `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `transparent_address` |
 | `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
 | `SendTransaction`, `GetMempoolTx`, `GetMempoolStream` | `chain` (submission §6, the servable mempool) |
 | `GetTransaction` | `validators` (first validator holding it) |
-| `GetLightdInfo` | `chain`'s pinned view + `compact_block`'s tip; `network` as configured |
+| `GetLightdInfo` | `chain`'s pinned view + the snapshot tip (0 before the first); `network` as configured |
 
-- `None` = that index disabled: its methods are `UNIMPLEMENTED`, naming the index
-  (`GetTreeState needs the tree_state index, which is not enabled`). An unknown
-  path is `UNIMPLEMENTED`.
+- **One snapshot per request** (`nfs.snapshot()`, pinned for the request or the
+  whole stream): every index method answers at heights `≤ snap.tip()`, so
+  `GetLatestBlock`, `GetBlockRange` and `GetTreeState` agree by construction
+  (R12). Past the tip = `NOT_FOUND` (ranges clamp to it; subtree roots
+  completing above it are left out; the transparent reader is
+  `.as_of(snap.tip())`).
+- No snapshot yet (a booting NFS) = every index method `UNAVAILABLE` (retry).
+- An index the snapshot lacks (`snap.views().x()` = `None`) = disabled: its
+  methods are `UNIMPLEMENTED`, naming the index (`GetTreeState needs the
+  tree_state index, which is not enabled`). Compact-block is optional like the
+  rest. An unknown path is `UNIMPLEMENTED`.
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [`docs/design/boundaries.md`](../../docs/design/boundaries.md).
-- `V` = the persistence engine's view every index service reads through
+- `V` = the persistence engine's committed view every snapshot holds
   (`SequenceRead + MapRead`; zainod: `zaino_persistence::DiskView`): `Routes<S,
   V>`, `GrpcService<S, V>`. The crate names no engine.
-- `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through `block_hash`:
-  its `locate(hash)` names the height, and the answering index must hold the
-  same hash there (else `NOT_FOUND`). With `block_hash: None`, a hash request is
+- `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
+  snapshot's `block_hash` view: `height_of(hash)` names the height (above the
+  tip = `NOT_FOUND`), and the answering index must hold the same hash there
+  (else `NOT_FOUND`). With block-hash disabled, a hash request is
   `UNIMPLEMENTED`.
+- Route tests build a snapshot with `NfsHandle::fixed` / `NfsHandle::unpublished`
+  (`zaino-nfs` feature `testing`).
 - `GetLightdInfo` never calls a validator: one pinned chain-view snapshot
   (`validator_info`); no held verified tip = `UNAVAILABLE`.
 - `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
@@ -120,7 +130,7 @@ touches index files on the blocking pool, under a permit of its lane, never on
 a runtime worker:
 
 - **point**: block by height or hash, tree state, subtree roots
-- **range**: each `GetBlockRange` window below the finalised seam
+- **range**: each `GetBlockRange` window below the snapshot's layer/committed seam
 - **scan**: address UTXOs, balances and transactions
 
 A heavy scan queues behind the other scans, never behind or ahead of a tip read.
@@ -132,16 +142,16 @@ The answers every synced wallet asks for right after each block never queue:
 
 | Answer | Why it needs no read |
 |---|---|
-| `GetLatestBlock` | tip height + hash resolved when the view was published |
-| `GetBlock` by height, non-finalized | RAM record |
-| `GetBlockRange`, non-finalized, default pools | projection stored at apply (zero-copy) |
+| `GetLatestBlock` | the snapshot's tip |
+| `GetBlock` by height, in the snapshot's layer | RAM record |
+| `GetBlockRange`, in the layer | one RAM record per chunk, projected on read |
 | `GetMempoolStream` snapshot | framed once per chain-view publication |
-| `GetTreeState` (non-finalized heights), `GetLatestTreeState` | framed once per publication |
-| `GetSubtreeRoots` | each pool's list framed once per publication; a request = one slice |
+| `GetTreeState` (layer heights), `GetLatestTreeState` | framed once per snapshot |
+| `GetSubtreeRoots` | each pool's list framed once per snapshot; a request = one slice |
 
-The per-publication memos (`memo::PerView`) are keyed on the pinned view's
-`Arc`. A new publication starts empty, so there is no invalidation rule. The
-first ask per publication computes on the point lane, single-flight: the rest
+The per-snapshot memos (`memo::PerView`) are keyed on the snapshot's `Arc`. A
+new snapshot starts empty, so there is no invalidation rule. The first ask per
+snapshot computes on the point lane, single-flight: the rest
 of the herd waits for that one computation, then every later ask is answered
 inline.
 

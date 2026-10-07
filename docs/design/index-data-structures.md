@@ -3,7 +3,7 @@
 Every RPC Zaino answers from its own indexes is a fold over one stream of blocks. This document
 covers the shape of each fold: what it keeps on disk, and how a read finds it again. The substrate
 is measured in [persistence-architecture.md](./persistence-architecture.md), the still-reorgable
-tip in [non-finalized-state.md](./non-finalized-state.md), and which methods an index answers at
+tip in [nfs.md](./nfs.md), and which methods an index answers at
 all in [boundaries.md](./boundaries.md).
 
 ## 1. There is one input
@@ -159,9 +159,10 @@ hits, since a valid spend's prevout exists, so the filter picks the one segment 
 probe costs one block read. At mainnet scale that is about 190M outputs × 44 B, or 8.4 GB, against
 about 1.4 GB resident plus a delete path for a maintained UTXO set.
 
-The value-balance index serves nothing itself. It publishes each block's per-transaction fees into
-a `FeeSink`, and the compact-block index reads one fee step after each block step, pairing each block
-with its fees by hash ([sync.md](./sync.md#fees-an-index-publishing-to-another-index)).
+The value-balance index serves nothing itself. In bulk sync it publishes each block's
+per-transaction fees into a `FeeSink`, and the compact-block index reads one fee step per unfolded
+block, pairing each block with its fees by hash; at the tip the NFS folds value-balance first and
+hands compact-block's fold the fees ([data-sink.md](./data-sink.md#indexes-publishing-to-other-indexes-fees)).
 
 Mempool fees are not a fold. An unconfirmed transaction may spend another unconfirmed one, and the
 validator already resolved both when it admitted them, so we take the fee from its
@@ -186,9 +187,9 @@ lossy, and the full transaction bytes already live in the validator ([boundaries
 
 Durable storage stops at `tip − finalised_depth`, but clients ask inside that window constantly:
 librustzcash calls `GetTreeState` during steady-state polling, and pepper-sync asks address queries
-over the last ~100 blocks. The window is the same fold, applied but not yet committed
-([non-finalized-state.md](./non-finalized-state.md)). Reorgs are absorbed in memory and never reach
-disk, which is what lets Shapes A and B exist.
+over the last ~100 blocks. The window is the same fold, held in the NFS's per-block layers and not
+yet committed ([nfs.md](./nfs.md)). Reorgs are absorbed in memory and never reach disk, which is
+what lets Shapes A and B exist.
 
 ## 7. Shape B instances
 

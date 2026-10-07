@@ -1,21 +1,20 @@
 # zaino-nfs: one non-finalized state, folds, one snapshot
 
-Status: **target design, for review** (2026-10-07). Implemented: §4 (the port), §5's folds and
-readers, §6 (core, driver, `fold_block`, `Snapshot`). Not yet: §5's writers, §7, §8. The current code is described by [non-finalized-state.md](non-finalized-state.md), [data-sink.md](data-sink.md)
-and [sync.md](sync.md); those are rewritten as this lands.
+Status: **implemented** (2026-10-07): §4–§8 describe the code. The final stream's mechanics are
+in [data-sink.md](data-sink.md).
 
 Builds on [verified-chain.md](verified-chain.md) (the header chain decides best and final) and
 [persistence-engine.md](persistence-engine.md) (the port).
 
 ## 1. Why
 
-"The chain above the final tip" lives in four places today: the header chain's best path, the
+"The chain above the final tip" used to live in four places: the header chain's best path, the
 producer's held blocks, every index's RAM tier (`Tiered::apply`/`reorg`), and every index's
-serving gate. A reorg is replayed by the producer and re-applied by five indexes. A gRPC request
-pins one index's view, so `GetLatestBlock`, `GetBlockRange` and `GetTreeState` agree only because
-each index is gated separately (test plan R12).
+serving gate. A reorg was replayed by the producer and re-applied by five indexes. A gRPC request
+pinned one index's view, so `GetLatestBlock`, `GetBlockRange` and `GetTreeState` agreed only
+because each index was gated separately (test plan R12). All four are deleted (§8).
 
-The end state has one of each:
+Now there is one of each:
 
 | Concept                             | One place                                                 |
 | ----------------------------------- | --------------------------------------------------------- |
@@ -23,7 +22,7 @@ The end state has one of each:
 | index state as of a non-final block | `zaino-nfs`: one `imbl` node per block                    |
 | how a block changes an index        | that index's `fold`                                       |
 | what a request reads                | one `Snapshot`                                            |
-| how data becomes durable            | the final stream (`BlockSink`) → writer → `Store::commit` |
+| how data becomes durable            | the final stream → writer (`Committer`) → `Store::commit` |
 
 ## 2. The whole pipeline
 
@@ -39,7 +38,7 @@ The end state has one of each:
                                            │
                      ┌─────────────────────┼──────────────────────────┐
                      ▼                     ▼                          ▼
-              Snapshot (ArcSwap)     BlockSink: Final{block,      fetch wants
+              Snapshot (ArcSwap)     final stream: Final{block,   fetch wants
                      │                folds: Option}              (bulk + tip)
                      │                     │
                      │        ┌────────────┼─────────────┬──────────────┐
@@ -72,9 +71,9 @@ The end state has one of each:
 | **Node**         | one non-final block in the graph: its body, its `Folded`, its `Layers`                   |
 | **root**         | the common durable tip of every enabled store; nodes exist only above it                 |
 | **Snapshot**     | one node's layers + every store's committed view, at one served tip                      |
-| **final stream** | `BlockSink<Final>`: every block exactly once, in height order, final                     |
+| **final stream** | `IndexerDataSink<Final>`: every block exactly once, in height order, final               |
 
-## 4. Persistence port (target)
+## 4. Persistence port
 
 ### Store: buffer, then commit atomically
 
@@ -106,8 +105,8 @@ pub trait Store: Send + 'static {
   unconditional).
 - `PersistenceEngine`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`, `Width` are
   unchanged.
-- `Tiered` is deleted: its non-final half becomes the NFS's layers, its staging becomes
-  `Store::apply`.
+- `Tiered` is deleted: its non-final half became the NFS's layers, its staging `Store::apply`
+  behind `zaino_sync::Committer`.
 
 ### Layer and LayeredView: the `imbl` core
 
@@ -149,7 +148,7 @@ impl<V: MapRead> MapRead for LayeredView<V> { /* layer key → layer, else disk;
   `view() == committed prefix`, `staged() == committed + buffered` after every step; `Layer`
   steps (`with`, `rebase`) checked against a naive `BTreeMap` overlay.
 
-## 5. Index crates (target shape)
+## 5. Index crates
 
 Every index crate has the same four parts. Using compact-block:
 
@@ -158,7 +157,8 @@ zaino-index-compact-block/src/
   lib.rs       schema(network), BLOCKS, FORMAT, re-exports
   fold.rs      pub fn fold(parent, block, fees) -> Changes       (pure; golden tests beside it)
   reader.rs    pub struct CompactBlockReader<V>                    (typed reads over LayeredView<V>)
-  writer.rs    pub struct CompactBlockWriter<S: Store>             (final stream → apply → commit)
+  writer.rs    pub struct CompactBlockIndexWriter<S: Store>        (final stream → apply → commit)
+  serve.rs     ServeError, block_at, resident_block, RangeCursor   (reads RPCs answer with)
   build.rs, project.rs                                            (wire encoding, unchanged)
 ```
 
@@ -208,30 +208,39 @@ impl<V: SequenceRead> CompactBlockReader<V> {
   (one prevout probe per run). `fold` = a run of one. Bulk sync uses runs; the NFS folds one block.
 - transparent-address's fold is a lookup-free projection (spends keyed by outpoint, unspent =
   a read-time miss in `spent`); its parent reader supplies only the network.
-- Writers: one loop each, no reorg, no tiers, no gate:
+- Writers (`CompactBlockIndexWriter`, `ValueBalanceIndexWriter`, `BlockHashIndexWriter`,
+  `TreeStateIndexWriter`, `TransparentAddressIndexWriter`): `new(store, batch_bytes)`,
+  `committed()`, `run(blocks[, fees])`; one loop each, no reorg, no tiers, no gate. The store sits
+  behind a `zaino_sync::Committer` (commit cadence, committed-view watch):
 
 ```rust
-pub async fn run(mut self, mut blocks: Subscription<Final>) {
-    while let Step::Apply { height, data, .. } = blocks.next().await {
-        if Some(height) <= self.store.view().tip().map(|tip| tip.height) {
-            continue;                                                        // restart: held already
+// CompactBlockIndexWriter::run
+pub async fn run(mut self, mut blocks: Subscription<Final>, mut fees: Subscription<BlockFees>) {
+    while let Some(run) = self.store.next(&mut blocks).await {         // commits when due, first
+        let mut paid = Vec::with_capacity(run.unfolded.len());
+        for (_, block) in &run.unfolded {
+            paid.push(next_fees(&mut fees, block).await);             // one per unfolded step
         }
-        let changes = match &data.folds {
-            Some(folds) => folds.get(IndexKind::CompactBlock).expect("enabled").clone(), // tip: NFS folded
-            None => fold(&self.reader(), &data.block, &self.fees.next().await)?,         // bulk: fold here
+        let applied = move |store: &mut S| {
+            let mut paid = paid.into_iter();
+            run.apply(store, |store, block| {                         // held skipped, folded as sent
+                let fees = paid.find(|fees| fees.height == block.header().height).expect("one per step");
+                fold(&CompactBlockReader::new(store.staged(), network), block, &fees).unwrap_or_else(..)
+            });
         };
-        self.store.apply(changes);
-        if self.store.buffered_bytes() >= self.batch || data.folds.is_some() {
-            self.commit().await;                                             // offloaded, one fsync
-            self.committed.send_replace(self.store.view());                  // the NFS's durable input
-        }
+        self.store.compute(applied).await;                             // CPU pool, never the loop
     }
-    self.commit().await;
+    assert!(matches!(fees.next().await, Step::Shutdown));            // fees end with the blocks
 }
 ```
 
-- `committed` = the `watch::Sender` whose receiver went to `Nfs::subscribe`: its view's tip is the
-  durable tip, and the view itself is what snapshots and root folds read.
+- `Committer::next` commits when the buffer reaches `batch_bytes`, after each run carrying folded
+  steps (the tip), and when the stream is quiet for 1 s (lockstep: the first tip fold waits for
+  every index to hold all it was sent); `Shutdown` = a last commit, then `None`.
+- `committed()` = the `watch::Receiver` handed to `Nfs::subscribe`: its view's tip is the durable
+  tip, and the view itself is what snapshots and root folds read.
+- Tree-state and value-balance fold a run's unfolded steps with one `fold_run` and apply folded
+  ones with `Run::apply_folded`; the rest use `Run::apply` per block.
 - Fees in bulk: value-balance sends one per unfolded step, re-folding a height it holds (insert
   only: any later state resolves the same), compact-block pops one per unfolded step, one it
   skips included; both queues stay in step across a restart with either index ahead.
@@ -244,7 +253,9 @@ zaino-nfs/src/
   core.rs       NfsCore<F>: pure state machine (no I/O, time as input), check()
   graph.rs      Node<F>; imbl::HashMap<BlockHash, Arc<Node<F>>>, side-node pruning
   fold.rs       Folded, FoldError, fold_block: the fold order, the one place indexes meet
-  fetch.rs      check_block, wants, hedging, blame (moved from zaino-sync's ProducerCore)
+  fetch.rs      check_block, wants, hedging, blame
+  emit.rs       metrics (zaino_best_tip, zaino_reorgs_total, zaino_fetch_*)
+  report.rs     `Syncing blocks` progress every 30 s
   snapshot.rs   Snapshot<V>, Views<V>, ChainParams, NfsHandle<V>, PerIndex<T>
   core/model.rs, core/fire_drills.rs, tests.rs (driver end to end)
 ```
@@ -261,6 +272,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     pub fn subscribe(&mut self, kind: IndexKind, committed: watch::Receiver<V>, queue: NonZeroUsize)
         -> Subscription<zaino_sync::Final>;
     pub fn handle(&self) -> NfsHandle<V>;
+    pub fn subscribe_handed(&self) -> watch::Receiver<Option<Height>>;  // last block handed over
     pub async fn run(self, cancel: CancellationToken) -> Result<(), NfsError>;
 }
 
@@ -271,11 +283,20 @@ pub enum NfsError { Diverged { index: &'static str, height, expected, got }, Fol
   index's next commit (one `watch::changed` per index, respawned), a 1 s tick; every output
   executed in order; `check()` after each step in debug builds.
 - `Fetch` → a task (`getblock <hash> 0` + `check_block`); `Fold` → `zaino_sync::compute` (never on
-  the async loop); `Send` → `Step::Apply { finalized: true, data: Final { block, folds } }`,
-  awaited (backpressure); `Publish` → a `Snapshot` swapped into the handle.
+  the async loop); `Send` → `Step::Apply { height, data: Final { block, folds } }`, awaited
+  (backpressure); `Publish` → a `Snapshot` swapped into the handle.
 - `committed` (per index) = the store's committed view after each commit: its tip = the core's
   `Durable` input, the view itself = what root folds and snapshots read. One map holds both, so a
   fold or snapshot pairs layers with exactly the durable state the core knows.
+- Observability (`describe_metrics()`; names = ztest's `zainod` families):
+
+| Signal                                        | Source                                                           |
+| --------------------------------------------- | ---------------------------------------------------------------- |
+| `zaino_best_tip`                              | each verified chain's best height                                |
+| `zaino_reorgs_total` + WARN `Chain reorg detected` | a published tip that left the best chain (from, to)         |
+| `zaino_fetch_height`, `zaino_fetch_*_total`, `subscribe_handed` | each block handed to the indexes: folded, or sent unfolded (rewinds on a reorg) |
+| INFO `Chain tip advanced`                     | each published tip that is the verified best                     |
+| INFO `Syncing blocks` / WARN `Block fetch stalled` | every 30 s while the handed height trails the best          |
 
 ### Fold
 
@@ -385,6 +406,11 @@ impl<V> NfsHandle<V> {
     pub fn snapshot(&self) -> Option<Arc<Snapshot<V>>>;   // one atomic load
     pub async fn changed(&mut self) -> Result<(), RecvError>;  // next publish; Err = driver stopped
 }
+// feature `testing` (consumers' route tests, no driver):
+impl<V: View> NfsHandle<V> {
+    pub fn unpublished() -> Self;                                            // nothing served yet
+    pub fn fixed(chain, tip: BlockRef, params, durable: impl IntoIterator<Item = (IndexKind, V)>) -> Self;
+}
 ```
 
 - Every request or stream pins one snapshot for its life (nodes through `Arc`, disk through the
@@ -404,47 +430,69 @@ impl<V> NfsHandle<V> {
 
 ```rust
 // zaino-grpc: routes hold the handle, not per-index views
-pub struct Routes<V> { nfs: NfsHandle<V>, chain: Arc<ChainView>, validators: TrafficBalancer, … }
-
-async fn get_block_range(&self, req: BlockRange) -> Result<Stream, Status> {
-    let snap = self.nfs.snapshot().ok_or_else(syncing)?;
-    let reader = snap.views().compact_block().ok_or_else(unimplemented)?;
-    let (first, last) = req.bounds(snap.tip())?;
-    Ok(stream_range(reader, first, last))            // the reader (and so the snapshot) moves in
+pub struct Routes<S, V> {
+    pub chain: Arc<ChainView<S>>, pub validators: TrafficBalancer<S>, pub network: NetworkType,
+    pub nfs: NfsHandle<V>, pub max_address_rows: NonZeroUsize,
 }
+
+// per index request (Wired::answer): one snapshot, pinned for the request or stream
+let snap = self.snapshot()?;                                  // None = UNAVAILABLE (booting)
+let Some(blocks) = snap.views().compact_block() else { return not_enabled(..) }; // UNIMPLEMENTED
+blocks::dispatch(&snap, blocks, path, body, reads).await      // RangeCursor::new(blocks, start, end, snap.tip().height, pools)
 ```
+
+- Every index method answers at heights `≤ snap.tip()`: `GetLatestBlock` = the tip itself;
+  `GetBlock` / `GetTreeState` past it = `NOT_FOUND`; ranges clamp to it; a by-hash locate past it =
+  `NOT_FOUND`; `GetSubtreeRoots` = roots completing at or below it; the transparent reader is
+  `.as_of(snap.tip().height).with_max_rows(max_address_rows)`.
+- Tree-state memos (layer heights, the tip, each pool's roots) are keyed per snapshot.
+- `GetLightdInfo.blockHeight` = the snapshot tip (0 before the first). Compact-block is optional
+  like every index.
 
 ```rust
-// zainod boot (the approved shape)
-let engine = DiskEngine::new(fs);
-let params = ChainParams { network, activations: PoolActivations::from_validator(&schedule) };
-let sync = sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
-let mut nfs = Nfs::new(header_sync.subscribe(), sync, params, config.fetch.concurrency, depth);
+// zainod indexer::pipeline (boot = chain view + this + chain-view tasks + supervise)
+let nfs = Nfs::new(inputs.chain, inputs.sync, params, config.sync.concurrency, depth);
+let mut indexes = Subscribed { nfs, opened: Vec::new() };
+let mut tasks = JoinSet::new();                          // after the NFS: dropped first on an early Err
 
-// value_balance before compact_block (its fees); subscribe = enable + final stream out + committed view in
-if let Some(cb) = config.index.compact_block.enabled() {
-    let vb = ValueBalanceWriter::open(&engine, cb)?;
-    let blocks = nfs.subscribe(IndexKind::ValueBalance, vb.committed(), cb.queue_bytes());
-    let fees = vb.start(&mut tasks, blocks);
-    let cb_writer = CompactBlockWriter::open(&engine, cb)?;
-    let blocks = nfs.subscribe(IndexKind::CompactBlock, cb_writer.committed(), cb.queue_bytes());
-    cb_writer.start(&mut tasks, blocks, fees);
+if let Some((cb, vb)) = config.compact_block()? {
+    // compact-block folds after value-balance (its fees)
+    let mut fee_sink = FeeSink::new("fees");
+    let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
+    let (span, writer) = open(&engine, &vb, value_balance::schema(network), ValueBalanceIndexWriter::new)?;
+    let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
+    spawn_index(&mut tasks, IndexKind::ValueBalance, span, writer.run(blocks, fee_sink));
+    let (span, writer) = open(&engine, &cb, compact_block::schema(network), CompactBlockIndexWriter::new)?;
+    let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
+    spawn_index(&mut tasks, IndexKind::CompactBlock, span, writer.run(blocks, fees));
 }
-// tree_state, block_hash, transparent_address: same, no fees
-let snapshots = nfs.handle();
-tasks.spawn(nfs.run(cancel.clone()));
-GrpcService::new(Routes::new(snapshots, chain_view, validators), &config.serve).bind().await?.start(&mut tasks);
+// block_hash, tree_state, transparent_address: same three lines, no fees
+let snapshots = indexes.nfs.handle();
+let server = GrpcService::new(Routes { nfs: snapshots.clone(), .. }, address, limits).bind().await?;
+let Subscribed { nfs, opened } = indexes;                // nothing fallible past here
+spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
+spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+spawn(&mut tasks, "serving", .., serving::run(snapshots, verified, depth, synced, ..));
+// per opened index: metrics, index report, /statusz source
 ```
+
+- `serving::run` = `zaino_index_synced` + `/readyz`: on once the served tip **is** the verified
+  best, off once it leaves the best chain or trails it by more than `depth`.
 
 ## 8. Deleted
 
-- `zaino_persistence::Tiered` (→ `Store::apply`/`staged` + `Layer`/`LayeredView`)
-- `zaino-sync`: `Producer`, `ProducerCore` (fetch moves to `zaino-nfs::fetch`), `Step::Reorg`,
-  `Step::Finalized`, `Step::Apply{finalized}`, `Published` gates / `Served`, `published.rs` gate
-  task (durable-tip watches stay for status and metrics)
-- per index: `apply_tip`, `reorg`, `ReadView`'s tier logic, `*Service` wrappers around `Served`
-- `zaino-non-finalized-state` (unused since the verified-chain producer)
-- zainod: per-index watchers/gates, `open_optional` tuples
+- `zaino_persistence::Tiered` and its tests (→ `Store::apply`/`staged` + `Layer`/`LayeredView` +
+  `zaino_sync::Committer`)
+- `zaino-sync`: the producer (`Producer`, `ProducerCore`, `ProduceError`, its model and fire
+  drills, `tests/reorg_model.rs`); `Step::{Finalized, Reorg}` and `Step::Apply.finalized`;
+  `Published` (serving gate, reorg counter, `merged`); `Served` / `Reads`; `BlockSink`;
+  `Offloaded` / `blocking` made crate-private
+- `CompactBlockService`, `TreeStateService`, `TransparentAddressService`, `BlockHashService` (+
+  block-hash `serve.rs`): their logic moved onto the readers and the routes
+- the `zaino-non-finalized-state` crate
+- `zaino-source`: `BlockFetchPool`, `TrafficBalancer::among`, `ChainDataSource::get_block`
+- zainod: per-index `Watchers`, `open_optional` tuples, serving-gate tasks, the compact-block
+  "cannot be disabled" refusal
 
 ## 9. Invariants
 
@@ -470,26 +518,27 @@ GrpcService::new(Routes::new(snapshots, chain_view, validators), &config.serve).
   restart with indexes apart. Every snapshot seen = each index folded from genesis along best into
   fresh stores (table by table); every view at the snapshot tip (R12); final stream per index =
   each final height once. `fold_block` golden in `fold.rs`.
-- Per index: fold golden bytes + reader tests over `LayeredView` (in-memory engine).
+- Per index: fold golden bytes + reader tests over `LayeredView` (in-memory engine); each writer:
+  folded vs unfolded steps, held heights skipped on restart, crash states, a random-stream model.
+- `zaino-sync`: the `Committer` contract (batch, folded-run and idle commits; restart skip; gap and
+  unfolded-after-folded panics).
+- `zaino-grpc`: R12 on one fixed snapshot (`GetLatestBlock`, `GetBlockRange`, `GetTreeState` at its
+  tip, views ahead of it unseen). zainod: the whole pipeline over a mock validator, through a reorg.
 - Port conformance gains `apply`/`commit`/`staged` and `Layer` steps.
 - Live: S1–S16 reorg group, W2 servable tip, R12 cross-RPC agreement.
 
-## 11. Implementation plan (parallel)
+## 11. Implementation plan (done)
 
-Interfaces in §4–§7 are the contract between agents.
+| Wave | Scope                                                                                    | Status                    |
+| ---- | ---------------------------------------------------------------------------------------- | ------------------------- |
+| 1    | port: `Store::apply/commit/staged`, `Layer`, `LayeredView`, conformance, `DiskStore`     | done                      |
+| 1    | `zaino-nfs` core + graph + fetch + model + fire drills                                   | done                      |
+| 1    | folds + readers: every index                                                             | done                      |
+| 2    | `zaino-nfs` driver + `fold_block` with the real folds                                    | done                      |
+| 3    | writers on the final stream, gRPC on `Snapshot`, zainod boot + config, deletions (§8)    | done                      |
+| 4    | docs, changesets, heavy runs                                                             | done; live suite pending  |
 
-| Wave | Agent | Scope                                                                                    | Depends on                       |
-| ---- | ----- | ---------------------------------------------------------------------------------------- | -------------------------------- |
-| 1    | A     | port: `Store::apply/commit/staged`, `Layer`, `LayeredView`, conformance, `DiskStore`     | —                                |
-| 1    | B     | `zaino-nfs` core + graph + fetch (moved) + model + fire drills, over a toy index         | §6 types                         |
-| 1    | C     | folds + readers: compact-block, value-balance, block-hash                                | `SequenceRead`/`MapRead` (exist) |
-| 1    | D     | folds + readers: tree-state (`fold_run`), transparent-address                            | same                             |
-| 2    | E     | writers on the final stream + `Store::apply`; delete `Tiered`, `Step` variants           | A, C, D                          |
-| 2    | F     | `zaino-nfs` driver + `fold_block` with the real folds                                    | B, C, D                          |
-| 3    | G     | gRPC on `Snapshot`, zainod boot + config, delete gates / `Served` / producer / NFS crate | E, F                             |
-| 4    | —     | docs, changesets, heavy runs, live suite                                                 | all                              |
-
-## 12. Decisions for review
+## 12. Decisions
 
 1. **Bulk folds in the writers, `FeeSink` in bulk only** (value-balance → compact-block). Keeps
    per-index pipelining across blocks during first sync; the tip uses fold order.
