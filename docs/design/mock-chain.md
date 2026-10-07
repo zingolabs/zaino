@@ -6,21 +6,21 @@ put on it. Every block it hands out passes our own checks; nothing else builds a
 
 ## 1. Inventory (today)
 
-| Location | Builds | Users | Overlap |
-| --- | --- | --- | --- |
-| `zaino-primitives::testing` (`Chain`, `linked`, `encode_header`, `header_hash`) | regtest block tree, real header bytes, SHA-256d hash, merkle root, linkage, +75 s; `mine_bits` (any nBits), `mine_heavier` (exponent − 1 = 256× work, `None` past `u128`); bare coinbase from a mint counter | 40 files in 13 crates | the base; everything below re-wraps it |
-| `zaino-index-compact-block::testing` (`block`, `chain`, `committed`) | `block(h)`: an h-block chain rebuilt per call, one fixed tx in every block (also in genesis), fee 5 000 stated; unknown prevout `[0x22;32]:7` | compact-block `serve`/`build`, grpc `routes/blocks.rs` | hides the tx the serve tests assert on; O(h²) rebuild |
-| `zaino-source::mock` (`MockChain`, `fixture_block`, `fixture_transactions`) | `ChainDataSource` over held `Block`s: best chain by height and hash, `extend_best`/`rewind_to`, mempool at a flat `MEMPOOL_FEE`, `fail_next`, `set_reachable`; mined tx body = its txid (a lie); no latency, empty upgrade schedule | chainview, nfs, grpc, zainod | name clashes with the builder; `FakeValidator` wraps it for what it lacks |
-| `zaino-chainview/src/tests.rs` (`FakeValidator`, `FakePeers`, `transaction`) | mempool listing with per-tx fee, metadata failures, relay verdicts, reorg between tip read and `getblockhash`, call counters; scripted p2p (`ValidatorP2pSource`); real empty v4 tx bytes | chainview only | second validator double; `transaction` duplicated in `zaino-peers` tests |
-| `zaino-chainview/src/network_model.rs` (`Sim`, `Node`) | N simulated zebrads: mine, relay (longest wins), fork, unreachable | chainview model | hand-rolled network world over `Chain` + `MockChain` |
-| `zaino-header-chain` (`regtest_in_memory`, `insert_blocks`, `VerifiedChain::regtest`, `Params::with_genesis`, `any_bits`) | header chain over a builder genesis on `SimFs`, any nBits; `VerifiedChain` of a path, nothing final | chainview, nfs, grpc, zainod (32 call sites) | genesis + params passed by hand; finality set by hand per test |
-| per-crate tx helpers | `txs(seed, sapling, orchard, ironwood)` (compact-block `fold`, `writer`), `pools` (tree-state `writer`), `tx`/`p2pkh`/`txid`/`zat` (transparent-address `fold`, `writer`, `serve`), `tx`/`coinbase`/`fees` (value-balance `fold`, shared to its writer), `one_output` (grpc `tree_state`), `transactions(funding, tag)` (nfs `tests`), `coinbase(h)` (zainod `verify`) | their own crate | 35 `Transaction { .. }` literals in 17 files; p2pkh bytes spelled in 10 files; canonical-leaf trick in 4 |
-| `zaino-nfs` `core/model.rs`, `core/fire_drills.rs` | lying sources in-model (`WrongBlock`, `Poisoned`, `Mutated`, `Slow`, `Failing`, `Silent`) via a decoy block | nfs core | the lies the validator double lacks |
-| `zaino-grpc/src/testing.rs` | `indexed` (fold one index from genesis), `snapshot` (activations hard-coded at genesis), `routes_over`, request framing | grpc routes | activations not derived from the chain |
-| zainod `indexer.rs`, `serving.rs`, `verify.rs` | pipeline over `MockChain` + `HeaderChain`; `mine_bits(.., 0x1f0f_0f0f)` by hand | zainod | heavier branch spelled as raw nBits |
-| header capture (`header-chain/tests/fixtures/*.headers`, `examples/capture_headers.rs`); block capture (`source/tests/fixtures/block_*.hex`, `examples/capture_fixtures.rs`, `tests/block_parity.rs`) | real mainnet/testnet bytes | header-chain rules, source decode, grpc send tests | none: real data, stays |
-| `zaino-source` `rpc/client.rs`, `indexer.rs` (`FakeIndexer`), `zaino-peers` tests | JSON-RPC wire fake, zebrad indexer gRPC push streams, scripted zebra-network peer | their crate | wire-level; stays (§5 decision 4) |
-| `persistence::conformance::block_ref`; `live-tests/` (`zaino-testutils`) | `BlockRef` from an integer; nothing (live validators = oracle) | persistence; live suite (separate workspace) | none; both stay, out of scope |
+| Location                                                                                                                                                                                              | Builds                                                                                                                                                                                                                                                                                                                                                                 | Users                                                  | Overlap                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `zaino-primitives::testing` (`Chain`, `linked`, `encode_header`, `header_hash`)                                                                                                                       | regtest block tree, real header bytes, SHA-256d hash, merkle root, linkage, +75 s; `mine_bits` (any nBits), `mine_heavier` (exponent − 1 = 256× work, `None` past `u128`); bare coinbase from a mint counter                                                                                                                                                           | 40 files in 13 crates                                  | the base; everything below re-wraps it                                                                   |
+| `zaino-index-compact-block::testing` (`block`, `chain`, `committed`)                                                                                                                                  | `block(h)`: an h-block chain rebuilt per call, one fixed tx in every block (also in genesis), fee 5 000 stated; unknown prevout `[0x22;32]:7`                                                                                                                                                                                                                          | compact-block `serve`/`build`, grpc `routes/blocks.rs` | hides the tx the serve tests assert on; O(h²) rebuild                                                    |
+| `zaino-source::mock` (`MockChain`, `fixture_block`, `fixture_transactions`)                                                                                                                           | `ChainDataSource` over held `Block`s: best chain by height and hash, `extend_best`/`rewind_to`, mempool at a flat `MEMPOOL_FEE`, `fail_next`, `set_reachable`; mined tx body = its txid (a lie); no latency, empty upgrade schedule                                                                                                                                    | chainview, nfs, grpc, zainod                           | name clashes with the builder; `FakeValidator` wraps it for what it lacks                                |
+| `zaino-chainview/src/tests.rs` (`FakeValidator`, `FakePeers`, `transaction`)                                                                                                                          | mempool listing with per-tx fee, metadata failures, relay verdicts, reorg between tip read and `getblockhash`, call counters; scripted p2p (`ValidatorP2pSource`); real empty v4 tx bytes                                                                                                                                                                              | chainview only                                         | second validator double; `transaction` duplicated in `zaino-peers` tests                                 |
+| `zaino-chainview/src/network_model.rs` (`Sim`, `Node`)                                                                                                                                                | N simulated zebrads: mine, relay (longest wins), fork, unreachable                                                                                                                                                                                                                                                                                                     | chainview model                                        | hand-rolled network world over `Chain` + `MockChain`                                                     |
+| `zaino-header-chain` (`regtest_in_memory`, `insert_blocks`, `VerifiedChain::regtest`, `Params::with_genesis`, `any_bits`)                                                                             | header chain over a builder genesis on `SimFs`, any nBits; `VerifiedChain` of a path, nothing final                                                                                                                                                                                                                                                                    | chainview, nfs, grpc, zainod (32 call sites)           | genesis + params passed by hand; finality set by hand per test                                           |
+| per-crate tx helpers                                                                                                                                                                                  | `txs(seed, sapling, orchard, ironwood)` (compact-block `fold`, `writer`), `pools` (tree-state `writer`), `tx`/`p2pkh`/`txid`/`zat` (transparent-address `fold`, `writer`, `serve`), `tx`/`coinbase`/`fees` (value-balance `fold`, shared to its writer), `one_output` (grpc `tree_state`), `transactions(funding, tag)` (nfs `tests`), `coinbase(h)` (zainod `verify`) | their own crate                                        | 35 `Transaction { .. }` literals in 17 files; p2pkh bytes spelled in 10 files; canonical-leaf trick in 4 |
+| `zaino-nfs` `core/model.rs`, `core/fire_drills.rs`                                                                                                                                                    | lying sources in-model (`WrongBlock`, `Poisoned`, `Mutated`, `Slow`, `Failing`, `Silent`) via a decoy block                                                                                                                                                                                                                                                            | nfs core                                               | the lies the validator double lacks                                                                      |
+| `zaino-grpc/src/testing.rs`                                                                                                                                                                           | `indexed` (fold one index from genesis), `snapshot` (activations hard-coded at genesis), `routes_over`, request framing                                                                                                                                                                                                                                                | grpc routes                                            | activations not derived from the chain                                                                   |
+| zainod `indexer.rs`, `serving.rs`, `verify.rs`                                                                                                                                                        | pipeline over `MockChain` + `HeaderChain`; `mine_bits(.., 0x1f0f_0f0f)` by hand                                                                                                                                                                                                                                                                                        | zainod                                                 | heavier branch spelled as raw nBits                                                                      |
+| header capture (`header-chain/tests/fixtures/*.headers`, `examples/capture_headers.rs`); block capture (`source/tests/fixtures/block_*.hex`, `examples/capture_fixtures.rs`, `tests/block_parity.rs`) | real mainnet/testnet bytes                                                                                                                                                                                                                                                                                                                                             | header-chain rules, source decode, grpc send tests     | none: real data, stays                                                                                   |
+| `zaino-source` `rpc/client.rs`, `indexer.rs` (`FakeIndexer`), `zaino-peers` tests                                                                                                                     | JSON-RPC wire fake, zebrad indexer gRPC push streams, scripted zebra-network peer                                                                                                                                                                                                                                                                                      | their crate                                            | wire-level; stays (§5 decision 4)                                                                        |
+| `persistence::conformance::block_ref`; `live-tests/` (`zaino-testutils`)                                                                                                                              | `BlockRef` from an integer; nothing (live validators = oracle)                                                                                                                                                                                                                                                                                                         | persistence; live suite (separate workspace)           | none; both stay, out of scope                                                                            |
 
 ## 2. The builder
 
@@ -33,13 +33,13 @@ two copies of itself, so `zaino_testing::verified(..)` returns a `VerifiedChain`
 `crate::VerifiedChain`. Each view therefore lives in the crate that owns its output type, behind
 that crate's existing `testing` feature:
 
-| View | Crate (`testing` feature) | Shape |
-| --- | --- | --- |
-| blocks, headers, fees, `BlockchainInfo` | `zaino-primitives` | inherent methods on `MockChain` |
-| `HeaderChain`, `VerifiedChain` | `zaino-header-chain` | `trait HeaderViews` on `MockChain` |
-| validator double (`ChainDataSource`) | `zaino-source` | `MockValidator` |
-| p2p double (`ValidatorP2pSource`) | `zaino-chainview` | `MockPeers` |
-| `ChainParams` | `zaino-nfs` | `ChainParams::of(&MockChain, tip)` |
+| View                                    | Crate (`testing` feature) | Shape                              |
+| --------------------------------------- | ------------------------- | ---------------------------------- |
+| blocks, headers, fees, `BlockchainInfo` | `zaino-primitives`        | inherent methods on `MockChain`    |
+| `HeaderChain`, `VerifiedChain`          | `zaino-header-chain`      | `trait HeaderViews` on `MockChain` |
+| validator double (`ChainDataSource`)    | `zaino-source`            | `MockValidator`                    |
+| p2p double (`ValidatorP2pSource`)       | `zaino-chainview`         | `MockPeers`                        |
+| `ChainParams`                           | `zaino-nfs`               | `ChainParams::of(&MockChain, tip)` |
 
 ### Core API (`zaino_primitives::testing`)
 
@@ -121,15 +121,15 @@ pub fn outpoint(txid: [u8; 32], vout: u32) -> OutPoint;
 
 ### Branches, reorgs, finality
 
-| Shape | Call |
-| --- | --- |
-| extend | `chain.mine_empty(3)` / `chain.mine(\|b\| ..)` |
-| longer fork | `chain.fork(h(9)).mine_empty(4)` (Limit suffices) |
-| same-height replacement | `chain.fork(h(12)).outweigh().mine_empty(1)` |
-| retreat | `chain.fork(h(10)).outweigh().mine_empty(1)` (best was 12) |
-| revive an old tip | `chain.branch(old).outweigh().mine_empty(1)` |
-| side branch, not best | `chain.branch(parent).mine_empty(2)` |
-| finality | header chain's, never the builder's: `chain.verified_final(tip, final_at)` |
+| Shape                   | Call                                                                       |
+| ----------------------- | -------------------------------------------------------------------------- |
+| extend                  | `chain.mine_empty(3)` / `chain.mine(\|b\| ..)`                             |
+| longer fork             | `chain.fork(h(9)).mine_empty(4)` (Limit suffices)                          |
+| same-height replacement | `chain.fork(h(12)).outweigh().mine_empty(1)`                               |
+| retreat                 | `chain.fork(h(10)).outweigh().mine_empty(1)` (best was 12)                 |
+| revive an old tip       | `chain.branch(old).outweigh().mine_empty(1)`                               |
+| side branch, not best   | `chain.branch(parent).mine_empty(2)`                                       |
+| finality                | header chain's, never the builder's: `chain.verified_final(tip, final_at)` |
 
 ### Views
 
@@ -222,19 +222,19 @@ fn a_spend_carries_its_fee_and_commitments_into_the_compact_block_record() {
 
 ## 3. Migration
 
-| Today | Becomes |
-| --- | --- |
-| `testing::Chain`, `linked`, `mine_with`, `mine_at`, `extend`, `path` | `MockChain` (`mine`, `mine_empty`, `blocks`); deleted |
-| `mine_bits`, `mine_heavier` | `BlockBuilder::bits` (header model only), `Branch::outweigh`; deleted |
-| `encode_header`, `header_hash` | kept (`header_bytes` wraps them) |
-| compact-block `testing` (`block`, `chain`, `committed`) | deleted; callers inline `TxBuilder` + fold loop |
-| `zaino_source::mock::MockChain` | `zaino_source::testing::MockValidator` |
-| chainview `FakeValidator`, `FakePeers`, `transaction` | `MockValidator` (absorbed), `chainview::testing::MockPeers`, `source::testing::raw_transaction` |
-| `regtest_in_memory`, `insert_blocks`, `VerifiedChain::regtest`, `Params::with_genesis` | `HeaderViews`, `header_chain::testing::insert`; deleted |
-| per-crate `tx`/`txs`/`pools`/`one_output`/`transactions`/`coinbase`/`p2pkh` | inline `TxBuilder`; deleted |
-| grpc `snapshot` activations at genesis | `ChainParams::of(&chain, tip)` (via `PoolActivations::from_validator`) |
-| nfs model `Kind` lies + decoy | `Lie` shapes shared with `MockValidator` (model stays sans-IO) |
-| `fixture_block`, `fixture_transactions` | `zaino_source::testing::fixtures` |
+| Today                                                                                  | Becomes                                                                                         |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `testing::Chain`, `linked`, `mine_with`, `mine_at`, `extend`, `path`                   | `MockChain` (`mine`, `mine_empty`, `blocks`); deleted                                           |
+| `mine_bits`, `mine_heavier`                                                            | `BlockBuilder::bits` (header model only), `Branch::outweigh`; deleted                           |
+| `encode_header`, `header_hash`                                                         | kept (`header_bytes` wraps them)                                                                |
+| compact-block `testing` (`block`, `chain`, `committed`)                                | deleted; callers inline `TxBuilder` + fold loop                                                 |
+| `zaino_source::mock::MockChain`                                                        | `zaino_source::testing::MockValidator`                                                          |
+| chainview `FakeValidator`, `FakePeers`, `transaction`                                  | `MockValidator` (absorbed), `chainview::testing::MockPeers`, `source::testing::raw_transaction` |
+| `regtest_in_memory`, `insert_blocks`, `VerifiedChain::regtest`, `Params::with_genesis` | `HeaderViews`, `header_chain::testing::insert`; deleted                                         |
+| per-crate `tx`/`txs`/`pools`/`one_output`/`transactions`/`coinbase`/`p2pkh`            | inline `TxBuilder`; deleted                                                                     |
+| grpc `snapshot` activations at genesis                                                 | `ChainParams::of(&chain, tip)` (via `PoolActivations::from_validator`)                          |
+| nfs model `Kind` lies + decoy                                                          | `Lie` shapes shared with `MockValidator` (model stays sans-IO)                                  |
+| `fixture_block`, `fixture_transactions`                                                | `zaino_source::testing::fixtures`                                                               |
 
 Order (dependency order; each step = `cargo nextest run --workspace` + clippy green, old API
 deleted in the step that removes its last caller):
@@ -257,17 +257,17 @@ deleted in the step that removes its last caller):
 
 ## 4. Invariants (every block handed out) and the builder's own tests
 
-| | Invariant | Checked by |
-| --- | --- | --- |
-| M1 | hash = SHA-256d(`encode_header`); genesis bytes golden | primitives test |
-| M2 | `prev_hash` = parent hash, height = parent + 1, time > parent's median-time-past | primitives + M8 |
-| M3 | merkle root = `MerkleRoot::of_txids`; txids distinct chain-wide (an explicit repeat = panic) | primitives + `check_block` |
-| M4 | exactly one coinbase, slot 0 (BIP 34 height: no script sig in `Transaction`, no zaino check reads it) | primitives |
-| M5 | `Work::Limit` = limit nBits; `outweigh()` = best right after its first block, minimal margin | primitives (work sums) |
-| M6 | each spend = an unspent output on its own branch (ancestor or earlier in the block); value conserved, stated fee = derived | primitives (panic table) + value-balance fold |
-| M7 | pool data only from its upgrade (Sapling, NU5 = orchard, NU6.3 = ironwood); leaves canonical | primitives + tree-state fold |
-| M8 | every path inserts into `header_chain(..)` and `chain.tip()` = the header chain's best | header-chain proptest |
-| M9 | `MockValidator` serves only its best chain, by height and hash; a `Lie` never passes `check_block` | source + nfs tests |
+|     | Invariant                                                                                                                  | Checked by                                    |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| M1  | hash = SHA-256d(`encode_header`); genesis bytes golden                                                                     | primitives test                               |
+| M2  | `prev_hash` = parent hash, height = parent + 1, time > parent's median-time-past                                           | primitives + M8                               |
+| M3  | merkle root = `MerkleRoot::of_txids`; txids distinct chain-wide (an explicit repeat = panic)                               | primitives + `check_block`                    |
+| M4  | exactly one coinbase, slot 0 (BIP 34 height: no script sig in `Transaction`, no zaino check reads it)                      | primitives                                    |
+| M5  | `Work::Limit` = limit nBits; `outweigh()` = best right after its first block, minimal margin                               | primitives (work sums)                        |
+| M6  | each spend = an unspent output on its own branch (ancestor or earlier in the block); value conserved, stated fee = derived | primitives (panic table) + value-balance fold |
+| M7  | pool data only from its upgrade (Sapling, NU5 = orchard, NU6.3 = ironwood); leaves canonical                               | primitives + tree-state fold                  |
+| M8  | every path inserts into `header_chain(..)` and `chain.tip()` = the header chain's best                                     | header-chain proptest                         |
+| M9  | `MockValidator` serves only its best chain, by height and hash; a `Lie` never passes `check_block`                         | source + nfs tests                            |
 
 Builder tests, few and dense:
 

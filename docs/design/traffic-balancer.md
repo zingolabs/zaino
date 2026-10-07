@@ -6,17 +6,17 @@ Status: **design** (2026-10-07). Builds on [chainview.md](chainview.md) §7–§
 
 ## 1. Today: five schedulers over the same validators
 
-| Caller                                  | Asks                                                        | Pick                          | Concurrency                         | Retry / back-off                                         | Blame                                    |
-| --------------------------------------- | ----------------------------------------------------------- | ----------------------------- | ----------------------------------- | -------------------------------------------------------- | ---------------------------------------- |
-| `zaino-nfs` `Fetcher` (`fetch.rs`)      | `getblock <hash> 0`                                         | least `load` count, height tie | `Lane::Sync` permits                | hedge after 15 s; every source out → retry after 1 s     | misanswer → benched 60 s (fixed)          |
-| `zaino-source` `TrafficBalancer`        | `getrawtransaction <txid> 1` (GetTransaction, address txs)  | P2C over peak-EWMA (10 s decay) | `Lane::Serve` permits               | transient ×3 (250 ms, doubling), absent → next member    | none                                     |
-| `zaino-source` `RpcClient`              | every call                                                  | —                             | 3 lane semaphores, GCRA req + bytes | work-queue-full (`-1`) resent ×5, 500 ms                 | none                                     |
-| chainview `EndpointPoller` (`endpoint.rs`) | poll batch: `getblockchaininfo` + `getrawmempool true` + `getblockhash` ×2 (+ metadata /60 s); bytes batch | every trusted, own loop       | `Lane::Control`                     | 1 s / 15 s streamed, 200 ms floor; 0.5 → 30 s ladder; 10 failures → `Down` | `Ewma` α 0.2 (telemetry only)            |
-| `IndexerWatch` (`indexer.rs`)           | `ChainTipChange`, `MempoolChange` streams                   | each trusted with `indexer_address` | 1 gRPC channel                  | 0.5 → 30 s ladder                                        | none                                     |
-| chainview `HeaderSync` (`headers.rs`)   | `getblockheader <h> false` ×2000 batches                    | every validator in turn, sequential | `Lane::Sync` permits            | stalled round → 5 s                                      | rule failure → warned, skipped this round |
-| chainview submission (`submit.rs`, `view.rs`) | `sendrawtransaction`; peer `push_isolated`            | `Job`: uniform random, netgroup-distinct | `Lane::Control`              | per `propagation_threshold`, `max_attempts`              | none                                     |
-| zainod `upgrade_schedule`               | poll batch at boot                                          | each in order                 | `Lane::Control`                     | 1 → 30 s loop                                            | none                                     |
-| `zaino-peers` `PeerNetwork`             | `FindHeaders`, `BlocksByHash`, mempool ids/bytes            | zebra `PeerSet` P2C (unattributed) | zebra's per-peer limits         | 20 s timeout                                             | not-asked answer → score 50 to zebra     |
+| Caller                                        | Asks                                                                                                       | Pick                                     | Concurrency                         | Retry / back-off                                                           | Blame                                     |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------- | ----------------------------------- | -------------------------------------------------------------------------- | ----------------------------------------- |
+| `zaino-nfs` `Fetcher` (`fetch.rs`)            | `getblock <hash> 0`                                                                                        | least `load` count, height tie           | `Lane::Sync` permits                | hedge after 15 s; every source out → retry after 1 s                       | misanswer → benched 60 s (fixed)          |
+| `zaino-source` `TrafficBalancer`              | `getrawtransaction <txid> 1` (GetTransaction, address txs)                                                 | P2C over peak-EWMA (10 s decay)          | `Lane::Serve` permits               | transient ×3 (250 ms, doubling), absent → next member                      | none                                      |
+| `zaino-source` `RpcClient`                    | every call                                                                                                 | —                                        | 3 lane semaphores, GCRA req + bytes | work-queue-full (`-1`) resent ×5, 500 ms                                   | none                                      |
+| chainview `EndpointPoller` (`endpoint.rs`)    | poll batch: `getblockchaininfo` + `getrawmempool true` + `getblockhash` ×2 (+ metadata /60 s); bytes batch | every trusted, own loop                  | `Lane::Control`                     | 1 s / 15 s streamed, 200 ms floor; 0.5 → 30 s ladder; 10 failures → `Down` | `Ewma` α 0.2 (telemetry only)             |
+| `IndexerWatch` (`indexer.rs`)                 | `ChainTipChange`, `MempoolChange` streams                                                                  | each trusted with `indexer_address`      | 1 gRPC channel                      | 0.5 → 30 s ladder                                                          | none                                      |
+| chainview `HeaderSync` (`headers.rs`)         | `getblockheader <h> false` ×2000 batches                                                                   | every validator in turn, sequential      | `Lane::Sync` permits                | stalled round → 5 s                                                        | rule failure → warned, skipped this round |
+| chainview submission (`submit.rs`, `view.rs`) | `sendrawtransaction`; peer `push_isolated`                                                                 | `Job`: uniform random, netgroup-distinct | `Lane::Control`                     | per `propagation_threshold`, `max_attempts`                                | none                                      |
+| zainod `upgrade_schedule`                     | poll batch at boot                                                                                         | each in order                            | `Lane::Control`                     | 1 → 30 s loop                                                              | none                                      |
+| `zaino-peers` `PeerNetwork`                   | `FindHeaders`, `BlocksByHash`, mempool ids/bytes                                                           | zebra `PeerSet` P2C (unattributed)       | zebra's per-peer limits             | 20 s timeout                                                               | not-asked answer → score 50 to zebra      |
 
 Three latency estimators, four back-off ladders, two blame rules, two pick rules, one retry layer
 hidden under another (`RpcClient` resends `-1` up to 5 times inside each of `failover`'s 3 tries: up to 18 sends per member). No caller knows
@@ -25,15 +25,15 @@ see their own lane, never the member.
 
 ## 2. Reuse vs build
 
-| Prior art                                       | Evidence                                                                                                                           | Used as                                                                                    |
-| ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| tower `balance::p2c` + `load::PeakEwma` (0.5.3) | P2C over `Load`; cost = EWMA RTT × pending; peak jump, decay toward mean (`load/peak_ewma.rs`)                                     | **the rule**, not the `Service`: `Service::poll_ready` cannot depend on the request (class) |
-| zebra-network `PeerSet` (`peer_set/set.rs`)     | own module doc: readiness ≠ request data is a mismatch; proposed fix = "one entity holds the peer set and metadata, each backpressure category a separate `Service`" | the shape of this design; `PeerSet` kept for crawl, `inv`, broadcast (verified-chain §6)   |
-| zebra `LoadTrackedClient`                       | `PeakEwma::new(EWMA_DEFAULT_RTT = timeout + 1 s, decay 200 s)`                                                                     | default RTT for **peers** (pessimistic); trusted keep 30 ms (optimistic: tried first)       |
-| tower `hedge`                                   | re-sends through the **same** inner service after a rotating-histogram percentile, `min_data_points`                               | the percentile rule; not the middleware (hedge must exclude the first member)              |
-| tower `retry::budget::TpsBudget`                | deposit per call, withdraw per retry, `ttl`, `min_per_sec`, `retry_percent`; reads `tokio::time::Instant::now()` itself              | the arithmetic, ported (core takes time as input)                                          |
-| `governor` (in tree)                            | GCRA; pluggable `clock::Clock` (`FakeRelativeClock`)                                                                                | request rate in the core on a stepped clock; byte rate stays per body chunk in transport   |
-| Envoy priority levels / gRFC A50 outlier detection (external, not vendored) | lower priority gets traffic only when higher's healthy capacity runs out; ejection = base × times ejected               | trusted tiers above peers; bench doubling                                                  |
+| Prior art                                                                   | Evidence                                                                                                                                                             | Used as                                                                                     |
+| --------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| tower `balance::p2c` + `load::PeakEwma` (0.5.3)                             | P2C over `Load`; cost = EWMA RTT × pending; peak jump, decay toward mean (`load/peak_ewma.rs`)                                                                       | **the rule**, not the `Service`: `Service::poll_ready` cannot depend on the request (class) |
+| zebra-network `PeerSet` (`peer_set/set.rs`)                                 | own module doc: readiness ≠ request data is a mismatch; proposed fix = "one entity holds the peer set and metadata, each backpressure category a separate `Service`" | the shape of this design; `PeerSet` kept for crawl, `inv`, broadcast (verified-chain §6)    |
+| zebra `LoadTrackedClient`                                                   | `PeakEwma::new(EWMA_DEFAULT_RTT = timeout + 1 s, decay 200 s)`                                                                                                       | default RTT for **peers** (pessimistic); trusted keep 30 ms (optimistic: tried first)       |
+| tower `hedge`                                                               | re-sends through the **same** inner service after a rotating-histogram percentile, `min_data_points`                                                                 | the percentile rule; not the middleware (hedge must exclude the first member)               |
+| tower `retry::budget::TpsBudget`                                            | deposit per call, withdraw per retry, `ttl`, `min_per_sec`, `retry_percent`; reads `tokio::time::Instant::now()` itself                                              | the arithmetic, ported (core takes time as input)                                           |
+| `governor` (in tree)                                                        | GCRA; pluggable `clock::Clock` (`FakeRelativeClock`)                                                                                                                 | request rate in the core on a stepped clock; byte rate stays per body chunk in transport    |
+| Envoy priority levels / gRFC A50 outlier detection (external, not vendored) | lower priority gets traffic only when higher's healthy capacity runs out; ejection = base × times ejected                                                            | trusted tiers above peers; bench doubling                                                   |
 
 Build: one pure core (`TrafficCore`) + one driver. Reuse no `tower::Service`: every answer needs
 its sender (blame), and every hedge needs "anyone but him".
@@ -54,10 +54,10 @@ its sender (blame), and every hedge needs "anyone but him".
 
 ### Members
 
-| Kind      | Source                                | Priority                                           | May answer                                     |
-| --------- | ------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
-| `Trusted` | `[[trusted_validators]]`, fixed       | `priority` key (0 default; 0 before 1 before …)    | every class                                    |
-| `Peer`    | WorkPool connection, joins / leaves   | below every trusted                                | checkable only: headers, block bodies, mempool bytes |
+| Kind      | Source                              | Priority                                        | May answer                                           |
+| --------- | ----------------------------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `Trusted` | `[[trusted_validators]]`, fixed     | `priority` key (0 default; 0 before 1 before …) | every class                                          |
+| `Peer`    | WorkPool connection, joins / leaves | below every trusted                             | checkable only: headers, block bodies, mempool bytes |
 
 Trusted-only (chainview §1 "only source" rows): `Poll` (listing, fees, holding), `Lookup` (mined tx
 by id), the verdict `Submit`. A class never reaches a member kind not in its row (T2).
@@ -90,15 +90,15 @@ struct Member {
 Per member, a freed permit goes to the highest waiting class under its ceiling; a class's reserve
 is never taken by another. Lanes = the special case ceiling = reserve.
 
-| Class (prio) | Asks                                        | Members, order                    | Route                 | Reserve / ceiling (of 32) | Hedge                | On failure                     |
-| ------------ | ------------------------------------------- | --------------------------------- | --------------------- | ------------------------- | -------------------- | ------------------------------ |
-| `Poll` 0     | poll batch, then bytes of new listings      | each trusted                      | each, own cadence     | 1 / 1                     | —                    | ladder 0.5 → 30 s              |
-| `Submit` 1   | `sendrawtransaction`, `push_isolated`       | `Job`'s entry                     | caller-chosen (privacy) | 1 / 2                   | — (`Job`'s timer)    | `Job` decides                  |
-| `TipBlock` 2 | `getblock <hash> 0`, `BlocksByHash`         | trusted by tier, then peers       | P2C within tier       | 1 / 4                     | p95, floor 2 s       | next member; all out → 1 s     |
-| `Headers` 3  | `getblockheader` runs, `FindHeaders`        | trusted: pinned to the claim's member; peers: P2C | pinned / P2C | 0 / 4               | —                    | round retried after 5 s        |
-| `Lookup` 4   | `getrawtransaction <txid> 1`                | trusted by tier                   | P2C, absent → next    | 1 / 8                     | p95, floor 1 s       | transient → next, budgeted     |
-| `Bytes` 5    | `getrawtransaction 0` batch, `TransactionsById` | listers / announcers, then P2C | affinity (zebra `route_inv`) | 0 / 2           | —                    | next member                    |
-| `BulkBlock` 6 | `getblock <hash> 0`                        | trusted by tier, then peers       | P2C within tier       | 1 / rest                  | p95, floor 15 s      | next member; all out → 1 s     |
+| Class (prio)  | Asks                                            | Members, order                                    | Route                        | Reserve / ceiling (of 32) | Hedge             | On failure                 |
+| ------------- | ----------------------------------------------- | ------------------------------------------------- | ---------------------------- | ------------------------- | ----------------- | -------------------------- |
+| `Poll` 0      | poll batch, then bytes of new listings          | each trusted                                      | each, own cadence            | 1 / 1                     | —                 | ladder 0.5 → 30 s          |
+| `Submit` 1    | `sendrawtransaction`, `push_isolated`           | `Job`'s entry                                     | caller-chosen (privacy)      | 1 / 2                     | — (`Job`'s timer) | `Job` decides              |
+| `TipBlock` 2  | `getblock <hash> 0`, `BlocksByHash`             | trusted by tier, then peers                       | P2C within tier              | 1 / 4                     | p95, floor 2 s    | next member; all out → 1 s |
+| `Headers` 3   | `getblockheader` runs, `FindHeaders`            | trusted: pinned to the claim's member; peers: P2C | pinned / P2C                 | 0 / 4                     | —                 | round retried after 5 s    |
+| `Lookup` 4    | `getrawtransaction <txid> 1`                    | trusted by tier                                   | P2C, absent → next           | 1 / 8                     | p95, floor 1 s    | transient → next, budgeted |
+| `Bytes` 5     | `getrawtransaction 0` batch, `TransactionsById` | listers / announcers, then P2C                    | affinity (zebra `route_inv`) | 0 / 2                     | —                 | next member                |
+| `BulkBlock` 6 | `getblock <hash> 0`                             | trusted by tier, then peers                       | P2C within tier              | 1 / rest                  | p95, floor 15 s   | next member; all out → 1 s |
 
 - **Tier spill** (T6): a first attempt goes to a lower tier only when no eligible higher-tier
   member has a permit and rate headroom now. Hedges prefer an untried member of the same tier.
@@ -206,14 +206,14 @@ pub struct Observation {
 }
 ```
 
-| Caller                    | Today                                              | After                                                                        |
-| ------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------- |
-| NFS driver                | `Output::Fetch { from }` → `sources[from]`         | `Output::Fetch { at, record }` → `block(hash, Tip/Bulk)` → `check_block` → `Input::Body`; `Err` → `report` + re-ask |
-| `HeaderSync`              | `sources[i].get_block_links`                       | `headers(Pinned(i) / Peers, ..)`; rule failure → `report`                    |
-| mempool fold / snapshot   | `EndpointPoller` reports into `ChainViewCore`      | `observe(i)` per member; `bytes(..)` for the delta                            |
-| submission                | `sources[i].send_raw_transaction`, `peers.push`    | `entries()` → `Job` → `submit(entry, raw)`                                    |
-| gRPC `GetTransaction`, address txs | `TrafficBalancer<S>::failover`            | `transaction(txid)` (class `Lookup`)                                         |
-| zainod boot               | `upgrade_schedule` loop; `laned(..)` ×3            | first `Live` observation's `info`; one `TrafficBalancer` handed to all       |
+| Caller                             | Today                                           | After                                                                                                               |
+| ---------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| NFS driver                         | `Output::Fetch { from }` → `sources[from]`      | `Output::Fetch { at, record }` → `block(hash, Tip/Bulk)` → `check_block` → `Input::Body`; `Err` → `report` + re-ask |
+| `HeaderSync`                       | `sources[i].get_block_links`                    | `headers(Pinned(i) / Peers, ..)`; rule failure → `report`                                                           |
+| mempool fold / snapshot            | `EndpointPoller` reports into `ChainViewCore`   | `observe(i)` per member; `bytes(..)` for the delta                                                                  |
+| submission                         | `sources[i].send_raw_transaction`, `peers.push` | `entries()` → `Job` → `submit(entry, raw)`                                                                          |
+| gRPC `GetTransaction`, address txs | `TrafficBalancer<S>::failover`                  | `transaction(txid)` (class `Lookup`)                                                                                |
+| zainod boot                        | `upgrade_schedule` loop; `laned(..)` ×3         | first `Live` observation's `info`; one `TrafficBalancer` handed to all                                              |
 
 **Deleted**: `zaino-nfs` `Fetcher` scheduling (`Source`, `load`, `BENCH`, `HEDGE`, `RETRY`,
 `pick`, `Output::{Unserved, Misanswered}`, `Input::Body.from`, `sources`; `check_block` stays);
@@ -224,11 +224,11 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 
 ## 6. Interface with the global snapshot
 
-| Owned by the balancer                                    | Owned by the snapshot                                          |
-| -------------------------------------------------------- | -------------------------------------------------------------- |
-| who is reachable, how fast, in flight, benched, health   | tip, holders, agreement, mempool sightings, lightd info        |
-| when to poll, what a poll costs, retries, hedges         | what to ask (`ask_each_poll`), what bytes it lacks             |
-| `Observation` (raw reading, per member, latest-only)     | folding observations; `/statusz` joins both tables             |
+| Owned by the balancer                                  | Owned by the snapshot                                   |
+| ------------------------------------------------------ | ------------------------------------------------------- |
+| who is reachable, how fast, in flight, benched, health | tip, holders, agreement, mempool sightings, lightd info |
+| when to poll, what a poll costs, retries, hedges       | what to ask (`ask_each_poll`), what bytes it lacks      |
+| `Observation` (raw reading, per member, latest-only)   | folding observations; `/statusz` joins both tables      |
 
 - One-way types: the snapshot imports `zaino_traffic::{Observation, MemberTable, ValidatorId}`
   only; the balancer imports nothing of the snapshot.
@@ -240,23 +240,22 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 
 ## 7. Invariants
 
-| ID  | Invariant                                                                                          | Where                              |
-| --- | -------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| T1  | per member: Σ in flight ≤ `max_connections`; per class ≤ ceiling; reserves never borrowed           | `check`, `Permits` asserts          |
-| T2  | a class reaches only member kinds its row allows (trusted-only never reaches a peer)               | `check` over in-flight, model       |
-| T3  | no new send to a benched or `Down` member (except its `Poll` probe)                                | `check`, model                      |
-| T4  | every ask ends once: answered, unanswered or abandoned; a hedge loser is never delivered           | `check`, model                      |
-| T5  | a round never asks one member twice; a re-ask after `report` excludes the reported member          | `check`, model                      |
-| T6  | a first attempt goes to tier n+1 only if no eligible tier ≤ n member had a permit and rate          | `check` (recorded pick), model      |
-| T7  | retries + hedges ≤ budget over the window                                                          | `check`, model                      |
-| T8  | every misanswer is charged to the member that sent it, and only to it                              | `Ticket`, model                     |
-| T9  | an ask with an eligible honest live member is answered within hedge + one round (subsumes P5)      | model at quiescence, driver test    |
-| T10 | a trusted member is polled ≤ once per 200 ms and ≥ once per interval (ladder while failing)        | model, paused-clock driver test     |
+| ID  | Invariant                                                                                     | Where                            |
+| --- | --------------------------------------------------------------------------------------------- | -------------------------------- |
+| T1  | per member: Σ in flight ≤ `max_connections`; per class ≤ ceiling; reserves never borrowed     | `check`, `Permits` asserts       |
+| T2  | a class reaches only member kinds its row allows (trusted-only never reaches a peer)          | `check` over in-flight, model    |
+| T3  | no new send to a benched or `Down` member (except its `Poll` probe)                           | `check`, model                   |
+| T4  | every ask ends once: answered, unanswered or abandoned; a hedge loser is never delivered      | `check`, model                   |
+| T5  | a round never asks one member twice; a re-ask after `report` excludes the reported member     | `check`, model                   |
+| T6  | a first attempt goes to tier n+1 only if no eligible tier ≤ n member had a permit and rate    | `check` (recorded pick), model   |
+| T7  | retries + hedges ≤ budget over the window                                                     | `check`, model                   |
+| T8  | every misanswer is charged to the member that sent it, and only to it                         | `Ticket`, model                  |
+| T9  | an ask with an eligible honest live member is answered within hedge + one round (subsumes P5) | model at quiescence, driver test |
+| T10 | a trusted member is polled ≤ once per 200 ms and ≥ once per interval (ladder while failing)   | model, paused-clock driver test  |
 
 ## 8. Tests
 
-- **Core** (`zaino-traffic/src/core.rs`): `TrafficCore::step(&mut self, Input, now: Instant) ->
-  Vec<Output>`, seeded RNG as input, `check()` after every step in tests and debug builds;
+- **Core** (`zaino-traffic/src/core.rs`): `TrafficCore::step(&mut self, Input, now: Instant) -> Vec<Output>`, seeded RNG as input, `check()` after every step in tests and debug builds;
   preconditions as named `assert!`s (`"an answer for an ask in flight"`).
 - **Model** (`core/model.rs`, proptest): members `Honest`, `Slow`, `Lying` (wrong value),
   `Lagging` (absent), `Flapping`, `Down`, `Silent`; peers joining and leaving; random asks of
@@ -277,40 +276,40 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 
 1. `zaino-traffic`: `Observation`, `MemberTable`; today's `EndpointPoller` emits `Observation`
    (global-snapshot unblocked here).
-2. `TrafficCore` + model + fire drills, no users.
-3. Driver over trusted `ZebraRpcAdapter` members; `Lookup`: gRPC `GetTransaction` + address txs.
+1. `TrafficCore` + model + fire drills, no users.
+1. Driver over trusted `ZebraRpcAdapter` members; `Lookup`: gRPC `GetTransaction` + address txs.
    Delete `balance.rs`.
-4. NFS on `block(..)`: delete `Fetcher` scheduling, `Unserved`, `Misanswered`; `report` on
+1. NFS on `block(..)`: delete `Fetcher` scheduling, `Unserved`, `Misanswered`; `report` on
    `check_block` failure.
-5. Classes replace lanes: one permit pool per member in the core; delete `Lane`, `on`, transport
+1. Classes replace lanes: one permit pool per member in the core; delete `Lane`, `on`, transport
    resends.
-6. Polling moves in: pollers, push streams, `ask_each_poll`, `bytes`; delete `EndpointPoller`,
+1. Polling moves in: pollers, push streams, `ask_each_poll`, `bytes`; delete `EndpointPoller`,
    `PollWaker`, `upgrade_schedule`.
-7. `HeaderSync` and submission on `headers(..)` / `submit(..)`.
-8. Peers as members via `PeerTransport` over the WorkPool (verified-chain §6): headers, blocks,
+1. `HeaderSync` and submission on `headers(..)` / `submit(..)`.
+1. Peers as members via `PeerTransport` over the WorkPool (verified-chain §6): headers, blocks,
    bytes; chainview §9's table replaced by §3's.
-9. Docs: `zaino-traffic/usage.md`, README index, chainview §7/§9 and nfs §6 point here; changesets.
+1. Docs: `zaino-traffic/usage.md`, README index, chainview §7/§9 and nfs §6 point here; changesets.
 
 ## 10. Open decisions
 
 1. **Crate.** New `zaino-traffic` above `zaino-source` (RPC transport) with `PeerTransport` as a
    port, vs growing `zaino-source`. **Recommend new crate**: keeps zebra-network (tower 0.4) out
    of everything but zainod, and `zaino-source` stays one validator's RPC.
-2. **Trusted tiers.** `priority` on `[[trusted_validators]]`, default 0. **Recommend yes**: "ours
+1. **Trusted tiers.** `priority` on `[[trusted_validators]]`, default 0. **Recommend yes**: "ours
    on the tailnet" vs "partner's across an ocean" is operator knowledge P2C learns only by losing
    requests.
-3. **Peers-first exceptions.** chainview §9 sends tip blocks and mempool bytes to peers first (to
+1. **Peers-first exceptions.** chainview §9 sends tip blocks and mempool bytes to peers first (to
    shrink trusted load). **Recommend trusted first everywhere but `Submit`** (privacy): the
    operator's ask; peers take overflow and hedges. Revisit with fleet numbers.
-4. **Hedge delay.** Fixed (NFS 15 s) vs per-class p95. **Recommend p95 with a class floor**
+1. **Hedge delay.** Fixed (NFS 15 s) vs per-class p95. **Recommend p95 with a class floor**
    (tower's rule): a 15 s fixed hedge at the tip costs 20 % of a 75 s block interval.
-5. **Benching the last trusted member.** Envoy caps ejection at a percentage. **Recommend bench
+1. **Benching the last trusted member.** Envoy caps ejection at a percentage. **Recommend bench
    anyway**, alarm: a trusted member serving a block that fails its merkle root is broken or
    intercepted; finality pausing is the correct answer.
-6. **Transport resends** (`RpcClient` ×5 on `-1`). **Recommend delete**: one budget; a busy batch
+1. **Transport resends** (`RpcClient` ×5 on `-1`). **Recommend delete**: one budget; a busy batch
    item becomes that item's own outcome, re-asked by the core.
-7. **Observation delivery.** `watch` (latest) vs queue. **Recommend `watch`** (§6).
-8. **Borrowing.** Reserve + ceiling vs no-borrow lanes. **Recommend reserve + ceiling**: a wallet
+1. **Observation delivery.** `watch` (latest) vs queue. **Recommend `watch`** (§6).
+1. **Borrowing.** Reserve + ceiling vs no-borrow lanes. **Recommend reserve + ceiling**: a wallet
    burst uses idle bulk capacity, and the poll's reserve still holds.
-9. **Abandon.** Dropping an ask's future abandons it (in-flight sends cancelled). **Recommend
+1. **Abandon.** Dropping an ask's future abandons it (in-flight sends cancelled). **Recommend
    yes**: NFS drops wants off the best chain by dropping futures, no cancel API.

@@ -34,7 +34,7 @@ Measured against the code, not the intent (2026-10-06):
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **No new zebra patches.** Attribution and everything sync-critical is done at Zaino's own boundary. The zebra fork is only rebased onto upstream's primary branch (for NU7 and protocol 170,180).                                                                                                                                                                                                                                                                   |
 | 2   | **Minimum chain work gates peer-only bests, never finality.** Finality needs a trusted holder (peers alone never finalize), so a work floor adds nothing there; dropped from finality 2026-10-06 (an unbounded in-memory first sync was its only effect). A per-network floor (zcashd's `nMinimumChainWork`) returns with peers (phase 5) as `credible`: below it a best no trusted validator holds is not followed or served. Not a checkpoint: it trusts no hash. |
-| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the NFS follows proof of work; only finality waits for a holder.                                                                                                                                                                                                                                                                                                   |
+| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the NFS follows proof of work; only finality waits for a holder.                                                                                                                                                                                                                                                                                                        |
 | 4   | **`[p2p]` on by default.**                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 5   | **Block commitments are checked incrementally**, off the hot path, as their own follower (§8).                                                                                                                                                                                                                                                                                                                                                                      |
 
@@ -292,14 +292,14 @@ it is an `Err` that names the source.
 
 **NFS and the final stream** (built as `NfsCore` N1–N6, [nfs.md](./nfs.md) §9)
 
-|     | Invariant                                                                                                     |
-| --- | ------------------------------------------------------------------------------------------------------------- |
-| P1  | every sent or folded block is `c.hash_at(h)` for the chain it was taken under, with a matching merkle root    |
-| P2  | the final stream: every height once, ascending, final, never retracted                                        |
-| P3  | nothing at or below the final tip is ever replaced                                                            |
-| P4  | at quiescence the served tip = best, every index's durable block = the final tip (within one batch)          |
-| P5  | a lying source never causes a wrong delivery; a silent one never stalls a block another source has                                                                              |
-| P6  | on restart every durable tip is checked against the header chain; a diverged index halts                                                                                        |
+|     | Invariant                                                                                                  |
+| --- | ---------------------------------------------------------------------------------------------------------- |
+| P1  | every sent or folded block is `c.hash_at(h)` for the chain it was taken under, with a matching merkle root |
+| P2  | the final stream: every height once, ascending, final, never retracted                                     |
+| P3  | nothing at or below the final tip is ever replaced                                                         |
+| P4  | at quiescence the served tip = best, every index's durable block = the final tip (within one batch)        |
+| P5  | a lying source never causes a wrong delivery; a silent one never stalls a block another source has         |
+| P6  | on restart every durable tip is checked against the header chain; a diverged index halts                   |
 
 **Chain view and validators**
 

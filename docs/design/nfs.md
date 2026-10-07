@@ -290,13 +290,13 @@ pub enum NfsError { Diverged { index: &'static str, height, expected, got }, Fol
   fold or snapshot pairs layers with exactly the durable state the core knows.
 - Observability (`describe_metrics()`; names = ztest's `zainod` families):
 
-| Signal                                        | Source                                                           |
-| --------------------------------------------- | ---------------------------------------------------------------- |
-| `zaino_best_tip`                              | each verified chain's best height                                |
-| `zaino_reorgs_total` + WARN `Chain reorg detected` | a published tip that left the best chain (from, to)         |
+| Signal                                                          | Source                                                                          |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `zaino_best_tip`                                                | each verified chain's best height                                               |
+| `zaino_reorgs_total` + WARN `Chain reorg detected`              | a published tip that left the best chain (from, to)                             |
 | `zaino_fetch_height`, `zaino_fetch_*_total`, `subscribe_handed` | each block handed to the indexes: folded, or sent unfolded (rewinds on a reorg) |
-| INFO `Chain tip advanced`                     | each published tip that is the verified best                     |
-| INFO `Syncing blocks` / WARN `Block fetch stalled` | every 30 s while the handed height trails the best          |
+| INFO `Chain tip advanced`                                       | each published tip that is the verified best                                    |
+| INFO `Syncing blocks` / WARN `Block fetch stalled`              | every 30 s while the handed height trails the best                              |
 
 ### Fold
 
@@ -496,15 +496,15 @@ spawn(&mut tasks, "serving", .., serving::run(snapshots, verified, depth, synced
 
 ## 9. Invariants
 
-| ID  | Invariant                                                                | Where                          |
-| --- | ------------------------------------------------------------------------ | ------------------------------ |
-| N1  | every node's block = `VerifiedChain::hash_at` + merkle root              | `check`, fetch acceptance      |
+| ID  | Invariant                                                                                              | Where                                                                    |
+| --- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
+| N1  | every node's block = `VerifiedChain::hash_at` + merkle root                                            | `check`, fetch acceptance                                                |
 | N2  | node above the root, folded on a held parent (node or root); layer = parent layer `.with(own Changes)` | `check`; `fold_block`, `LayeredView::new` + `rebase` panics, driver test |
-| N3  | a node leaves only after every enabled store's durable tip ≥ it          | `check`, `Durable` asserts, model |
-| N4  | `snap.tip` = deepest folded best block (else the root)                   | `check`, model, driver test    |
-| N5  | final stream: every height once, ascending, never retracted              | `check`, model + driver writers |
-| N6  | every index read through a snapshot = folding it from genesis along best | model, driver test (real folds) |
-| P1  | `view()` = committed prefix; `staged()` = committed + buffered           | conformance                    |
+| N3  | a node leaves only after every enabled store's durable tip ≥ it                                        | `check`, `Durable` asserts, model                                        |
+| N4  | `snap.tip` = deepest folded best block (else the root)                                                 | `check`, model, driver test                                              |
+| N5  | final stream: every height once, ascending, never retracted                                            | `check`, model + driver writers                                          |
+| N6  | every index read through a snapshot = folding it from genesis along best                               | model, driver test (real folds)                                          |
+| P1  | `view()` = committed prefix; `staged()` = committed + buffered                                         | conformance                                                              |
 
 ## 10. Tests
 
@@ -529,14 +529,14 @@ spawn(&mut tasks, "serving", .., serving::run(snapshots, verified, depth, synced
 
 ## 11. Implementation plan (done)
 
-| Wave | Scope                                                                                    | Status                    |
-| ---- | ---------------------------------------------------------------------------------------- | ------------------------- |
-| 1    | port: `Store::apply/commit/staged`, `Layer`, `LayeredView`, conformance, `DiskStore`     | done                      |
-| 1    | `zaino-nfs` core + graph + fetch + model + fire drills                                   | done                      |
-| 1    | folds + readers: every index                                                             | done                      |
-| 2    | `zaino-nfs` driver + `fold_block` with the real folds                                    | done                      |
-| 3    | writers on the final stream, gRPC on `Snapshot`, zainod boot + config, deletions (§8)    | done                      |
-| 4    | docs, changesets, heavy runs                                                             | done; live suite pending  |
+| Wave | Scope                                                                                 | Status                   |
+| ---- | ------------------------------------------------------------------------------------- | ------------------------ |
+| 1    | port: `Store::apply/commit/staged`, `Layer`, `LayeredView`, conformance, `DiskStore`  | done                     |
+| 1    | `zaino-nfs` core + graph + fetch + model + fire drills                                | done                     |
+| 1    | folds + readers: every index                                                          | done                     |
+| 2    | `zaino-nfs` driver + `fold_block` with the real folds                                 | done                     |
+| 3    | writers on the final stream, gRPC on `Snapshot`, zainod boot + config, deletions (§8) | done                     |
+| 4    | docs, changesets, heavy runs                                                          | done; live suite pending |
 
 ## 12. Decisions
 

@@ -3,8 +3,7 @@
 Zaino links no Zebra crate. `zaino-source` fetches each block as consensus bytes with
 `getblock <height> 0` and decodes it with librustzcash (`zcash_primitives`'s
 `CompressedTransaction`), and it parses every other JSON-RPC result into
-`zaino-primitives` types in `packages/zaino-source/src/parse.rs`. `cargo tree -i
-zebra-chain` finds nothing. Zaino's coupling to Zebra is therefore the JSON-RPC
+`zaino-primitives` types in `packages/zaino-source/src/parse.rs`. `cargo tree -i zebra-chain` finds nothing. Zaino's coupling to Zebra is therefore the JSON-RPC
 surface of the zebrad release it runs against, and keeping up with Zebra means
 testing against new zebrad releases rather than bumping a dependency. We treat a
 spread between the latest zebrad and the one the live suite tests as high-priority
@@ -16,11 +15,11 @@ JSON-RPC response, read the tagged Zebra source for the node version you target.
 ## Moving to a new zebrad
 
 1. Take a baseline on `dev` with `cargo nextest run --workspace` and the live suite.
-2. Bump the version in every `Validator::zebrad("6.2.3")` under `live-tests/`, and
+1. Bump the version in every `Validator::zebrad("6.2.3")` under `live-tests/`, and
    the zebrad version stated in [running.md](./running.md#requirements).
-3. Check out the matching tag in the `zebra` checkout beside this repository, since
+1. Check out the matching tag in the `zebra` checkout beside this repository, since
    the sync profiles build zebrad's image from it.
-4. Run the live tests (see [testing.md](./testing.md)). A changed response shape
+1. Run the live tests (see [testing.md](./testing.md)). A changed response shape
    shows up as a parse error in `zaino-source`, which is where it is fixed.
 
 ## Pinning unreleased dependencies

@@ -170,16 +170,16 @@ validator already resolved both when it admitted them, so we take the fee from i
 
 ## 6. Completeness
 
-| RPC                                                                      | Fold                              | Shape                         |
-| ------------------------------------------------------------------------ | --------------------------------- | ----------------------------- |
-| `GetLatestBlock`, `GetBlock`, `GetBlockRange`, `GetBlockRangeNullifiers` | compact record per height         | A                             |
-| `CompactTx.fee` in those records                                         | outpoint to value (value-balance) | B                             |
-| `GetBlock` and `GetTreeState` by hash                                    | block hash to height (`by_hash`)  | B                             |
-| `GetTreeState`, `GetLatestTreeState`                                     | commitment frontier               | A                             |
-| `GetSubtreeRoots`                                                        | same fold, at 2^16 boundaries     | A                             |
-| `GetTaddressTransactions`                                                | address to (height, txid)         | B (bytes from the validator)  |
-| `GetAddressUtxos`, `GetAddressUtxosStream`                               | receives minus spends             | B                             |
-| `GetTaddressBalance`, `GetTaddressBalanceStream`                         | the sum of the above              | B                             |
+| RPC                                                                      | Fold                              | Shape                        |
+| ------------------------------------------------------------------------ | --------------------------------- | ---------------------------- |
+| `GetLatestBlock`, `GetBlock`, `GetBlockRange`, `GetBlockRangeNullifiers` | compact record per height         | A                            |
+| `CompactTx.fee` in those records                                         | outpoint to value (value-balance) | B                            |
+| `GetBlock` and `GetTreeState` by hash                                    | block hash to height (`by_hash`)  | B                            |
+| `GetTreeState`, `GetLatestTreeState`                                     | commitment frontier               | A                            |
+| `GetSubtreeRoots`                                                        | same fold, at 2^16 boundaries     | A                            |
+| `GetTaddressTransactions`                                                | address to (height, txid)         | B (bytes from the validator) |
+| `GetAddressUtxos`, `GetAddressUtxosStream`                               | receives minus spends             | B                            |
+| `GetTaddressBalance`, `GetTaddressBalanceStream`                         | the sum of the above              | B                            |
 
 Every row is a fold over the block stream, so never forwarding a derived read is a property of the
 design, not a policy we have to enforce. `GetTransaction` is not on the list: compact records are
@@ -193,12 +193,12 @@ what lets Shapes A and B exist.
 
 ## 7. Shape B instances
 
-| Set                       | Key                           | Row  | Read by                  |
-| ------------------------- | ----------------------------- | ---- | ------------------------ |
+| Set                       | Key                           | Row  | Read by                         |
+| ------------------------- | ----------------------------- | ---- | ------------------------------- |
 | `receives`                | `addr ‖ height ‖ txid ‖ vout` | 69 B | range scan, filtered by address |
-| `spent`                   | `txid ‖ vout`                 | 72 B | point probe              |
-| `outputs` (value-balance) | `txid ‖ vout`                 | 44 B | point probe, always hits |
-| `by_hash` (block-hash)    | `block hash`                  | 36 B | point probe              |
+| `spent`                   | `txid ‖ vout`                 | 72 B | point probe                     |
+| `outputs` (value-balance) | `txid ‖ vout`                 | 44 B | point probe, always hits        |
+| `by_hash` (block-hash)    | `block hash`                  | 36 B | point probe                     |
 
 The address key is the address itself, not an id for it. `receives` is keyed by the 21-byte
 `[hash160][kind]` tag. Interning it into a `u64` would cost a dictionary, a second structure to keep

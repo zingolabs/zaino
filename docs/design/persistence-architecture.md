@@ -90,7 +90,7 @@ one incomplete addition and one doubling, account for 76.8 µs of the remaining 
 
 ### 3.3 What a full-chain fold costs
 
-A fold costs one combine per commitment, amortised. At N ≈ 3M per pool [assumed]:
+A fold costs one combine per commitment, amortised. At N ≈ 3M per pool \[assumed\]:
 
 | Pool                       | Node                   | Fold cost [estimated]     |
 | -------------------------- | ---------------------- | ------------------------- |
@@ -165,7 +165,7 @@ every file, as each commit does when it republishes its read snapshot through `A
 | 100 (+ `heights.idx`, 3 × `subtrees.dat`) | **357.8 ms**       | 235 µs    |
 
 That is ~3.5 ms per file, and remapping 100 files at 235 µs is not a concern. At one commit per
-1000 blocks, fsyncing all 100 files would add ~20 minutes across a 3.4M-block sync [estimated]:
+1000 blocks, fsyncing all 100 files would add ~20 minutes across a 3.4M-block sync \[estimated\]:
 absorbable against an RPC-bound sync, but not free. The fan measured here is data files only.
 Sealing a file also fsyncs its `.crc` whenever a page completed since the last seal, so a grown
 file costs up to two fsyncs.
@@ -181,7 +181,7 @@ about n/2^(ℓ+1) new nodes per n commitments, so the upper levels are clean in 
 
 A copy-on-write B-tree file after 10M random-order inserts held 478,526 extents for 2.3 GiB,
 roughly one extent per 5 KiB, because every page landed somewhere new. The append-only file of the
-same experiment held 1 extent [measured, `filefrag`]. Removing that fragmentation was worth a
+same experiment held 1 extent \[measured, `filefrag`\]. Removing that fragmentation was worth a
 factor of 2 on cold point reads.
 
 An append-only file gets a single extent on any filesystem because it is never rewritten in place,
@@ -198,7 +198,7 @@ hazards below are not hypothetical.
 A compact-block range read serves a window of up to 1 MiB out of the mapping. Touching it is a
 synchronous operation of unbounded latency on whichever thread does it. For a 1 MiB span at 40
 random offsets, with the page cache dropped from a separate process before each cold run
-[measured]:
+\[measured\]:
 
 |                                    | Cold         | Warm      |
 | ---------------------------------- | ------------ | --------- |

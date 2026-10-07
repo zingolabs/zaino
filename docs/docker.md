@@ -31,10 +31,10 @@ The image mounts its config and data under `/app` and symlinks zainod's XDG defa
 paths to them, so a config that sets no `[index.*] path` keeps every index under
 `/app/data`.
 
-| Purpose | Mount point | Symlinked from |
-|---|---|---|
-| Config | `/app/config` | `~/.config/zaino`, zainod's default config directory |
-| Index data | `/app/data` | `~/.cache/zaino`, the parent of every index's default directory |
+| Purpose    | Mount point   | Symlinked from                                                  |
+| ---------- | ------------- | --------------------------------------------------------------- |
+| Config     | `/app/config` | `~/.config/zaino`, zainod's default config directory            |
+| Index data | `/app/data`   | `~/.cache/zaino`, the parent of every index's default directory |
 
 Mounted volumes must be writable by UID 1000. For a bind mount, run
 `mkdir -p ./data && chown 1000:1000 ./data`. Under rootless Podman,

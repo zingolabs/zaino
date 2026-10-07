@@ -69,7 +69,7 @@ No index was available locally, so no number in this document was measured by th
     kinds).
 - Every [est] above stands until that phase reports.
 
----
+______________________________________________________________________
 
 ## 0. Executive summary
 
@@ -86,17 +86,17 @@ bytes.** Ranked by impact:
    `zaino-chainview/src/view.rs:195-214`). At ~2,048 connected pepper-sync wallets
    (`max_streams` = 2048), every other RPC from every wallet gets `UNAVAILABLE`.
    **Hard ceiling: ~2k steady-state zingo wallets per zainod.**
-2. **`max_connections_per_ip` = 32 caps the whole server behind a TLS proxy.** zainod has no TLS
+1. **`max_connections_per_ip` = 32 caps the whole server behind a TLS proxy.** zainod has no TLS
    stack (`docs/running.md:90`), and the documented public deployment is nginx `grpc_pass`
    (`devops/devlog/2026-07-02-reproducible-grpc-funnel.md`). Every connection then arrives from
    one IP. nginx opens one upstream connection per in-flight request [assumed], so the server
    serves **32 concurrent requests in total**. Mobile carrier CGNAT hits the same cap.
-3. **One accept error kills zainod.** `EMFILE`/`ENFILE`/`ENOBUFS` from `accept()` returns
+1. **One accept error kills zainod.** `EMFILE`/`ENFILE`/`ENOBUFS` from `accept()` returns
    `Err` from the serve loop (`transport.rs:170-179`). `boot` treats any task exit as fatal
    (`zainod/src/indexer.rs:237`). The config allows `max_connections` = 4096, but nothing raises
    or checks `RLIMIT_NOFILE`. A systemd soft limit of 1024 means ~1000 wallets take the daemon
    down.
-4. **Unbounded work shares one FIFO 16-permit queue with cheap reads.**
+1. **Unbounded work shares one FIFO 16-permit queue with cheap reads.**
    - Address queries scan all of history, regardless of the requested range
      (`zaino-index-transparent-address/src/serve.rs:135`).
    - Request bodies are unbounded: the router's `decode_request` collects the whole body and
@@ -104,16 +104,15 @@ bytes.** Ranked by impact:
    - Address lists are unbounded.
    - A few heavy requests therefore stall every `GetLatestBlock`, `GetTreeState` and range
      refill behind them (`limits.rs:65-75`).
-5. **`GetLightdInfo` costs one validator RPC per call** (`validator.rs:189-194`), with no
+1. **`GetLightdInfo` costs one validator RPC per call** (`validator.rs:189-194`), with no
    caching. zingo-mobile calls it every 5 s while the app is open (`zingo-mobile/app/rpc/RPC.ts:441`).
-6. **No `TCP_NODELAY`.** tonic's own server enables it by default (`tonic-0.14.5
-   transport/server/mod.rs:132`). zaino's own accept loop never sets it (`transport.rs:183-195`).
-7. **Identical answers are recomputed per wallet on every block.** When a block lands, every
+1. **No `TCP_NODELAY`.** tonic's own server enables it by default (`tonic-0.14.5 transport/server/mod.rs:132`). zaino's own accept loop never sets it (`transport.rs:183-195`).
+1. **Identical answers are recomputed per wallet on every block.** When a block lands, every
    steady-state wallet asks for the same tip `BlockID`, the same tip `TreeState`, the same
    subtree roots and the same projected tip blocks, and re-reads the whole mempool. zaino
    rebuilds each of these per request: a blocking-pool hop, a hex encode, a protobuf frame, and
    a memcpy of every mempool transaction per subscriber.
-8. **Per-stream heap is bounded by the 1 MiB window, not by the 64 KiB send buffer.** A
+1. **Per-stream heap is bounded by the 1 MiB window, not by the 64 KiB send buffer.** A
    default-pools (projected) range chunk is a heap `Vec` of up to 1 MiB (`project.rs:69`).
    hyper polls the next chunk while the previous one drains (hyper-1.10.1
    `proto/h2/mod.rs:185-217`), so a slow client pins about 2 MiB. At 2,048 streams that is about
@@ -130,26 +129,26 @@ Is **"16 permits + `spawn_blocking` per unary request"** right at 10k req/s?
   work budgets on scans (§3.4, items 7–9).
 
 **Capacity today vs after the plan** (reference box: 16 cores, 64 GB RAM, local NVMe, 2.5 GbE)
-[est]:
+\[est\]:
 
-| Workload | Binding resource today | Wallets today | After P0+P1 |
-|---|---|---|---|
-| Restore from old birthday (byte-bound) | NIC; disk if on network storage | 30–300 concurrent (client scan speed); **32 behind a proxy** | same, NIC-bound, at <1 core |
-| Steady state at tip (request-bound) | `max_streams` held by mempool streams | **~2,000** (pepper-sync) | 20–50k per node (bursts + memory per connection) |
-| Mobile reconnect (1 day offline) | admission / per-IP | tens/s | ~20 reconnects/s ≈ NIC |
+| Workload                               | Binding resource today                | Wallets today                                                | After P0+P1                                      |
+| -------------------------------------- | ------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------ |
+| Restore from old birthday (byte-bound) | NIC; disk if on network storage       | 30–300 concurrent (client scan speed); **32 behind a proxy** | same, NIC-bound, at \<1 core                     |
+| Steady state at tip (request-bound)    | `max_streams` held by mempool streams | **~2,000** (pepper-sync)                                     | 20–50k per node (bursts + memory per connection) |
+| Mobile reconnect (1 day offline)       | admission / per-IP                    | tens/s                                                       | ~20 reconnects/s ≈ NIC                           |
 
 **Plan, top six:**
 
 1. Separate the subscription cap from the work cap.
-2. Proxy-aware per-IP limits.
-3. Harden the accept loop and `RLIMIT_NOFILE`.
-4. `TCP_NODELAY`.
-5. Body and list limits.
-6. A `GetLightdInfo` cache.
+1. Proxy-aware per-IP limits.
+1. Harden the accept loop and `RLIMIT_NOFILE`.
+1. `TCP_NODELAY`.
+1. Body and list limits.
+1. A `GetLightdInfo` cache.
 
 All six are small, local changes; §3.4 has the rest.
 
----
+______________________________________________________________________
 
 ## 1. Ground truth: the protocol and how wallets use it
 
@@ -160,22 +159,22 @@ comments and the lightwallet-protocol CHANGELOG are the contract. ZIP-307 (Sapli
 ZIP-314 (empty) do not specify this API (`docs/client-requirements.md`, "The contract is the
 proto").
 
-| RPC | Shape | Request | Response |
-|---|---|---|---|
-| `GetLatestBlock` | unary | `ChainSpec` (empty) | `BlockID{height, hash}` |
-| `GetBlock` | unary | `BlockID` (height or hash) | `CompactBlock`, **all pools** incl. transparent |
-| `GetBlockRange` | server-stream | `BlockRange{start, end, poolTypes[]}` | `CompactBlock`* |
-| `GetBlockRangeNullifiers` | server-stream | `BlockRange` | nullifier-only `CompactBlock`* (deprecated) |
-| `GetTreeState` / `GetLatestTreeState` | unary | `BlockID` / `Empty` | `TreeState{network, height, hash, time, saplingTree, orchardTree, ironwoodTree}` (trees = hex of `write_commitment_tree`) |
-| `GetSubtreeRoots` | server-stream | `{startIndex, shieldedProtocol, maxEntries}` (0 = all) | `SubtreeRoot{rootHash, completingBlockHash, completingBlockHeight}`* |
-| `GetTransaction` | unary | `TxFilter` (hash arm only in zaino) | `RawTransaction{data, height}` |
-| `SendTransaction` | unary | `RawTransaction` | `SendResponse{errorCode, errorMessage}` |
-| `GetTaddressTxids` / `GetTaddressTransactions` | server-stream | `{address, range}` | `RawTransaction`* (full tx bytes) |
-| `GetTaddressBalance` / `…Stream` | unary / client-stream | `AddressList` / `Address`* | `Balance` |
-| `GetAddressUtxos` / `…Stream` | unary / server-stream | `{addresses[], startHeight, maxEntries}` | list / stream of `GetAddressUtxosReply` |
-| `GetMempoolTx` | server-stream | `{exclude_txid_suffixes, poolTypes}` | `CompactTx`* |
-| `GetMempoolStream` | server-stream, **long-lived** | `Empty` | `RawTransaction`*; closes when a new block is mined (`service.proto:289-291`) |
-| `GetLightdInfo` | unary | `Empty` | `LightdInfo` |
+| RPC                                            | Shape                         | Request                                                | Response                                                                                                                  |
+| ---------------------------------------------- | ----------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `GetLatestBlock`                               | unary                         | `ChainSpec` (empty)                                    | `BlockID{height, hash}`                                                                                                   |
+| `GetBlock`                                     | unary                         | `BlockID` (height or hash)                             | `CompactBlock`, **all pools** incl. transparent                                                                           |
+| `GetBlockRange`                                | server-stream                 | `BlockRange{start, end, poolTypes[]}`                  | `CompactBlock`\*                                                                                                          |
+| `GetBlockRangeNullifiers`                      | server-stream                 | `BlockRange`                                           | nullifier-only `CompactBlock`\* (deprecated)                                                                              |
+| `GetTreeState` / `GetLatestTreeState`          | unary                         | `BlockID` / `Empty`                                    | `TreeState{network, height, hash, time, saplingTree, orchardTree, ironwoodTree}` (trees = hex of `write_commitment_tree`) |
+| `GetSubtreeRoots`                              | server-stream                 | `{startIndex, shieldedProtocol, maxEntries}` (0 = all) | `SubtreeRoot{rootHash, completingBlockHash, completingBlockHeight}`\*                                                     |
+| `GetTransaction`                               | unary                         | `TxFilter` (hash arm only in zaino)                    | `RawTransaction{data, height}`                                                                                            |
+| `SendTransaction`                              | unary                         | `RawTransaction`                                       | `SendResponse{errorCode, errorMessage}`                                                                                   |
+| `GetTaddressTxids` / `GetTaddressTransactions` | server-stream                 | `{address, range}`                                     | `RawTransaction`\* (full tx bytes)                                                                                        |
+| `GetTaddressBalance` / `…Stream`               | unary / client-stream         | `AddressList` / `Address`\*                            | `Balance`                                                                                                                 |
+| `GetAddressUtxos` / `…Stream`                  | unary / server-stream         | `{addresses[], startHeight, maxEntries}`               | list / stream of `GetAddressUtxosReply`                                                                                   |
+| `GetMempoolTx`                                 | server-stream                 | `{exclude_txid_suffixes, poolTypes}`                   | `CompactTx`\*                                                                                                             |
+| `GetMempoolStream`                             | server-stream, **long-lived** | `Empty`                                                | `RawTransaction`\*; closes when a new block is mined (`service.proto:289-291`)                                            |
+| `GetLightdInfo`                                | unary                         | `Empty`                                                | `LightdInfo`                                                                                                              |
 
 **`poolTypes`:**
 
@@ -188,17 +187,17 @@ proto").
 - So **every wallet range request takes the projection path**, never the zero-copy
   `Pools::ALL` path (`project.rs:65`) [code].
 
-**Element sizes on the wire**, derived from `compact_formats.proto` [code + arithmetic]:
+**Element sizes on the wire**, derived from `compact_formats.proto` \[code + arithmetic\]:
 
-| Element | Bytes in its parent (incl. tag + length) |
-|---|---|
-| `CompactSaplingOutput` (cmu 32, epk 32, ct 52) | 124 |
-| `CompactOrchardAction` (nf, cmx, epk 32 each, ct 52) | 159 |
-| `CompactSaplingSpend` (nf) | 36 |
-| `CompactTxIn` (prevout txid + index) | ~40 |
-| `TxOut` (value + P2PKH script) | ~37 |
-| `CompactTx` fixed (index, txid, fee) | ~42 |
-| `CompactBlock` fixed (height, hash, prevHash, time, chainMetadata) + gRPC frame | ~105 |
+| Element                                                                         | Bytes in its parent (incl. tag + length) |
+| ------------------------------------------------------------------------------- | ---------------------------------------- |
+| `CompactSaplingOutput` (cmu 32, epk 32, ct 52)                                  | 124                                      |
+| `CompactOrchardAction` (nf, cmx, epk 32 each, ct 52)                            | 159                                      |
+| `CompactSaplingSpend` (nf)                                                      | 36                                       |
+| `CompactTxIn` (prevout txid + index)                                            | ~40                                      |
+| `TxOut` (value + P2PKH script)                                                  | ~37                                      |
+| `CompactTx` fixed (index, txid, fee)                                            | ~42                                      |
+| `CompactBlock` fixed (height, hash, prevHash, time, chainMetadata) + gRPC frame | ~105                                     |
 
 ### 1.2 What the clients do
 
@@ -212,29 +211,29 @@ polling are unverified. Zallet calls Zaino in-process, not over gRPC.
 
 **Connection model**
 
-| | pepper-sync | librustzcash reference `sync.rs` |
-|---|---|---|
-| Connections per wallet | 1 H2 connection; all calls multiplexed (`zingo-netutils/src/lib.rs:325-357`) | 1 client, strictly sequential (`sync.rs:354-358`) |
-| Concurrent block streams | ~1: one loader task, load channel capacity 1 (`scan/task.rs:357-369`) | 1, collected fully before the next call |
-| Other long-lived streams | 1 `GetMempoolStream`, resubscribed forever (`sync.rs:2579-2656`) | none |
-| Client flow control | hyper client defaults: 2 MiB stream / 5 MiB connection window, 16 KiB max frame (hyper-1.10.1 `proto/h2/client.rs:48-50`) | same (tonic) |
-| Timeouts | unary 10 s, heavy 20 s, per stream message 15 s (`zingo-netutils/src/time.rs:183-191`) | none |
+|                          | pepper-sync                                                                                                               | librustzcash reference `sync.rs`                  |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Connections per wallet   | 1 H2 connection; all calls multiplexed (`zingo-netutils/src/lib.rs:325-357`)                                              | 1 client, strictly sequential (`sync.rs:354-358`) |
+| Concurrent block streams | ~1: one loader task, load channel capacity 1 (`scan/task.rs:357-369`)                                                     | 1, collected fully before the next call           |
+| Other long-lived streams | 1 `GetMempoolStream`, resubscribed forever (`sync.rs:2579-2656`)                                                          | none                                              |
+| Client flow control      | hyper client defaults: 2 MiB stream / 5 MiB connection window, 16 KiB max frame (hyper-1.10.1 `proto/h2/client.rs:48-50`) | same (tonic)                                      |
+| Timeouts                 | unary 10 s, heavy 20 s, per stream message 15 s (`zingo-netutils/src/time.rs:183-191`)                                    | none                                              |
 
 **Call sites and frequency**
 
-| RPC | pepper-sync | librustzcash |
-|---|---|---|
-| `GetLatestBlock` | Every continuous-sync iteration, forced at least every `CHECK_NEW_BLOCKS_INTERVAL` = 10 s (`sync.rs:82,492-500`) | Every loop (`sync.rs:315`) |
-| `GetBlockRange` | Once per scan range. A range is shard-sized, up to 2^16 notes of blocks. Stream consumed at scan speed, split into loads of ≤2^13 outputs (`task.rs:104-109,525-551`) | Once per `batch_size` batch (caller-supplied; Zallet 1000) |
-| `GetTreeState` | Birthday −1 and tip, every new-block iteration (`state.rs:908-935,1017`) | **1:1 with every `GetBlockRange`**, at `start − 1` (`sync.rs:381`) |
-| `GetSubtreeRoots` | 3 pools × 2 passes (an unbounded ask plus a confirming empty pass) = **~6 per new block** (`sync.rs:2400-2404`, `client.rs:229-238`) | 3 pools, **from index 0 every run** (`sync.rs:232-260`) |
-| `GetBlock` | Reorg check at tip, seams (`sync.rs:569` etc.) | — |
-| `GetTaddressTxids` | Per known t-address plus gap-limit discovery, sequential, first iteration (`sync/transparent.rs:61-150`) | — |
-| `GetAddressUtxosStream` | dead code | Per account per iteration, all receivers (`sync.rs:505-527`) |
-| `GetTransaction` | Per relevant txid, sequential (`scan/transactions.rs:97-110`) | — (SDK) |
-| `GetMempoolStream` | Permanent; reconnect immediately on close (`sync.rs:2579-2656`) | — |
-| `GetLightdInfo` | zingo-mobile **every 5 s** while active (`zingo-mobile/app/rpc/RPC.ts:441,362-366`) | never |
-| `GetBlockRangeNullifiers` | Only `ScannedWithoutMapping` ranges (`task.rs:377-393`) | — |
+| RPC                       | pepper-sync                                                                                                                                                           | librustzcash                                                       |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `GetLatestBlock`          | Every continuous-sync iteration, forced at least every `CHECK_NEW_BLOCKS_INTERVAL` = 10 s (`sync.rs:82,492-500`)                                                      | Every loop (`sync.rs:315`)                                         |
+| `GetBlockRange`           | Once per scan range. A range is shard-sized, up to 2^16 notes of blocks. Stream consumed at scan speed, split into loads of ≤2^13 outputs (`task.rs:104-109,525-551`) | Once per `batch_size` batch (caller-supplied; Zallet 1000)         |
+| `GetTreeState`            | Birthday −1 and tip, every new-block iteration (`state.rs:908-935,1017`)                                                                                              | **1:1 with every `GetBlockRange`**, at `start − 1` (`sync.rs:381`) |
+| `GetSubtreeRoots`         | 3 pools × 2 passes (an unbounded ask plus a confirming empty pass) = **~6 per new block** (`sync.rs:2400-2404`, `client.rs:229-238`)                                  | 3 pools, **from index 0 every run** (`sync.rs:232-260`)            |
+| `GetBlock`                | Reorg check at tip, seams (`sync.rs:569` etc.)                                                                                                                        | —                                                                  |
+| `GetTaddressTxids`        | Per known t-address plus gap-limit discovery, sequential, first iteration (`sync/transparent.rs:61-150`)                                                              | —                                                                  |
+| `GetAddressUtxosStream`   | dead code                                                                                                                                                             | Per account per iteration, all receivers (`sync.rs:505-527`)       |
+| `GetTransaction`          | Per relevant txid, sequential (`scan/transactions.rs:97-110`)                                                                                                         | — (SDK)                                                            |
+| `GetMempoolStream`        | Permanent; reconnect immediately on close (`sync.rs:2579-2656`)                                                                                                       | —                                                                  |
+| `GetLightdInfo`           | zingo-mobile **every 5 s** while active (`zingo-mobile/app/rpc/RPC.ts:441,362-366`)                                                                                   | never                                                              |
+| `GetBlockRangeNullifiers` | Only `ScannedWithoutMapping` ranges (`task.rs:377-393`)                                                                                                               | —                                                                  |
 
 ### 1.3 Workload model
 
@@ -244,15 +243,15 @@ polling are unverified. Zallet calls Zaino in-process, not over gRPC.
   full sync").
 - Estimate [assumed inputs, flagged], from §1.1 element sizes and assumed mainnet counts:
 
-| Component | Assumed count | × bytes | Estimate |
-|---|---|---|---|
-| Sapling outputs (Sandblast-dominated) | 50–150 M | 124 | 6–19 GB |
-| Orchard actions | 10–60 M | 159 | 2–10 GB |
-| Transparent outputs + inputs | ~190 M each (`persistence-architecture.md` §2) | ~37 + ~40 | ~14 GB |
-| Transactions | ~20–30 M | ~45 | ~1 GB |
-| Blocks | 3.4 M | ~105 | 0.4 GB |
-| **`blocks.dat`** | | | **~25–45 GB** |
-| **Default-pools answer, Sapling activation → tip** | | | **~10–30 GB** |
+| Component                                          | Assumed count                                  | × bytes   | Estimate      |
+| -------------------------------------------------- | ---------------------------------------------- | --------- | ------------- |
+| Sapling outputs (Sandblast-dominated)              | 50–150 M                                       | 124       | 6–19 GB       |
+| Orchard actions                                    | 10–60 M                                        | 159       | 2–10 GB       |
+| Transparent outputs + inputs                       | ~190 M each (`persistence-architecture.md` §2) | ~37 + ~40 | ~14 GB        |
+| Transactions                                       | ~20–30 M                                       | ~45       | ~1 GB         |
+| Blocks                                             | 3.4 M                                          | ~105      | 0.4 GB        |
+| **`blocks.dat`**                                   |                                                |           | **~25–45 GB** |
+| **Default-pools answer, Sapling activation → tip** |                                                |           | **~10–30 GB** |
 
 **Step 0 of the plan is to replace this table with a measurement** (§3.5). Transparent is
 pruned from every wallet answer, but it is still read from disk and page cache
@@ -262,12 +261,12 @@ pruned from every wallet answer, but it is still read from disk and page cache
 
 - **Order:**
   1. GetLatestBlock
-  2. GetTreeState ×2
-  3. ~6 GetSubtreeRoots
-  4. 2–21 GetTaddressTxids (mobile minimal gap vs desktop)
-  5. The chain-tip shard range
-  6. Historic shard ranges, ascending
-  7. One GetTransaction per found tx
+  1. GetTreeState ×2
+  1. ~6 GetSubtreeRoots
+  1. 2–21 GetTaddressTxids (mobile minimal gap vs desktop)
+  1. The chain-tip shard range
+  1. Historic shard ranges, ascending
+  1. One GetTransaction per found tx
 - **Bytes:** 10–30 GB per full restore.
 - **Requests:** a few thousand (shards × 3 pools plus tree states).
 - **Rate per wallet:** bound by client trial-decryption speed, 1–10 MB/s [assumed].
@@ -276,13 +275,13 @@ pruned from every wallet answer, but it is still read from disk and page cache
 
 **Workload W2: steady state at the tip, per active wallet-hour** [est; 48 blocks/h]
 
-| Source | Requests/h | Bytes/h |
-|---|---|---|
-| GetLatestBlock (≥ every 10 s) | ~360 | ~20 KB |
-| Per block: GetTreeState ×1–2, GetSubtreeRoots ×6, GetBlockRange (verify, ~10 tip blocks) | ~430 | ~2–5 MB [assumed tip block size] |
-| GetMempoolStream resubscribe + snapshot (T txs × ~3–10 KB) | 48 | ~5–10 MB |
-| GetLightdInfo (zingo-mobile, app open) | 720 | ~0.2 MB |
-| **Total** | **~1,500 (0.4 req/s)** | **~10–15 MB (~3–4 KB/s)** |
+| Source                                                                                   | Requests/h             | Bytes/h                          |
+| ---------------------------------------------------------------------------------------- | ---------------------- | -------------------------------- |
+| GetLatestBlock (≥ every 10 s)                                                            | ~360                   | ~20 KB                           |
+| Per block: GetTreeState ×1–2, GetSubtreeRoots ×6, GetBlockRange (verify, ~10 tip blocks) | ~430                   | ~2–5 MB [assumed tip block size] |
+| GetMempoolStream resubscribe + snapshot (T txs × ~3–10 KB)                               | 48                     | ~5–10 MB                         |
+| GetLightdInfo (zingo-mobile, app open)                                                   | 720                    | ~0.2 MB                          |
+| **Total**                                                                                | **~1,500 (0.4 req/s)** | **~10–15 MB (~3–4 KB/s)**        |
 
 **W2 is request-bound.**
 
@@ -303,7 +302,7 @@ pruned from every wallet answer, but it is still read from disk and page cache
 - **Request count:** GetLightdInfo (mobile), GetLatestBlock, GetSubtreeRoots and GetTreeState.
   All four are tip-synchronized and **identical across wallets** (W2).
 
----
+______________________________________________________________________
 
 ## 2. The audit
 
@@ -313,36 +312,36 @@ pruned from every wallet answer, but it is still read from disk and page cache
 accept ─ ConnectionCaps ─ hyper h2 conn task ─ Measured ─ Admission ─ Router ─ dispatch
 ```
 
-| Step | Code | Cost / issue |
-|---|---|---|
-| accept | `transport.rs:164-181` | **No `set_nodelay(true)`** (tonic's server defaults to `true`). **Non-transient errors end the server** (`:178`), and `EMFILE` is one of them. |
-| caps | `connections.rs:29-47` | Global `Mutex<HashMap<IpAddr, usize>>` per accept/close: fine. The **per-IP cap of 32 breaks proxied and CGNAT deployments** (§0.2). |
-| h2 settings | `transport.rs:124-137` | `max_concurrent_streams(8)`, `max_send_buf_size(64 KiB)`, keepalive 30 s/20 s, rapid-reset 128. Receive windows are left at hyper's 1 MiB (irrelevant: requests are tiny). Send pacing = the **client's** 2 MiB stream window and 16 KiB max frame. |
-| `Measured` | `observe.rs:33-43,66-90` | Per request: an `Arc<str>` allocation for the method, one boxed future. Per data chunk: `Messages::feed`, O(messages). At close: **4 metric macro calls, each `method.to_owned()`, plus `format!("{code:?}")`** (`emit.rs:122-127`). Plus `first_message` (`:107`) and 2 gauge updates (`emit.rs:83-91`) on one global atomic each. ≈ 3–6 µs and ~7 allocations per request [est]. |
-| `Admission` | `admission.rs:69-90` | One `try_acquire_owned` CAS on a **global** semaphore, plus one boxed future. The **permit lives as long as the body**, including idle mempool streams and flow-control-stalled streams. |
-| `Router::call` | `router.rs:403-455,509-551` | Per request: clones the service (an `Arc` bump plus a `watch::Receiver` clone, i.e. a shared refcount RMW), clones `DiskReadPermits`, and allocates the path `String` (`:522`). Negligible below ~100k req/s. |
-| decode | `router.rs:214-233,240-272` | `body.collect()` with **no size limit**. Claimed paths bypass tonic's codec and its 4 MiB default decode limit. |
-| `Served::pin` | `zaino-sync/src/served.rs:41-43` | Two shared atomics per request: a `watch` read lock and an `ArcSwap::load_full` refcount increment. Cross-core cache-line traffic ~0.1–1 µs [est]. Fine at 10k/s, visible at 100k+/s. |
-| response | `router.rs:163-209` | Unary: headers + one `Full` body with `grpc-status` in the headers: one write. Streams: one `Frame` per record for `streamed_response`. |
+| Step           | Code                             | Cost / issue                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| accept         | `transport.rs:164-181`           | **No `set_nodelay(true)`** (tonic's server defaults to `true`). **Non-transient errors end the server** (`:178`), and `EMFILE` is one of them.                                                                                                                                                                                                                                     |
+| caps           | `connections.rs:29-47`           | Global `Mutex<HashMap<IpAddr, usize>>` per accept/close: fine. The **per-IP cap of 32 breaks proxied and CGNAT deployments** (§0.2).                                                                                                                                                                                                                                               |
+| h2 settings    | `transport.rs:124-137`           | `max_concurrent_streams(8)`, `max_send_buf_size(64 KiB)`, keepalive 30 s/20 s, rapid-reset 128. Receive windows are left at hyper's 1 MiB (irrelevant: requests are tiny). Send pacing = the **client's** 2 MiB stream window and 16 KiB max frame.                                                                                                                                |
+| `Measured`     | `observe.rs:33-43,66-90`         | Per request: an `Arc<str>` allocation for the method, one boxed future. Per data chunk: `Messages::feed`, O(messages). At close: **4 metric macro calls, each `method.to_owned()`, plus `format!("{code:?}")`** (`emit.rs:122-127`). Plus `first_message` (`:107`) and 2 gauge updates (`emit.rs:83-91`) on one global atomic each. ≈ 3–6 µs and ~7 allocations per request [est]. |
+| `Admission`    | `admission.rs:69-90`             | One `try_acquire_owned` CAS on a **global** semaphore, plus one boxed future. The **permit lives as long as the body**, including idle mempool streams and flow-control-stalled streams.                                                                                                                                                                                           |
+| `Router::call` | `router.rs:403-455,509-551`      | Per request: clones the service (an `Arc` bump plus a `watch::Receiver` clone, i.e. a shared refcount RMW), clones `DiskReadPermits`, and allocates the path `String` (`:522`). Negligible below ~100k req/s.                                                                                                                                                                      |
+| decode         | `router.rs:214-233,240-272`      | `body.collect()` with **no size limit**. Claimed paths bypass tonic's codec and its 4 MiB default decode limit.                                                                                                                                                                                                                                                                    |
+| `Served::pin`  | `zaino-sync/src/served.rs:41-43` | Two shared atomics per request: a `watch` read lock and an `ArcSwap::load_full` refcount increment. Cross-core cache-line traffic ~0.1–1 µs [est]. Fine at 10k/s, visible at 100k+/s.                                                                                                                                                                                              |
+| response       | `router.rs:163-209`              | Unary: headers + one `Full` body with `grpc-status` in the headers: one write. Streams: one `Frame` per record for `streamed_response`.                                                                                                                                                                                                                                            |
 
 **Framework overhead** (hyper h2 stream setup, HPACK, tower boxing, one task per stream) is
-~15–30 µs of CPU per unary request [est, from typical tonic/hyper unary benchmarks; to be
-measured]. Per-request tracing is absent from the serve path [code]. h2's internal `trace!`
+~15–30 µs of CPU per unary request \[est, from typical tonic/hyper unary benchmarks; to be
+measured\]. Per-request tracing is absent from the serve path [code]. h2's internal `trace!`
 call sites are statically disabled under the default filter (`zainod/src/logging.rs:20`).
 
 ### 2.2 `GetBlockRange` (the byte path)
 
-**Trace for a default-pools request** [code]:
+**Trace for a default-pools request** \[code\]:
 
 1. **`range()`** decodes the request, parses pools, clamps to the tip, and pins a `ReadView` (`serve.rs:118-155`). No read yet.
-2. **`range_response` unfold** (`router.rs:619-675`). For each step:
+1. **`range_response` unfold** (`router.rs:619-675`). For each step:
    - **Below the finalised seam** (`next_touches_disk`, i.e. every file step, hot or cold): take
      a `DiskReadPermit` (FIFO), then `spawn_blocking`, which runs `next_chunk`:
      1. `span_from`: reads offsets, up to 1 MiB (`SPAN_BUDGET`, `serve.rs:19`).
-     2. `will_need` = `MADV_WILLNEED` (`lib.rs:203`).
-     3. `Pages::bytes` (`pages.rs:306-309`) = a zero-copy mmap slice, CRC-checking each 4 KiB
+     1. `will_need` = `MADV_WILLNEED` (`lib.rs:203`).
+     1. `Pages::bytes` (`pages.rs:306-309`) = a zero-copy mmap slice, CRC-checking each 4 KiB
         page the first time the process touches it (`pages.rs:339-362`).
-     4. `project`: allocates a `Vec` of `records.len()` (`project.rs:69`).
+     1. `project`: allocates a `Vec` of `records.len()` (`project.rs:69`).
         - For every `CompactTx` it allocates **another** `Vec` (`project.rs:105`) and copies
           the kept fields into it.
         - Then it copies that `Vec` into `out` (`project.rs:110`).
@@ -350,7 +349,7 @@ call sites are statically disabled under the default filter (`zainod/src/logging
    - **Above the seam** (the 1,000-block non-finalized state, i.e. every steady-state and
      reconnect request): inline on the runtime worker, **one record per chunk**. Each record
      is projected again for every request (`serve.rs:186-196`).
-3. **hyper `PipeToSendStream`** (hyper-1.10.1 `proto/h2/mod.rs:130-230`) polls a chunk,
+1. **hyper `PipeToSendStream`** (hyper-1.10.1 `proto/h2/mod.rs:130-230`) polls a chunk,
    reserves its full length, and `send_data`s the whole chunk.
    - h2 splits it into 16 KiB DATA frames (client max frame).
    - `FramedWrite::flush` writes **one DATA frame per `writev`** and breaks the flush loop
@@ -359,24 +358,24 @@ call sites are statically disabled under the default filter (`zainod/src/logging
      copy on this leg.
    - While chunk N drains, the body is polled for chunk N+1. So a stream holds **≤2 chunks**,
      and the 64 KiB `SEND_BUFFER` only gates when the next chunk is requested.
-4. **Kernel:** `copy_from_user` into skbs, then TSO/GSO. With a TLS proxy there are 3 more
+1. **Kernel:** `copy_from_user` into skbs, then TSO/GSO. With a TLS proxy there are 3 more
    copies plus AES-GCM in the proxy.
 
 **Copies per served byte:** 2 userland copies (projection) + 1 kernel copy, or 1 kernel copy
 for `Pools::ALL`.
 
-**CPU per MB** [est; `persistence-architecture.md` §5.1 measured 92–263 µs/MiB to copy 1 MiB
-off a warm mapping]:
+**CPU per MB** \[est; `persistence-architecture.md` §5.1 measured 92–263 µs/MiB to copy 1 MiB
+off a warm mapping\]:
 
-| Stage | µs/MB |
-|---|---|
-| offsets walk + first-touch CRC (first pass only, crc32fast ~15–30 GB/s) | ~0–60 |
-| projection (2 copies + field walk) | 150–300 |
-| hyper/h2 frame bookkeeping (64 frames) | 30–60 |
-| `writev` + TCP send (64 × ~4–6 µs) | 250–400 |
-| minor faults on a fresh mapping after each commit (fault-around 16 pages → 16 faults/MiB) | 15–30 |
-| **Total zainod + kernel** | **~0.5–0.9 ms/MB** → 0.15–0.3 cores at 300 MB/s |
-| TLS proxy on the same box | +0.3–1 ms/MB |
+| Stage                                                                                     | µs/MB                                           |
+| ----------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| offsets walk + first-touch CRC (first pass only, crc32fast ~15–30 GB/s)                   | ~0–60                                           |
+| projection (2 copies + field walk)                                                        | 150–300                                         |
+| hyper/h2 frame bookkeeping (64 frames)                                                    | 30–60                                           |
+| `writev` + TCP send (64 × ~4–6 µs)                                                        | 250–400                                         |
+| minor faults on a fresh mapping after each commit (fault-around 16 pages → 16 faults/MiB) | 15–30                                           |
+| **Total zainod + kernel**                                                                 | **~0.5–0.9 ms/MB** → 0.15–0.3 cores at 300 MB/s |
+| TLS proxy on the same box                                                                 | +0.3–1 ms/MB                                    |
 
 **Findings**
 
@@ -489,7 +488,7 @@ off a warm mapping]:
     initial snapshot as one coalesced chunk.
   - **The herd every block.** Each block closes every tail (`view.rs:264-268`). Every
     pepper-sync wallet reconnects at once and receives the **whole** mempool snapshot again.
-    N = 2,048 wallets × ~150 KB ≈ 300 MB per block [est]: a second of full NIC each block,
+    N = 2,048 wallets × ~150 KB ≈ 300 MB per block \[est\]: a second of full NIC each block,
     re-copied per subscriber.
   - **Irrelevant wakeups.** Every `ChainAction`, including `Sighted`/`Dropped` that tails
     ignore (`view.rs:263`), wakes every tail. The cost is O(N) per action. A
@@ -527,10 +526,10 @@ off a warm mapping]:
      scans. With 1% heavy (0.5 s) requests at 10k req/s, heavy work alone needs ~50 permits.
      The queue then grows without bound until `max_streams`, and pepper-sync's 10 s unary
      timeout fires [est].
-  2. **Hops for RAM answers.** Tip `BlockID`, tip tree state and tip ranges live in the
+  1. **Hops for RAM answers.** Tip `BlockID`, tip tree state and tip ranges live in the
      non-finalized tier.
-  3. **Caps warm-read CPU parallelism at 16**, whatever the core count (arbei has 72c).
-  4. **tokio's blocking pool** is a mutex-guarded queue plus a condvar wake per task. That is
+  1. **Caps warm-read CPU parallelism at 16**, whatever the core count (arbei has 72c).
+  1. **tokio's blocking pool** is a mutex-guarded queue plus a condvar wake per task. That is
      fine at 10k/s, but at 100k/s bursts it is a global serialization point with thread churn.
 - **Recommended shape** (§3.4, item 7):
   - A **point lane** (cheap, bounded work, ~2 × cores permits).
@@ -597,18 +596,18 @@ fixed set of ~20).
 
 **CPU cost summary** [est; to be replaced by §3.5 measurements]
 
-| Operation | CPU per unit |
-|---|---|
-| Unary framework overhead (h2, tower, admission, metrics) | 20–35 µs / request |
-| `spawn_blocking` + permit | 5–15 µs / request (+10–50 µs latency) |
-| `GetLatestBlock` work | ~1 µs |
-| `GetTreeState` warm | 15–25 µs (3 × 3.02 µs node reads [measured] + serialise + hex) |
-| `GetSubtreeRoots` (all, ~3k roots) | 1.5–3 ms (per-root alloc + frame) |
-| Address query (typical wallet, ~10–100 rows) | 20–200 µs + rayon ~10–30 µs |
-| Range byte path | 0.5–0.9 ms / MB |
-| Mempool snapshot per subscriber | ~1 memcpy of the mempool (~150 KB) + 1 frame per tx |
+| Operation                                                | CPU per unit                                                   |
+| -------------------------------------------------------- | -------------------------------------------------------------- |
+| Unary framework overhead (h2, tower, admission, metrics) | 20–35 µs / request                                             |
+| `spawn_blocking` + permit                                | 5–15 µs / request (+10–50 µs latency)                          |
+| `GetLatestBlock` work                                    | ~1 µs                                                          |
+| `GetTreeState` warm                                      | 15–25 µs (3 × 3.02 µs node reads [measured] + serialise + hex) |
+| `GetSubtreeRoots` (all, ~3k roots)                       | 1.5–3 ms (per-root alloc + frame)                              |
+| Address query (typical wallet, ~10–100 rows)             | 20–200 µs + rayon ~10–30 µs                                    |
+| Range byte path                                          | 0.5–0.9 ms / MB                                                |
+| Mempool snapshot per subscriber                          | ~1 memcpy of the mempool (~150 KB) + 1 frame per tx            |
 
----
+______________________________________________________________________
 
 ## 3. Capacity model and plan
 
@@ -622,28 +621,28 @@ fixed set of ~20).
 
 ### 3.2 Which resource binds first
 
-| Resource | Ceiling | Binds? |
-|---|---|---|
-| NIC | ~295 MB/s payload after TCP/TLS/h2 overheads [est] | **Yes, for W1/W3 once the limits are fixed** |
-| CPU, byte path | 0.5–0.9 ms/MB + TLS 0.3–1 → ~0.3–0.6 cores at NIC rate | No |
-| Syscalls | ~19k `writev`/s at 300 MB/s | No |
-| Memory bandwidth | ~4–6 bytes moved per payload byte → ~1.5 GB/s | No |
-| Page cache | RAM vs the hot set (25–45 GB `blocks.dat`) | Only if RAM < hot set |
-| Disk | NVMe ≥2 GB/s; cloud 125–1000 MB/s; demand = 300 MB/s × read amp (1.2–3×) | **Yes on cloud disks** |
-| H2 flow control | 2 MiB/RTT per stream (20 MB/s at 100 ms) | Per-wallet only |
-| Blocking pool / permits | 300 hops/s for ranges; ~0.3 permits busy at 10k unary/s | **Only via head-of-line blocking** |
-| `max_streams` 2048 | Held by idle mempool streams | **Yes, first: ~2k pepper-sync wallets** |
-| `max_connections_per_ip` 32 | Behind a proxy = the whole server | **Yes, first, when proxied** |
-| `max_connections` 4096 / fd limit | 1 connection per wallet | **Yes: 4096 wallets, or ~1000 with a 1024 fd soft limit (then the process dies)** |
-| Validator RPC | `GetLightdInfo` N/5 per s; `GetTransaction`; t-address fetch | **Yes for mobile-heavy fleets** |
-| Unary CPU (after fixes) | ~20–40 µs/request → ~400–800k req/s on 16 cores | At ≥50k wallets, per-block bursts |
+| Resource                          | Ceiling                                                                  | Binds?                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
+| NIC                               | ~295 MB/s payload after TCP/TLS/h2 overheads [est]                       | **Yes, for W1/W3 once the limits are fixed**                                      |
+| CPU, byte path                    | 0.5–0.9 ms/MB + TLS 0.3–1 → ~0.3–0.6 cores at NIC rate                   | No                                                                                |
+| Syscalls                          | ~19k `writev`/s at 300 MB/s                                              | No                                                                                |
+| Memory bandwidth                  | ~4–6 bytes moved per payload byte → ~1.5 GB/s                            | No                                                                                |
+| Page cache                        | RAM vs the hot set (25–45 GB `blocks.dat`)                               | Only if RAM < hot set                                                             |
+| Disk                              | NVMe ≥2 GB/s; cloud 125–1000 MB/s; demand = 300 MB/s × read amp (1.2–3×) | **Yes on cloud disks**                                                            |
+| H2 flow control                   | 2 MiB/RTT per stream (20 MB/s at 100 ms)                                 | Per-wallet only                                                                   |
+| Blocking pool / permits           | 300 hops/s for ranges; ~0.3 permits busy at 10k unary/s                  | **Only via head-of-line blocking**                                                |
+| `max_streams` 2048                | Held by idle mempool streams                                             | **Yes, first: ~2k pepper-sync wallets**                                           |
+| `max_connections_per_ip` 32       | Behind a proxy = the whole server                                        | **Yes, first, when proxied**                                                      |
+| `max_connections` 4096 / fd limit | 1 connection per wallet                                                  | **Yes: 4096 wallets, or ~1000 with a 1024 fd soft limit (then the process dies)** |
+| Validator RPC                     | `GetLightdInfo` N/5 per s; `GetTransaction`; t-address fetch             | **Yes for mobile-heavy fleets**                                                   |
+| Unary CPU (after fixes)           | ~20–40 µs/request → ~400–800k req/s on 16 cores                          | At ≥50k wallets, per-block bursts                                                 |
 
 ### 3.3 Wallets per workload at 2.5 Gbit/s [est]
 
 - **W1, restore:**
   - 300 MB/s ÷ 1–10 MB/s per wallet = **30–300 concurrent restores** saturate the NIC.
   - That is ~50 full restores/hour (≈300 MB/s × 3600 s / 20 GB).
-  - Server CPU <1 core.
+  - Server CPU \<1 core.
   - Needs: the proxy-aware per-IP cap, heap bound per stream (B4), and RAM ≥ hot set or local
     NVMe.
 - **W2, steady state:**
@@ -668,44 +667,44 @@ metric. Every item states its expected gain; confirm it before moving to the nex
 
 #### P0: capacity bugs (small, local changes; do first)
 
-| # | Change | Files / functions | Gain | Risks | Measure |
-|---|---|---|---|---|---|
-| 1 | Classify requests at admission. Long-lived subscriptions (`GetMempoolStream`) take a **subscription** permit (new `max_subscriptions`, default = `max_connections`), not a work permit. Optionally bound idle subscriptions per IP. | `admission.rs` (`Admission::call`: path → class), `limits.rs` (`GrpcLimits`), `zainod/src/config.rs` (`GrpcConfig`), `emit.rs` (gauge by class) | Removes the ~2k-wallet ceiling | Subscriptions are then bounded only by connections (memory per tail ≈ a mempool-sized `VecDeque` of `Bytes` refs) | N idle mempool streams + concurrent ranges: zero `UNAVAILABLE` at N > 2048; `active_streams{class}` |
-| 2 | Proxy-aware client identity: `trusted_proxies` (CIDRs) + PROXY protocol v2 on accept (a mature crate such as `ppp`/`proxy-header`). Document that nginx needs `proxy_protocol`, or that the per-IP cap must be off behind a proxy. | `transport.rs` (accept loop), `connections.rs` (`admit`), config, `docs/running.md` | Removes the 32-connection server-wide cap behind TLS; restores per-client fairness | PROXY-header parsing on accept (must time out: slowloris); spoofing if the listener is exposed un-proxied (allowlist) | loadgen through nginx: throughput vs connection count |
-| 3 | Accept loop: on `EMFILE`/`ENFILE`/`ENOBUFS`/`ENOMEM`, log and back off (e.g. 100 ms → 1 s) and continue (hyper/axum pattern). At boot, raise the soft `RLIMIT_NOFILE` to the hard limit and **refuse a config** whose `max_connections` + index fds + headroom exceeds it. | `transport.rs:170-179`, `zainod/src/main.rs` / `config.rs` (`validate`) | Removes a remote crash; makes the limits real | Crate choice for `setrlimit` (`rlimit` or `libc`; `unsafe` is forbidden in zaino-grpc, so do it in zainod) | fd-exhaustion test: server survives and recovers |
-| 4 | `socket.set_nodelay(true)` on every accepted socket. Evaluate `TCP_NOTSENT_LOWAT` ≈ 128 KiB. | `transport.rs:183-195` | Removes Nagle/delayed-ACK stalls (up to ~40 ms) on unary and stream tails | None (tonic's default) | p99 unary latency on a multiplexed connection under mixed load |
-| 5 | Bound request bodies (`http_body_util::Limited`: e.g. 64 KiB generally, ~2.1 MiB for `SendTransaction` = max block size + slack) and list lengths (addresses ≤ 1,000 → `INVALID_ARGUMENT`) | `router.rs:214-272` (`decode_request*`), `:1380-1386`, `:1455`, `:1463-1474` | Closes the memory DoS; bounds work per request | Must not reject a legitimate large account (choose limits from client data; lightwalletd has similar caps [assumed]) | adversarial scenario: RSS flat |
-| 6 | Cache `LightdInfo`: `ArcSwap<(served tip, Instant, LightdInfo)>`, refreshed at most once per second or on a tip change | `validator.rs:189-209` | Validator RPC load from N/5 per s to ≤1/s | Staleness of `estimated_height` ≤1 s (fine) | validator RPC rate vs mobile-poll scenario |
+| #   | Change                                                                                                                                                                                                                                                                     | Files / functions                                                                                                                               | Gain                                                                               | Risks                                                                                                                 | Measure                                                                                             |
+| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| 1   | Classify requests at admission. Long-lived subscriptions (`GetMempoolStream`) take a **subscription** permit (new `max_subscriptions`, default = `max_connections`), not a work permit. Optionally bound idle subscriptions per IP.                                        | `admission.rs` (`Admission::call`: path → class), `limits.rs` (`GrpcLimits`), `zainod/src/config.rs` (`GrpcConfig`), `emit.rs` (gauge by class) | Removes the ~2k-wallet ceiling                                                     | Subscriptions are then bounded only by connections (memory per tail ≈ a mempool-sized `VecDeque` of `Bytes` refs)     | N idle mempool streams + concurrent ranges: zero `UNAVAILABLE` at N > 2048; `active_streams{class}` |
+| 2   | Proxy-aware client identity: `trusted_proxies` (CIDRs) + PROXY protocol v2 on accept (a mature crate such as `ppp`/`proxy-header`). Document that nginx needs `proxy_protocol`, or that the per-IP cap must be off behind a proxy.                                         | `transport.rs` (accept loop), `connections.rs` (`admit`), config, `docs/running.md`                                                             | Removes the 32-connection server-wide cap behind TLS; restores per-client fairness | PROXY-header parsing on accept (must time out: slowloris); spoofing if the listener is exposed un-proxied (allowlist) | loadgen through nginx: throughput vs connection count                                               |
+| 3   | Accept loop: on `EMFILE`/`ENFILE`/`ENOBUFS`/`ENOMEM`, log and back off (e.g. 100 ms → 1 s) and continue (hyper/axum pattern). At boot, raise the soft `RLIMIT_NOFILE` to the hard limit and **refuse a config** whose `max_connections` + index fds + headroom exceeds it. | `transport.rs:170-179`, `zainod/src/main.rs` / `config.rs` (`validate`)                                                                         | Removes a remote crash; makes the limits real                                      | Crate choice for `setrlimit` (`rlimit` or `libc`; `unsafe` is forbidden in zaino-grpc, so do it in zainod)            | fd-exhaustion test: server survives and recovers                                                    |
+| 4   | `socket.set_nodelay(true)` on every accepted socket. Evaluate `TCP_NOTSENT_LOWAT` ≈ 128 KiB.                                                                                                                                                                               | `transport.rs:183-195`                                                                                                                          | Removes Nagle/delayed-ACK stalls (up to ~40 ms) on unary and stream tails          | None (tonic's default)                                                                                                | p99 unary latency on a multiplexed connection under mixed load                                      |
+| 5   | Bound request bodies (`http_body_util::Limited`: e.g. 64 KiB generally, ~2.1 MiB for `SendTransaction` = max block size + slack) and list lengths (addresses ≤ 1,000 → `INVALID_ARGUMENT`)                                                                                 | `router.rs:214-272` (`decode_request*`), `:1380-1386`, `:1455`, `:1463-1474`                                                                    | Closes the memory DoS; bounds work per request                                     | Must not reject a legitimate large account (choose limits from client data; lightwalletd has similar caps [assumed])  | adversarial scenario: RSS flat                                                                      |
+| 6   | Cache `LightdInfo`: `ArcSwap<(served tip, Instant, LightdInfo)>`, refreshed at most once per second or on a tip change                                                                                                                                                     | `validator.rs:189-209`                                                                                                                          | Validator RPC load from N/5 per s to ≤1/s                                          | Staleness of `estimated_height` ≤1 s (fine)                                                                           | validator RPC rate vs mobile-poll scenario                                                          |
 
 #### P1: fairness and per-request fixed cost (medium)
 
-| # | Change | Files / functions | Gain | Risks | Measure |
-|---|---|---|---|---|---|
-| 7 | Lanes instead of one FIFO: `point` (block, tree state, by-hash; ~2 × cores), `range` (window steps; 16–64), `scan` (address history; small, e.g. 4). Each is its own semaphore and wait histogram. | `limits.rs` (`DiskReadPermits` → per-lane), `router.rs` (each dispatch picks its lane) | Heavy scans cannot stall tip reads; warm-read CPU scales with cores | Tuning; more config surface (keep defaults derived from core count) | `disk_read_wait_seconds{lane}` p99 under the mixed scenario with an adversarial hot address |
-| 8 | Work budget for address scans: a row cap per request → `RESOURCE_EXHAUSTED` naming the limit. Longer term, a spend-by-address-and-height key so `GetTaddressTransactions` scans only its range. | `zaino-index-transparent-address/src/serve.rs` (`transactions`, `unspent`), `view.rs` | Bounds the worst request from ~seconds to ms | A client with a legitimately huge address gets an error (exchanges, not light wallets). The index change is a design change. | hot-address latency; permit hold time |
-| 9 | Precompute per published view (lazy `OnceLock` inside the pinned view, so no invalidation logic): framed tip `BlockID`; a `TreeState` cache for heights in the non-finalized state; a pre-framed subtree-roots buffer per pool (append-only, sliced by `startIndex`); the default-pools projection of each non-finalized record, stored at `apply` (B2). Serve these **inline, no hop**. | `zaino-index-compact-block/src/{serve.rs,non_finalized.rs,view.rs}`, `zaino-index-tree-state/src/{serve.rs,view.rs}`, `router.rs` (`latest`, `tree_state::dispatch`, `subtree_roots`) | Per-block burst CPU for these methods down ~5–10× [est]; tip ranges zero-copy; no hop for tip answers | Memory: +1 projected `Bytes` per window block (~1,000 × tip size); correctness across reorg (the view is immutable, so the cache dies with it) | burst-drain time per block at N wallets; CPU-seconds per burst |
-| 10 | Mempool fan-out: frame each entry once (store the framed `RawTransaction` in `MempoolEntry`); send the snapshot as one coalesced chunk; give tails their own action channel (`Admitted`/`TipAdvanced`/`QuorumLost` only) | `zaino-chainview/src/{snapshot.rs,view.rs}` (`tail`, `MempoolTail::next`), `router.rs:1116-1140` | O(N × mempool) memcpy per block → refcount bumps; wakeups only on relevant actions | Channel split must keep the "never miss a tip move" rule (lag → re-anchor) | CPU and bytes per block with N tails |
-| 11 | Metrics: a static per-method handle table (`Counter`/`Histogram` resolved once per `(method, code)`); no per-request `String` | `emit.rs`, `observe.rs` | −3–6 µs and ~7 allocations per request [est] | None | `perf` diff; req/s at fixed CPU |
-| 12 | Stall and idle policy: reset streams that make no flow-control progress for T minutes; a per-IP cap on concurrent work streams | `admission.rs` (timer on the `Admitted` body), config | Closes permit-holding slowloris | T must exceed pepper-sync's legitimate scan stalls (measure the p99 stall) | adversarial: permits recover |
+| #   | Change                                                                                                                                                                                                                                                                                                                                                                                   | Files / functions                                                                                                                                                                     | Gain                                                                                                  | Risks                                                                                                                                          | Measure                                                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 7   | Lanes instead of one FIFO: `point` (block, tree state, by-hash; ~2 × cores), `range` (window steps; 16–64), `scan` (address history; small, e.g. 4). Each is its own semaphore and wait histogram.                                                                                                                                                                                       | `limits.rs` (`DiskReadPermits` → per-lane), `router.rs` (each dispatch picks its lane)                                                                                                | Heavy scans cannot stall tip reads; warm-read CPU scales with cores                                   | Tuning; more config surface (keep defaults derived from core count)                                                                            | `disk_read_wait_seconds{lane}` p99 under the mixed scenario with an adversarial hot address |
+| 8   | Work budget for address scans: a row cap per request → `RESOURCE_EXHAUSTED` naming the limit. Longer term, a spend-by-address-and-height key so `GetTaddressTransactions` scans only its range.                                                                                                                                                                                          | `zaino-index-transparent-address/src/serve.rs` (`transactions`, `unspent`), `view.rs`                                                                                                 | Bounds the worst request from ~seconds to ms                                                          | A client with a legitimately huge address gets an error (exchanges, not light wallets). The index change is a design change.                   | hot-address latency; permit hold time                                                       |
+| 9   | Precompute per published view (lazy `OnceLock` inside the pinned view, so no invalidation logic): framed tip `BlockID`; a `TreeState` cache for heights in the non-finalized state; a pre-framed subtree-roots buffer per pool (append-only, sliced by `startIndex`); the default-pools projection of each non-finalized record, stored at `apply` (B2). Serve these **inline, no hop**. | `zaino-index-compact-block/src/{serve.rs,non_finalized.rs,view.rs}`, `zaino-index-tree-state/src/{serve.rs,view.rs}`, `router.rs` (`latest`, `tree_state::dispatch`, `subtree_roots`) | Per-block burst CPU for these methods down ~5–10× [est]; tip ranges zero-copy; no hop for tip answers | Memory: +1 projected `Bytes` per window block (~1,000 × tip size); correctness across reorg (the view is immutable, so the cache dies with it) | burst-drain time per block at N wallets; CPU-seconds per burst                              |
+| 10  | Mempool fan-out: frame each entry once (store the framed `RawTransaction` in `MempoolEntry`); send the snapshot as one coalesced chunk; give tails their own action channel (`Admitted`/`TipAdvanced`/`QuorumLost` only)                                                                                                                                                                 | `zaino-chainview/src/{snapshot.rs,view.rs}` (`tail`, `MempoolTail::next`), `router.rs:1116-1140`                                                                                      | O(N × mempool) memcpy per block → refcount bumps; wakeups only on relevant actions                    | Channel split must keep the "never miss a tip move" rule (lag → re-anchor)                                                                     | CPU and bytes per block with N tails                                                        |
+| 11  | Metrics: a static per-method handle table (`Counter`/`Histogram` resolved once per `(method, code)`); no per-request `String`                                                                                                                                                                                                                                                            | `emit.rs`, `observe.rs`                                                                                                                                                               | −3–6 µs and ~7 allocations per request [est]                                                          | None                                                                                                                                           | `perf` diff; req/s at fixed CPU                                                             |
+| 12  | Stall and idle policy: reset streams that make no flow-control progress for T minutes; a per-IP cap on concurrent work streams                                                                                                                                                                                                                                                           | `admission.rs` (timer on the `Admitted` body), config                                                                                                                                 | Closes permit-holding slowloris                                                                       | T must exceed pepper-sync's legitimate scan stalls (measure the p99 stall)                                                                     | adversarial: permits recover                                                                |
 
 #### P2: byte-path efficiency and memory (do when measurement shows need)
 
-| # | Change | Files / functions | Gain | Risks | Measure |
-|---|---|---|---|---|---|
-| 13 | Bound heap per stream: projected chunks ≤128–256 KiB while advising 1 MiB ahead; or a global projected-bytes-in-flight budget | `serve.rs` (`SPAN_BUDGET`, `next_chunk`), `lib.rs` (`span_from`: separate advice and slice sizes) | RSS from ~2 MiB to ~0.5 MiB per slow stream (≈4 GiB → 1 GiB at 2k streams) | 4–8× more hops per MB (~2k/s at NIC rate: fine) | RSS vs N slow streams |
-| 14 | Single-copy projection (size pass, then write key + length + spans into `out`; no per-transaction `Vec`) | `project.rs:96-137` | ~2× less memcpy on the hottest path; no per-transaction malloc | Varint-length patching bugs (covered by the existing prost-decode projection tests) | criterion MB/s of `project` |
-| 15 | Coalesce small frames: non-finalized records into ≥64 KiB chunks; `streamed_response` concatenates into one `Bytes` | `serve.rs` (`next_chunk` above the seam), `router.rs:193-209` | 3–10× fewer syscalls on tip ranges and roots/UTXO streams [est] | First-message latency (tiny) | syscalls per MB (`perf trace -s`) |
-| 16 | `get_many`: sequential below a key threshold; never the global rayon pool on the serve path | `zaino-persistence/src/lsm/reader.rs:94-108` | −10–30 µs per address request; no interference with the sync fold | Large lists lose intra-request parallelism (the lanes handle that) | address-query p50 |
-| 17 | Map once, grow in place (no per-commit remap) | `zaino-persistence/src/{pages.rs,fs/real.rs}` | Warm page tables across commits; no `munmap` shootdowns | The SIGBUS invariants of `persistence-architecture.md` §5.2 must hold exactly (reads already gated on the sealed length) | `perf stat -e minor-faults,tlb:tlb_flush` at the tip |
-| 18 | Default-projection file (`shielded.dat` + offsets), only if disk or page cache binds | `zaino-index-compact-block` (writer + serve) | Zero-copy for every wallet range; smaller hot set; no read amplification | +40–60% disk [est]; a second artefact to verify (must stay byte-identical to the projection of `blocks.dat`) | page-cache hit %, disk MB/s at a fixed restore mix |
+| #   | Change                                                                                                                        | Files / functions                                                                                 | Gain                                                                       | Risks                                                                                                                    | Measure                                              |
+| --- | ----------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| 13  | Bound heap per stream: projected chunks ≤128–256 KiB while advising 1 MiB ahead; or a global projected-bytes-in-flight budget | `serve.rs` (`SPAN_BUDGET`, `next_chunk`), `lib.rs` (`span_from`: separate advice and slice sizes) | RSS from ~2 MiB to ~0.5 MiB per slow stream (≈4 GiB → 1 GiB at 2k streams) | 4–8× more hops per MB (~2k/s at NIC rate: fine)                                                                          | RSS vs N slow streams                                |
+| 14  | Single-copy projection (size pass, then write key + length + spans into `out`; no per-transaction `Vec`)                      | `project.rs:96-137`                                                                               | ~2× less memcpy on the hottest path; no per-transaction malloc             | Varint-length patching bugs (covered by the existing prost-decode projection tests)                                      | criterion MB/s of `project`                          |
+| 15  | Coalesce small frames: non-finalized records into ≥64 KiB chunks; `streamed_response` concatenates into one `Bytes`           | `serve.rs` (`next_chunk` above the seam), `router.rs:193-209`                                     | 3–10× fewer syscalls on tip ranges and roots/UTXO streams [est]            | First-message latency (tiny)                                                                                             | syscalls per MB (`perf trace -s`)                    |
+| 16  | `get_many`: sequential below a key threshold; never the global rayon pool on the serve path                                   | `zaino-persistence/src/lsm/reader.rs:94-108`                                                      | −10–30 µs per address request; no interference with the sync fold          | Large lists lose intra-request parallelism (the lanes handle that)                                                       | address-query p50                                    |
+| 17  | Map once, grow in place (no per-commit remap)                                                                                 | `zaino-persistence/src/{pages.rs,fs/real.rs}`                                                     | Warm page tables across commits; no `munmap` shootdowns                    | The SIGBUS invariants of `persistence-architecture.md` §5.2 must hold exactly (reads already gated on the sealed length) | `perf stat -e minor-faults,tlb:tlb_flush` at the tip |
+| 18  | Default-projection file (`shielded.dat` + offsets), only if disk or page cache binds                                          | `zaino-index-compact-block` (writer + serve)                                                      | Zero-copy for every wallet range; smaller hot set; no read amplification   | +40–60% disk [est]; a second artefact to verify (must stay byte-identical to the projection of `blocks.dat`)             | page-cache hit %, disk MB/s at a fixed restore mix   |
 
 #### P3: validator-bound and rarely called
 
-| # | Change | Files / functions | Gain |
-|---|---|---|---|
-| 19 | Pipeline `GetTaddressTxids` fetches (ordered `buffered(k)`) | `router.rs:1290-1304` | Latency n × RTT → ~n × RTT / k |
-| 20 | Precompute `CompactTx` per mempool entry for `GetMempoolTx` | `zainod/src/chainview.rs`, `router.rs:1040-1064` | Removes per-request transaction parsing (no current client calls it) |
-| 21 | `max_concurrent_streams` default 8 → 32 when behind a multiplexing proxy | `limits.rs`, docs | Envoy/Cloudflare-style deployments |
+| #   | Change                                                                   | Files / functions                                | Gain                                                                 |
+| --- | ------------------------------------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------- |
+| 19  | Pipeline `GetTaddressTxids` fetches (ordered `buffered(k)`)              | `router.rs:1290-1304`                            | Latency n × RTT → ~n × RTT / k                                       |
+| 20  | Precompute `CompactTx` per mempool entry for `GetMempoolTx`              | `zainod/src/chainview.rs`, `router.rs:1040-1064` | Removes per-request transaction parsing (no current client calls it) |
+| 21  | `max_concurrent_streams` default 8 → 32 when behind a multiplexing proxy | `limits.rs`, docs                                | Envoy/Cloudflare-style deployments                                   |
 
 ### 3.5 Benchmark and load-test harness
 
@@ -787,22 +786,22 @@ Cheapest path first:
 1. **Piggyback on the sync-tier test.** `live-tests/sync/tests/zaino_index_construction.rs:111-150`
    already builds a mainnet index on NVMe under a 48 h cap. Add a "serve under load" phase
    after the index reaches the tip, and run `LoadDriver` from the driver pod first.
-2. **Add a load-client topology component.** N pods × footprint, anti-affinity to zainod so
+1. **Add a load-client topology component.** N pods × footprint, anti-affinity to zainod so
    traffic crosses the real NIC, with `spec.nodeName` recorded in the report. Aggregate the
    hdrhistograms.
    - **Note:** a single loadgen pod is one source IP. Raise or disable
      `max_connections_per_ip` for the test, or use many pods, or the per-IP cap measures itself.
-3. **Add a zaino index snapshot backend** (seed the indexer volume like zebra snapshots), so
+1. **Add a zaino index snapshot backend** (seed the indexer volume like zebra snapshots), so
    load runs stop paying the index build.
-4. **Report.** Extend the segment report reader to load-test windows. Run the never-exercised
+1. **Report.** Extend the segment report reader to load-test windows. Run the never-exercised
    lightwalletd backend through `pair()` for an A/B baseline.
 
 **Acceptance targets** (proposed):
 
-- **Restore mix:** ≥280 MB/s sustained through TLS, zainod CPU <2 cores, p99 first message
-  <50 ms, zero `UNAVAILABLE`.
-- **Steady:** 20k simulated wallets, per-block burst drained in <2 s, p99 `GetLatestBlock`
-  <20 ms, no rejections.
+- **Restore mix:** ≥280 MB/s sustained through TLS, zainod CPU \<2 cores, p99 first message
+  \<50 ms, zero `UNAVAILABLE`.
+- **Steady:** 20k simulated wallets, per-block burst drained in \<2 s, p99 `GetLatestBlock`
+  \<20 ms, no rejections.
 - **Adversarial:** RSS and permit availability recover within the stall timeout.
 
 ### 3.6 Assumptions to verify first

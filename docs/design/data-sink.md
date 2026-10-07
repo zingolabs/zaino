@@ -15,17 +15,17 @@ retracted. Reorgs never reach it: they live in the NFS ([nfs.md](./nfs.md)).
 
 ## Steps
 
-| Step                      | Subscriber action                       |
-| ------------------------- | --------------------------------------- |
-| `Apply { height, data }`  | `data` = one final block: apply it      |
-| `Shutdown`                | commit what is buffered, stop           |
+| Step                     | Subscriber action                  |
+| ------------------------ | ---------------------------------- |
+| `Apply { height, data }` | `data` = one final block: apply it |
+| `Shutdown`               | commit what is buffered, stop      |
 
 `data` on the final stream is a `Final { block, folds }`:
 
-| `folds`       | Where                                     | Writer                                       |
-| ------------- | ----------------------------------------- | -------------------------------------------- |
-| `None`        | at or below the NFS root (bulk sync)      | folds the block itself onto `Store::staged()` |
-| `Some(folds)` | above the root (folded once by the NFS)   | applies `folds.get(kind)` as sent            |
+| `folds`       | Where                                   | Writer                                        |
+| ------------- | --------------------------------------- | --------------------------------------------- |
+| `None`        | at or below the NFS root (bulk sync)    | folds the block itself onto `Store::staged()` |
+| `Some(folds)` | above the root (folded once by the NFS) | applies `folds.get(kind)` as sent             |
 
 - Once a step is folded, every later one is too, until a restart (the NFS never sends an unfolded
   block over a folded parent). A writer asserts it.

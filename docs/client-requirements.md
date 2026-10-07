@@ -18,21 +18,21 @@ answering.
 
 ## The call matrix
 
-| RPC                                            | librustzcash                                                                  | pepper-sync                               |
-| ---------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------------------------- |
-| `GetLatestBlock`                               | every loop iteration                                                          | once per session                          |
-| `GetBlockRange`                                | per batch, dominant                                                           | per scan range, dominant                  |
-| `GetBlock`                                     | not called                                                                    | reorg check and backfill                  |
-| `GetTreeState`                                 | **1:1 with every `GetBlockRange`**, at `scan_range.start - 1` (`sync.rs:381`) | birthday and fallbacks                    |
-| `GetSubtreeRoots`                              | three pools at startup, ironwood included                                     | three pools per session, two passes each  |
-| `GetTransaction`                               | not called                                                                    | per scan target                           |
-| `GetTaddressTransactions`                      | not called                                                                    | not called (it uses `GetTaddressTxids`)   |
+| RPC                                            | librustzcash                                                                  | pepper-sync                                  |
+| ---------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------- |
+| `GetLatestBlock`                               | every loop iteration                                                          | once per session                             |
+| `GetBlockRange`                                | per batch, dominant                                                           | per scan range, dominant                     |
+| `GetBlock`                                     | not called                                                                    | reorg check and backfill                     |
+| `GetTreeState`                                 | **1:1 with every `GetBlockRange`**, at `scan_range.start - 1` (`sync.rs:381`) | birthday and fallbacks                       |
+| `GetSubtreeRoots`                              | three pools at startup, ironwood included                                     | three pools per session, two passes each     |
+| `GetTransaction`                               | not called                                                                    | per scan target                              |
+| `GetTaddressTransactions`                      | not called                                                                    | not called (it uses `GetTaddressTxids`)      |
 | `GetTaddressTxids` *(deprecated alias)*        | not called                                                                    | per known t-address, and gap-limit discovery |
-| `GetBlockRangeNullifiers` *(deprecated alias)* | not called                                                                    | per `ScannedWithoutMapping` range         |
-| `GetAddressUtxosStream`                        | per account per iteration                                                     | dead code                                 |
-| `GetMempoolStream`                             | not called                                                                    | background task, retries forever          |
-| `SendTransaction`                              | the embedder's job                                                            | zingolib                                  |
-| `GetLightdInfo`                                | **never called**                                                              | zingolib server selection only            |
+| `GetBlockRangeNullifiers` *(deprecated alias)* | not called                                                                    | per `ScannedWithoutMapping` range            |
+| `GetAddressUtxosStream`                        | per account per iteration                                                     | dead code                                    |
+| `GetMempoolStream`                             | not called                                                                    | background task, retries forever             |
+| `SendTransaction`                              | the embedder's job                                                            | zingolib                                     |
+| `GetLightdInfo`                                | **never called**                                                              | zingolib server selection only               |
 
 The most important row is `GetTreeState`. It is 1:1 with `GetBlockRange`, which
 makes it the highest-volume method after block fetch itself, and a librustzcash

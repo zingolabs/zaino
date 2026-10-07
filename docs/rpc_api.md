@@ -15,19 +15,19 @@ Which side a method falls on is not a per-method judgement. It follows from
 Zaino index (never the validator), and writes and point lookups of primary
 consensus objects are forwarded to the validator.
 
-| Method                                                   | Answered by                                                                   |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `GetLatestBlock`, `GetBlock`, `GetBlockRange`            | compact-block index                                                           |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots`  | tree-state index                                                              |
-| `GetAddressUtxos`, `GetAddressUtxosStream`               | transparent-address index                                                     |
-| `GetTaddressBalance`, `GetTaddressBalanceStream`         | transparent-address index                                                     |
-| `GetTaddressTransactions`                                | transparent-address index for the `{height, txid}` set, the validator for the bytes |
-| `GetTransaction`                                         | validator                                                                     |
-| `SendTransaction`                                        | relayed to every validator in the [chain view](./design/chainview.md)         |
-| `GetMempoolTx`, `GetMempoolStream`                       | chain view (quorum mempool)                                                   |
-| `GetLightdInfo`                                          | chain view (validators' last poll) + the served snapshot tip                  |
-| `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*   | compact-block index, re-projected to nullifiers                               |
-| `GetTaddressTxids` *(deprecated, TODO: REMOVE)*          | as `GetTaddressTransactions`                                                  |
+| Method                                                  | Answered by                                                                         |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `GetLatestBlock`, `GetBlock`, `GetBlockRange`           | compact-block index                                                                 |
+| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                                                                    |
+| `GetAddressUtxos`, `GetAddressUtxosStream`              | transparent-address index                                                           |
+| `GetTaddressBalance`, `GetTaddressBalanceStream`        | transparent-address index                                                           |
+| `GetTaddressTransactions`                               | transparent-address index for the `{height, txid}` set, the validator for the bytes |
+| `GetTransaction`                                        | validator                                                                           |
+| `SendTransaction`                                       | relayed to every validator in the [chain view](./design/chainview.md)               |
+| `GetMempoolTx`, `GetMempoolStream`                      | chain view (quorum mempool)                                                         |
+| `GetLightdInfo`                                         | chain view (validators' last poll) + the served snapshot tip                        |
+| `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                     |
+| `GetTaddressTxids` *(deprecated, TODO: REMOVE)*         | as `GetTaddressTransactions`                                                        |
 
 "The validator" here is the first `[[trusted_validators]]` entry, until routing
 picks per request; `SendTransaction` and the mempool methods use every trusted
@@ -71,19 +71,19 @@ status when no validator accepted and at least one could not be reached.
 
 ## Status codes a client must distinguish
 
-| Condition                                                                                        | Code                 | Read it as                                                   |
-| ------------------------------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------ |
-| nothing served yet (indexes opening at boot)                                                     | `UNAVAILABLE`        | back off and retry                                           |
-| stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                  | `UNAVAILABLE`        | retry after the hint                                         |
-| validators below quorum (`GetMempoolStream`, `GetMempoolTx`)                                     | `UNAVAILABLE`        | back off and retry                                           |
-| validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`)                     | `UNAVAILABLE`        | back off and retry                                           |
-| index disabled by config                                                                         | `UNIMPLEMENTED`      | never retry                                                  |
-| height, hash or txid not in the chain, or above the served tip                                   | `NOT_FOUND`          | ask for something else                                       |
-| bad or oversized range, unparseable or foreign-network address                                   | `INVALID_ARGUMENT`   | fix the request                                              |
-| request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`)                        | `RESOURCE_EXHAUSTED` | send less per call                                           |
-| addresses with more receives than one request may walk (`serve.max_address_rows`)               | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
-| request body not complete within 30 s                                                            | `DEADLINE_EXCEEDED`  | resend                                                       |
-| stored record will not walk                                                                      | `INTERNAL`           | the server is broken                                         |
+| Condition                                                                         | Code                 | Read it as                                                             |
+| --------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| nothing served yet (indexes opening at boot)                                      | `UNAVAILABLE`        | back off and retry                                                     |
+| stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                   | `UNAVAILABLE`        | retry after the hint                                                   |
+| validators below quorum (`GetMempoolStream`, `GetMempoolTx`)                      | `UNAVAILABLE`        | back off and retry                                                     |
+| validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`)      | `UNAVAILABLE`        | back off and retry                                                     |
+| index disabled by config                                                          | `UNIMPLEMENTED`      | never retry                                                            |
+| height, hash or txid not in the chain, or above the served tip                    | `NOT_FOUND`          | ask for something else                                                 |
+| bad or oversized range, unparseable or foreign-network address                    | `INVALID_ARGUMENT`   | fix the request                                                        |
+| request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`)         | `RESOURCE_EXHAUSTED` | send less per call                                                     |
+| addresses with more receives than one request may walk (`serve.max_address_rows`) | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
+| request body not complete within 30 s                                             | `DEADLINE_EXCEEDED`  | resend                                                                 |
+| stored record will not walk                                                       | `INTERNAL`           | the server is broken                                                   |
 
 While Zaino syncs, the served tip trails the chain: every index answers at it,
 as lightwalletd answers at what it has ingested, and `GetLatestBlock` /

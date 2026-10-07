@@ -117,17 +117,17 @@ let view = store.view();
 Invariants are enforced by whoever owns them, at the earliest point, as panics naming the table (a
 schema is a constant in the index's code, so a mismatch is a bug, not a runtime condition):
 
-| Where                          | Panics on                                                                                  |
-| ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `Schema::with_*`               | ids out of declaration order                                                               |
-| `Changes::append` / `insert`   | an undeclared id; a fixed-width item of the wrong size                                     |
-| the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes         |
-| the LSM (each batch)           | a row of the wrong widths; a duplicate key                                                 |
-| sequence files (each append)   | a fixed-width record of the wrong size                                                     |
-| `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice   |
-| `Store::commit`                | a commit after a failed one                                                                |
-| `Layer::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks       |
-| `LayeredView::new`             | a layer not above the durable tip (not rebased)                                            |
+| Where                          | Panics on                                                                                |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| `Schema::with_*`               | ids out of declaration order                                                             |
+| `Changes::append` / `insert`   | an undeclared id; a fixed-width item of the wrong size                                   |
+| the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes       |
+| the LSM (each batch)           | a row of the wrong widths; a duplicate key                                               |
+| sequence files (each append)   | a fixed-width record of the wrong size                                                   |
+| `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice |
+| `Store::commit`                | a commit after a failed one                                                              |
+| `Layer::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks     |
+| `LayeredView::new`             | a layer not above the durable tip (not rebased)                                          |
 
 | Port      | `DiskEngine`                                                     | LMDB                                   | SQLite                                 |
 | --------- | ---------------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -270,13 +270,13 @@ Non-final data lives in `zaino-nfs`: one node per block above the durable root, 
 data. Each index writer drives its store through `zaino_sync::Committer`
 ([data-sink.md](./data-sink.md)):
 
-| Final step                     | Writer                                                              |
-| ------------------------------ | ------------------------------------------------------------------- |
-| held (at or below `staged()`)  | skipped (a restart resends from the lowest durable tip)             |
-| unfolded (bulk)                | fold onto `staged()` on the compute pool, `Store::apply`            |
-| folded (the tip)               | `Store::apply` its `Changes` as the NFS sent them                   |
-| batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS       |
-| `Shutdown`                     | `Store::commit`, stop                                               |
+| Final step                       | Writer                                                      |
+| -------------------------------- | ----------------------------------------------------------- |
+| held (at or below `staged()`)    | skipped (a restart resends from the lowest durable tip)     |
+| unfolded (bulk)                  | fold onto `staged()` on the compute pool, `Store::apply`    |
+| folded (the tip)                 | `Store::apply` its `Changes` as the NFS sent them           |
+| batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS |
+| `Shutdown`                       | `Store::commit`, stop                                       |
 
 - A fold reads its parent's state off `staged()` (compact-block's tree sizes, tree-state's
   frontiers) instead of carrying it: a restart needs no step of its own ([nfs.md](nfs.md) §5).
