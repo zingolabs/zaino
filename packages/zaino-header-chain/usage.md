@@ -139,7 +139,26 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
   reopens, against a naive tree; `check()` after every insert.
 - Fire drills: each check in `check()` and each precondition, seen firing on a
   planted bug.
-- For consumers' tests (`testing` feature): `Params::with_genesis`,
+- Builder agreement (`testing::the_builders_best_tip_is_the_real_header_chains_best`):
+  random `MockChain` shapes (extend, fork, outweigh, revive, side branch; limit and
+  varied work), every new block inserted, `MockChain::tip()` = `HeaderChain::best()`
+  after each, an outweigh always the best.
+- For consumers' tests (`testing` feature), `testing::HeaderViews` on a
+  `zaino_primitives::testing::MockChain`: the rules its schedule implies
+  (`Params::regtest` at its Blossom / NU7 heights over its genesis; any nBits only when
+  the chain declared `varied_work()`), a fresh `SimFs` store, real header bytes through
+  stage A and B.
+
+  ```rust,ignore
+  use zaino_header_chain::testing::{insert, HeaderViews};
+
+  let mut headers = chain.header_chain(depth);         // genesis inserted
+  insert(&mut headers, &chain.blocks(tip))?;           // a path, as header sync would
+  let verified = chain.verified(tip);                  // nothing final
+  let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
+  ```
+
+  Still here until every caller moves: `Params::with_genesis`,
   `HeaderChain::regtest_in_memory(genesis, depth)` (regtest rules over a
   `testing::Chain`'s genesis, any nBits so `mine_bits` branches vary in work
   and the most work need not be the highest, a fresh `SimFs` store),

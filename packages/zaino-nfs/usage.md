@@ -74,7 +74,9 @@ snapshots.changed().await?;                             // next publish (Err: dr
 - `chain()` = the `VerifiedChain` it was cut from, `params()` = network + pool activations.
 - Feature `testing`: `NfsHandle::unpublished()` (nothing served yet) and
   `NfsHandle::fixed(chain, tip, params, [(kind, committed view)])` (one snapshot for good, no
-  layers): consumers' route tests without a driver.
+  layers): consumers' route tests without a driver. `ChainParams::of(&mock_chain, tip)`: the
+  network label + pool activations a validator following that `MockChain` at `tip` reports
+  (`PoolActivations::from_validator` over its `blockchain_info`), never hard-coded.
 
 ## Observability
 

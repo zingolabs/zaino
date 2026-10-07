@@ -137,9 +137,42 @@ permit, the request budget charged per call, replies matched by `id`.
 agent, protocol version and `EndOfService`: `At { height, estimated_unix }` on
 mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
 
-## Testing: `MockChain`
+## Testing: `MockValidator`
 
-Behind the `testing` feature (always compiled for this crate's own tests):
+Behind the `testing` feature (always compiled for this crate's own tests): one
+simulated zebrad over a `zaino_primitives::testing::MockChain`, a whole
+`ChainDataSource`. N nodes over one chain = N validators, each following its own tip.
+
+```rust,ignore
+use zaino_source::testing::{decoded, raw_transaction, Lie, MockValidator};
+
+let validator = MockValidator::following(&chain, chain.tip());
+validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
+validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
+validator.estimate(h(500));                          // getblockchaininfo estimatedheight
+let txid = validator.mempool_insert(raw, 2_000);     // listed from the next poll at 2 000
+validator.listing(Err(GetMempoolListingError::Inactive));
+validator.relay(Err(SendRawTransactionError::Rejected("fee".into()))); // sendrawtransaction verdict
+validator.metadata(None, Some(release));             // peers read times out
+validator.latency(Duration::from_secs(2));           // before every answer (tokio::time)
+validator.fail_next(2, FailureMode::Timeout);
+validator.reachable(false);
+validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
+assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1 });
+let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
+chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: get_transaction serves them
+```
+
+- Answers as zebrad: blocks by hash and links by height from its best chain only,
+  nothing above its tip; `getblockchaininfo` = `chain.blockchain_info(tip)` (the
+  chain's upgrade schedule, statuses by its tip); a mined txid leaves the mempool.
+- An accepted send is listed at the fee its bytes leave over its best chain; an input
+  not unspent there = `Rejected("missing input …")`; undecodable = `Malformed`.
+- `get_transaction` of a mined `TxBuilder` transaction panics: it has no bytes, and
+  the double never invents a body (mine real bytes with `raw_tx`).
+- Each `Lie` fails the NFS body check (`check_block`) by the rule that names it.
+
+The older `mock::MockChain` below stays until every caller moves to `MockValidator`.
 
 ```rust,ignore
 use zaino_primitives::testing::Chain;

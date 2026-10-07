@@ -111,8 +111,57 @@ digits); that pair is the one display-order conversion.
 
 ## Features
 
-`testing` exposes the one chain builder every test below the live suite uses. Enable it
-from `[dev-dependencies]` only.
+`testing` exposes `MockChain`, the one chain builder every test below the live suite
+uses (`docs/design/mock-chain.md`). Enable it from `[dev-dependencies]` only.
+
+```rust,ignore
+use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain, Upgrades};
+
+let alice = p2pkh([0xaa; 20]);
+let mut chain = MockChain::regtest();                // every upgrade through NU6.3 at 1, bare genesis
+chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+let spent = chain.mine(|b| {
+    b.tx(|t| {
+        t.spend(outpoint([0x10; 32], 0))
+            .pay(&alice, 49_000)
+            .fee(1_000)                              // asserted against conservation
+            .sapling_output(7)                       // cmu = 7 little-endian (canonical)
+            .orchard_action([0x04; 32], 9)
+    })
+});
+let tip = chain.mine_empty(3);                       // bare blocks on the best tip
+let blocks = chain.blocks(tip);                      // genesis ..= tip, as `Arc<Block>`s
+let fees = chain.fees(spent.hash);                   // [Coinbase, Paid(1 000)]
+let side = chain.fork(h(2)).mine_empty(1).tip();     // a side branch: not best
+let info = chain.blockchain_info(tip);               // getblockchaininfo at tip
+
+let mut varied = MockChain::regtest().varied_work(); // reorg-by-work tests opt in
+let twelve = varied.mine_empty(12);
+let retreat = varied.fork(h(10)).outweigh().mine_empty(1).tip(); // 12 → 11, now the best
+let revived = varied.branch(twelve).outweigh().mine_empty(1).tip();
+let later = MockChain::regtest().upgrades(Upgrades::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3)));
+```
+
+- Builder-owned (never asserted): hashes, nonces, times, nBits, merkle roots, default
+  txids, ephemeral keys, ciphertexts. Test-owned (asserted, written at the call site):
+  every value, script, spend, leaf, nullifier, fee and any txid a test compares.
+- Every block passes M1–M7: hash = SHA-256d of `encode_header`; linked, one height and
+  one target spacing up (150 s pre-Blossom, 75 s, 25 s from NU7), after the median time
+  past; merkle root over its txids; one coinbase, slot 0, spending nothing; each spend an
+  unspent output of its own branch (an ancestor, or earlier in the block), txids and
+  nullifiers distinct per branch, chain value pools never negative (ZIP 209), stated fee =
+  derived; pool data only once its upgrade is active. A construction breaking one panics
+  naming the rule.
+- `Work::Limit` (default): every nBits the regtest limit, heavier = longer. `varied_work()`:
+  `outweigh()` gives the branch's next block the least work that makes it best;
+  `BlockBuilder::bits` sets any nBits.
+- `raw_tx(decoded(bytes))` mines a real transaction beside its bytes (`tx_bytes(txid)`);
+  `TxBuilder` transactions have none, so a validator double never invents a body.
+- Views live in the crates that own their types: `HeaderViews` (`zaino-header-chain`),
+  `MockValidator` (`zaino-source`), `MockPeers` (`zaino-chainview`), `ChainParams::of`
+  (`zaino-nfs`).
+
+`Chain` and `linked` below remain until every test moves to `MockChain`.
 
 ```rust,ignore
 use zaino_primitives::testing::{encode_header, Chain};

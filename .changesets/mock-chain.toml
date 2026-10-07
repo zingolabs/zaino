@@ -1,0 +1,60 @@
+id = "01a11858-4715-730a-a3b8-06ff591085a2"
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `testing::MockChain`, one regtest block-tree builder for every test \
+(`regtest()`, `upgrades(Upgrades)`, `varied_work()`, `network(..)`, `genesis_with(..)`, \
+`mine(|b| ..)`, `mine_empty(n)`, `branch(parent)` / `fork(height)` → `Branch` with \
+`outweigh()`, `tip()`, `at(height)`, `blocks(tip)`, `block(hash)`, `header_bytes(hash)`, \
+`fees(hash)`, `tx_bytes(txid)`, `blockchain_info(tip)`, `schedule()`), with `BlockBuilder` \
+(`coinbase`, `tx`, `raw_tx`, `time`, `bits`), `TxBuilder` (`txid`, `spend`, `pay`, \
+`sapling_spend`, `sapling_output`, `orchard_action`, `ironwood_action`, `value_balance`, \
+`sprout_balance`, `fee`), `Upgrades` (`all_at`, `with`, `onward`, `without`, `activation`), \
+`Work`, `Schedule`, and the helpers `h`, `p2pkh`, `outpoint`, `fee_left`. Every block it \
+hands out is checked: real linked headers, merkle root over its txids, one coinbase, spends \
+of unspent outputs on its own branch, conserved value and stated fees, pool data only once \
+its upgrade is active; `outweigh()` reorgs by the least work that wins.
+"""
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `testing::HeaderViews` on a `MockChain` (`header_chain(depth)`, \
+`verified(tip)`, `verified_final(tip, final_at)`) under the rules its schedule implies, and \
+`testing::insert(chain, blocks)`.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `testing::MockValidator`, a simulated zebrad over a `MockChain` tip \
+(`following`, `follow`, `reorg_after_next_poll`, `estimate`, `mempool_insert`, `listing`, \
+`relay`, `metadata`, `latency`, `fail_next`, `reachable`, `lie`, `calls`), with `Lie` \
+(`WrongBlock`, `Poisoned`, `Mutated`, `WrongHeight`), `Calls`, `raw_transaction` and \
+`decoded`.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `testing::MockPeers`, the p2p layer as a script (`new(live, dead)`, \
+`announce`, `pushes`).
+"""
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `ChainParams::of(&MockChain, tip)`, the network and pool activations a \
+validator following that chain reports. The feature now enables `zaino-primitives/testing`.
+"""

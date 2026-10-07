@@ -166,8 +166,19 @@ block), `Diverged` (none of these: a losing branch, an alarm and never an error)
 or `Unknown` (nothing verified yet, or no answer since its last failure).
 
 Tests standing in for header sync (feature `testing`) hand the view a chain with
-`ChainView::set_verified(Some(VerifiedChain::regtest(&path)))`
-(`zaino-header-chain`'s `testing` feature verifies the path's real headers).
+`ChainView::set_verified(Some(chain.verified(tip)))` (`zaino-header-chain`'s
+`testing::HeaderViews` verifies a `MockChain` path's real headers).
+
+Feature `testing` also carries `testing::MockPeers`, the p2p layer as a script
+(`ValidatorP2pSource`), beside `zaino_source::testing::MockValidator` for the
+validators:
+
+```rust,ignore
+let peers = Arc::new(MockPeers::new(live, dead));     // dead entries refuse a push
+let view = view.with_peers(peers.clone());
+peers.announce(peer, vec![txid]);                    // one `inv` (after peer_watch subscribed)
+let entered: Vec<SocketAddr> = peers.pushes();       // entries pushed to, in order
+```
 
 `ChainTip::held_by` is an `EndpointSet` bitset: `positions()` yields each
 member's position in the configured list (the same order as the fetch pool's
