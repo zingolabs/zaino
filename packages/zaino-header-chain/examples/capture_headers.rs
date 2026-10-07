@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|reply| {
                 let id = reply["id"].as_u64().ok_or("reply without id")?;
                 let hex = reply["result"].as_str().ok_or_else(|| format!("{id}: {reply}"))?;
-                Ok((id, const_hex::decode(hex)?))
+                Ok((id, hex::decode(hex)?))
             })
             .collect::<Result<_, Box<dyn std::error::Error>>>()?;
         by_height.sort_by_key(|(height, _)| *height);

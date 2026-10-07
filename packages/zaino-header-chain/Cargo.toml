@@ -12,7 +12,6 @@ description = "Proof-of-work verified header chain: the most-work tip, from gene
 [dependencies]
 equihash = "0.3"
 imbl.workspace = true
-sha2 = "0.10"
 thiserror.workspace = true
 uint = "0.9"
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
@@ -28,7 +27,7 @@ unsafe_code = "forbid"
 unreachable_pub = "warn"
 
 [dev-dependencies]
-const-hex = "1.19.3"
+hex.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true

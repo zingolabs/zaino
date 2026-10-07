@@ -7,13 +7,10 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::{VerifiedChain, SIDE_NODES_PER_DEPTH};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 
 use crate::fetch::merkle_root;
-
-/// Header chain's own side bound (`zaino-header-chain` H4)
-const SIDE_NODES_PER_DEPTH: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct Node<F> {

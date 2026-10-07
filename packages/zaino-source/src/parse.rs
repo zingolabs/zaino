@@ -7,8 +7,8 @@
 
 use zaino_primitives::types::{
     BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, PeerInfo, TransactionId,
-    TransactionLocation, Zatoshis,
+    HeightOverflow, NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, ParseHashError,
+    PeerInfo, TransactionId, TransactionLocation, Zatoshis,
 };
 
 use zcash_protocol::consensus::BranchId;
@@ -19,14 +19,14 @@ use crate::{MempoolListed, TransactionResponse};
 pub(crate) enum ParseError {
     #[error("hex decode: {0}")]
     Hex(String),
+    #[error("hash: {0}")]
+    Hash(#[from] ParseHashError),
     #[error("expected {expected}, got {got}")]
     UnexpectedType { expected: &'static str, got: String },
-    #[error("expected {expected} bytes, got {got}")]
-    WrongLength { expected: usize, got: usize },
     #[error("value {0} overflows target type")]
     Overflow(u64),
     #[error("invalid height: {0}")]
-    Height(String),
+    Height(#[from] HeightOverflow),
     #[error("missing field `{0}`")]
     MissingField(&'static str),
     #[error("unknown network upgrade status `{0}`")]
@@ -83,34 +83,19 @@ fn as_array(value: &serde_json::Value) -> Result<&Vec<serde_json::Value>, ParseE
 }
 
 fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
-    let n = as_u64(value)?;
-    let h = u32::try_from(n).map_err(|_| ParseError::Overflow(n))?;
-    Height::try_from(h).map_err(|e| ParseError::Height(e.to_string()))
+    Ok(Height::try_from(as_u64(value)?)?)
 }
 
 fn hex(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
-    hex_str(as_str(value)?)
-}
-
-fn hex_str(hex: &str) -> Result<Vec<u8>, ParseError> {
-    const_hex::decode(hex).map_err(|e| ParseError::Hex(e.to_string()))
-}
-
-/// 32 bytes written byte-reversed (RPC display order: block hashes, txids)
-fn reversed(hex: &str) -> Result<[u8; 32], ParseError> {
-    let mut le: [u8; 32] = hex_str(hex)?
-        .try_into()
-        .map_err(|b: Vec<u8>| ParseError::WrongLength { expected: 32, got: b.len() })?;
-    le.reverse();
-    Ok(le)
+    hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
 }
 
 pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseError> {
-    reversed(as_str(value)?).map(TransactionId::from)
+    Ok(as_str(value)?.parse()?)
 }
 
 pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
-    reversed(as_str(value)?).map(BlockHash::from)
+    Ok(as_str(value)?.parse()?)
 }
 
 /// Hex-string `result` decoded straight off the body (borrowed `&str`, one const-hex pass)
@@ -128,7 +113,7 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
             }
 
             fn visit_str<E: serde::de::Error>(self, hex: &str) -> Result<HexBytes, E> {
-                const_hex::decode(hex).map(HexBytes).map_err(E::custom)
+                hex::decode(hex).map(HexBytes).map_err(E::custom)
             }
         }
 
@@ -208,7 +193,7 @@ pub(crate) fn parse_mempool_listing(
         .map(|(txid, entry)| {
             let size = field(entry, "size")?;
             Ok(MempoolListed {
-                txid: TransactionId::from(reversed(txid)?),
+                txid: txid.parse()?,
                 fee: as_zec(field(entry, "fee")?)?,
                 encoded_len: size
                     .as_u64()
@@ -303,7 +288,7 @@ mod tests {
     #[test]
     fn mempool_listing_reads_each_txid_and_its_exact_fee() {
         let mut reversed_bytes = [0u8; 32];
-        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
         let listed = |fee: serde_json::Value| {
             parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } }))
@@ -360,7 +345,7 @@ mod tests {
             "consensus": { "chaintip": "c2d6d0b4", "nextblock": "c2d6d0b4" },
         });
         let mut reversed_bytes = [0u8; 32];
-        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
         let height = |h: u32| Height::try_from(h).expect("h");
         let nu5 = ConsensusBranchId::new(0xc2d6_d0b4);
@@ -409,7 +394,7 @@ mod tests {
         let mined = location(json!({ "hex": "00", "height": 12345 })).expect("mined");
         let side = location(json!({ "hex": "00", "height": -1 })).expect("side chain");
         let mempool = location(json!({ "hex": "00" })).expect("mempool");
-        let height = Height::try_from(12345).expect("h");
+        let height = Height::try_from(12345u32).expect("h");
         assert_eq!((mined, side, mempool), (BestChain(height), NonBestChain, Mempool));
         assert!(location(json!({ "hex": "00", "height": -7 })).is_err());
 
@@ -432,7 +417,7 @@ mod tests {
         };
         let mainnet = json!({ "end_of_service": { "block_height": 3_564_960, "estimated_time": 1_790_000_000 } });
         let halts = EndOfService::At {
-            height: Height::try_from(3_564_960).expect("in range"),
+            height: Height::try_from(3_564_960u32).expect("in range"),
             estimated_unix: 1_790_000_000,
         };
         assert_eq!(release(Some(mainnet)).expect("mainnet"), halts);

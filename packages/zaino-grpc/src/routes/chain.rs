@@ -451,7 +451,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(info().expect("held"), expected, "mock: tip 7, nothing served");
-        let five = Height::try_from(5).ok();
+        let five = Height::try_from(5u32).ok();
         let served = lightd_info(&view.subscriber(), five, NetworkType::Main).expect("held");
         assert_eq!(served, LightdInfo { block_height: 5, ..expected }, "the snapshot tip");
 

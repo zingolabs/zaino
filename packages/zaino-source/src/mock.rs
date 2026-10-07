@@ -12,8 +12,8 @@ use std::sync::RwLock;
 
 use zaino_primitives::testing::{encode_header, header_hash};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockRef, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
-    NodeRelease, TransactionId, TransactionLocation, Zatoshis,
+    Block, BlockHash, BlockRef, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds,
+    EndOfService, Height, NodeRelease, TransactionId, TransactionLocation, Zatoshis,
 };
 
 use crate::{
@@ -282,7 +282,7 @@ impl crate::ChainDataSource for MockChain {
 pub(crate) fn fixture_block(height: u32) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/block_{height}.hex", env!("CARGO_MANIFEST_DIR"));
     let hex = std::fs::read_to_string(&path).expect("fixture readable");
-    const_hex::decode(hex.trim()).expect("fixture is hex")
+    hex::decode(hex.trim()).expect("fixture is hex")
 }
 
 /// [`fixture_block`]'s transactions, each its own consensus bytes, in block order

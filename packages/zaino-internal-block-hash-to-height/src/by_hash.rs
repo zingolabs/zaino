@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn a_height_is_its_golden_big_endian_bytes_and_one_past_the_maximum_is_refused() {
-        let height = Height::try_from(0x0102_0304).expect("in range");
+        let height = Height::try_from(0x0102_0304u32).expect("in range");
         assert_eq!(encode_height(height), [0x01, 0x02, 0x03, 0x04]);
         assert_eq!(decode_height(&[0x01, 0x02, 0x03, 0x04]), Ok(height));
         let overflow = decode_height(&[0x80, 0, 0, 0]).map_err(|error| error.got);

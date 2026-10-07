@@ -38,15 +38,8 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
     use zaino_internal_block_hash_to_height as block_hash;
     use zaino_internal_value_balance as value_balance;
 
-    let schema = match kind {
-        IndexKind::CompactBlock => compact_block::schema(MAINNET),
-        IndexKind::TreeState => tree_state::schema(MAINNET),
-        IndexKind::TransparentAddress => transparent_address::schema(MAINNET),
-        IndexKind::BlockHash => block_hash::schema(MAINNET),
-        IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
-    };
-    let mut index = store(kind.name(), &schema);
-    let mut fees = store("fees", &value_balance::schema(MAINNET));
+    let mut index = store(kind.name(), &zaino_nfs::schema(kind, MAINNET));
+    let mut fees = store("fees", &zaino_nfs::schema(IndexKind::ValueBalance, MAINNET));
     for block in blocks {
         let parent = index.staged();
         let changes = match kind {
@@ -65,7 +58,8 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
                 &transparent_address::TransparentAddressReader::new(parent, MAINNET),
                 block,
             ),
-            _ => block_hash::fold(block, MAINNET),
+            IndexKind::BlockHash => block_hash::fold(block, MAINNET),
+            IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
         };
         index.apply(changes);
     }

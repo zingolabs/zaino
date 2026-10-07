@@ -83,7 +83,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         (
             "H2: one height above its parent",
             Box::new(move |c| {
-                c.nodes.get_mut(&at[6]).expect("held").height = Height::try_from(9).expect("h");
+                c.nodes.get_mut(&at[6]).expect("held").height = Height::try_from(9u32).expect("h");
             }),
         ),
         (
@@ -145,8 +145,8 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         let raw = &include_bytes!("../../tests/fixtures/mainnet_0.headers")[..1487];
         check(&Params::mainnet(), decode_header(raw).expect("genesis")).expect("stage A")
     };
-    let off_best = BlockRef { hash: side, height: Height::try_from(12).expect("h") };
-    let shallow = BlockRef { hash: at[5], height: Height::try_from(5).expect("h") };
+    let off_best = BlockRef { hash: side, height: Height::try_from(12u32).expect("h") };
+    let shallow = BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") };
     let preconditions: [(&str, Plant); 3] = [
         (
             "H3: checked under this chain's rules",

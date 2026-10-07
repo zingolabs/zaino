@@ -4,8 +4,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
-
+use crate::sha256d;
 use crate::types::{
     Block, BlockHash, BlockHeader, BlockRef, CompactDifficulty, EquihashSolution, Height,
     MerkleRoot, Transaction, TransactionId, TransparentData,
@@ -39,10 +38,6 @@ pub fn encode_header(header: &BlockHeader) -> Vec<u8> {
 /// What `header.hash` must be: SHA-256d of [`encode_header`]
 pub fn header_hash(header: &BlockHeader) -> BlockHash {
     BlockHash::from(sha256d(&encode_header(header)))
-}
-
-fn sha256d(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(Sha256::digest(bytes)).into()
 }
 
 /// Bare coinbase, txid = SHA-256d of the mint counter
@@ -189,10 +184,6 @@ impl Chain {
 mod tests {
     use super::*;
 
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
     /// Genesis pinned byte for byte (177 = regtest header); each child links to its parent, one
     /// height and 75 s up; siblings on one parent differ; `path` = genesis ..= tip
     #[test]
@@ -211,7 +202,7 @@ mod tests {
             "0000000000000000000000000000000000000000000000000000000000000000",
             "24000000000000000000000000000000000000000000000000000000000000000000000000",
         ];
-        assert_eq!(hex(&raw), golden.concat());
+        assert_eq!(hex::encode(&raw), golden.concat());
         let coinbase = <[u8; 32]>::from(chain.block(genesis.hash).transactions()[0].txid);
         assert_eq!(coinbase, sha256d(&0u64.to_le_bytes()), "merkle root of one = its txid");
         let display = "2c7c50c5b6ed3a223ec575e024891141c64d2a6469a8db045d53229e06aa7e7e";

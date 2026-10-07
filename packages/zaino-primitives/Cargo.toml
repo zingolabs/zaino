@@ -23,3 +23,6 @@ zcash_protocol.workspace = true
 [lints.rust]
 unsafe_code = "forbid"
 unreachable_pub = "warn"
+
+[dev-dependencies]
+hex.workspace = true

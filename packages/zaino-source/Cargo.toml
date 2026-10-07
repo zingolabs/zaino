@@ -25,19 +25,18 @@ tracing = { workspace = true }
 zcash_encoding = "0.4"
 zcash_primitives.workspace = true
 zcash_protocol.workspace = true
-const-hex = "1.19.3"
 governor = { version = "0.10.4", default-features = false, features = ["std"] }
 fastrand = "2"
 zaino-proto.workspace = true
 tonic.workspace = true
 tokio-util.workspace = true
+hex.workspace = true
 
 [features]
 testing = ["zaino-primitives/testing"]
 
 [dev-dependencies]
 proptest.workspace = true
-sha2 = "0.10"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-util"] }
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }

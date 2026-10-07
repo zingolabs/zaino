@@ -61,7 +61,7 @@ pub(crate) mod path {
 
 /// Client height → [`Height`] (past the protocol ceiling = the client's error, never a service's)
 pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
-    u32::try_from(raw).ok().and_then(|raw| Height::try_from(raw).ok()).ok_or_else(|| {
+    Height::try_from(raw).map_err(|_| {
         Status::invalid_argument(format!("{field} {raw} is above the protocol height ceiling"))
     })
 }

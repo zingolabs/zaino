@@ -232,7 +232,7 @@ pub(crate) mod tests {
     fn an_unrecorded_prevout_a_forward_spend_or_a_negative_fee_is_a_named_error() {
         let network = NetworkType::Regtest;
         let id = |byte| TransactionId::from([byte; 32]);
-        let h = |n| Height::try_from(n).expect("h");
+        let h = |n: u32| Height::try_from(n).expect("h");
         let cases = [
             (
                 "never recorded",

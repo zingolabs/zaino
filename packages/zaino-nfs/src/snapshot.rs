@@ -15,6 +15,7 @@ use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{IndexKind, Layer, LayeredView, MapRead, SequenceRead, View};
 use zaino_primitives::types::BlockRef;
+use zaino_sync::PerIndex;
 use zcash_protocol::consensus::NetworkType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,38 +120,6 @@ impl<V: MapRead> Views<V> {
     pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<LayeredView<V>>> {
         let view = self.view(IndexKind::ValueBalance)?;
         Some(ValueBalanceReader::new(view, self.network))
-    }
-}
-
-/// One `T` per enabled index (order = subscribe order where the driver builds it)
-#[derive(Debug, Clone)]
-pub(crate) struct PerIndex<T>(Vec<(IndexKind, T)>);
-
-impl<T> Default for PerIndex<T> {
-    fn default() -> Self {
-        Self(Vec::new())
-    }
-}
-
-impl<T> PerIndex<T> {
-    pub(crate) fn get(&self, kind: IndexKind) -> Option<&T> {
-        self.0.iter().find(|(each, _)| *each == kind).map(|(_, value)| value)
-    }
-
-    /// Panics: `kind` held already
-    pub(crate) fn insert(&mut self, kind: IndexKind, value: T) {
-        assert!(self.get(kind).is_none(), "{}: twice", kind.name());
-        self.0.push((kind, value));
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (IndexKind, &T)> {
-        self.0.iter().map(|(kind, value)| (*kind, value))
-    }
-
-    /// `(kind, value)` at `position` (insert order)
-    pub(crate) fn at_mut(&mut self, position: usize) -> (IndexKind, &mut T) {
-        let (kind, value) = &mut self.0[position];
-        (*kind, value)
     }
 }
 

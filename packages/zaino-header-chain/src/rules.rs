@@ -7,10 +7,10 @@
 
 use std::cmp::{max, min};
 
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{Height, REGTEST_SOLUTION, STANDARD_SOLUTION};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::header::{Header, REGTEST_SOLUTION, STANDARD_SOLUTION};
+use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
 use crate::target::{expand, mean, meets, to_compact, work, U256};
 
@@ -171,7 +171,7 @@ pub(crate) fn in_context(
 /// Equihash (200, 9) over the bytes before the nonce, the nonce, the solution
 pub(crate) fn equihash_valid(header: &Header) -> Result<(), Rejected> {
     let (input, nonce) = (header.equihash_input(), header.nonce());
-    equihash::is_valid_solution(200, 9, input, nonce, header.solution())
+    equihash::is_valid_solution(200, 9, input, &nonce, header.solution())
         .map_err(|_| Rejected::Solution)
 }
 

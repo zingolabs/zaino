@@ -1,6 +1,7 @@
 //! One line per enabled index: its committed (`durable`) height + bytes on disk
 //!
-//! - `Syncing` every [`REPORT_EVERY`] while the NFS serves behind the verified tip
+//! - `Syncing` every [`REPORT_INTERVAL`] (lands under the NFS's `Syncing blocks`) while the NFS
+//!   serves behind the verified tip
 //! - `Serving` once it serves the tip
 //! - Disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` usage)
 
@@ -19,11 +20,12 @@ use tracing::{
 
 use zaino_persistence::{disk_bytes, DiskView, View as _};
 
-use crate::error::IndexerError;
-use crate::logging::{HeightCol, Size3};
+use zaino_nfs::REPORT_INTERVAL;
+use zaino_sync::ByteSize;
 
-/// = the sync report's interval (index lines land under its `Syncing blocks`)
-const REPORT_EVERY: Duration = Duration::from_secs(30);
+use crate::error::IndexerError;
+use crate::logging::HeightCol;
+
 const WALK_EVERY: Duration = Duration::from_secs(120);
 
 /// What the report reads: the writer's committed view, the NFS's serving judgement
@@ -48,7 +50,7 @@ pub(crate) async fn run(
     measured: watch::Sender<Option<Usage>>,
     cancel: CancellationToken,
 ) -> Result<(), IndexerError> {
-    let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_EVERY, REPORT_EVERY);
+    let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_INTERVAL, REPORT_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut walked = Walked(None);
     let mut serving = *index.synced.borrow();
@@ -89,7 +91,7 @@ impl Walked {
         dir: &Path,
         measured: &watch::Sender<Option<Usage>>,
         fresh: Duration,
-    ) -> Result<Option<DisplayValue<Size3>>, IndexerError> {
+    ) -> Result<Option<DisplayValue<ByteSize>>, IndexerError> {
         let stale = self.0.is_none_or(|(at, _)| at.elapsed() >= fresh);
         if stale {
             let walk = dir.to_path_buf();
@@ -106,7 +108,7 @@ impl Walked {
             };
             self.0 = Some((Instant::now(), total));
         }
-        Ok(self.0.and_then(|(_, total)| total).map(|total| display(Size3(total))))
+        Ok(self.0.and_then(|(_, total)| total).map(|total| display(ByteSize(total))))
     }
 }
 

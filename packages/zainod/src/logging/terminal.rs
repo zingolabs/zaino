@@ -331,10 +331,11 @@ mod tests {
                     "Syncing blocks"
                 );
                 tracing::warn!(reason = "queue full", ratio = 0.5, %hash, "Commit waited");
-                use super::super::{HeightCol, Size3};
+                use super::super::HeightCol;
+                use zaino_sync::ByteSize;
                 tracing::info!(
                     durable = %HeightCol(None),
-                    size = %Size3(134_000_000),
+                    size = %ByteSize(134_000_000),
                     "Syncing"
                 );
             });

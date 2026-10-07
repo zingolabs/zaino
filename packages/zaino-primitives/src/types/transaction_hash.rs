@@ -1,6 +1,8 @@
 //! Transaction hash (txid).
 
-use core::fmt;
+use core::{fmt, str::FromStr};
+
+use super::display_order::{self, ParseHashError};
 
 /// Transaction hash / txid (32 bytes, internal byte order).
 ///
@@ -37,10 +39,15 @@ impl fmt::Debug for TransactionId {
 
 impl fmt::Display for TransactionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for &byte in self.0.iter().rev() {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        display_order::write(&self.0, f)
+    }
+}
+
+impl FromStr for TransactionId {
+    type Err = ParseHashError;
+
+    fn from_str(hex: &str) -> Result<Self, Self::Err> {
+        display_order::parse(hex).map(Self)
     }
 }
 

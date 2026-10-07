@@ -7,15 +7,13 @@
 use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, CompactCiphertext, CompactDifficulty,
-    CompactDifficultyError, ConsensusBranchId, EphemeralKey, EquihashSolution, Height,
-    HeightOverflow, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint,
-    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow,
-    SproutData, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
-    ZatoshisOverflow,
+    Block, BlockHash, BlockHeader, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
+    ConsensusBranchId, EphemeralKey, HeaderBytes, HeaderError, Height, HeightOverflow,
+    NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput,
+    SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow, SproutData, Transaction,
+    TransactionId, TransparentData, TransparentOutput, Zatoshis, ZatoshisOverflow,
 };
 use zcash_encoding::CompactSize;
-use zcash_primitives::block::BlockHeader as RawHeader;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
 use zcash_protocol::{consensus::BranchId, value::ZatBalance};
 
@@ -44,8 +42,8 @@ pub enum DecodeError {
     ValueBalance(#[from] SignedZatoshisOverflow),
     #[error("sprout JoinSplit values sum past the money supply")]
     SproutBalance,
-    #[error("equihash solution of {0} bytes (neither 1344 nor regtest's 36)")]
-    Solution(usize),
+    #[error("header: {0}")]
+    Header(#[from] HeaderError),
     #[error("difficulty: {0}")]
     Difficulty(#[from] CompactDifficultyError),
     #[error("expiry height {0} above ZIP-203's 499999999")]
@@ -57,12 +55,12 @@ const MAX_EXPIRY_HEIGHT: u32 = 499_999_999;
 
 /// `getblock <h> 0` bytes → [`Block`] (the one block parse; every index projects from it)
 pub(crate) fn block(raw: &[u8]) -> Result<Block, DecodeError> {
-    let mut cursor = Cursor::new(raw);
-    let header = RawHeader::read(&mut cursor)?;
+    let (header, body) = HeaderBytes::split(raw)?;
+    let mut cursor = Cursor::new(body);
     let count = CompactSize::read(&mut cursor)?;
     let transactions =
         (0..count).map(|_| read_transaction(&mut cursor)).collect::<Result<Vec<_>, _>>()?;
-    let trailing = raw.len() - cursor.position() as usize;
+    let trailing = body.len() - cursor.position() as usize;
     if trailing != 0 {
         return Err(DecodeError::Trailing(trailing));
     }
@@ -126,35 +124,30 @@ fn read_transaction(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedTransact
 
 /// `coinbase` = transaction 0, already checked to be a coinbase
 fn block_header(
-    raw: &RawHeader,
+    raw: &HeaderBytes<'_>,
     coinbase: &CompressedTransaction,
 ) -> Result<BlockHeader, DecodeError> {
-    let solution = if let Ok(standard) = <[u8; 1344]>::try_from(raw.solution.as_slice()) {
-        EquihashSolution::Standard(standard)
-    } else if let Ok(regtest) = <[u8; 36]>::try_from(raw.solution.as_slice()) {
-        EquihashSolution::Regtest(regtest)
-    } else {
-        return Err(DecodeError::Solution(raw.solution.len()));
-    };
-
+    let version = raw.version();
     Ok(BlockHeader {
-        hash: BlockHash::from(raw.hash().0),
-        version: u32::try_from(raw.version)
-            .map_err(|_| DecodeError::NegativeVersion(raw.version))?,
-        prev_hash: BlockHash::from(raw.prev_block.0),
+        hash: raw.hash(),
+        version: u32::try_from(version).map_err(|_| DecodeError::NegativeVersion(version))?,
+        prev_hash: raw.prev_hash(),
         height: block_height(raw, coinbase)?,
-        time: raw.time,
-        merkle_root: MerkleRoot::from(raw.merkle_root),
-        block_commitments: BlockCommitments::from(raw.final_sapling_root),
-        bits: CompactDifficulty::try_from_bits(raw.bits)?,
-        nonce: raw.nonce,
-        solution,
+        time: raw.time(),
+        merkle_root: raw.merkle_root(),
+        block_commitments: raw.block_commitments(),
+        bits: CompactDifficulty::try_from_bits(raw.bits())?,
+        nonce: raw.nonce(),
+        solution: raw.equihash_solution(),
     })
 }
 
 /// Genesis = height 0 (its coinbase predates BIP 34); every later block's coinbase opens with it
-fn block_height(raw: &RawHeader, coinbase: &CompressedTransaction) -> Result<Height, DecodeError> {
-    let height = if BlockHash::from(raw.prev_block.0) == BlockHash::ZERO {
+fn block_height(
+    raw: &HeaderBytes<'_>,
+    coinbase: &CompressedTransaction,
+) -> Result<Height, DecodeError> {
+    let height = if raw.prev_hash() == BlockHash::ZERO {
         0
     } else {
         coinbase
@@ -285,14 +278,15 @@ fn signed(balance: ZatBalance) -> Result<SignedZatoshis, DecodeError> {
 /// Byte span of each tx inside a block (header + count skipped by the same readers)
 #[cfg(any(test, feature = "testing"))]
 pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
-    let mut cursor = Cursor::new(raw);
-    RawHeader::read(&mut cursor).expect("header");
+    let (header, body) = HeaderBytes::split(raw).expect("header");
+    let at = header.as_bytes().len();
+    let mut cursor = Cursor::new(body);
     let count = CompactSize::read(&mut cursor).expect("count");
     (0..count)
         .map(|_| {
-            let start = cursor.position() as usize;
+            let start = at + cursor.position() as usize;
             read_transaction(&mut cursor).expect("tx");
-            start..cursor.position() as usize
+            start..at + cursor.position() as usize
         })
         .collect()
 }
@@ -301,6 +295,8 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
 mod tests {
     use super::*;
     use crate::mock::fixture_block as fixture;
+    use zaino_primitives::types::{EquihashSolution, MerkleRoot};
+    use zcash_primitives::block::BlockHeader as RawHeader;
 
     /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard):
     /// header decoded, BIP 34 height agrees, every pool present, standalone path = block path
@@ -343,11 +339,11 @@ mod tests {
     }
 
     /// - Header prefix of each fixture → the full-block decode's hash + parent
-    /// - Hash = SHA-256d of the header bytes (sha2, independent of librustzcash)
+    /// - Header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)
+    /// - Hash = SHA-256d of those bytes
     /// - `testing::encode_header` of the decoded header = those bytes (test chains' one encoder)
     #[test]
     fn a_header_links_to_its_block_hash_and_parent() {
-        use sha2::{Digest, Sha256};
         for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
             let raw = fixture(height);
             let mut cursor = Cursor::new(raw.as_slice());
@@ -355,11 +351,10 @@ mod tests {
             let header = &raw[..cursor.position() as usize];
 
             let decoded = block(&raw).expect("block decodes");
-            let sha256d: [u8; 32] = Sha256::digest(Sha256::digest(header)).into();
             let prev: [u8; 32] = header[4..36].try_into().expect("32");
             assert_eq!(
                 (decoded.header().hash, decoded.header().prev_hash),
-                (BlockHash::from(sha256d), BlockHash::from(prev)),
+                (BlockHash::from(zaino_primitives::sha256d(header)), BlockHash::from(prev)),
                 "height {height}"
             );
             let encoded = zaino_primitives::testing::encode_header(decoded.header());

@@ -1,32 +1,24 @@
-//! Block height on the Zcash chain.
+//! Block height on the Zcash chain
 
 use core::fmt;
 
-/// Maximum valid block height (Zcash protocol limit, matches Zebra).
-///
-/// `2^31 - 1`. Heights above this are rejected at construction.
+/// `2^31 - 1` (Zcash protocol limit, = Zebra's)
 const MAX_HEIGHT: u32 = (1 << 31) - 1;
 
-/// Block height.
-///
-/// Invariant: the inner value is `≤ MAX_HEIGHT` (`2^31 - 1`).
-/// Enforced at construction; all arithmetic is checked.
+/// `<= MAX_HEIGHT`, enforced at construction; all arithmetic checked
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Height(u32);
 
-/// Error returned when a `u32` exceeds the protocol height limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("height {got} exceeds protocol maximum {MAX_HEIGHT}")]
 pub struct HeightOverflow {
-    /// The value that was rejected.
-    pub got: u32,
+    pub got: u64,
 }
 
 impl Height {
-    /// The genesis block.
     pub const GENESIS: Self = Self(0);
 
-    /// Add a delta, returning `None` on overflow or protocol-limit violation.
+    /// `None` past the protocol maximum
     pub fn checked_add(self, delta: u32) -> Option<Self> {
         let sum = self.0.checked_add(delta)?;
         if sum > MAX_HEIGHT {
@@ -40,12 +32,10 @@ impl Height {
         self.checked_add(1).expect("height one past the protocol maximum")
     }
 
-    /// Subtract a delta, returning `None` on underflow.
     pub fn checked_sub(self, delta: u32) -> Option<Self> {
         self.0.checked_sub(delta).map(Self)
     }
 
-    /// Subtract, saturating at zero.
     pub fn saturating_sub(self, delta: u32) -> Self {
         Self(self.0.saturating_sub(delta))
     }
@@ -60,10 +50,17 @@ impl TryFrom<u32> for Height {
     type Error = HeightOverflow;
 
     fn try_from(h: u32) -> Result<Self, Self::Error> {
-        if h > MAX_HEIGHT {
-            Err(HeightOverflow { got: h })
-        } else {
-            Ok(Self(h))
+        Self::try_from(u64::from(h))
+    }
+}
+
+impl TryFrom<u64> for Height {
+    type Error = HeightOverflow;
+
+    fn try_from(h: u64) -> Result<Self, Self::Error> {
+        match u32::try_from(h) {
+            Ok(fits) if fits <= MAX_HEIGHT => Ok(Self(fits)),
+            _ => Err(HeightOverflow { got: h }),
         }
     }
 }
@@ -96,60 +93,25 @@ impl fmt::Display for Height {
 mod tests {
     use super::*;
 
+    /// Construction from `u32` and `u64` agrees up to `MAX_HEIGHT` and names the rejected value
+    /// past it; arithmetic stays inside `0..=MAX_HEIGHT`
     #[test]
-    fn genesis() {
+    fn heights_hold_to_the_protocol_maximum_from_either_width_and_arithmetic_stays_inside() {
+        let max = MAX_HEIGHT;
         assert_eq!(u32::from(Height::GENESIS), 0);
-    }
+        assert_eq!(Height::try_from(max).map(u32::from), Ok(max));
+        assert_eq!(Height::try_from(u64::from(max)), Height::try_from(max));
+        assert_eq!(Height::try_from(max + 1), Err(HeightOverflow { got: u64::from(max) + 1 }));
+        let past_u32 = u64::from(u32::MAX) + 1;
+        assert_eq!(Height::try_from(past_u32), Err(HeightOverflow { got: past_u32 }));
 
-    #[test]
-    fn valid_construction() {
-        let h = Height::try_from(100).expect("valid height");
-        assert_eq!(u32::from(h), 100);
-    }
-
-    #[test]
-    fn max_is_valid() {
-        assert!(Height::try_from(MAX_HEIGHT).is_ok());
-    }
-
-    #[test]
-    fn above_max_rejected() {
-        let err = Height::try_from(MAX_HEIGHT + 1).unwrap_err();
-        assert_eq!(err.got, MAX_HEIGHT + 1);
-    }
-
-    #[test]
-    fn checked_add_within_limit() {
-        let h = Height::try_from(10).expect("valid");
-        assert_eq!(u32::from(h.checked_add(5).expect("ok")), 15);
-    }
-
-    #[test]
-    fn checked_add_overflow_returns_none() {
-        let h = Height::try_from(MAX_HEIGHT).expect("valid");
-        assert!(h.checked_add(1).is_none());
-    }
-
-    #[test]
-    fn checked_sub_underflow_returns_none() {
-        assert!(Height::GENESIS.checked_sub(1).is_none());
-    }
-
-    #[test]
-    fn saturating_sub_floors_at_zero() {
+        let ten = Height::try_from(10u32).expect("valid");
+        assert_eq!((u32::from(ten), u64::from(ten)), (10, 10));
+        assert_eq!(ten.checked_add(5).map(u32::from), Some(15));
+        assert_eq!(Height::try_from(max).expect("valid").checked_add(1), None);
+        assert_eq!(Height::GENESIS.checked_sub(1), None);
         assert_eq!(Height::GENESIS.saturating_sub(100), Height::GENESIS);
-    }
-
-    #[test]
-    fn ordering() {
-        let a = Height::try_from(1).expect("valid");
-        let b = Height::try_from(2).expect("valid");
-        assert!(a < b);
-    }
-
-    #[test]
-    fn into_u64() {
-        let h = Height::try_from(42).expect("valid");
-        assert_eq!(u64::from(h), 42u64);
+        assert!(Height::GENESIS < ten);
+        assert_eq!((format!("{ten}"), format!("{ten:?}")), ("10".into(), "Height(10)".into()));
     }
 }

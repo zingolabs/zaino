@@ -237,7 +237,7 @@ mod tests {
             for (block, folds) in chain[3..].iter().zip(&folded[3..]) {
                 sink.send(step(block, Some(Arc::clone(folds)))).await;
             }
-            let four = Some(Height::try_from(4).expect("h"));
+            let four = Some(Height::try_from(4u32).expect("h"));
             committed.wait_for(|view| view.tip().map(|tip| tip.height) == four).await.expect("alive");
             sink.shutdown();
             running.await.expect("clean stop");

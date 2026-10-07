@@ -21,16 +21,17 @@ use zaino_header_chain::{Record, VerifiedChain};
 use zaino_persistence::{IndexKind, Layer, MapRead, SequenceRead};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::ChainDataSource;
-use zaino_sync::{compute, Final, Human, IndexerDataSink, Step, Subscription};
+use zaino_sync::{compute, Final, Human, IndexerDataSink, PerIndex, Step, Subscription};
 
 use crate::core::{Diverged, Input, NfsCore, Output, SnapshotTip};
 use crate::fetch::{check_block, Answer};
-use crate::fold::{fold_block, schema, Folded};
+use crate::fold::{fold_block, Folded};
 use crate::report::Progress;
-use crate::snapshot::{PerIndex, Publisher};
+use crate::snapshot::Publisher;
 
 pub use crate::emit::describe_metrics;
-pub use crate::fold::FoldError;
+pub use crate::fold::{schema, FoldError};
+pub use crate::report::REPORT_INTERVAL;
 pub use crate::snapshot::{ChainParams, NfsHandle, Snapshot, Views};
 
 /// Core re-asked at this pace (retries, hedges)

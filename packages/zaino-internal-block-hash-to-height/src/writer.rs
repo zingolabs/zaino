@@ -115,7 +115,7 @@ mod tests {
         let reader = BlockHashReader::new(open(&fs).view());
         let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
         let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
-        let heights = (0..=4).map(|n| Some(Height::try_from(n).expect("h")));
+        let heights = (0..=4u32).map(|n| Some(Height::try_from(n).expect("h")));
         assert_eq!(located, heights.chain([None]).collect::<Vec<_>>());
     }
 

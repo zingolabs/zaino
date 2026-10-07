@@ -161,14 +161,8 @@ fn height(height: u32) -> Height {
     Height::try_from(height).expect("activation height in range")
 }
 
-/// Display-order hex → internal-order hash
 fn display(hex: &str) -> BlockHash {
-    let mut bytes = [0u8; 32];
-    for (index, byte) in bytes.iter_mut().rev().enumerate() {
-        let pair = &hex[index * 2..index * 2 + 2];
-        *byte = u8::from_str_radix(pair, 16).expect("constant hex");
-    }
-    BlockHash::from(bytes)
+    hex.parse().expect("genesis: constant display-order hex")
 }
 
 #[cfg(test)]

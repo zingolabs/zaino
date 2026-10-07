@@ -51,7 +51,7 @@ mod tests {
     fn subtree_entry_golden_bytes_round_trip() {
         let entry = SubtreeEntry {
             root: TreeRoot::from([0x5a; 32]),
-            end_height: Height::try_from(0x0012_3456).expect("in range"),
+            end_height: Height::try_from(0x0012_3456u32).expect("in range"),
         };
 
         let mut expected = [0u8; ENTRY];

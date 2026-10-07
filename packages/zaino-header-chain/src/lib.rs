@@ -14,7 +14,7 @@ mod model;
 #[cfg(test)]
 mod tests;
 
-pub use chain::{BestTip, HeaderChain, Inserted};
+pub use chain::{BestTip, HeaderChain, Inserted, SIDE_NODES_PER_DEPTH};
 pub use header::{decode_header, DecodeError, Header};
 pub use params::Params;
 pub use rules::{check, link_run, Checked, Rejected};

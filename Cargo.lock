@@ -693,18 +693,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "const-hex"
-version = "1.19.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e59eef12462b0f9b0a3620219be5d639afd79fe39dff0a42c3997061f9298b4"
-dependencies = [
- "cfg-if",
- "cpufeatures 0.2.17",
- "proptest",
- "serde_core",
-]
-
-[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5078,6 +5066,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
+ "zaino-sync",
  "zcash_address",
  "zcash_protocol",
  "zcash_script",
@@ -5088,13 +5077,12 @@ dependencies = [
 name = "zaino-header-chain"
 version = "0.1.0"
 dependencies = [
- "const-hex",
  "equihash",
+ "hex",
  "imbl",
  "proptest",
  "reqwest",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.18",
  "uint 0.9.5",
  "zaino-persistence",
@@ -5242,6 +5230,7 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
+ "hex",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "zcash_protocol",
@@ -5262,17 +5251,16 @@ dependencies = [
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [
- "const-hex",
  "fastrand",
  "futures",
  "governor",
+ "hex",
  "metrics",
  "orchard",
  "proptest",
  "reqwest",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

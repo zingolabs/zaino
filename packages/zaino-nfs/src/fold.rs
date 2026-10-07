@@ -11,10 +11,10 @@ use zaino_internal_block_hash_to_height as block_hash;
 use zaino_internal_value_balance as value_balance;
 use zaino_persistence::{Changes, IndexKind, Layer, MapRead, Schema, SequenceRead};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
-use zaino_sync::Folds;
+use zaino_sync::{Folds, PerIndex};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::snapshot::{PerIndex, Views};
+use crate::snapshot::Views;
 
 /// One node's payload: what the final stream carries + each index's state as of the block
 #[derive(Debug)]
@@ -64,15 +64,15 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     Ok(Folded { folds: Arc::new(folds), layers })
 }
 
-/// Panics: `header_chain` (not fed by the final stream)
-pub(crate) fn schema(kind: IndexKind, network: NetworkType) -> Schema {
+/// `kind`'s tables, as its crate declares them
+pub fn schema(kind: IndexKind, network: NetworkType) -> Schema {
     match kind {
         IndexKind::ValueBalance => value_balance::schema(network),
         IndexKind::CompactBlock => compact_block::schema(network),
         IndexKind::BlockHash => block_hash::schema(network),
         IndexKind::TreeState => tree_state::schema(network),
         IndexKind::TransparentAddress => transparent_address::schema(network),
-        IndexKind::HeaderChain => panic!("header_chain: not an index the NFS folds"),
+        IndexKind::HeaderChain => zaino_header_chain::schema(network),
     }
 }
 

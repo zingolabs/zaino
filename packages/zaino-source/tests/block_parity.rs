@@ -195,10 +195,9 @@ async fn block_parity_with_explorer_offline() {
 
     for expected in FIXTURES {
         let height = Height::try_from(expected.height).expect("fixture height");
-        let mut hash: [u8; 32] = const_hex::decode_to_array(expected.hash).expect("display hex");
-        hash.reverse();
+        let hash: BlockHash = expected.hash.parse().expect("display hex");
         let block = adapter
-            .get_block_by_hash(BlockHash::from(hash))
+            .get_block_by_hash(hash)
             .await
             .unwrap_or_else(|e| panic!("getblock {} failed: {e}", expected.hash));
         assert_eq!(block.header().height, height, "coinbase height");

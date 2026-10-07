@@ -11,6 +11,7 @@ use zcash_protocol::consensus::NetworkType;
 use crate::rules::{equihash_valid, expected_bits, in_context, Ancestor, MEDIAN_SPAN};
 use crate::{check, decode_header, link_run, Header, HeaderChain, HeaderStore, Inserted, Params};
 use crate::{DecodeError, Rejected};
+use zaino_primitives::types::HeaderError;
 
 const HEADER_LEN: usize = 1487;
 const GENESIS_RANGE: &[u8] = include_bytes!("../tests/fixtures/mainnet_0.headers");
@@ -208,7 +209,8 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let mut padded = raw[..140].to_vec();
     padded.extend([0xfd, 36, 0]);
     padded.extend(&raw[141..]);
-    assert_eq!(decode_header(&padded), Err(DecodeError::NonMinimalLength { len: 36 }));
+    let non_minimal = HeaderError::NonMinimalLength { len: 36 };
+    assert_eq!(decode_header(&padded), Err(DecodeError::Header(non_minimal)));
 
     let run = |order: [usize; 3]| {
         let run = order.map(|at| check(&mainnet, headers[at].clone()));
@@ -293,16 +295,19 @@ fn decode_takes_exactly_one_header() {
     let header = decode_header(raw).expect("genesis");
     assert_eq!(header.hash(), Params::mainnet().genesis(), "hash recomputed from the bytes");
     assert_eq!(header.prev_hash(), BlockHash::ZERO);
-    assert_eq!(decode_header(&raw[..140]), Err(DecodeError::Truncated { len: 140 }));
-    assert_eq!(
-        decode_header(&raw[..HEADER_LEN - 1]),
-        Err(DecodeError::Truncated { len: HEADER_LEN - 1 })
-    );
+    let truncated = |len| Err(DecodeError::Header(HeaderError::Truncated { len }));
+    assert_eq!(decode_header(&raw[..140]), truncated(140));
+    assert_eq!(decode_header(&raw[..HEADER_LEN - 1]), truncated(HEADER_LEN - 1));
     let mut long = raw.to_vec();
     long.push(0);
     assert_eq!(decode_header(&long), Err(DecodeError::Trailing { trailing: 1 }));
     let mut odd = raw[..141].to_vec();
     odd[140] = 7;
     odd.extend([0u8; 7]);
-    assert_eq!(decode_header(&odd), Err(DecodeError::SolutionLength { len: 7 }));
+    let odd_length = HeaderError::SolutionLength { len: 7 };
+    assert_eq!(decode_header(&odd), Err(DecodeError::Header(odd_length)));
+    let mut wide = raw[..141].to_vec();
+    wide[140] = 0xfe;
+    let wide_prefix = HeaderError::SolutionPrefix { prefix: 0xfe };
+    assert_eq!(decode_header(&wide), Err(DecodeError::Header(wide_prefix)));
 }

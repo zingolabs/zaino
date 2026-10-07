@@ -11,7 +11,7 @@ use tracing::{info, warn};
 use zaino_primitives::types::Height;
 use zaino_sync::Human;
 
-const REPORT_INTERVAL: Duration = Duration::from_secs(30);
+pub const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Last block handed over vs the verified best: the driver advances it, the reporter samples it
 #[derive(Default)]

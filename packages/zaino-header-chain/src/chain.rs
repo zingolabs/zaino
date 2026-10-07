@@ -24,7 +24,7 @@ use crate::verified::VerifiedChain;
 /// Side-branch tips held beside the best (H4)
 const SIDE_TIPS: usize = 32;
 /// Side-branch nodes held, per block of reorg depth (H4)
-const SIDE_NODES_PER_DEPTH: usize = 4;
+pub const SIDE_NODES_PER_DEPTH: usize = 4;
 
 /// The best tip and the work behind it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

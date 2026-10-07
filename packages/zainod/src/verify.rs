@@ -10,9 +10,8 @@ use std::{
 
 use serde::Serialize;
 use zaino_persistence::{
-    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, Schema, StoreError, Verification,
+    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, StoreError, Verification,
 };
-use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
 
@@ -59,29 +58,24 @@ pub fn run(config_path: &Path) -> i32 {
     }
 }
 
-/// An index's tables, as its crate declares them
-type SchemaOf = fn(NetworkType) -> Schema;
-
 fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
-    let indexes: [(IndexKind, SchemaOf); 6] = [
-        (IndexKind::CompactBlock, zaino_index_compact_block::schema),
-        (IndexKind::ValueBalance, zaino_internal_value_balance::schema),
-        (IndexKind::BlockHash, zaino_internal_block_hash_to_height::schema),
-        (IndexKind::TreeState, zaino_index_tree_state::schema),
-        (IndexKind::TransparentAddress, zaino_index_transparent_address::schema),
-        (IndexKind::HeaderChain, zaino_header_chain::schema),
+    let indexes = [
+        IndexKind::CompactBlock,
+        IndexKind::ValueBalance,
+        IndexKind::BlockHash,
+        IndexKind::TreeState,
+        IndexKind::TransparentAddress,
+        IndexKind::HeaderChain,
     ];
 
     let engine = DiskEngine::new(RealFs::shared());
     let mut reports = BTreeMap::new();
-    for (kind, schema) in indexes {
+    for kind in indexes {
         let index = kind.name();
         let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
-            engine.verify(&path, &schema(config.network)).map_err(|source| VerifyError::Index {
-                index,
-                path,
-                source,
-            })
+            engine
+                .verify(&path, &zaino_nfs::schema(kind, config.network))
+                .map_err(|source| VerifyError::Index { index, path, source })
         });
         reports.insert(index, report.transpose()?);
     }
@@ -135,6 +129,7 @@ mod tests {
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::fs::RealFs;
+    use zaino_persistence::Schema;
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
         Block, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction, TransactionId,
@@ -142,6 +137,7 @@ mod tests {
     };
 
     use zaino_sync::{FeeSink, Final, IndexerDataSink, Step};
+    use zcash_protocol::consensus::NetworkType;
 
     /// All five indexes from one chain, scrubbed through the daemon's own config: clean = 0, a
     /// flipped committed byte = its page named + 1, a lost file = 1, disabled = skipped, no

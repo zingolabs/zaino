@@ -84,24 +84,13 @@ fn range_response<V: SequenceRead>(
         // spawning for those would cost a task per *block* on a projected range — putting a
         // bounded pool in front of the highest-volume RPC before the disk is even reached.
         let (cursor, chunk) = if cursor.next_touches_disk() {
-            // Range lane, per disk step (not per request): a stream reading the snapshot's
-            // layer never queues, and no range queues a point read or a scan.
-            let _permit = reads.acquire(Lane::Range).await;
-
-            match tokio::task::spawn_blocking(move || {
+            // - Range lane per disk step, not per request (layer reads never queue)
+            // - Err = runtime shutting down → stream ends
+            let stepped = reads.read(Lane::Range, move || {
                 let chunk = cursor.next_chunk();
                 (cursor, chunk)
-            })
-            .await
-            {
-                Ok(stepped) => stepped,
-                Err(error) => match error.try_into_panic() {
-                    // a walk panic = a broken invariant: re-raised (zainod aborts on it)
-                    Ok(panic) => std::panic::resume_unwind(panic),
-                    // runtime shutting down: nothing left to serve
-                    Err(_) => return None,
-                },
-            }
+            });
+            stepped.await.ok()?
         } else {
             let chunk = cursor.next_chunk();
             (cursor, chunk)

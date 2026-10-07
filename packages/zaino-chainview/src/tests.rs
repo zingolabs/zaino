@@ -311,7 +311,7 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
         hash: path[height].header().hash,
         height: path[height].header().height,
     };
-    let network = Height::try_from(40).expect("in range");
+    let network = Height::try_from(40u32).expect("in range");
     let validator = Arc::new(FakeValidator::default());
     validator.serve(&chain, tip_at(10));
     validator.edit(|fake| {
@@ -378,7 +378,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let at_90 = chain.extend(chain.genesis().hash, 90);
     let agreed = chain.extend(at_90.hash, 10);
     let tx7 = TransactionId::from([7u8; 32]);
-    for (validator, estimate) in validators.iter().zip([105, 106, 107]) {
+    for (validator, estimate) in validators.iter().zip([105u32, 106, 107]) {
         validator.serve(&chain, agreed);
         validator.edit(|fake| {
             fake.network_tip = Some(Height::try_from(estimate).expect("in range"));
@@ -1130,7 +1130,7 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     )
     .expect("three endpoints");
     let reader = view.subscriber();
-    let params = Params::regtest(Height::try_from(1).expect("1"), None).with_genesis(at(0).hash);
+    let params = Params::regtest(Height::try_from(1u32).expect("1"), None).with_genesis(at(0).hash);
     let fs = zaino_persistence::fs::SimFs::new();
     let path = std::path::Path::new("/headers");
     let regtest = zcash_protocol::consensus::NetworkType::Regtest;
@@ -1187,7 +1187,7 @@ async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_heade
     let endpoint = Endpoint { address: "a:8232".to_owned(), source: Arc::clone(&validator) };
     let (view, pollers) = ChainView::new(vec![endpoint], depth()).expect("one endpoint");
     let reader = view.subscriber();
-    let params = Params::regtest(Height::try_from(1).expect("1"), None).with_genesis(at(0).hash);
+    let params = Params::regtest(Height::try_from(1u32).expect("1"), None).with_genesis(at(0).hash);
     let fs = zaino_persistence::fs::SimFs::new();
     let path = std::path::Path::new("/headers");
     let regtest = zcash_protocol::consensus::NetworkType::Regtest;

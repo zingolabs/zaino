@@ -11,6 +11,7 @@ mod data_sink;
 mod emit;
 mod final_block;
 mod offload;
+mod per_index;
 mod report;
 
 pub use committer::{held, Committer, Run};
@@ -19,7 +20,8 @@ pub use emit::describe_metrics;
 pub use final_block::{Final, Folds};
 pub use offload::compute;
 use offload::Offloaded;
-pub use report::Human;
+pub use per_index::PerIndex;
+pub use report::{ByteSize, Human};
 
 use zaino_primitives::types::{Block, BlockFees};
 

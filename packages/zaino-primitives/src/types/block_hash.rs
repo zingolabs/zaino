@@ -1,6 +1,8 @@
 //! SHA-256d block hash.
 
-use core::fmt;
+use core::{fmt, str::FromStr};
+
+use super::display_order::{self, ParseHashError};
 
 /// SHA-256d block hash (32 bytes, internal byte order).
 ///
@@ -42,11 +44,15 @@ impl fmt::Debug for BlockHash {
 
 impl fmt::Display for BlockHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Full 64-char hex in display (big-endian) order.
-        for &byte in self.0.iter().rev() {
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
+        display_order::write(&self.0, f)
+    }
+}
+
+impl FromStr for BlockHash {
+    type Err = ParseHashError;
+
+    fn from_str(hex: &str) -> Result<Self, Self::Err> {
+        display_order::parse(hex).map(Self)
     }
 }
 

@@ -164,12 +164,6 @@ fn mempool_unavailable_or_fetch(error: RpcError) -> QueryError<GetMempoolListing
     }
 }
 
-/// RPC display order (byte-reversed hex)
-fn display_hex(mut bytes: [u8; 32]) -> String {
-    bytes.reverse();
-    const_hex::encode(bytes)
-}
-
 /// Headers per `getblockheader` batch (~3 KB hex each: ~1.5 MB reply)
 const LINK_BATCH_CALLS: usize = 500;
 
@@ -178,7 +172,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        self.raw_block(display_hex(hash.into()), || GetBlockByHashError::NotFound(hash)).await
+        self.raw_block(hash.to_string(), || GetBlockByHashError::NotFound(hash)).await
     }
 
     /// Raw form (verbose = two extra state reads per header on zebrad)
@@ -262,7 +256,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
                 .iter()
                 .map(|entry| Call {
                     method: "getrawtransaction",
-                    params: vec![display_hex(entry.txid.into()).into(), 0.into()],
+                    params: vec![entry.txid.to_string().into(), 0.into()],
                 })
                 .collect();
             let replies = self.rpc.call_batch(self.lane, calls).await?;
@@ -281,7 +275,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         &self,
         transaction: Vec<u8>,
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
-        let params = vec![const_hex::encode(transaction).into()];
+        let params = vec![hex::encode(transaction).into()];
         self.call_parsed("sendrawtransaction", params, parse::as_txid, |error| {
             let error: NonDomainError = error.into();
             match submission_rejection(&error) {
@@ -297,7 +291,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         &self,
         txid: TransactionId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        let params = vec![display_hex(txid.into()).into(), serde_json::Value::Number(1.into())];
+        let params = vec![txid.to_string().into(), serde_json::Value::Number(1.into())];
         self.call_parsed("getrawtransaction", params, parse::parse_transaction, |error| {
             absent_or_fetch(error, || GetTransactionError::NotFound(txid))
         })

@@ -1,8 +1,7 @@
 //! Merkle root of the transaction tree.
 
-use sha2::{Digest, Sha256};
-
 use super::TransactionId;
+use crate::sha256d;
 
 /// Transaction merkle root (32 bytes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,10 +25,6 @@ impl MerkleRoot {
         }
         level.first().map(|root| Self(*root))
     }
-}
-
-fn sha256d(bytes: &[u8]) -> [u8; 32] {
-    Sha256::digest(Sha256::digest(bytes)).into()
 }
 
 impl From<[u8; 32]> for MerkleRoot {

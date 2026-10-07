@@ -27,8 +27,8 @@ use zaino_sync::Human;
 
 use crate::config::{DaemonConfig, SnapshotConfig};
 use crate::error::IndexerError;
-use crate::logging::Size3;
 use crate::status::{self, Phase, Snapshot};
+use zaino_sync::ByteSize;
 
 const STAGING: &str = ".zaino-snapshot";
 const MANIFEST: &str = "manifest.json";
@@ -106,7 +106,7 @@ pub(crate) async fn bootstrap(
         info!(
             from = %source,
             to = manifest.height,
-            size = %Size3(manifest.bytes),
+            size = %ByteSize(manifest.bytes),
             "Downloading index snapshot"
         );
         let mut logged = Instant::now();
@@ -125,9 +125,9 @@ pub(crate) async fn bootstrap(
                     info!(
                         from = %source,
                         to = manifest.height,
-                        done = %Size3(state.done),
-                        total = %Size3(total),
-                        rate = %format_args!("{}/s", Size3(state.rate)),
+                        done = %ByteSize(state.done),
+                        total = %ByteSize(total),
+                        rate = %format_args!("{}/s", ByteSize(state.rate)),
                         eta = %eta(left, state.rate),
                         "Downloading index snapshot"
                     );
@@ -135,7 +135,7 @@ pub(crate) async fn bootstrap(
             })
             .await?;
         aria2.stop().await;
-        info!(size = %Size3(manifest.bytes), "Verifying index snapshot");
+        info!(size = %ByteSize(manifest.bytes), "Verifying index snapshot");
         let hash = tracked(Phase::Verifying, manifest.bytes, &progress, {
             let archive = archive.clone();
             move |read| sha256(&archive, read)
@@ -154,7 +154,7 @@ pub(crate) async fn bootstrap(
     }
 
     if !staging.join(UNPACKED_DONE).exists() {
-        info!(size = %Size3(manifest.bytes), "Unpacking index snapshot");
+        info!(size = %ByteSize(manifest.bytes), "Unpacking index snapshot");
         let into = staging.join(UNPACKED);
         tracked(Phase::Unpacking, manifest.bytes, &progress, {
             let archive = archive.clone();
@@ -256,7 +256,7 @@ async fn tracked<T: Send + 'static>(
                 status::snapshot(Some(progress(phase, done, total, None)));
                 if logged.elapsed() >= LOG_EVERY {
                     logged = Instant::now();
-                    info!(done = %Size3(done), total = %Size3(total), "{}", match phase {
+                    info!(done = %ByteSize(done), total = %ByteSize(total), "{}", match phase {
                         Phase::Verifying => "Verifying index snapshot",
                         _ => "Unpacking index snapshot",
                     });

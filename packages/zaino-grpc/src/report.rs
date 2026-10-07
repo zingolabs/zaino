@@ -21,6 +21,7 @@ use tracing::{
     field::{display, DisplayValue},
     info, warn,
 };
+use zaino_sync::ByteSize;
 
 use crate::emit::{Method, CODES, METHODS};
 
@@ -293,7 +294,7 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
             requests = tally.requests,
             p50 = timed(p50),
             p99 = timed(p99),
-            out = %ByteRate(method.sent as f64 / secs),
+            out = byte_rate(method.sent, secs),
             client = tally.client,
             refused = tally.refused,
             failed = tally.failed,
@@ -335,7 +336,7 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
             $level!(
                 rps = %Rate(total.requests as f64 / secs),
                 p99 = timed(p99),
-                out = %ByteRate(sent as f64 / secs),
+                out = byte_rate(sent, secs),
                 conns = %conns,
                 streams = over(held.streams),
                 subs = over(held.subscriptions),
@@ -407,25 +408,9 @@ impl fmt::Display for Latency {
     }
 }
 
-/// Bytes per second, binary units: `0B/s`, `12.0KiB/s`, `3.1MiB/s`
-struct ByteRate(f64);
-
-impl fmt::Display for ByteRate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // decimal units, 3 significant figures (same as zainod's index `size`)
-        const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-        let (mut value, mut unit) = (self.0, 0);
-        while value >= 999.5 && unit + 1 < UNITS.len() {
-            value /= 1000.0;
-            unit += 1;
-        }
-        match value {
-            _ if unit == 0 => write!(f, "{value:.0}B/s"),
-            value if value < 9.995 => write!(f, "{value:.2}{}/s", UNITS[unit]),
-            value if value < 99.95 => write!(f, "{value:.1}{}/s", UNITS[unit]),
-            value => write!(f, "{value:.0}{}/s", UNITS[unit]),
-        }
-    }
+/// `bytes` over `secs` as [`ByteSize`] per second: `0B/s`, `3.10MB/s`
+fn byte_rate(bytes: u64, secs: f64) -> String {
+    format!("{}/s", ByteSize((bytes as f64 / secs).round() as u64))
 }
 
 /// Held of its cap: `4/2,048`
@@ -507,8 +492,8 @@ mod tests {
         assert_eq!(shown(&Latency(38_420)), "38.4ms");
         assert_eq!(shown(&Latency(412_300)), "412ms");
         assert_eq!(shown(&Latency(2_310_000)), "2.31s");
-        assert_eq!(shown(&ByteRate(0.0)), "0B/s");
-        assert_eq!(shown(&ByteRate(3_100_000.0)), "3.10MB/s");
+        assert_eq!(byte_rate(0, 1.0), "0B/s");
+        assert_eq!(byte_rate(6_200_000, 2.0), "3.10MB/s");
         assert_eq!(shown(&Used((4, 2_048))), "4/2,048");
     }
 }

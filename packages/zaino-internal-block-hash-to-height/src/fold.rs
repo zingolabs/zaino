@@ -52,7 +52,7 @@ mod tests {
         let reader = BlockHashReader::new(store.staged());
         let located: Vec<_> =
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
-        let expected: Vec<_> = (0..3).map(|n| Some(Height::try_from(n).expect("h"))).collect();
+        let expected: Vec<_> = (0..3u32).map(|n| Some(Height::try_from(n).expect("h"))).collect();
         assert_eq!(located, expected);
         assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
     }
