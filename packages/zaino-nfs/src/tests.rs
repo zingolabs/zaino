@@ -30,6 +30,11 @@ use zaino_primitives::types::{
     Zatoshis,
 };
 use zaino_source::mock::MockChain;
+use zaino_source::{
+    BlockLinks, GetBlockByHashError, GetTransactionError, MempoolListed, NonDomainError,
+    PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+};
+use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
 
 use super::*;
@@ -47,6 +52,60 @@ const INDEXES: [(IndexKind, u64, u32); 5] = [
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
+
+/// `MockChain`, its block bodies with the coinbase twice when `lying` (merkle root moves)
+#[derive(Default)]
+struct Member {
+    chain: MockChain,
+    lying: bool,
+}
+
+impl ChainDataSource for Member {
+    async fn get_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Block, QueryError<GetBlockByHashError>> {
+        let block = self.chain.get_block_by_hash(hash).await?;
+        let txs = block.transactions();
+        Ok(match self.lying {
+            true => Block::new(block.header().clone(), [txs, &txs[..1]].concat()),
+            false => block,
+        })
+    }
+
+    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
+        self.chain.get_block_links(heights).await
+    }
+
+    async fn get_poll_reading(
+        &self,
+        metadata: bool,
+        holds: &[Height],
+    ) -> Result<PollReading, NonDomainError> {
+        self.chain.get_poll_reading(metadata, holds).await
+    }
+
+    async fn get_raw_mempool_transactions(
+        &self,
+        listed: &[MempoolListed],
+    ) -> Result<RawMempoolTransactions, NonDomainError> {
+        self.chain.get_raw_mempool_transactions(listed).await
+    }
+
+    async fn get_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
+        self.chain.get_transaction(txid).await
+    }
+
+    async fn send_raw_transaction(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
+        self.chain.send_raw_transaction(transaction).await
+    }
+}
 
 /// Coinbase paying 10 000, + a spend of `funding`'s output 0 (fee 1 000) carrying one sapling
 /// output and one orchard action (none: genesis, or a funding coinbase paying nothing)
@@ -271,6 +330,8 @@ fn height(h: usize) -> Height {
 ///   (same height), D12 off B11 (retreat), E 13..=16 (final 13: folded sends), E 17..=20 (final
 ///   17: indexes crash at 14..=17)
 /// - Run 1: restart from those tips (apart), E 21..=24 (final 21)
+/// - Bodies through the balancer: an honest member + a liar (each lie reported, re-asked; never
+///   folded: the oracle would differ)
 #[tokio::test(start_paused = true)]
 async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart() {
     let mut blocks = Chain::with_genesis(transactions(None, 0));
@@ -314,10 +375,14 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
     let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
     headers.insert_blocks(&a[..1]).expect("genesis");
-    let sources = [
-        Arc::new(MockChain::serving([a[0].clone()])),
-        Arc::new(MockChain::serving([a[0].clone()])),
-    ];
+    let members = [false, true]
+        .map(|lying| Arc::new(Member { chain: MockChain::serving([a[0].clone()]), lying }));
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted =
+        members.iter().map(|member| Trusted { source: Arc::clone(member), priority: 0, limits });
+    let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
+    let stop_balancing = CancellationToken::new();
+    tokio::spawn(balancing.run(stop_balancing.clone()));
     let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let activations = PoolActivations {
         sapling: Height::GENESIS,
@@ -340,7 +405,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let lookahead = NonZeroUsize::new(4).expect("nonzero");
 
     for (run, moves) in runs.iter().enumerate() {
-        let mut nfs = Nfs::new(verified_rx.clone(), sources.to_vec(), params, lookahead, depth);
+        let mut nfs = Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead, depth);
         let value_balance = indexes[0].2.subscribe();
         let durable: Vec<watch::Receiver<DiskView>> =
             indexes.iter().map(|(_, _, committed)| committed.subscribe()).collect();
@@ -379,8 +444,8 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
             if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
                 headers.finalize(boundary).expect("in-memory store");
             }
-            for source in &sources {
-                source.extend_best(added.to_vec());
+            for member in &members {
+                member.chain.extend_best(added.to_vec());
             }
             verified.send_replace(headers.verified().map(Arc::new));
             let best = headers.best().expect("verified").block;
@@ -445,6 +510,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
             indexes.push((kind, store, committed));
         }
     }
+    stop_balancing.cancel();
 }
 
 /// Chain A 0..=5 (final 2), block-hash alone: `compact_block` before `value_balance` or an index
@@ -465,9 +531,12 @@ async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a
     let activations = PoolActivations { sapling: Height::GENESIS, orchard: None, ironwood: None };
     let params = ChainParams { network: NETWORK, activations };
     let (queue, lookahead) = (NonZeroUsize::MAX, NonZeroUsize::MIN);
-    let nfs = || {
-        let sources = vec![Arc::new(MockChain::serving(a.clone()))];
-        Nfs::<MockChain, DiskView>::new(verified_rx.clone(), sources, params, lookahead, depth)
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let source = Arc::new(MockChain::serving(a.clone()));
+    let (balancer, _never_driven) =
+        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+    let nfs = || -> Nfs<_, DiskView> {
+        Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead, depth)
     };
     let engine = DiskEngine::new(SimFs::new());
     let schema = schema(IndexKind::BlockHash, NETWORK);

@@ -4,14 +4,14 @@
 //!   above final onto a heavier branch (longer, same height, or a retreat), an earlier best made
 //!   heaviest again (nodes reused), finalize
 //! - Each move published or coalesced with the next (a `watch` keeps the latest)
-//! - Sources: honest, slow (past [`HEDGE`]), wrong block, poisoned, mutated, failing, silent
-//! - Source 0 honest or slow (one source holding every block)
+//! - Fetches answered late (random delay), out of order, or after their abandon (a stale body);
+//!   who answers, lies, hedges, retries = `zaino-traffic`'s model (every answer here checked)
 //! - Folds answered after a random delay, in random order
 //! - Each index commits after its own random delay
 //! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too)
 //! - Oracle ([`Toy`]) = fold from genesis along each block's own path
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,28 +20,19 @@ use proptest::prelude::*;
 use zaino_header_chain::{HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_traffic::Urgency;
 
 use super::{Final, Input, NfsCore, Output, SnapshotTip};
-use crate::fetch::{check_block, Answer, HEDGE};
+use crate::fetch::{check_block, Checked};
 use crate::graph::on_best;
 use crate::snapshot::Branch;
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-const SOURCES: usize = 4;
 const INDEXES: usize = 3;
+/// Most virtual seconds the balancer takes to serve a body (hedges, retries, a bench)
+const SERVED_WITHIN: u64 = 20;
 /// Virtual seconds a case may take to settle once the moves end
 const SETTLE: u32 = 20_000;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Kind {
-    Honest,
-    Slow,
-    WrongBlock,
-    Poisoned,
-    Mutated,
-    Failing,
-    Silent,
-}
 
 /// - `Reorg` = top `depth` replaced by `len` heavier blocks (`len` < `depth` = a retreat)
 /// - `Revive` = an earlier best tip (`pick` mod held) outweighs the best again (switch back)
@@ -78,37 +69,22 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
     prop::collection::vec(one, 1..32)
 }
 
-fn kinds() -> impl Strategy<Value = [Kind; SOURCES]> {
-    let any = prop_oneof![
-        Just(Kind::Honest),
-        Just(Kind::Slow),
-        Just(Kind::WrongBlock),
-        Just(Kind::Poisoned),
-        Just(Kind::Mutated),
-        Just(Kind::Failing),
-        Just(Kind::Silent),
-    ];
-    let first = prop_oneof![Just(Kind::Honest), Just(Kind::Slow)];
-    (first, [any.clone(), any.clone(), any]).prop_map(|(first, [a, b, c])| [first, a, b, c])
-}
-
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
     /// - `check()` after every step
+    /// - One `Fetch` per want until its body or its `Abandon`; `Tip` iff above the final tip
     /// - Each index: the best path's final prefix, once, in order, = the oracle
     /// - Published tip folded on the best; no node sent folded pruned before every index holds it
     /// - Settled: every index durable through the final tip, served tip = best
     #[test]
-    fn the_final_stream_and_served_tip_follow_the_verified_best_through_reorgs_lies_and_restarts(
+    fn the_final_stream_and_served_tip_follow_the_verified_best_through_reorgs_and_restarts(
         moves in moves(),
-        kinds in kinds(),
-        sources in 1usize..=SOURCES,
         delays in prop::collection::vec(0u64..=20, 1..=INDEXES),
         lookahead in 1usize..=4,
         seed in any::<u64>(),
     ) {
-        run(&moves, &kinds[..sources], &delays, lookahead, seed);
+        run(&moves, &delays, lookahead, seed);
     }
 }
 
@@ -149,20 +125,22 @@ impl Writer {
 }
 
 enum Due {
-    Body { from: usize, at: BlockRef, answer: Answer },
+    Body(Checked),
     Folded { at: BlockRef, toy: Toy },
     Commit { index: usize, len: usize },
 }
 
-struct Sim<'a> {
+/// - `fetching` = blocks with a `Fetch` out, neither answered nor abandoned
+/// - `decoy` = a block off every chain (G7: `at` of it = `None`)
+struct Sim {
     builder: Chain,
     headers: HeaderChain,
     decoy: BlockHash,
-    kinds: &'a [Kind],
     lookahead: usize,
     core: NfsCore<Toy>,
     given: Option<Arc<VerifiedChain>>,
     pending: Vec<(Instant, Due)>,
+    fetching: HashSet<BlockHash>,
     writers: Vec<Writer>,
     published: Option<BlockRef>,
     sent_folded: BTreeMap<Height, BlockHash>,
@@ -172,7 +150,7 @@ struct Sim<'a> {
     rng: u64,
 }
 
-impl Sim<'_> {
+impl Sim {
     fn random(&mut self, below: u64) -> u64 {
         // xorshift64*: deterministic from the case's seed
         self.rng ^= self.rng >> 12;
@@ -269,52 +247,44 @@ impl Sim<'_> {
     }
 
     fn step(&mut self, input: Input<Toy>, context: &str) {
-        let outputs = self.core.step(input, self.now).expect("durable tips stay on the chain");
+        let outputs = self.core.step(input).expect("durable tips stay on the chain");
         self.core.check();
         for output in outputs {
             match output {
-                Output::Fetch { from, height, record } => self.ask(from, height, record),
-                Output::Misanswered { .. } | Output::Unserved { .. } => {}
+                Output::Fetch { at, record, urgency } => self.ask(at, record, urgency, context),
+                Output::Abandon(at) => self.abandon(at, context),
                 Output::Fold { at, parent, block } => self.fold(at, parent, &block, context),
                 Output::Send(block) => self.send(block, context),
                 Output::Publish(tip) => self.served(tip, context),
             }
         }
+        let wanted: HashSet<BlockHash> = self.core.wanted.values().copied().collect();
+        assert_eq!(wanted, self.fetching, "{context}: one Fetch out per want, none past it");
         self.verify(context);
     }
 
-    /// Source's answer, through the real [`check_block`] (a lie never passes it)
-    fn ask(&mut self, from: usize, height: Height, record: Record) {
-        let kind = self.kinds[from];
-        let honest = self.builder.block(record.hash).clone();
-        let header = honest.header().clone();
-        let served = match kind {
-            Kind::Honest | Kind::Slow => Some(honest),
-            Kind::WrongBlock => Some(self.builder.block(self.decoy).clone()),
-            Kind::Poisoned => {
-                let extra = self.builder.block(self.decoy).transactions()[0].clone();
-                Some(Block::new(header, [honest.transactions().to_vec(), vec![extra]].concat()))
-            }
-            Kind::Mutated => {
-                let txs = honest.transactions();
-                Some(Block::new(header, [txs, txs].concat()))
-            }
-            Kind::Failing => None,
-            Kind::Silent => return,
-        };
-        let answer = match served.map(|block| check_block(block, height, &record)) {
-            Some(Ok(checked)) => Answer::Checked(checked),
-            Some(Err(why)) => Answer::Misanswered(why),
-            None => Answer::Failed,
-        };
-        let honest = matches!(kind, Kind::Honest | Kind::Slow);
-        assert_eq!(matches!(answer, Answer::Checked(_)), honest, "N1: {kind:?} caught by check");
-        let due = match kind {
-            Kind::Slow => self.later(4) + HEDGE + Duration::from_secs(1),
-            _ => self.later(3),
-        };
-        let at = BlockRef { hash: record.hash, height };
-        self.pending.push((due, Due::Body { from, at, answer }));
+    /// The balancer's checked answer, served within [`SERVED_WITHIN`]
+    fn ask(&mut self, at: BlockRef, record: Record, urgency: Urgency, context: &str) {
+        let chain = self.given.as_ref().expect("a chain before any fetch");
+        let final_height = chain.final_tip().map(|tip| tip.height);
+        let tip = Some(at.height) > final_height;
+        assert_eq!(urgency == Urgency::Tip, tip, "{context}: Fetch {at:?} {urgency:?}");
+        assert_eq!(record.hash, at.hash, "{context}: Fetch {at:?} with another's header");
+        let fresh = self.fetching.insert(at.hash);
+        assert!(fresh, "{context}: Fetch {at:?} twice while in flight");
+        let honest = self.builder.block(at.hash).clone();
+        let checked = check_block(honest, at.height, &record).expect("the asked block passes");
+        let due = self.later(SERVED_WITHIN);
+        self.pending.push((due, Due::Body(checked)));
+    }
+
+    /// Its fetch dropped; the answer still lands half the time (a stale body: ignored)
+    fn abandon(&mut self, at: BlockRef, context: &str) {
+        assert!(self.fetching.remove(&at.hash), "{context}: Abandon {at:?} with no Fetch out");
+        if self.random(2) == 0 {
+            let answer = |due: &Due| matches!(due, Due::Body(body) if body.at() == at);
+            self.pending.retain(|(_, due)| !answer(due));
+        }
     }
 
     /// Parent = the oracle's (a node) or every index durable exactly below `at` (the root)
@@ -463,7 +433,13 @@ impl Sim<'_> {
             }
             let pick = due[self.random(due.len() as u64) as usize];
             let input = match self.pending.swap_remove(pick).1 {
-                Due::Body { from, at, answer } => Input::Body { from, at, answer },
+                Due::Body(body) => {
+                    let at = body.at();
+                    if self.core.wanted.get(&at.height) == Some(&at.hash) {
+                        self.fetching.remove(&at.hash);
+                    }
+                    Input::Body(body)
+                }
                 Due::Folded { at, toy } => Input::Folded { at, folded: Arc::new(toy) },
                 Due::Commit { index, len } => {
                     let writer = &mut self.writers[index];
@@ -475,12 +451,9 @@ impl Sim<'_> {
         }
     }
 
-    /// One virtual second: a tick, then everything due
+    /// One virtual second, then everything due
     fn advance(&mut self, context: &str) {
         self.now += Duration::from_secs(1);
-        if self.given.is_some() {
-            self.step(Input::Tick, context);
-        }
         self.answer(context);
     }
 
@@ -496,8 +469,9 @@ impl Sim<'_> {
             writer.applied.truncate(writer.durable);
         }
         let durable = self.writers.iter().map(Writer::tip).collect();
-        self.core = NfsCore::new(self.kinds.len(), self.lookahead, durable);
+        self.core = NfsCore::new(self.lookahead, durable);
         self.pending.clear();
+        self.fetching.clear();
         self.published = None;
         self.sent_folded.clear();
         self.publish(context);
@@ -535,7 +509,7 @@ fn height(h: u32) -> Height {
     Height::try_from(h).expect("small chain")
 }
 
-fn run(moves: &[Move], kinds: &[Kind], delays: &[u64], lookahead: usize, seed: u64) {
+fn run(moves: &[Move], delays: &[u64], lookahead: usize, seed: u64) {
     let mut builder = Chain::new();
     let genesis = builder.genesis().hash;
     let decoy = builder.mine(genesis).hash;
@@ -547,11 +521,11 @@ fn run(moves: &[Move], kinds: &[Kind], delays: &[u64], lookahead: usize, seed: u
         builder,
         headers,
         decoy,
-        kinds,
         lookahead,
-        core: NfsCore::new(kinds.len(), lookahead, vec![None; writers.len()]),
+        core: NfsCore::new(lookahead, vec![None; writers.len()]),
         given: None,
         pending: Vec::new(),
+        fetching: HashSet::new(),
         writers,
         published: None,
         sent_folded: BTreeMap::new(),

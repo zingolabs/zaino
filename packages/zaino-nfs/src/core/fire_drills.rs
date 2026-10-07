@@ -4,14 +4,13 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::time::Instant;
 
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 
 use super::{Diverged, Input, NfsCore, Output, Sent};
-use crate::fetch::{check_block, Answer, Checked};
+use crate::fetch::{check_block, Checked};
 use crate::fired;
 use crate::graph::Node;
 
@@ -80,13 +79,12 @@ impl World {
 
     /// `input`, then every fetch and fold answered honestly (payload = height) unless held
     fn drive(&self, core: &mut NfsCore<Height>, input: Input<Height>, hold: Hold) {
-        let outputs = core.step(input, Instant::now()).expect("durable tips on the chain");
+        let outputs = core.step(input).expect("durable tips on the chain");
         for output in outputs {
             let input = match output {
-                Output::Fetch { from, height, record } if Some(record.hash) != hold.fetch => {
-                    let block = self.builder.block(record.hash).clone();
-                    let answer = Answer::Checked(check_block(block, height, &record).expect("ok"));
-                    Input::Body { from, at: BlockRef { hash: record.hash, height }, answer }
+                Output::Fetch { at, record, .. } if Some(at.hash) != hold.fetch => {
+                    let block = self.builder.block(at.hash).clone();
+                    Input::Body(check_block(block, at.height, &record).expect("honest"))
                 }
                 Output::Fold { at, .. } if Some(at.hash) != hold.fold => {
                     Input::Folded { at, folded: Arc::new(at.height) }
@@ -102,7 +100,7 @@ impl World {
     fn valid(&self) -> NfsCore<Height> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
-        let mut core = NfsCore::new(2, 4, vec![None, None]);
+        let mut core = NfsCore::new(4, vec![None, None]);
         self.drive(&mut core, Input::Chain(self.verified(&a[..=4], 1)), all);
         for index in 0..2 {
             let tip = Some(self.at(a[1]));
@@ -137,7 +135,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     let folding: Vec<BlockHash> = valid.folding.keys().copied().collect();
     let sent = Some(Sent { at: world.at(a[4]), folded: true });
     assert_eq!(
-        (nodes, ready, folding, valid.fetcher.wants(h(9)), valid.sent, valid.served),
+        (nodes, ready, folding, valid.wanted.get(&h(9)) == Some(&a[9]), valid.sent, valid.served),
         (expected, vec![h(8)], vec![a[7]], true, sent, Some(world.at(a[6]))),
         "the planted state"
     );
@@ -204,7 +202,10 @@ fn every_invariant_check_fires_on_its_planted_bug() {
             "fetch: a folded block is not ready",
             Box::new(|c| drop(c.ready.insert(h(6), world.checked(a[6])))),
         ),
-        ("fetch: a ready body is not wanted", Box::new(|c| c.fetcher.want(world.at(a[8])))),
+        ("fetch: a ready body is not wanted", Box::new(|c| _ = c.wanted.insert(h(8), a[8]))),
+        ("fetch: wants above the last sent", Box::new(|c| _ = c.wanted.insert(h(1), a[1]))),
+        ("N1: every want is best", Box::new(|c| _ = c.wanted.insert(h(9), BlockHash::ZERO))),
+        ("fetch: a folded block is not wanted", Box::new(|c| _ = c.wanted.insert(h(6), a[6]))),
         (
             "fold: nothing folds twice",
             Box::new(|c| drop(c.folding.insert(a[6], world.checked(a[6])))),
@@ -218,18 +219,17 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
 
     // preconditions: caller / driver bug → named panic
-    let now = Instant::now();
     let rewound = world.verified(&a[..=4], 1);
     let on_q = world.verified(&[&a[..=3], &q[..]].concat(), 4);
     let step = |plant: &dyn Fn(&mut NfsCore<Height>), input: Input<Height>| {
         let mut core = world.valid();
         plant(&mut core);
-        fired(|| drop(core.step(input, now)))
+        fired(|| drop(core.step(input)))
     };
     let durable = |index, tip: BlockHash| Input::Durable { index, tip: Some(world.at(tip)) };
     let preconditions = [
-        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(1, 0, vec![None])))),
-        ("an index to feed", fired(|| drop(NfsCore::<Height>::new(1, 1, vec![])))),
+        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(0, vec![None])))),
+        ("an index to feed", fired(|| drop(NfsCore::<Height>::new(1, vec![])))),
         ("H2: the final tip never moves back", step(&|_| {}, Input::Chain(rewound))),
         (
             "H2: a final block never changes",
@@ -249,8 +249,8 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
 
     // bad input (not a bug): durable tip off the final chain → `Err(Diverged)`, no panic
-    let mut core = NfsCore::<Height>::new(1, 1, vec![None, Some(world.at(q[0]))]);
-    let diverged = core.step(Input::Chain(world.verified(a, 4)), now).map(drop);
+    let mut core = NfsCore::<Height>::new(1, vec![None, Some(world.at(q[0]))]);
+    let diverged = core.step(Input::Chain(world.verified(a, 4))).map(drop);
     let expected = Diverged { index: 1, height: h(4), expected: q[0], got: a[4] };
     assert_eq!(diverged, Err(expected));
 }

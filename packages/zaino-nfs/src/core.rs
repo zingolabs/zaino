@@ -1,8 +1,8 @@
 //! [`NfsCore`]: the [`VerifiedChain`] + bodies + folds + durable tips → the final stream, the
 //! served tip and the fetches and folds feeding them (`nfs.md` §6, §9)
 //!
-//! - Pure: no I/O, no clock (`now` = an input)
-//! - Fetch, check, fold, send = the driver's
+//! - Pure: no I/O, no clock
+//! - Fetch (one per want, until checked or abandoned), fold, send = the driver's
 //! - Root = lowest durable tip of every index, nodes only above it
 //! - Final + no folded parent → sent unfolded (writers fold)
 //! - Else folded parent first as it joins the best → sent folded once final (lockstep finality)
@@ -10,15 +10,17 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::Instant;
 
 use zaino_header_chain::{Record, VerifiedChain};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
+use zaino_traffic::Urgency;
 
-use crate::fetch::{Answer, Checked, Fetcher, Misanswer};
+use crate::fetch::Checked;
 use crate::graph::{on_best, Graph, Node};
 
 /// Folded payload `F` = one block's folded state per index (`Folded`, toy in the model)
+///
+/// - `wanted` = heights fetching (each one [`Output::Fetch`] until its body or an `Abandon`)
 pub(crate) struct NfsCore<F> {
     lookahead: usize,
     chain: Option<Arc<VerifiedChain>>,
@@ -27,7 +29,7 @@ pub(crate) struct NfsCore<F> {
     graph: Graph<F>,
     ready: BTreeMap<Height, Checked>,
     folding: HashMap<BlockHash, Checked>,
-    fetcher: Fetcher,
+    wanted: BTreeMap<Height, BlockHash>,
     served: Option<BlockRef>,
     served_durable: Vec<Option<BlockRef>>,
 }
@@ -38,22 +40,22 @@ struct Sent {
     folded: bool,
 }
 
+/// `Body` = a checked answer to a `Fetch` (stale = ignored)
 #[derive(Debug, Clone)]
 pub(crate) enum Input<F> {
     Chain(Arc<VerifiedChain>),
-    Body { from: usize, at: BlockRef, answer: Answer },
+    Body(Checked),
     Folded { at: BlockRef, folded: Arc<F> },
     Durable { index: usize, tip: Option<BlockRef> },
-    Tick,
 }
 
 /// - `Send`s in list order; the rest in any
+/// - `Fetch.urgency` = `Tip` above the final tip, `Bulk` below
 /// - `Fold.parent` = `None`: fold on the committed stores at the root
 #[derive(Debug, Clone)]
 pub(crate) enum Output<F> {
-    Fetch { from: usize, height: Height, record: Record },
-    Misanswered { from: usize, at: BlockRef, why: Misanswer },
-    Unserved { height: Height },
+    Fetch { at: BlockRef, record: Record, urgency: Urgency },
+    Abandon(BlockRef),
     Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block> },
     Send(Final<F>),
     Publish(SnapshotTip<F>),
@@ -87,7 +89,7 @@ pub(crate) struct Diverged {
 impl<F> NfsCore<F> {
     /// - `durable` = each enabled index's durable tip (`Durable.index` = its position)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
-    pub(crate) fn new(sources: usize, lookahead: usize, durable: Vec<Option<BlockRef>>) -> Self {
+    pub(crate) fn new(lookahead: usize, durable: Vec<Option<BlockRef>>) -> Self {
         assert!(lookahead > 0, "at least one block in flight");
         assert!(!durable.is_empty(), "an index to feed");
         let mut core = Self {
@@ -99,7 +101,7 @@ impl<F> NfsCore<F> {
             graph: Graph::new(),
             ready: BTreeMap::new(),
             folding: HashMap::new(),
-            fetcher: Fetcher::new(sources),
+            wanted: BTreeMap::new(),
             served: None,
         };
         core.sent = core.root().map(|at| Sent { at, folded: false });
@@ -107,34 +109,33 @@ impl<F> NfsCore<F> {
     }
 
     /// `Err` = an index's durable block off the final chain (resync required)
-    pub(crate) fn step(
-        &mut self,
-        input: Input<F>,
-        now: Instant,
-    ) -> Result<Vec<Output<F>>, Diverged> {
+    pub(crate) fn step(&mut self, input: Input<F>) -> Result<Vec<Output<F>>, Diverged> {
         let mut out = Vec::new();
         match input {
             Input::Chain(chain) => self.follow(chain)?,
-            Input::Body { from, at, answer } => {
-                if let Some(body) = self.fetcher.answered(from, at, answer, now, &mut out) {
-                    self.ready.insert(at.height, body);
-                }
-            }
+            Input::Body(body) => self.body(body),
             Input::Folded { at, folded } => self.folded(at, folded),
             Input::Durable { index, tip } => self.durable(index, tip),
-            Input::Tick => {}
         }
         let Some(chain) = self.chain.clone() else { return Ok(out) };
         self.graph.prune(&chain, self.root());
-        self.forget(&chain);
+        self.forget(&chain, &mut out);
         if !self.restarting(&chain) {
             self.send(&chain, &mut out);
             self.fold(&chain, &mut out);
             self.publish(&chain, &mut out);
         }
-        self.want(&chain);
-        self.fetcher.ask(&chain, now, &mut out);
+        self.want(&chain, &mut out);
         Ok(out)
+    }
+
+    /// A wanted body → ready; any other (abandoned while in flight) dropped
+    fn body(&mut self, body: Checked) {
+        let at = body.at();
+        if self.wanted.get(&at.height) == Some(&at.hash) {
+            self.wanted.remove(&at.height);
+            self.ready.insert(at.height, body);
+        }
     }
 
     /// Lowest durable tip (`None` = an index holds nothing)
@@ -199,14 +200,21 @@ impl<F> NfsCore<F> {
         self.durable[index] = tip;
     }
 
-    /// Bodies and wants no longer needed: off best, already sent, or folded
-    fn forget(&mut self, chain: &VerifiedChain) {
+    /// Bodies and wants no longer needed: off best, already sent, or folded (each want abandoned)
+    fn forget(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
         let next = self.next_send();
         let graph = &self.graph;
         let needed =
             |at: BlockRef| at.height >= next && on_best(chain, at) && !graph.contains(&at.hash);
         self.ready.retain(|_, body| needed(body.at()));
-        self.fetcher.retain(needed);
+        self.wanted.retain(|height, hash| {
+            let at = BlockRef { hash: *hash, height: *height };
+            let keep = needed(at);
+            if !keep {
+                out.push(Output::Abandon(at));
+            }
+            keep
+        });
     }
 
     /// Final heights in order: a node's folded, else (no folded parent, no fold in flight) the
@@ -288,18 +296,27 @@ impl<F> NfsCore<F> {
     }
 
     /// First `lookahead` best heights from the next send with no node: each held, folding or
-    /// wanted
-    fn want(&mut self, chain: &VerifiedChain) {
+    /// wanted (a new want = one `Fetch`)
+    fn want(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
         let heights = self.next_send().up_to(chain.best().height);
         let at = heights.map(|height| BlockRef {
             hash: chain.hash_at(height).expect("at or below the best tip"),
             height,
         });
         let unfolded = at.filter(|at| !self.graph.contains(&at.hash));
+        let final_height = chain.final_tip().map(|tip| tip.height);
         for at in unfolded.take(self.lookahead).collect::<Vec<_>>() {
-            if !self.ready.contains_key(&at.height) && !self.folding.contains_key(&at.hash) {
-                self.fetcher.want(at);
+            let held = self.ready.contains_key(&at.height) || self.folding.contains_key(&at.hash);
+            if held || self.wanted.contains_key(&at.height) {
+                continue;
             }
+            self.wanted.insert(at.height, at.hash);
+            let record = chain.header_at(at.height).expect("a wanted height is best");
+            let urgency = match Some(at.height) > final_height {
+                true => Urgency::Tip,
+                false => Urgency::Bulk,
+            };
+            out.push(Output::Fetch { at, record, urgency });
         }
     }
 
@@ -307,6 +324,7 @@ impl<F> NfsCore<F> {
     pub(crate) fn check(&self) {
         let Some(chain) = &self.chain else {
             let empty = self.graph.is_empty() && self.ready.is_empty() && self.folding.is_empty();
+            let empty = empty && self.wanted.is_empty();
             assert!(empty && self.served.is_none(), "nothing before a chain");
             return;
         };
@@ -337,12 +355,16 @@ impl<F> NfsCore<F> {
             assert!(*height >= next, "fetch: ready bodies above the last sent");
             assert!(on_best(chain, body.at()), "N1: every ready body is best");
             assert!(!self.graph.contains(&body.at().hash), "fetch: a folded block is not ready");
-            assert!(!self.fetcher.wants(*height), "fetch: a ready body is not wanted");
+            assert!(!self.wanted.contains_key(height), "fetch: a ready body is not wanted");
         }
         for hash in self.folding.keys() {
             assert!(!self.graph.contains(hash), "fold: nothing folds twice");
         }
-        self.fetcher.check(chain, next);
+        for (height, hash) in &self.wanted {
+            assert!(*height >= next, "fetch: wants above the last sent");
+            assert_eq!(chain.hash_at(*height), Some(*hash), "N1: every want is best");
+            assert!(!self.graph.contains(hash), "fetch: a folded block is not wanted");
+        }
     }
 }
 

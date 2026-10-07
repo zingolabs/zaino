@@ -102,12 +102,18 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     let inputs = Inputs {
         chain: chainview.header_sync.subscribe(),
         view: Arc::clone(&chainview.view),
-        sync: laned(Lane::Sync),
+        balancer: chainview.balancer.clone(),
         validators: TrafficBalancer::new(laned(Lane::Serve)),
         activations: PoolActivations::from_validator(&schedule),
     };
     let cancel = CancellationToken::new();
     let mut tasks = pipeline(&config, fs, inputs, &cancel, started).await?;
+
+    let balancing = chainview.balancing.run(cancel.child_token());
+    spawn(&mut tasks, "traffic", component("Traffic"), async move {
+        balancing.await;
+        Ok::<_, IndexerError>(())
+    });
 
     let run = chainview.header_sync.run(cancel.child_token());
     spawn(&mut tasks, "header-sync", chainview_span.clone(), run);
@@ -144,11 +150,11 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals(), shutdown)))
 }
 
-/// Pipeline inputs (production: header sync + trusted validators, each on its lane; tests: mocks)
+/// Pipeline inputs (production: header sync + trusted validators; tests: mocks)
 struct Inputs<S: ChainDataSource> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
-    sync: Vec<Arc<S>>,
+    balancer: zaino_traffic::TrafficBalancer<S>,
     validators: TrafficBalancer<S>,
     activations: PoolActivations,
 }
@@ -168,7 +174,7 @@ async fn pipeline<S: ChainDataSource>(
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let params = ChainParams { network, activations: inputs.activations };
     let verified = inputs.chain.clone();
-    let nfs = Nfs::new(inputs.chain, inputs.sync, params, config.sync.concurrency, depth);
+    let nfs = Nfs::new(inputs.chain, inputs.balancer, params, config.sync.concurrency, depth);
     let mut indexes = Subscribed { nfs, opened: Vec::new() };
     let mut tasks = JoinSet::new();
     let engine = DiskEngine::new(fs);
@@ -581,10 +587,13 @@ mod tests {
             orchard: Some(genesis_height),
             ironwood: Some(genesis_height),
         };
+        let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+        let trusted = zaino_traffic::Trusted { source: Arc::clone(&mock), priority: 0, limits };
+        let (balancer, balancing) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
         let inputs = Inputs {
             chain,
             view: Arc::new(view),
-            sync: vec![Arc::clone(&mock)],
+            balancer,
             validators: TrafficBalancer::new(vec![Arc::clone(&mock)]),
             activations,
         };
@@ -601,6 +610,7 @@ mod tests {
         let cancel = CancellationToken::new();
         let started = std::time::Instant::now();
         let tasks = pipeline(&config, fs, inputs, &cancel, started).await.expect("pipeline up");
+        tokio::spawn(balancing.run(cancel.child_token()));
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");

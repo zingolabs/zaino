@@ -79,6 +79,7 @@ zaino-peers.workspace = true
 futures.workspace = true
 bytes.workspace = true
 zaino-nfs.workspace = true
+zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

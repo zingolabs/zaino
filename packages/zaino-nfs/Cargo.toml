@@ -28,6 +28,7 @@ zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 zaino-sync.workspace = true
+zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 zcash_protocol.workspace = true
 
 [features]

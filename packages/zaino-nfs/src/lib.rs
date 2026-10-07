@@ -9,22 +9,25 @@ mod graph;
 mod report;
 mod snapshot;
 
+use std::collections::HashMap;
+use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
-use tokio::task::{JoinError, JoinSet};
+use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn};
-use zaino_header_chain::{Record, VerifiedChain};
+use tracing::{info, warn};
+use zaino_header_chain::VerifiedChain;
 use zaino_persistence::{IndexKind, Layer, MapRead, SequenceRead};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::ChainDataSource;
 use zaino_sync::{compute, Final, Human, IndexerDataSink, PerIndex, Step, Subscription};
+use zaino_traffic::TrafficBalancer;
 
 use crate::core::{Diverged, Input, NfsCore, Output, SnapshotTip};
-use crate::fetch::{check_block, Answer};
+use crate::fetch::{fetch, Checked};
 use crate::fold::{fold_block, Folded};
 use crate::report::Progress;
 use crate::snapshot::Publisher;
@@ -33,9 +36,6 @@ pub use crate::emit::describe_metrics;
 pub use crate::fold::{schema, FoldError, INDEXES};
 pub use crate::report::REPORT_INTERVAL;
 pub use crate::snapshot::{At, Branch, ChainParams, NfsHandle, Published, Snapshot, Views};
-
-/// Core re-asked at this pace (retries, hedges)
-const TICK: Duration = Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {
@@ -52,14 +52,14 @@ pub enum NfsError {
     WriterGone(&'static str),
 }
 
-/// `NfsCore` run against real sources, folds, writers and readers
-/// - Inputs: the verified chain, fetched bodies, fold results, each index's committed view
+/// `NfsCore` run against the balancer, real folds, writers and readers
+/// - Inputs: the verified chain, checked bodies, fold results, each index's committed view
 /// - Outputs: fetches (tasks), folds (compute pool), the final stream, [`Snapshot`]s
 /// - `handed` = last block handed to the indexes (folded, or sent unfolded); `served` = last
 ///   published tip (reorgs and new tips logged against it)
 pub struct Nfs<S, V> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
-    sources: Vec<Arc<S>>,
+    balancer: TrafficBalancer<S>,
     params: ChainParams,
     lookahead: NonZeroUsize,
     sink: IndexerDataSink<Final>,
@@ -72,19 +72,19 @@ pub struct Nfs<S, V> {
 }
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
-    /// - `sources` = everything serving blocks by hash (each answer checked)
+    /// - `balancer` = who serves each body (each answer checked; its driver runs elsewhere)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
     /// - `_depth`: unread (side nodes = what `chain` holds, its H4 bound); goes with zainod's call
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
-        sources: Vec<Arc<S>>,
+        balancer: TrafficBalancer<S>,
         params: ChainParams,
         lookahead: NonZeroUsize,
         _depth: ReorgDepth,
     ) -> Self {
         Self {
             chain,
-            sources,
+            balancer,
             params,
             lookahead,
             sink: IndexerDataSink::new("final"),
@@ -154,31 +154,31 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             commits.spawn(next_commit(position, watch));
         }
         let durable = committed.iter().map(|(_, view)| view.tip()).collect();
-        let (sources, lookahead) = (self.sources.len(), self.lookahead.get());
-        let mut core = NfsCore::new(sources, lookahead, durable);
+        let mut core = NfsCore::new(self.lookahead.get(), durable);
         let mut work = JoinSet::new();
-        let mut ticks = tokio::time::interval(TICK);
-        ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut input = self.chain.borrow_and_update().clone().map_or(Input::Tick, Input::Chain);
+        let mut fetches = Fetches::default();
+        let mut input = self.chain.borrow_and_update().clone().map(Input::Chain);
         loop {
-            if let Input::Chain(chain) = &input {
-                emit::best(chain.best().height);
-                self.progress.target(chain.best().height);
-            }
-            let now = tokio::time::Instant::now().into_std();
-            let outputs = core.step(input, now).map_err(|diverged| self.diverged(diverged))?;
-            for output in outputs {
-                self.execute(output, &committed, &mut work).await;
-            }
-            if cfg!(debug_assertions) {
-                core.check();
+            if let Some(input) = input.take() {
+                if let Input::Chain(chain) = &input {
+                    emit::best(chain.best().height);
+                    self.progress.target(chain.best().height);
+                }
+                let outputs = core.step(input).map_err(|diverged| self.diverged(diverged))?;
+                for output in outputs {
+                    self.execute(output, &committed, &mut work, &mut fetches).await;
+                }
+                if cfg!(debug_assertions) {
+                    core.check();
+                }
             }
             input = tokio::select! {
                 changed = self.chain.changed() => {
                     changed.map_err(|_| NfsError::ChainGone)?;
-                    self.chain.borrow_and_update().clone().map_or(Input::Tick, Input::Chain)
+                    self.chain.borrow_and_update().clone().map(Input::Chain)
                 }
-                Some(done) = work.join_next() => joined(done)?,
+                Some(done) = work.join_next() => Some(joined(done)?),
+                body = fetches.next() => Some(Input::Body(body)),
                 Some(commit) = commits.join_next() => {
                     let (index, mut watch, open) = joined(commit);
                     let (kind, view) = committed.at_mut(index);
@@ -188,9 +188,8 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                     *view = watch.borrow_and_update().clone();
                     let tip = view.tip();
                     commits.spawn(next_commit(index, watch));
-                    Input::Durable { index, tip }
+                    Some(Input::Durable { index, tip })
                 }
-                _ = ticks.tick() => Input::Tick,
             };
         }
     }
@@ -201,12 +200,14 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         output: Output<Folded>,
         committed: &PerIndex<V>,
         work: &mut JoinSet<Result<Input<Folded>, FoldError>>,
+        fetches: &mut Fetches,
     ) {
         match output {
-            Output::Fetch { from, height, record } => {
-                let source = Arc::clone(&self.sources[from]);
-                work.spawn(async move { Ok(fetch(source, from, height, record).await) });
+            Output::Fetch { at, record, urgency } => {
+                let fetch = fetch(self.balancer.clone(), at, record, urgency);
+                fetches.start(at.hash, fetch);
             }
+            Output::Abandon(at) => fetches.abandon(at.hash),
             Output::Fold { at, parent, block } => {
                 self.hand(&block);
                 let parent = self.views(committed, parent.as_deref());
@@ -229,13 +230,6 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                 let durable = committed.clone();
                 let snapshot = Snapshot::new(chain, tip, root, self.params, durable, graph);
                 self.published.publish(snapshot);
-            }
-            Output::Misanswered { from, at, why } => {
-                let height = u32::from(at.height);
-                warn!(source = from, height, %why, "Source misanswered a block, asking another");
-            }
-            Output::Unserved { height } => {
-                debug!(height = u32::from(height), "No source served the block, retrying");
             }
         }
     }
@@ -295,24 +289,45 @@ async fn next_commit<V>(
     (index, watch, open)
 }
 
-/// `getblock <hash> 0` off `source`, checked against `record`
-async fn fetch<S: ChainDataSource>(
-    source: Arc<S>,
-    from: usize,
-    height: Height,
-    record: Record,
-) -> Input<Folded> {
-    let answer = match source.get_block_by_hash(record.hash).await {
-        Ok(block) => match check_block(block, height, &record) {
-            Ok(checked) => Answer::Checked(checked),
-            Err(why) => Answer::Misanswered(why),
-        },
-        Err(error) => {
-            debug!(source = from, height = u32::from(height), %error, "Block fetch failed");
-            Answer::Failed
+/// Fetches in flight, each abandoned by its block (`ids`: a re-want's task never taken for the
+/// abandoned one's)
+#[derive(Default)]
+struct Fetches {
+    tasks: JoinSet<Checked>,
+    ids: HashMap<BlockHash, (Id, AbortHandle)>,
+}
+
+impl Fetches {
+    fn start(&mut self, block: BlockHash, fetch: impl Future<Output = Checked> + Send + 'static) {
+        let handle = self.tasks.spawn(fetch);
+        self.ids.insert(block, (handle.id(), handle));
+    }
+
+    fn abandon(&mut self, block: BlockHash) {
+        if let Some((_, handle)) = self.ids.remove(&block) {
+            handle.abort();
         }
-    };
-    Input::Body { from, at: BlockRef { hash: record.hash, height }, answer }
+    }
+
+    /// Next checked body (an abandoned fetch's end skipped; none in flight = pending)
+    async fn next(&mut self) -> Checked {
+        loop {
+            let Some(done) = self.tasks.join_next_with_id().await else {
+                return std::future::pending().await;
+            };
+            match done {
+                Ok((id, body)) => {
+                    let hash = body.at().hash;
+                    if self.ids.get(&hash).is_some_and(|(held, _)| *held == id) {
+                        self.ids.remove(&hash);
+                    }
+                    return body;
+                }
+                Err(join) if join.is_cancelled() => {}
+                Err(join) => std::panic::resume_unwind(join.into_panic()),
+            }
+        }
+    }
 }
 
 /// Task's value; its panic resumed here (a fold or fetch never half-done)
