@@ -1,28 +1,8 @@
-//! Poll cadence, retry ladder, telemetry thresholds
+//! Telemetry thresholds (poll cadence + retry ladder = `zaino-traffic`'s)
 
 use std::time::Duration;
 
-/// Delay between polls of one endpoint
-pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Reconcile cadence while its push stream is up (events wake it sooner; the poll stays the truth)
-pub(crate) const STREAMED_POLL_INTERVAL: Duration = Duration::from_secs(15);
-
-/// Floor between two polls of one endpoint (a burst of events = one poll per floor, not per event)
-pub(crate) const MIN_POLL_SPACING: Duration = Duration::from_millis(200);
-
-/// First retry delay (doubles up to `MAX_BACKOFF`)
-pub(crate) const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
-
-pub(crate) const MAX_BACKOFF: Duration = Duration::from_secs(30);
-
-/// Consecutive failures before an endpoint is ejected (`Down`)
-pub(crate) const MAX_CONSECUTIVE_FAILURES: u32 = 10;
-
-/// Delay between peer + release reads (peer graph and version move far slower than the mempool)
-pub(crate) const METADATA_REFRESH: Duration = Duration::from_secs(60);
-
-/// Delay between "catching up" warnings for one endpoint (polled every `POLL_INTERVAL`)
+/// Delay between "catching up" warnings for one endpoint (polled every second)
 pub(crate) const CATCHING_UP_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Live tip this far behind its own clock estimate = stale (P(natural 30 min gap) ≈ e^-24)

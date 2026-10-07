@@ -5023,6 +5023,7 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
+ "zaino-traffic",
  "zcash_primitives",
  "zcash_protocol",
 ]
@@ -5273,6 +5274,7 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
+ "zaino-traffic",
  "zcash_protocol",
 ]
 

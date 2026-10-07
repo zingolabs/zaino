@@ -2,13 +2,13 @@
 #![forbid(unsafe_code)]
 
 mod config;
-mod endpoint;
 mod endpoints;
 mod error;
 mod feed;
 mod fold;
 mod headers;
 mod holders;
+mod observe;
 mod peers;
 mod ports;
 mod snapshot;
@@ -24,15 +24,15 @@ mod network_model;
 #[cfg(test)]
 mod tests;
 
-pub use endpoint::{EndpointPoller, PollWaker};
-pub use endpoints::{Agreement, EndpointSet, EndpointState, Ewma, ValidatorMetadata};
+pub use endpoints::{Agreement, EndpointSet, ValidatorMetadata};
 pub use error::{ConfigError, HeaderStoreFailed, SubmitError};
 pub use feed::{Logged, MempoolTail};
 pub use headers::HeaderSync;
+pub use observe::ObservationFold;
 pub use peers::PeerWatch;
 pub use ports::{Heard, ValidatorP2pSource};
 pub use snapshot::{ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread};
 pub use submit::SubmitPolicy;
 pub use telemetry::{describe_metrics, Alarms, METRIC_BUCKETS};
 pub use tip::{ChainTip, Unserved};
-pub use view::{ChainView, ChainViewSubscriber, Endpoint};
+pub use view::{ChainView, ChainViewSubscriber};

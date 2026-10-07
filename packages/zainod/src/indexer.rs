@@ -41,9 +41,9 @@ use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::{BlockchainInfo, ReorgDepth};
-use zaino_source::{ChainDataSource, ZebraRpcAdapter};
+use zaino_source::ChainDataSource;
 use zaino_sync::{FeeSink, Final, Subscription};
-use zaino_traffic::TrafficBalancer;
+use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
 
 use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
 use crate::error::IndexerError;
@@ -70,49 +70,58 @@ pub(crate) async fn spawn_indexer(
     boot(config).await
 }
 
-/// Upgrade schedule from the first trusted validator to answer (retried until one does)
+/// Upgrade schedule from the first poll any trusted validator answers (catching up counts: its
+/// schedule is the network's)
 ///
 /// - the one boot-time validator read (tree-state pool activations; never a compiled-in table)
-async fn upgrade_schedule(validators: &[Arc<ZebraRpcAdapter>]) -> BlockchainInfo {
-    let mut delay = std::time::Duration::from_secs(1);
+async fn upgrade_schedule<S: ChainDataSource>(
+    balancer: &TrafficBalancer<S>,
+    validators: usize,
+) -> BlockchainInfo {
+    let members = (0..validators).filter_map(ValidatorId::new);
+    let mut observed: Vec<_> = members.map(|member| balancer.observe(member)).collect();
+    let mut warned = false;
     loop {
-        for validator in validators {
-            match validator.get_poll_reading(false, &[]).await {
-                Ok(reading) => return reading.info,
-                Err(error) => debug!(%error, "Validator not answering for the upgrade schedule"),
+        for observation in &mut observed {
+            let observation = observation.borrow_and_update().clone();
+            match observation.as_ref().map(|observation| &observation.polled) {
+                Some(Ok(reading)) => return reading.info.clone(),
+                Some(Err(cause)) if !warned => {
+                    warn!(%cause, "No trusted validator answering yet, waiting to read the upgrade schedule");
+                    warned = true;
+                }
+                Some(Err(_)) | None => {}
             }
         }
-        warn!(retry = ?delay, "No trusted validator answering yet, waiting to read the upgrade schedule");
-        tokio::time::sleep(delay).await;
-        delay = (delay * 2).min(std::time::Duration::from_secs(30));
+        let changes = observed.iter_mut().map(|observation| Box::pin(observation.changed()));
+        let (changed, ..) = futures::future::select_all(changes).await;
+        changed.expect("the balancer outlives boot");
     }
 }
 
 /// Chain view over the trusted validators → pipeline over it → every task spawned
 ///
-/// - One connection pool per validator; chainview on `Lane::Control`, fetch on `Sync`, serving on
-///   `Serve` (a lane never borrows another's connections)
+/// - One balancer over every validator; its driver first (the upgrade schedule is a poll's)
 async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
     let chainview_span = component("ChainView");
     let chainview =
         chainview_span.in_scope(|| crate::chainview::connect(&config, Arc::clone(&fs)))?;
-    let schedule = upgrade_schedule(&chainview.sources).instrument(chainview_span.clone()).await;
+    let cancel = CancellationToken::new();
+    let mut tasks = JoinSet::new();
+    let balancing = chainview.balancing.run(cancel.child_token());
+    spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
+    let validators = config.trusted_validators.len();
+    let schedule = upgrade_schedule(&chainview.balancer, validators);
+    let schedule = schedule.instrument(chainview_span.clone()).await;
     let inputs = Inputs {
         chain: chainview.header_sync.subscribe(),
         view: Arc::clone(&chainview.view),
         balancer: chainview.balancer.clone(),
         activations: PoolActivations::from_validator(&schedule),
     };
-    let cancel = CancellationToken::new();
-    let mut tasks = pipeline(&config, fs, inputs, &cancel, started).await?;
-
-    let balancing = chainview.balancing.run(cancel.child_token());
-    spawn(&mut tasks, "traffic", component("Traffic"), async move {
-        balancing.await;
-        Ok::<_, IndexerError>(())
-    });
+    let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
 
     let run = chainview.header_sync.run(cancel.child_token());
     spawn(&mut tasks, "header-sync", chainview_span.clone(), run);
@@ -121,26 +130,17 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
         let token = cancel.child_token();
         let run = async move {
             tokio::join!(token.run_until_cancelled(starting), watch.run(token.clone()));
-            Ok::<_, IndexerError>(())
         };
-        spawn(&mut tasks, "peers", chainview_span.clone(), run);
+        spawn_infallible(&mut tasks, "peers", chainview_span.clone(), run);
     }
-    for (poller, watch) in chainview.pollers {
-        if let Some(watch) = watch {
-            let (woken, linked) = (poller.waker(), poller.waker());
-            let token = cancel.child_token();
-            let run = async move {
-                watch.run(token, move |_| woken.wake(), move |up| linked.streaming(up)).await;
-                Ok::<_, IndexerError>(())
-            };
-            spawn(&mut tasks, "push-stream", chainview_span.clone(), run);
-        }
-        let token = cancel.child_token();
-        let run = async move {
-            poller.run(token).await;
-            Ok::<_, IndexerError>(())
-        };
-        spawn(&mut tasks, "chainview", chainview_span.clone(), run);
+    let fold = chainview.fold.run(cancel.child_token());
+    spawn_infallible(&mut tasks, "chainview", chainview_span.clone(), fold);
+    for (member, watch) in chainview.watches {
+        let (changed, linked) = (chainview.balancer.clone(), chainview.balancer.clone());
+        let on_change = move |_| changed.pushed(member, Push::Changed);
+        let on_link = move |up| linked.pushed(member, Push::Link(up));
+        let run = watch.run(cancel.child_token(), on_change, on_link);
+        spawn_infallible(&mut tasks, "push-stream", chainview_span.clone(), run);
     }
     let heartbeat = crate::admin::beat(cancel.child_token());
     spawn(&mut tasks, "heartbeat", component("Metrics"), heartbeat);
@@ -158,6 +158,7 @@ struct Inputs<S: ChainDataSource> {
 }
 
 /// The NFS, every enabled index's writer, the gRPC server: opened, subscribed, bound, spawned
+/// into `tasks`
 ///
 /// - an early `Err` leaves nothing running (`tasks` dropped before the NFS: no writer sees its
 ///   stream end)
@@ -167,6 +168,7 @@ async fn pipeline<S: ChainDataSource>(
     inputs: Inputs<S>,
     cancel: &CancellationToken,
     started: std::time::Instant,
+    tasks: JoinSet<TaskExit>,
 ) -> Result<JoinSet<TaskExit>, IndexerError> {
     let network = config.network;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
@@ -175,7 +177,8 @@ async fn pipeline<S: ChainDataSource>(
     let balancer = inputs.balancer.clone();
     let nfs = Nfs::new(inputs.chain, balancer, params, config.sync.concurrency, depth);
     let mut indexes = Subscribed { nfs, opened: Vec::new() };
-    let mut tasks = JoinSet::new();
+    // declared after the NFS: dropped first
+    let mut tasks = tasks;
     let engine = DiskEngine::new(fs);
 
     if let Some((cb, vb)) = config.compact_block()? {
@@ -185,32 +188,35 @@ async fn pipeline<S: ChainDataSource>(
         let schema = value_balance::schema(network);
         let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
-        spawn_index(&mut tasks, IndexKind::ValueBalance, span, writer.run(blocks, fee_sink));
+        let run = writer.run(blocks, fee_sink);
+        spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
         let schema = compact_block::schema(network);
         let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
-        spawn_index(&mut tasks, IndexKind::CompactBlock, span, writer.run(blocks, fees));
+        let run = writer.run(blocks, fees);
+        spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
         let schema = block_hash::schema(network);
         let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::BlockHash, writer.committed(), &bh, &span);
-        spawn_index(&mut tasks, IndexKind::BlockHash, span, writer.run(blocks));
+        spawn_infallible(&mut tasks, IndexKind::BlockHash.name(), span, writer.run(blocks));
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
         let schema = tree_state::schema(network);
         let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new)?;
         let blocks = indexes.subscribe(IndexKind::TreeState, writer.committed(), &ts, &span);
-        spawn_index(&mut tasks, IndexKind::TreeState, span, writer.run(blocks));
+        spawn_infallible(&mut tasks, IndexKind::TreeState.name(), span, writer.run(blocks));
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
         let kind = IndexKind::TransparentAddress;
         let schema = transparent_address::schema(network);
         let (span, writer) = open(&engine, &ta, schema, TransparentAddressIndexWriter::new)?;
         let blocks = indexes.subscribe(kind, writer.committed(), &ta, &span);
-        spawn_index(&mut tasks, kind, span, writer.run(blocks));
+        spawn_infallible(&mut tasks, kind.name(), span, writer.run(blocks));
     }
     let snapshots = indexes.nfs.handle();
+    let members = inputs.balancer.members();
 
     // --- serving: bound here (EADDRINUSE = boot failure), every answer off one snapshot
     let routes = Routes {
@@ -266,6 +272,7 @@ async fn pipeline<S: ChainDataSource>(
         network: network_name(network),
         started,
         chainview: inputs.view.subscriber(),
+        members,
         handed,
         served: snapshots,
         synced: synced.subscribe(),
@@ -403,13 +410,14 @@ fn spawn<E>(
     tasks.spawn(async move { (task, run.await.map_err(IndexerError::from)) }.instrument(component));
 }
 
-fn spawn_index(
+/// [`spawn`] for a task with no failure of its own
+fn spawn_infallible(
     tasks: &mut JoinSet<TaskExit>,
-    index: IndexKind,
+    task: &'static str,
     component: Span,
     run: impl Future<Output = ()> + Send + 'static,
 ) {
-    spawn(tasks, index.name(), component, async move {
+    spawn(tasks, task, component, async move {
         run.await;
         Ok::<_, IndexerError>(())
     });
@@ -577,9 +585,6 @@ mod tests {
         let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
         let (verified, chain) = watch::channel(None);
         let mock = Arc::new(MockChain::serving(a.clone()));
-        let endpoint =
-            zaino_chainview::Endpoint { address: "mock".to_owned(), source: mock.clone() };
-        let (view, _pollers) = ChainView::new(vec![endpoint], depth).expect("one endpoint");
         let genesis_height = Height::GENESIS;
         let activations = PoolActivations {
             sapling: genesis_height,
@@ -589,7 +594,9 @@ mod tests {
         let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = zaino_traffic::Trusted { source: Arc::clone(&mock), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
-        let inputs = Inputs { chain, view: Arc::new(view), balancer, activations };
+        let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth);
+        let view = Arc::new(view.expect("one endpoint"));
+        let inputs = Inputs { chain, view, balancer, activations };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let address = probe.local_addr().expect("local addr");
         drop(probe);
@@ -602,8 +609,10 @@ mod tests {
         let fs = zaino_persistence::fs::SimFs::new();
         let cancel = CancellationToken::new();
         let started = std::time::Instant::now();
-        let tasks = pipeline(&config, fs, inputs, &cancel, started).await.expect("pipeline up");
-        tokio::spawn(balancing.run(cancel.child_token()));
+        let mut tasks = JoinSet::new();
+        spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
+        let tasks = pipeline(&config, fs, inputs, &cancel, started, tasks);
+        let tasks = tasks.await.expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");

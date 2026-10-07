@@ -15,8 +15,9 @@ use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis};
+use zaino_traffic::{Health, ValidatorId};
 
-use crate::endpoints::{EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
+use crate::endpoints::{EndpointSet, ValidatorMetadata};
 use crate::holders::Holders;
 use crate::peers::{Overheard, Pending};
 use crate::telemetry::Alarms;
@@ -186,12 +187,12 @@ impl Sighting {
         self.ours || !self.trusted.is_empty()
     }
 
-    pub(crate) fn sight(&mut self, endpoint: EndpointIndex) {
+    pub(crate) fn sight(&mut self, endpoint: ValidatorId) {
         self.trusted.insert(endpoint);
         self.timeline.first_trusted.get_or_insert_with(Instant::now);
     }
 
-    pub(crate) fn unsight(&mut self, endpoint: EndpointIndex) {
+    pub(crate) fn unsight(&mut self, endpoint: ValidatorId) {
         self.trusted.remove(endpoint);
     }
 
@@ -349,8 +350,8 @@ impl ChainViewSnapshot {
         self.endpoints
             .iter()
             .enumerate()
-            .filter(|(_, meta)| meta.state == EndpointState::Live)
-            .filter_map(|(position, _)| EndpointIndex::new(position))
+            .filter(|(_, meta)| meta.health == Health::Live)
+            .filter_map(|(position, _)| ValidatorId::new(position))
             .collect()
     }
 

@@ -1,6 +1,7 @@
-//! Daemon's validator set → [`zaino_chainview`]
+//! Daemon's validator set → [`zaino_traffic`] + [`zaino_chainview`]
 //!
 //! - Trust = `[[trusted_validators]]`, configured order (`chainview.md` §1: never discovered)
+//! - One balancer: every request to them (polls, headers, blocks, lookups, submissions)
 //! - Tip = their headers, verified from genesis into the header chain's store
 
 use std::sync::Arc;
@@ -8,12 +9,12 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use futures::FutureExt as _;
 use tracing::info;
-use zaino_chainview::{ChainView, EndpointPoller, HeaderSync, PeerWatch};
+use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch};
 use zaino_header_chain::{HeaderChain, HeaderStore, Params};
 use zaino_persistence::fs::Fs;
 use zaino_primitives::types::{Height, ReorgDepth};
 use zaino_source::{IndexerWatch, Lane, ZebraRpcAdapter};
-use zaino_traffic::{TrafficBalancer, TrafficDriver, Trusted};
+use zaino_traffic::{TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
@@ -21,40 +22,39 @@ use crate::error::IndexerError;
 
 /// View + the tasks driving it (spawn every one)
 ///
-/// - `pollers`: each with its push streams when `indexer_address` names them
-/// - `sources`: configured order, one connection pool each (shared with fetch + serving)
-/// - `balancer`: every block fetch over `sources`; `balancing` = its driver
+/// - `balancing` = the balancer's driver (every poll included); `fold` = polls into the view
+/// - `watches`: push streams of each validator naming an `indexer_address`
 /// - `peers`: `[p2p]` on = network start + the view's announcement fold
 pub(crate) struct Wiring {
     pub(crate) view: Arc<ChainView<ZebraRpcAdapter>>,
-    pub(crate) pollers: Vec<(EndpointPoller<ZebraRpcAdapter>, Option<IndexerWatch>)>,
-    pub(crate) header_sync: HeaderSync<ZebraRpcAdapter>,
-    pub(crate) sources: Vec<Arc<ZebraRpcAdapter>>,
     pub(crate) balancer: TrafficBalancer<ZebraRpcAdapter>,
     pub(crate) balancing: TrafficDriver<ZebraRpcAdapter>,
+    pub(crate) fold: ObservationFold<ZebraRpcAdapter>,
+    pub(crate) watches: Vec<(ValidatorId, IndexerWatch)>,
+    pub(crate) header_sync: HeaderSync<ZebraRpcAdapter>,
     pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
 }
 
-/// One unprobed adapter per trusted validator + the view over them (down at boot = its poller's
-/// retry, never a boot failure)
+/// One unprobed adapter per trusted validator, the balancer over them, the view over it (down at
+/// boot = the balancer's retry, never a boot failure)
 pub(crate) fn connect(config: &DaemonConfig, fs: Arc<dyn Fs>) -> Result<Wiring, IndexerError> {
-    let endpoints = config
-        .trusted_validators
-        .iter()
-        .map(|validator| Ok(endpoint(validator, Arc::new(adapter(validator)?))))
-        .collect::<Result<Vec<_>, IndexerError>>()?;
-    let sources: Vec<Arc<ZebraRpcAdapter>> =
-        endpoints.iter().map(|e| Arc::clone(&e.source)).collect();
-    let watches = config
-        .trusted_validators
-        .iter()
-        .map(|validator| {
-            let Some(address) = &validator.indexer_address else { return Ok(None) };
-            Ok(Some(IndexerWatch::at(address, validator.into()).map_err(IndexerError::from)?))
-        })
-        .collect::<Result<Vec<_>, IndexerError>>()?;
+    let validators = &config.trusted_validators;
+    let trusted = validators.iter().map(|validator| {
+        let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
+        let source = Arc::new(adapter(validator)?.on(Lane::Sync));
+        Ok(Trusted { source, priority: validator.priority, limits })
+    });
+    let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
+    let (balancer, balancing) = TrafficBalancer::new(trusted, None);
+    let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
+        let address = validator.indexer_address.as_ref()?;
+        let member = ValidatorId::new(index)?;
+        Some(IndexerWatch::at(address, validator.into()).map(|watch| (member, watch)))
+    });
+    let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
-    let (view, pollers) = ChainView::new(endpoints, depth)?;
+    let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
+    let view = ChainView::new(addresses.collect(), balancer.clone(), depth)?;
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;
     if config.p2p.enabled {
@@ -63,30 +63,16 @@ pub(crate) fn connect(config: &DaemonConfig, fs: Arc<dyn Fs>) -> Result<Wiring, 
         starting = Some(start.boxed());
     }
     let peers = starting.zip(view.peer_watch());
-    let pollers = pollers.into_iter().zip(watches).collect();
 
     let headers = header_chain(config, fs, depth)?;
     let resumed = headers.final_tip().map_or(0, |tip| u32::from(tip.height));
-    let bulk = sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
-    let header_sync = view.header_sync(headers, bulk);
-    let trusted = config.trusted_validators.iter().zip(&sources).map(|(validator, source)| {
-        let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
-        let source = Arc::new(source.on(Lane::Sync));
-        Ok(Trusted { source, priority: validator.priority, limits })
-    });
-    let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
-    let (balancer, balancing) = TrafficBalancer::new(trusted, None);
-    let validators = config.trusted_validators.len();
+    let header_sync = view.header_sync(headers);
+    let fold = view.observation_fold();
     let p2p = config.p2p.enabled;
-    info!(validators, p2p, headers_final = resumed, "Chain view configured");
+    info!(validators = validators.len(), p2p, headers_final = resumed, "Chain view configured");
 
     let view = Arc::new(view);
-    Ok(Wiring { view, pollers, header_sync, sources, balancer, balancing, peers })
-}
-
-/// [`DaemonConfig::validate`] refuses it first
-fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
-    IndexerError::ConfigError(format!("{}: max_connections too low", validator.jsonrpc_address))
+    Ok(Wiring { view, balancer, balancing, fold, watches, header_sync, peers })
 }
 
 /// The verified header chain, resumed from its store (verified from genesis once, never a
@@ -108,14 +94,11 @@ fn header_chain(
     Ok(HeaderChain::open(params, depth, store))
 }
 
-fn endpoint(
-    config: &TrustedValidatorConfig,
-    source: Arc<ZebraRpcAdapter>,
-) -> zaino_chainview::Endpoint<ZebraRpcAdapter> {
-    zaino_chainview::Endpoint { address: config.jsonrpc_address.clone(), source }
+/// [`DaemonConfig::validate`] refuses it first
+fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
+    IndexerError::ConfigError(format!("{}: max_connections too low", validator.jsonrpc_address))
 }
 
-/// On [`Lane::Control`](zaino_source::Lane): the poller's, and submission's
 fn adapter(validator: &TrustedValidatorConfig) -> Result<ZebraRpcAdapter, IndexerError> {
     let limits = validator.link().ok_or_else(|| too_few_connections(validator))?;
     ZebraRpcAdapter::at(

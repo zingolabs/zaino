@@ -1,14 +1,16 @@
-//! Scenarios against fake endpoints
+//! Scenarios against fake endpoints, through the real balancer, on a paused clock
 //!
 //! - `MockChain` = each one's real chain (header bytes, linkage, `getblockhash`, reachability)
 //! - [`FakeValidator`] = the rest under test (mempool listings + fees, metadata failures, relay
 //!   verdicts, a reorg between tip read and `getblockhash` answers, counters)
+//! - Each poll = the balancer's (every second, or woken); [`polled`] waits out one per member
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use tokio_util::sync::CancellationToken;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
@@ -22,12 +24,50 @@ use zaino_source::{
     NonDomainError, PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError,
     TransactionResponse,
 };
+use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
-use crate::endpoint::Polled;
 use crate::{
-    Agreement, ChainView, Count, Endpoint, EndpointSet, EndpointState, MempoolEntry, Projection,
-    SubmitError, Unserved,
+    Agreement, ChainView, Count, EndpointSet, MempoolEntry, Projection, SubmitError, Unserved,
 };
+
+/// The view over `validators` (`addresses` in order), its balancer + poll fold spawned (they run
+/// once the test awaits)
+fn running(
+    validators: &[Arc<FakeValidator>],
+    addresses: &[&str],
+) -> (ChainView<FakeValidator>, TrafficBalancer<FakeValidator>, CancellationToken) {
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = validators.iter().map(|validator| Trusted {
+        source: Arc::clone(validator),
+        priority: 0,
+        limits,
+    });
+    let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
+    let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
+    let view = ChainView::new(addresses, balancer.clone(), depth()).expect("a valid set");
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    (view, balancer, cancel)
+}
+
+/// Every member polled again (cadence, ladder or a wake) and that poll folded (paused clock: the
+/// 1 ms timer fires once every task idles)
+async fn polled(balancer: &TrafficBalancer<FakeValidator>) {
+    let members = balancer.members().borrow().rows.len();
+    let mut watches: Vec<_> = (0..members).map(|at| balancer.observe(v(at))).collect();
+    for watch in &mut watches {
+        watch.borrow_and_update();
+    }
+    for watch in &mut watches {
+        watch.changed().await.expect("driver running");
+    }
+    tokio::time::sleep(Duration::from_millis(1)).await;
+}
+
+fn v(at: usize) -> ValidatorId {
+    ValidatorId::new(at).expect("small")
+}
 
 /// One validator's answers beyond its chain, mutated between ticks by the test
 ///
@@ -208,7 +248,7 @@ fn transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
 /// - tail = servable mempool at its tip block, then each later crossing once (never one the
 ///   opening carried); silent on an empty mempool; ended by a mined block
 /// - late subscriber = same opening + every arrival since (one log per block)
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival_once() {
     let mut chain = Chain::new();
     let tip_10 = chain.extend(chain.genesis().hash, 10);
@@ -225,11 +265,7 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
         .collect();
     });
 
-    let (view, pollers) = ChainView::new(
-        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
-        depth(),
-    )
-    .expect("one endpoint is a valid set");
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     let reader = view.subscriber();
 
     assert_eq!(reader.current().mempool().err(), Some(Unserved::NoBestTip), "no verified tip yet");
@@ -238,7 +274,7 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let unheld = reader.current().mempool().err();
     assert_eq!(unheld, Some(Unserved::NotHeld { height: 10, configured: 1 }), "nothing polled");
 
-    assert_eq!(pollers[0].tick().await.expect("first poll succeeds"), Polled::Listed(2));
+    polled(&balancer).await;
     let pinned = reader.current();
     let tip = pinned.tip().expect("the validator holds the verified tip");
     assert_eq!((tip.block, tip.held_by), (tip_10, EndpointSet::at([0])));
@@ -258,12 +294,12 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     // - tx 1 dropped (propagation churn: nothing to send); tx 3 arrives; ours (tx 9) servable
     //   before any listing
     validator.edit(|fake| fake.listed.retain(|txid| *txid != TransactionId::from([2u8; 32])));
-    pollers[0].tick().await.expect("second poll succeeds");
+    polled(&balancer).await;
     validator.edit(|fake| {
         fake.listed = [2u8, 3].map(|seed| TransactionId::from([seed; 32])).into_iter().collect();
         fake.bytes.insert(TransactionId::from([3u8; 32]), vec![3u8; 8]);
     });
-    pollers[0].tick().await.expect("third poll succeeds");
+    polled(&balancer).await;
     let (txid, sent) = transaction(9, 0);
     let ours = view.submit(sent.clone()).await.expect("accepted");
     assert_eq!(ours, txid, "the txid from the bytes, not the validator's word");
@@ -290,7 +326,7 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     // block 11 = the one stream end, for every tail on the old tip
     let tip_11 = chain.mine(tip_10.hash);
     validator.serve(&chain, tip_11);
-    pollers[0].tick().await.expect("fourth poll succeeds");
+    polled(&balancer).await;
     view.set_verified(verified(&chain, tip_11));
     assert!(tail.next().await.is_none(), "the stream ends on a mined block");
     assert!(late.next().await.is_none(), "late subscriber too");
@@ -301,11 +337,12 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     current.push(ours);
     current.sort();
     assert_eq!(opened, current, "the new tip opens on the mempool as it now stands (ours listed)");
+    cancel.cancel();
 }
 
 /// Mempool off below the network tip → verified tip still held (the NFS's input), empty mempool
 /// served, listings again once active
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     let mut chain = Chain::new();
     let tip_12 = chain.extend(chain.genesis().hash, 12);
@@ -322,15 +359,12 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
         fake.bytes = [(TransactionId::from([1u8; 32]), vec![1u8; 8])].into_iter().collect();
     });
 
-    let (view, pollers) = ChainView::new(
-        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
-        depth(),
-    )
-    .expect("one endpoint is a valid set");
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     let reader = view.subscriber();
     let tip = reader.subscribe_tip();
 
-    assert_eq!(pollers[0].tick().await.expect("active poll succeeds"), Polled::Listed(1));
+    polled(&balancer).await;
+    assert_eq!(reader.current().endpoints()[0].health, Health::Live, "listed its mempool");
     view.set_verified(verified(&chain, tip_at(10)));
 
     validator.serve(&chain, tip_at(11));
@@ -338,15 +372,14 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
         fake.network_tip = Some(network);
         fake.mempool_inactive = true;
     });
-    assert_eq!(
-        pollers[0].tick().await.expect("an inactive mempool is an answer, not a failure"),
-        Polled::CatchingUp { tip: tip_at(11), network },
-    );
+    polled(&balancer).await;
     view.set_verified(verified(&chain, tip_at(11)));
     assert_eq!(tip.borrow().map(|tip| tip.block), Some(tip_at(11)), "its chain still holds it");
     let catching_up = reader.current();
-    assert_eq!(catching_up.endpoints()[0].state, EndpointState::CatchingUp);
-    assert_eq!(catching_up.endpoints()[0].failures, 0);
+    let meta = &catching_up.endpoints()[0];
+    let answered = (meta.health, meta.tip(), meta.stale_blocks());
+    assert_eq!(answered, (Health::CatchingUp, Some(tip_at(11)), Some(29)), "an answer, no failure");
+    assert_eq!(balancer.members().borrow().rows[0].failures, 0);
     assert_eq!(
         catching_up.mempool().expect("a holder of the verified tip").entries().count(),
         0,
@@ -360,21 +393,23 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
         fake.listed = [TransactionId::from([2u8; 32])].into_iter().collect();
         fake.bytes = [(TransactionId::from([2u8; 32]), vec![2u8; 8])].into_iter().collect();
     });
-    assert_eq!(pollers[0].tick().await.expect("caught-up poll succeeds"), Polled::Listed(1));
+    polled(&balancer).await;
     view.set_verified(verified(&chain, tip_at(12)));
     let caught_up = reader.current();
-    assert_eq!(caught_up.endpoints()[0].state, EndpointState::Live);
+    assert_eq!(caught_up.endpoints()[0].health, Health::Live);
     assert_eq!(
         caught_up.mempool().expect("held").entries().map(|e| e.txid).collect::<Vec<_>>(),
         [TransactionId::from([2u8; 32])],
     );
+    cancel.cancel();
 }
 
 /// - Tip = the verified best block, never a validator's claim
 /// - Holders = every validator whose chain holds it (one = enough)
 /// - Third claiming a far higher tip: moves nothing, drops out of the holders, never supplies the
 ///   chain description served
-#[tokio::test]
+/// - b, c unreachable at first (not yet read), each joining as it answers
+#[tokio::test(start_paused = true)]
 async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_verified_block() {
     let validators: Vec<Arc<FakeValidator>> =
         (0..3).map(|_| Arc::new(FakeValidator::default())).collect();
@@ -394,24 +429,15 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
         pinned.validator_info().map(|info| u32::from(info.estimated_height))
     };
     validators[0].edit(|fake| fake.listed = [tx7].into_iter().collect());
+    validators[1].chain.set_reachable(false);
+    validators[2].chain.set_reachable(false);
 
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232", "c:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("three endpoints is a valid set");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
     view.set_verified(verified(&chain, agreed));
 
     // one validator holding the verified block = a tip (one admission proves validity)
-    pollers[0].tick().await.expect("endpoint a polls");
+    polled(&balancer).await;
     let pinned = reader.current();
     let tip = pinned.tip().expect("a holds the verified block");
     assert_eq!((tip.block, tip.held_by), (agreed, EndpointSet::at([0])));
@@ -424,7 +450,8 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let opened: Vec<_> = tail.opening().iter().map(|entry| entry.txid).collect();
     assert_eq!(opened, [tx7], "in the opening of the first block with a tip");
 
-    pollers[1].tick().await.expect("endpoint b polls");
+    validators[1].chain.set_reachable(true);
+    polled(&balancer).await;
     let tip = reader.current().tip().expect("a and b hold it");
     assert_eq!(tip.held_by, EndpointSet::at([0, 1]));
 
@@ -435,7 +462,8 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
         fake.listed = [tx7].into_iter().collect();
         fake.peers = vec![outbound("seed-z:8233")];
     });
-    pollers[2].tick().await.expect("endpoint c polls");
+    validators[2].chain.set_reachable(true);
+    polled(&balancer).await;
     let pinned = reader.current();
     let tip = pinned.tip().expect("a and b still hold it");
     assert_eq!((tip.block, tip.held_by), (agreed, EndpointSet::at([0, 1])), "never the claim");
@@ -455,6 +483,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 
     let again = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
     assert!(again.is_err(), "a second sighting spreads it, never re-sends it");
+    cancel.cancel();
 }
 
 /// One rejecting, one unreachable, one accepting validator
@@ -462,7 +491,7 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 /// - random entries until one accepts, each pushed at most once
 /// - accepted tx = `ours` (servable before any listing, unpriced)
 /// - unanimous rejection = the rejection; none reachable = no answer; expired = refused, no push
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servable_at_once() {
     let validators: Vec<Arc<FakeValidator>> =
         (0..3).map(|_| Arc::new(FakeValidator::default())).collect();
@@ -478,24 +507,12 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     });
     validators[2].edit(|fake| fake.relay_unreachable = true);
 
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232", "c:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("three endpoints is a valid set");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
 
-    pollers[0].tick().await.expect("endpoint a polls");
-    pollers[1].tick().await.expect("endpoint b polls");
+    polled(&balancer).await;
     view.set_verified(verified(&chain, agreed));
-    assert!(reader.current().tip().is_some(), "a and b hold the verified tip");
+    assert!(reader.current().tip().is_some(), "every one holds the verified tip");
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.read(|f| f.pushes)).collect() };
 
     let (expired_txid, expired) = transaction(1, 50);
@@ -517,11 +534,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     let pinned = reader.current();
     let spread = pinned.spread(&txid).expect("the submission recorded it");
     assert!(spread.ours && spread.servable);
-    assert_eq!(
-        spread.trusted,
-        Count { seen: 0, of: 2 },
-        "not polled since; a and b read, c not yet"
-    );
+    assert_eq!(spread.trusted, Count { seen: 0, of: 3 }, "not polled since");
     assert_eq!(spread.timeline.first_trusted, None);
     let mempool = pinned.mempool().expect("tip held");
     let served = mempool.get(&txid).expect("`ours` is servable with zero sightings");
@@ -538,7 +551,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert_eq!(cached, Ok(Bytes::from_static(b"unpriced")), "one render per (raw, fee)");
 
     // a lists what it accepted: the first listing prices it (bytes held, none refetched)
-    pollers[0].tick().await.expect("endpoint a lists it");
+    polled(&balancer).await;
     let pinned = reader.current();
     let listed = pinned.mempool().expect("tip held").get(&txid);
     let listed = listed.expect("still servable");
@@ -547,10 +560,10 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     let priced = (Bytes::from(sent), Some(fee_of(&txid)));
     assert_eq!((listed.raw, listed.fee), priced);
     let spread = pinned.spread(&txid).expect("held");
-    assert_eq!(spread.trusted, Count { seen: 1, of: 2 });
+    assert_eq!(spread.trusted, Count { seen: 1, of: 3 });
     let timeline = spread.timeline;
     assert!(timeline.first_trusted.is_some_and(|at| at >= timeline.first_seen), "{timeline:?}");
-    assert_eq!(timeline.all_trusted, None, "b has not listed it");
+    assert_eq!(timeline.all_trusted, None, "b, c have not listed it");
 
     // unanimous domain rejection = the real one, after every validator tried once
     for validator in &validators {
@@ -573,6 +586,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
 
     let garbage = view.submit(vec![9u8; 8]).await;
     assert!(matches!(garbage, Err(SubmitError::Rejected(SendRawTransactionError::Malformed(_)))));
+    cancel.cancel();
 }
 
 /// Paused clock, every validator accepting, none gossiping on its own
@@ -587,43 +601,26 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
     for validator in &validators {
         validator.serve(&chain, chain.genesis());
     }
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232", "c:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("three endpoints");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let policy = crate::SubmitPolicy {
         propagation_threshold: Duration::from_secs(10),
         max_attempts: std::num::NonZeroU8::new(4).expect("nz"),
     };
     let view = view.with_submit_policy(policy);
-    for poller in &pollers {
-        poller.tick().await.expect("polls");
-    }
+    polled(&balancer).await;
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.read(|f| f.pushes)).collect() };
-    async fn poll_all(pollers: &[crate::EndpointPoller<FakeValidator>]) {
-        for poller in pollers {
-            poller.tick().await.expect("polls");
-        }
-    }
 
     let (txid, sent) = transaction(5, 0);
     view.submit(sent).await.expect("the first entry accepts");
     let first = pushes();
     assert_eq!(first.iter().sum::<usize>(), 1);
-    poll_all(&pollers).await;
+    polled(&balancer).await;
     assert_eq!(reader_trusted(&view, txid), Count { seen: 1, of: 3 }, "the entry lists it");
 
-    tokio::time::sleep(Duration::from_secs(9)).await;
+    // ≤ 1 s polled + 8 s: inside the threshold
+    tokio::time::sleep(Duration::from_secs(8)).await;
     assert_eq!(pushes(), first, "inside the threshold: no resubmit");
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
     let second = pushes();
     assert_eq!(second.iter().sum::<usize>(), 2, "threshold passed unspread: a second entry");
     assert!(second.iter().all(|&n| n <= 1), "a different validator: {second:?}");
@@ -633,10 +630,11 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
     validators[outsider].edit(|fake| {
         fake.listed.insert(txid);
     });
-    poll_all(&pollers).await;
+    polled(&balancer).await;
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(pushes(), second, "spread past its entries: the job ended, nothing more pushed");
     assert_eq!(reader_trusted(&view, txid), Count { seen: 3, of: 3 });
+    cancel.cancel();
 }
 
 fn reader_trusted(view: &ChainView<FakeValidator>, txid: TransactionId) -> Count {
@@ -698,18 +696,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
     for validator in &validators {
         validator.serve(&chain, chain.genesis());
     }
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("two endpoints");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"]);
     let peer = |b: u8| std::net::SocketAddr::from(([10, b, 0, 1], 8233));
     let (announce, _) = tokio::sync::broadcast::channel::<Heard>(64);
     let peers = Arc::new(FakePeers {
@@ -723,18 +710,12 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
         max_attempts: std::num::NonZeroU8::new(3).expect("nz"),
     };
     let view = Arc::new(view.with_submit_policy(policy).with_peers(peers.clone()));
-    let cancel = tokio_util::sync::CancellationToken::new();
     tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
     tokio::task::yield_now().await; // the watch subscribes before the first announcement
-    let poll_all = || async {
-        for poller in &pollers {
-            poller.tick().await.expect("polls");
-        }
-    };
     let fold = || tokio::time::sleep(crate::peers::PEER_FOLD * 2);
     let validator_pushes = || validators.iter().map(|v| v.read(|f| f.pushes)).sum::<usize>();
     let peer_pushes = || peers.pushes.lock().expect("fake peers mutex poisoned").clone();
-    poll_all().await;
+    polled(&balancer).await;
 
     // heard first: overheard until a trusted validator lists it
     let (gossiped, raw) = transaction(1, 0);
@@ -748,7 +729,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
         fake.listed.insert(gossiped);
         fake.bytes.insert(gossiped, raw);
     });
-    poll_all().await;
+    polled(&balancer).await;
     let spread = view.subscriber().current().spread(&gossiped).expect("held once listed");
     assert_eq!(
         (spread.peers, spread.trusted),
@@ -783,7 +764,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
         fake.bytes.insert(txid, transaction(2, 0).1);
     });
     fold().await;
-    poll_all().await;
+    polled(&balancer).await;
     let answered = answer.await.expect("submission task");
     assert_eq!(answered.expect("listed by a trusted validator"), txid);
     assert_eq!(validator_pushes(), 0, "no trusted validator saw it first, or at all from us");
@@ -818,7 +799,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
 /// - holders-only change → tip watch moves, epoch doesn't
 /// - a heavier fork only one validator holds → it alone holds the tip, the others `Diverged`
 /// - that one reorging away mid-poll → one wrong poll, dropped at the next
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race() {
     let validators: Vec<Arc<FakeValidator>> =
         (0..3).map(|_| Arc::new(FakeValidator::default())).collect();
@@ -829,18 +810,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     for validator in &validators {
         validator.serve(&chain, at(100));
     }
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232", "c:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("three endpoints is a valid set");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
     let mut tips = reader.subscribe_tip();
     let held_by = |positions: &[usize]| EndpointSet::at(positions.iter().copied());
@@ -851,16 +821,14 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     async fn open(tail: &mut crate::MempoolTail) -> bool {
         tokio::time::timeout(Duration::from_millis(20), tail.next()).await.is_err()
     }
-    for poller in &pollers {
-        poller.tick().await.expect("polls");
-    }
+    polled(&balancer).await;
     view.set_verified(verified(&chain, at(100)));
     assert_eq!(tip(), Some((at(100), held_by(&[0, 1, 2]))));
     let mut first = reader.tail().expect("a tip");
 
     // a mines 101; its header verifies: the tip moves at once, held by a alone
     validators[0].serve(&chain, at(101));
-    pollers[0].tick().await.expect("a polls");
+    polled(&balancer).await;
     view.set_verified(verified(&chain, at(101)));
     assert_eq!(tip(), Some((at(101), held_by(&[0]))), "one holder is enough");
     assert_eq!(agreements(), [Agreement::Agreed, Agreement::Behind, Agreement::Behind]);
@@ -869,8 +837,9 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
 
     // a goes unreachable: no trusted validator holds 101 → no tip (never a weaker answer)
     validators[0].chain.set_reachable(false);
-    let failed = pollers[0].tick().await.expect_err("a unreachable");
-    assert!(!pollers[0].failed(&failed, 1), "one failure = degraded, out of the holders");
+    polled(&balancer).await;
+    let health = reader.current().endpoints()[0].health;
+    assert_eq!(health, Health::Degraded, "one failure = degraded, out of the holders");
     assert_eq!(tip(), None);
     let refused = reader.current().mempool().err();
     assert_eq!(refused, Some(Unserved::NotHeld { height: 101, configured: 3 }));
@@ -879,12 +848,12 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
 
     // b catches up: 101 served again; a returns: a holders-only change
     validators[1].serve(&chain, at(101));
-    pollers[1].tick().await.expect("b polls");
+    polled(&balancer).await;
     assert_eq!(tip(), Some((at(101), held_by(&[1]))));
     let mut third = reader.tail().expect("a tip");
     tips.borrow_and_update();
     validators[0].chain.set_reachable(true);
-    pollers[0].tick().await.expect("a polls again");
+    polled(&balancer).await;
     let joined = (*tips.borrow_and_update()).expect("a tip");
     assert_eq!((joined.block, joined.held_by), (at(101), held_by(&[0, 1])));
     assert!(open(&mut third).await, "holders-only change: same epoch, stream open");
@@ -892,7 +861,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     // a heavier fork from 100 that only c has: the tip follows the work, a and b diverge
     let fork = chain.mine(at(100).hash);
     validators[2].serve(&chain, fork);
-    pollers[2].tick().await.expect("c polls");
+    polled(&balancer).await;
     view.set_verified(verified(&chain, fork));
     assert_eq!(tip(), Some((fork, held_by(&[2]))));
     assert_eq!(agreements(), [Agreement::Diverged, Agreement::Diverged, Agreement::Agreed]);
@@ -901,22 +870,29 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     // c raced: tip read on the fork, then back onto the trunk before its getblockhash answers:
     // one wrong poll (its claim still holds the fork), the next one re-asks and drops it
     validators[2].edit(|fake| fake.reorg_after_poll = Some(chain.path(at(101).hash)));
-    let raced = pollers[2].tick().await.expect("a race is not a failure");
-    assert_eq!(raced, Polled::Listed(0));
+    let mut c = balancer.observe(v(2));
+    c.borrow_and_update();
+    c.changed().await.expect("driver running");
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let raced = c.borrow().as_ref().map(|observation| observation.polled.is_ok());
+    assert_eq!(raced, Some(true), "a race is not a failure");
     assert_eq!(tip(), Some((fork, held_by(&[2]))), "the raced poll: its claim, as read");
-    pollers[2].tick().await.expect("c polls again");
+    c.changed().await.expect("driver running");
+    tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(tip(), None, "re-asked: on the trunk, it holds nothing of the fork (never stale)");
     let pinned = reader.current();
     let c = &pinned.endpoints()[2];
     assert_eq!((c.tip(), c.agreement), (Some(at(101)), Agreement::Diverged));
     let links: usize = validators.iter().map(|v| v.read(|f| f.links_served)).sum();
     assert_eq!(links, 0, "holding is asked by getblockhash in the poll: no header reads");
+    cancel.cancel();
 }
 
-/// Peers + release ride the poll every `METADATA_REFRESH`
+/// Peers + release ride the poll every 60 s; the push stream's state, every poll
 ///
 /// - failed half → endpoint still live, last answer kept
 /// - release halting within a week of the tip raises `ending`; an upgrade clears it
+/// - stream up / down (the balancer's) shown from the next poll
 #[tokio::test(start_paused = true)]
 async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
     let mut chain = Chain::new();
@@ -937,18 +913,15 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
             vec![outbound("seed-a:8233"), PeerInfo { addr: "x:1".to_owned(), inbound: true }];
         fake.release = Some(release("v6.4.2", 10 + 4_960));
     });
-    let (view, pollers) = ChainView::new(
-        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
-        depth(),
-    )
-    .expect("one endpoint is a valid set");
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     let reader = view.subscriber();
     let peers =
         || -> Vec<PeerInfo> { reader.current().endpoints()[0].peers.iter().cloned().collect() };
     let build = || reader.current().endpoints()[0].release.as_ref().map(|r| r.build.clone());
+    let streaming = || reader.current().endpoints()[0].streaming;
     let one = EndpointSet::at([0]);
 
-    pollers[0].tick().await.expect("first poll");
+    polled(&balancer).await;
     let first = peers();
     assert_eq!(first.len(), 2);
     assert_eq!(build().as_deref(), Some("v6.4.2"));
@@ -961,30 +934,36 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
         fake.peers = Vec::new();
         fake.release = None;
     });
-    tokio::time::advance(crate::config::METADATA_REFRESH).await;
-    let polled = pollers[0].tick().await.expect("a metadata failure is not a poll failure");
-    assert_eq!(polled, Polled::Listed(0));
-    let pinned = reader.current();
-    let meta = &pinned.endpoints()[0];
-    assert_eq!((meta.state, meta.failures), (EndpointState::Live, 0));
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let health =
+        (reader.current().endpoints()[0].health, balancer.members().borrow().rows[0].failures);
+    assert_eq!(health, (Health::Live, 0), "a metadata failure is not a poll failure");
     assert_eq!((peers(), build().as_deref()), (first, Some("v6.4.2")), "last answers kept");
 
     validator.edit(|fake| {
         fake.peers_unreachable = false;
         fake.release = Some(release("v6.5.0", 3_700_000));
     });
-    pollers[0].tick().await.expect("between refreshes");
-    assert_eq!(build().as_deref(), Some("v6.4.2"), "read once per refresh, not per tick");
-    tokio::time::advance(crate::config::METADATA_REFRESH).await;
-    pollers[0].tick().await.expect("next refresh");
+    polled(&balancer).await;
+    assert_eq!(build().as_deref(), Some("v6.4.2"), "read once per refresh, not per poll");
+    tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(peers(), [], "a fresh answer replaces it (isolated = empty, not an error)");
     assert_eq!(build().as_deref(), Some("v6.5.0"));
     assert_eq!(reader.current().alarms().ending(), EndpointSet::default(), "upgraded");
+
+    assert!(!streaming());
+    balancer.pushed(v(0), Push::Link(true));
+    polled(&balancer).await;
+    assert!(streaming(), "stream up, shown from the next poll");
+    balancer.pushed(v(0), Push::Link(false));
+    polled(&balancer).await;
+    assert!(!streaming());
+    cancel.cancel();
 }
 
-/// - Gone validator → `Down` past the failure ceiling: its holds + sightings withdrawn (fail
-///   closed, never stale), poller still retrying
-/// - First answer back restores both; only cancel ends the poller
+/// - Gone validator → `Down` past the failure ceiling (the balancer's): its holds + sightings
+///   withdrawn (fail closed, never stale), still probed
+/// - First answer back restores both
 #[tokio::test(start_paused = true)]
 async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_its_hold() {
     let validator = Arc::new(FakeValidator::default());
@@ -996,16 +975,10 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
         fake.listed = [tx1].into_iter().collect();
         fake.bytes = [(tx1, vec![1u8; 8])].into_iter().collect();
     });
-    let (view, mut pollers) = ChainView::new(
-        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
-        depth(),
-    )
-    .expect("one endpoint is a valid set");
+    let (view, _, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     view.set_verified(verified(&chain, genesis));
     let reader = view.subscriber();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let polling = tokio::spawn(pollers.remove(0).run(cancel.clone()));
-    let state = || reader.current().endpoints()[0].state;
+    let state = || reader.current().endpoints()[0].health;
     async fn until(what: &str, done: impl Fn() -> bool) {
         for _ in 0..600 {
             if done() {
@@ -1020,78 +993,22 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     until("live", serves_tx1).await;
 
     validator.chain.set_reachable(false);
-    until("down", || state() == EndpointState::Down).await;
+    until("down", || state() == Health::Down).await;
     let pinned = reader.current();
     assert_eq!(pinned.tip(), None, "no holder left");
     let refused = pinned.mempool().err();
     assert_eq!(refused, Some(Unserved::NotHeld { height: 0, configured: 1 }), "fail closed");
     let trusted = pinned.spread(&tx1).map(|spread| spread.trusted);
     assert_eq!(trusted.unwrap_or_default(), Count::default(), "retracted, and none left reading");
-    assert!(!polling.is_finished(), "a validator going away never ends its poller");
 
     validator.chain.set_reachable(true);
     until("back", serves_tx1).await;
-    assert_eq!(state(), EndpointState::Live);
-
+    assert_eq!(state(), Health::Live);
     cancel.cancel();
-    polling.await.expect("only cancel ends the poller");
 }
 
-/// - Unwoken = a poll a second
-/// - Streaming = one reconcile per 15 s + a poll per wake (burst of wakes → at most two polls)
-/// - Either streaming edge = poll at once, shown in the endpoint's metadata
-#[tokio::test(start_paused = true)]
-async fn a_push_stream_wakes_the_poller_and_stretches_its_reconcile_interval() {
-    let validator = Arc::new(FakeValidator::default());
-    let chain = Chain::new();
-    validator.serve(&chain, chain.genesis());
-    let (view, mut pollers) = ChainView::new(
-        vec![Endpoint { address: "one:8232".to_owned(), source: Arc::clone(&validator) }],
-        depth(),
-    )
-    .expect("one endpoint is a valid set");
-    let reader = view.subscriber();
-    let poller = pollers.remove(0);
-    let waker = poller.waker();
-    let cancel = tokio_util::sync::CancellationToken::new();
-    let polling = tokio::spawn(poller.run(cancel.clone()));
-    let polls = || validator.read(|f| f.polls);
-    let streaming = || reader.current().endpoints()[0].streaming;
-    let over = |millis: u64| tokio::time::sleep(Duration::from_millis(millis));
-
-    over(10_100).await;
-    assert_eq!(polls(), 11, "t = 0, then one a second");
-    assert!(!streaming());
-
-    waker.streaming(true);
-    over(300).await;
-    let edge = polls();
-    assert_eq!(edge, 12, "stream up = poll at once (events may have fallen in the gap)");
-    assert!(streaming());
-    over(10_000).await;
-    assert_eq!(polls(), edge, "streaming: nothing until a wake or the 15 s reconcile");
-
-    for _ in 0..100 {
-        waker.wake();
-    }
-    over(1_000).await;
-    let burst = polls() - edge;
-    assert!((1..=2).contains(&burst), "100 wakes = {burst} polls (one pending wake at most)");
-    over(15_000).await;
-    assert_eq!(polls(), edge + burst + 1, "the reconcile still runs while streaming");
-
-    waker.streaming(false);
-    over(300).await;
-    assert!(!streaming(), "stream down = poll at once, back to the 1 s cadence");
-    let down = polls();
-    over(3_000).await;
-    assert_eq!(polls(), down + 3);
-
-    cancel.cancel();
-    polling.await.expect("only cancel ends the poller");
-}
-
-/// Polls `done` every 20 ms for 10 s (header sync runs on its own task)
+/// Checks `done` every 20 ms (virtual) for 10 s, at idle points only (paused clock: every task
+/// runs before a timer fires, blocking work holds the clock)
 async fn until(what: &str, done: impl Fn() -> bool) {
     for _ in 0..500 {
         if done() {
@@ -1107,9 +1024,9 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 /// - a: 5,000 headers, verified in batches, finalized as they go (published final tip = depth
 ///   below its best); then its tip = the view's, held by a
 /// - c: a's chain + a header at 4,999 earlier than its median time past → refused, never the
-///   tip, holds nothing
+///   tip, holds nothing, reported (benched)
 /// - b: fork of a's above the final boundary with more work → tip follows the work to b
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_work() {
     use zaino_header_chain::{HeaderChain, HeaderStore, Params};
 
@@ -1126,49 +1043,38 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     validators[0].serve(&chain, a);
     validators[1].serve(&chain, at(3_000));
     validators[2].serve(&chain, c);
-    let (view, pollers) = ChainView::new(
-        validators
-            .iter()
-            .zip(["a:8232", "b:8232", "c:8232"])
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect(),
-        depth(),
-    )
-    .expect("three endpoints");
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
     let params = Params::regtest(Height::try_from(1u32).expect("1"), None).with_genesis(at(0).hash);
     let fs = zaino_persistence::fs::SimFs::new();
     let path = std::path::Path::new("/headers");
     let regtest = zcash_protocol::consensus::NetworkType::Regtest;
     let store = HeaderStore::open(fs, path, regtest).expect("store opens");
-    let sync = view.header_sync(HeaderChain::open(params, depth(), store), validators.clone());
+    let sync = view.header_sync(HeaderChain::open(params, depth(), store));
     let verified = sync.subscribe();
-    let cancel = tokio_util::sync::CancellationToken::new();
     let syncing = tokio::spawn(sync.run(cancel.clone()));
-    for poller in &pollers {
-        poller.tick().await.expect("polls");
-    }
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
 
-    until("a's tip verified", || reader.current().best() == Some(a)).await;
+    // the published chain, not the view's best: finality lands after the run reaches the view
+    let final_tip = Some(at(5_000 - 3));
+    until("a's tip verified, final to depth", || published() == Some((a, final_tip))).await;
     let tip = reader.current().tip().expect("a holds it");
     assert_eq!((tip.block, tip.held_by), (a, EndpointSet::at([0])), "c refused, b behind");
-    let published = verified.borrow().clone().expect("a VerifiedChain");
-    let answers = (published.best(), published.final_tip(), published.hash_at(at(2_500).height));
-    let final_tip = Some(at(5_000 - 3));
-    assert_eq!(answers, (a, final_tip, Some(at(2_500).hash)), "final = depth below the tip");
+    let first = verified.borrow().clone().expect("a VerifiedChain");
+    assert_eq!(first.hash_at(at(2_500).height), Some(at(2_500).hash));
     assert!(!reader.current().alarms().finality_paused(), "held each batch: final as it went");
+    let members = balancer.members().borrow().clone();
+    let benched: Vec<bool> = members.rows.iter().map(|row| row.benched_until.is_some()).collect();
+    assert_eq!(benched, [false, false, true], "c's invalid header reported");
 
     validators[1].serve(&chain, b);
-    pollers[1].tick().await.expect("b polls its fork");
+    polled(&balancer).await;
     until("b's heavier fork verified", || reader.current().best() == Some(b)).await;
     let tip = reader.current().tip().expect("b holds it");
     assert_eq!((tip.block, tip.held_by), (b, EndpointSet::at([1])), "the work, not the first");
     assert_ne!(reader.current().best(), Some(c), "c's invalid chain never wins");
-    until("b's chain published", || verified.borrow().as_ref().map(|v| v.best()) == Some(b)).await;
-    assert_eq!(published.best(), a, "a published chain never changes (H5)");
+    until("b's chain published", || published().map(|(best, _)| best) == Some(b)).await;
+    assert_eq!(first.best(), a, "a published chain never changes (H5)");
 
     cancel.cancel();
     let ended = syncing.await.expect("header sync never panics");
@@ -1177,12 +1083,13 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
 
 /// One validator, chain ending in an invalid 80 (time at its median time past), any work
 ///
-/// - first round: 0..=79 verified; served run ends at the refused 80 (off our chain), no poll
-///   yet asked about our boundary → nothing final, alarm raised
-/// - next poll: `getblockhash` 76 / 79 = ours → boundary held, final through 76 (depth 3 below
-///   79), alarm cleared
-/// - valid fork above 79 + store failing its next commit → header sync ends with the error
-#[tokio::test]
+/// - first round: 0..=79 verified; served run ends at the refused 80 (off our chain, reported:
+///   benched), no poll yet asked about our boundary → nothing final, alarm raised
+/// - next poll (woken by the new heights): `getblockhash` 76 / 79 = ours → boundary held, final
+///   through 76 (depth 3 below 79), alarm cleared
+/// - valid fork above 79 + store failing its next commit → header sync ends with the error once
+///   the bench (60 s) is over
+#[tokio::test(start_paused = true)]
 async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_header_sync() {
     use zaino_header_chain::{HeaderChain, HeaderStore, Params};
 
@@ -1194,34 +1101,33 @@ async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_heade
     let valid = chain.extend(top.hash, 5);
     let validator = Arc::new(FakeValidator::default());
     validator.serve(&chain, invalid);
-    let endpoint = Endpoint { address: "a:8232".to_owned(), source: Arc::clone(&validator) };
-    let (view, pollers) = ChainView::new(vec![endpoint], depth()).expect("one endpoint");
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
     let reader = view.subscriber();
     let params = Params::regtest(Height::try_from(1u32).expect("1"), None).with_genesis(at(0).hash);
     let fs = zaino_persistence::fs::SimFs::new();
     let path = std::path::Path::new("/headers");
     let regtest = zcash_protocol::consensus::NetworkType::Regtest;
     let store = HeaderStore::open(fs.clone(), path, regtest).expect("store opens");
-    let sync = view.header_sync(HeaderChain::open(params, depth(), store), vec![validator.clone()]);
+    let sync = view.header_sync(HeaderChain::open(params, depth(), store));
     let verified = sync.subscribe();
-    let cancel = tokio_util::sync::CancellationToken::new();
     let syncing = tokio::spawn(sync.run(cancel.clone()));
     let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
 
-    pollers[0].tick().await.expect("polls");
     until("79 verified", || reader.current().best() == Some(at(79))).await;
     until("the alarm", || reader.current().alarms().finality_paused()).await;
     assert_eq!(published(), Some((at(79), None)), "no trusted holder of 76: nothing final");
+    let benched = balancer.members().borrow().rows[0].benched_until.is_some();
+    assert!(benched, "the refused 80 reported");
 
-    pollers[0].tick().await.expect("polls");
+    polled(&balancer).await;
     until("the alarm cleared", || !reader.current().alarms().finality_paused()).await;
     assert_eq!(published(), Some((at(79), Some(at(76)))), "held: final to depth");
 
     fs.fail_from(fs.mutations());
     validator.serve(&chain, valid);
-    pollers[0].tick().await.expect("polls");
-    // the refused 80 stalls each round: the next one waits out `RETRY` (5 s)
-    let ended = tokio::time::timeout(Duration::from_secs(30), syncing).await;
+    // benched: each round stalls, `RETRY` (5 s) apart, until the bench is over
+    let ended = tokio::time::timeout(Duration::from_secs(120), syncing).await;
     let ended = ended.expect("ends on its own").expect("never panics");
     assert!(ended.is_err(), "a failed commit ends header sync: {ended:?}");
+    cancel.cancel();
 }

@@ -276,7 +276,7 @@ impl TrafficCore {
         let member = member.filter(|m| m.poller.as_ref().is_some_and(|p| p.in_flight));
         let member = member.expect("a poll result for a poll in flight");
         let poller = member.poller.as_mut().expect("trusted members poll");
-        poller.in_flight = false;
+        poller.finished(read.is_some());
         let started = poller.last.expect("a poll in flight started");
         member.in_flight[Class::Poll.index()] -= 1;
         member.latency.observe(self.now.saturating_duration_since(started), self.now);

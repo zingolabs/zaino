@@ -291,6 +291,7 @@ pub(crate) struct Poller {
     pub(crate) wake: bool,
     pub(crate) streaming: bool,
     metadata_at: Option<Instant>,
+    metadata_asked: bool,
 }
 
 impl Poller {
@@ -310,10 +311,15 @@ impl Poller {
     /// `true` = metadata due with this poll
     pub(crate) fn start(&mut self, now: Instant) -> bool {
         (self.previous, self.last, self.in_flight, self.wake) = (self.last, Some(now), true, false);
-        let metadata = self.metadata_at.is_none_or(|at| now >= at + METADATA_REFRESH);
-        if metadata {
-            self.metadata_at = Some(now);
+        self.metadata_asked = self.metadata_at.is_none_or(|at| now >= at + METADATA_REFRESH);
+        self.metadata_asked
+    }
+
+    /// Answered = its metadata read (a failed poll leaves it due: the next answer carries it)
+    pub(crate) fn finished(&mut self, answered: bool) {
+        self.in_flight = false;
+        if std::mem::take(&mut self.metadata_asked) && answered {
+            self.metadata_at = self.last;
         }
-        metadata
     }
 }

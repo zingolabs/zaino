@@ -10,7 +10,9 @@ use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{BlockRef, Height, ReorgDepth};
 
 use super::Holders;
-use crate::endpoints::{Agreement, EndpointIndex};
+use zaino_traffic::ValidatorId;
+
+use crate::endpoints::Agreement;
 
 /// Panic message of `run`, `None` = it returned
 fn fired(run: impl FnOnce()) -> Option<String> {
@@ -33,7 +35,7 @@ fn every_holders_check_fires_on_its_planted_bug() {
     let mut chain = HeaderChain::regtest_in_memory(genesis, depth);
     chain.insert_blocks(&path).expect("valid chain");
     let verified = Arc::new(chain.verified().expect("verified"));
-    let endpoint = |at: usize| EndpointIndex::new(at).expect("< MAX");
+    let endpoint = |at: usize| ValidatorId::new(at).expect("< MAX");
     let valid = || {
         let mut holders = Holders::new(3, depth);
         holders.verified(Some(Arc::clone(&verified)));

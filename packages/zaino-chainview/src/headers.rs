@@ -14,8 +14,9 @@
 //!   commit = disk) and back; stage A = one blocking task per core
 //! - every chain change reaches the view before finality reads its holders (one chain, both sides)
 //! - a store commit failure ends the task ([`HeaderStoreFailed`]): the supervisor ends the process
-//! - a header failing a rule = that validator served an invalid chain: warned, skipped this round;
-//!   a header from the future = deferred (retried after `RETRY`, never blamed: H7)
+//! - an undecodable header or one failing a rule = that validator served an invalid chain:
+//!   reported (benched), skipped this round; a header from the future = deferred (retried after
+//!   `RETRY`, never blamed: H7); an orphan run = never blamed either
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -29,11 +30,11 @@ use zaino_header_chain::{
 };
 use zaino_primitives::types::{BlockRef, Height};
 use zaino_source::{ChainDataSource, GetAtHeightError};
+use zaino_traffic::{HeaderAsk, TrafficBalancer, ValidatorId};
 
-use crate::endpoints::EndpointIndex;
 use crate::error::HeaderStoreFailed;
-use crate::fold::{ChainViewCore, HeaderReport};
-use crate::holders::Holders;
+use crate::fold::{ChainViewCore, HeaderReport, Served};
+use crate::holders::{Holders, PollStamp};
 
 /// Heights per fetch + verify step (memory: tree holds <= `depth` + this before finalizing)
 const HEADER_BATCH: u32 = 2_000;
@@ -46,7 +47,7 @@ const RETRY: Duration = Duration::from_secs(5);
 /// - `reported` = (best, final tip, finality paused) the view last heard
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
-    sources: Vec<Arc<S>>,
+    balancer: TrafficBalancer<S>,
     /// `None` only while lent to the blocking pool ([`Self::blocking`])
     chain: Option<HeaderChain>,
     verified: watch::Sender<Option<Arc<VerifiedChain>>>,
@@ -63,9 +64,14 @@ enum Synced {
 }
 
 impl<S: ChainDataSource> HeaderSync<S> {
-    pub(crate) fn new(core: Arc<ChainViewCore>, sources: Vec<Arc<S>>, chain: HeaderChain) -> Self {
+    pub(crate) fn new(
+        core: Arc<ChainViewCore>,
+        balancer: TrafficBalancer<S>,
+        chain: HeaderChain,
+    ) -> Self {
         let verified = watch::Sender::new(chain.verified().map(Arc::new));
-        Self { core, sources, chain: Some(chain), verified, reported: None, finality_paused: false }
+        let chain = Some(chain);
+        Self { core, balancer, chain, verified, reported: None, finality_paused: false }
     }
 
     /// The verified chain, republished whenever its best or final tip moves (`None` = nothing
@@ -101,13 +107,14 @@ impl<S: ChainDataSource> HeaderSync<S> {
     /// `true` = some validator stalled
     async fn round(&mut self) -> Result<bool, HeaderStoreFailed> {
         let mut stalled = false;
-        for index in (0..self.sources.len()).filter_map(EndpointIndex::new) {
+        let configured = self.core.current().endpoints().len();
+        for index in (0..configured).filter_map(ValidatorId::new) {
             // re-read per validator: the last one's headers may have moved the chain
             let view = self.core.current();
-            let Some(claim) = view.holders.claim(index) else { continue };
+            let Some((claim, under)) = view.holders.claim(index) else { continue };
             let reach = view.holders.reach(index);
             let address = view.endpoints()[index.get()].address.clone();
-            if let Synced::Stalled = self.sync_from(index, &address, claim, reach).await? {
+            if let Synced::Stalled = self.sync_from(index, &address, claim, under, reach).await? {
                 stalled = true;
             }
         }
@@ -115,12 +122,14 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Ok(stalled)
     }
 
-    /// Fetch + insert its chain from above where it leaves ours up to its claim
+    /// Fetch + insert its chain from above where it leaves ours up to its claim (read `under`
+    /// that poll of it)
     async fn sync_from(
         &mut self,
-        index: EndpointIndex,
+        index: ValidatorId,
         address: &str,
         claim: BlockRef,
+        under: PollStamp,
         reach: Option<Height>,
     ) -> Result<Synced, HeaderStoreFailed> {
         let Some(mut next) = self.first_needed(claim, reach) else { return Ok(Synced::Caught) };
@@ -129,20 +138,21 @@ impl<S: ChainDataSource> HeaderSync<S> {
             let last =
                 next.checked_add(HEADER_BATCH - 1).map_or(claim.height, |h| h.min(claim.height));
             let heights: Vec<Height> = next.up_to(last).collect();
-            let links = match self.sources[index.get()].get_block_links(&heights).await {
-                Ok(links) => links,
-                Err(cause) => {
-                    warn!(endpoint = %address, %cause, "Header fetch failed");
+            let ask = HeaderAsk::Pinned { member: index, heights };
+            let answered = match self.balancer.headers(ask).await {
+                Ok(answered) => answered,
+                Err(unanswered) => {
+                    warn!(endpoint = %address, %unanswered, "Header fetch failed");
                     return Ok(Synced::Stalled);
                 }
             };
-            let mut headers = Vec::with_capacity(links.len());
-            for link in links {
+            let mut headers = Vec::with_capacity(answered.value.len());
+            for link in answered.value {
                 match link {
                     Ok(link) => match decode_header(&link.header) {
                         Ok(header) => headers.push(header),
                         Err(malformed) => {
-                            warn!(endpoint = %address, %malformed, "Validator served an undecodable header");
+                            self.balancer.report(answered.ticket, &malformed);
                             return Ok(Synced::Stalled);
                         }
                     },
@@ -155,19 +165,20 @@ impl<S: ChainDataSource> HeaderSync<S> {
             else {
                 return Ok(Synced::Stalled);
             };
-            match self.insert(headers, index, top).await? {
+            match self.insert(headers, (index, top, under)).await? {
                 None => next = last.next(),
                 // its chain leaves ours below where we started: from the final tip, once
                 Some(Rejected::Orphan) if !retried_from_final => {
                     retried_from_final = true;
                     next = above_final(self.chain().final_tip());
                 }
+                Some(Rejected::Orphan) => return Ok(Synced::Stalled),
                 Some(deferred) if deferred.is_deferred() => {
                     debug!(endpoint = %address, %deferred, "Header from the future: retried later");
                     return Ok(Synced::Stalled);
                 }
                 Some(rejected) => {
-                    warn!(endpoint = %address, %rejected, "Validator served a header that fails a rule");
+                    self.balancer.report(answered.ticket, &rejected);
                     return Ok(Synced::Stalled);
                 }
             }
@@ -186,17 +197,16 @@ impl<S: ChainDataSource> HeaderSync<S> {
         Some(reach.map_or(floor, |reach| reach.next().max(floor)))
     }
 
-    /// Stage A, then stage B on the blocking pool, the chain + `top` (served by `from`) into the
-    /// view, then finality; `Some` = the rule the run broke
+    /// Stage A, then stage B on the blocking pool, the chain + `served` (the run's validator, top,
+    /// poll) into the view, then finality; `Some` = the rule the run broke
     async fn insert(
         &mut self,
         headers: Vec<Header>,
-        from: EndpointIndex,
-        top: BlockRef,
+        served: Served,
     ) -> Result<Option<Rejected>, HeaderStoreFailed> {
         let (run, cut) = stage_a(*self.chain().params(), headers).await;
         let refused = self.blocking(move |chain| stage_b(chain, run, unix_now())).await;
-        self.publish(Some((from, top)));
+        self.publish(Some(served));
         self.finalize().await?;
         Ok(refused.or(cut))
     }
@@ -235,7 +245,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
 
     /// `VerifiedChain` → watch when its best or final tip moved; → view on that, a `served` run
     /// or a finality edge (an unchanged publish would wake this task's own wait)
-    fn publish(&mut self, served: Option<(EndpointIndex, BlockRef)>) {
+    fn publish(&mut self, served: Option<Served>) {
         let chain = self.chain();
         let report = (chain.best().map(|best| best.block), chain.final_tip(), self.finality_paused);
         let moved =

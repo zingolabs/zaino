@@ -7,7 +7,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         atomic::{AtomicBool, Ordering},
-        OnceLock,
+        Arc, OnceLock,
     },
     time::Instant,
 };
@@ -18,6 +18,7 @@ use zaino_chainview::ChainViewSubscriber;
 use zaino_nfs::NfsHandle;
 use zaino_persistence::{DiskView, View as _};
 use zaino_primitives::types::{self, Height};
+use zaino_traffic::{Health, MemberTable};
 
 use crate::index_report::Usage;
 
@@ -36,11 +37,12 @@ pub(crate) fn draining() -> bool {
 }
 
 /// `handed` = the NFS's last block handed to the indexes; `served` = its snapshots; `synced` =
-/// [`crate::serving`]'s judgement
+/// [`crate::serving`]'s judgement; `members` = the balancer's (latency, failures; trusted first)
 pub(crate) struct Sources {
     pub(crate) network: &'static str,
     pub(crate) started: Instant,
     pub(crate) chainview: ChainViewSubscriber,
+    pub(crate) members: watch::Receiver<Arc<MemberTable>>,
     pub(crate) handed: watch::Receiver<Option<Height>>,
     pub(crate) served: NfsHandle<DiskView>,
     pub(crate) synced: watch::Receiver<bool>,
@@ -218,17 +220,20 @@ pub(crate) fn current(live: bool) -> Option<Status> {
     let endpoints = view.endpoints();
     let tip = *sources.chainview.subscribe_tip().borrow();
     let alarms = view.alarms();
+    let members = sources.members.borrow().clone();
 
     let validators = endpoints
         .iter()
-        .map(|meta| Validator {
+        .zip(&members.rows)
+        .map(|(meta, member)| Validator {
             address: meta.address.clone(),
-            state: meta.state.label(),
+            state: meta.health.label(),
             agreement: meta.agreement.label(),
             height: meta.tip().map(|tip| u32::from(tip.height)),
             stale_blocks: meta.stale_blocks(),
-            latency_ms: meta.latency.mean().map(|mean| mean.as_millis() as u64),
-            failures: meta.failures,
+            latency_ms: (member.health != Health::Pending)
+                .then_some(member.latency.as_millis() as u64),
+            failures: member.failures,
             observed_s_ago: meta.observed_at.map(|at| at.elapsed().as_secs()),
             streaming: meta.streaming,
             release: meta.release.as_ref().map(|release| Release {

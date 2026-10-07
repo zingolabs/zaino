@@ -8,7 +8,9 @@ use tracing::{info, warn};
 use zaino_primitives::types::EndOfService;
 
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
-use crate::endpoints::{Agreement, EndpointIndex, EndpointSet, EndpointState, ValidatorMetadata};
+use zaino_traffic::{Health, ValidatorId};
+
+use crate::endpoints::{Agreement, EndpointSet, ValidatorMetadata};
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::submit::Ended;
 
@@ -80,7 +82,10 @@ pub fn describe_metrics() {
         "First sighting to leaving the view, by how (block = at a tip move; unlisted = evicted)"
     );
 
-    describe_gauge!(names::ENDPOINT_STATE, "1 on the endpoint's current poller state, by endpoint");
+    describe_gauge!(
+        names::ENDPOINT_STATE,
+        "1 on the endpoint's health as of its last poll, by endpoint"
+    );
     describe_gauge!(
         names::AGREEMENT,
         "1 on where the endpoint's chain stands against the verified best block, by endpoint"
@@ -156,7 +161,7 @@ impl Alarms {
 fn outbound(endpoints: &imbl::Vector<ValidatorMetadata>) -> Vec<HashSet<&str>> {
     endpoints
         .iter()
-        .filter(|meta| meta.state == EndpointState::Live)
+        .filter(|meta| meta.health == Health::Live)
         .map(|meta| {
             meta.peers.iter().filter(|peer| !peer.inbound).map(|peer| peer.addr.as_str()).collect()
         })
@@ -176,9 +181,9 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_pause
     let stale = endpoints
         .iter()
         .enumerate()
-        .filter(|(_, meta)| meta.state == EndpointState::Live)
+        .filter(|(_, meta)| meta.health == Health::Live)
         .filter(|(_, meta)| meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS))
-        .filter_map(|(index, _)| EndpointIndex::new(index))
+        .filter_map(|(index, _)| ValidatorId::new(index))
         .collect();
     let ending = endpoints
         .iter()
@@ -186,7 +191,7 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_pause
         .filter(|(_, meta)| {
             meta.blocks_to_end_of_service().is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS)
         })
-        .filter_map(|(index, _)| EndpointIndex::new(index))
+        .filter_map(|(index, _)| ValidatorId::new(index))
         .collect();
     let outbound = outbound(endpoints);
     let union: HashSet<&str> = outbound.iter().flatten().copied().collect();
@@ -199,13 +204,8 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_pause
     }
 }
 
-const STATES: [EndpointState; 5] = [
-    EndpointState::Pending,
-    EndpointState::Live,
-    EndpointState::Degraded,
-    EndpointState::Down,
-    EndpointState::CatchingUp,
-];
+const STATES: [Health; 5] =
+    [Health::Pending, Health::Live, Health::Degraded, Health::Down, Health::CatchingUp];
 
 const AGREEMENTS: [Agreement; 5] = [
     Agreement::Unknown,
@@ -271,7 +271,7 @@ pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
         let endpoint = meta.address.clone();
         for state in STATES {
             let labels = [("endpoint", endpoint.clone()), ("state", state.label().to_owned())];
-            metrics::gauge!(names::ENDPOINT_STATE, &labels).set(f64::from(meta.state == state));
+            metrics::gauge!(names::ENDPOINT_STATE, &labels).set(f64::from(meta.health == state));
         }
         for agreement in AGREEMENTS {
             let label = agreement.label().to_owned();
@@ -317,7 +317,7 @@ pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
     let now = snapshot.alarms;
     metrics::gauge!(names::FINALITY_PAUSED).set(f64::from(now.finality_paused));
 
-    for index in (0..snapshot.endpoints.len()).filter_map(EndpointIndex::new) {
+    for index in (0..snapshot.endpoints.len()).filter_map(ValidatorId::new) {
         let Some(meta) = snapshot.endpoints.get(index.get()) else { continue };
         let tip = meta.tip().map(|tip| u32::from(tip.height));
         let estimated = meta.info.as_ref().map(|info| u32::from(info.estimated_height));
@@ -372,9 +372,9 @@ mod tests {
     /// - Isolated node (regtest) + inbound-only overlap → nothing raised
     #[test]
     fn alarms_rise_on_a_stale_tip_a_partition_and_a_thin_outbound_set() {
-        type Endpoint = (EndpointState, u32, u32, &'static [&'static str], &'static [&'static str]);
+        type Endpoint = (Health, u32, u32, &'static [&'static str], &'static [&'static str]);
         type Raised = (&'static [usize], bool, bool);
-        use EndpointState::{CatchingUp, Live};
+        use Health::{CatchingUp, Live};
         #[rustfmt::skip]
         let cases: [(&str, &[Endpoint], Raised); 8] = [
             ("isolated regtest node",     &[(Live, 10, 10, &[], &[])],                                   (&[], false, false)),
@@ -399,7 +399,7 @@ mod tests {
                         move |addr: &&str| PeerInfo { addr: (*addr).to_owned(), inbound }
                     };
                     let mut meta = ValidatorMetadata::new(format!("v{index}:8232"));
-                    meta.state = *state;
+                    meta.health = *state;
                     let branch = ConsensusBranchId::new(0);
                     meta.info = Some(BlockchainInfo {
                         blocks: height(*tip),

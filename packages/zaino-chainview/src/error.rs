@@ -1,4 +1,4 @@
-//! Why a poll, a query or a broadcast could not complete
+//! Why the view could not be built, header sync stopped, or a broadcast failed
 
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
@@ -7,22 +7,8 @@ pub enum ConfigError {
     #[error("no validator endpoints configured")]
     NoEndpoints,
 
-    #[error("{count} endpoints configured, {max} is the ceiling", max = crate::EndpointSet::MAX)]
+    #[error("{count} endpoints configured, {max} is the ceiling", max = zaino_traffic::ValidatorId::MAX)]
     TooManyEndpoints { count: usize },
-}
-
-/// One endpoint's failed poll, split on retryability
-///
-/// - `Unavailable` = about the node: `Down` at once
-/// - `Source` = transport or garbled answer: backoff, `Down` at the failure ceiling
-/// - neither: `GetRawMempoolTransactionError::NotFound` (normal listing/fetch race, txid skipped)
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum EndpointPollError {
-    #[error("validator exposes no mempool")]
-    Unavailable,
-
-    #[error(transparent)]
-    Source(#[from] NonDomainError),
 }
 
 /// Final headers not durable: header sync ends, the process with it (never warn-and-continue)

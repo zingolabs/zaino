@@ -48,6 +48,15 @@ pub struct Unanswered<E: fmt::Debug + fmt::Display> {
     pub last: Option<QueryError<E>>,
 }
 
+impl<E: fmt::Debug + fmt::Display> fmt::Display for Unanswered<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.last {
+            Some(last) => write!(f, "{last}"),
+            None => f.write_str("no member to ask (benched, down or catching up)"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Urgency {
     Tip,

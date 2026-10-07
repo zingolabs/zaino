@@ -1,22 +1,27 @@
-//! Chain view over simulated zebrads, checked against a naive model after every poll
+//! Chain view over simulated zebrads through the real balancer, checked against a naive model
+//! after every poll
 //!
 //! - Nodes mine, relay (longest chain wins: regtest work per block is fixed; first seen on a tie),
-//!   fork (`invalidateblock` + `generate`), go unreachable; endpoints polled in random order
+//!   fork (`invalidateblock` + `generate`), go unreachable; a node's poll woken in random order
+//!   (others poll on their own cadence too: every observation counts)
+//! - Paused clock: the sim stands still while any poll runs (moves land between waits)
 //! - Header chain = a real one, fed each polled chain (header sync's part, without its I/O)
 //! - Oracle = each endpoint's chain *as last polled*, full length from genesis, and the best it
 //!   was asked under
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
 
 use proptest::prelude::*;
+use tokio_util::sync::CancellationToken;
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::mock::MockChain;
+use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
-use crate::endpoints::EndpointIndex;
-use crate::{ChainView, Endpoint, EndpointSet, Unserved};
+use crate::{ChainView, EndpointSet, Unserved};
 
 const DEPTH: u32 = 3;
 const MAX_NODES: usize = 5;
@@ -55,13 +60,16 @@ proptest! {
     ///
     /// - holders ⊆ reporting validators whose polled chain holds it, ⊇ those claiming it or
     ///   polled under it; no holder = no tip (`NotHeld`)
-    /// - each endpoint's own tip = its polled chain's; epoch moves iff the tip block does
+    /// - each endpoint's own tip = its polled chain's (none once `Down`); epoch moves iff the tip
+    ///   block does (or left and came back within the step; holders-only = the unit test's)
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(
         nodes in 1..=MAX_NODES,
         moves in moves(),
     ) {
         tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
             .build()
             .expect("runtime")
             .block_on(run(nodes, moves));
@@ -79,6 +87,7 @@ struct Node {
 struct Seen {
     chain: Vec<BlockHash>,
     reporting: bool,
+    down: bool,
     under: Option<BlockRef>,
 }
 
@@ -109,7 +118,7 @@ fn holders(seen: &[Option<Seen>], best: BlockRef) -> (EndpointSet, EndpointSet) 
     let (mut must, mut may) = (EndpointSet::default(), EndpointSet::default());
     for (index, seen) in seen.iter().enumerate() {
         let Some(seen) = seen.as_ref().filter(|seen| seen.reporting) else { continue };
-        let index = EndpointIndex::new(index).expect("< MAX_NODES");
+        let index = ValidatorId::new(index).expect("< MAX_NODES");
         if seen.chain.get(u32::from(best.height) as usize) == Some(&best.hash) {
             may.insert(index);
             if seen.chain.last() == Some(&best.hash) || seen.under == Some(best) {
@@ -132,17 +141,22 @@ async fn run(n: usize, moves: Vec<Move>) {
         sim.nodes.push(Node { mock, best: genesis.clone() });
         sim.serve(index);
     }
-    let endpoints = sim
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| Endpoint {
-            address: format!("v{index}"),
-            source: Arc::clone(&node.mock),
-        })
-        .collect();
-    let (view, pollers) = ChainView::new(endpoints, depth).expect("1..=5 endpoints");
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = sim.nodes.iter().map(|node| Trusted {
+        source: Arc::clone(&node.mock),
+        priority: 0,
+        limits,
+    });
+    let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
+    let addresses = (0..n).map(|index| format!("v{index}")).collect();
+    let view = ChainView::new(addresses, balancer.clone(), depth).expect("1..=5 endpoints");
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    let member = |node: usize| ValidatorId::new(node).expect("< MAX_NODES");
+    let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(member(node))).collect();
     let reader = view.subscriber();
+    let mut tips = reader.subscribe_tip();
     let mut seen: Vec<Option<Seen>> = vec![None; n];
     let (mut tip_was, mut epoch_was) = (None, reader.tail().ok());
 
@@ -171,23 +185,30 @@ async fn run(n: usize, moves: Vec<Move>) {
             }
             Move::Poll { node } => {
                 let node = node % n;
-                let chain = sim.nodes[node].best.clone();
                 let under = reader.current().best();
-                seen[node] = match pollers[node].tick().await {
-                    Ok(_) => Some(Seen { chain, reporting: true, under }),
-                    Err(failed) => {
-                        assert!(
-                            !pollers[node].failed(&failed, 1),
-                            "one failure = degraded, not down"
-                        );
-                        seen[node].take().map(|seen| Seen { reporting: false, ..seen })
+                balancer.pushed(member(node), Push::Changed);
+                observed[node].changed().await.expect("driver running");
+                observed[node].mark_changed();
+                // every fold of what landed (paused clock: runs before the timer fires)
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                for (index, watch) in observed.iter_mut().enumerate() {
+                    if !watch.has_changed().expect("driver running") {
+                        continue;
                     }
-                };
-
-                // header sync's part: what was read, verified (most work wins, tie = first seen)
-                if let Some(read) = seen[node].as_ref().filter(|seen| seen.reporting) {
-                    let tip = *read.chain.last().expect("genesis");
-                    let _side_or_known = headers.insert_blocks(&sim.chain.path(tip));
+                    let observation = watch.borrow_and_update().clone().expect("polled");
+                    let chain = sim.nodes[index].best.clone();
+                    let down = observation.health == Health::Down;
+                    seen[index] = match observation.polled {
+                        Ok(_) => Some(Seen { chain, reporting: true, down, under }),
+                        Err(_) => {
+                            seen[index].take().map(|seen| Seen { reporting: false, down, ..seen })
+                        }
+                    };
+                    // header sync's part: what was read, verified (most work wins, tie = first)
+                    if let Some(read) = seen[index].as_ref().filter(|seen| seen.reporting) {
+                        let tip = *read.chain.last().expect("genesis");
+                        let _side_or_known = headers.insert_blocks(&sim.chain.path(tip));
+                    }
                 }
                 view.set_verified(headers.verified());
 
@@ -210,7 +231,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                     (None, tip) => assert_eq!(tip, None, "{context}: nothing verified, no tip"),
                 }
                 for (index, seen) in seen.iter().enumerate() {
-                    let theirs = seen.as_ref().and_then(|seen| {
+                    let theirs = seen.as_ref().filter(|seen| !seen.down).and_then(|seen| {
                         let height = Height::try_from(seen.chain.len() as u32 - 1).expect("small");
                         Some(BlockRef { hash: *seen.chain.last()?, height })
                     });
@@ -227,11 +248,13 @@ async fn run(n: usize, moves: Vec<Move>) {
                     (None, Err(_)) => false,
                     _ => true,
                 };
-                assert_eq!(
-                    moved,
-                    block != tip_was,
-                    "{context}: the feed opens a new epoch iff the tip block moves"
-                );
+                // several folds per step: the tip may leave and come back (watch = any change)
+                let passed_through = tips.has_changed().expect("view alive");
+                tips.borrow_and_update();
+                let context =
+                    format!("{context}: the feed opens a new epoch iff the tip block moves");
+                assert!(block == tip_was || moved, "{context}");
+                assert!(block != tip_was || !moved || passed_through, "{context}");
                 if tip.is_none() {
                     let refused = match best {
                         None => Unserved::NoBestTip,
@@ -246,4 +269,5 @@ async fn run(n: usize, moves: Vec<Move>) {
             }
         }
     }
+    cancel.cancel();
 }

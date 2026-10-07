@@ -175,13 +175,13 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
     txid: TransactionId,
 ) -> Result<RawTransaction, Status> {
-    let found = validators.transaction(txid).await.map_err(|unanswered| match unanswered.last {
-        Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
-            Status::not_found(format!("transaction not found: {txid}"))
-        }
-        Some(failed) => Status::unavailable(failed.to_string()),
-        None => Status::unavailable("no trusted validator to ask (benched, down or catching up)"),
-    })?;
+    let found =
+        validators.transaction(txid).await.map_err(|unanswered| match &unanswered.last {
+            Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
+                Status::not_found(format!("transaction not found: {txid}"))
+            }
+            _ => Status::unavailable(unanswered.to_string()),
+        })?;
     let found = found.value;
 
     // Orphaned → unmined (one wire "no height"; an abandoned branch must not read as confirmed)
@@ -381,17 +381,13 @@ mod tests {
 
     /// - No verified tip, then a verified tip no polled validator holds = `UNAVAILABLE` naming why
     /// - Holder polled → its `getblockchaininfo` + served height (sync fn = no validator call)
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lightd_info_refuses_without_a_held_tip_then_answers_from_the_holders_view() {
         let mut chain = Chain::new();
         let tip_7 = chain.extend(chain.genesis().hash, 7);
-        let validator = Arc::new(MockChain::serving(chain.path(tip_7.hash)));
-        let depth = zaino_primitives::types::ReorgDepth::new(
-            std::num::NonZeroU32::new(3).expect("non-zero"),
-        );
-        let endpoint =
-            zaino_chainview::Endpoint { address: "one:8232".to_owned(), source: validator };
-        let (view, pollers) = zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one");
+        let node = Arc::new(MockChain::serving(chain.path(tip_7.hash)));
+        let (routes, balancing, fold) = routes_over(&node);
+        let view = routes.chain;
         let info = || lightd_info(&view.subscriber(), None, NetworkType::Main);
 
         let why = |refused: Status| (refused.code(), refused.message().to_owned());
@@ -404,8 +400,8 @@ mod tests {
         assert_eq!(why(refused), (tonic::Code::Unavailable, unheld));
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let polling = pollers.into_iter().map(|poller| tokio::spawn(poller.run(cancel.clone())));
-        let polling: Vec<_> = polling.collect();
+        tokio::spawn(balancing.run(cancel.clone()));
+        let folding = tokio::spawn(fold.run(cancel.clone()));
         let mut tip = view.subscriber().subscribe_tip();
         tip.wait_for(Option::is_some).await.expect("view alive");
 
@@ -426,9 +422,7 @@ mod tests {
         assert_eq!(served, LightdInfo { block_height: 5, ..expected }, "the snapshot tip");
 
         cancel.cancel();
-        for poller in polling {
-            poller.await.expect("poller ran to its cancel");
-        }
+        folding.await.expect("the fold ran to its cancel");
     }
 
     /// 1,000 subscribers on one thread (a block of wallets):
@@ -450,13 +444,12 @@ mod tests {
         let tip_11 = chain.mine(tip_10.hash);
         let node = Arc::new(MockChain::new());
         node.set_reachable(false);
-        let (routes, pollers, _) = routes_over(&node);
+        let (routes, balancing, fold) = routes_over(&node);
         let view = Arc::clone(&routes.chain);
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
-        for poller in pollers {
-            tokio::spawn(poller.run(cancel.child_token()));
-        }
+        tokio::spawn(balancing.run(cancel.child_token()));
+        tokio::spawn(fold.run(cancel.child_token()));
         let mut router = dispatch(routes);
         // the header chain's verdict, standing in for header sync
         let verified =
@@ -595,12 +588,11 @@ mod tests {
         for (tx, raw) in &chosen {
             node.mempool_insert(tx.txid, raw.clone());
         }
-        let (routes, pollers, _) = routes_over(&node);
+        let (routes, balancing, fold) = routes_over(&node);
         let reader = routes.chain.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
-        for poller in pollers {
-            tokio::spawn(poller.run(cancel.child_token()));
-        }
+        tokio::spawn(balancing.run(cancel.child_token()));
+        tokio::spawn(fold.run(cancel.child_token()));
         routes.chain.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
         let mut router = dispatch(routes);
         for _ in 0..10 {

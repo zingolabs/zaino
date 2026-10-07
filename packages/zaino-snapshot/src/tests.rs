@@ -8,7 +8,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zaino_chainview::{ChainView, ChainViewSnapshot, Endpoint, EndpointSet};
+use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_index_tree_state::PoolActivations;
 use zaino_internal_block_hash_to_height as block_hash;
@@ -17,6 +17,7 @@ use zaino_persistence::{fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceE
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
 use zaino_source::mock::MockChain;
+use zaino_traffic::{Limits, TrafficBalancer, Trusted};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::compose::check;
@@ -44,8 +45,11 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let a3 = builder.extend(builder.genesis().hash, 3);
     let path = builder.path(a3.hash);
     let source = Arc::new(MockChain::serving(path.clone()));
-    let endpoint = Endpoint { address: "10.0.0.1:8232".to_owned(), source };
-    let (view, _pollers) = ChainView::new(vec![endpoint], DEPTH).expect("one endpoint");
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let (balancer, _never_driven) =
+        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+    let address = vec!["10.0.0.1:8232".to_owned()];
+    let view = ChainView::new(address, balancer, DEPTH).expect("one validator");
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
     let mut snapshots = publisher.handle();

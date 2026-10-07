@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 7b2a1dce4e11ca77ea4638727a4495540940843a85b321b5c82d2e561bbc81ba # shrinks to nodes = 2, moves = [Mine { node: 2, count: 1 }, Fork { node: 2, drop: 2, mine: 0 }, Fork { node: 2, drop: 1, mine: 0 }, Mine { node: 2, count: 1 }, Fork { node: 0, drop: 1, mine: 0 }, Mine { node: 1, count: 2 }, Poll { node: 2 }, Poll { node: 1 }, Fork { node: 1, drop: 1, mine: 0 }, Poll { node: 1 }]
 cc cd2f5a221bbd46f79508bb1a97cb0ff6a35d7124a99038e3205b007837d9233a # shrinks to nodes = 1, moves = [Fork { node: 0, drop: 3, mine: 0 }, Poll { node: 0 }]
+cc 758f38d00373c7b6a45fa2fe34daca541f5ad34b30d9c16ec7bf591d4a4783fa # shrinks to nodes = 2, moves = [Mine { node: 2, count: 1 }, Poll { node: 0 }, Relay { from: 2, to: 1 }, Fork { node: 2, drop: 3, mine: 0 }, Poll { node: 0 }]

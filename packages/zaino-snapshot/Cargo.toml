@@ -44,4 +44,5 @@ zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
+zaino-traffic = { path = "../zaino-traffic" }
 zcash_protocol.workspace = true

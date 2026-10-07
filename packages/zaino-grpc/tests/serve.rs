@@ -16,16 +16,16 @@ use zaino_source::mock::MockChain;
 fn routes() -> Routes<MockChain, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let validator = Arc::new(MockChain::new());
-    let endpoint = zaino_chainview::Endpoint {
-        address: "unpolled:18232".to_owned(),
-        source: validator.clone(),
-    };
-    let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
-    let (chain, _pollers) =
-        zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one endpoint");
     let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
+    let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
+    let chain = zaino_chainview::ChainView::new(
+        vec!["unpolled:18232".to_owned()],
+        validators.clone(),
+        depth,
+    );
+    let chain = chain.expect("one endpoint");
     Routes {
         chain: Arc::new(chain),
         validators,

@@ -10,6 +10,7 @@
 //! - fact on the verified chain at `h` ⇒ every verified block ≤ `h` held (hash commits to its
 //!   ancestry): one height (`reach`) = all it holds
 //! - each poll replaces the last one's facts, a failed poll forgets them (never a stale holder)
+//! - a run counts only under the poll it was read under (fetched before a newer poll = stale)
 //! - pure core: no I/O, no clock
 //! - [`Holders::check`]: V1 + V2 (§10)
 
@@ -17,8 +18,9 @@ use std::sync::Arc;
 
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, Height, ReorgDepth};
+use zaino_traffic::ValidatorId;
 
-use crate::endpoints::{Agreement, EndpointIndex, EndpointSet};
+use crate::endpoints::{Agreement, EndpointSet};
 
 #[cfg(test)]
 mod fire_drills;
@@ -28,12 +30,17 @@ mod model;
 /// `getblockhash` questions per poll (the final boundary, the best)
 pub(crate) const ASKED: usize = 2;
 
+/// One answered poll, numbered by [`Holders::polled`]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PollStamp(u64);
+
 /// Every configured validator's standing against one verified chain, configured order
 #[derive(Debug, Clone)]
 pub(crate) struct Holders {
     depth: ReorgDepth,
     chain: Option<Arc<VerifiedChain>>,
     validators: imbl::Vector<Standing>,
+    polls: u64,
 }
 
 /// `reach` = highest verified height its facts hold
@@ -47,6 +54,7 @@ struct Standing {
 /// One poll's facts + header sync's latest since it (`polled`: ascending, at most `ASKED`)
 #[derive(Debug, Clone)]
 struct Answers {
+    stamp: PollStamp,
     claim: BlockRef,
     polled: Vec<BlockRef>,
     served: Option<BlockRef>,
@@ -61,7 +69,7 @@ impl Answers {
 impl Holders {
     pub(crate) fn new(configured: usize, depth: ReorgDepth) -> Self {
         let validators = (0..configured).map(|_| Standing::default()).collect();
-        Self { depth, chain: None, validators }
+        Self { depth, chain: None, validators, polls: 0 }
     }
 
     pub(crate) fn best(&self) -> Option<BlockRef> {
@@ -88,28 +96,27 @@ impl Holders {
 
     /// One answered poll: its claim + `polled` (the `getblockhash` answers it gave), replacing
     /// every earlier fact
-    pub(crate) fn polled(
-        &mut self,
-        endpoint: EndpointIndex,
-        claim: BlockRef,
-        polled: Vec<BlockRef>,
-    ) {
+    pub(crate) fn polled(&mut self, endpoint: ValidatorId, claim: BlockRef, polled: Vec<BlockRef>) {
         let at = self.configured(endpoint);
         assert!(one_per_asked_height(&polled), "holders: poll answers ascending, at most ASKED");
-        self.validators[at].answers = Some(Answers { claim, polled, served: None });
+        self.polls += 1;
+        let stamp = PollStamp(self.polls);
+        self.validators[at].answers = Some(Answers { stamp, claim, polled, served: None });
         self.settle(at);
     }
 
-    /// Header sync read `block` off its best chain (lost = ignored: nothing held until a poll)
-    pub(crate) fn served(&mut self, endpoint: EndpointIndex, block: BlockRef) {
+    /// Header sync read `block` off its best chain, under poll `under` (lost or polled since =
+    /// ignored)
+    pub(crate) fn served(&mut self, endpoint: ValidatorId, block: BlockRef, under: PollStamp) {
         let at = self.configured(endpoint);
-        let Some(answers) = self.validators[at].answers.as_mut() else { return };
+        let answers = self.validators[at].answers.as_mut();
+        let Some(answers) = answers.filter(|answers| answers.stamp == under) else { return };
         answers.served = Some(block);
         self.settle(at);
     }
 
     /// Poll failed (or ejected): holds nothing until its next answer
-    pub(crate) fn lost(&mut self, endpoint: EndpointIndex) {
+    pub(crate) fn lost(&mut self, endpoint: ValidatorId) {
         let at = self.configured(endpoint);
         self.validators[at].answers = None;
         self.settle(at);
@@ -122,19 +129,20 @@ impl Holders {
         assert!(verified, "V1: holders asked of a verified block, not {block:?}");
         let holds = |standing: &Standing| standing.reach.is_some_and(|reach| reach >= block.height);
         let held = self.validators.iter().enumerate().filter(|(_, standing)| holds(standing));
-        held.filter_map(|(at, _)| EndpointIndex::new(at)).collect()
+        held.filter_map(|(at, _)| ValidatorId::new(at)).collect()
     }
 
-    pub(crate) fn reach(&self, endpoint: EndpointIndex) -> Option<Height> {
+    pub(crate) fn reach(&self, endpoint: ValidatorId) -> Option<Height> {
         self.validators.get(endpoint.get())?.reach
     }
 
-    /// Its tip as of its last answered poll (`None` = none since its last failure)
-    pub(crate) fn claim(&self, endpoint: EndpointIndex) -> Option<BlockRef> {
-        Some(self.validators.get(endpoint.get())?.answers.as_ref()?.claim)
+    /// Its tip as of its last answered poll + that poll (`None` = none since its last failure)
+    pub(crate) fn claim(&self, endpoint: ValidatorId) -> Option<(BlockRef, PollStamp)> {
+        let answers = self.validators.get(endpoint.get())?.answers.as_ref()?;
+        Some((answers.claim, answers.stamp))
     }
 
-    pub(crate) fn agreement(&self, endpoint: EndpointIndex) -> Agreement {
+    pub(crate) fn agreement(&self, endpoint: ValidatorId) -> Agreement {
         self.validators.get(endpoint.get()).map_or(Agreement::Unknown, |s| s.agreement)
     }
 
@@ -152,7 +160,7 @@ impl Holders {
         }
     }
 
-    fn configured(&self, endpoint: EndpointIndex) -> usize {
+    fn configured(&self, endpoint: ValidatorId) -> usize {
         let at = endpoint.get();
         assert!(at < self.validators.len(), "holders: {at} not a configured validator");
         at

@@ -201,7 +201,9 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
 /// One member, its push stream up:
 /// - reconcile every 15 s, a push event polls within 200 ms
 /// - poll heights ride the next poll (`getblockhash` per height)
-/// - unreachable: `Degraded`, then `Down` after 10 failures (ladder); reachable: `Live` again
+/// - unreachable: `Degraded`, then `Down` after 10 failures (ladder); reachable: `Live` again,
+///   its first answer carrying the metadata the failures left due
+/// - each observation: the health right after it
 #[tokio::test(start_paused = true)]
 async fn pushes_wake_the_poll_heights_ride_it_and_failures_walk_the_health_ladder() {
     let mut chain = Chain::new();
@@ -255,9 +257,11 @@ async fn pushes_wake_the_poll_heights_ride_it_and_failures_walk_the_health_ladde
     assert_eq!(health(&balancer), Health::Down);
     assert_eq!(observed_health(&mut observed), Some((Some(FailureMode::Connection), Health::Down)));
     mock.set_reachable(true);
-    tokio::time::sleep(Duration::from_secs(31)).await;
-    assert_eq!(health(&balancer), Health::Live, "the probe brings it back");
-    assert_eq!(observed_health(&mut observed), Some((None, Health::Live)));
+    observed.changed().await.expect("driver running");
+    let back = observed.borrow_and_update().clone().expect("polled");
+    let metadata = back.polled.as_ref().ok().map(|reading| reading.metadata.is_some());
+    assert_eq!(metadata, Some(true), "failed polls leave metadata due: the answer back reads it");
+    assert_eq!((back.health, health(&balancer)), (Health::Live, Health::Live), "the probe");
     cancel.cancel();
 }
 

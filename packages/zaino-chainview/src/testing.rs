@@ -76,14 +76,16 @@ impl ValidatorP2pSource for MockPeers {
 mod tests {
     use std::num::NonZeroU32;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use tokio_util::sync::CancellationToken;
     use zaino_primitives::testing::MockChain;
     use zaino_primitives::types::ReorgDepth;
     use zaino_source::testing::{raw_transaction, MockValidator};
+    use zaino_traffic::{Limits, TrafficBalancer, Trusted, ValidatorId};
 
     use super::*;
-    use crate::{ChainView, Count, Endpoint};
+    use crate::{ChainView, Count};
 
     /// Paused clock, two validators on one chain, four live peers:
     /// - two announcements before any trusted listing: not held; listed by one = `peers: 2/4,
@@ -97,23 +99,33 @@ mod tests {
             (0..2).map(|_| Arc::new(MockValidator::following(&chain, chain.genesis()))).collect();
         let peer = |b: u8| SocketAddr::from(([10, b, 0, 1], 8233));
         let peers = Arc::new(MockPeers::new((0..4).map(peer), [peer(9)]));
-        let endpoints = validators.iter().zip(["a:8232", "b:8232"]);
-        let endpoints = endpoints
-            .map(|(source, address)| Endpoint {
-                address: address.to_owned(),
-                source: Arc::clone(source),
-            })
-            .collect();
+        let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+        let trusted = validators.iter().map(|validator| Trusted {
+            source: Arc::clone(validator),
+            priority: 0,
+            limits,
+        });
+        let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
+        let addresses = vec!["a:8232".to_owned(), "b:8232".to_owned()];
         let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
-        let (view, pollers) = ChainView::new(endpoints, depth).expect("two endpoints");
+        let view = ChainView::new(addresses, balancer.clone(), depth).expect("two validators");
         let view = Arc::new(view.with_peers(peers.clone()));
         let cancel = CancellationToken::new();
+        tokio::spawn(driver.run(cancel.clone()));
+        tokio::spawn(view.observation_fold().run(cancel.clone()));
         tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
         tokio::task::yield_now().await;
+        // each member polled again + folded (paused clock: the 1 ms timer fires once all idle)
         let poll_all = || async {
-            for poller in &pollers {
-                poller.tick().await.expect("polls");
+            let ids = (0..validators.len()).map(|at| ValidatorId::new(at).expect("small"));
+            let mut watches: Vec<_> = ids.map(|id| balancer.observe(id)).collect();
+            for watch in &mut watches {
+                watch.borrow_and_update();
             }
+            for watch in &mut watches {
+                watch.changed().await.expect("driver running");
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
         };
         let fold = || tokio::time::sleep(crate::peers::PEER_FOLD * 2);
         poll_all().await;

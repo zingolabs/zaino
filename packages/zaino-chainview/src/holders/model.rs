@@ -14,8 +14,10 @@ use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 
-use super::Holders;
-use crate::endpoints::{Agreement, EndpointIndex};
+use super::{Holders, PollStamp};
+use zaino_traffic::ValidatorId;
+
+use crate::endpoints::Agreement;
 
 const DEPTH: u32 = 3;
 const VALIDATORS: usize = 4;
@@ -23,7 +25,8 @@ const VALIDATORS: usize = 4;
 /// - `Relay` = `to` adopts `from`'s chain iff longer; `Fork` = top `drop` invalidated, `mine`
 ///   mined on the rest (`mine < drop` = retreat)
 /// - header sync: `Learn` verifies `node`'s chain; `Finalize` = the boundary (holders never
-///   consulted: the driver's call); `Serve` = a run off `node`'s best, ending `below` its tip
+///   consulted: the driver's call); `Fetch` = a run read off `node`'s best now, under its last
+///   poll; `Serve` = that run lands, ending `below` its top (polls, forks between = interleaved)
 #[derive(Debug, Clone)]
 enum Step {
     Mine { node: usize, count: u32 },
@@ -32,6 +35,7 @@ enum Step {
     Learn { node: usize },
     Finalize,
     Poll { node: usize, answer: Answer },
+    Fetch { node: usize },
     Serve { node: usize, below: u32 },
 }
 
@@ -62,6 +66,7 @@ fn steps() -> impl Strategy<Value = (u8, Vec<Step>)> {
         3 => node().prop_map(|node| Step::Learn { node }),
         1 => Just(Step::Finalize),
         6 => (node(), answer).prop_map(|(node, answer)| Step::Poll { node, answer }),
+        2 => node().prop_map(|node| Step::Fetch { node }),
         2 => (node(), 0u32..=DEPTH + 1).prop_map(|(node, below)| Step::Serve { node, below }),
     ];
     (any::<u8>(), prop::collection::vec(step, 1..64))
@@ -113,6 +118,9 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
     let mut holders = Holders::new(n, depth);
     let mut known = vec![Known::Silent; n];
     let mut verified: Option<VerifiedChain> = None;
+    // per node: its polls so far; the run in flight (its chain when read, its poll, polls then)
+    let mut polls = vec![0usize; n];
+    let mut fetched: Vec<Option<(Vec<BlockHash>, PollStamp, usize)>> = vec![None; n];
 
     let mine = |world: &mut Chain, path: &mut Vec<BlockHash>, count: u32| {
         for _ in 0..count {
@@ -131,7 +139,7 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
             Step::Relay { .. } => Some(1),
             Step::Fork { .. } => Some(2),
             Step::Finalize => Some(3),
-            Step::Serve { .. } => Some(4),
+            Step::Fetch { .. } | Step::Serve { .. } => Some(4),
             Step::Poll { answer: Answer::Partial { .. } | Answer::Failed, .. } => Some(5),
             Step::Poll { answer: Answer::Raced { .. }, .. } => Some(6),
             Step::Learn { .. } | Step::Poll { answer: Answer::Full, .. } => None,
@@ -167,7 +175,8 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
             }
             Step::Poll { node, answer } => {
                 let (node, asked) = (node % n, holders.asked());
-                let endpoint = EndpointIndex::new(node).expect("< MAX");
+                polls[node] += 1;
+                let endpoint = ValidatorId::new(node).expect("< MAX");
                 let under = verified.as_ref().map(VerifiedChain::best);
                 let answered = |path: &[BlockHash]| -> Vec<BlockRef> {
                     let at = |height: &Height| Some(*path.get(u32::from(*height) as usize)?);
@@ -204,21 +213,33 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
                     }
                 }
             }
-            Step::Serve { node, below } => {
+            Step::Fetch { node } => {
                 let node = node % n;
-                let path = &nodes[node];
+                let endpoint = ValidatorId::new(node).expect("< MAX");
+                // header sync reads only a validator with a claim
+                fetched[node] = holders
+                    .claim(endpoint)
+                    .map(|(_, under)| (nodes[node].clone(), under, polls[node]));
+            }
+            Step::Serve { node, below } if fetched[node % n].is_some() => {
+                let node = node % n;
+                let (path, under, polled) = fetched[node].take().expect("guarded");
                 let height = (path.len() - 1).saturating_sub(below as usize);
                 let block = BlockRef {
                     hash: path[height],
                     height: Height::try_from(height as u32).expect("small"),
                 };
-                let endpoint = EndpointIndex::new(node).expect("< MAX");
-                holders.served(endpoint, block);
-                if let Known::Polled { moments, whole, .. } = &mut known[node] {
-                    moments.push(path.clone());
+                let endpoint = ValidatorId::new(node).expect("< MAX");
+                holders.served(endpoint, block, under);
+                // polled since its read = stale: ignored (the newer poll's facts stand alone)
+                if let (Known::Polled { moments, whole, .. }, true) =
+                    (&mut known[node], polled == polls[node])
+                {
+                    moments.push(path);
                     *whole = false;
                 }
             }
+            Step::Serve { .. } => {}
         }
 
         let context = format!("step {at}: {known:?}");
@@ -237,7 +258,7 @@ fn verify(
 ) {
     let Some(verified) = verified else {
         assert!(holders.asked().is_empty(), "{context}: nothing verified, nothing asked");
-        for at in (0..known.len()).filter_map(EndpointIndex::new) {
+        for at in (0..known.len()).filter_map(ValidatorId::new) {
             assert_eq!(holders.agreement(at), Agreement::Unknown, "{context}: {at:?}");
         }
         return;
@@ -252,7 +273,7 @@ fn verify(
     let heights = || Height::GENESIS.up_to(best.height);
     let sets: Vec<_> = heights().map(|height| holders.holders(block(height))).collect();
     for (at, known) in known.iter().enumerate() {
-        let endpoint = EndpointIndex::new(at).expect("< MAX");
+        let endpoint = ValidatorId::new(at).expect("< MAX");
         let held = |height: Height| sets[u32::from(height) as usize].contains(endpoint);
         match known {
             Known::Silent => {

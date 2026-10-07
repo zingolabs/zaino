@@ -23,7 +23,9 @@ use imbl::OrdSet;
 use tokio::time::Instant;
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
-use crate::endpoints::{EndpointIndex, EndpointSet};
+use zaino_traffic::ValidatorId;
+
+use crate::endpoints::EndpointSet;
 
 /// How hard Zaino pushes one transaction into the network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +47,7 @@ impl Default for SubmitPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Entry {
     Peer(SocketAddr),
-    Trusted(EndpointIndex),
+    Trusted(ValidatorId),
 }
 
 /// Address prefix one operator plausibly controls: /16 IPv4, /32 IPv6 (Bitcoin Core's buckets)
@@ -149,7 +151,7 @@ pub(crate) struct Job {
     policy: SubmitPolicy,
     rng: fastrand::Rng,
     peers: Vec<SocketAddr>,
-    trusted: Vec<EndpointIndex>,
+    trusted: Vec<ValidatorId>,
     tried: Vec<Entry>,
     used: Vec<Netgroup>,
     deadline: Option<Instant>,
@@ -163,7 +165,7 @@ impl Job {
     /// `peers` = entry candidates (none = trusted entries only, §6's form before peers)
     pub(crate) fn new(
         peers: Vec<SocketAddr>,
-        trusted: Vec<EndpointIndex>,
+        trusted: Vec<ValidatorId>,
         policy: SubmitPolicy,
         rng: fastrand::Rng,
     ) -> Self {
@@ -354,7 +356,7 @@ mod tests {
         }
 
         fn seen(&self, tried: &[Entry], at: Instant) -> Seen {
-            let index = |i: usize| EndpointIndex::new(i).expect("< MAX");
+            let index = |i: usize| ValidatorId::new(i).expect("< MAX");
             let readers: EndpointSet = (0..self.trusted.len())
                 .filter(|&i| !matches!(self.trusted[i], Node::Unread))
                 .map(index)
@@ -407,7 +409,7 @@ mod tests {
                 propagation_threshold: Duration::from_millis(threshold_ms),
                 max_attempts: NonZeroU8::new(max_attempts).expect("≥ 1"),
             };
-            let index = |i: usize| EndpointIndex::new(i).expect("< MAX");
+            let index = |i: usize| ValidatorId::new(i).expect("< MAX");
             let start = Instant::now();
             let mut now = start;
             let mut world = World { trusted: trusted.clone(), peers: peers.clone(), took: BTreeMap::new() };
@@ -510,7 +512,7 @@ mod tests {
     /// - tried trusted entry (p2p address unknown) → two outside announcers needed
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
-        let t = |i: usize| EndpointIndex::new(i).expect("< MAX");
+        let t = |i: usize| ValidatorId::new(i).expect("< MAX");
         let p = |n: u8| SocketAddr::from(([10, n, 0, 1], 8233));
         let set = |of: &[usize]| of.iter().map(|&i| t(i)).collect::<EndpointSet>();
         let peers = |of: &[u8]| of.iter().map(|&n| p(n)).collect::<OrdSet<SocketAddr>>();
@@ -592,7 +594,7 @@ mod tests {
     /// - Peers → uniform over the peers, never a trusted validator (none singled out: §6's point)
     #[test]
     fn the_first_entry_is_uniform_and_a_peer_whenever_one_exists() {
-        let index = |i: usize| EndpointIndex::new(i).expect("< MAX");
+        let index = |i: usize| ValidatorId::new(i).expect("< MAX");
         let peers: Vec<SocketAddr> =
             (0..4).map(|i| SocketAddr::from((Ipv4Addr::new(10, i, 0, 1), 8233))).collect();
         let seen = Seen { listed: false, spread: false, observable: true };

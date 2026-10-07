@@ -1,15 +1,13 @@
-//! [`ValidatorP2pSource`], and how this crate uses a validator's
-//! [`ChainDataSource`](zaino_source::ChainDataSource) (two round trips at most per tick)
+//! [`ValidatorP2pSource`], and what this crate asks a validator through the balancer
+//! (`zaino-traffic`: cadence, retries, blame)
 //!
-//! - poll batch: `getblockchaininfo` (its claim, the estimate and schedule `GetLightdInfo`
-//!   serves) + `getrawmempool true` (the listing the diff runs over, fees included) +
-//!   `getblockhash` at the final boundary and the best (what it holds: `holders.rs`); every
-//!   `METADATA_REFRESH`, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
-//! - bytes batch: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
-//! - header sync: `getblockheader <h> false` batches (its headers)
-//! - `sendrawtransaction`: one submission attempt or the verdict (§6)
-//!
-//! - Retry = this crate's own per-endpoint ladder (`config.rs`)
+//! - poll (the balancer's, folded here): `getblockchaininfo` (its claim, the estimate and schedule
+//!   `GetLightdInfo` serves) + `getrawmempool true` (the listing the diff runs over, fees
+//!   included) + `getblockhash` at the final boundary and the best (what it holds: `holders.rs`);
+//!   every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
+//! - `bytes(..)`: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
+//! - `headers(Pinned)`: `getblockheader <h> false` batches (its headers)
+//! - `submit(..)`: `sendrawtransaction`, one submission attempt or the verdict (§6)
 
 use std::net::SocketAddr;
 
