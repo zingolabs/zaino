@@ -511,7 +511,7 @@ fn run(moves: Vec<Move>) {
         assert_eq!(verified.branch(&best.hash), [], "{context}: the best tip = no side branch");
         for header in &model.mined {
             let hash = header.hash();
-            let at = BlockRef { hash, height: builder.block(hash).header().height };
+            let at = BlockRef { hash, height: builder.templates[&hash].height };
             let on_best = path.get(u32::from(at.height) as usize).is_some_and(|r| r.hash == hash);
             let expected = on_best || model.alive.contains_key(&hash);
             assert_eq!(verified.holds(at), expected, "{context}: holds {at:?}");
