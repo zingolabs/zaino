@@ -6,38 +6,40 @@ submission that watches its own transaction spread, and a stream that says
 *which* validators have seen each transaction. Design:
 [`docs/design/chainview.md`](../../docs/design/chainview.md).
 
-The view itself keeps no durable state. Each endpoint is polled, diffed against
-its own previous listing, and folded into one published snapshot; a restart loses
-nothing one poll round does not restore. The one file behind it is the header
-chain (`zaino-header-chain`), which `HeaderSync` owns.
+The view itself keeps no durable state. Every request to the validators goes
+through one `zaino_traffic::TrafficBalancer`: each member's poll (the balancer's)
+is diffed against its own previous listing and folded into one published
+snapshot; a restart loses nothing one poll round does not restore. The one file
+behind it is the header chain (`zaino-header-chain`), which `HeaderSync` owns.
 
 ```rust
-use std::sync::Arc;
-use zaino_chainview::{ChainView, Endpoint, SubmitPolicy};
+use zaino_chainview::{ChainView, SubmitPolicy};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
+use zaino_traffic::TrafficBalancer;
 
-# fn wire<S: zaino_source::ChainDataSource>(source: Arc<S>, chain: HeaderChain) -> Result<(), Box<dyn std::error::Error>> {
-// depth = the header chain's finality depth (zainod passes `sync.finalised_depth`)
-let (view, pollers) = ChainView::new(
-    vec![Endpoint { address: "127.0.0.1:8232".to_owned(), source: Arc::clone(&source) }],
-    ReorgDepth::CONSENSUS,
-)?;
+# fn wire<S: zaino_source::ChainDataSource>(balancer: TrafficBalancer<S>, chain: HeaderChain) -> Result<(), Box<dyn std::error::Error>> {
+// addresses[i] = the balancer's trusted member i (logs, status); depth = the header chain's
+// finality depth (zainod passes `sync.finalised_depth`)
+let addresses = vec!["127.0.0.1:8232".to_owned()];
+let view = ChainView::new(addresses, balancer, ReorgDepth::CONSENSUS)?;
 let view = view.with_submit_policy(SubmitPolicy::default());
-// the tip comes only from here: spawn it next to the pollers
-let headers = view.header_sync(chain, vec![source]);
+// the tip comes only from header sync, the polls from the fold (the balancer's driver runs
+// beside them)
+let headers = view.header_sync(chain);
+let fold = view.observation_fold();
 // each: `tokio::spawn(x.run(cancel.child_token()))`
 // `view.submit(raw)` submits; `view.subscriber()` = the read handle
-let _ = (view, pollers, headers);
+let _ = (view, headers, fold);
 # Ok(())
 # }
 ```
 
 ## In `zainod`
 
-Membership is `[[trusted_validators]]`, in configured order, all equal. One
-adapter (connection pool) per validator is shared by the view, the fetch pool and
-serving; header sync reads through each one's bulk lane.
+Membership is `[[trusted_validators]]`, in configured order, all equal for the
+view (`priority` only orders who the balancer asks first). One balancer over one
+adapter per validator is shared by the view, the NFS and serving.
 
 ```toml
 [[trusted_validators]]
@@ -47,15 +49,17 @@ jsonrpc_address = "127.0.0.1:8232"
 jsonrpc_address = "10.0.0.7:8232"
 ```
 
-The daemon spawns header sync, one task per poller (and its push stream, when
-`indexer_address` is set, and the peer watch, when `[p2p]` is on), ahead of the
-fetch loop. `zaino-grpc`'s `Routes.chain` holds the view: it answers
+The daemon spawns the balancer's driver first (the upgrade schedule is a poll's),
+then header sync, the observation fold, each push stream (when `indexer_address`
+is set: its callbacks → `TrafficBalancer::pushed`) and the peer watch (when
+`[p2p]` is on). `zaino-grpc`'s `Routes.chain` holds the view: it answers
 `SendTransaction`, `GetMempoolTx`, `GetMempoolStream` and `GetLightdInfo`.
 
 ## Membership
 
 - `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more
-  than `EndpointSet::MAX` = 64 (`ConfigError::TooManyEndpoints`). N = 1 is valid.
+  than `ValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). N = 1 is valid.
+  One address per trusted member of the balancer (asserted).
 - No validator outvotes another: there is no vote. A validator contributes
   headers (checked against every consensus rule before they count), answers to
   `getblockhash` that say which verified blocks it holds, a mempool listing and a
@@ -68,17 +72,18 @@ fetch loop. `zaino-grpc`'s `Routes.chain` holds the view: it answers
 ## Structure
 
 ```text
-HeaderSync             every validator's headers → HeaderChain (proof of work) → VerifiedChain
-EndpointPoller × N     one validator each: poll, diff, report added / removed / claim + getblockhash
-      │
+HeaderSync             every validator's headers (headers(Pinned)) → HeaderChain → VerifiedChain
+ObservationFold        each member's poll (TrafficBalancer::observe): diff, report added / removed /
+      │                claim + getblockhash; the holders' heights → ask_each_poll
 ChainViewCore          folds both into one ChainViewSnapshot (Holders: who holds what), via ArcSwap
       │
 ChainViewSubscriber    readers pin one snapshot per request
 ```
 
-Each poller owns its interval, backoff and failure count, so a slow validator
-degrades alone. The fold is `O(change)`. Raw bytes are fetched once per txid: a
-poller skips the ones the view already holds and fetches the rest in batches.
+The balancer owns every cadence, retry and failure count, so a slow validator
+degrades alone. The fold is `O(change)`. Raw bytes are fetched once per txid: the
+fold skips the ones the view already holds and asks `bytes(..)` for the rest, the
+lister preferred.
 Each `MempoolEntry` carries a `Projection`, the serving layer's encoding of it,
 rendered once (`get_or_render`) and shared by every snapshot holding the entry; a
 fee arriving for an unpriced entry starts a fresh one.
@@ -114,8 +119,10 @@ The view serves from `ChainTip { block, held_by }`:
   verified chain at `h` means it holds every verified block up to `h` (a hash
   commits to its ancestry). Each poll replaces the last one's answers, and a
   failed poll (`Degraded`) or `Down` forgets them: a validator that reorged away
-  holds nothing from its next poll on, never a stale vote. A race (it moved
-  between the items of one batch) costs one wrong poll; the next one re-asks.
+  holds nothing from its next poll on, never a stale vote. A header run counts
+  only under the poll it was read under (one fetched before a newer poll is
+  dropped). A race (it moved between the items of one batch) costs one wrong
+  poll; the next one re-asks.
 - `held_by` empty → no tip (`Unserved::NotHeld`); nothing verified yet →
   `Unserved::NoBestTip`. Both fail closed (`UNAVAILABLE`): a verified header
   says the work is real, not that the block is valid, and only a validator
@@ -126,18 +133,19 @@ Finality moves only past a block `depth` deep and held by a trusted validator
 the final boundary. Work never gates it: peers alone can never finalize, and a
 trusted holder already vouches for the chain. While a boundary waits for a
 holder, finality pauses and the `finality_paused` alarm rises; serving continues.
-A validator serving a header that fails a rule is warned and skipped that round;
-a header from the future (past the clock + 2 h) is deferred, retried next round
-and never blamed; one that retreats below its claim is read again from its next
-claim.
+A validator serving an undecodable header or one that fails a rule is reported
+to the balancer (benched: nothing but its poll reaches it for 60 s, doubling)
+and skipped that round; a header from the future (past the clock + 2 h) is
+deferred, retried next round and never blamed, as is an orphan run; one that
+retreats below its claim is read again from its next claim.
 
 The `Holders` core behind it is pure (answers and the `VerifiedChain` in, holders
 and agreement out); its `check()` asserts V1 (each validator's reach = the
 highest verified height its answers hold) and V2 (agreement = its claim's
 classification), after every fold in debug builds. Tests: a model against a
 naive oracle over whole validator chains (agree, disagree, failed items, timeouts,
-mid-poll reorgs, validators behind and ahead, runs served by header sync) and a
-fire drill per check and precondition.
+mid-poll reorgs, validators behind and ahead, runs served by header sync, read
+before a later poll or fork) and a fire drill per check and precondition.
 
 ## Read handle: `ChainViewSubscriber`
 
@@ -160,9 +168,10 @@ not),
 `unserved()`, `mempool()` (below), `validator_info()` (the first holder's
 `BlockchainInfo`, `Err(Unserved)` without a tip; `GetLightdInfo` serves it with
 no validator call), and `endpoints()`: per-endpoint `ValidatorMetadata` in
-configured order (address, own tip via `tip()`, `EndpointState`, `Agreement`
-with the verified best block, last-observed time, latency `Ewma`, failure count,
-peers, release, push-stream state, `blocks_to_end_of_service()`).
+configured order (address, own tip via `tip()`, `zaino_traffic::Health` as of its
+last poll, `Agreement` with the verified best block, last-observed time, peers,
+release, push-stream state, `blocks_to_end_of_service()`). Latency and failure
+counts are the balancer's (`TrafficBalancer::members()`).
 
 `Agreement` comes from its claim and its answers, as of its last answered poll:
 `Agreed` (its claim is the best block), `Ahead` (it holds the best block and
@@ -187,9 +196,9 @@ peers.announce(peer, vec![txid]);                    // one `inv` (after peer_wa
 let entered: Vec<SocketAddr> = peers.pushes();       // entries pushed to, in order
 ```
 
-`ChainTip::held_by` is an `EndpointSet` bitset: `positions()` yields each
-member's position in the configured list (the same order as the fetch pool's
-sources), and `EndpointSet::at(positions)` builds one from positions.
+`ChainTip::held_by` is an `EndpointSet` bitset over `ValidatorId`s:
+`positions()` yields each member's position in the configured list (the
+balancer's order), and `EndpointSet::at(positions)` builds one from positions.
 
 ## Mempool
 
@@ -222,8 +231,8 @@ move.
 1. Precheck from the bytes: decodes, expiry height not below the next block
    (ZIP-203; `tx-expiring-soon`), and a v5+ transaction's branch id = the next
    block's. A failure is `SubmitError::Rejected` with no validator contacted.
-2. One entry per attempt, drawn uniformly from the validators not yet tried
-   (`Down` ones only when nothing else is left).
+2. One entry per attempt, drawn uniformly from the balancer's `entries()` (live,
+   not benched) not yet tried; each push is `submit(member, raw)`.
 3. The wallet is answered at the **first acceptance** (`Ok(txid)`; the
    transaction is `ours` from then, servable at once). A rejection or failure is
    answered only once every attempt is spent: no acceptance and some rejection →
@@ -296,48 +305,46 @@ while let Some(logged) = tail.next().await {
 
 ## Cadence and failure
 
-Fixed (`config.rs`): poll 1 s (15 s while streaming), at least 200 ms between
-polls, metadata refresh 60 s, backoff 500 ms → 30 s, 10 consecutive failures.
+The balancer's (`zaino-traffic`'s usage, "Polling and observations"): poll 1 s
+(15 s while its push stream is up), at least 200 ms apart, metadata every 60 s
+(a failed poll leaves it due), 0.5 → 30 s ladder while failing, `Down` after 10
+consecutive failures. A push event (`TrafficBalancer::pushed`) polls within
+200 ms; `ValidatorMetadata::streaming` reports the stream.
 
-`EndpointPoller::waker()` → `PollWaker`, the poller's early-wake handle (a push
-stream holds one): `wake()` polls now (coalesced to one pending wake);
-`streaming(up)` switches the cadence and polls at once on either edge. The
-endpoint's `ValidatorMetadata::streaming` reports it.
+A poll is at most two round trips: the poll batch (claim, listing and the two
+`getblockhash` answers), then one `bytes(..)` for what the view lacks. It reads
+no headers. A `getblockhash` above the validator's tip, or one failed item, is no
+answer for that height; the rest of the poll stands. A failed peer or release
+read keeps the last answer and never fails the poll; unanswered bytes are
+re-listed and re-fetched next poll.
 
-A tick is at most two round trips: the poll batch (claim, listing and the two
-`getblockhash` answers), then one bytes batch. It reads no headers. A
-`getblockhash` above the validator's tip, or one failed item, is no answer for
-that height; the rest of the poll stands. A failed peer or release read keeps
-the last answer and never fails the tick.
-
-`EndpointPoller::run(cancel)` logs once (INFO) on its first successful tick.
+`ObservationFold::run(cancel)` logs once (INFO) on a validator's first listing.
 A validator whose mempool is off below the network tip (zebrad's "mempool is not
-active") is `CatchingUp`: its answers still count as holding (so block sync
-follows a catching-up validator), its sightings are retracted, and `run` warns
-every 60 s with its tip height and hash until the mempool answers, then logs
-"Validator caught up". A transport failure marks the endpoint `Degraded` and
-retries on the backoff ladder. The failure ceiling, or a validator answering
-"mempool unavailable", marks it `Down`: its sightings, claim and answers are
-retracted (never held stale), and the poller keeps retrying every 30 s; its
-first answer back restores them. A `Degraded` endpoint keeps its last claim on
-show but holds nothing until it answers again. A validator going away never ends `run`; only cancel does.
-With no holder left the tip and mempool fail closed, which is the only
-consequence.
+active") or absent is `CatchingUp`: its answers still count as holding (so block
+sync follows a catching-up validator), its sightings are retracted, and the fold
+warns every 60 s with its tip height and hash until the mempool answers, then logs
+"Validator caught up". A failed poll leaves it `Degraded`: its last claim stays
+on show, it holds nothing until it answers again, its sightings stay. `Down`
+retracts its sightings, claim and answers (never held stale); the balancer keeps
+probing every 30 s and its first answer back restores them. A validator going
+away never ends `run`; only cancel does. With no holder left the tip and mempool
+fail closed, which is the only consequence.
 
 ## Ports
 
-Each trusted validator is a `zaino_source::ChainDataSource` (its RPC). The view
-asks it `get_poll_reading(metadata, holds)`, `get_raw_mempool_transactions` and
-`send_raw_transaction`; header sync asks `get_block_links`.
+Each trusted validator is a member of a `zaino_traffic::TrafficBalancer` over
+`zaino_source::ChainDataSource` (its RPC). The view folds its polls (`observe`)
+and asks `bytes(..)` and `submit(..)`; header sync asks `headers(Pinned)`.
+Retries, hedges and blame (`report`) are the balancer's.
 
 - an endpoint's claim is the poll's `getblockchaininfo` tip, read in the same
-  batch as the listing and the `getblockhash` answers at `holds` (the final
-  boundary and the best); `get_block_links` (`getblockheader <h> false`) supplies
-  the raw header bytes of header sync's batches, each decoded and hashed once on
-  arrival, never by the source. zebrad answers even on an empty state (genesis,
-  mempool inactive = `CatchingUp`), so there is no readiness probe
+  batch as the listing and the `getblockhash` answers at the heights the view
+  hands `ask_each_poll` (the final boundary and the best); `headers(Pinned)`
+  (`getblockheader <h> false`) supplies the raw header bytes of header sync's
+  batches, each decoded and hashed once on arrival, never by the source. zebrad
+  answers even on an empty state (genesis, mempool inactive = `CatchingUp`), so
+  there is no readiness probe
 - the whole `BlockchainInfo` is kept per endpoint (see `validator_info()`)
-- retry is this crate's own per-endpoint ladder
 
 The p2p network is a `ValidatorP2pSource` (`dyn`, so the view's type is the same
 with or without it), given by `ChainView::with_peers`:
@@ -363,7 +370,7 @@ Observation only: none of it decides membership or gates serving.
 
 | Gauge (`zaino.chainview.*`) | Labels | Value |
 |---|---|---|
-| `endpoint_state` | `endpoint`, `state` | 1 on the current `EndpointState` |
+| `endpoint_state` | `endpoint`, `state` | 1 on its `Health` as of its last poll |
 | `agreement` | `endpoint`, `agreement` | 1 on the current `Agreement` |
 | `tip_height` | `endpoint` | the endpoint's own tip height |
 | `stale_blocks` | `endpoint` | `estimatedheight` − tip height |

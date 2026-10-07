@@ -253,7 +253,7 @@ zaino-nfs/src/
   core.rs       NfsCore<F>: pure state machine (no I/O, time as input), check()
   graph.rs      Node<F>; imbl::HashMap<BlockHash, Arc<Node<F>>>, side-node pruning
   fold.rs       Folded, FoldError, fold_block: the fold order, the one place indexes meet
-  fetch.rs      check_block, wants, hedging, blame
+  fetch.rs      check_block, fetch (block(hash, urgency) until checked; misanswer → report)
   emit.rs       metrics (zaino_best_tip, zaino_reorgs_total, zaino_fetch_*)
   report.rs     `Syncing blocks` progress every 30 s
   snapshot.rs   Snapshot<V>, Views<V>, ChainParams, NfsHandle<V>, PerIndex<T>
@@ -263,10 +263,10 @@ zaino-nfs/src/
 ### Driver
 
 ```rust
-pub struct Nfs<S, V> { /* chain watch, sources, params, sink, committed watches, root layers, publisher */ }
+pub struct Nfs<S, V> { /* chain watch, balancer, params, sink, committed watches, root layers, publisher */ }
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
-    pub fn new(chain: watch::Receiver<Option<Arc<VerifiedChain>>>, sources: Vec<Arc<S>>,
+    pub fn new(chain: watch::Receiver<Option<Arc<VerifiedChain>>>, balancer: TrafficBalancer<S>,
                params: ChainParams, lookahead: NonZeroUsize, depth: ReorgDepth) -> Self;
     // panics: kind twice, CompactBlock before ValueBalance
     pub fn subscribe(&mut self, kind: IndexKind, committed: watch::Receiver<V>, queue: NonZeroUsize)
@@ -279,12 +279,14 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
 pub enum NfsError { Diverged { index: &'static str, height, expected, got }, Fold(FoldError), ChainGone, WriterGone(&'static str) }
 ```
 
-- One task: `select!` over the chain watch, finished fetches and folds (one `JoinSet`), each
-  index's next commit (one `watch::changed` per index, respawned), a 1 s tick; every output
-  executed in order; `check()` after each step in debug builds.
-- `Fetch` → a task (`getblock <hash> 0` + `check_block`); `Fold` → `zaino_sync::compute` (never on
-  the async loop); `Send` → `Step::Apply { height, data: Final { block, folds } }`, awaited
-  (backpressure); `Publish` → a `Snapshot` swapped into the handle.
+- One task: `select!` over the chain watch, finished folds (one `JoinSet`), checked bodies (one
+  per fetch task), each index's next commit (one `watch::changed` per index, respawned); every
+  output executed in order; `check()` after each step in debug builds.
+- `Fetch` → a task (`TrafficBalancer::block(hash, Tip | Bulk)` + `check_block`, a misanswer
+  `report`ed and re-asked: [traffic-balancer.md](./traffic-balancer.md) owns who, hedges,
+  retries and benches); `Abandon` → that task aborted (its sends dropped); `Fold` →
+  `zaino_sync::compute` (never on the async loop); `Send` → `Step::Apply { height, data: Final {
+  block, folds } }`, awaited (backpressure); `Publish` → a `Snapshot` swapped into the handle.
 - `committed` (per index) = the store's committed view after each commit: its tip = the core's
   `Durable` input, the view itself = what root folds and snapshots read. One map holds both, so a
   fold or snapshot pairs layers with exactly the durable state the core knows.
@@ -322,16 +324,14 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(parent: &Views<V>, block: &B
 ```rust
 pub(crate) enum Input<F> {
     Chain(Arc<VerifiedChain>),
-    Body { from: usize, at: BlockRef, answer: Answer },    // Checked (check_block) | Misanswered | Failed
+    Body(Checked),                                          // check_block passed; stale = ignored
     Folded { at: BlockRef, folded: Arc<F> },
     Durable { index: usize, tip: Option<BlockRef> },       // index = position in `new`'s durable tips
-    Tick,
 }
 
 pub(crate) enum Output<F> {
-    Fetch { from: usize, height: Height, record: Record },  // driver: getblock + check_block(record)
-    Misanswered { from: usize, at: BlockRef, why: Misanswer },
-    Unserved { height: Height },                            // every source out: retried after 1 s
+    Fetch { at: BlockRef, record: Record, urgency: Urgency }, // one per want; Tip above the final tip
+    Abandon(BlockRef),                                      // want gone: its fetch dropped
     Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block> },  // None = committed stores at the root
     Send(Final<F>),                                         // to the final stream, in list order
     Publish(SnapshotTip<F>),                                // driver builds the Snapshot from it
@@ -341,8 +341,8 @@ pub(crate) struct Final<F> { block: Arc<Block>, folded: Option<Arc<F>> }
 pub(crate) struct SnapshotTip<F> { chain: Arc<VerifiedChain>, tip: BlockRef, folded: Option<Arc<F>> }
 
 impl<F> NfsCore<F> {                                        // crate-internal: the driver is its one user
-    fn new(sources: usize, lookahead: usize, depth: ReorgDepth, durable: Vec<Option<BlockRef>>) -> Self;
-    fn step(&mut self, input: Input<F>, now: Instant) -> Result<Vec<Output<F>>, Diverged>;
+    fn new(lookahead: usize, depth: ReorgDepth, durable: Vec<Option<BlockRef>>) -> Self;
+    fn step(&mut self, input: Input<F>) -> Result<Vec<Output<F>>, Diverged>;
     fn check(&self);                                        // N1–N5, named panics (N6: model + driver test)
 }
 ```
@@ -361,7 +361,7 @@ impl<F> NfsCore<F> {                                        // crate-internal: t
 A block's life:
 
 ```text
-header verified ─▶ on best? ─▶ fetch (any source) ─▶ checked (hash_at + merkle)
+header verified ─▶ on best? ─▶ fetch (the balancer) ─▶ checked (hash_at + merkle)
    ─▶ final, parent unfolded? ── yes ─▶ Send(Final{block, folded: None})       (bulk)
                              └─ no ──▶ Fold (parent node, or the root) ─▶ node joins graph
                                   ─▶ Publish(snapshot at deepest folded best node)

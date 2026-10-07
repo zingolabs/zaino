@@ -19,13 +19,11 @@ error. `ZebraRpcAdapter` answers all of it over zebrad's JSON-RPC; blocks come f
 ## Building an adapter: one link per validator
 
 ```rust,ignore
-use zaino_source::{Lane, LinkLimits, Timeouts, ZebraRpcAdapter};
+use zaino_source::{LinkLimits, Timeouts, ZebraRpcAdapter};
 
-let limits = LinkLimits::new(max_connections, max_requests_per_sec, max_bytes_per_sec)
-    .expect("max_connections >= LinkLimits::MIN_CONNECTIONS");
-let chainview = ZebraRpcAdapter::at(address, cookie, user, password, Timeouts::default(), limits)?;
-let sync = chainview.on(Lane::Sync);
-let serve = chainview.on(Lane::Serve);
+let link = LinkLimits { max_connections, max_bytes_per_sec };
+let adapter = ZebraRpcAdapter::at(address, cookie, user, password, Timeouts::default(), link)?;
+// one per validator, handed to `zaino_traffic::TrafficBalancer` as a `Trusted` member
 ```
 
 `at` builds the adapter from config without contacting the validator. An
@@ -33,24 +31,15 @@ unreachable validator is the caller's retry, never a construction failure;
 `EndpointError` means a bad address, an unreadable cookie, or a client that
 cannot be built.
 
-Every handle made with `on` shares one link, and so one budget, to that
-validator. Zaino never exceeds the budget, however many consumers it has:
-
-| Lane      | Connections        | Used by                                      |
-| --------- | ------------------ | -------------------------------------------- |
-| `Control` | 2                  | chain view polling, submission (`at` default) |
-| `Serve`   | a quarter, at least 1 | wallet lookups (`GetTransaction`, …)      |
-| `Sync`    | the rest           | bulk block fetch                             |
-
-- One HTTP/1.1 request holds one connection, so the permits are the connection cap.
-  A lane never borrows another's: a sync burst or a wallet storm cannot delay the
-  tip poll.
-- `max_requests_per_sec` and `max_bytes_per_sec` (`None` = unlimited) are GCRA
-  budgets over the whole link. Response bytes are charged per body chunk as they
-  are read, so an exhausted budget slows the sender through TCP backpressure.
-- Per-validator metrics carry a `validator` label: wait for a permit
-  (`zaino.validator_rpc.wait_seconds`, by lane), requests in flight, bytes
-  received.
+- One attempt per call. Which validator, how many requests in flight, the request
+  rate, retries and hedges are the balancer's (`zaino-traffic`): this crate never
+  re-sends, and a batch item's refusal (zebrad's `-1` work queue full included) is
+  that item's own outcome.
+- `LinkLimits`: `max_connections` = idle connections kept to the validator;
+  `max_bytes_per_sec` (`None` = unlimited) paces response bytes per body chunk as
+  they are read, so an exhausted budget slows the sender through TCP backpressure.
+- Per-validator metrics carry a `validator` label: call duration by method,
+  failures, calls in flight, bytes received.
 
 ## Error model
 
@@ -66,10 +55,8 @@ that height" as `NonDomain` makes every caller's retry treat an above-tip probe
 as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
 `NonDomainError { mode: FailureMode, .. }` keeps the concrete cause as its
-`source()`. `FailureMode::is_transient()` is true for `Connection`, `Timeout`,
-`HttpStatus(>= 500)` and RPC codes `-1` (work queue full) and `-28` (warming
-up). Every other code is the validator's considered reply. The transport
-re-sends a work-queue-full refusal itself, up to `RpcClientConfig::max_retries`.
+`source()`; `mode` classifies it (`Connection`, `Timeout`, `HttpStatus`,
+`RpcError(code)`, `Parse`, `Auth`).
 
 ## `IndexerWatch`: push streams as wake hints
 
@@ -80,31 +67,14 @@ re-sends a work-queue-full refusal itself, up to `RpcClientConfig::max_retries`.
 streams are open and `on_link(false)` when either ends after that (a refused
 connect is no edge), then it reconnects on a 500 ms → 30 s ladder. Events are
 hints only: zebrad ends a lagged stream rather than skip events, so a consumer
-that polls on every edge never misses a change.
+that polls on every edge never misses a change. zainod wires the callbacks to
+`zaino_traffic::TrafficBalancer::pushed`.
 
-## `TrafficBalancer`: which validator answers a read
+## Batched ports for one poll
 
-The set of trusted validators, never one: it is not a `ChainDataSource`. Its one
-operation, `failover(|validator| read)`, asks them in turn until one answers:
-
-- first = the cheaper of two at random, cost = peak-EWMA latency × (in flight +
-  1) (tower's `PeakEwma` rule); the rest follow cheapest first. The estimate
-  jumps to any slower sample, decays toward faster ones, and decays to zero while
-  idle, so a once-slow validator is tried again
-- a transient failure is retried 3 times on that validator (250 ms, doubling)
-- a domain answer (every read's is "absent") moves on: a lagging validator lacks
-  a just-mined block or transaction
-- the result = the first answer, else a transport failure (that validator may
-  have held it), else the last absence
-
-Writes never go through it: submission belongs to the chain view. Block bodies
-are fetched by the NFS (`zaino-nfs`), by hash, from any source, each checked
-against the verified header.
-
-## Batched ports for one poller
-
-The chain view's poller asks one validator at most two batches per tick (the poll,
-then the bytes of what it newly lists); its header sync asks `get_block_links`:
+The balancer's poll asks one validator `get_poll_reading`; the chain view then
+asks `get_raw_mempool_transactions` for the bytes of what it newly lists, and its
+header sync `get_block_links`:
 
 - `get_poll_reading(metadata, holds)`: `getblockchaininfo` +
   `getrawmempool true` + `getblockhash <h>` per height in `holds`, in one batch,
@@ -131,7 +101,8 @@ then the bytes of what it newly lists); its header sync asks `get_block_links`:
 
 In each, items come back in request order and `Err` means the batch as a whole
 failed. A crate-internal JSON-RPC batch call is the transport underneath: one
-permit, the request budget charged per call, replies matched by `id`.
+HTTP request, replies matched by `id` (the balancer charges its request rate per
+call).
 
 `NodeRelease` (from `getinfo` + `getdeprecationinfo`) carries the build, user
 agent, protocol version and `EndOfService`: `At { height, estimated_unix }` on

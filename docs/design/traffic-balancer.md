@@ -1,7 +1,8 @@
 # TrafficBalancer: one way Zaino talks to validators and peers
 
-Status: **phase 1 built** (2026-10-07): `packages/zaino-traffic` (core, driver, API, model, fire
-drills), no callers yet; §5 lists what changed while building. Builds on [chainview.md](chainview.md) §7–§9,
+Status: **phase 2 built** (2026-10-07): every trusted-validator request goes through
+`zaino-traffic` (§9 steps 1–7 and 9); peers as members (step 8) wait for the WorkPool. §5 lists
+what changed while building each phase. Builds on [chainview.md](chainview.md) §7–§9,
 [verified-chain.md](verified-chain.md) §6–§7 and §10, [nfs.md](nfs.md) §6. Boundary with
 `global-snapshot.md` in §6.
 
@@ -233,6 +234,29 @@ Changed while building (phase 1):
 - `pushed(member, Push)` instead of the driver owning push streams: zainod wires
   `IndexerWatch::run`'s callbacks to it (step 6), keeping gRPC connects out of this crate.
 
+Changed while migrating (phase 2):
+
+- `Observation.health` = the member's health right after that poll: the chain view folds
+  `Degraded` vs `Down` without racing the published `MemberTable` (`MemberRow.failures` and
+  `Health::label` feed `/statusz` and the `endpoint_state` gauge; `Unanswered` displays).
+- Only an answered poll consumes the metadata refresh (a failing member's first answer reads it).
+- Boot's upgrade schedule = the first *answered* poll, `CatchingUp` included (a syncing zebrad
+  holds the network's schedule; waiting for `Live` would hold boot until it reaches the tip).
+- The transport keeps per-chunk byte pacing only (`LinkLimits { max_connections,
+  max_bytes_per_sec }`); request rate = the core's GCRA alone.
+- A validator with no mempool method (`-32601`) folds as `CatchingUp` (chain counted, no
+  sightings), as the core reads it; formerly `Down` at once.
+- The view's NFS-facing contract kept, its transport switched: `ChainView::new(addresses,
+  balancer, depth)`, `ObservationFold` (one task, a loop per member), `ValidatorId` replaces
+  `EndpointIndex`. Holders gained `PollStamp`: a header run counts only under the poll it was
+  read under.
+- Submission entries = `entries()` (live, not benched): no "every member down → try them all"
+  fallback.
+- NFS: the core names each fetch and its end (`Output::{Fetch, Abandon}`); the driver drops the
+  abandoned future.
+- Bytes answers are not yet checked against their txid (trusted only today); the check lands with
+  peers (step 8).
+
 | Caller | Today | After |
 | ------------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------- |
 | NFS driver | `Output::Fetch { from }` → `sources[from]` | `Output::Fetch { at, record }` → `block(hash, Tip/Bulk)` → `check_block` → `Input::Body`; `Err` → `report` + re-ask |
@@ -299,7 +323,7 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 - **Consumers keep theirs**: NFS model loses source kinds (bodies arrive late, never, or not at
   all, from "the balancer"); chainview's `network_model` drives the real balancer.
 
-## 9. Migration (each step green, live suite after 4 and 7)
+## 9. Migration (each step green, live suite after 4 and 7; 1–7 and 9 done, 8 open)
 
 1. `zaino-traffic`: `Observation`, `MemberTable`; today's `EndpointPoller` emits `Observation`
    (global-snapshot unblocked here).

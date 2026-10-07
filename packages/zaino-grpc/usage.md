@@ -10,7 +10,7 @@ client must distinguish live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 ```rust
 let routes = Routes {
     chain: Arc::clone(&view),            // Arc<ChainView<S>>
-    validators,                          // TrafficBalancer<S>
+    validators,                          // zaino_traffic::TrafficBalancer<S> (the view's too)
     network,                             // declared (GetLightdInfo.chainName)
     nfs: nfs.handle(),                   // NfsHandle<V>: one snapshot per request
     max_address_rows,                    // receives one t-address request may walk
@@ -31,7 +31,7 @@ tokio::spawn(bound.run(cancel.child_token()));
 | `GetAddressUtxos[Stream]`, `GetTaddressBalance[Stream]` | `transparent_address` |
 | `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
 | `SendTransaction`, `GetMempoolTx`, `GetMempoolStream` | `chain` (submission §6, the servable mempool) |
-| `GetTransaction` | `validators` (first validator holding it) |
+| `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 | `GetLightdInfo` | `chain`'s pinned view + the snapshot tip (0 before the first); `network` as configured |
 
 - **One snapshot per request** (`nfs.snapshot()`, pinned for the request or the

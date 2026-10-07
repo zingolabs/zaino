@@ -318,29 +318,21 @@ long Zaino owns a wallet's transaction.
 
 ## 7. Talking to a trusted validator
 
-Each trusted validator gets one `zaino_source::RpcClient`, which owns everything Zaino sends it
-(the chain view's `EndpointPoller` polls through it; the NFS fetches blocks and gRPC asks for
-transactions through it). A zebrad JSON-RPC server admits 100 connections in total; before
-these lanes, Zaino's pool per validator was unbounded and wallet traffic went straight through it
-(`GetTaddressTransactions` fans one call out into one `getrawtransaction` per txid).
+Every request Zaino sends a trusted validator goes through one traffic balancer
+([traffic-balancer.md](./traffic-balancer.md), `zaino-traffic`): the chain view's polls,
+header runs, mempool bytes and submissions, the NFS's blocks and gRPC's lookups. It owns the
+connection budget (request classes with reserved and ceiling-capped permits, so a bulk-sync burst
+or a wallet storm never delays a poll), the request rate, every cadence, retry, hedge and bench;
+each validator's `zaino_source::RpcClient` makes one attempt per call. A zebrad JSON-RPC server
+admits 100 connections in total: keep `zaino nodes × max_connections` (default 32, at least 6)
+under it.
 
-```text
-                     ┌─ Control  (tip, listing, headers, broadcast)   2 ─┐
-  RpcClient ─────────┼─ Serve    (GetTransaction, address tx bytes)   ¼ ─┼──▶ ≤ max_connections ──▶ zebrad
-                     └─ Sync     (block fetch)                 the rest ─┘
-                                 + request-rate and byte-rate limits (GCRA)
-```
-
-- **Lanes do not borrow**, so a bulk-sync burst or a wallet storm never delays the listing the
-  mempool depends on. Each in-flight request holds one HTTP/1.1 connection, so the lanes bound the
-  connections: `max_connections` per `[[trusted_validators]]` entry (default 32, at least 4).
-  Keep `zaino nodes × max_connections` under zebrad's 100.
 - **Bytes are charged per body chunk as it is read** (the `governor` crate): an exhausted budget
-  stops reading, and TCP backpressure slows the validator's send. Requests are charged per call,
-  so a batch of N costs N.
+  stops reading, and TCP backpressure slows the validator's send. Requests are charged per call
+  (the balancer's), so a batch of N costs N.
 - **Batches.** JSON-RPC batch requests (zebrad hands an array straight to jsonrpsee, whose batch
   limit is unlimited) carry N calls in one round trip and one permit; a work-queue-full item is
-  re-sent alone. A poll tick is at most two round trips: `getblockchaininfo` +
+  that item's own refusal, re-asked by the balancer. A poll is at most two round trips: `getblockchaininfo` +
   `getrawmempool true` + `getblockhash` at the final boundary and the best (who holds them:
   [verified-chain.md §7](./verified-chain.md#7-trusted-validators-holding-is-a-question-not-a-walk))
   (+ `getpeerinfo`, `getinfo`, `getdeprecationinfo` once a minute), then one
@@ -350,8 +342,8 @@ these lanes, Zaino's pool per validator was unbounded and wallet traffic went st
   mempool inactive), so there is no separate readiness probe.
 - **Push streams.** zebrad's `Indexer` gRPC streams `ChainTipChange` and `MempoolChange`. When a
   validator's config names an `indexer_address` and both streams are up, each event wakes its
-  poller (coalesced: one pending wake, 200 ms between polls) and the reconcile interval is 15 s;
-  absent or broken, the poller runs every second. The listing stays the one source of truth (an
+  poll (`TrafficBalancer::pushed`; coalesced: 200 ms between polls) and the reconcile interval
+  is 15 s; absent or broken, it polls every second. The listing stays the one source of truth (an
   event only decides when to read it), which is safe because zebrad ends a lagged stream
   (`while let Ok(..) = recv()` exits, then `UNAVAILABLE`) rather than skip events, and the stream
   coming up or going down polls at once.
@@ -383,22 +375,12 @@ every peer.
 
 ## 9. Routing
 
-A request any of several sources may answer goes to the less loaded of two picked at random,
-load = peak-EWMA latency × requests in flight (power-of-two-choices, as in Finagle, linkerd and
-zebra-network's own peer set). A nearby source wins until it has hundreds of requests in flight,
-and a distant one becomes failover without anyone configuring a primary. Built as
-`zaino_source::TrafficBalancer` (tower's `PeakEwma` rule over ports, not `tower::Service`s):
-`GetTransaction` and address transaction bytes route through it; the remaining candidates,
-cheapest first, are the failover order. Block fetch is the NFS's own scheduler (`zaino-nfs`
-`fetch.rs`: least-loaded source first, every body checked against the verified header, a
-misanswering source benched, a silent one hedged). Reads only: submission is §6's.
-
-| Request             | Candidates                                     |
-| ------------------- | ---------------------------------------------- |
-| block, near the tip | peers, then trusted                            |
-| block, bulk         | trusted and peers (trusted wins on throughput) |
-| mined transaction   | trusted                                        |
-| mempool bytes       | peers, then trusted                            |
+One balancer routes every request: [traffic-balancer.md](./traffic-balancer.md) §3 (members,
+classes, tiers, hedge / retry / blame) replaces this section's earlier table. Within the best
+tier with room, the cheaper of two picked at random, load = peak-EWMA latency × requests in
+flight (power-of-two-choices, as in Finagle, linkerd and zebra-network's own peer set); trusted
+`priority` tiers first, then peers. Submission's entry choice stays §6's (`entries()` →
+`submit(member, raw)`).
 
 ## 10. When things fail
 

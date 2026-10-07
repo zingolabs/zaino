@@ -13,7 +13,7 @@ use zaino_traffic::{Limits, TrafficBalancer, Trusted};
 let trusted = validators
     .iter()
     .map(|v| Trusted {
-        source: Arc::new(ZebraRpcAdapter::new(v.client())),
+        source: Arc::new(ZebraRpcAdapter::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections, v.max_requests_per_sec)?,  // None below 6
     })
@@ -77,18 +77,25 @@ let checked = loop {
 
 - Each trusted member is polled every 1 s (every 15 s while its push stream is up), never closer
   than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
-  failures) is probed at 30 s and nothing else is sent to it.
+  failures) is probed at 30 s and nothing else is sent to it. Metadata (`getpeerinfo`, `getinfo`,
+  `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
 - `ask_each_poll(heights)`: every poll asks `getblockhash` of these; setting them wakes every
   poller. `observe(member)` is a `watch` of the latest `Observation { polled, asked, at,
-  streaming }` (latest only: a slow consumer never stalls a poll).
+  streaming, health }` (latest only: a slow consumer never stalls a poll; `health` = the
+  member's right after that poll, so a consumer folds `Degraded` vs `Down` without the table).
+  A consumer subscribing after the driver started marks the watch changed to read the poll
+  already there.
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an
   event polls within 200 ms.
-- `members()`: `watch` of the `MemberTable` (health, bench, latency estimate, in flight) for
-  `/statusz` and metrics. `entries()`: trusted members a submission may enter by (live, not
-  benched).
+- `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, latency
+  estimate, in flight; trusted first, configured order) for `/statusz` and metrics, refreshed by
+  the driver. `entries()`: trusted members a submission may enter by (live, not benched).
 
 ## Health
 
 `Pending` (never polled) → `Live` / `CatchingUp` (polled; catching up = no mempool, so never
 asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `Down` (10).
-`Benched` is orthogonal: a fast liar is `Live` and benched.
+`Benched` is orthogonal: a fast liar is `Live` and benched. `Health::label()` = the metric label
+(`pending`, `live`, `catching_up`, `degraded`, `down`).
+
+`Unanswered` displays its `last` (or "no member to ask"), for logs and wallet-facing statuses.

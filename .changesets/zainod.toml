@@ -213,3 +213,29 @@ answered from the chain view without a validator call; `GetMempoolStream` encode
 transaction once for every subscriber. `GetBlockRangeNullifiers` and `GetTaddressTxids` are \
 served as deprecated aliases for pepper-sync.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "added"
+description = """
+One traffic balancer sends every request to the trusted validators (polls, headers, blocks, \
+lookups, submissions): per-class reserved connections, the cheaper of two by latency × load, \
+hedges, one retry budget, and a validator serving a block or header that fails its check \
+benched for 60 s (doubling; WARN `Misanswer, member benched`, \
+`zaino_traffic_misanswers_total`). New `[[trusted_validators]] priority` (default 0): lower \
+tiers first, a higher tier taking overflow and hedges. `/statusz` validator latency and \
+failures are the balancer's. The upgrade schedule is read from the first answered poll.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "changed"
+description = """
+`[[trusted_validators]] max_connections` must be at least 6 (one reserved per request class + \
+one shared), was 4; `max_requests_per_sec` counts each call of a batch.
+"""
+migration = """
+Raise any `max_connections` below 6.
+"""

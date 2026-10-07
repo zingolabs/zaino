@@ -18,3 +18,22 @@ Every trusted member polled (1 s, 15 s streaming, 200 ms floor, 0.5 → 30 s lad
 10 failures) with `ask_each_poll` heights and `pushed` wake-ups; `observe(member)` = its latest \
 `Observation`, `members()` = the `MemberTable`, `entries()` = submission entries.
 """
+
+[[changes]]
+crate = "zaino-traffic"
+kind = "feature"
+section = "added"
+description = """
+`Observation.health` = the member's health right after that poll, `MemberRow.failures` = its \
+consecutive failures, `Health::label()` = its metric label, and `Unanswered` implements \
+`Display` (its last failure or answer, or "no member to ask").
+"""
+
+[[changes]]
+crate = "zaino-traffic"
+kind = "fix"
+section = "fixed"
+description = """
+A failed poll no longer consumes the minute's metadata read: the member's next answered poll \
+carries `getpeerinfo` / `getinfo` / `getdeprecationinfo`.
+"""

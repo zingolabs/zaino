@@ -27,8 +27,9 @@ of `configured` trusted validators; `null` = unserved), `best_height` (the heade
 most-work verified height: header sync progress, above `tip` until a validator holds it),
 `fetch_height` (the last block handed to the indexes: sync progress between their commits),
 `served_height` (the snapshot every request answers at, `GetLatestBlock`), `synced` (the
-`syncing` judgement above, as a bool), each configured validator (state, agreement, tip height, stale blocks, latency,
-failures, `streaming` (push streams up), `release`: build, user agent, protocol and `end_of_service` as `{"status": "at", height,
+`syncing` judgement above, as a bool), each configured validator (state = its health as of its
+last poll, agreement, tip height, stale blocks, latency + consecutive failures = the traffic
+balancer's, `streaming` (push streams up), `release`: build, user agent, protocol and `end_of_service` as `{"status": "at", height,
 estimated_unix, blocks_left}` / `{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad
 < 6.3), and the p2p peers its `getpeerinfo` reports), the chainview alarms (`stale`, `ending` =
 releases halting within a week, `partitioned`, `eclipsed`), the mempool's spread (`transactions`,
@@ -239,8 +240,9 @@ INFO  [09-28|17:29:42.659] BlockHashIdx:        Syncing                        d
   component that logged it, and the message, padded to 30 columns when fields
   follow, so repeated lines align. Index `durable` heights and `size` are padded
   into columns (between fields, never inside a value).
-- Components: `Zainod` (lifecycle), `Metrics`, `ChainView` (validator polling,
-  mempool), `ZainoNFS` (block fetch, folds, the served tip, reorgs), `Grpc`, and one per index
+- Components: `Zainod` (lifecycle), `Metrics`, `Traffic` (the balancer's driver: every
+  validator's poll), `ChainView` (polls folded, headers, mempool, submission), `ZainoNFS`
+  (block fetch, folds, the served tip, reorgs), `Grpc`, and one per index
   (`CompactBlockIdx`, `ValueBalanceIdx`, `BlockHashIdx`,
   `TreeStateIdx`, `TransparentAddrIdx`), which also owns that index's
   commits and compactions. In `json` the component is the `component` field of
@@ -258,10 +260,11 @@ What an operator sees at `info`:
 | Component | Event | Level | When |
 |---|---|---|---|
 | `ChainView` | `Chain view configured` | info | At startup (`validators`, `headers_final` = the header chain's final height resumed from disk). |
-| `ChainView` | `Polling validator` | info | A validator's first answered poll (`endpoint`, `mempool` size). |
+| `ChainView` | `Polling validator` | info | A validator's first listing (`endpoint`, `listed` = its mempool size). |
 | `ChainView` | `Headers verified and final` | info | Header sync finalized past another 100,000 heights (`height`). |
-| `ChainView` | `Header fetch failed` / `Validator served an undecodable header` / `Validator served a header that fails a rule` | warn | Header sync skips that validator this round and retries in 5 s (`endpoint`, cause; a rule failure = it served an invalid chain). |
-| `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll on the backoff ladder; the failure ceiling or no mempool (its chain and sightings retracted); its first answer after down. |
+| `ChainView` | `Header fetch failed` | warn | Header sync skips that validator this round and retries in 5 s (`endpoint`, the failure, or no member to ask: benched, down). |
+| `ChainView` / `ZainoNFS` | `Misanswer, member benched` | warn | A validator served a header that fails a rule or does not decode (header sync), or a block its verified header does not commit to (NFS): `member`, `class`, `why`. Nothing but its poll reaches it for 60 s (doubling, 1 h at most); the block is asked of another. |
+| `ChainView` | `Validator poll failed` / `Validator down, holds no tip` / `Validator back` | warn / warn / info | A failed poll (the traffic balancer's 0.5 → 30 s ladder); 10 in a row (its chain and sightings retracted, probed every 30 s); its first answer after. |
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
@@ -279,7 +282,6 @@ What an operator sees at `info`:
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
 | `ZainoNFS` | `Syncing blocks` | info | Every 30 s while the blocks handed to the indexes trail the verified best (`height` handed, `target` = the best, `bps`, `eta`). |
 | `ZainoNFS` | `Block fetch stalled` | warn | A whole 30 s interval behind the best handed over no block. |
-| `ZainoNFS` | `Source misanswered a block, asking another` | warn | A source served another block or a body its header does not commit to (`source` = its `[[trusted_validators]]` position, `height`, `why`); it is skipped for 60 s. |
 | `ZainoNFS` | `Chain tip advanced` | info | Each published snapshot at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
 | `ZainoNFS` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips (`height` = the served tip). |

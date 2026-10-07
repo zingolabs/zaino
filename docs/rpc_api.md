@@ -30,9 +30,11 @@ consensus objects are forwarded to the validator.
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)* | compact-block index, re-projected to nullifiers |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)* | as `GetTaddressTransactions` |
 
-"The validator" here is the `TrafficBalancer` over every `[[trusted_validators]]`
-entry: least-loaded first, failing over through the rest until one answers (a
-lagging validator may lack a just-mined transaction). The mempool methods read
+"The validator" here is the traffic balancer (`zaino-traffic`) over every
+`[[trusted_validators]]` entry: lowest `priority` tier first, the cheaper of two
+within it, a slow answer hedged and an absent one asked of the next until one
+answers (a lagging validator may lack a just-mined transaction); `NOT_FOUND` only
+when every one asked said absent. The mempool methods read
 every trusted validator's listing. The two deprecated rows are served
 only because pepper-sync calls them (see
 [client-requirements.md](./client-requirements.md)).

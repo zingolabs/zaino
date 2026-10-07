@@ -19,3 +19,23 @@ enabled index; `changed()` awaits the next. A snapshot is republished per index 
 every kind folded. Metrics and logs for the tip, reorgs and fetch progress (`describe_metrics`). \
 Feature `testing`: `Snapshot::fixed`, `NfsHandle::{fixed, unpublished}`.
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "breaking"
+section = "changed"
+description = """
+Block bodies come from the traffic balancer: `Nfs::new(verified, balancer, params, lookahead, \
+depth)` takes a `zaino_traffic::TrafficBalancer` (its driver spawned by the caller) instead of a \
+list of sources. Each wanted height is one `block(hash, Tip | Bulk)` (`Tip` above the final \
+tip) until a body passes its check; a misanswer is `report`ed, benching its sender, and asked \
+again; a want dropped aborts its fetch. The NFS's own source scheduling (least-loaded pick, \
+60 s bench, 15 s hedge, 1 s retry) and its `Source misanswered a block` log are gone: \
+`zaino-traffic` owns who answers, hedges, retries and benches (logging `Misanswer, member \
+benched`).
+"""
+migration = """
+Build one `zaino_traffic::TrafficBalancer` over the validators (`Trusted { source, priority, \
+limits }`), spawn its `TrafficDriver::run`, and pass `balancer.clone()` where the source list \
+went.
+"""

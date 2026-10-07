@@ -9,8 +9,8 @@ root, one final stream into the index writers, one served `Snapshot` across ever
 use zaino_nfs::{ChainParams, Nfs, NfsError};
 
 let params = ChainParams { network, activations: PoolActivations::from_validator(&info) };
-let sync = sources.iter().map(|source| Arc::new(source.on(Lane::Sync))).collect();
-let mut nfs = Nfs::new(header_sync.subscribe(), sync, params, lookahead, depth);
+// the one zaino_traffic::TrafficBalancer (its driver spawned elsewhere)
+let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, lookahead, depth);
 
 // one per enabled index: its final stream out, its committed view in
 // value_balance before compact_block (its fees feed compact-block's fold)
@@ -22,10 +22,12 @@ let handed = nfs.subscribe_handed();                  // last block handed to th
 tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold | ChainGone | WriterGone
 ```
 
-- `Nfs::new`: the `VerifiedChain` watch, the block sources (any may serve any block: each answer
-  checked against the verified header), the chain params, `lookahead` (bodies fetched or folding
-  ahead of the next one needed), the header chain's reorg depth (unread: side nodes are bounded
-  by what the chain `holds`).
+- `Nfs::new`: the `VerifiedChain` watch, the traffic balancer (one `block(hash, urgency)` per
+  wanted height: `Tip` above the final tip, `Bulk` below; each answer checked against the
+  verified header, a misanswer `report`ed so the re-ask never reaches its sender; who answers,
+  hedges and retries are the balancer's), the chain params, `lookahead` (bodies fetched or
+  folding ahead of the next one needed), the header chain's reorg depth (unread: side nodes are
+  bounded by what the chain `holds`).
 - `subscribe(kind, committed, queue)`: enables `kind`. `committed` is a
   `watch::Receiver<V>` of the index store's committed view, sent after every commit: its tip is
   the index's durable tip, and the view is what snapshots and root folds read. Panics on a kind
@@ -33,8 +35,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Diverged | Fold |
 - `run(cancel)`: cancel → `Ok`; either way the final stream ends with `Shutdown`.
   `Diverged { index, .. }` = an index's durable block off the final chain (resync), `Fold` = an
   index's fold refused a verified block, `ChainGone` / `WriterGone(index)` = an input dropped.
-- Folds run on the compute pool (`zaino_sync::compute`), fetches on tasks; final-stream sends are
-  awaited in order (a full queue holds the driver back, never grows memory).
+- Folds run on the compute pool (`zaino_sync::compute`), fetches on tasks (a want dropped = its
+  task aborted, the balancer's sends with it); final-stream sends are awaited in order (a full
+  queue holds the driver back, never grows memory).
 
 ## Writers: the final stream
 
@@ -131,21 +134,25 @@ compact-block → block-hash → tree-state → transparent-address, each only i
 
 ## The core: `NfsCore<F>`
 
-Pure (no I/O, time as input): `step(input, now) -> Result<Vec<Output>, Diverged>` and `check()`
-(N1–N5, `nfs.md` §9; G8, `global-snapshot.md` §6), crate-internal. The driver feeds it the
-verified chain, checked bodies, fold results and durable tips, and carries out fetches, folds,
-sends and publishes.
+Pure (no I/O, no clock): `step(input) -> Result<Vec<Output>, Diverged>` and `check()` (N1–N5,
+`nfs.md` §9; G8, `global-snapshot.md` §6), crate-internal. The driver feeds it the verified
+chain, checked bodies, fold results and durable tips, and carries out fetches (one `Fetch` per
+want until its body or its `Abandon`), folds, sends and publishes.
 
 ## Tests
 
-- `core/model.rs`: random verified-chain evolutions, lying and silent sources, delayed folds and
-  commits, restarts, against naive writers and a fold-from-genesis oracle; every publish's `at`
-  for each node, the root, a block below it and a stranger against a naive answer (G7);
-  `core/fire_drills.rs` plants one bug per check and precondition.
+- `core/model.rs`: random verified-chain evolutions, bodies answered late, out of order or after
+  their abandon, delayed folds and commits, restarts, against naive writers and a
+  fold-from-genesis oracle (one fetch out per want); every publish's `at` for each node, the
+  root, a block below it and a stranger against a naive answer (G7); `core/fire_drills.rs`
+  plants one bug per check and precondition. Lying, slow and silent members = `zaino-traffic`'s
+  model.
+- `fetch.rs`: `check_block` refuses each misanswer by name, every `MockValidator` `Lie` included.
 - `tests.rs`: the driver end to end with all five real folds over `SimFs` stores and mock
-  validators, through bulk, reorgs (longer, same height, retreat), finality and a crash restart;
-  every snapshot seen: `at` of every mined block, side branches included, = each index folded
-  from genesis along that block's path; the driver's refusals.
+  validators behind a real balancer (one of them lying), through bulk, reorgs (longer, same
+  height, retreat), finality and a crash restart; every snapshot seen: `at` of every mined block,
+  side branches included, = each index folded from genesis along that block's path; the driver's
+  refusals.
 - `fold.rs`: `fold_block` golden (fees in the compact-block record, disabled indexes absent).
 
 ```bash

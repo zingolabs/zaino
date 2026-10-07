@@ -133,8 +133,9 @@ Deliberately not seams:
   `None`, not a stub.
 - **The index readers and writers.** Each index is one concrete crate; what varies between them
   is data, not an interface to swap.
-- **The validator set.** `TrafficBalancer` is the set of trusted validators (cheapest first, then
-  failover) and is not itself a `ChainDataSource`; a pool is never mistaken for one validator.
+- **The validator set.** `zaino_traffic::TrafficBalancer` is the set of trusted validators (and
+  peers): every request by class, tier, hedge and blame; it is not itself a `ChainDataSource`, so
+  a pool is never mistaken for one validator.
 
 ## 7. Conversions at the edges
 
