@@ -5247,6 +5247,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-snapshot"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "bytes",
+ "futures",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chainview",
+ "zaino-header-chain",
+ "zaino-index-tree-state",
+ "zaino-internal-block-hash-to-height",
+ "zaino-nfs",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-source",
+ "zcash_protocol",
+]
+
+[[package]]
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [

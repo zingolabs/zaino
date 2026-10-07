@@ -84,6 +84,10 @@ name = "zaino-proto"
 path = "packages/zaino-proto"
 
 [[target]]
+name = "zaino-snapshot"
+path = "packages/zaino-snapshot"
+
+[[target]]
 name = "zaino-source"
 path = "packages/zaino-source"
 

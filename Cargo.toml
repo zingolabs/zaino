@@ -2,6 +2,7 @@
 [workspace]
 members = [
     "packages/zaino-grpc",
+    "packages/zaino-snapshot",
     "packages/zaino-index-compact-block",
     "packages/zaino-index-tree-state",
     "packages/zaino-index-transparent-address",

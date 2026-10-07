@@ -1,0 +1,74 @@
+//! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6
+
+use zaino_chainview::ChainViewSnapshot;
+use zaino_header_chain::VerifiedChain;
+use zaino_nfs::Snapshot as Indexed;
+use zaino_primitives::types::{BlockRef, ReorgDepth};
+
+use crate::snapshot::{Snapshot, Tips};
+
+/// Pure (no I/O, no clock); `was_synced` = the last publish's (hysteresis)
+pub(crate) fn compose<V>(
+    was_synced: bool,
+    indexed: Option<&Indexed<V>>,
+    view: &ChainViewSnapshot,
+    depth: ReorgDepth,
+) -> Tips {
+    let chain = view.chain().map(|chain| &**chain);
+    let served = indexed.map(Indexed::tip);
+    Tips {
+        best: chain.map(VerifiedChain::best),
+        final_tip: chain.and_then(VerifiedChain::final_tip),
+        served,
+        held_by: view.tip().map(|tip| tip.held_by).unwrap_or_default(),
+        synced: chain.is_some_and(|chain| synced(was_synced, served, chain, depth)),
+    }
+}
+
+/// Opens at the best block (hash, not height); stays while on the best and ≤ `depth` behind it
+fn synced(was: bool, served: Option<BlockRef>, chain: &VerifiedChain, depth: ReorgDepth) -> bool {
+    let Some(served) = served else { return false };
+    let best = chain.best();
+    let on_best = chain.hash_at(served.height) == Some(served.hash);
+    let behind = u32::from(best.height).saturating_sub(served.height.into());
+    match was {
+        false => served == best,
+        true => on_best && behind <= depth.get(),
+    }
+}
+
+/// G2–G6 between two consecutive publishes; panics naming the invariant broken
+///
+/// - after `next`'s store and `prev`'s seal (the publisher's order)
+pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth) {
+    assert_eq!(next.seq, prev.seq + 1, "G2: seq + 1 per publish");
+    let tips = next.tips;
+    let chain = next.view.chain();
+    assert_eq!(tips.best, chain.map(|chain| chain.best()), "G3: best = the view chain's");
+    let final_tip = chain.and_then(|chain| chain.final_tip());
+    assert_eq!(tips.final_tip, final_tip, "G3: final = the view chain's");
+    let held_by = next.view.tip().map(|tip| tip.held_by).unwrap_or_default();
+    assert_eq!(tips.held_by, held_by, "G3: held_by = the view's holders of best");
+    let served = next.indexed.as_ref().map(|indexed| indexed.tip());
+    assert_eq!(tips.served, served, "G3: served = the NFS's");
+
+    if tips.synced {
+        let chain = chain.expect("G4: synced under a chain");
+        let (best, served) = (chain.best(), tips.served.expect("G4: synced = something served"));
+        let opened = prev.tips.synced || served == best;
+        assert!(opened, "G4: synced opens only at served = best");
+        assert_eq!(chain.hash_at(served.height), Some(served.hash), "G4: synced stays on best");
+        let behind = u32::from(best.height) - u32::from(served.height);
+        assert!(behind <= depth.get(), "G4: synced stays within {depth:?} of best");
+    }
+
+    let moved = tips.served != prev.tips.served;
+    assert_eq!(next.feed.key(), tips.served, "G5: epoch key = the served tip");
+    let rotated = !next.feed.same_epoch(&prev.feed);
+    assert_eq!(rotated, moved, "G5: epoch rotates iff the served tip moved");
+    assert_eq!(prev.feed.sealed(), moved, "G5: the old epoch sealed iff rotated");
+    assert!(!next.feed.sealed(), "G5: the stored epoch open");
+
+    let gate = next.mempool().is_ok();
+    assert_eq!(gate, !tips.held_by.is_empty(), "G6: mempool() Ok iff held_by != empty");
+}

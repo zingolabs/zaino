@@ -1,0 +1,16 @@
+id = "01a1185c-86c7-719c-8b95-8e6e1016f9e4"
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "feature"
+section = "added"
+description = """
+First release. One published `Snapshot` of everything Zaino serves: `Tips` (best, final, served, \
+the validators holding best, synced), the NFS's latest publish (`served()`, `at(hash)`), the \
+chain view's latest (`mempool()`, `lightd()`, `view()`), the chain's `forks()` and a \
+`GetMempoolStream` feed (`mempool_stream()`) whose epoch is keyed to the served tip, so a stream \
+ends only once the new tip is servable. `Publisher` combines the two inputs into one atomic \
+publication per change (`Snapshots::load`, never torn); `Unavailable` and `Unready` name each \
+refusal. `Report::of` (the `/statusz` body) and `emit_gauges` (at scrape) derive from one \
+snapshot (`describe_metrics`).
+"""
