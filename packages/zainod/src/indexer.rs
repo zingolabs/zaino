@@ -41,8 +41,9 @@ use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::{BlockchainInfo, ReorgDepth};
-use zaino_source::{ChainDataSource, Lane, TrafficBalancer, ZebraRpcAdapter};
+use zaino_source::{ChainDataSource, ZebraRpcAdapter};
 use zaino_sync::{FeeSink, Final, Subscription};
+use zaino_traffic::TrafficBalancer;
 
 use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
 use crate::error::IndexerError;
@@ -98,12 +99,10 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     let chainview =
         chainview_span.in_scope(|| crate::chainview::connect(&config, Arc::clone(&fs)))?;
     let schedule = upgrade_schedule(&chainview.sources).instrument(chainview_span.clone()).await;
-    let laned = |lane| chainview.sources.iter().map(|source| Arc::new(source.on(lane))).collect();
     let inputs = Inputs {
         chain: chainview.header_sync.subscribe(),
         view: Arc::clone(&chainview.view),
         balancer: chainview.balancer.clone(),
-        validators: TrafficBalancer::new(laned(Lane::Serve)),
         activations: PoolActivations::from_validator(&schedule),
     };
     let cancel = CancellationToken::new();
@@ -154,8 +153,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
 struct Inputs<S: ChainDataSource> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
-    balancer: zaino_traffic::TrafficBalancer<S>,
-    validators: TrafficBalancer<S>,
+    balancer: TrafficBalancer<S>,
     activations: PoolActivations,
 }
 
@@ -174,7 +172,8 @@ async fn pipeline<S: ChainDataSource>(
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let params = ChainParams { network, activations: inputs.activations };
     let verified = inputs.chain.clone();
-    let nfs = Nfs::new(inputs.chain, inputs.balancer, params, config.sync.concurrency, depth);
+    let balancer = inputs.balancer.clone();
+    let nfs = Nfs::new(inputs.chain, balancer, params, config.sync.concurrency, depth);
     let mut indexes = Subscribed { nfs, opened: Vec::new() };
     let mut tasks = JoinSet::new();
     let engine = DiskEngine::new(fs);
@@ -216,7 +215,7 @@ async fn pipeline<S: ChainDataSource>(
     // --- serving: bound here (EADDRINUSE = boot failure), every answer off one snapshot
     let routes = Routes {
         chain: Arc::clone(&inputs.view),
-        validators: inputs.validators,
+        validators: inputs.balancer,
         network,
         nfs: snapshots.clone(),
         max_address_rows: config.serve.max_address_rows,
@@ -589,14 +588,8 @@ mod tests {
         };
         let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = zaino_traffic::Trusted { source: Arc::clone(&mock), priority: 0, limits };
-        let (balancer, balancing) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
-        let inputs = Inputs {
-            chain,
-            view: Arc::new(view),
-            balancer,
-            validators: TrafficBalancer::new(vec![Arc::clone(&mock)]),
-            activations,
-        };
+        let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
+        let inputs = Inputs { chain, view: Arc::new(view), balancer, activations };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let address = probe.local_addr().expect("local addr");
         drop(probe);

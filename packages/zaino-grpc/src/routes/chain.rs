@@ -15,7 +15,8 @@ use zaino_primitives::types::{
     BlockchainInfo, Height, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
 };
 use zaino_proto::proto::service::{self as proto, LightdInfo, RawTransaction};
-use zaino_source::{ChainDataSource, GetTransactionError, QueryError, TrafficBalancer};
+use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
+use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::wire::{self, decode_request, frame, path, status_response, trailers};
@@ -169,18 +170,19 @@ where
 /// bytes)
 ///
 /// - `height` = mined height, or `0` = the wire's "in the mempool" (= no-height location)
+/// - `NOT_FOUND` only when every validator asked said absent (a failure = maybe held)
 pub(super) async fn raw_transaction<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
     txid: TransactionId,
 ) -> Result<RawTransaction, Status> {
-    let lookup =
-        validators.failover(|validator| async move { validator.get_transaction(txid).await });
-    let found = lookup.await.map_err(|error| match error {
-        QueryError::Domain(GetTransactionError::NotFound(txid)) => {
+    let found = validators.transaction(txid).await.map_err(|unanswered| match unanswered.last {
+        Some(QueryError::Domain(GetTransactionError::NotFound(txid))) => {
             Status::not_found(format!("transaction not found: {txid}"))
         }
-        other => Status::unavailable(other.to_string()),
+        Some(failed) => Status::unavailable(failed.to_string()),
+        None => Status::unavailable("no trusted validator to ask (benched, down or catching up)"),
     })?;
+    let found = found.value;
 
     // Orphaned → unmined (one wire "no height"; an abandoned branch must not read as confirmed)
     let height = match found.location {
@@ -448,7 +450,7 @@ mod tests {
         let tip_11 = chain.mine(tip_10.hash);
         let node = Arc::new(MockChain::new());
         node.set_reachable(false);
-        let (routes, pollers) = routes_over(&node);
+        let (routes, pollers, _) = routes_over(&node);
         let view = Arc::clone(&routes.chain);
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -593,7 +595,7 @@ mod tests {
         for (tx, raw) in &chosen {
             node.mempool_insert(tx.txid, raw.clone());
         }
-        let (routes, pollers) = routes_over(&node);
+        let (routes, pollers, _) = routes_over(&node);
         let reader = routes.chain.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
         for poller in pollers {

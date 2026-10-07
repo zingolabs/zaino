@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-/// Machine-readable no-answer class (retry decisions match on this, never on messages)
+/// Machine-readable no-answer class (decisions match on this, never on messages)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailureMode {
     Connection,
@@ -11,20 +11,6 @@ pub enum FailureMode {
     RpcError(i64),
     Parse,
     Auth,
-}
-
-impl FailureMode {
-    /// Asking again can change the outcome
-    ///
-    /// - `-1` work queue full, `-28` warming up (every other code = the node's considered reply)
-    pub(crate) fn is_transient(&self) -> bool {
-        match self {
-            Self::Connection | Self::Timeout => true,
-            Self::HttpStatus(code) => *code >= 500,
-            Self::RpcError(code) => matches!(code, -1 | -28),
-            Self::Parse | Self::Auth => false,
-        }
-    }
 }
 
 /// No answer from the validator
@@ -93,9 +79,8 @@ mod tests {
 
     /// - Wrapped cause reachable through `QueryError`
     /// - Coded refusal: no source, displays its message
-    /// - Transient = only the classes a re-ask can change
     #[test]
-    fn causes_survive_wrapping_and_only_transient_modes_retry() {
+    fn causes_survive_wrapping_and_a_coded_refusal_displays_its_message() {
         let wrapped: QueryError<String> =
             NonDomainError::from_cause(FailureMode::Parse, Cause).into();
         let mut cursor: Option<&(dyn Error + 'static)> = Some(&wrapped);
@@ -109,19 +94,5 @@ mod tests {
         let refusal = NonDomainError::new(FailureMode::RpcError(-8), "rejected");
         assert!(refusal.source().is_none());
         assert_eq!(refusal.to_string(), "rejected");
-
-        for (mode, transient) in [
-            (FailureMode::Connection, true),
-            (FailureMode::Timeout, true),
-            (FailureMode::HttpStatus(503), true),
-            (FailureMode::HttpStatus(404), false),
-            (FailureMode::RpcError(-1), true),
-            (FailureMode::RpcError(-28), true),
-            (FailureMode::RpcError(-8), false),
-            (FailureMode::Parse, false),
-            (FailureMode::Auth, false),
-        ] {
-            assert_eq!(mode.is_transient(), transient, "{mode:?}");
-        }
     }
 }

@@ -5067,6 +5067,7 @@ dependencies = [
  "zaino-proto",
  "zaino-source",
  "zaino-sync",
+ "zaino-traffic",
  "zcash_address",
  "zcash_protocol",
  "zcash_script",
@@ -5279,7 +5280,6 @@ dependencies = [
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [
- "fastrand",
  "futures",
  "governor",
  "hex",

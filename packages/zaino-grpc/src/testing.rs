@@ -14,7 +14,7 @@ use zaino_persistence::{
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_source::mock::MockChain;
-use zaino_source::TrafficBalancer;
+use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
 use crate::limits::ReadLanes;
 use crate::service::{Dispatch, Routes};
@@ -78,23 +78,31 @@ pub(super) fn snapshot(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> Nfs
     NfsHandle::fixed(Arc::new(VerifiedChain::regtest(path)), tip, params, views)
 }
 
-/// The always-on routes over `node` (its view's pollers back, unspawned); nothing served yet
+/// The always-on routes over `node` (its view's pollers + the balancer's driver back, unspawned);
+/// nothing served yet
 pub(super) fn routes_over(
     node: &Arc<MockChain>,
-) -> (Routes<MockChain, DiskView>, Vec<zaino_chainview::EndpointPoller<MockChain>>) {
+) -> (
+    Routes<MockChain, DiskView>,
+    Vec<zaino_chainview::EndpointPoller<MockChain>>,
+    TrafficDriver<MockChain>,
+) {
     let endpoint =
         zaino_chainview::Endpoint { address: "node:8232".to_owned(), source: Arc::clone(node) };
     let depth = zaino_primitives::types::ReorgDepth::CONSENSUS;
     let (view, pollers) =
         zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one endpoint");
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
+    let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let routes = Routes {
         chain: Arc::new(view),
-        validators: TrafficBalancer::new(vec![Arc::clone(node)]),
+        validators,
         network: MAINNET,
         nfs: NfsHandle::unpublished(),
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     };
-    (routes, pollers)
+    (routes, pollers, driver)
 }
 
 /// [`routes_over`] an empty, never-polled node, for tests that only serve indexes

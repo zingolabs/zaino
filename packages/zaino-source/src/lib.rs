@@ -2,10 +2,9 @@
 //!
 //! - [`ChainDataSource`]: one port, each question with its own domain error
 //! - [`ZebraRpcAdapter`]: the one implementation (blocks decoded once, from consensus bytes)
-//! - [`TrafficBalancer`]: the least-loaded of N validators first, failover through the rest
+//! - Which validator answers = `zaino-traffic`'s
 
 mod adapter;
-mod balance;
 mod decode;
 mod error;
 mod indexer;
@@ -14,7 +13,6 @@ mod queries;
 mod rpc;
 
 pub use adapter::ZebraRpcAdapter;
-pub use balance::TrafficBalancer;
 pub use decode::{decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use indexer::{Change, IndexerWatch};

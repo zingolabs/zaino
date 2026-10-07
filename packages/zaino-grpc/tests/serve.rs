@@ -23,9 +23,12 @@ fn routes() -> Routes<MockChain, DiskView> {
     let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
     let (chain, _pollers) =
         zaino_chainview::ChainView::new(vec![endpoint], depth).expect("one endpoint");
+    let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
+    let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
     Routes {
         chain: Arc::new(chain),
-        validators: zaino_source::TrafficBalancer::new(vec![validator]),
+        validators,
         network,
         nfs: zaino_nfs::NfsHandle::unpublished(),
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,

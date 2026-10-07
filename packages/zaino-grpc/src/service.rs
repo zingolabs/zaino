@@ -21,7 +21,8 @@ use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
 use zaino_nfs::{NfsHandle, Snapshot};
 use zaino_persistence::{IndexKind, MapRead, SequenceRead};
-use zaino_source::{ChainDataSource, TrafficBalancer};
+use zaino_source::ChainDataSource;
+use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::limits::ReadLanes;

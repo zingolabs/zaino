@@ -57,13 +57,12 @@ impl From<RpcError> for crate::NonDomainError {
 mod tests {
     use super::*;
 
-    /// Never transient (a retry would buffer the same oversized body again: amplifier, not cap)
+    /// The validator's answer, unreadable (never a transport failure)
     #[test]
-    fn an_oversized_body_is_not_retryable() {
+    fn an_oversized_body_is_a_parse_failure() {
         let fetch_error =
             crate::NonDomainError::from(RpcError::ResponseBodyTooLarge { max: MAX_RESPONSE_BYTES });
 
         assert_eq!(fetch_error.mode, crate::FailureMode::Parse);
-        assert!(!fetch_error.mode.is_transient());
     }
 }

@@ -7,7 +7,8 @@ use zaino_persistence::{LayeredView, MapRead};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::Zatoshis;
 use zaino_proto::proto::service as proto;
-use zaino_source::{ChainDataSource, TrafficBalancer};
+use zaino_source::ChainDataSource;
+use zaino_traffic::TrafficBalancer;
 use zcash_address::{ConversionError, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
 use zcash_script::script::Evaluable;
@@ -332,7 +333,9 @@ mod tests {
 
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(MockChain::serving(chain.path(tip.hash)));
-        let routes = Routes { nfs: snapshot(&blocks, vec![index]), ..routes_over(&node).0 };
+        let (routes, _, balancing) = routes_over(&node);
+        let routes = Routes { nfs: snapshot(&blocks, vec![index]), ..routes };
+        tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
