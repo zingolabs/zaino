@@ -50,7 +50,7 @@ let changes = fold(&parent, &block, &fees)?;          // Result<Changes, TreeSiz
   the wrong parent would silently mis-size every later record.
 - `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
 - `CompactBlockReader<V>` is generic over any `V: SequenceRead`: a store's
-  committed view, `zaino_persistence::TieredView`, or a layer over either.
+  committed view or a `zaino_persistence::LayeredView` over one.
   `tip()` (`Option<BlockRef>`), `block(h)` (one framed record, every pool) and
   `range(first, last, budget)` (one window: at most 256 records, cut to
   `budget` bytes, never fewer than one; either direction) are its reads.
@@ -88,7 +88,7 @@ tokio::spawn(index.run(blocks, fees));
   every applied block (the winner folds onto the durable tip record);
   `Shutdown` commits what is staged. Commits run on the blocking pool; the loop
   waits for them. Chain identity is the producer's check, not this index's.
-- `published()` (`zaino_sync::Published<CompactBlockReader<TieredView<V>>>`) =
+- `published()` (`zaino_sync::Published<CompactBlockReader<LayeredView<V>>>`) =
   the reader, both tips and the serving gate (its task:
   `published().gate(tips, depth, cancel)`).
 - Folding runs inline on the loop, once per block, staged or applied: serving
@@ -106,7 +106,7 @@ tokio::spawn(index.run(blocks, fees));
 let service = CompactBlockService::new(index.published().served());
 ```
 
-- `published().served()` (`zaino_sync::Served<CompactBlockReader<TieredView<V>>>`)
+- `published().served()` (`zaino_sync::Served<CompactBlockReader<LayeredView<V>>>`)
   = the reader the loop republishes after every step and commit, gated on
   `synced`. Until the
   index reaches the tip, `block`, `resident_block`, `block_at_hash` and `range`
@@ -171,7 +171,7 @@ write 0, "not provided", rather than a saturated wrong value.
 
 `testing` exposes `testing::block(height) -> (Block, BlockFees)`, a sample
 block carrying every pool and its fees (one tx, fee 5 000), and
-`testing::committed(store, n) -> CompactBlockReader<TieredView<V>>`:
+`testing::committed(store, n) -> CompactBlockReader<LayeredView<V>>`:
 `block(0..n)` folded and committed to `store` in one commit, served as the
 index serves them (tree sizes after `h` = `(h + 1) × (1, 1, 2)`).
 Blocks come from one deterministic `zaino_primitives::testing::Chain` (it

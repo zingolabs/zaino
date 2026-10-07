@@ -7,7 +7,8 @@
 //!   <map>/<id>.seg      one sorted segment per batch or merge   `lsm`
 //! ```
 //!
-//! - commit = append + seal every table, then the manifest (the commit point), then readable
+//! - apply = into the buffer (a [`Layer`], RAM); commit = the buffer appended + sealed per table,
+//!   then the manifest (the commit point), then readable
 //! - a failed commit poisons the store (`docs/design/durability.md` §6): recovery = reopen
 
 use std::{
@@ -23,6 +24,7 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     dir::IndexDir,
     fs::Fs,
+    layer::{Layer, LayeredView},
     lsm::{decode_list, encode_list, file_name, SegmentLog, SegmentMeta, Snapshot},
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     pages::{scrub, Sealed},
@@ -56,15 +58,16 @@ impl DiskEngine {
     }
 }
 
-/// One index directory's writer (holds its `LOCK`)
+/// One index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s item bytes
 #[derive(Debug)]
 pub struct DiskStore {
     dir: IndexDir,
     schema: Schema,
-    tip: Option<BlockRef>,
     sequences: Vec<SequenceFile>,
     maps: Vec<SegmentLog>,
     view: DiskView,
+    buffer: Layer,
+    buffered: usize,
     failed: bool,
 }
 
@@ -198,10 +201,11 @@ impl PersistenceEngine for DiskEngine {
         Ok(DiskStore {
             dir,
             schema: schema.clone(),
-            tip: body.committed.tip,
             sequences,
             maps,
             view: DiskView { state: Arc::new(state) },
+            buffer: Layer::empty(schema),
+            buffered: 0,
             failed: false,
         })
     }
@@ -254,31 +258,30 @@ impl DiskStore {
         }
     }
 
-    /// Appends + segments written and sealed, the manifest, then the new view
-    fn write(&mut self, changes: &Changes) -> Result<DiskView, StoreError> {
+    /// The buffer's appends + rows written and sealed, the manifest at `tip`, then the new view
+    fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
         for (table, file) in self.schema.sequence_ids().zip(&mut self.sequences) {
-            for record in changes.appends(table) {
+            for record in self.buffer.records(table) {
                 file.append(record)?;
             }
         }
         let mut lists = Vec::with_capacity(self.maps.len());
         for (table, log) in self.schema.map_ids().zip(&mut self.maps) {
-            lists.push(log.batch(changes.inserts(table).collect())?);
+            let rows = self.buffer.rows(table).iter();
+            lists.push(log.batch(rows.map(|(key, value)| (&key[..], &value[..])).collect())?);
         }
         let sequences =
             self.sequences.iter_mut().map(SequenceFile::seal).collect::<io::Result<_>>()?;
 
-        let body =
-            Body { committed: Committed { tip: Some(changes.tip()) }, sequences, maps: lists };
+        let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps: lists };
         self.dir.commit(&body.encode(&self.schema))?;
-        self.tip = Some(changes.tip());
         for log in &mut self.maps {
             log.committed()?;
         }
 
         let previous = &self.view.state;
         let state = State {
-            tip: self.tip,
+            tip: Some(tip),
             sequences: self
                 .sequences
                 .iter()
@@ -288,7 +291,7 @@ impl DiskStore {
             maps: self.maps.iter().map(|log| Arc::clone(log.snapshot())).collect(),
         };
         self.view = DiskView { state: Arc::new(state) };
-        Ok(self.view.clone())
+        Ok(())
     }
 }
 
@@ -303,19 +306,34 @@ impl Store for DiskStore {
         self.dir.path()
     }
 
+    fn apply(&mut self, changes: Changes) {
+        assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
+        let last = self.buffer.tip().or(self.view.tip()).map(|tip| tip.height);
+        let tip = changes.tip().height;
+        assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
+        self.buffer.push(&changes);
+        self.buffered += changes.bytes();
+    }
+
+    fn buffered_bytes(&self) -> usize {
+        self.buffered
+    }
+
+    fn commit(&mut self) -> Result<(), StoreError> {
+        assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
+        let Some(tip) = self.buffer.tip() else { return Ok(()) };
+        self.write(tip).inspect_err(|_| self.failed = true)?;
+        self.buffer = Layer::empty(&self.schema);
+        self.buffered = 0;
+        Ok(())
+    }
+
     fn view(&self) -> DiskView {
         self.view.clone()
     }
 
-    fn commit(&mut self, changes: Changes) -> Result<DiskView, StoreError> {
-        assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
-        assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
-        let (tip, committed) = (changes.tip().height, self.tip.map(|tip| tip.height));
-        assert!(
-            Some(tip) > committed,
-            "commit to height {tip}, not above the committed {committed:?}"
-        );
-        self.write(&changes).inspect_err(|_| self.failed = true)
+    fn staged(&self) -> LayeredView<DiskView> {
+        LayeredView::new(self.view.clone(), self.buffer.clone())
     }
 }
 

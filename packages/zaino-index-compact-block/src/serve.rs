@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use zaino_persistence::{SequenceRead, TieredView, View};
+use zaino_persistence::{LayeredView, SequenceRead, View};
 use zaino_primitives::types::Height;
 use zaino_sync::Served;
 
@@ -22,10 +22,10 @@ use crate::{
 const WINDOW_BYTES: usize = 1 << 20;
 
 /// Pinned reader over both tiers: committed records up to the durable tip, held ones above
-type Pinned<V> = Arc<CompactBlockReader<TieredView<V>>>;
+type Pinned<V> = Arc<CompactBlockReader<LayeredView<V>>>;
 
 /// Tier seam (serving only: gone with `Tiered`)
-impl<V: SequenceRead> CompactBlockReader<TieredView<V>> {
+impl<V: SequenceRead> CompactBlockReader<LayeredView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
     fn durable_height(&self) -> Option<Height> {
         self.view().durable().tip().map(|tip| tip.height)
@@ -64,12 +64,12 @@ pub enum ServeError {
 /// - a request pins **both at once** (one reader, one load): the seam cannot move mid-stream
 #[derive(Debug, Clone)]
 pub struct CompactBlockService<V> {
-    served: Served<CompactBlockReader<TieredView<V>>>,
+    served: Served<CompactBlockReader<LayeredView<V>>>,
 }
 
 impl<V: SequenceRead> CompactBlockService<V> {
     /// Unsynced → [`ServeError::Syncing`] past the durable tip, committed heights answered
-    pub fn new(served: Served<CompactBlockReader<TieredView<V>>>) -> Self {
+    pub fn new(served: Served<CompactBlockReader<LayeredView<V>>>) -> Self {
         Self { served }
     }
 

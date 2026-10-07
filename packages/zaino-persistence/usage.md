@@ -1,10 +1,11 @@
 # zaino-persistence
 
 What every index stores through: the persistence port (`PersistenceEngine`,
-`Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`), the tiering
-every index holds its uncommitted blocks in (`Tiered`, over any `Store`), and
-the engine behind it, `DiskEngine`, which keeps sequences as positional files
-and maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
+`Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`), non-final
+data over a committed view (`Layer`, `LayeredView`), the tiering every index
+holds its uncommitted blocks in today (`Tiered`, over any `Store`), and the
+engine behind it, `DiskEngine`, which keeps sequences as positional files and
+maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
 crash protocol: [`docs/design/durability.md`](../../docs/design/durability.md).
 
 An index owns only its schema and its record layouts: fixed-width `encode` /
@@ -34,8 +35,13 @@ let mut store = engine.open(path, &schema(network))?;   // fresh = empty, else t
 let mut changes = Changes::new(tip, store.schema());
 changes.append(BLOCKS, &record);                         // at the end, in call order
 changes.insert(SPENT, &outpoint.encode(), &spend);       // keys unique
-let view = store.commit(changes)?;                        // durable, then readable
+store.apply(changes);                                     // buffered: in staged(), not in view()
+if store.buffered_bytes() >= batch {
+    store.commit()?;                                      // every buffer, one fsync, then in view()
+}
 
+let view = store.view();                                  // committed only (what serving pins)
+let staged = store.staged();                              // LayeredView: committed + buffered
 view.tip();                                               // Option<BlockRef>
 view.record(BLOCKS, h);  view.records(BLOCKS, a..b);      // zero-copy mmap slices
 view.value(SPENT, &key); view.values(SPENT, &keys);       // answers in `keys` order
@@ -58,14 +64,20 @@ view.range(SPENT, &start, &end, limit);                   // [start, end); None 
   tables cost only their bytes; variable ones add an end offset per item. A
   fixed-width item of the wrong size, or an undeclared id, panics at the
   `append` or `insert` call, naming the table.
+- **`apply`** buffers final changes in RAM (a `Layer`): `staged()` reads them,
+  `view()` and the disk do not until `commit`. It panics, buffering nothing,
+  on changes built for another schema, a tip not above the last applied one,
+  or a map key the buffer already holds (or one `Changes` inserts twice).
+  `buffered_bytes()` = the buffered items' bytes, a writer's batch trigger.
 - **`commit`:**
-  - Appends are sealed (only tables that grew are fsynced) and each map's rows
+  - Every buffered change goes to disk in one commit at the last applied tip:
+    appends are sealed (only tables that grew are fsynced) and each map's rows
     are written as one sorted segment; then the manifest slot is written, which
-    is the commit point, and the new view is returned.
-  - It asserts that the tip advances and that the changes were built for this
-    store's schema.
+    is the commit point, and `view()` moves. Nothing buffered = `Ok`, nothing
+    written.
   - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
-    never retried; `durability.md` §6). Drop the store and reopen it.
+    never retried; `durability.md` §6). Drop the store and reopen it: the
+    buffer is gone with it.
   - `Tiered::finalize` (below) turns the `Err` into a panic naming the index
     and `store.path()`: `<index> index commit failed: disk <dir> full` when
     `StorageFull` or `QuotaExceeded` sits anywhere in the error chain, else
@@ -155,6 +167,30 @@ report.is_clean();
 - **Logs:** `Compacting segments` / `Compacted segments` (debug) and
   `Commit waited on compaction` (warn).
 
+## Non-final data: `Layer` and `LayeredView`
+
+A `Layer` is one index's data above a durable tip, as of one block: per
+sequence the records past durable's length, per map the rows above durable
+(`imbl`, so a clone is O(tables) pointer copies). A store's buffer is one;
+`zaino-nfs` keeps one per non-final block.
+
+```rust
+let root = Layer::empty(&schema);
+let child = root.with(&changes);            // parent + changes, structural sharing
+let view = LayeredView::new(store.view(), child.clone()); // layer first, then durable
+view.record(BLOCKS, h); view.range(SPENT, &start, &end, limit); // same read traits
+view.durable();                              // the committed view alone (the seam)
+let child = child.rebase(&store.view());     // after a commit: what durable holds dropped
+```
+
+- `with` panics on a tip not above the layer's, another schema's tables, or a
+  map key the layer already holds; the layer itself never changes.
+- `rebase` drops every block through durable's tip; it panics when that tip is
+  past the layer or not one of its blocks (another branch).
+- `LayeredView::new` panics on a layer that is not above durable's tip (an
+  un-rebased layer would read its blocks twice).
+- `range` merges both runs and keeps the `None` = over `limit` rule.
+
 ## Tiering: blocks above the committed tip (`Tiered`)
 
 Every index holds its non-final and not-yet-committed blocks through one generic
@@ -172,15 +208,15 @@ if tiered.stage(final_changes, block_weight) {       // final block: true = a ba
 }
 tiered.reorg();                                      // every applied block dropped
 
-let view = tiered.view();                            // TieredView<S::View>: held first, then durable
+let view = tiered.view();                            // LayeredView<S::View>: held first, then durable
 view.record(BLOCKS, h); view.value(SPENT, &key);     // the read traits the store's view has
 view.durable();                                      // the committed view alone (the seam)
 tiered.durable_tip(); tiered.applied(); tiered.staged(); // Option<BlockRef> each
 ```
 
-- A held block is keyed exactly as the store holds it: a view answers a
-  position past the durable length from the held records, a key from the held
-  rows first. `range` merges both and keeps the `None` = over `limit` rule.
+- Staged blocks are the store's buffer (`Store::apply`, read through
+  `staged()`); applied blocks are a `Layer` over the committed view, applied
+  to the store when finalized.
 - Views are O(tables) pointer copies (`imbl` per table): publish one per block.
 - Staged and applied blocks never coexist: finalize the staged before applying
   a tip block. Each precondition (a gap, apply over staged, stage over applied,
@@ -189,16 +225,16 @@ tiered.durable_tip(); tiered.applied(); tiered.staged(); // Option<BlockRef> eac
   naming the index.
 - `stage`'s `weight` = the source block's bytes, so a batch means the same
   whatever the index stores per block.
-- `finalize` merges the held blocks through `height` into one `Changes`, commits
-  it (one fsync) and panics naming the index and directory if the commit fails.
-- `check(label)` and `store()` (feature `testing`) = its internal invariants and
-  the store underneath, for the conformance suite.
+- `finalize` applies the held blocks through `height` to the store and commits
+  them (one fsync); it panics naming the index and directory if the commit fails.
+- Transitional: `zaino-nfs` replaces it (`docs/design/nfs.md` §8).
 
 ## Conformance suite (feature `testing`)
 
-`conformance` tests any `PersistenceEngine` through the port alone, driven through `Tiered`
-as every index drives it. An engine implements `conformance::Subject`, which is `engine()`
-and `path()` plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
+`conformance` tests any `PersistenceEngine` through the port alone: the store driven as a
+writer drives it (`apply`, `commit`) under `Layer`s kept as the NFS keeps them (`with`,
+`rebase`). An engine implements `conformance::Subject`, which is `engine()` and `path()`
+plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
 `conformance::history` under proptest and `conformance::contract` as a plain test.
 `PROPTEST_CASES=1000` is its heavy run. `conformance::Model` is the expected state for an
 engine's own crash tests. Design:

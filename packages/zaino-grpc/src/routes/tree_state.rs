@@ -8,7 +8,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader, TreeStateService};
 use zaino_internal_block_hash_to_height::BlockHashService;
-use zaino_persistence::{MapRead, SequenceRead, TieredView};
+use zaino_persistence::{LayeredView, MapRead, SequenceRead};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
@@ -30,7 +30,7 @@ pub(crate) struct Memos<V> {
 /// One answer kind, keyed by `K`, per published tree-state view
 type ViewMemo<V, K, T> = PerView<Pinned<V>, K, T>;
 
-type Pinned<V> = TreeStateReader<TieredView<V>>;
+type Pinned<V> = TreeStateReader<LayeredView<V>>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {

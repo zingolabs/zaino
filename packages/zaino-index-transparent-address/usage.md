@@ -51,7 +51,7 @@ let balances = service.balances(&addresses)?;            // Vec<Zatoshis>
   probe per outpoint.
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
-  with `S::View: MapRead`, serving `TransparentAddressReader<TieredView<V>>` /
+  with `S::View: MapRead`, serving `TransparentAddressReader<LayeredView<V>>` /
   `TransparentAddressService<V>`; zainod picks `DiskEngine`.
 - `TransparentAddressIndexWriter::run` is this index's own loop over its
   `zaino_sync::BlockSink` subscription (one `match` per `Step`). Services read

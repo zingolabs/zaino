@@ -3,7 +3,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{MapRead, Store, Tiered, TieredView};
+use zaino_persistence::{LayeredView, MapRead, Store, Tiered};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
@@ -11,7 +11,7 @@ use crate::{fold, TransparentAddressReader};
 
 pub struct TransparentAddressIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    published: Published<TransparentAddressReader<TieredView<S::View>>>,
+    published: Published<TransparentAddressReader<LayeredView<S::View>>>,
 }
 
 impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
@@ -30,7 +30,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
     }
 
     /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<TransparentAddressReader<TieredView<S::View>>> {
+    pub fn published(&self) -> &Published<TransparentAddressReader<LayeredView<S::View>>> {
         &self.published
     }
 
@@ -96,7 +96,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
         self.published.view(self.reader(), self.tiered.get().applied());
     }
 
-    fn reader(&self) -> TransparentAddressReader<TieredView<S::View>> {
+    fn reader(&self) -> TransparentAddressReader<LayeredView<S::View>> {
         let tiered = self.tiered.get();
         TransparentAddressReader::new(tiered.view(), tiered.schema().network)
     }
@@ -136,7 +136,7 @@ mod tests {
 
     /// Service over the view the index last published
     fn service(
-        served: &Served<TransparentAddressReader<TieredView<DiskView>>>,
+        served: &Served<TransparentAddressReader<LayeredView<DiskView>>>,
     ) -> TransparentAddressService<DiskView> {
         let view = (*served.pin_any()).clone();
         TransparentAddressService::new(Served::fixed(view), NetworkType::Regtest)

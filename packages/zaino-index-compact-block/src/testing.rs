@@ -4,7 +4,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{SequenceRead, Store, Tiered, TieredView};
+use zaino_persistence::{LayeredView, SequenceRead, Store, Tiered};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
     Block, BlockFees, CompactCiphertext, Fee, Height, OrchardAction, OrchardData, OutPoint,
@@ -18,7 +18,7 @@ use crate::{fold, CompactBlockReader, HASH};
 pub fn committed<S: Store<View: SequenceRead>>(
     store: S,
     count: u32,
-) -> CompactBlockReader<TieredView<S::View>> {
+) -> CompactBlockReader<LayeredView<S::View>> {
     let network = store.schema().network;
     let mut tiered = Tiered::new(store, NonZeroUsize::MAX);
     for height in 0..count {

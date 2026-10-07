@@ -8,7 +8,7 @@
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, Tiered, TieredView, View};
+use zaino_persistence::{Changes, IndexKind, LayeredView, SequenceRead, Store, Tiered, View};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Applied, Offloaded, Published, Step, Subscription, Weight};
 
@@ -20,7 +20,7 @@ const NAME: &str = IndexKind::TreeState.name();
 pub struct TreeStateIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
     batch_bytes: NonZeroUsize,
-    published: Published<TreeStateReader<TieredView<S::View>>>,
+    published: Published<TreeStateReader<LayeredView<S::View>>>,
 }
 
 impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
@@ -42,7 +42,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     }
 
     /// View, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<TreeStateReader<TieredView<S::View>>> {
+    pub fn published(&self) -> &Published<TreeStateReader<LayeredView<S::View>>> {
         &self.published
     }
 
@@ -122,7 +122,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
         self.published.view(self.reader(), self.tiered.get().applied());
     }
 
-    fn reader(&self) -> TreeStateReader<TieredView<S::View>> {
+    fn reader(&self) -> TreeStateReader<LayeredView<S::View>> {
         let tiered = self.tiered.get();
         TreeStateReader::new(tiered.view(), tiered.schema().network)
     }
@@ -544,7 +544,7 @@ mod tests {
         let completing =
             |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
         // level-16 root of the subtree holding the tip of the orchard tree served at `height`
-        let tree_root = |view: &TreeStateReader<TieredView<DiskView>>, height: u32| {
+        let tree_root = |view: &TreeStateReader<LayeredView<DiskView>>, height: u32| {
             let tree = view.treestate(h(height)).expect("served").orchard;
             let frontier = read_commitment_tree::<MerkleHashOrchard, _, 32>(tree.as_bytes())
                 .expect("parses")
@@ -554,7 +554,7 @@ mod tests {
             root.write(&mut bytes[..]).expect("32 bytes");
             TreeRoot::from(bytes)
         };
-        let expected = |view: &TreeStateReader<TieredView<DiskView>>| {
+        let expected = |view: &TreeStateReader<LayeredView<DiskView>>| {
             let first =
                 SubtreeRoot { root: tree_root(view, 1), completing: completing(&blocks[1]) };
             let second =

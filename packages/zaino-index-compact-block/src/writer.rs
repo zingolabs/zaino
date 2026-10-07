@@ -5,7 +5,7 @@
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, Tiered, TieredView, View};
+use zaino_persistence::{Changes, IndexKind, LayeredView, SequenceRead, Store, Tiered, View};
 use zaino_primitives::types::{Block, BlockFees, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
@@ -13,7 +13,7 @@ use crate::{fold, position, CompactBlockReader, BLOCKS};
 
 pub struct CompactBlockIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    published: Published<CompactBlockReader<TieredView<S::View>>>,
+    published: Published<CompactBlockReader<LayeredView<S::View>>>,
 }
 
 const NAME: &str = IndexKind::CompactBlock.name();
@@ -70,7 +70,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     }
 
     /// Reader, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<CompactBlockReader<TieredView<S::View>>> {
+    pub fn published(&self) -> &Published<CompactBlockReader<LayeredView<S::View>>> {
         &self.published
     }
 
@@ -139,7 +139,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         folded.unwrap_or_else(|error| panic!("{NAME} index at {}: {error}", block.header().height))
     }
 
-    fn reader(&self) -> CompactBlockReader<TieredView<S::View>> {
+    fn reader(&self) -> CompactBlockReader<LayeredView<S::View>> {
         let tiered = self.tiered.get();
         CompactBlockReader::new(tiered.view(), tiered.schema().network)
     }
@@ -249,7 +249,7 @@ mod tests {
     struct Running {
         blocks: BlockSink,
         fees: FeeSink,
-        served: Served<CompactBlockReader<TieredView<DiskView>>>,
+        served: Served<CompactBlockReader<LayeredView<DiskView>>>,
         applied: watch::Receiver<Option<BlockRef>>,
         durable: watch::Receiver<Option<Height>>,
         run: JoinHandle<()>,

@@ -118,7 +118,9 @@ impl HeaderStore {
         for (_, record) in records {
             changes.append(HEADERS, &encode(record));
         }
-        self.view = HeaderView { view: self.store.commit(changes)? };
+        self.store.apply(changes);
+        self.store.commit()?;
+        self.view = HeaderView { view: self.store.view() };
         Ok(())
     }
 }

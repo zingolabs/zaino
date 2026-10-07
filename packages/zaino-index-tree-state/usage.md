@@ -22,11 +22,11 @@ tokio::spawn(index.run(blocks));
 ```
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
-  `S::View: SequenceRead`, serving `TreeStateReader<TieredView<V>>` /
+  `S::View: SequenceRead`, serving `TreeStateReader<LayeredView<V>>` /
   `TreeStateService<V>`; zainod picks `DiskEngine`.
 - `TreeStateIndexWriter` runs its own loop over the `zaino_sync::BlockSink`
   subscription (`"tree_state"`): `run` follows it through `Shutdown`,
-  publishing through a `zaino_sync::Published<TreeStateReader<TieredView<V>>>`.
+  publishing through a `zaino_sync::Published<TreeStateReader<LayeredView<V>>>`.
   Each `Apply` takes the run of blocks already queued behind it
   (`Subscription::run`, up to `batch_bytes`) and folds it with
   [`fold_run`](#fold) onto a reader over everything held. Final blocks (bulk)

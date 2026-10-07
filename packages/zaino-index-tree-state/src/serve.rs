@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use zaino_persistence::{SequenceRead, TieredView};
+use zaino_persistence::{LayeredView, SequenceRead};
 use zaino_primitives::types::{
     BlockchainInfo, ConsensusBranchId, Height, ShieldedPool, SubtreeRoot, Treestate,
 };
@@ -74,7 +74,7 @@ pub enum ServeError {
 
 #[derive(Debug, Clone)]
 pub struct TreeStateService<V> {
-    served: Served<TreeStateReader<TieredView<V>>>,
+    served: Served<TreeStateReader<LayeredView<V>>>,
     network: NetworkType,
     activations: PoolActivations,
 }
@@ -83,7 +83,7 @@ impl<V: SequenceRead> TreeStateService<V> {
     /// - unsynced → every method [`ServeError::Syncing`] (committed heights excepted)
     /// - `network` = operator-declared (regtest reports as `"test"` over the validator's RPC)
     pub fn new(
-        served: Served<TreeStateReader<TieredView<V>>>,
+        served: Served<TreeStateReader<LayeredView<V>>>,
         network: NetworkType,
         activations: PoolActivations,
     ) -> Self {
@@ -103,7 +103,7 @@ impl<V: SequenceRead> TreeStateService<V> {
     /// Tree state at `at` from one pinned `view` (a transport memoizing per publication)
     pub fn treestate_in(
         &self,
-        view: &TreeStateReader<TieredView<V>>,
+        view: &TreeStateReader<LayeredView<V>>,
         at: Height,
     ) -> Result<Treestate, ServeError> {
         let sapling = self.activations.sapling;
@@ -116,7 +116,7 @@ impl<V: SequenceRead> TreeStateService<V> {
     /// Tree state at `view`'s tip
     pub fn latest_in(
         &self,
-        view: &TreeStateReader<TieredView<V>>,
+        view: &TreeStateReader<LayeredView<V>>,
     ) -> Result<Treestate, ServeError> {
         self.treestate_in(view, view.tip().ok_or(ServeError::Empty)?)
     }
@@ -124,7 +124,7 @@ impl<V: SequenceRead> TreeStateService<V> {
     /// The latest publication, synced only (one load; every tree state it answers comes from it)
     ///
     /// - one `Arc` per publication: a transport may key per-publication memos on it
-    pub fn pin(&self) -> Result<Arc<TreeStateReader<TieredView<V>>>, ServeError> {
+    pub fn pin(&self) -> Result<Arc<TreeStateReader<LayeredView<V>>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 

@@ -1,6 +1,6 @@
 //! The persistence port: what an index may ask of storage (`docs/design/persistence-engine.md`)
 //!
-//! - final data only, insert only, one atomic commit per tip, snapshot reads, verifiable
+//! - final data only, insert only, buffered then one atomic commit, snapshot reads, verifiable
 //! - two kinds of table: a sequence (records at positions 0, 1, 2, ...) and a map (values under
 //!   unique keys); an engine's `View` implements the read trait of each kind it can hold
 
@@ -11,7 +11,7 @@ use serde::Serialize;
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::{manifest::IndexKind, StoreError};
+use crate::{layer::LayeredView, manifest::IndexKind, StoreError};
 
 /// A storage backend: opens one store per index, verifies them offline
 pub trait PersistenceEngine: Send + Sync + 'static {
@@ -28,6 +28,8 @@ pub trait PersistenceEngine: Send + Sync + 'static {
 }
 
 /// One index's store: the commit point of all its tables (one writer)
+///
+/// - final data: [`apply`](Self::apply) buffers, [`commit`](Self::commit) makes it durable
 pub trait Store: Send + 'static {
     type View: View;
 
@@ -37,14 +39,26 @@ pub trait Store: Send + 'static {
     /// Where it was opened (a failed commit's panic names it)
     fn path(&self) -> &Path;
 
-    /// Latest committed state
+    /// `changes` buffered: in [`staged`](Self::staged), not in [`view`](Self::view), not durable
+    ///
+    /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
+    ///   a map key the buffer already holds or `changes` inserts twice
+    fn apply(&mut self, changes: Changes);
+
+    /// Item bytes buffered (a writer's batch trigger)
+    fn buffered_bytes(&self) -> usize;
+
+    /// Every buffered change + the last applied tip, durable together (one fsync), then in `view`
+    ///
+    /// - nothing buffered = `Ok`, nothing written
+    /// - `Err` poisons the store: every later commit panics (a failed sync is never retried)
+    fn commit(&mut self) -> Result<(), StoreError>;
+
+    /// Committed only (what serving pins: a crash never takes back what a reader saw)
     fn view(&self) -> Self::View;
 
-    /// Every change + the new tip, durable together, then readable
-    ///
-    /// - the tip must be above the committed one
-    /// - `Err` poisons the store: every later commit panics (a failed sync is never retried)
-    fn commit(&mut self, changes: Changes) -> Result<Self::View, StoreError>;
+    /// Committed + buffered (what a bulk fold reads its parent through)
+    fn staged(&self) -> LayeredView<Self::View>;
 }
 
 /// One committed state: never changes while held; a clone shares it
@@ -223,6 +237,12 @@ impl Changes {
 
     pub fn schema(&self) -> &Schema {
         &self.schema
+    }
+
+    /// Item bytes held, every table (end offsets not counted)
+    pub(crate) fn bytes(&self) -> usize {
+        let maps = self.maps.iter().flatten();
+        self.sequences.iter().chain(maps).map(|buffer| buffer.bytes.len()).sum()
     }
 
     /// `table`'s appends, in the order made

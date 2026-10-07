@@ -1,7 +1,7 @@
 # zaino-nfs: one non-finalized state, folds, one snapshot
 
-Status: **target design, for review** (2026-10-07). Nothing here is implemented yet. The current
-code is described by [non-finalized-state.md](non-finalized-state.md), [data-sink.md](data-sink.md)
+Status: **target design, for review** (2026-10-07). §4 (the port) is implemented; the rest is
+not yet. The current code is described by [non-finalized-state.md](non-finalized-state.md), [data-sink.md](data-sink.md)
 and [sync.md](sync.md); those are rewritten as this lands.
 
 Builds on [verified-chain.md](verified-chain.md) (the header chain decides best and final) and
@@ -100,8 +100,10 @@ pub trait Store: Send + 'static {
 }
 ```
 
-- `apply` asserts the next tip is above the last applied one and the `Changes` match the schema
-  (the checks `Tiered::apply`/`stage` make today).
+- `apply` asserts the next tip is above the last applied one, the `Changes` match the schema and
+  no map key is buffered twice, before buffering anything.
+- `commit` with nothing buffered = `Ok`, nothing written (a writer's final commit is
+  unconditional).
 - `PersistenceEngine`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`, `Width` are
   unchanged.
 - `Tiered` is deleted: its non-final half becomes the NFS's layers, its staging becomes
@@ -113,13 +115,14 @@ pub trait Store: Send + 'static {
 /// One index's non-final data as of one block (clone = O(tables) pointer copies)
 #[derive(Clone)]
 pub struct Layer {
-    tip: Option<BlockRef>,
+    deltas: imbl::Vector<Arc<Delta>>,                    // per Changes absorbed: tip, its share
     sequences: Vec<imbl::Vector<Bytes>>,                 // per SequenceId: records past durable
     maps: Vec<imbl::OrdMap<Bytes, Bytes>>,               // per MapId: inserts above durable
 }
 
 impl Layer {
     pub fn empty(schema: &Schema) -> Self;
+    pub fn tip(&self) -> Option<BlockRef>;                // last block absorbed
     pub fn with(&self, changes: &Changes) -> Self;        // parent + changes, structural sharing
     pub fn rebase(&self, durable: &impl View) -> Self;    // drop what `durable` now holds
 }
@@ -128,6 +131,10 @@ impl Layer {
 #[derive(Clone)]
 pub struct LayeredView<V> { durable: V, layer: Layer }
 
+impl<V: View> LayeredView<V> {
+    pub fn new(durable: V, layer: Layer) -> Self;         // panics: layer not above durable's tip
+    pub fn durable(&self) -> &V;                          // the seam (readers' finalized tip)
+}
 impl<V: View> View for LayeredView<V> { /* tip = layer tip, else durable tip */ }
 impl<V: SequenceRead> SequenceRead for LayeredView<V> { /* position ≥ durable len → layer */ }
 impl<V: MapRead> MapRead for LayeredView<V> { /* layer key → layer, else disk; ranges merged */ }
@@ -135,6 +142,9 @@ impl<V: MapRead> MapRead for LayeredView<V> { /* layer key → layer, else disk;
 
 - A store's buffer and the NFS's nodes are the same type: `Store::staged()` = committed view +
   the buffer's `Layer`.
+- `deltas` (not a bare `tip`): `rebase` must know how many records each table drops, and a
+  `Changes` carries no positions; each block's share is that count plus its keys. `rebase` panics
+  when durable's tip is past the layer or not one of its blocks (another branch).
 - Conformance (`history` + `contract`, any engine): apply / commit / crash / reopen, and
   `view() == committed prefix`, `staged() == committed + buffered` after every step; `Layer`
   steps (`with`, `rebase`) checked against a naive `BTreeMap` overlay.
@@ -166,7 +176,7 @@ pub fn fold<V: SequenceRead>(
     Ok(changes)
 }
 
-// reader.rs: any view (`TieredView` today, `LayeredView` once the port has it)
+// reader.rs: any view (a committed view, or a `LayeredView` over one)
 pub struct CompactBlockReader<V> { view: V, network: NetworkType }
 impl<V: SequenceRead> CompactBlockReader<V> {
     pub fn new(view: V, network: NetworkType) -> Self;
@@ -345,7 +355,7 @@ GrpcService::new(Routes::new(snapshots, chain_view, validators), &config.serve).
 
 ## 8. Deleted
 
-- `zaino_persistence::Tiered`, `TieredView` (→ `Store::apply`/`staged` + `Layer`/`LayeredView`)
+- `zaino_persistence::Tiered` (→ `Store::apply`/`staged` + `Layer`/`LayeredView`)
 - `zaino-sync`: `Producer`, `ProducerCore` (fetch moves to `zaino-nfs::fetch`), `Step::Reorg`,
   `Step::Finalized`, `Step::Apply{finalized}`, `Published` gates / `Served`, `published.rs` gate
   task (durable-tip watches stay for status and metrics)

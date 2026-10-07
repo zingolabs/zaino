@@ -4,7 +4,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{MapRead, Store, Tiered, TieredView};
+use zaino_persistence::{LayeredView, MapRead, Store, Tiered};
 use zaino_primitives::types::{Block, BlockRef, Height};
 use zaino_sync::{Offloaded, Published, Step, Subscription, Weight};
 
@@ -12,7 +12,7 @@ use crate::{fold, BlockHashReader};
 
 pub struct BlockHashIndexWriter<S: Store> {
     tiered: Offloaded<Tiered<S>>,
-    published: Published<BlockHashReader<TieredView<S::View>>>,
+    published: Published<BlockHashReader<LayeredView<S::View>>>,
 }
 
 impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
@@ -30,7 +30,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
     }
 
     /// Reader, tips and gate, for serving, metrics and status (taken before [`run`](Self::run))
-    pub fn published(&self) -> &Published<BlockHashReader<TieredView<S::View>>> {
+    pub fn published(&self) -> &Published<BlockHashReader<LayeredView<S::View>>> {
         &self.published
     }
 
@@ -128,7 +128,7 @@ mod tests {
     }
 
     fn located(
-        reader: &BlockHashReader<TieredView<DiskView>>,
+        reader: &BlockHashReader<LayeredView<DiskView>>,
         blocks: &[BlockRef],
     ) -> Vec<Option<Height>> {
         blocks.iter().map(|at| reader.height_of(&at.hash)).collect()

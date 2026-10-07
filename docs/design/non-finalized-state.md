@@ -46,7 +46,7 @@ is rare by design, which we are happy to pay.
 The non-finalized state is not per-index code: every index holds it in `zaino_persistence::Tiered`
 ([persistence-engine.md §5](./persistence-engine.md#5-tiering)). A block's effect on an index is
 one `Changes`, the same one a commit writes, so the held tier is keyed exactly like storage and a
-read resolves a position or key held first, then durable, through one pinned `TieredView` per
+read resolves a position or key held first, then durable, through one pinned `LayeredView` per
 request. `apply` and `stage` are the two watermarks' inputs, `finalize` is `committed`, `reorg` is
 `reset`. The window holds `finalised_depth` blocks, 1,000 by default, with one persistent-structure
 (`imbl`) clone per published block.

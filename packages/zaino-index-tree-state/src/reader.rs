@@ -5,7 +5,7 @@ use incrementalmerkletree::{
     Address, Hashable, Position, Source,
 };
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{SequenceId, SequenceRead, TieredView, View};
+use zaino_persistence::{LayeredView, SequenceId, SequenceRead, View};
 use zaino_primitives::types::{
     BlockRef, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
 };
@@ -48,8 +48,8 @@ impl<V: View> TreeStateReader<V> {
     }
 }
 
-/// Serving's seam between held blocks and the committed files (gone with `TieredView`)
-impl<V: View> TreeStateReader<TieredView<V>> {
+/// Serving's seam between held blocks and the committed files (gone with `LayeredView`)
+impl<V: View> TreeStateReader<LayeredView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
     pub(crate) fn finalized(&self) -> Option<Height> {
         self.view.durable().tip().map(|tip| tip.height)

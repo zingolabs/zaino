@@ -15,6 +15,7 @@ pub mod conformance;
 mod dir;
 mod disk;
 pub mod fs;
+mod layer;
 pub mod lsm;
 mod manifest;
 mod pages;
@@ -24,13 +25,14 @@ mod tiered;
 
 pub use dir::disk_bytes;
 pub use disk::{DiskEngine, DiskStore, DiskView};
+pub use layer::{Layer, LayeredView};
 pub use manifest::{IndexKind, ManifestError};
 pub use pages::PageError;
 pub use port::{
     Changes, Checked, MapId, MapRead, MapTable, PersistenceEngine, Schema, SequenceId,
     SequenceRead, SequenceTable, Store, Verification, View, Width,
 };
-pub use tiered::{Tiered, TieredView};
+pub use tiered::Tiered;
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]

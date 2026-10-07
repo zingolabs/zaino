@@ -6,7 +6,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{MapRead, TieredView};
+use zaino_persistence::{LayeredView, MapRead};
 use zaino_primitives::types::{Height, TransactionId, Zatoshis};
 use zaino_sync::Served;
 use zcash_protocol::consensus::NetworkType;
@@ -55,7 +55,7 @@ pub struct TransactionRef {
 
 #[derive(Debug, Clone)]
 pub struct TransparentAddressService<V> {
-    served: Served<TransparentAddressReader<TieredView<V>>>,
+    served: Served<TransparentAddressReader<LayeredView<V>>>,
     network: NetworkType,
     max_rows: NonZeroUsize,
 }
@@ -64,7 +64,7 @@ impl<V: MapRead> TransparentAddressService<V> {
     /// - unsynced → every method [`ServeError::Syncing`]
     /// - `network` = what the index was built for (its addresses are the only ones it answers)
     pub fn new(
-        served: Served<TransparentAddressReader<TieredView<V>>>,
+        served: Served<TransparentAddressReader<LayeredView<V>>>,
         network: NetworkType,
     ) -> Self {
         Self { served, network, max_rows: DEFAULT_MAX_ADDRESS_ROWS }
@@ -192,7 +192,7 @@ impl<V: MapRead> TransparentAddressService<V> {
     }
 
     /// One consistent view for the request (no commit lands mid-answer)
-    fn pin(&self) -> Result<std::sync::Arc<TransparentAddressReader<TieredView<V>>>, ServeError> {
+    fn pin(&self) -> Result<std::sync::Arc<TransparentAddressReader<LayeredView<V>>>, ServeError> {
         self.served.pin().ok_or(ServeError::Syncing)
     }
 }

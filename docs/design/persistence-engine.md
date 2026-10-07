@@ -23,12 +23,13 @@ than a B-tree ([persistence-architecture.md](./persistence-architecture.md)).
 
 Five properties hold for all of them, and they are the contract:
 
-1. **Final data only.** Non-final data stays in memory above the store (`Tiered`, §5), and reorgs
+1. **Final data only.** Non-final data stays in memory above the store (`Layer`, §5), and reorgs
    never reach storage. The LMDB store this replaced deleted and rewound on disk, which needed the
    whole block back to reverse every secondary index.
 1. **Insert only.** No update, no delete, no read-modify-write.
 1. **One atomic commit per index, carrying the tip.** Every table of an index moves to the new tip
-   together or not at all. The tip only advances, and it is the resume point.
+   together or not at all, however many blocks were buffered. The tip only advances, and it is the
+   resume point.
 1. **Snapshot reads.** A reader holds one committed state for a whole request or stream.
 1. **Verifiable.** Every committed byte can be checked against integrity data, offline, and a
    mismatch stops the process; nothing repairs.
@@ -54,8 +55,11 @@ pub trait Store: Send + 'static {
     type View: View;
     fn schema(&self) -> &Schema;
     fn path(&self) -> &Path;
-    fn view(&self) -> Self::View;
-    fn commit(&mut self, changes: Changes) -> Result<Self::View, StoreError>;
+    fn apply(&mut self, changes: Changes);                // buffered: not durable, not in view()
+    fn buffered_bytes(&self) -> usize;
+    fn commit(&mut self) -> Result<(), StoreError>;      // every buffer, one atomic commit
+    fn view(&self) -> Self::View;                         // committed only
+    fn staged(&self) -> LayeredView<Self::View>;          // committed + buffered
 }
 
 pub trait View: Clone + Send + Sync + 'static {
@@ -86,7 +90,9 @@ let mut store = DiskEngine::new(fs).open(path, &schema)?;
 
 let mut changes = Changes::new(tip, store.schema());
 changes.insert(SPENT, &outpoint.encode(), &encode_spend(&spend));
-let view = store.commit(changes)?;
+store.apply(changes);
+store.commit()?;
+let view = store.view();
 ```
 
 - **`Width`** is `Fixed(NonZeroU32)` or `Variable`; ids (`SequenceId`, `MapId`) are declared in
@@ -98,9 +104,13 @@ let view = store.commit(changes)?;
   bytes back to back with no per-item overhead, a variable one adds an end offset per item. Widths
   are checked as each item arrives, so a wrong one panics at the call that made it, naming the
   table. Callers encode into temporaries and never manage a lifetime.
-- **Commit** makes every change and the tip durable together, then returns the new view. The tip
-  must advance. An `Err` poisons the store: every later commit panics, and recovery is a reopen
-  (a failed sync is never retried).
+- **Apply** buffers one `Changes` (a `Layer`, §5): `staged()` reads it, `view()` does not, and
+  nothing is durable yet. Its tip must be above the last applied one.
+- **Commit** makes every buffered change and the last applied tip durable together (one fsync),
+  then moves `view()`; nothing buffered = nothing written. An `Err` poisons the store: every
+  later commit panics, and recovery is a reopen (a failed sync is never retried).
+- **`view()` vs `staged()`**: serving pins `view()`, so a crash never takes back what a reader
+  saw; a writer folding the next final block reads its parent through `staged()`.
 - **Reads** never return errors: a read past what was committed is a bug, and corruption panics on
   the first touch of a page whose checksum fails.
 
@@ -114,7 +124,10 @@ schema is a constant in the index's code, so a mismatch is a bug, not a runtime 
 | the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes         |
 | the LSM (each batch)           | a row of the wrong widths; a duplicate key                                                 |
 | sequence files (each append)   | a fixed-width record of the wrong size                                                     |
-| `Store::commit`                | changes built for another schema; a tip that does not advance; a commit after a failed one |
+| `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice   |
+| `Store::commit`                | a commit after a failed one                                                                |
+| `Layer::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks       |
+| `LayeredView::new`             | a layer not above the durable tip (not rebased)                                            |
 
 | Port      | `DiskEngine`                                                     | LMDB                                   | SQLite                                 |
 | --------- | ---------------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -143,7 +156,8 @@ What the port deliberately does not have:
 ```text
 zaino-persistence/src/
   port.rs       the traits, Schema, Changes, Verification
-  tiered.rs     Tiered / TieredView: blocks above the committed tip, over any Store (§5)
+  layer.rs      Layer / LayeredView: non-final data over a committed view (§5)
+  tiered.rs     Tiered: blocks above the committed tip, over any Store (§5, transitional)
   disk.rs       DiskEngine / DiskStore / DiskView: one manifest over both table kinds
   sequence.rs   sequence tables as positional files
   lsm/          map tables as size-tiered sorted segments
@@ -188,20 +202,22 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
 ```
 
 - `history`: random blocks over every table shape (a variable sequence, a fixed one, one in a
-  sub-directory, a scoped map, a point-lookup map) driven through `Tiered` (§5) as an index
-  drives it: applies, stages (a full batch finalized), finalizes through any held block,
-  reorgs, reopens and power loss. After every step the view reads like an oracle of the held
-  blocks over the finalized ones, the durable view like the finalized ones alone, the tips
-  (`durable_tip`, `applied`, `staged`) like the oracle's, and `Tiered::check` holds; a crash or
-  reopen keeps exactly what was finalized. Blocks a reorg or crash dropped are replaced with
-  different bytes at the same positions and keys, so a stale held item cannot pass. Views pinned
-  earlier are re-checked after later steps (structural sharing never leaks a later write);
-  range limits on both sides of each answer's size. Swarm-tested: whole step kinds switched off
-  per case (bulk alone, no reorgs, …).
-- `contract`: an empty open, identity refused across kind, format and network, a reopen resuming
-  at the tip, `verify` clean with every commit counted, store misuse (a tip that does not
-  advance, changes for another schema) and every `Tiered` precondition (§5) panicking before any
-  state moves, work continuing after each.
+  sub-directory, a scoped map, a point-lookup map), held as the NFS holds them (one node per
+  block, its `Layer` = its parent's `.with` its `Changes`) and handed to the store as a writer
+  hands them: grow a node, apply the oldest unapplied nodes, commit, reorg the unapplied ones,
+  settle, reopen, power loss. After every step `view()` reads like the committed prefix,
+  `staged()` like committed + buffered, `buffered_bytes()` like the applied items, each node's
+  layer over `view()` like the contents through it, and `Layer::check` holds; a commit rebases
+  every node, a crash or reopen keeps exactly what was committed. Nodes a reorg dropped are
+  replaced with different bytes at the same positions and keys, so a stale item cannot pass.
+  Views pinned earlier are re-checked after later steps (structural sharing never leaks a later
+  write); range limits on both sides of each answer's size. The models are plain `Vec`s and
+  `BTreeMap`s. Swarm-tested: whole step kinds switched off per case (no reorgs, no crashes, …).
+- `contract`: an empty open, `apply` invisible to `view()` until `commit`, an empty commit
+  writing nothing, identity refused across kind, format and network, a reopen resuming at the
+  tip, `verify` clean with every commit counted, and every `Store::apply`, `Layer::with` /
+  `rebase` and `LayeredView::new` precondition panicking with nothing buffered, work continuing
+  after each.
 - `Model` doubles as the expected state for an engine's own crash and fault tests.
 
 `DiskEngine` runs the suite on `SimFs` (power loss = `SimFs::power_loss`, settle = merges, check
@@ -209,40 +225,69 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
 every failed I/O call, every failed read at open, its invariant checks firing, open's trimming and
 refusals, the manifest body's golden bytes, and verify (bad page, lost file, a file a merge retired
 mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and filters.
-`tiered.rs` fire-drills each `Tiered::check` invariant by breaking it by hand.
+`layer.rs` and `tiered.rs` fire-drill each `check` invariant by breaking it by hand.
 
 ## 5. Tiering
 
-Every index holds the blocks above its durable tip the same way, so the port's crate holds them
-once, over any engine:
+### Buffer and layers
+
+Data above a durable tip has one shape, whether it is a store's buffer or a non-final block in
+`zaino-nfs` ([nfs.md §4](./nfs.md#4-persistence-port-target)):
+
+```rust
+impl Layer {
+    pub fn empty(schema: &Schema) -> Self;
+    pub fn tip(&self) -> Option<BlockRef>;
+    pub fn with(&self, changes: &Changes) -> Self;        // parent + changes, structural sharing
+    pub fn rebase(&self, durable: &impl View) -> Self;    // drop what `durable` now holds
+}
+
+impl<V: View> LayeredView<V> {
+    pub fn new(durable: V, layer: Layer) -> Self;         // layer first, then durable
+    pub fn durable(&self) -> &V;                          // the committed view (the seam)
+}
+```
+
+- **A block = one `Changes`**, tipped by that block and keyed exactly as the store holds it. A
+  layer is, per table, an `imbl` structure over its blocks' items (sequence records past the
+  durable length, map rows by key) plus each block's share of them: a clone is O(tables) pointer
+  copies, so a writer republishes per block and a child block shares its parent's layer.
+- **`rebase`** drops every block through durable's tip, by those shares. Durable's tip must be
+  one of the layer's blocks (or below them all): past the layer or on another branch panics.
+- **`LayeredView<V>`** is a `View`, and a `SequenceRead` / `MapRead` when `V` is. A position past
+  the durable length reads the layer's records; a key reads the layer's rows first, and `values`
+  asks durable once for the misses; `range` merges both runs (keys are unique across the two)
+  and keeps the over-`limit` = `None` rule. `new` refuses a layer that is not above durable's tip,
+  since an un-rebased layer would read its blocks twice.
+- **A store's buffer is a `Layer`**: `apply` adds one `Changes` in place, `staged()` =
+  `LayeredView::new(view(), buffer)`, and `commit` writes the buffer's items (map rows already in
+  key order) and empties it.
+
+### `Tiered` (transitional, deleted by `zaino-nfs`)
+
+Every index holds the blocks above its durable tip the same way today, over any engine:
 
 ```rust
 impl<S: Store> Tiered<S> {
     pub fn new(store: S, batch: NonZeroUsize) -> Self;
-    pub fn apply(&mut self, changes: Changes);                     // tip block: RAM, reorgable
-    pub fn stage(&mut self, changes: Changes, weight: usize) -> bool; // final block; true = batch full
+    pub fn apply(&mut self, changes: Changes);                     // tip block: a Layer, reorgable
+    pub fn stage(&mut self, changes: Changes, weight: usize) -> bool; // final block: Store::apply
     pub fn finalize(&mut self, through: Height);                   // held through `through`: one commit
     pub fn reorg(&mut self);                                       // every applied block dropped
-    pub fn view(&self) -> TieredView<S::View>;                     // held first, then durable
+    pub fn view(&self) -> LayeredView<S::View>;                    // held first, then durable
     pub fn durable_tip(&self) / applied(&self) / staged(&self) -> Option<BlockRef>;
 }
 ```
 
-- **A block = one `Changes`**, tipped by that block and keyed exactly as the store holds it. The
-  held tier is those blocks plus, per table, an `imbl` structure over their items (sequence
-  records past the durable length, map rows by key): a view is O(tables) pointer copies, so a
-  writer republishes per block.
-- **`TieredView<V>`** is a `View`, and a `SequenceRead` / `MapRead` when `V` is. A position past
-  the durable length reads the held records; a key reads the held rows first, and `values` asks
-  durable once for the misses; `range` merges both runs (keys are unique across tiers) and keeps
-  the over-`limit` = `None` rule. `durable()` is the committed view (the seam).
+- **Staged blocks are the store's buffer**, applied blocks a `Layer` over its committed view (plus
+  their `Changes`, applied to the store when finalized).
 - **Staged and applied never coexist.** A final `Apply` arrives only when the producer's window is
   empty, and a tip block builds on durable: a writer finalizes its staged blocks first.
 - **`stage`'s `weight`** is the source block's bytes, so `[index] batch_mib` still means MiB of
   decoded blocks per commit, whatever an index's rows weigh.
-- **`finalize`** merges the held blocks through `through` into one `Changes` and commits it (one
-  fsync). A failed commit panics naming the index and its directory: the store is poisoned and a
-  restart recovers.
+- **`finalize`** applies the held blocks through `through` to the store and commits them (one
+  fsync), then rebases the layer. A failed commit panics naming the index and its directory: the
+  store is poisoned and a restart recovers.
 - **Restart and reorg leave the same state**: nothing held. A fold reads its parent's state off
   the view (compact-block's tree sizes, tree-state's frontiers) instead of carrying it, so neither
   needs a step of its own ([nfs.md](nfs.md) §5).

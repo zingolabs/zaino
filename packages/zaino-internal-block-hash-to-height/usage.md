@@ -21,7 +21,7 @@ tokio::spawn(index.run(blocks));
 ```
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
-  `S::View: MapRead`, serving `BlockHashReader<TieredView<V>>` /
+  `S::View: MapRead`, serving `BlockHashReader<LayeredView<V>>` /
   `BlockHashService<V>`; zainod picks `DiskEngine`.
 - `BlockHashIndexWriter` runs its own loop over its `Subscription<Block>`
   ([the shape every index shares](../zaino-sync/usage.md#an-index-loop);
@@ -33,7 +33,7 @@ tokio::spawn(index.run(blocks));
 - `fold(block, network) -> Changes` is the index's whole state transition,
   pure: one `by_hash` row from the header. It reads no parent state.
 - `BlockHashReader<V>` is generic over any `V: MapRead` (a store's committed
-  view, `TieredView`, or a layer over either): `height_of(&BlockHash)`.
+  view or a `LayeredView` over one): `height_of(&BlockHash)`.
 - Fallible only at boot (the engine's `open` → `StoreError`). `new` and `run`
   are infallible: `run` returns at `Shutdown` and panics on a failed commit
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
