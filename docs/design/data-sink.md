@@ -25,10 +25,10 @@ This removes a lot of complexity around monitoring the speed/progress of each in
 code to run on an async runtime, and be quite simple.
 
 ```text
- zaino-source (bulk) ───────────┐
+ header chain (VerifiedChain) ──┐
                                 ├─▶ Producer ──▶ BlockSink ─┬─▶ [≤ 256 MiB] ─▶ compact-block
- zaino-non-finalized-state ─────┘                           ├─▶ [≤ 256 MiB] ─▶ tree-state
- (tip, reorgs)                                              └─▶ [≤ 256 MiB] ─▶ transparent-address
+ any source (getblock <hash>) ──┘   (checked)               ├─▶ [≤ 256 MiB] ─▶ tree-state
+                                                            └─▶ [≤ 256 MiB] ─▶ transparent-address
 ```
 
 ## Steps
@@ -76,6 +76,52 @@ Durable to 1233; 1236 is replaced by 1236′.
 The replay starts at the first non-final height; final blocks are never re-sent. `Reorg` carries no
 fork height because every legal fork is above the final boundary.
 
+## How the producer publishes
+
+The producer follows the header chain's `VerifiedChain` and nothing else
+([verified-chain.md §9](./verified-chain.md#9-the-producer)). It holds every block it has sent
+above the final tip, each with its hash: that window is how it sees a reorg, and what it replays
+from. On each `VerifiedChain` it reads (the latest one: chains it never saw produce no steps), in
+this order:
+
+1. **Finality.** A `Finalized` for each window block, oldest first, that is at or below the
+   chain's final tip **and** still the chain's block at its height. Those leave the window.
+1. **Reorg.** The fork is the first window block whose hash is not the chain's at its height (a
+   height above the new best counts: a retreat). If there is one: `Reorg`, then the window's
+   blocks below the fork are sent again from memory (no fetch), then the new branch.
+1. **Delivery.** Each next height's block, once fetched from any source and checked against the
+   chain's header (hash, coinbase height, merkle root rebuilt from its txids), as an `Apply` whose
+   `finalized` says whether it is at or below the final tip.
+
+What a subscriber can rely on, whatever the chain does:
+
+- **Final never rolls back.** A `Reorg` only drops non-final state; the header chain's final tip
+  never moves back and a final block never changes (the producer asserts both).
+- **Every `Apply` is the verified chain's block at its height, body included**, for the chain it
+  was sent under. A source that served another block or a doctored body is passed over and the
+  block is asked of another source; it never reaches a subscriber.
+- **One finality.** `finalized` and `Finalized` follow the header chain's final tip alone. A
+  `Reorg` and finality moving across the fork can arrive in one chain update: the window's blocks
+  below the fork that are final go out as `Finalized` first, then `Reorg`, then the new branch's
+  blocks at heights now final arrive as final `Apply`s.
+- **A retreat is a reorg.** A heavier, shorter branch sends `Reorg` and replays up to the new best;
+  heights above it come back only once the chain grows again.
+- **Restart.** Nothing is sent until every subscriber's durable tip is at or below the final tip
+  and is the chain's block there; one that is not stops the producer (`ProduceError::Diverged`).
+
+A reorg that also finalizes across the fork. Final through 1233, A1234..A1237 sent non-final; the
+next chain read has B (forking after A1234) as best at 1239, final through 1236:
+
+| Step                | Why                                                    |
+| ------------------- | ------------------------------------------------------ |
+| `Finalized 1234`    | A1234 is still the chain's block and now final         |
+| `Reorg`             | A1235 is not the chain's block at 1235: the fork       |
+| `Apply B1235 final` | the final tip reached 1235 in the same update          |
+| `Apply B1236 final` |                                                        |
+| `Apply B1237`       | above the final tip: non-final from here               |
+| `Apply B1238`       |                                                        |
+| `Apply B1239`       | the best; the index's serving gate opens on this block |
+
 ## Start point
 
 The stream starts after the **rearmost** durable tip.
@@ -119,8 +165,8 @@ A few mistakes are made impossible or loud rather than silent:
   `shutdown()` panics its subscribers. Either way the process stops instead of quietly losing
   blocks. This is also the failure path: a failing index panics, its queues drop, and the
   pipeline stops through these two panics. There is no error channel.
-- The chain tip is deliberately not part of the stream. Indexes read it from `zaino-chainview`
-  directly, which keeps the sink purely about blocks.
+- The chain tip is deliberately not part of the stream. Each index's serving gate reads the
+  header chain's `VerifiedChain` directly, which keeps the sink purely about blocks.
 
 [sync.md](./sync.md) covers the producer and the index loops, and
 [`zaino-sync/usage.md`](../../packages/zaino-sync/usage.md) is the API reference.

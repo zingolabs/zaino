@@ -30,14 +30,14 @@ packages/                          Cargo workspace members
   zainod/                            Daemon binary: config → boot (one task per stage), logging, verify
   # serving
   zaino-grpc/                        Lightwalletd-compatible gRPC: router + validator fallback
-  zaino-chainview/                   One view over N validators: quorum tip, quorum mempool, broadcast
+  zaino-chainview/                   One view over N validators: verified tip, mempool, submission
   # indexing
   zaino-sync/                        Sync pipeline: producer → BlockSink → per-index loop
   zaino-index-compact-block/         CompactBlockIndex: framed records in append-only files
   zaino-internal-block-hash-to-height/  BlockHashIndex: hash ↔ height, the by-hash locator
   zaino-index-tree-state/            TreeStateIndex: commitment-tree frontiers and subtree roots
   zaino-index-transparent-address/   TransparentAddressIndex: receives and spends as sorted segments
-  zaino-persistence/                 Storage core: sorted segments, verify report types
+  zaino-persistence/                 Persistence port + DiskEngine (files for sequences, LSM for maps)
   zaino-non-finalized-state/         Non-final window of the best chain, in memory: reorg replay
   # validator source
   zaino-source/                      Driven ports + the Zebra JSON-RPC adapter, block decode, fetch pool
@@ -137,10 +137,12 @@ Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, `ValidatorClient`, and the ordered multi-validator `BlockFetchPool`.
-- [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N validators — the two-layer model, quorum and failing closed, and why `ours` is the exception.
+- [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
+- [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers, blocks and mempool from peers with every id re-derived from the bytes, attributed transaction announcements, and the isolated per-attempt submission push.
+- [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the proof-of-work verified header tree from genesis — which rules, the most-work tip, and why finality is the caller's gate.
 - [`zaino-non-finalized-state`](./packages/zaino-non-finalized-state/usage.md): the in-memory non-final window, how `advance` resolves an extension or a reorg, and why a reorg replays without fetching.
-- [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (bulk, then the quorum tip), why every index is fed from the rearmost resume point, indexes publishing to other indexes, the loop every index runs, and what the committed height promises.
-- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the on-disk record boundary, immutable sorted segments, and the report vocabulary every index verifier shares.
+- [`zaino-sync`](./packages/zaino-sync/usage.md): the one producer (the verified chain, every block checked), why every index is fed from the rearmost resume point, indexes publishing to other indexes, the loop every index runs, and what the committed height promises.
+- [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
 - [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash ↔ height locator every by-hash request resolves through, and why the serving index confirms it.
 - [`zaino-internal-value-balance`](./packages/zaino-internal-value-balance/usage.md): every transparent output's value, resolving each transaction's fee for compact blocks, and why all of it happens in `deliver`.

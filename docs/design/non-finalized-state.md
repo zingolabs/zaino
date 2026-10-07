@@ -2,9 +2,9 @@
 
 We think of sync as a function, `f(old_state, blocks)`. The non-finalized state is simply that same
 function applied to blocks that are not final yet, and kept in memory instead of committed. It is
-not a second data structure or a separate subsystem. Every index keeps it in its own loop
-([usage.md](../../packages/zaino-sync/usage.md#an-index-loop)): a non-final block is applied, and
-dropped again on a reorg. Each index's own `usage.md` describes how it does so.
+not a second data structure or a separate subsystem. Every index's own loop
+([usage.md](../../packages/zaino-sync/usage.md#an-index-loop)) holds it in
+`zaino_persistence::Tiered`: a non-final block is applied, and dropped again on a reorg.
 
 ## Two watermarks
 
@@ -14,9 +14,9 @@ is the chain tip. `finalized_height` is how far it is durable on disk, which tra
 
 `apply` extends the non-finalized state by one block. `finalize` and `committed` write final blocks
 to disk, and only blocks below `tip − finalised_depth`, so nothing that can still be reorged is ever
-fsynced. During bulk sync every block arrives already final and never goes through `apply`, so a
-node catching up folds each block exactly once. All movement between the two tiers happens in
-`committed`, which means a reader always finds a block in exactly one of them.
+fsynced. During bulk sync every block arrives already final and is staged instead (batched into
+one commit), so a node catching up folds each block exactly once. All movement between the two
+tiers happens in `committed`, which means a reader always finds a block in exactly one of them.
 
 `reset` drops the entire non-finalized state. It only touches memory: durable structures never
 delete anything, which is what keeps both of our storage shapes
@@ -43,23 +43,32 @@ is rare by design, which we are happy to pay.
 
 ## Per index
 
-| Index | Non-finalized state (`imbl`) | Carry |
-|---|---|---|
-| compact block | `OrdMap<height, Bytes>` of encoded records, plus hashes | cumulative tree sizes |
-| tree state | retained nodes by `(level, slot)`, per-height sizes, subtree roots | frontier |
-| transparent address | `OrdMap<ReceiveKey, _>`, `OrdMap<SpentKey, _>` | none |
+The non-finalized state is not per-index code: every index holds it in `zaino_persistence::Tiered`
+([persistence-engine.md §5](./persistence-engine.md#5-tiering)). A block's effect on an index is
+one `Changes`, the same one a commit writes, so the held tier is keyed exactly like storage and a
+read resolves a position or key held first, then durable, through one pinned `TieredView` per
+request. `apply` and `stage` are the two watermarks' inputs, `finalize` is `committed`, `reorg` is
+`reset`. The window holds `finalised_depth` blocks, 1,000 by default, with one persistent-structure
+(`imbl`) clone per published block.
 
-An index with a carry keeps two copies of it, one after the last applied block and one after the
-last finalized block, so `reset` is a simple assignment rather than a read from disk. Reads merge
-the non-finalized state with durable storage through one pinned view per request; the compact-block
-`ReadView::block` is the pattern to follow. The window holds `finalised_depth` blocks, 1,000 by
-default, with one persistent-structure clone per published block.
+| Index               | One block's `Changes`                                         | Carry                 |
+| ------------------- | ------------------------------------------------------------- | --------------------- |
+| compact block       | its encoded record                                            | cumulative tree sizes |
+| tree state          | its height record, the nodes and subtree roots it completes   | frontier per pool     |
+| transparent address | its `receives` and `spent` rows                               | none                  |
+| value balance       | its transparent outputs                                       | none                  |
+| block hash          | its `hash → height` row                                       | none                  |
+
+An index with a carry keeps one, after the last held block. `reset` re-reads it off the view's tip
+record (compact-block's `chainMetadata`, tree-state's frontiers through the same reconstruction a
+read uses), so a reorg runs the boot path.
 
 ## A reorg deeper than `finalised_depth` is fatal
 
-The chain head refuses any fork below its window (`AdvanceError::BelowWindow`), and zainod exits. On
-the next boot the stored tip hash no longer links to the validator's chain, so the first delivered
-block fails the producer's link check (`ProduceError::Unlinked`), and zainod refuses to run until the
-index is resynced. With `finalised_depth` at least `MAX_BLOCK_REORG_HEIGHT`, such a reorg is outside
+The header chain never moves its final tip back, so the producer never sees such a fork: a final
+block never changes (asserted). If the header store is lost and rebuilt onto another chain, the
+first final tip covering an index's stored tip names a different block there, the producer stops
+with `ProduceError::Diverged` before sending anything, and zainod refuses to run until the index
+is resynced. With `finalised_depth` at least `MAX_BLOCK_REORG_HEIGHT`, such a reorg is outside
 the consensus rules, so we want a loud resync rather than silently splicing a new branch onto the old
 durable prefix ([durability.md](./durability.md) §5).

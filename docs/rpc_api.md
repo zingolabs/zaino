@@ -50,9 +50,11 @@ answer `UNIMPLEMENTED` (for the block-hash index, only the by-hash form of
 and `upgradeHeight` (the next pending upgrade), and `estimatedHeight` from the
 validator's `getblockchaininfo`, which it reuses for up to one second because
 every wallet polls it. `blockHeight` is the compact-block index's tip, not the
-validator's, because a wallet gates its sync on it. With the validator
-unreachable the call is `UNAVAILABLE`. We never substitute a stand-in branch,
-schedule or tip.
+validator's, because a wallet gates its sync on it. `lightwalletProtocolVersion`
+is the release of the vendored protos (currently `v0.5.0`), which pepper-sync
+requires before it syncs ([client-requirements.md](./client-requirements.md)).
+With the validator unreachable the call is `UNAVAILABLE`. We never substitute a
+stand-in branch, schedule or tip.
 
 `GetTransaction` answers a mined transaction with its height, and an unmined or
 orphaned one with height 0, the wire's only "no height" value.
@@ -102,11 +104,6 @@ and pruned on read, so any requested subset is answerable.
 
 ## Known gaps
 
-- `LightdInfo.lightwalletProtocolVersion` is left unset. The proto requires a
-  client to feature-detect there before requesting non-default `poolTypes`, so a
-  spec-following client cannot use the transparent compact blocks Zaino serves.
-  No current client reads the field (see
-  [client-requirements.md](./client-requirements.md)).
 - `GetTransaction` answers only `TxFilter`'s `hash` arm. The `(block, index)`
   positional arm is `INVALID_ARGUMENT`.
 - `CompactTx.fee` is filled, unlike lightwalletd. In a mined block the

@@ -1,48 +1,83 @@
-# Where data lives
+# Boundaries
 
-Three components each own one kind of data, and that rule decides every "should Zaino index this?"
-question, so we write it down once rather than re-argue it.
+Where each kind of data lives, what Zaino believes and why, and where those lines are drawn in the
+code. Every "should Zaino index this?", "can we take this from a peer?" and "should this be a
+trait?" question is answered here once rather than re-argued.
 
-- **The validator (Zebra)** owns consensus-critical data. It should store and serve the minimum
-  consensus requires, with no convenience indexes on top.
+## 1. Who owns which data
+
+Three components each own one kind of data:
+
+- **The validator (Zebra)** owns consensus: what is a valid transaction, a valid block, the
+  admitted mempool and its fees. It should store and serve the minimum consensus requires, with no
+  convenience indexes on top.
 - **The wallet** owns key material, which never leaves it.
-- **The indexer (Zaino)** owns everything else.
+- **The indexer (Zaino)** owns everything else: every answer derived from the chain.
 
-The corollary that does the work is that data the validator does not need for consensus belongs in
-Zaino, and data it does need stays in the validator rather than being copied.
+The corollary that does the work: data the validator does not need for consensus belongs in Zaino,
+and data it does need stays in the validator rather than being copied.
 
-## What this decides
+## 2. What Zaino believes, and from whom
+
+Zaino reads from two kinds of source ([chainview.md §1](./chainview.md#1-sources)):
+
+- **Trusted validators**: zebrads the operator configured. Trust is configured, never discovered.
+- **Peers**: any node on the Zcash p2p network. Discovered, unauthenticated, free to create.
+
+The rule is that **nothing counts until it is verified, and only consensus decisions are taken on
+trust**. What Zaino can check cheaply it checks itself, whoever supplied it; what would need a
+second implementation of consensus it takes from a trusted validator, and only from one.
+
+| Fact                              | Checked by Zaino                                                                                                       | Taken on trust, from a trusted validator only                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| block header, best tip            | proof of work, difficulty, time, linkage, most work ([chainview.md §2](./chainview.md#2-the-best-chain-proof-of-work)) | —                                                                                                                   |
+| block body                        | hash linked to the verified header chain                                                                               | that it is valid (only a trusted validator holding it vouches for it: [chainview.md §4](./chainview.md#4-finality)) |
+| transaction id                    | recomputed from the bytes                                                                                              | —                                                                                                                   |
+| mempool membership, fee           | —                                                                                                                      | admission (each listing = it fully validated the transaction)                                                       |
+| a mined transaction's bytes       | txid recomputed                                                                                                        | its location (`getrawtransaction 1`)                                                                                |
+| a submission's fate               | spread, seen at a source that was never an entry                                                                       | the verdict: accepted or rejected                                                                                   |
+| peers' claims (tips, inventories) | never counted, never voted                                                                                             | —                                                                                                                   |
+
+Zaino does not validate transactions: that would be a second mempool verifier (proofs, nullifier
+set, script, conflicts) kept in lockstep with every upgrade. A trusted validator answers the
+question; Zaino asks it ([chainview.md §1](./chainview.md#1-sources)).
+
+Peers never decide anything. A count of peers proves nothing an attacker cannot buy; proof of work
+does. So peers are sources of headers and of whatever is checkable against them, of `inv`
+sightings (`peers: x/y`, telemetry) and of submission entries, and never of claims.
+
+## 3. What this decides for each RPC
 
 An RPC is served from a Zaino index when its answer is derived: something Zaino computes that no
 validator is obliged to have. Forwarding those would mean either a second implementation that can
-disagree with the index, or a dependency on a validator feature such as `getaddressutxos` or
-`getaddressbalance` that Zebra need not implement. So the block, tree-state and transparent-address
-methods all come from the index, and while an index is still building they fail with UNAVAILABLE
-rather than falling back to a validator.
+disagree with the index, or a dependency on a validator feature such as `getaddressutxos` that
+Zebra need not implement. So the block, tree-state and transparent-address methods all come from
+an index, and while an index is still building they fail with `UNAVAILABLE` rather than falling
+back to a validator.
 
-An RPC is forwarded when it is a write, or a point lookup of a primary object the validator already
-holds for consensus reasons.
+An RPC goes to the validators when it is a consensus decision or a primary object they already
+hold for consensus reasons.
 
-| Method                                                  | Where             | Why                                                |
-| ------------------------------------------------------- | ----------------- | -------------------------------------------------- |
-| `GetBlock`, `GetBlockRange`, `GetLatestBlock`           | index             | derived: the compact projection                    |
-| `CompactTx.fee` in a mined block                        | index             | derived: value-balance sums the spent prevouts     |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | index             | derived: the commitment-tree fold                  |
-| `GetAddressUtxos`, `GetTaddressBalance`                 | index             | derived: the address rollup                        |
-| `GetTaddressTransactions`                               | index + validator | the index names the txids, the validator the bytes |
-| `GetMempoolTx`, `GetMempoolStream`                      | validator         | not in any block                                   |
-| `CompactTx.fee` in `GetMempoolTx`                       | validator         | its admission computed it (`getrawmempool true`)   |
-| `SendTransaction`                                       | validator         | a write, relayed to every validator in the view    |
-| `GetTransaction`                                        | validator         | a primary consensus object, looked up by txid      |
-| `GetLightdInfo`                                         | validator + index | node and network state, plus our served height     |
+| Method                                                  | Served from                      | Why                                                                                                                                               |
+| ------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GetBlock`, `GetBlockRange`, `GetLatestBlock`           | compact-block index              | derived: the compact projection                                                                                                                   |
+| `CompactTx.fee` in a mined block                        | value-balance index              | derived: the spent prevouts' values                                                                                                               |
+| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                 | derived: the commitment-tree fold                                                                                                                 |
+| `GetAddressUtxos`, `GetTaddressBalance` (+ streams)     | transparent-address index        | derived: the address rollup                                                                                                                       |
+| `GetTaddressTransactions`                               | index + validators               | the index names the txids, a validator holds the bytes                                                                                            |
+| `GetMempoolTx`, `GetMempoolStream`                      | chain view                       | admitted by a trusted validator; not in any block                                                                                                 |
+| `CompactTx.fee` in `GetMempoolTx`                       | chain view                       | the admitting validator priced it (`getrawmempool true`)                                                                                          |
+| `SendTransaction`                                       | chain view                       | a consensus decision: entries + a trusted verdict ([chainview.md §6](./chainview.md#6-submission-one-random-entry-node-watched-until-it-spreads)) |
+| `GetTransaction`                                        | validators                       | a primary consensus object, looked up by txid (§4)                                                                                                |
+| `GetLightdInfo`                                         | chain view + compact-block index | network state from a validator holding the verified tip; the height Zaino serves                                                                  |
 
-The code enforces the split. `ValidatorPorts` in `zaino-grpc/src/validator.rs` gives the
-single-validator handler only `SendRawTransaction` and `GetTransaction` (`GetLightdInfo` reads the
-chain view's copy of each validator's `getblockchaininfo`), so an
-index-backed method has no validator port it could forward to. If an operator disables an index,
-its methods answer UNIMPLEMENTED instead.
+The code enforces this in one place, `zaino-grpc`'s path dispatch (`service.rs`): each derived
+method maps to its index's service only, and the validators are reachable from exactly two routes,
+`GetTransaction` and `GetTaddressTransactions`' bytes. A disabled index's methods answer
+`UNIMPLEMENTED` naming the index, never a validator's answer instead; a test asserts that for
+every index-backed path.
 
-## Why `GetTransaction` is the exception
+## 4. Why `GetTransaction` is the exception
 
 `GetTransaction` looks like it wants an index, and does not.
 
@@ -56,12 +91,12 @@ from a compact block, and calls `GetTransaction` only when that succeeds, so onl
 transactions. The reads are rare and reach into arbitrary history, so nothing could be pruned or
 evicted: we would store all of it and read almost none of it.
 
-Meanwhile the validator already holds those bytes because consensus requires it, and indexing them
-here would be a second copy of data the boundary says lives there. `GetTaddressTransactions` follows
-the same reasoning. The index supplies the derived `{height, txid}` set, and the bytes for each txid
-come from the validator.
+The validator already holds those bytes because consensus requires it, and indexing them here
+would be a second copy of data the boundary says lives there. `GetTaddressTransactions` follows the
+same reasoning: the index supplies the derived `{height, txid}` set, and the bytes for each txid
+come from a validator.
 
-## Why one fee has two sources
+## 5. Why one fee has two sources
 
 A mined transaction's fee is derived. The value-balance index holds every transparent output's
 value, so it resolves the one term a block does not carry, what each input spends, by itself.
@@ -75,3 +110,42 @@ the mempool fee off the validator's own listing rather than re-deriving it, the 
 `CompactTx.fee` is a `uint32` with no presence bit ("present if server can provide"). As a Zaino
 policy, a coinbase, which pays no fee, a mempool transaction not yet priced, and a fee of 2^32
 zatoshis or more are all sent as 0 rather than as a saturated wrong value.
+
+## 6. Seams in the code
+
+A trait at a boundary earns its place only when there is, or must be able to be, more than one
+implementation: another protocol version, another backend, or a deterministic fake that tests
+cannot do without. Everything else is a concrete type.
+
+| Seam                      | Trait                                                                                                                  | Implementations                                                                             | Why a trait                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| a trusted validator's RPC | `zaino_source::ChainDataSource`                                                                                        | `ZebraRpcAdapter`; `MockChain` and per-test fakes                                           | future RPC versions; every layer above tested against data it controls                   |
+| the p2p network           | `zaino_chainview::ValidatorP2pSource`                                                                                  | zainod's `ZebraPeers` over `zaino-peers`; `FakePeers`                                       | real peers need sockets and a multi-thread runtime; a second transport (Tor) is foreseen |
+| storage                   | `zaino_persistence::PersistenceEngine` + `SequenceRead` / `MapRead` ([persistence-engine.md](./persistence-engine.md)) | `DiskEngine`: positional files (sequences), LSM (maps); LMDB and SQLite fit the same traits | one contract every index meets, whatever holds its bytes                                 |
+| the filesystem            | `zaino_persistence::fs::Fs`                                                                                            | `RealFs`; `SimFs`                                                                           | crash-state enumeration needs a filesystem that can lose writes on demand                |
+
+Deliberately not seams:
+
+- **The gRPC service.** One endpoint, one protocol, one implementation: `GrpcService` over
+  `Routes`, the enabled indexes as concrete services. A disabled index is `None`, not a stub.
+- **The index services and writers.** Each index is one concrete crate; what varies between them
+  is data, not an interface to swap.
+- **The validator set.** `TrafficBalancer` is the set of trusted validators (cheapest first, then
+  failover) and is not itself a `ChainDataSource`; a pool is never mistaken for one validator.
+
+## 7. Conversions at the edges
+
+Bytes off disk or off the wire are where input is validated, so each conversion is a named function
+whose signature states the direction and the failure, never `From`/`TryFrom` hiding both behind
+`.into()` (`CLAUDE.md`):
+
+- **Disk:** the index that owns a record owns its layout, as `encode(&X) -> [u8; N]` and
+  `decode(&[u8; N]) -> X` (or a `Result` when some bytes are invalid), with a golden-bytes test
+  beside it. The storage engine sees bytes only.
+- **Wire:** domain crates (`zaino-primitives`, the indexes' domain types) never depend on
+  `zaino-proto`. The crate that produces or consumes the wire bytes owns the conversion, for
+  example `encode_compact_block` in compact-block's `build.rs`; a fallible wire → domain conversion
+  returns an error enum naming each rejection.
+- **Validator RPC:** `zaino-source` parses JSON-RPC into domain types and recomputes every hash it
+  can from the bytes it was given (block hash from the header, txid from the transaction), never
+  trusting a hash field in the JSON.

@@ -53,7 +53,7 @@ fixture's sibling is `IRONWOOD_ONLY_*`, not `NU6_3_ACTIVE_*`)
 **Unfiltered pool set**:
 The pools served when a request's `poolTypes` is empty: every shielded pool
 (Sapling, Orchard, Ironwood), transparent excluded. Defined once, by
-`PoolTypeFilter::default`; a narrower set makes compact blocks disagree with
+`zaino_index_compact_block::Pools::default`; a narrower set makes compact blocks disagree with
 their own `chainMetadata` tree sizes, which a scanning wallet reads as a
 phantom reorg.
 _Avoid_: default pools, backfill set, "Sapling and Orchard"

@@ -14,8 +14,9 @@ network = "testnet"
 # listen_address = "127.0.0.1:9999"
 
 # Validators Zaino trusts (Zebra JSON-RPC), at least one, all equal
-# - tip = a majority of them; one listing admits a mempool transaction
-# - 3 = the first set that survives a failure (2 is weaker than 1: either down = below quorum)
+# - tip = most-work proof-of-work verified header, served while any of them holds it
+# - one listing admits a mempool transaction; each submission attempt goes to one at random
+# - 2+ = survives one going down (no vote: more never weakens it)
 # - down at boot or later = retried, never fatal
 [[trusted_validators]]
 jsonrpc_address = "127.0.0.1:18232"
@@ -27,9 +28,34 @@ jsonrpc_address = "127.0.0.1:18232"
 # connect_timeout_secs = 2
 # Silence before a request fails, never total duration (raise for a slow or lossy link)
 # read_timeout_secs = 30
+# Link budget to this validator (zaino never exceeds it): connections split 2 chain view / ¼ wallet
+# lookups / rest block sync, at least 4; unset rates = unlimited
+# max_connections = 32
+# max_requests_per_sec = 200
+# max_mib_per_sec = 8
+# zebrad's indexer gRPC (its `indexer_listen_addr`): tip + mempool push streams wake polling at
+# once; polling slows to a 15 s reconcile while they are up. Unset = poll every second
+# indexer_address = "127.0.0.1:8230"
 
 # [[trusted_validators]]
 # jsonrpc_address = "127.0.0.1:18242"
+
+# SendTransaction: one random trusted validator per attempt (defaults shown)
+[submission]
+# Seconds an accepted transaction gets to be seen beyond its entries before another is tried
+propagation_threshold_secs = 15
+# Validators one transaction is sent to at most; the wallet is answered at the first acceptance
+max_attempts = 4
+
+# Zaino's own peers on the Zcash p2p network (zebra-network), off by default: per-transaction
+# `peers: x/y`, and SendTransaction entries (a random peer per attempt, then one trusted verdict).
+# Zaino serves no peer (listener on loopback); peers never decide the tip.
+# [p2p]
+# enabled = true
+# peer_target = 16
+# Empty = the network's DNS seeders (regtest has none: list peers)
+# initial_peers = []
+# cache_dir = "<ZAINO_DATA>/peers"
 
 [serve]
 # CompactTxStreamer gRPC: plaintext HTTP/2, or TLS with [serve.tls]
@@ -83,37 +109,41 @@ concurrency = 32
 # One directory per index; an omitted table takes its defaults (path under the XDG cache dir)
 [index.compact_block]
 # GetBlock, GetBlockRange, GetLatestBlock; cannot be disabled
-path = "<ZAINO_DATA>/compact-block"
+path = "<ZAINO_DATA>/compact_block"
 # MiB of decoded blocks per bulk-sync commit (bigger = fewer fsyncs, more memory held, more to
 # redo after a crash); at the tip each final block commits as it arrives
 batch_mib = 64
 # MiB of decoded blocks this index may lag the fetch before it throttles the pipeline
 queue_mib = 256
 
+[index.header_chain]
+# Proof-of-work verified headers from genesis (~280 MB mainnet); the tip; never from a snapshot
+path = "<ZAINO_DATA>/header_chain"
+
 [index.value_balance]
 # Every transparent output's value: each CompactTx.fee; cannot be disabled (compact_block reads it)
-path = "<ZAINO_DATA>/value-balance"
+path = "<ZAINO_DATA>/value_balance"
 batch_mib = 64
 queue_mib = 256
 
 [index.block_hash]
 # GetBlock / GetTreeState by hash (off = those UNIMPLEMENTED; by height unaffected)
 enabled = true
-path = "<ZAINO_DATA>/block-hash"
+path = "<ZAINO_DATA>/block_hash"
 batch_mib = 64
 queue_mib = 256
 
 [index.tree_state]
 # GetTreeState, GetLatestTreeState, GetSubtreeRoots
 enabled = true
-path = "<ZAINO_DATA>/tree-state"
+path = "<ZAINO_DATA>/tree_state"
 batch_mib = 64
 queue_mib = 256
 
 [index.transparent_address]
 # GetAddressUtxos(+Stream), GetTaddressBalance(+Stream), GetTaddressTransactions
 enabled = true
-path = "<ZAINO_DATA>/transparent-address"
+path = "<ZAINO_DATA>/transparent_address"
 batch_mib = 64
 queue_mib = 256
 

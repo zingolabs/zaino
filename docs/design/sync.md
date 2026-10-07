@@ -6,9 +6,9 @@ decoded once, and any number of indexes consume it. Every stage runs as a single
 steps, a reorg walkthrough and backpressure).
 
 ```text
-validators ──▶ BlockFetchPool (bulk: ordered, concurrent, decoded on every core) ──┐
-chainview (quorum tip) ──▶ ChainHead (non-final window, hash-linked) ───────────────┤
-                                                                                   ▼
+header sync ── watch<VerifiedChain> ─────────────────────────────┐
+validators ── getblock <hash> 0 (any, each block checked) ───────┤
+                                                                 ▼
                                                               Producer ──▶ BlockSink
                                                                             ├─▶ compact-block ◀───── fees ─ FeeSink ◀─┐
                                                                             ├─▶ value-balance ────────────────────────┘
@@ -19,44 +19,41 @@ chainview (quorum tip) ──▶ ChainHead (non-final window, hash-linked) ─�
 
 ## Stages
 
-The `BlockFetchPool` in `zaino-source` turns a height range into an ordered stream of decoded
-blocks. Each height is fetched and decoded in its own task, with at most `concurrency` in flight,
-and heights are spread round-robin across the trusted validators.
+Header sync publishes the `VerifiedChain`: Zaino's own header chain, every header checked against
+the consensus rules including proof of work, its best tip the most-work one, its final tip
+`finalised_depth` below once a trusted validator holds it
+([verified-chain.md §3–§4](./verified-chain.md#3-the-shape)). It names the hash and merkle root
+of every block up to the best, so the producer needs nothing else to know what to fetch and
+whether what came back is right.
 
-`zaino-chainview` provides the quorum tip: the highest block a majority of the validators hold on
-their best chains, by hash rather than by highest height (each validator's vote counts its tip and
-its ancestors; phase 5 replaces this vote with the most-work header chain, see
-[chainview §2–§3](./chainview.md#2-the-best-chain-proof-of-work)). The producer follows that tip, and each
-index's serving gate (a small task of its own, beside the index's loop) reads it to decide when
-that index is serving. Blocks are only ever fetched from the validators listed in the tip's
-`agreed_by`. Each of them holds the tip on its best chain, some possibly a block or two past it,
-and no fetch asks above the tip. A validator outside that set may still be serving a stale branch
-at a height the tip has already made final.
+The `Producer` is the only thing that writes to the `BlockSink`, and it follows that chain alone
+([verified-chain.md §9](./verified-chain.md#9-the-producer)). It is a pure `ProducerCore` (the
+verified chain + what the sink holds → the steps to send and the blocks to fetch; no I/O, time an
+input) inside a thin async driver that runs the fetches and the sends:
 
-Because votes count ancestors, the tip can retreat when the validator that was ahead stops voting
-and the rest lag. A retreat inside the window is an ordinary reorg. A retreat below the window
-(`ChainHead::next_floor`) cannot be a legal fork, since on mainnet and testnet the window is at
-least the consensus reorg bound, so the producer logs it and waits for the next tip. The one
-exception is a tip that contradicts a block an index has already committed at that height: that
-is proof of divergence, and production stops.
+- **Fetch from anyone, check everything.** Each wanted `(height, hash)` goes to the least-loaded
+  source as `getblock <hash> 0` on its own task (decode and check spread across the runtime). A
+  block is accepted only if its hash is the chain's, its coinbase height is the height asked, and
+  the merkle root rebuilt from its txids is the header's. Anything else is that source
+  misanswering (never an invalid header: ZIP 256 lets a valid header travel with a doctored v5
+  body); the source is skipped for a minute and the block asked of another. A source silent past
+  15 s is hedged with another; a block every source failed is asked again after a second.
+- **Pipelined.** Up to `concurrency` blocks are in flight ahead of the next one sent; they arrive
+  in any order and are sent in height order.
+- **One finality.** A block is sent final when it is at or below the header chain's final tip;
+  each non-final block it holds gets its `Finalized` once the final tip passes it. The producer
+  keeps no tip of its own.
+- **Reorgs are a hash comparison.** The first held non-final block that is no longer the chain's
+  block at its height is the fork: `Reorg`, then the still-best blocks below it again from memory,
+  then the new branch. The exact contract subscribers see is in
+  [data-sink.md](./data-sink.md#how-the-producer-publishes).
+- **Restart.** Production starts after the rearmost durable tip, and nothing is sent until the
+  final tip covers every durable tip and each is the chain's block there. One that is not is
+  proof the index holds another chain: `ProduceError::Diverged`, and zainod stops.
 
-The `ChainHead` in `zaino-non-finalized-state` is a library rather than a task. It holds the
-non-final window as a hash-linked chain of `Arc<Block>`, and its floor sits one below the final
-boundary so every legal fork point is inside it. On each new tip, `advance(tip)` either extends
-the window by height, or walks back along `prev_hash` to find the fork, and reports `Unchanged`,
-`Extended` or `Reorg { fork }`. A tip that retreats onto one of our own ancestors is also reported
-as a reorg, with no replacement blocks. A fork below the floor is outside consensus and is fatal.
-
-The `Producer` is the only thing that writes to the `BlockSink`. It bulk-syncs from its start
-height up to `tip − finalised_depth`, sending every block as final and checking each `prev_hash`
-against the block before it. The end of that range moves up as the tip moves, so one bulk pass
-covers the whole catch-up. It then anchors the chain head on the last bulk block and follows the
-tip: each `advance` becomes a `Finalized` for every height the tip has buried, plus an `Apply` for
-each new block. On a reorg it sends `Reorg` and replays the winning branch from the first
-non-final height, straight out of the chain head's window with no fetching. If the tip ever gets
-more than `finalised_depth` ahead, for example after a long validator outage, the producer goes
-back to bulk sync, but only once it has confirmed the validator still holds our tip. Otherwise it
-steps onto the validator's block first, which is just an ordinary reorg.
+Each index's serving gate (a small task beside its loop) reads the same `VerifiedChain`: it opens
+once the index's applied block **is** the best block (hash, not height), and closes when that
+block leaves the best chain, falls more than `finalised_depth` behind it, or a reorg is replaying.
 
 Each index runs its own loop over its queue until `Shutdown`, one `match` arm per step
 ([`zaino-sync` usage](../../packages/zaino-sync/usage.md#an-index-loop)). In bulk, final blocks
@@ -84,16 +81,18 @@ block while a commit waits for a whole batch, so the two would deadlock.
 
 ## Invariants
 
-These are asserted in release builds, and a violation stops zainod:
+The producer's are P1–P6 ([verified-chain.md §10](./verified-chain.md#invariants)): asserted by
+`ProducerCore::check` after every step in tests and debug builds, its preconditions asserted in
+every build, each seen firing on a planted bug (`producer/core/fire_drills.rs`), and driven by a
+model against a naive index (`producer/core/model.rs`). In release builds a violation stops
+zainod:
 
-- Every index sees contiguous heights from after the rearmost durable tip, and a replay that
-  starts below an index's own durable tip MUST land exactly on it (`ProduceError::Diverged`).
-- Every block MUST link onto the one before it, starting from the rearmost stored tip hash
-  (`ProduceError::Unlinked`, see [durability.md](./durability.md) §5). The producer checks both;
-  indexes trust the stream.
-- `finalised_depth` is at least `MAX_BLOCK_REORG_HEIGHT` on mainnet and testnet, so no replay can
-  reach a final height.
+- Every index sees contiguous heights from after the rearmost durable tip, and every durable tip
+  MUST be the final verified chain's block at its height (`ProduceError::Diverged`). The producer
+  checks it; indexes trust the stream.
+- Every `Apply` is the verified chain's block at its height, body included.
+- The final tip never moves back and a final block never changes, so no replay reaches a final
+  height.
 - `Finalized` is sent oldest first, and only for heights already delivered.
 - A final `Apply` only arrives while the index's non-finalized state is empty.
 - Durable tips only ever move forward.
-- The chain head never spans more than `finalised_depth + 1` heights.

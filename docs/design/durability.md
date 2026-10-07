@@ -45,17 +45,17 @@ of repairing anything in place. Every index follows the same six rules.
 offset  bytes  field
 0       8      magic       b"ZAINOMS\0"
 8       2      format      u16 LE, the index's layout version
-10      1      kind        1 compact-block, 2 tree-state, 3 transparent-address,
-                           4 block-hash, 5 value-balance
+10      1      kind        1 compact_block, 2 tree_state, 3 transparent_address,
+                           4 block_hash, 5 value_balance, 6 header_chain
 11      1      network     0 main, 1 test, 2 regtest
 12      8      seq         u64 LE, the commit's sequence number (1, 2, 3, ...)
 20      4      body_len    u32 LE
-24      n      body        index-owned layout (§4)
+24      n      body        the engine's layout (§4), shaped by the index's schema
 24+n    4      crc         CRC-32 (IEEE) over bytes 0 inclusive to 24+n exclusive
 ```
 
 Every body starts with the committed tip, as the block count from genesis and the tip hash,
-followed by the seal of every file the index owns.
+followed by the seal of every sequence file and the segment list of every map (§4).
 
 A commit (`IndexDir::commit`) writes commit `seq` over slot `seq % 2`, the slot the previous commit
 did not use, then fsyncs the file. The other slot always holds the commit before it, so a crash
@@ -122,7 +122,7 @@ A `PagedFile` is opened as one of two kinds (`pages::FileKind`):
 
 - `Segment`, an LSM segment: written once, then sealed for good. It grows by exactly what is
   appended, and the segment writer fsyncs its directory before the segment is listed.
-- `Log`, the compact-block and tree-state files: appended to commit after commit. When
+- `Log`, a sequence table's files: appended to commit after commit. When
   open creates the file (or its `.crc`), it fsyncs the parent directory, so the name is durable
   before any manifest names it. The file then grows into a **reserve**: room past its end,
   written with zeros and fsynced, each step the file's size again (64 KiB to 64 MiB). Appends
@@ -150,44 +150,37 @@ file is 1/1024 of the data, so that is about 30 MB for a 30 GB `blocks.dat`. A r
 and records it in a per-file bitset that carries across commits. A mismatch panics with the file,
 the page and the remedy, and zainod aborts (§6).
 
-`zainod verify` is the offline check. It reads every committed byte of every file each enabled
-index's manifest seals, sequentially, against the same checksums (`pages::scrub`), and prints a
-JSON report. It maps nothing and takes no lock, so it is safe beside a running daemon. It exits 0
-when clean, 1 on corruption, and 2 when it cannot read the configuration or a manifest.
+`zainod verify` is the offline check. For each enabled index it runs `DiskEngine::verify` with the
+index's schema: every committed byte of every file the manifest seals, read sequentially against
+the same checksums, into a JSON report. It maps nothing and takes no lock, so it is safe beside a
+running daemon; a segment a merge retired between reading the manifest and scrubbing it is
+scrubbed again against the newer manifest. It exits 0 when clean, 1 on corruption, and 2 when it
+cannot read the configuration or a manifest.
 
-## 4. Per index
+## 4. The engine's tables
 
-### Compact block
+Every index is one `DiskEngine` store ([persistence-engine.md](./persistence-engine.md)): its
+schema declares sequence and map tables, and one manifest commits all of them.
 
-`blocks.dat` holds each block's framed wire record in height order, and `offsets.idx` holds 8 bytes
-per height recording where that record ends. The body carries the tip, the three tree sizes at the
-tip, and the two seals. A commit appends records and offsets, seals both files, then writes the
-manifest.
+```text
+body = tip ‖ per sequence: Sealed(<name>.dat) [‖ Sealed(<name>.idx) if Variable]
+           ‖ per map: count u32 ‖ (id u32 ‖ records u64 ‖ Sealed)*          (schema order)
+```
 
-### Tree state
+- **Sequence** (compact-block `blocks`, tree-state `heights` and per pool `l00`..`l31` +
+  `subtrees`, header-chain `headers`): `<name>.dat` holds records back to back; a `Variable` one
+  adds `<name>.idx`, a u64 end offset per record. A commit appends, then seals only the files that
+  grew (fsync cost grows with the file count, and tree-state has about 100), before the manifest.
+- **Map** (transparent-address `receives` and `spent`, block-hash `by_hash`, value-balance
+  `outputs`): a directory of immutable sorted segments, `<map>/<id>.seg` plus `.crc`. A segment
+  holds fixed-width rows, one fence key per 4 KiB block and a binary fuse filter over each key's
+  first `scope` bytes (the whole key when the scope is 0). A commit writes and seals one segment per
+  map with rows, fsyncs the map directories, then writes a manifest listing the old segments plus
+  the new ones.
 
-`heights.idx` holds 48 bytes per height (hash, time, three tree sizes). Each pool has
-`l00.dat`..`l31.dat` for the retained nodes of each level and `subtrees.dat` with 36 bytes per
-completed subtree (root, completing height). The body carries the tip, the `heights.idx` seal, and
-per pool the 32 level seals and the subtree seal.
-
-A commit appends height records, nodes and subtree entries, each asserted to land at its file's
-end, seals `heights.idx`, the subtree files and only the level files that grew, then writes the
-manifest. The frontier the next batch folds onto is carried in memory from the chunk just written,
-so nothing is read back.
-
-### Segment stores: block hash, value balance, transparent address
-
-These three are `LsmStore`s over immutable sorted segments, `<set>/<id>.seg` plus `.crc`. A
-segment holds its records, one fence key per 4 KiB block, and, for sets probed by key, a binary
-fuse filter. The block-hash index has one set, `by_hash`, and its manifest check requires the
-total rows to equal the committed count. Value balance has `outputs`, and transparent address has
-`receives` and `spent`. The block-hash index is its own commit point, so a hash-to-height answer
-is always confirmed by the index that serves it.
-
-The body carries the tip and, per set, the list of `(id, records, seal)`. A commit writes and seals
-one segment per set, fsyncs the segment directories, then writes a manifest listing the old
-segments plus the new ones.
+Compact-block keeps no tree sizes in its manifest: the sizes after the tip are its last record's
+`ChainMetadata`. The block-hash index is its own commit point, so a hash-to-height answer is always
+confirmed by the index that serves it.
 
 Merges are size-tiered. When a tier holds `FANOUT` segments (8 by default), a background thread
 merges them, one merge per tier at a time so small merges never queue behind a large one. The merge

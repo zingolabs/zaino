@@ -104,11 +104,15 @@ reads that as the end of the chain.
 issue #33 records that `startHeight` is not a unique resume key, so paging can
 stall. It is latent only because no current client pages.
 
-**There is no version handshake anywhere.** Neither client reads
-`lightwalletProtocolVersion`: librustzcash has no reader for the field, and
-pepper-sync never calls `GetLightdInfo`. The proto's instruction that clients
-*MUST* verify server capability before setting `poolTypes` has no
-implementation on either side.
+**pepper-sync refuses a server below protocol v0.5.0.** Before syncing it
+calls `GetLightdInfo` and rejects any `lightwalletProtocolVersion` below
+`v0.5.0`, an empty one included (`check_lightwallet_protocol_version` in
+`pepper-sync/src/client.rs`). It needs transparent and Ironwood data in compact
+blocks. Zaino reports the release of its vendored protos
+(`zaino_proto::LIGHTWALLET_PROTOCOL_VERSION`, read from
+`packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`), so moving to a new
+upstream release moves the reported version with it. librustzcash still has no
+reader for the field.
 
 ## Transparent: the path everyone uses, and the path nobody uses yet
 

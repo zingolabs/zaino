@@ -157,6 +157,9 @@ cargo test -p zaino-internal-block-hash-to-height -p zaino-internal-value-balanc
   sensitive tests (background merges, failed I/O, crash states) repeat too, and
   the model test (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`)
   runs 1000 fresh random histories per round.
+- The model test is `conformance::history`, generic over `PersistenceEngine`. A
+  new engine implements `conformance::Subject` and runs `history` + `contract`
+  (`docs/design/persistence-engine.md` §4). The same loop is its heavy run.
 - Env overrides (proptest 1.6): `PROPTEST_CASES` (cases per proptest; overrides
   the in-code 64), `PROPTEST_MAX_SHRINK_ITERS` (shrink harder on a failure),
   `PROPTEST_VERBOSE=1` (print each case). Lengthen the run by raising the `180`
