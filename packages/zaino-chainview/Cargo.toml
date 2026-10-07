@@ -10,7 +10,7 @@ repository.workspace = true
 description = "The best chain by proof of work, the mempool and submission, over trusted validators"
 
 [features]
-# `ChainView::set_verified`: consumers' tests standing in for header sync
+# `ChainView::set_verified` (standing in for header sync) + `testing::MockPeers`
 testing = []
 
 [dependencies]

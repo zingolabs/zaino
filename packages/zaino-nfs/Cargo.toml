@@ -32,8 +32,8 @@ zaino-sync.workspace = true
 zcash_protocol.workspace = true
 
 [features]
-# `NfsHandle::{fixed, unpublished}`: snapshots without a driver, for consumers' route tests
-testing = []
+# `NfsHandle::{fixed, unpublished}` (snapshots without a driver) + `ChainParams::of(MockChain)`
+testing = ["zaino-primitives/testing"]
 
 [lints.rust]
 unsafe_code = "forbid"

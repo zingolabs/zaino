@@ -211,9 +211,12 @@ fn pick(sources: &[Source], want: &Want, height: Height, now: Instant) -> Option
 
 #[cfg(test)]
 mod tests {
+    use zaino_header_chain::testing::HeaderViews;
     use zaino_header_chain::VerifiedChain;
-    use zaino_primitives::testing::Chain;
+    use zaino_primitives::testing::{h, Chain, MockChain};
     use zaino_primitives::types::Transaction;
+    use zaino_source::testing::{Lie, MockValidator};
+    use zaino_source::ChainDataSource;
 
     use super::*;
 
@@ -321,6 +324,36 @@ mod tests {
         for (expected, message) in preconditions {
             let message = message.unwrap_or_default();
             assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
+        }
+    }
+
+    /// M9: a `MockValidator` answers its best block honestly, and each `Lie` it is told to tell
+    /// fails `check_block` by the rule that names it
+    #[tokio::test]
+    async fn every_lie_a_mock_validator_tells_fails_the_body_check() {
+        let mut chain = MockChain::regtest();
+        chain.mine_empty(1);
+        let two = chain.mine(|b| b.tx(|t| t.txid([0x21; 32])).tx(|t| t.txid([0x22; 32])));
+        let record = chain.verified(two).header_at(h(2)).expect("verified");
+        let validator = MockValidator::following(&chain, two);
+        let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
+        let passed = check_block(honest, h(2), &record).map(|checked| checked.at());
+        assert_eq!(passed, Ok(two));
+
+        type Expected = fn(&Block) -> Misanswer;
+        #[rustfmt::skip]
+        let lies: [(Lie, Expected); 4] = [
+            (Lie::WrongBlock,  |served| Misanswer::WrongBlock { got: served.header().hash }),
+            (Lie::Poisoned,    |_| Misanswer::MerkleRoot),
+            (Lie::Mutated,     |_| Misanswer::Mutated),
+            (Lie::WrongHeight, |_| Misanswer::WrongHeight { got: h(3) }),
+        ];
+        for (lie, misanswer) in lies {
+            validator.lie(Some(lie));
+            let served = validator.get_block_by_hash(two.hash).await.expect("answers");
+            let expected = misanswer(&served);
+            let checked = check_block(served, h(2), &record).map(|checked| checked.at());
+            assert_eq!(checked, Err(expected), "{lie:?}");
         }
     }
 }

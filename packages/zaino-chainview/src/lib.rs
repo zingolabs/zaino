@@ -14,6 +14,8 @@ mod ports;
 mod snapshot;
 mod submit;
 mod telemetry;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod tip;
 mod view;
 
