@@ -5,6 +5,9 @@ use std::time::Duration;
 /// Delay between "catching up" warnings for one endpoint (polled every second)
 pub(crate) const CATCHING_UP_WARN_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Block `depth` deep owed finality this long, final tip unmoved = finality stalled (alarm)
+pub(crate) const FINALITY_STALL: Duration = Duration::from_secs(60);
+
 /// Live tip this far behind its own clock estimate = stale (P(natural 30 min gap) ≈ e^-24)
 pub(crate) const STALE_TIP_BLOCKS: u32 = 24;
 

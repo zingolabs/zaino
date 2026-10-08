@@ -2,6 +2,7 @@
 
 use std::time::Instant;
 
+use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, ValidatorId};
 
@@ -74,10 +75,10 @@ impl FromIterator<ValidatorId> for EndpointSet {
 
 /// Its chain vs the verified best block, as of its last answered poll (`verified-chain.md` §7)
 ///
-/// - `Ahead` = holds best, claims higher
+/// - `Ahead` = claims higher, its `getblockhash` answer on the verified chain
 /// - `Behind` = its claim on the verified chain, below best
 /// - `Diverged` = neither (a losing branch: an alarm, never an error, zebra #11133)
-/// - `Unknown` = nothing verified yet, or no answer since its last failure
+/// - `Unknown` = nothing verified yet, or its last poll failed (`Degraded`, `Down`)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Agreement {
     #[default]
@@ -103,8 +104,9 @@ impl Agreement {
 
 /// One configured validator as last observed (`peers` = telemetry only, never gates serving)
 ///
-/// - `health` = the balancer's, as of its last poll (`Live` + `CatchingUp` answer: may hold a tip)
+/// - `health` = the balancer's, as of its last poll (`Live` + `CatchingUp` answer)
 /// - `info` = its last `getblockchaininfo` (its tip, clock estimate, upgrade schedule, branch)
+/// - `held` = its last `getblockhash`, at the best the poll started under
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorMetadata {
     pub address: String,
@@ -115,6 +117,7 @@ pub struct ValidatorMetadata {
     pub release: Option<NodeRelease>,
     pub streaming: bool,
     pub(crate) info: Option<BlockchainInfo>,
+    pub(crate) held: Option<BlockRef>,
 }
 
 impl ValidatorMetadata {
@@ -128,6 +131,35 @@ impl ValidatorMetadata {
             release: None,
             streaming: false,
             info: None,
+            held: None,
+        }
+    }
+
+    /// Its last poll answered (`Live`, `CatchingUp`): its claim + `held` are current facts
+    pub(crate) fn answering(&self) -> bool {
+        matches!(self.health, Health::Live | Health::CatchingUp)
+    }
+
+    /// `Live` and its last poll holds `best` (claim, or `getblockhash` there)
+    pub(crate) fn holds(&self, best: BlockRef) -> bool {
+        self.health == Health::Live && (self.tip() == Some(best) || self.held == Some(best))
+    }
+
+    /// §7, in order: claim = best; claims higher, `held` verified; claim verified, below; else
+    pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
+        let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
+            return Agreement::Unknown;
+        };
+        let (best, verified) =
+            (chain.best(), |at: BlockRef| chain.hash_at(at.height) == Some(at.hash));
+        if claim == best {
+            Agreement::Agreed
+        } else if claim.height > best.height && self.held.is_some_and(verified) {
+            Agreement::Ahead
+        } else if claim.height < best.height && verified(claim) {
+            Agreement::Behind
+        } else {
+            Agreement::Diverged
         }
     }
 

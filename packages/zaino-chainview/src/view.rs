@@ -48,8 +48,8 @@ impl<S: ChainDataSource> ChainView<S> {
     /// and status); its tip comes from [`header_sync`](Self::header_sync), its polls from
     /// [`observation_fold`](Self::observation_fold)
     ///
-    /// - `depth` = the header chain's (sync's `finalised_depth`): each poll asks who holds the
-    ///   final boundary, `depth` below the best
+    /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
+    /// - each poll asks `getblockhash` at this view's best ([`TrafficBalancer::poll_best`])
     pub fn new(
         addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
@@ -65,9 +65,9 @@ impl<S: ChainDataSource> ChainView<S> {
         let trusted = members.rows.iter().filter(|row| matches!(row.id, MemberId::Trusted(_)));
         assert_eq!(trusted.count(), addresses.len(), "an address per trusted member");
         let endpoints = addresses.iter().map(|address| ValidatorMetadata::new(address.clone()));
-        let asking = balancer.clone();
-        let ask = Box::new(move |heights| asking.ask_each_poll(heights));
-        let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth, ask));
+        let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth));
+        let asked = Arc::clone(&core);
+        balancer.poll_best(move || asked.current().best().map(|best| best.height));
         Ok(Self { core, balancer, addresses, policy: SubmitPolicy::default(), peers: None })
     }
 
@@ -87,12 +87,10 @@ impl<S: ChainDataSource> ChainView<S> {
         Some(PeerWatch::new(Arc::clone(&self.core), peers))
     }
 
-    /// Stands in for header sync in tests: `verified` as its word, no run served, finality on
+    /// Stands in for header sync in tests: `verified` as its word
     #[cfg(any(test, feature = "testing"))]
     pub fn set_verified(&self, verified: Option<zaino_header_chain::VerifiedChain>) {
-        let verified = verified.map(Arc::new);
-        let report = crate::fold::HeaderReport { verified, served: None, finality_paused: false };
-        self.core.apply_headers(report);
+        self.core.apply_headers(verified.map(Arc::new));
     }
 
     /// The runnable that feeds `chain` from the validators and publishes its best tip into this

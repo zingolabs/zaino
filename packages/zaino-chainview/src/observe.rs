@@ -1,6 +1,8 @@
 //! Each trusted member's polls (the balancer's [`Observation`]s) folded into the view
 //!
 //! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
+//! - Reading (claim, `getblockhash`) folded first, then the listing (holder facts never wait on
+//!   bytes)
 //! - Bytes = only what the view lacks, through `bytes(..)` with this member preferred (§5)
 //! - A transaction leaves a member's listing one way: unlisted (mined or evicted); a new tip
 //!   clears nothing (an unmined transaction survives a block)
@@ -81,11 +83,14 @@ impl<S: ChainDataSource> Member<'_, S> {
         };
         let PollReading { info, listing, held, metadata } = polled;
         let (peers, release) = self.metadata(metadata.as_ref());
-        let held = self.held(&observation.asked, held);
+        let held = self.held(observation.asked, held);
         let streaming = observation.streaming;
         let reading = Reading { held, info: info.clone(), peers, release, streaming };
         match listing {
-            Ok(listing) => self.listed(reading, listing).await,
+            Ok(listing) => {
+                self.core.apply(self.member, EndpointReport::Read(reading));
+                self.listed(listing).await;
+            }
             Err(_) => {
                 self.catching_up(&reading);
                 self.core.apply(self.member, EndpointReport::CatchingUp(reading));
@@ -94,8 +99,9 @@ impl<S: ChainDataSource> Member<'_, S> {
         }
     }
 
-    /// Mempool read: the diff, bytes for what the view lacks, one report
-    async fn listed(&mut self, reading: Reading, listing: &[MempoolListed]) {
+    /// Mempool read (its reading already folded): the diff, bytes for what the view lacks, one
+    /// report
+    async fn listed(&mut self, listing: &[MempoolListed]) {
         let listing: BTreeMap<TransactionId, MempoolListed> =
             listing.iter().map(|entry| (entry.txid, *entry)).collect();
         let removed: Vec<TransactionId> =
@@ -127,7 +133,7 @@ impl<S: ChainDataSource> Member<'_, S> {
             }
         }
         let listing = Listing { added, removed };
-        for txid in self.core.apply(self.member, EndpointReport::Observed(reading, listing)) {
+        for txid in self.core.apply(self.member, EndpointReport::Listed(listing)) {
             admitted.remove(&txid);
         }
         self.live(admitted.len());
@@ -195,21 +201,20 @@ impl<S: ChainDataSource> Member<'_, S> {
         }
     }
 
-    /// Its best-chain blocks at the `asked` heights (above its tip or an item failed = no fact)
+    /// Its best-chain block at the `asked` height (above its tip or the item failed = no fact)
     fn held(
         &self,
-        asked: &[Height],
+        asked: Option<Height>,
         held: &[Result<BlockHash, QueryError<GetAtHeightError>>],
-    ) -> Vec<BlockRef> {
-        let answers = asked.iter().zip(held).filter_map(|(height, answer)| match answer {
-            Ok(hash) => Some(BlockRef { hash: *hash, height: *height }),
-            Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_))) => None,
-            Err(QueryError::NonDomain(cause)) => {
+    ) -> Option<BlockRef> {
+        match (asked?, held.first()?) {
+            (height, Ok(hash)) => Some(BlockRef { hash: *hash, height }),
+            (_, Err(QueryError::Domain(GetAtHeightError::HeightNotFound(_)))) => None,
+            (height, Err(QueryError::NonDomain(cause))) => {
                 debug!(endpoint = self.address, ?height, %cause, "getblockhash unanswered");
                 None
             }
-        });
-        answers.collect()
+        }
     }
 
     /// Telemetry halves of a metadata poll: a failed half keeps the last answer (`None`), warned

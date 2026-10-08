@@ -12,12 +12,11 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, Height, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
+    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
 };
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
-use crate::holders::{Holders, PollStamp};
 use crate::ports::Heard;
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
@@ -26,33 +25,17 @@ use crate::telemetry;
 struct Before {
     held: Option<BlockRef>,
     readers: EndpointSet,
-    asked: Vec<Height>,
 }
 
 impl Before {
     fn of(state: &ChainViewSnapshot) -> Self {
-        let readers = state.mempool_readers();
-        Self { held: held(state), readers, asked: state.holders.asked() }
+        Self { held: held(state), readers: state.mempool_readers() }
     }
 }
 
 /// Best block, once a trusted validator holds it
 fn held(state: &ChainViewSnapshot) -> Option<BlockRef> {
     state.best().filter(|_| !state.held_by.is_empty())
-}
-
-/// Where the holders' next `getblockhash` heights go (the balancer's `ask_each_poll`)
-pub(crate) type AskEachPoll = Box<dyn Fn(Vec<Height>) + Send + Sync>;
-
-/// A validator whose best chain served a header run ending at that block, read under that poll
-pub(crate) type Served = (ValidatorId, BlockRef, PollStamp);
-
-/// Header sync → view
-#[derive(Debug, Clone)]
-pub(crate) struct HeaderReport {
-    pub(crate) verified: Option<Arc<VerifiedChain>>,
-    pub(crate) served: Option<Served>,
-    pub(crate) finality_paused: bool,
 }
 
 /// One txid a member listed; `raw` = `None` when the view already held it (bytes fetched once,
@@ -66,11 +49,11 @@ pub(crate) struct Sighted {
 
 /// What every answered poll read, mempool on or off
 ///
-/// - `held` = its `getblockhash` answers at the asked heights (`holders.rs`)
+/// - `held` = its `getblockhash` answer at the best the poll started under
 /// - `peers`, `release`: `Some` only on a metadata poll whose half answered (else the last kept)
 #[derive(Debug, Clone)]
 pub(crate) struct Reading {
-    pub(crate) held: Vec<BlockRef>,
+    pub(crate) held: Option<BlockRef>,
     pub(crate) info: BlockchainInfo,
     pub(crate) peers: Option<Vec<PeerInfo>>,
     pub(crate) release: Option<NodeRelease>,
@@ -84,10 +67,13 @@ pub(crate) struct Listing {
     pub(crate) removed: Vec<TransactionId>,
 }
 
-/// One member's poll, as the fold takes it
+/// One member's poll, as the fold takes it: its reading first, then its listing (bytes fetched
+/// between: holder facts never wait on them)
 #[derive(Debug, Clone)]
 pub(crate) enum EndpointReport {
-    Observed(Reading, Listing),
+    /// Mempool read (`Live`): its listing follows
+    Read(Reading),
+    Listed(Listing),
     /// Chain counted, mempool off: sightings retracted
     CatchingUp(Reading),
     /// Poll failed, member `Degraded` (sightings kept, holds no tip)
@@ -101,21 +87,15 @@ pub(crate) enum EndpointReport {
 /// - non-generic: the poll fold and readers hold it (the source type stays the balancer's)
 /// - `state` = fold working copy (`imbl` throughout: cloning it to publish = `O(1)`)
 pub(crate) struct ChainViewCore {
-    ask_each_poll: AskEachPoll,
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
     published_tx: watch::Sender<()>,
 }
 
 impl ChainViewCore {
-    pub(crate) fn new(
-        endpoints: Vector<ValidatorMetadata>,
-        depth: ReorgDepth,
-        ask_each_poll: AskEachPoll,
-    ) -> Self {
+    pub(crate) fn new(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
         let empty = ChainViewSnapshot::empty(endpoints, depth);
         Self {
-            ask_each_poll,
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
             published_tx: watch::Sender::new(()),
@@ -153,9 +133,11 @@ impl ChainViewCore {
         };
 
         match report {
-            EndpointReport::Observed(reading, listing) => {
+            EndpointReport::Read(reading) => {
                 meta.health = Health::Live;
-                read(meta, &mut state.holders, endpoint, reading);
+                read(meta, reading);
+            }
+            EndpointReport::Listed(listing) => {
                 for txid in &listing.removed {
                     if let Some(sighting) = state.mempool.get_mut(txid) {
                         sighting.unsight(endpoint);
@@ -191,18 +173,14 @@ impl ChainViewCore {
             }
             EndpointReport::CatchingUp(reading) => {
                 meta.health = Health::CatchingUp;
-                read(meta, &mut state.holders, endpoint, reading);
+                read(meta, reading);
                 touched.extend(retract(&mut state.mempool, endpoint));
             }
-            EndpointReport::Failed => {
-                meta.health = Health::Degraded;
-                state.holders.lost(endpoint);
-            }
+            EndpointReport::Failed => meta.health = Health::Degraded,
             EndpointReport::Down => {
                 meta.health = Health::Down;
-                meta.info = None;
+                (meta.info, meta.held) = (None, None);
                 meta.peers = Vector::new();
-                state.holders.lost(endpoint);
                 touched.extend(retract(&mut state.mempool, endpoint));
             }
         }
@@ -248,15 +226,11 @@ impl ChainViewCore {
         }
     }
 
-    /// Header sync's word: the verified chain, who just served a run of it, finality paused
-    pub(crate) fn apply_headers(&self, report: HeaderReport) {
+    /// Header sync's word: the verified chain (`None` = nothing verified yet)
+    pub(crate) fn apply_headers(&self, chain: Option<Arc<VerifiedChain>>) {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let before = Before::of(&guard);
-        guard.holders.verified(report.verified);
-        if let Some((endpoint, block, under)) = report.served {
-            guard.holders.served(endpoint, block, under);
-        }
-        guard.finality_paused = report.finality_paused;
+        guard.verified(chain, Instant::now());
         self.settle(guard, before, Vec::new());
     }
 
@@ -268,15 +242,18 @@ impl ChainViewCore {
         touched: Vec<TransactionId>,
     ) {
         let state = &mut *guard;
-        if cfg!(debug_assertions) {
-            state.holders.check();
+        let (best, chain) = (state.best(), state.chain.clone());
+        let holding = state
+            .endpoints
+            .iter()
+            .enumerate()
+            .filter(|(_, meta)| best.is_some_and(|best| meta.holds(best)));
+        state.held_by = holding.filter_map(|(at, _)| ValidatorId::new(at)).collect();
+        for meta in state.endpoints.iter_mut() {
+            meta.agreement = meta.agreement_with(chain.as_deref());
         }
-        state.held_by = state.best().map(|best| state.holders.holders(best)).unwrap_or_default();
-        for (index, meta) in state.endpoints.iter_mut().enumerate() {
-            let index = ValidatorId::new(index).expect("configured below EndpointSet::MAX");
-            meta.agreement = state.holders.agreement(index);
-        }
-        state.alarms = telemetry::alarms(&state.endpoints, state.finality_paused);
+        let stalled = state.finality_stalled(Instant::now());
+        state.alarms = telemetry::alarms(&state.endpoints, stalled);
 
         // a reader joining or leaving can complete anyone's spread; otherwise only `touched`
         let readers = state.mempool_readers();
@@ -307,11 +284,7 @@ impl ChainViewCore {
             }
         }
 
-        let asked = state.holders.asked();
         self.publish(guard);
-        if asked != before.asked {
-            (self.ask_each_poll)(asked);
-        }
     }
 
     /// Mark a transaction as relayed by us, admitting it before it has propagated (§6).
@@ -344,11 +317,9 @@ impl std::fmt::Debug for ChainViewCore {
     }
 }
 
-/// An answering poll: claim + held (→ `holders`), clock estimate, peers (a failed peer read
-/// keeps the last)
-fn read(meta: &mut ValidatorMetadata, holders: &mut Holders, at: ValidatorId, reading: Reading) {
-    let claim = BlockRef { hash: reading.info.best_block_hash, height: reading.info.blocks };
-    holders.polled(at, claim, reading.held);
+/// An answering poll: claim + held, clock estimate, peers (a failed peer read keeps the last)
+fn read(meta: &mut ValidatorMetadata, reading: Reading) {
+    meta.held = reading.held;
     meta.info = Some(reading.info);
     meta.observed_at = Some(std::time::Instant::now());
     meta.streaming = reading.streaming;

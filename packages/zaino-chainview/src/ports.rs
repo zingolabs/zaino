@@ -3,7 +3,7 @@
 //!
 //! - poll (the balancer's, folded here): `getblockchaininfo` (its claim, the estimate and schedule
 //!   `GetLightdInfo` serves) + `getrawmempool true` (the listing the diff runs over, fees
-//!   included) + `getblockhash` at the final boundary and the best (what it holds: `holders.rs`);
+//!   included) + `getblockhash` at the view's best as the poll starts (whether it holds it);
 //!   every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
 //! - `bytes(..)`: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
 //! - `headers(Pinned)`: `getblockheader <h> false` batches (its headers)

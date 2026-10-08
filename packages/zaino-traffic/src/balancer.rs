@@ -100,11 +100,13 @@ pub trait PeerTransport: Send + Sync + 'static {
 }
 
 /// One trusted member's latest poll (raw reading, latest only); `health` = right after it
+///
+/// - `asked` = where its `getblockhash` was asked ([`TrafficBalancer::poll_best`], read at start)
 #[derive(Debug)]
 pub struct Observation {
     pub member: ValidatorId,
     pub at: Instant,
-    pub asked: Vec<Height>,
+    pub asked: Option<Height>,
     pub polled: Result<PollReading, NonDomainError>,
     pub streaming: bool,
     pub health: Health,
@@ -125,10 +127,17 @@ pub struct TrafficDriver<S> {
     shared: Arc<Shared<S>>,
 }
 
+/// The caller's best height, read as each poll starts
+type PollBest = Box<dyn Fn() -> Option<Height> + Send + Sync>;
+
+/// One finished poll: its order, the height asked, the reading
+type Polled = (PollOrder, Option<Height>, Result<PollReading, NonDomainError>);
+
 struct Shared<S> {
     state: Mutex<State>,
     trusted: Vec<Arc<S>>,
     peers: Option<Arc<dyn PeerTransport>>,
+    best: Mutex<PollBest>,
     changed: Notify,
     observations: Vec<watch::Sender<Option<Arc<Observation>>>>,
     table: watch::Sender<Arc<MemberTable>>,
@@ -168,6 +177,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             observations: trusted.iter().map(|_| watch::Sender::new(None)).collect(),
             trusted: trusted.into_iter().map(|t| t.source).collect(),
             peers,
+            best: Mutex::new(Box::new(|| None)),
             changed: Notify::new(),
             table,
         });
@@ -285,9 +295,11 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.shared.lock().core.entries()
     }
 
-    /// Heights every poll asks `getblockhash` of; wakes every poller
-    pub fn ask_each_poll(&self, heights: Vec<Height>) {
-        self.shared.step(Input::AskEachPoll(heights));
+    /// Where each poll asks `getblockhash`: `best()` as the poll starts (`None` = not asked)
+    ///
+    /// - never wakes a poll (an answer at a moved best = one stale fact, re-asked next poll)
+    pub fn poll_best(&self, best: impl Fn() -> Option<Height> + Send + Sync + 'static) {
+        *self.shared.best.lock().expect("poll best mutex poisoned") = Box::new(best);
     }
 
     /// A push stream's event (`IndexerWatch` callbacks): wakes `member`'s poll
@@ -510,7 +522,7 @@ impl<S: ChainDataSource> TrafficDriver<S> {
                 () = cancel.cancelled() => return,
                 () = shared.changed.notified() => {}
                 () = timer => shared.step(Input::Tick),
-                Some((order, polled)) = polls.next() => shared.polled(order, polled),
+                Some(polled) = polls.next() => shared.polled(polled),
                 Some(change) = membership.next() => shared.step(match change {
                     Membership::Joined(peer) => Input::Joined(peer),
                     Membership::Left(peer) => Input::Left(peer),
@@ -521,20 +533,18 @@ impl<S: ChainDataSource> TrafficDriver<S> {
 }
 
 impl<S: ChainDataSource> Shared<S> {
-    fn poll(
-        &self,
-        order: PollOrder,
-    ) -> BoxFuture<'static, (PollOrder, Result<PollReading, NonDomainError>)> {
+    fn poll(&self, order: PollOrder) -> BoxFuture<'static, Polled> {
         let source = Arc::clone(&self.trusted[order.member.get()]);
+        let asked = (self.best.lock().expect("poll best mutex poisoned"))();
         async move {
-            let polled = source.get_poll_reading(order.metadata, &order.asked).await;
-            (order, polled)
+            let polled = source.get_poll_reading(order.metadata, asked.as_slice()).await;
+            (order, asked, polled)
         }
         .boxed()
     }
 
     /// Mempool listed = `Live`, unlisted (inactive or none) = `CatchingUp`
-    fn polled(&self, order: PollOrder, polled: Result<PollReading, NonDomainError>) {
+    fn polled(&self, (order, asked, polled): Polled) {
         let read = polled.as_ref().ok().map(|reading| match reading.listing {
             Ok(_) => Synced::Live,
             Err(_) => Synced::CatchingUp,
@@ -544,7 +554,7 @@ impl<S: ChainDataSource> Shared<S> {
         let health = state.core.health(order.member);
         drop(state);
         self.changed.notify_one();
-        let PollOrder { member, asked, streaming, .. } = order;
+        let PollOrder { member, streaming, .. } = order;
         let at = Instant::now();
         let observation = Observation { member, at, asked, polled, streaming, health };
         self.observations[member.get()].send_replace(Some(Arc::new(observation)));

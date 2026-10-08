@@ -4,7 +4,7 @@
 //! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent; polls catching
 //!   up), flapping (fails in odd 20 s phases, lagging's polls too), silent (transport timeout)
 //! - Swarm: whole kinds off per case (an off one plays honest)
-//! - Asks of every class and route, abandons, push events, poll heights, clock advances
+//! - Asks of every class and route, abandons, push events, clock advances
 //! - Model = the caller: a lie answered → `report` (+ a block re-asked)
 //! - Oracle per send, from the model's own record: T2 kind + route, T3 bench + down, synced,
 //!   T5 one member once per ask (rounds: blocks only), T6 no better tier eligible with room
@@ -58,7 +58,6 @@ enum Move {
     Join(Kind),
     Leave(u8),
     Push { member: u8, push: Push },
-    AskEachPoll(u8),
 }
 
 fn kind() -> impl Strategy<Value = Kind> {
@@ -75,7 +74,6 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
         2 => kind().prop_map(Move::Join),
         1 => any::<u8>().prop_map(Move::Leave),
         1 => (any::<u8>(), push).prop_map(|(member, push)| Move::Push { member, push }),
-        1 => (0u8..=3).prop_map(Move::AskEachPoll),
     ];
     prop::collection::vec(one, 1..64)
 }
@@ -222,10 +220,6 @@ impl World {
                     unreachable!("trusted")
                 };
                 self.step(Input::Push { member, push });
-            }
-            Move::AskEachPoll(n) => {
-                let heights = (0..u32::from(n)).map(|h| h.try_into().expect("small")).collect();
-                self.step(Input::AskEachPoll(heights));
             }
         }
     }

@@ -9,8 +9,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-use zaino_primitives::types::Height;
-
 use crate::class::{Class, CLASSES};
 use crate::limits::RetryBudget;
 use crate::member::{
@@ -85,7 +83,6 @@ pub(crate) enum Input {
         member: ValidatorId,
         read: Option<Synced>,
     },
-    AskEachPoll(Vec<Height>),
     Push {
         member: ValidatorId,
         push: Push,
@@ -106,11 +103,10 @@ pub(crate) enum Output {
     Poll(PollOrder),
 }
 
-/// One poll batch: tip + listing + `getblockhash` per `asked` (+ metadata)
+/// One poll batch: tip + listing + `getblockhash` (+ metadata)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PollOrder {
     pub(crate) member: ValidatorId,
-    pub(crate) asked: Vec<Height>,
     pub(crate) metadata: bool,
     pub(crate) streaming: bool,
 }
@@ -118,7 +114,6 @@ pub(crate) struct PollOrder {
 pub(crate) struct TrafficCore {
     members: BTreeMap<MemberId, Member>,
     asks: BTreeMap<AskId, Ask>,
-    asked: Vec<Height>,
     budget: RetryBudget,
     rng: fastrand::Rng,
     stamp: u64,
@@ -164,7 +159,6 @@ impl TrafficCore {
         Self {
             members: members.collect(),
             asks: BTreeMap::new(),
-            asked: Vec::new(),
             budget: RetryBudget::new(now),
             rng: fastrand::Rng::with_seed(seed),
             stamp: 0,
@@ -202,12 +196,6 @@ impl TrafficCore {
                 }
             }
             Input::Polled { member, read } => self.polled(member, read),
-            Input::AskEachPoll(heights) => {
-                self.asked = heights;
-                self.members.values_mut().filter_map(|m| m.poller.as_mut()).for_each(|p| {
-                    p.wake = true;
-                });
-            }
             Input::Push { member, push } => {
                 let poller = self.members.get_mut(&MemberId::Trusted(member));
                 let poller =
@@ -325,10 +313,10 @@ impl TrafficCore {
             }
             let metadata = poller.start(now);
             member.in_flight[Class::Poll.index()] += 1;
-            let cost = 2 + self.asked.len() as u32 + if metadata { 3 } else { 0 };
+            let cost = 3 + if metadata { 3 } else { 0 };
             member.rate.iter_mut().for_each(|rate| rate.charge(now, cost));
-            let (asked, streaming) = (self.asked.clone(), poller.streaming);
-            out.push(Output::Poll(PollOrder { member: *validator, asked, metadata, streaming }));
+            let streaming = poller.streaming;
+            out.push(Output::Poll(PollOrder { member: *validator, metadata, streaming }));
         }
     }
 

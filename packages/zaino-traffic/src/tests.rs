@@ -141,12 +141,12 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
 
 /// One member, its push stream up:
 /// - reconcile every 15 s, a push event polls within 200 ms
-/// - poll heights ride the next poll (`getblockhash` per height)
+/// - `poll_best` wakes nothing; the next poll asks `getblockhash` there
 /// - unreachable: `Degraded`, then `Down` after 10 failures (ladder); reachable: `Live` again,
 ///   its first answer carrying the metadata the failures left due
 /// - each observation: the health right after it
 #[tokio::test(start_paused = true)]
-async fn pushes_wake_the_poll_heights_ride_it_and_failures_walk_the_health_ladder() {
+async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_ladder() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let validator = Arc::new(MockValidator::following(&chain, tip));
@@ -169,17 +169,16 @@ async fn pushes_wake_the_poll_heights_ride_it_and_failures_walk_the_health_ladde
     observed.changed().await.expect("driver running");
     assert!(pushed.elapsed() <= Duration::from_millis(200), "{:?}", pushed.elapsed());
 
-    balancer.ask_each_poll(vec![h(2), h(9)]);
+    balancer.poll_best(|| Some(h(2)));
+    let unwoken = tokio::time::timeout(Duration::from_secs(10), observed.changed()).await;
+    assert!(unwoken.is_err(), "a new best wakes no poll");
     observed.changed().await.expect("driver running");
     let observation = observed.borrow_and_update().clone().expect("polled");
     let held: Vec<Option<BlockHash>> = match &observation.polled {
         Ok(reading) => reading.held.iter().map(|held| held.as_ref().ok().copied()).collect(),
         Err(cause) => panic!("reachable: {cause}"),
     };
-    assert_eq!(
-        (observation.asked.clone(), held),
-        (vec![h(2), h(9)], vec![Some(chain.at(h(2)).hash), None])
-    );
+    assert_eq!((observation.asked, held), (Some(h(2)), vec![Some(chain.at(h(2)).hash)]));
 
     let health =
         |balancer: &TrafficBalancer<MockValidator>| balancer.members().borrow().rows[0].health;

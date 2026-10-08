@@ -93,7 +93,8 @@ impl Alarms {
         self.eclipsed
     }
 
-    /// A boundary block `depth` deep, not final: no trusted validator holds it (H6)
+    /// Finality stalled: final tip unmoved ≥ 60 s, a block `depth` deep no trusted validator
+    /// vouched for (H6)
     pub fn finality_paused(&self) -> bool {
         self.finality_paused
     }

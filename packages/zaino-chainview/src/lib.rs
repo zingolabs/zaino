@@ -6,7 +6,6 @@ mod endpoints;
 mod error;
 mod fold;
 mod headers;
-mod holders;
 mod observe;
 mod peers;
 mod ports;

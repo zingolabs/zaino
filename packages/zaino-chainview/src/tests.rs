@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{
-    EndOfService, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
+    BlockRef, EndOfService, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
 };
 use zaino_source::testing::{raw_transaction, MockValidator, Port};
 use zaino_source::{GetMempoolListingError, SendRawTransactionError};
@@ -67,9 +67,10 @@ fn zats(zats: u64) -> Zatoshis {
     Zatoshis::new(zats).expect("in supply")
 }
 
-/// Finality depth: polls ask who holds 3 below the best
+const DEPTH: u32 = 10;
+
 fn depth() -> ReorgDepth {
-    ReorgDepth::new(std::num::NonZeroU32::new(3).expect("nz"))
+    ReorgDepth::new(std::num::NonZeroU32::new(DEPTH).expect("nz"))
 }
 
 /// N=1, its window holding the verified tip
@@ -146,10 +147,10 @@ async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_crossing_in
     cancel.cancel();
 }
 
-/// Mempool off below the network tip → verified tip still held (the NFS's input), empty mempool
-/// served, listings again once active
+/// Mempool off below the network tip → `CatchingUp`: holds no tip (its tip may be stale), no
+/// mempool, no chain description served; listings and the hold again once active
 #[tokio::test(start_paused = true)]
-async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
+async fn a_catching_up_validator_holds_no_tip_until_its_mempool_answers() {
     let mut chain = MockChain::regtest();
     chain.mine_empty(12);
     let at = |height: u32| chain.at(h(height));
@@ -172,16 +173,15 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     view.set_verified(Some(chain.verified(at(11))));
     let catching_up = reader.current();
     let held = (catching_up.best(), catching_up.held_by());
-    assert_eq!(held, (Some(at(11)), EndpointSet::at([0])), "its chain still holds it");
+    assert_eq!(held, (Some(at(11)), EndpointSet::default()), "catching up: never a holder");
     let meta = &catching_up.endpoints()[0];
-    let answered = (meta.health, meta.tip(), meta.stale_blocks());
-    assert_eq!(answered, (Health::CatchingUp, Some(at(11)), Some(29)), "an answer, no failure");
+    let answered = (meta.health, meta.tip(), meta.stale_blocks(), meta.agreement);
+    let expected = (Health::CatchingUp, Some(at(11)), Some(29), Agreement::Agreed);
+    assert_eq!(answered, expected, "an answer, no failure");
     assert_eq!(balancer.members().borrow().rows[0].failures, 0);
-    assert_eq!(
-        catching_up.mempool().expect("a holder of the verified tip").entries().count(),
-        0,
-        "sighting retracted with the mempool off",
-    );
+    let served = (catching_up.mempool().is_none(), catching_up.validator_info().is_none());
+    assert_eq!(served, (true, true), "fail closed: no holder");
+    assert_eq!(catching_up.spread(&one), None, "its only listing retracted: dropped");
 
     validator.follow(&chain, at(12));
     validator.estimate(h(12));
@@ -511,7 +511,8 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
 
 /// Holding re-asked every poll (`getblockhash`, never a walk)
 ///
-/// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`
+/// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`; slow mempool
+///   bytes never delay the hold
 /// - its only holder gone → no holder, no mempool (fail closed: nothing proves the block valid)
 /// - a heavier fork only one validator holds → it alone holds the tip, the others `Diverged`
 /// - that one reorging away mid-poll → one wrong poll, dropped at the next
@@ -538,12 +539,17 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     view.set_verified(Some(chain.verified(at_100)));
     assert_eq!(tip(), Some((at_100, held_by(&[0, 1, 2]))));
 
-    // a mines 101; its header verifies: the tip moves at once, held by a alone
+    // a mines 101, a new transaction's bytes 20 s away; its header verifies: the tip moves at
+    // once, held by a alone (its poll's hold folded before its bytes are fetched)
     validators[0].follow(&chain, at_101);
+    validators[0].latency(&[Port::MempoolBytes], Duration::from_secs(20));
+    validators[0].mempool_insert(raw_transaction(1, 0).1, 1_000);
     polled(&balancer).await;
     view.set_verified(Some(chain.verified(at_101)));
-    assert_eq!(tip(), Some((at_101, held_by(&[0]))), "one holder is enough");
+    assert_eq!(tip(), Some((at_101, held_by(&[0]))), "one holder is enough, bytes or not");
     assert_eq!(agreements(), [Agreement::Agreed, Agreement::Behind, Agreement::Behind]);
+    validators[0].latency(&[Port::MempoolBytes], Duration::ZERO);
+    tokio::time::sleep(Duration::from_secs(21)).await;
 
     // a goes unreachable: no trusted validator holds 101 → no mempool (never a weaker answer)
     validators[0].reachable(&Port::ALL, false);
@@ -709,6 +715,31 @@ async fn until(what: &str, done: impl Fn() -> bool) {
     panic!("never {what}");
 }
 
+/// Finality stall alarm (telemetry, depth 10): final = best − depth never raises it; a block
+/// `depth` deep owed finality raises it only past 60 s; the final tip moving clears it
+#[tokio::test(start_paused = true)]
+async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_final_moves() {
+    let mut chain = MockChain::regtest();
+    let tip_30 = chain.mine_empty(30);
+    let tip_45 = chain.mine_empty(15);
+    let validator = Arc::new(MockValidator::following(&chain, tip_45));
+    let (view, _balancer, cancel) = running(&[validator], &["a:8232"]);
+    let reader = view.subscriber();
+    let stalled = || reader.current().alarms().finality_paused();
+
+    view.set_verified(Some(chain.verified_final(tip_30, h(20))));
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    assert!(!stalled(), "final = best − depth: nothing owed");
+    view.set_verified(Some(chain.verified_final(tip_45, h(20))));
+    tokio::time::sleep(Duration::from_secs(59)).await;
+    assert!(!stalled(), "unmoved 59 s: not yet");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(stalled(), "unmoved past 60 s, 25 unfinal");
+    view.set_verified(Some(chain.verified_final(tip_45, h(35))));
+    assert!(!stalled(), "final moved: cleared at once");
+    cancel.cancel();
+}
+
 /// Real regtest header bytes through header sync, three validators
 ///
 /// - a: 5,000 headers, verified in batches, finalized as they go (published final tip = depth
@@ -723,7 +754,7 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     let mut chain = MockChain::regtest();
     let a = chain.mine_empty(5_000);
     let at = |height: u32| chain.at(h(height));
-    let (at_2_500, at_3_000, at_4_997, at_4_998) = (at(2_500), at(3_000), at(4_997), at(4_998));
+    let (at_2_500, at_3_000, at_4_990, at_4_998) = (at(2_500), at(3_000), at(4_990), at(4_998));
     let early = chain.block(at(4_980).hash).header().time;
     let c = chain.branch(at_4_998).mine_empty(12).tip();
     let b = chain.branch(at_4_998).mine_empty(22).tip();
@@ -741,7 +772,7 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
 
     // the published chain, not the view's best: finality lands after the run reaches the view
-    until("a's tip verified, final to depth", || published() == Some((a, Some(at_4_997)))).await;
+    until("a's tip verified, final to depth", || published() == Some((a, Some(at_4_990)))).await;
     let held = (reader.current().best(), reader.current().held_by());
     assert_eq!(held, (Some(a), EndpointSet::at([0])), "c refused, b behind");
     let first = verified.borrow().clone().expect("a VerifiedChain");
@@ -765,27 +796,75 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     assert!(ended.is_ok(), "cancel ends header sync cleanly: {ended:?}");
 }
 
-/// One validator, chain ending in an invalid 80 (time earlier than its median time past)
+/// First sync of 20,500 headers (> 10 batches) from one validator, a poll forced after every
+/// publish (the production interleaving: each poll used to discard header sync's evidence)
 ///
-/// - first round: 0..=79 verified; served run ends at the refused 80 (off our chain, reported:
-///   benched), no poll yet asked about our boundary → nothing final, alarm raised
-/// - next poll (woken by the new heights): `getblockhash` 76 / 79 = ours → boundary held, final
-///   through 76 (depth 3 below 79), alarm cleared
-/// - valid fork above 79 + store failing its next commit → header sync ends with the error once
-///   the bench (60 s) is over
+/// - every published chain: final = best − depth (each run vouches itself, H6), best − final ≤
+///   depth + `HEADER_BATCH` (H9), finality alarm down
 #[tokio::test(start_paused = true)]
-async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_header_sync() {
+async fn a_first_sync_finalizes_every_batch_while_polls_interleave() {
     use zaino_header_chain::{HeaderChain, HeaderStore};
 
     let mut chain = MockChain::regtest();
-    let top = chain.mine_empty(79);
-    let (at_60, at_76) = (chain.at(h(60)), chain.at(h(76)));
-    let invalid = chain.mine_empty(1);
-    let valid = chain.branch(top).mine_empty(5).tip();
-    let validator = Arc::new(MockValidator::following(&chain, invalid));
-    let early = chain.block(at_60.hash).header().time;
-    validator.tamper(h(80), |header| header.time = early);
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
+    let tip = chain.mine_empty(20_500);
+    let at_20_490 = chain.at(h(20_490));
+    let validator = Arc::new(MockValidator::following(&chain, tip));
+    let (view, balancer, cancel) = running(&[validator], &["a:8232"]);
+    let reader = view.subscriber();
+    let fs = zaino_persistence::fs::SimFs::new();
+    let regtest = zcash_protocol::consensus::NetworkType::Regtest;
+    let store = HeaderStore::open(fs, std::path::Path::new("/headers"), regtest).expect("opens");
+    let sync = view.header_sync(HeaderChain::open(chain.header_params(), depth(), store));
+    let mut verified = sync.subscribe();
+    tokio::spawn(sync.run(cancel.clone()));
+
+    let mut publishes = 0;
+    loop {
+        let changed = tokio::time::timeout(Duration::from_secs(60), verified.changed()).await;
+        changed.expect("header sync progresses").expect("header sync running");
+        let (best, final_tip) = {
+            let published = verified.borrow_and_update();
+            let published = published.as_ref().expect("a chain once published");
+            (published.best(), published.final_tip())
+        };
+        let base = final_tip.map_or(0, |tip| u32::from(tip.height) + 1);
+        let unfinal = u32::from(best.height) + 1 - base;
+        let bound = DEPTH + crate::headers::HEADER_BATCH;
+        assert!(unfinal <= bound, "publish {publishes}: H9, {unfinal} unfinal > {bound}");
+        let boundary = best.height.checked_sub(DEPTH);
+        let final_height = final_tip.map(|tip| tip.height);
+        assert_eq!(final_height, boundary, "publish {publishes}: final = best − depth (H6)");
+        assert!(!reader.current().alarms().finality_paused(), "publish {publishes}: alarm");
+        publishes += 1;
+        balancer.pushed(v(0), Push::Changed);
+        if (best, final_tip) == (tip, Some(at_20_490)) {
+            break;
+        }
+    }
+    assert!(publishes >= 10, "{publishes} publishes: one per batch at least");
+    until("the view's tip, held", || reader.current().held_by() == EndpointSet::at([0])).await;
+    cancel.cancel();
+}
+
+/// a's chain turns invalid at 31 (reported: benched), b honest; depth 10
+///
+/// - b's 30, then 31 followed within one poll while a backs off (a's stall is a's alone)
+/// - a then serves a longer chain forked below our final tip: given up on that claim (never
+///   fetched again while it stands), b's 32 followed within one poll
+/// - store failing its next commit → header sync ends with the error at b's 33
+#[tokio::test(start_paused = true)]
+async fn a_benched_or_forked_validator_never_delays_the_honest_one() {
+    use zaino_header_chain::{HeaderChain, HeaderStore};
+
+    let mut chain = MockChain::regtest();
+    let at_30 = chain.mine_empty(30);
+    let (at_20, at_21, at_22) = (chain.at(h(20)), chain.at(h(21)), chain.at(h(22)));
+    let early = chain.block(at_20.hash).header().time;
+    let at_31 = chain.mine_empty(1);
+    let forked = chain.fork(h(5)).mine_empty(60).tip();
+    let validators = [at_31, at_30].map(|tip| Arc::new(MockValidator::following(&chain, tip)));
+    validators[0].tamper(h(31), |header| header.time = early);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"]);
     let reader = view.subscriber();
     let fs = zaino_persistence::fs::SimFs::new();
     let path = std::path::Path::new("/headers");
@@ -795,21 +874,36 @@ async fn finality_waits_only_for_a_trusted_holder_and_a_failed_commit_ends_heade
     let verified = sync.subscribe();
     let syncing = tokio::spawn(sync.run(cancel.clone()));
     let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+    let followed = async |tip: BlockRef, final_tip: BlockRef| {
+        let asked = tokio::time::Instant::now();
+        until("followed", || published() == Some((tip, Some(final_tip)))).await;
+        asked.elapsed()
+    };
 
-    until("79 verified", || reader.current().best() == Some(top)).await;
-    until("the alarm", || reader.current().alarms().finality_paused()).await;
-    assert_eq!(published(), Some((top, None)), "no trusted holder of 76: nothing final");
+    followed(at_30, at_20).await;
     let benched = balancer.members().borrow().rows[0].benched_until.is_some();
-    assert!(benched, "the refused 80 reported");
+    assert!(benched, "a's refused 31 reported");
+    validators[1].follow(&chain, at_31);
+    let took = followed(at_31, at_21).await;
+    assert!(took <= Duration::from_millis(1_500), "b's 31 after {took:?}: a's stall delayed it");
 
-    polled(&balancer).await;
-    until("the alarm cleared", || !reader.current().alarms().finality_paused()).await;
-    assert_eq!(published(), Some((top, Some(at_76))), "held: final to depth");
+    validators[0].follow(&chain, forked);
+    tokio::time::sleep(Duration::from_secs(61)).await;
+    let links = validators[0].calls().links;
+    let at_32 = chain.branch(at_31).mine_empty(1).tip();
+    validators[1].follow(&chain, at_32);
+    let took = followed(at_32, at_22).await;
+    assert!(took <= Duration::from_millis(1_500), "b's 32 after {took:?}");
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(validators[0].calls().links, links, "a's forked claim never fetched again");
+    let pinned = reader.current();
+    let standing = (pinned.best(), pinned.endpoints()[0].agreement);
+    assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below final: never followed");
 
     fs.fail_from(fs.mutations());
-    validator.follow(&chain, valid);
-    // benched: each round stalls, `RETRY` (5 s) apart, until the bench is over
-    let ended = tokio::time::timeout(Duration::from_secs(120), syncing).await;
+    let at_33 = chain.branch(at_32).mine_empty(1).tip();
+    validators[1].follow(&chain, at_33);
+    let ended = tokio::time::timeout(Duration::from_secs(10), syncing).await;
     let ended = ended.expect("ends on its own").expect("never panics");
     assert!(ended.is_err(), "a failed commit ends header sync: {ended:?}");
     cancel.cancel();

@@ -17,8 +17,8 @@ use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis};
 use zaino_traffic::{Health, ValidatorId};
 
+use crate::config::FINALITY_STALL;
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
-use crate::holders::Holders;
 use crate::peers::{Overheard, Pending};
 use crate::telemetry::{self, Alarms};
 
@@ -205,17 +205,19 @@ impl Sighting {
 ///
 /// - [`mempool`](Self::mempool) + [`validator_info`](Self::validator_info) `None` while no
 ///   trusted validator holds the verified best block (no answer rather than a weak one)
-/// - `held_by` = `holders`' holders of the best block, as of the last fold
+/// - `held_by` = `Live` validators whose last poll holds the best block, as of the last fold
+/// - `owed_since` = since when a block `depth` deep waits, final tip unmoved (stall alarm)
+/// - `mempool` ordered: two readers of one view walk it identically
+/// - `peers_live` = connected peers as of the last peer fold (`peers: x/y`'s `y`)
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
-    pub(crate) holders: Holders,
+    pub(crate) chain: Option<Arc<VerifiedChain>>,
+    pub(crate) depth: ReorgDepth,
+    pub(crate) owed_since: Option<Instant>,
     pub(crate) held_by: EndpointSet,
-    /// Ordered, so two readers of one view walk the mempool identically.
     pub(crate) mempool: OrdMap<TransactionId, Sighting>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
     pub(crate) alarms: Alarms,
-    pub(crate) finality_paused: bool,
-    /// Connected peers as of the last peer fold (`peers: x/y`'s `y`)
     pub(crate) peers_live: OrdSet<SocketAddr>,
     pub(crate) overheard: Overheard,
 }
@@ -223,15 +225,39 @@ pub struct ChainViewSnapshot {
 impl ChainViewSnapshot {
     pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
         Self {
-            holders: Holders::new(endpoints.len(), depth),
+            chain: None,
+            depth,
+            owed_since: None,
             held_by: EndpointSet::default(),
             mempool: OrdMap::new(),
             endpoints,
             alarms: Alarms::default(),
-            finality_paused: false,
             peers_live: OrdSet::new(),
             overheard: Overheard::default(),
         }
+    }
+
+    /// Header sync's word: `owed_since` restarts when the final tip moves, ends when nothing is
+    /// owed (≤ `depth` unfinal on the best)
+    pub(crate) fn verified(&mut self, chain: Option<Arc<VerifiedChain>>, now: Instant) {
+        let final_tip =
+            |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().and_then(|c| c.final_tip());
+        let moved = final_tip(&chain) != final_tip(&self.chain);
+        let owed = chain.as_deref().is_some_and(|chain| {
+            let base = chain.final_tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            (u32::from(chain.best().height) + 1).saturating_sub(base) > self.depth.get()
+        });
+        self.owed_since = match (owed, moved) {
+            (false, _) => None,
+            (true, true) => Some(now),
+            (true, false) => self.owed_since.or(Some(now)),
+        };
+        self.chain = chain;
+    }
+
+    /// A block `depth` deep owed finality ≥ [`FINALITY_STALL`] (never vouched, H6)
+    pub(crate) fn finality_stalled(&self, now: Instant) -> bool {
+        self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_STALL)
     }
 
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
@@ -250,7 +276,7 @@ impl ChainViewSnapshot {
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
-        view.holders.verified(chain);
+        view.chain = chain;
         view.held_by = view.best().map_or_else(EndpointSet::default, |_| held_by);
         if let Some(best) = view.best() {
             let branch = ConsensusBranchId::new(0);
@@ -286,19 +312,20 @@ impl ChainViewSnapshot {
         }
     }
 
-    /// Trusted validators whose chain holds the verified best block (V1; empty = no chain yet)
+    /// `Live` trusted validators whose last poll holds the verified best block (V1; empty = no
+    /// chain yet)
     pub fn held_by(&self) -> EndpointSet {
         self.held_by
     }
 
     /// The header chain's best block, whether or not a trusted validator holds it
     pub fn best(&self) -> Option<BlockRef> {
-        self.holders.best()
+        self.chain.as_ref().map(|chain| chain.best())
     }
 
     /// Header sync's word every standing was judged against (`None` = nothing verified yet)
     pub fn chain(&self) -> Option<&Arc<VerifiedChain>> {
-        self.holders.chain()
+        self.chain.as_ref()
     }
 
     /// Servable here, not servable (or absent) in `since`, txid order (`None` = every servable)
