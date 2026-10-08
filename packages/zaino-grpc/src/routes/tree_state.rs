@@ -121,13 +121,14 @@ impl FramedRoots {
     }
 
     /// Roots `start` inclusive to `start + max` exclusive; `max == 0` = to the last root
-    /// (`start ≥ count` = none)
-    fn slice(&self, start: u16, max: u16) -> Bytes {
+    /// (`start ≥ count` = none, any `u32`: pepper-sync resumes until an empty answer)
+    fn slice(&self, start: u32, max: u32) -> Bytes {
         let count = self.ends.len();
-        let start = usize::from(start).min(count);
+        let wide = |value: u32| usize::try_from(value).unwrap_or(usize::MAX);
+        let start = wide(start).min(count);
         let end = match max {
             0 => count,
-            max => count.min(start + usize::from(max)),
+            max => count.min(start.saturating_add(wide(max))),
         };
         let offset = |roots: usize| roots.checked_sub(1).map_or(0, |at| self.ends[at]);
         self.framed.slice(offset(start)..offset(end))
@@ -225,7 +226,11 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
 }
 
 /// Every root of the pool completed at or below the tip, framed once per snapshot; a request =
-/// one slice of it
+/// one slice of it, whole or refused before the first byte (iOS keeps a partial prefix)
+///
+/// - unknown pool = `UNIMPLEMENTED` (the one non-Sapling refusal the Android SDK survives with its
+///   fast sync intact)
+/// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
 async fn subtree_roots<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
     V: SequenceRead + MapRead,
@@ -239,19 +244,13 @@ where
         Ok(proto::ShieldedProtocol::Orchard) => ShieldedPool::Orchard,
         Ok(proto::ShieldedProtocol::Ironwood) => ShieldedPool::Ironwood,
         Err(_) => {
-            return Err(Status::invalid_argument(format!(
-                "unknown shieldedProtocol {}",
+            return Err(Status::unimplemented(format!(
+                "shieldedProtocol {} is not served (sapling = 0, orchard = 1, ironwood = 2)",
                 request.shielded_protocol
             )))
         }
     };
-
-    // Depth-32 tree = <= 2^16 subtrees (anything wider names none)
-    let ceiling = |field: &str| {
-        Status::invalid_argument(format!("{field} is above the 2^16 subtree ceiling"))
-    };
-    let start = u16::try_from(request.start_index).map_err(|_| ceiling("startIndex"))?;
-    let max = u16::try_from(request.max_entries).map_err(|_| ceiling("maxEntries"))?;
+    let (start, max) = (request.start_index, request.max_entries);
 
     let tip = answering.served().tip().height;
     let every = move |trees: &TreeStateReader<LayeredView<V>>| {
@@ -325,16 +324,61 @@ mod tests {
             found
         };
 
-        let cases: [((u16, u16), &[u64]); 6] = [
+        let cases: [((u32, u32), &[u64]); 9] = [
             ((0, 0), &[0, 10, 20, 30, 40]),
             ((2, 0), &[20, 30, 40]),
             ((1, 2), &[10, 20]),
             ((3, 9), &[30, 40]),
             ((5, 0), &[]),
             ((9, 1), &[]),
+            ((0, 100_000), &[0, 10, 20, 30, 40]),
+            ((70_000, 0), &[]),
+            ((u32::MAX, u32::MAX), &[]),
         ];
         for ((start, max), expected) in cases {
             assert_eq!(heights(framed.slice(start, max)), expected, "start {start} max {max}");
+        }
+    }
+
+    /// W8, R4 over the router, no subtree complete yet:
+    /// - every pool, any `startIndex` / `maxEntries` (past `u16` too) = an empty `OK` stream
+    ///   (status in trailers: pepper-sync's resume probe; Orchard after Sapling = iOS's pass)
+    /// - unknown pool = `UNIMPLEMENTED`, trailers-only (no body: never a partial prefix)
+    #[tokio::test]
+    async fn subtree_roots_answer_whole_or_refuse_before_the_first_byte() {
+        use http_body_util::BodyExt as _;
+        use tower::Service as _;
+
+        let chain = Chain::with_genesis(vec![one_output(0x51)]);
+        let blocks = chain.path(chain.genesis().hash);
+        let trees = indexed(IndexKind::TreeState, &blocks);
+        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, vec![trees]), ..routes() });
+
+        let (sapling, orchard, ironwood) = (0, 1, 2);
+        let ok = || (None, Some("0".to_owned()), 0);
+        let cases = [
+            ((sapling, 0, 0), ok()),
+            ((orchard, 0, 0), ok()),
+            ((ironwood, 0, 0), ok()),
+            ((sapling, 1, 0), ok()),
+            ((orchard, 70_000, 0), ok()),
+            ((sapling, u32::MAX, u32::MAX), ok()),
+            ((orchard, 0, 100_000), ok()),
+            ((3, 0, 0), (Some("12".to_owned()), None, 0)),
+        ];
+        for ((protocol, start_index, max_entries), expected) in cases {
+            let arg =
+                proto::GetSubtreeRootsArg { start_index, shielded_protocol: protocol, max_entries };
+            let request = framed_request(path::GET_SUBTREE_ROOTS, arg.encode_to_vec().into());
+            let response = router.call(request).await.expect("router answers");
+            let status = |headers: &http::HeaderMap| {
+                headers.get("grpc-status").and_then(|s| s.to_str().ok()).map(str::to_owned)
+            };
+            let headed = status(response.headers());
+            let body = response.into_body().collect().await.expect("body");
+            let trailed = body.trailers().and_then(status);
+            let got = (headed, trailed, body.to_bytes().len());
+            assert_eq!(got, expected, "protocol {protocol} start {start_index} max {max_entries}");
         }
     }
 

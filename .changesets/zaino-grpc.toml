@@ -67,3 +67,14 @@ JSON-RPC code and message (`-22` for unparseable bytes), not `-1` and a reworded
 zebrad's "transaction already exists in mempool" and "already queued for download" (code `-1`) \
 now reach the wallet as rejections instead of `UNAVAILABLE`.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+`GetSubtreeRoots`: an unknown `shieldedProtocol` is `UNIMPLEMENTED` (was `INVALID_ARGUMENT`, a \
+shape the Android SDK does not survive with fast sync), and a `startIndex` or `maxEntries` \
+above 65,535 is an empty or whole `OK` stream (was `INVALID_ARGUMENT`). The answer is whole \
+or refused before its first byte.
+"""
