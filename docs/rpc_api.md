@@ -68,10 +68,38 @@ stand-in branch, schedule or tip.
 `GetTransaction` answers a mined transaction with its height, and an unmined or
 orphaned one with height 0, the wire's only "no height" value.
 
-`SendTransaction` reports a rejection in the `SendResponse` itself, with
-`errorCode` -1 and the validator's message, because a wallet has to tell "the
-network said no" from "the network is unreachable". The call only fails with a
-status when no validator accepted and at least one could not be reached.
+`SendTransaction` reports a rejection in the `SendResponse` itself, as
+lightwalletd does: gRPC `OK`, `errorCode` = the validator's own JSON-RPC code
+and `errorMessage` = its message verbatim (`-22` for bytes that do not parse,
+`-25` for the expiry and consensus-branch prechecks Zaino runs itself, as zebrad
+would answer them). A wallet has to tell "the network said no" from "the network
+is unreachable", and zingolib matches the message text ("transaction already
+exists in mempool", "transaction already in block chain", "already queued for
+download"). zebrad's `-1` answers that judge the transaction itself count as
+rejections; its other `-1`s (queue full, mempool disabled) do not. The call only
+fails with a status when no validator accepted and at least one could not be
+reached. An accepted transaction answers `errorCode` 0 and the quoted
+display-order txid.
+
+`GetBlockRange` reaching past the served tip streams every block up to the tip,
+then ends with `OUT_OF_RANGE` in its trailers, never an early `OK` (the iOS
+downloader waits forever after one). A range whose first height is past the tip
+is `OUT_OF_RANGE` before any block.
+
+`GetTreeState` answers exactly the height asked for, with the block hash in
+display order. Each tree is `""` below its pool's activation and the serialized
+tree from activation on, `000000` while empty (pepper-sync rejects `""` for an
+active pool). Below Sapling activation every tree is `""`.
+
+`GetSubtreeRoots` answers each request whole or refuses it before the first
+byte. A `startIndex` past the last root is an empty `OK` stream, which
+pepper-sync reads as the end, and `maxEntries` 0 means every root. A
+`shieldedProtocol` Zaino does not know is `UNIMPLEMENTED`, the one refusal the
+Android SDK survives without dropping its fast sync.
+
+No stream has a total-duration cap. The client's `grpc-timeout` is its
+deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
+(see [running.md](./running.md#stream-time-limits)).
 
 ## Status codes a client must distinguish
 
@@ -81,8 +109,11 @@ status when no validator accepted and at least one could not be reached.
 | stream or subscription cap full (`grpc-retry-pushback-ms: 250`) | `UNAVAILABLE` | retry after the hint |
 | no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`) | `UNAVAILABLE` | back off and retry |
 | validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`) | `UNAVAILABLE` | back off and retry |
-| index disabled by config | `UNIMPLEMENTED` | never retry |
+| stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`) | `UNAVAILABLE` | retry |
+| index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED` | never retry |
 | height, hash or txid not in the chain, or above the served tip | `NOT_FOUND` | ask for something else |
+| `GetBlockRange` reaching past the served tip (after the blocks up to it) | `OUT_OF_RANGE` | ask again once the tip moves |
+| the request's own `grpc-timeout` passed | `DEADLINE_EXCEEDED` | allow longer or ask for less |
 | bad or oversized range, unparseable or foreign-network address | `INVALID_ARGUMENT` | fix the request |
 | request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`) | `RESOURCE_EXHAUSTED` | send less per call |
 | addresses with more receives than one request may walk (`serve.max_address_rows`) | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
@@ -92,7 +123,8 @@ status when no validator accepted and at least one could not be reached.
 While Zaino syncs, the served tip trails the chain: every index answers at it,
 as lightwalletd answers at what it has ingested, and `GetLatestBlock` /
 `GetLightdInfo.blockHeight` report it, so a wallet gating on them never asks
-past what is served. A range ending past the served tip is clamped to it. Before
+past what is served. A range ending past the served tip streams up to it, then
+ends `OUT_OF_RANGE`. Before
 the first snapshot (indexes opening at boot) every index method is
 `UNAVAILABLE`.
 
@@ -115,6 +147,10 @@ and pruned on read, so any requested subset is answerable.
 
 - `GetTransaction` answers only `TxFilter`'s `hash` arm. The `(block, index)`
   positional arm is `INVALID_ARGUMENT`.
+- `GetBlockNullifiers` (deprecated) and `Ping` (testing only) are not in the
+  vendored `service.proto`, so both are `UNIMPLEMENTED`. `zingo-netutils` wraps
+  both, but nothing in zingolib (pepper-sync included) calls them, and neither
+  does the Android SDK ([client requirements](./client-requirements.md)).
 - `CompactTx.fee` is filled, unlike lightwalletd. In a mined block the
   value-balance index resolves the values of the outputs each transaction
   spends. In `GetMempoolTx` it is the fee the validator listed. It is 0 for a

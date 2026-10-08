@@ -40,9 +40,16 @@ tokio::spawn(bound.run(cancel.child_token()));
 - **One snapshot per request** (`snapshots.load()`, pinned for the request or
   the whole stream, G1): every index method answers at heights `≤` the served
   tip, so `GetLatestBlock`, `GetBlockRange`, `GetTreeState` and
-  `GetLightdInfo.blockHeight` agree by construction (R12). Past the tip =
-  `NOT_FOUND` (ranges clamp to it; subtree roots completing above it are left
-  out; the transparent reader is `.as_of(tip)`).
+  `GetLightdInfo.blockHeight` agree by construction (R12). A point read past
+  the tip = `NOT_FOUND`; a range streams to the tip, then `OUT_OF_RANGE`;
+  subtree roots completing above it are left out; the transparent reader is
+  `.as_of(tip)`.
+- Wire contract (`docs/design/integration-test-plan.md` W1–W15): `SendTransaction`
+  rejections = gRPC `OK` + the validator's code and message; `GetTreeState` = the
+  exact height, `""` below a pool's activation, `000000` for an empty active
+  tree; `GetSubtreeRoots` whole or refused before the first byte (unknown pool
+  `UNIMPLEMENTED`, `startIndex` past the end = empty `OK`). See
+  [`docs/rpc_api.md`](../../docs/rpc_api.md).
 - `Unavailable` = `UNAVAILABLE` with its message: nothing served yet (a booting
   NFS), no verified chain, or no trusted validator holding the best block (the
   mempool methods and `GetLightdInfo`).
