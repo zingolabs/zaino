@@ -5358,6 +5358,7 @@ dependencies = [
  "metrics-process",
  "reqwest",
  "rlimit",
+ "rustix",
  "sd-notify",
  "serde",
  "serde_json",

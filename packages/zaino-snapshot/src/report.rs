@@ -48,7 +48,7 @@ const AGREEMENTS: [Agreement; 5] = [
 
 /// `/statusz` body (zainod adds its process fields beside it)
 ///
-/// - `handed` = last block handed to the indexes; `indexes` empty before the NFS's first publish
+/// - `handed` = last block handed to the indexes
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Report {
     seq: u64,
@@ -79,11 +79,27 @@ struct TipsReport {
     synced: bool,
 }
 
+/// One `INDEXES` kind: `enabled` = config's, `durable` = its committed height
 #[derive(Debug, Serialize, PartialEq)]
-struct IndexReport {
+pub struct IndexReport {
     name: &'static str,
     enabled: bool,
     durable: Option<u32>,
+}
+
+/// Every `INDEXES` kind, `durable` absent before the NFS's first publish (zainod's pre-boot stub
+/// passes none)
+pub fn indexes(
+    enabled: &[IndexKind],
+    durable: &[(IndexKind, Option<BlockRef>)],
+) -> Vec<IndexReport> {
+    let height = |kind| durable.iter().find(|(each, _)| *each == kind).and_then(|(_, tip)| *tip);
+    let report = |kind: IndexKind| IndexReport {
+        name: kind.name(),
+        enabled: enabled.contains(&kind),
+        durable: height(kind).map(|tip| u32::from(tip.height)),
+    };
+    INDEXES.into_iter().map(report).collect()
 }
 
 /// Chain view facts ⨝ the balancer's `MemberTable` row (`state`, `latency_ms`, `failures`)
@@ -157,23 +173,22 @@ struct ForkReport {
 }
 
 impl Report {
-    /// `members` = the traffic balancer's table (joined on `MemberId::Trusted(position)`)
-    pub fn of<V: View>(snap: &Snapshot<V>, progress: &SyncProgress, members: &MemberTable) -> Self {
+    /// - `members` = the traffic balancer's table (joined on `MemberId::Trusted(position)`)
+    /// - `enabled` = config's indexes (listed before the NFS's first publish)
+    pub fn of<V: View>(
+        snap: &Snapshot<V>,
+        progress: &SyncProgress,
+        members: &MemberTable,
+        enabled: &[IndexKind],
+    ) -> Self {
         let (tips, view) = (snap.tips(), snap.view());
         let endpoints = view.endpoints();
         let named = |set: EndpointSet| -> Vec<String> {
             let at = set.positions().filter_map(|position| endpoints.get(position));
             at.map(|meta| meta.address.clone()).collect()
         };
-        let indexes = snap.indexed().map_or_else(Vec::new, |indexed| {
-            let durable: Vec<_> = indexed.durable().collect();
-            let report = |kind: IndexKind| {
-                let tip = durable.iter().find(|(each, _)| *each == kind).map(|(_, tip)| *tip);
-                let durable = tip.flatten().map(|tip| u32::from(tip.height));
-                IndexReport { name: kind.name(), enabled: tip.is_some(), durable }
-            };
-            INDEXES.into_iter().map(report).collect()
-        });
+        let durable: Vec<_> = snap.indexed().into_iter().flat_map(|i| i.durable()).collect();
+        let indexes = indexes(enabled, &durable);
         let validators = endpoints
             .iter()
             .enumerate()

@@ -33,8 +33,9 @@ all methods), `disk` (per enabled index: `size_bytes` + `tables` = bytes per sub
 the progress task's last walk, so absent until the first, 30 s after boot, then every 2
 minutes), then `seq`, `tips` (`best`, `final`, `served` as `{height, hash}`, `held_by` of
 `configured`, `synced`), `unready`, `handed` (the last block handed to the indexes: sync progress
-between their commits), `indexes` (every index the NFS can fold: `name`, `enabled`, `durable` =
-its committed height; empty before the NFS's first publish), `validators` (each configured one:
+between their commits), `indexes` (every index the NFS can fold: `name`, `enabled` = configured,
+`durable` = its committed height, `null` until the NFS reports it; listed from startup, snapshot
+bootstrap included), `validators` (each configured one:
 `address`, `state` / `latency_ms` / `failures` = the traffic balancer's, `agreement`, `height`,
 `stale_blocks`, `observed_s_ago`, `streaming` (push streams up), `release`: build, user agent,
 protocol and `end_of_service` as `{"status": "at", height, estimated_unix, blocks_left}` /
@@ -104,46 +105,60 @@ and `aria2c` on `PATH`, zainod fills empty indexes from a published snapshot bef
 
 ```toml
 [snapshot]
-manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.0.0.json"
-connections = 8   # parallel connections (aria2c --split), at most 16
+manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.1.0/manifest.json"
+connections = 8   # total across every archive (aria2c --split), at most 16
 ```
 
-The manifest describes one archive (`archive` resolves against the manifest URL):
+The manifest lists one archive per index, all from one seed at one `height` (each `archive`
+resolves against the manifest URL; `installed_bytes` = its unpacked size):
 
 ```json
-{"archive": "zaino-snapshot-1.0.0.tar.zst", "bytes": 44500000000,
- "sha256": "…", "height": 3501802, "network": "mainnet"}
+{"network": "mainnet", "height": 3501802,
+ "indexes": {
+   "compact_block": {"archive": "compact_block.tar.zst", "sha256": "…",
+                     "archive_bytes": 31000000000, "installed_bytes": 74000000000},
+   "value_balance": {"archive": "value_balance.tar.zst", "sha256": "…", …},
+   "block_hash": {…}, "tree_state": {…}, "transparent_address": {…}}}
 ```
 
-The archive is a zstd tar holding one top-level directory per index, named like its default
-path: `compact_block`, `value_balance`, `block_hash`, `tree_state`, `transparent_address`
-(`value_balance` installs beside the compact-block index, which it runs with; `index.compact_block`
-may be disabled, and then neither is installed).
+Each archive is a zstd tar of that index directory's contents (no top-level directory). Keys
+are the index names: `compact_block`, `value_balance`, `block_hash`, `tree_state`,
+`transparent_address` (`value_balance` installs beside the compact-block index, which it runs
+with; `index.compact_block` may be disabled, and then neither is installed).
 
-- Only an enabled index whose directory is missing or empty is filled; one holding data is
-  never touched, and with none empty the snapshot is skipped (no download).
-- aria2c downloads over its JSON-RPC (loopback, random secret): segmented, retried without
-  limit on transient errors, resumed after a restart. It stops itself if zainod dies.
-- The archive is checked against `sha256`, unpacked into `.zaino-snapshot` beside the
-  first enabled index, then each index directory is renamed into place. Every index path must
-  share that filesystem.
-- A restart resumes at the step it stopped in (download, verify, unpack, install).
-- A manifest for another network, a hash mismatch or a permanent download error stops startup.
+- Only an enabled index whose directory is missing or empty is filled, from its own archive
+  (only those are downloaded); one holding data is never touched, and with none empty the
+  snapshot is skipped (no download). An empty index the manifest has no archive for stops startup.
+- Before any download, free space is checked per filesystem: each archive plus its unpacked size
+  (less what a previous attempt already staged). Too little stops startup and names the
+  directory, the bytes needed and the bytes available.
+- aria2c downloads over its JSON-RPC (loopback, random secret): every archive queued, one at a
+  time over `connections`, retried without limit on transient errors, resumed after a restart,
+  each checked against its `sha256` by aria2c. It stops itself if zainod dies.
+- Each archive is unpacked as soon as it lands (while the next downloads) into
+  `.<index>.snapshot` beside its index, then renamed into place and deleted. Index paths may sit
+  on different filesystems.
+- A restart resumes each archive at the step it stopped in (download, unpack, install).
+- A manifest for another network, a hash mismatch or a permanent download error stops startup
+  (a failed archive's staging is deleted).
 
 While it runs, `/readyz` answers `snapshot_downloading` / `snapshot_verifying` /
-`snapshot_unpacking`, and `/statusz` carries the progress:
+`snapshot_unpacking`, and `/statusz` carries the progress beside the configured `indexes`:
 
 ```json
 {"ready": false, "reasons": ["snapshot_downloading"],
+ "indexes": [{"name": "value_balance", "enabled": true, "durable": null}, …],
  "snapshot": {"phase": "downloading", "source": "snapshots.zingolabs.dev", "height": 3501802,
-              "done": 27000000000, "total": 44500000000, "rate": 103000000}}
+              "indexes": 5, "done": 27000000000, "total": 44500000000, "rate": 103000000}}
 ```
 
-`done` / `total` are bytes, `rate` bytes/s (downloading only). The `Snapshot` component logs each
-phase, and progress every 30 s:
+`indexes` = archives fetched, `total` = their cumulative bytes. `phase` = the slowest archive's
+(each moves downloading → verifying → unpacking); `done` = bytes through it, archives already
+past it counted whole. `rate` bytes/s (downloading only). The `Snapshot` component logs progress
+every 30 s:
 
 ```text
-INFO  Snapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
+INFO  Snapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
 INFO  Snapshot:  Index snapshot installed    indexes=5 height=3,501,802 elapsed=7m12s
 ```
 

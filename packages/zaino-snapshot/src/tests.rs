@@ -86,9 +86,10 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
 }
 
 /// A 0..=5 final through 2, side S4..=S5 off A3; one of two validators holds A5 (the balancer:
-/// one live at 12 ms, one degraded after 3 failures); block-hash durable through A5 (the only
-/// index), served A5, handed 5; one relayed tx, one unlisted: the `/statusz` body field by
-/// field, then the gauges a scrape renders from the same snapshot
+/// one live at 12 ms, one degraded after 3 failures); block-hash durable through A5, tree-state
+/// configured but absent from the NFS (enabled, no durable), served A5, handed 5; one relayed tx,
+/// one unlisted: the `/statusz` body field by field, then the gauges a scrape renders from the
+/// same snapshot
 #[test]
 fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let mut builder = MockChain::regtest();
@@ -169,7 +170,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             disabled("value_balance"),
             disabled("compact_block"),
             { "name": "block_hash", "enabled": true, "durable": 5 },
-            disabled("tree_state"),
+            { "name": "tree_state", "enabled": true, "durable": null },
             disabled("transparent_address"),
         ],
         "validators": [
@@ -188,7 +189,9 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             { "from": block(&a[3]), "tip": block(&s[5]), "cumulative_work": work, "folded": null },
         ],
     });
-    let report = serde_json::to_value(Report::of(&snap, &progress, &members)).expect("serializes");
+    let enabled = [IndexKind::BlockHash, IndexKind::TreeState];
+    let report = Report::of(&snap, &progress, &members, &enabled);
+    let report = serde_json::to_value(report).expect("serializes");
     assert_eq!(report, expected);
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();

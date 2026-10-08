@@ -145,5 +145,5 @@ path = "<ZAINO_DATA>/header_chain"
 
 # Fill empty indexes from a published snapshot before boot (`snapshot` build, aria2c on PATH)
 # [snapshot]
-# manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.0.0.json"
-# connections = 8
+# manifest = "https://snapshots.zingolabs.dev/zaino-snapshot-1.1.0/manifest.json"
+# connections = 8   # total across every archive

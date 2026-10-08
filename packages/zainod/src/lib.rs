@@ -44,6 +44,10 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     let config = load_config(&config_path)?;
     // Before any startup work (a bad `[snapshot]` must fail before it downloads)
     config.validate()?;
+    // Before the snapshot bootstrap (`/statusz` lists the configured indexes from the start)
+    crate::status::configure(
+        zaino_nfs::INDEXES.into_iter().filter(|kind| config.enabled(*kind).is_some()),
+    );
     config.warn_about_metrics_listener();
     // Before the snapshot bootstrap (its progress extends systemd's start timeout)
     crate::notify::spawn();

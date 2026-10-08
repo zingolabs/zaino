@@ -197,8 +197,12 @@ crate = "zainod"
 kind = "feature"
 description = """
 `snapshot` feature: `[snapshot]` (`manifest`, `connections`) fills empty indexes from a \
-published snapshot before boot, downloading with aria2c (on `PATH`), verifying its sha256 and \
-installing each index directory; a restart resumes at the step it stopped in.
+published snapshot before boot, one archive per index (only the empty ones downloaded). The \
+manifest lists each archive's `sha256`, `archive_bytes` and `installed_bytes`; free space is \
+checked per filesystem before any download. aria2c (on `PATH`) queues every archive over \
+`connections` in total and checks each sha256; each archive is unpacked beside its own index as \
+it lands and renamed into place. `/statusz` `snapshot` reports `indexes` (archives fetched) and \
+`total` (their bytes); a restart resumes each archive at the step it stopped in.
 """
 
 [[changes]]
@@ -257,7 +261,8 @@ description = """
 `/statusz` = `version`, `network`, `uptime_s`, `ready`, `reasons`, `grpc.sent_bytes`, `disk` \
 (per index: `size_bytes`, `tables`) beside the snapshot's report: `seq`, `tips` (`best`, \
 `final`, `served` as `{height, hash}`, `held_by`, `configured`, `synced`), `unready`, `handed`, \
-`indexes` (`name`, `enabled`, `durable`), `validators` (now with `state`, `latency_ms`, \
+`indexes` (`name`, `enabled` = configured, `durable`; listed from startup, before boot too), \
+`validators` (now with `state`, `latency_ms`, \
 `failures` from the traffic balancer), `alarms` (now with `finality_paused`), `mempool`, \
 `forks`. Gone: `tip`, `best_height`, `fetch_height`, `served_height`, top-level `synced`, and \
 `size_bytes` / `tables` inside `indexes`. `/readyz` reasons and every ztest metric family are \

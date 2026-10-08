@@ -226,7 +226,7 @@ pub struct Report {
     tips: TipsReport,                   // best, final, served, held_by/configured, synced
     unready: Vec<&'static str>,         // Unready::label, in order
     handed: Option<u32>,                // SyncProgress::handed
-    indexes: Vec<IndexReport>,          // name, enabled, durable (empty before the NFS publishes)
+    indexes: Vec<IndexReport>,          // name, enabled (config's), durable (null until NFS publishes)
     validators: Vec<ValidatorReport>,   // view facts ⨝ MemberTable (state, latency_ms, failures)
     alarms: AlarmsReport,               // partitioned, eclipsed, finality_paused, stale, ending
     mempool: MempoolCounts,

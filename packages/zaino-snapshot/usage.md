@@ -78,13 +78,15 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 
 ```rust,ignore
 let members = balancer.members().borrow().clone();     // the traffic balancer's MemberTable
-let body = Report::of(&snapshots.load(), &nfs_progress, &members); // `/statusz` (serde)
+let body = Report::of(&snapshots.load(), &nfs_progress, &members, &enabled); // `/statusz`
+let stub = indexes(&enabled, &[]);                      // same list, before a snapshot exists
 describe_metrics();                                     // once, at boot
 emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then render
 ```
 
 - `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`), unready reasons,
-  `handed` (`SyncProgress::handed`), every index the NFS folds (`enabled`, `durable`), each
+  `handed` (`SyncProgress::handed`), every index the NFS folds (`enabled` = the caller's
+  configured set, so listed before the NFS's first publish; `durable` = `null` until then), each
   validator's facts (agreement, own height, staleness, push streams, release, peers) joined with
   its `MemberTable` row (`state`, `latency_ms` once measured, `failures`), alarms (incl.
   `finality_paused`), mempool counts, forks (work as a decimal string). zainod flattens it beside
