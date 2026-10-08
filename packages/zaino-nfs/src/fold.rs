@@ -7,7 +7,7 @@ use zaino_index_transparent_address as transparent_address;
 use zaino_index_tree_state as tree_state;
 use zaino_internal_block_hash_to_height as block_hash;
 use zaino_internal_value_balance as value_balance;
-use zaino_persistence::{Changes, IndexKind, Layer, MapRead, SequenceRead};
+use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
 use zaino_sync::PerIndex;
 
@@ -25,7 +25,7 @@ pub const INDEXES: [IndexKind; 5] = [
 /// One node's payload: each covered index's state as of the block
 #[derive(Debug)]
 pub(crate) struct Folded {
-    pub(crate) layers: PerIndex<Layer>,
+    pub(crate) layers: PerIndex<Overlay>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -50,8 +50,9 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
 ) -> Result<Folded, FoldError> {
     let mut layers = PerIndex::default();
     let open = |kind: IndexKind| parent.layer(kind).changes(block.at());
-    let mut push =
-        |kind: IndexKind, changes: Changes| layers.insert(kind, parent.layer(kind).with(&changes));
+    let mut push = |kind: IndexKind, changes: BlockChanges| {
+        layers.insert(kind, parent.layer(kind).with(&changes))
+    };
     let covered = |kind: IndexKind| covers.contains(&kind);
 
     let mut fees = None;
@@ -156,8 +157,8 @@ mod tests {
             for &kind in enabled {
                 let schema = crate::tests::schema(kind);
                 let store = engine.open(Path::new(kind.name()), &schema).expect("fresh store");
-                durable.insert(kind, store.view());
-                root.insert(kind, Layer::empty(&schema));
+                durable.insert(kind, store.committed());
+                root.insert(kind, Overlay::empty(&schema));
                 stores.push(store);
             }
             let folded = fold_block(&Views::new(&durable, &root), genesis, enabled).expect("folds");
@@ -172,7 +173,7 @@ mod tests {
                 "{enabled:?}: block 1 = its fees + sizes"
             );
             for kind in all {
-                let tip = folded.layers.get(kind).map(Layer::tip);
+                let tip = folded.layers.get(kind).map(Overlay::tip);
                 let expected = enabled.contains(&kind).then_some(Some(one));
                 assert_eq!(tip, expected, "{enabled:?}: {}", kind.name());
             }

@@ -5,7 +5,7 @@
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use zaino_persistence::{Changes, IndexKind, SequenceRead, Store, View};
+use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
 use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
 use zaino_sync::{Committer, IndexHandle, Step, Subscription};
 
@@ -21,7 +21,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
     /// bulk commit (one fsync)
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
-        let view = store.view();
+        let view = store.committed();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
         assert_eq!(view.sequence(BLOCKS).count(), held, "{NAME}: one record per committed height");
         Self { store: Committer::new(store, batch_bytes) }
@@ -73,7 +73,7 @@ pub fn fold<V: SequenceRead>(
     parent: &CompactBlockReader<V>,
     block: &Block,
     fees: &BlockFees,
-    out: &mut Changes,
+    out: &mut BlockChanges,
 ) -> Result<(), TreeSizeOutOfRange> {
     out.assert_next(parent.tip(), block);
     let sizes = parent.tip_sizes().advance(block)?;
@@ -89,7 +89,7 @@ mod tests {
     use prost::Message as _;
     use tokio::task::JoinHandle;
     use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, Layer, PersistenceEngine, Schema,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, Overlay, PersistenceEngine, Schema,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
     use zaino_primitives::types::{Height, TreeSize, TreeSizes};
@@ -171,7 +171,7 @@ mod tests {
         // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
         let mut seeded = open(&SimFs::new());
         seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
-        let mut changes = Layer::empty(&SCHEMA).changes(one);
+        let mut changes = Overlay::empty(&SCHEMA).changes(one);
         let near_full = sizes(u32::MAX - 1, 0, 0);
         let block = chain.block(one.hash);
         changes.sequence(BLOCKS).append(&encode_compact_block(block, &fees(block), &near_full));
@@ -463,10 +463,10 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs);
-            let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
-            let reader = CompactBlockReader::new(store.view());
+            let reader = CompactBlockReader::new(store.committed());
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
             assert_eq!(served, records[..count], "{label}: byte-identical records");
 

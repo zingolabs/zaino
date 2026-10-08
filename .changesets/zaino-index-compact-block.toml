@@ -19,7 +19,7 @@ crate = "zaino-index-compact-block"
 kind = "breaking"
 section = "changed"
 description = """
-`fold(parent, block, fees, out: &mut Changes) -> Result<(), TreeSizeOutOfRange>` appends to a \
+`fold(parent, block, fees, out: &mut BlockChanges) -> Result<(), TreeSizeOutOfRange>` appends to a \
 caller-opened delta (asserting it is the block's and the block extends the parent); it moved \
 into `writer.rs`. `schema(network)` is replaced by `FORMAT` + `TABLES`; \
 `CompactBlockReader::new(view)` takes no network.

@@ -33,7 +33,7 @@ tokio::spawn(writer.run(blocks));
   `out`. It reads only the parent's tip: the block must extend it and `out`
   must be opened for the block, else a panic naming the index.
 - `BlockHashReader<V>` is generic over any `V: MapRead` (a store's committed
-  view or a `LayeredView` over one): `height_of(&BlockHash)`.
+  view or an `OverlayView` over one): `height_of(&BlockHash)`.
 - Fallible only at boot (the engine's `open` → `StoreError`). `run` returns at
   `Shutdown` and panics on a failed commit
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).

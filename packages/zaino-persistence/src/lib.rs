@@ -15,23 +15,25 @@ pub mod conformance;
 mod dir;
 mod disk;
 pub mod fs;
-mod layer;
 pub mod lsm;
 mod manifest;
+mod overlay;
 mod pages;
 mod port;
 mod sequence;
+mod write_buffer;
 
 pub use dir::disk_bytes;
 pub use disk::{DiskEngine, DiskStore, DiskView};
-pub use layer::{Layer, LayeredView};
 pub use manifest::{IndexKind, ManifestError};
+pub use overlay::{Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;
 pub use port::{
-    Changes, Checked, MapBuffer, MapId, MapRead, MapTable, MapView, PersistenceEngine, Schema,
-    SequenceBuffer, SequenceId, SequenceRead, SequenceTable, SequenceView, Store, Tables,
+    BlockChanges, Checked, MapId, MapInserts, MapRead, MapTable, MapView, PersistenceEngine,
+    Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable, SequenceView, Store, Tables,
     Verification, View, Width,
 };
+pub use write_buffer::{StagedView, WriteBuffer};
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]

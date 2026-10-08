@@ -66,7 +66,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         index.apply(out);
     }
     index.commit().expect("SimFs commit");
-    (kind, index.view())
+    (kind, index.committed())
 }
 
 /// `views` served at `tip` (the NFS root): genesis ..= `tip` verified, the chain's own params

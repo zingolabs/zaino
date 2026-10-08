@@ -6,7 +6,7 @@
 //! - layer/committed seam = the reader's: a commit landing mid-stream cannot move it
 
 use bytes::Bytes;
-use zaino_persistence::{LayeredView, SequenceRead, View};
+use zaino_persistence::{OverlayView, SequenceRead, View};
 use zaino_primitives::types::Height;
 
 use crate::{
@@ -46,7 +46,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 }
 
 /// Snapshot's seam: its layer above the committed records
-impl<V: SequenceRead> CompactBlockReader<LayeredView<V>> {
+impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
     fn committed(&self) -> Option<Height> {
         self.view().durable().tip().map(|tip| tip.height)
@@ -64,7 +64,7 @@ impl<V: SequenceRead> CompactBlockReader<LayeredView<V>> {
 /// - `reader` held for the whole stream: committed records, layer and seam frozen
 /// - `next` `None` = spent; `last` = final height served, inclusive
 pub struct RangeCursor<V> {
-    reader: CompactBlockReader<LayeredView<V>>,
+    reader: CompactBlockReader<OverlayView<V>>,
     budget: usize,
     pools: Pools,
     descending: bool,
@@ -92,7 +92,7 @@ impl<V: SequenceRead> RangeCursor<V> {
     /// - no length cap (pepper-sync asks a whole shard; work bounded per window)
     /// - no read here (the first file window = the cursor's first blocking step)
     pub fn new(
-        reader: CompactBlockReader<LayeredView<V>>,
+        reader: CompactBlockReader<OverlayView<V>>,
         start: Height,
         end: Height,
         tip: Height,
@@ -103,7 +103,7 @@ impl<V: SequenceRead> RangeCursor<V> {
 
     /// [`new`](Self::new) with an explicit window size (a test forces a refill)
     pub(crate) fn with_budget(
-        reader: CompactBlockReader<LayeredView<V>>,
+        reader: CompactBlockReader<OverlayView<V>>,
         start: Height,
         end: Height,
         tip: Height,
@@ -167,7 +167,8 @@ mod tests {
     use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
     use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, Store,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, Overlay, PersistenceEngine, Schema,
+        Store,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain, Upgrades};
     use zaino_proto::frame::{framed_len, split_frame};
@@ -231,18 +232,27 @@ mod tests {
     }
 
     /// `chain(count)` committed, read as a snapshot reads it (nothing above)
-    fn reader(count: u32) -> CompactBlockReader<LayeredView<DiskView>> {
+    fn reader(count: u32) -> CompactBlockReader<OverlayView<DiskView>> {
         let mut store = folded(store(), &chain(count), 0..count);
         store.commit().expect("SimFs commit");
-        CompactBlockReader::new(store.staged())
+        CompactBlockReader::new(OverlayView::new(store.committed(), Overlay::empty(store.schema())))
     }
 
-    /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them
-    fn four_committed_three_above() -> CompactBlockReader<LayeredView<DiskView>> {
+    /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them (as the NFS folds them)
+    fn four_committed_three_above() -> CompactBlockReader<OverlayView<DiskView>> {
         let chain = chain(7);
         let mut store = folded(store(), &chain, 0..4);
         store.commit().expect("SimFs commit");
-        CompactBlockReader::new(folded(store, &chain, 4..7).staged())
+        let mut layer = Overlay::empty(store.schema());
+        for block in &chain.blocks(chain.tip())[4..7] {
+            let parent =
+                CompactBlockReader::new(OverlayView::new(store.committed(), layer.clone()));
+            let mut changes = layer.changes(block.at());
+            let fees = chain.fees(block.header().hash);
+            fold(&parent, block, &fees, &mut changes).expect("small tree sizes");
+            layer = layer.with(&changes);
+        }
+        CompactBlockReader::new(OverlayView::new(store.committed(), layer))
     }
 
     /// Every framed record a chunk carries, decoded

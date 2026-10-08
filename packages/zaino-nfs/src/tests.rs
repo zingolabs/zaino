@@ -21,8 +21,8 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_internal_value_balance::{ValueBalanceIndexWriter, ValueBalanceReader};
 use zaino_persistence::{
-    fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store, View,
-    Width,
+    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store,
+    View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
 use zaino_primitives::types::{Block, BlockHash, Height, OutPoint};
@@ -71,7 +71,7 @@ fn own_fold(
     parent: impl SequenceRead + MapRead,
     value_balance: impl MapRead,
     block: &Block,
-    out: &mut Changes,
+    out: &mut BlockChanges,
 ) {
     match kind {
         IndexKind::ValueBalance => {
@@ -133,7 +133,7 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let mut folded = Vec::new();
     for (kind, mut store) in stores {
         store.commit().expect("SimFs commit");
-        folded.push((kind, tables(&store.view())));
+        folded.push((kind, tables(&store.committed())));
     }
     folded
 }

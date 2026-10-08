@@ -1,7 +1,7 @@
 //! Non-final data over a committed view (`docs/design/nfs.md` §4)
 //!
-//! - [`Layer`] = `Changes` above some durable tip, per table the items they add (`imbl`)
-//! - [`LayeredView`] = layer over the committed view it sits on: layer first, then durable
+//! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
+//! - [`OverlayView`] = rows [`Uncommitted`] the committed view they sit on: above first, then durable
 
 use std::{
     fmt,
@@ -11,22 +11,22 @@ use std::{
 
 use bytes::Bytes;
 use imbl::{OrdMap, Vector};
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::{BlockRef, Height};
 
-use crate::port::{Changes, MapId, MapRead, Schema, SequenceId, SequenceRead, View};
+use crate::port::{BlockChanges, MapId, MapRead, Schema, SequenceId, SequenceRead, View};
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
 ///
-/// - `deltas` = each `Changes` absorbed, oldest first ([`rebase`](Self::rebase) drops by them)
+/// - `deltas` = each `BlockChanges` absorbed, oldest first ([`rebase`](Self::rebase) drops by them)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Layer {
+pub struct Overlay {
     schema: Schema,
     deltas: Vector<Arc<Delta>>,
     sequences: Vec<Vector<Bytes>>,
     maps: Vec<OrdMap<Bytes, Bytes>>,
 }
 
-/// `Changes`' share: `(sequence, records)` per sequence it grew (sparse), keys per map
+/// `BlockChanges`' share: `(sequence, records)` per sequence it grew (sparse), keys per map
 #[derive(Debug, PartialEq, Eq)]
 struct Delta {
     tip: BlockRef,
@@ -34,7 +34,7 @@ struct Delta {
     keys: Vec<Vec<Bytes>>,
 }
 
-impl Layer {
+impl Overlay {
     pub fn empty(schema: &Schema) -> Self {
         Self {
             schema: *schema,
@@ -50,14 +50,14 @@ impl Layer {
     }
 
     /// Empty delta for block `at`, shaped by this layer's schema (for [`with`](Self::with))
-    pub fn changes(&self, at: BlockRef) -> Changes {
-        Changes::new(at, self.schema)
+    pub fn changes(&self, at: BlockRef) -> BlockChanges {
+        BlockChanges::new(at, self.schema)
     }
 
     /// This layer + `changes`, sharing structure with `self`
     ///
     /// - panics: tip not above this one, another schema's tables, map key held twice
-    pub fn with(&self, changes: &Changes) -> Self {
+    pub fn with(&self, changes: &BlockChanges) -> Self {
         let mut next = self.clone();
         next.push(changes);
         next
@@ -89,8 +89,8 @@ impl Layer {
         next
     }
 
-    /// [`with`](Self::with) in place (store's buffer: unshared → no node copied)
-    pub(crate) fn push(&mut self, changes: &Changes) {
+    /// [`with`](Self::with) in place
+    fn push(&mut self, changes: &BlockChanges) {
         let (tip, last) = (changes.tip(), self.tip());
         let above = last.is_none_or(|last| tip.height > last.height);
         assert!(above, "layer: {tip:?} not above its tip {last:?}");
@@ -121,7 +121,7 @@ impl Layer {
     }
 
     /// Panics: key `changes` inserts twice or this layer holds (before any state moves)
-    fn assert_new_keys(&self, changes: &Changes) {
+    fn assert_new_keys(&self, changes: &BlockChanges) {
         for (&table, held) in self.schema.maps().iter().zip(&self.maps) {
             let mut keys: Vec<&[u8]> = changes.inserts(table).map(|(key, _)| key).collect();
             keys.sort_unstable();
@@ -160,38 +160,6 @@ impl Layer {
     }
 }
 
-/// Allocator cost per allocation (glibc: 8 B header + 16 B granularity)
-const ALLOCATION: usize = 16;
-
-/// `Arc<Delta>` (+ 2 counts) + its `deltas` slot + its `appends` and `keys` allocations
-const BLOCK: usize = size_of::<Delta>() + 3 * size_of::<usize>() + 3 * ALLOCATION;
-
-/// `sequences` slot + the record's allocation
-const RECORD: usize = size_of::<Bytes>() + ALLOCATION;
-
-/// `OrdMap` entry (leaves ≈ 2/3 full) + key and value allocations + `Delta::keys` clone (`Bytes`
-/// + its promoted 3-word `Shared`)
-const ROW: usize = size_of::<(Bytes, Bytes)>() * 3 / 2
-    + 2 * ALLOCATION
-    + size_of::<Bytes>()
-    + 3 * size_of::<usize>()
-    + ALLOCATION;
-
-/// Heap `changes` adds to a layer it is pushed onto (≈, unshared; `tests/buffer_heap.rs`)
-pub(crate) fn heap(changes: &Changes) -> usize {
-    let schema = changes.schema();
-    let records: Vec<usize> =
-        schema.sequences().iter().map(|&table| changes.appends(table).count()).collect();
-    let rows: usize = schema.maps().iter().map(|&table| changes.inserts(table).count()).sum();
-    let grown = records.iter().filter(|&&count| count > 0).count();
-    changes.bytes()
-        + BLOCK
-        + grown * size_of::<(usize, usize)>()
-        + schema.maps().len() * size_of::<Vec<Bytes>>()
-        + records.iter().sum::<usize>() * RECORD
-        + rows * ROW
-}
-
 /// Records `deltas` appended, per sequence (`tables` = the schema's sequence count)
 fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> Vec<usize> {
     let mut records = vec![0; tables];
@@ -201,22 +169,104 @@ fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> 
     records
 }
 
-/// Layer over the committed view it sits on: one state, fixed while held
-#[derive(Clone)]
-pub struct LayeredView<V> {
-    durable: V,
-    layer: Layer,
+/// Rows above a committed view: [`Overlay`] (NFS snapshots) or a store's uncommitted
+/// [`WriteBuffer`](crate::write_buffer::WriteBuffer)
+pub trait Uncommitted: Clone {
+    fn schema(&self) -> &Schema;
+
+    /// Lowest block held (`None` = empty)
+    fn first(&self) -> Option<Height>;
+
+    fn tip(&self) -> Option<BlockRef>;
+
+    fn record_count(&self, table: SequenceId) -> u64;
+
+    fn record(&self, table: SequenceId, at: u64) -> Option<Bytes>;
+
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes>;
+
+    /// Up to `limit` rows in `start..end`, key order
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)>;
 }
 
-impl<V: View> LayeredView<V> {
-    /// Panics: layer not above `durable`'s tip (rebase it first), or of another schema
-    pub fn new(durable: V, layer: Layer) -> Self {
-        assert_eq!(&layer.schema, durable.schema(), "layer over another schema's view");
-        let first = layer.deltas.front().map(|delta| delta.tip.height);
+impl Uncommitted for Overlay {
+    fn schema(&self) -> &Schema {
+        &self.schema
+    }
+
+    fn first(&self) -> Option<Height> {
+        self.deltas.front().map(|delta| delta.tip.height)
+    }
+
+    fn tip(&self) -> Option<BlockRef> {
+        Overlay::tip(self)
+    }
+
+    fn record_count(&self, table: SequenceId) -> u64 {
+        self.records(table).len() as u64
+    }
+
+    fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
+        self.records(table).get(at as usize).cloned()
+    }
+
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
+        self.rows(table).get(key).cloned()
+    }
+
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)> {
+        let bounds = (Bound::Included(start), Bound::Excluded(end));
+        let rows = Overlay::rows(self, table).range::<_, [u8]>(bounds).take(limit);
+        rows.map(|(key, value)| (key.clone(), value.clone())).collect()
+    }
+}
+
+impl<A: Uncommitted> Uncommitted for Arc<A> {
+    fn schema(&self) -> &Schema {
+        (**self).schema()
+    }
+
+    fn first(&self) -> Option<Height> {
+        (**self).first()
+    }
+
+    fn tip(&self) -> Option<BlockRef> {
+        (**self).tip()
+    }
+
+    fn record_count(&self, table: SequenceId) -> u64 {
+        (**self).record_count(table)
+    }
+
+    fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
+        (**self).record(table, at)
+    }
+
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
+        (**self).value(table, key)
+    }
+
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)> {
+        (**self).rows(table, start, end, limit)
+    }
+}
+
+/// Rows above over the committed view they sit on: one state, fixed while held
+#[derive(Clone)]
+pub struct OverlayView<V, A = Overlay> {
+    durable: V,
+    above: A,
+}
+
+impl<V: View, A: Uncommitted> OverlayView<V, A> {
+    /// Panics: `above` not above `durable`'s tip (rebase it first), or of another schema
+    pub fn new(durable: V, above: A) -> Self {
+        assert_eq!(above.schema(), durable.schema(), "layer over another schema's view");
+        let first = above.first();
         let floor = durable.tip().map(|tip| tip.height);
-        let above = first.is_none_or(|first| Some(first) > floor);
-        assert!(above, "layer from {first:?} not above durable {floor:?}: rebase it first");
-        Self { durable, layer }
+        let is_above = first.is_none_or(|first| Some(first) > floor);
+        assert!(is_above, "layer from {first:?} not above durable {floor:?}: rebase it first");
+        Self { durable, above }
     }
 
     /// Committed state underneath (the seam: at or below its tip = durable)
@@ -225,9 +275,9 @@ impl<V: View> LayeredView<V> {
     }
 }
 
-impl<V: View> View for LayeredView<V> {
+impl<V: View, A: Uncommitted + Send + Sync + 'static> View for OverlayView<V, A> {
     fn tip(&self) -> Option<BlockRef> {
-        self.layer.tip().or_else(|| self.durable.tip())
+        self.above.tip().or_else(|| self.durable.tip())
     }
 
     fn schema(&self) -> &Schema {
@@ -235,24 +285,24 @@ impl<V: View> View for LayeredView<V> {
     }
 }
 
-impl<V: View> fmt::Debug for LayeredView<V> {
+impl<V: View, A: Uncommitted> fmt::Debug for OverlayView<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LayeredView")
-            .field("tip", &self.tip())
+        f.debug_struct("OverlayView")
+            .field("tip", &self.above.tip().or_else(|| self.durable.tip()))
             .field("durable", &self.durable.tip())
             .finish_non_exhaustive()
     }
 }
 
-impl<V: SequenceRead> SequenceRead for LayeredView<V> {
+impl<V: SequenceRead, A: Uncommitted + Send + Sync + 'static> SequenceRead for OverlayView<V, A> {
     fn len(&self, table: SequenceId) -> u64 {
-        self.durable.len(table) + self.layer.records(table).len() as u64
+        self.durable.len(table) + self.above.record_count(table)
     }
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes> {
         match at.checked_sub(self.durable.len(table)) {
             None => self.durable.record(table, at),
-            Some(above) => self.layer.records(table).get(above as usize).cloned(),
+            Some(above) => self.above.record(table, above),
         }
     }
 
@@ -261,26 +311,23 @@ impl<V: SequenceRead> SequenceRead for LayeredView<V> {
         let below = range.start.min(durable)..range.end.min(durable);
         let mut records =
             if below.is_empty() { Vec::new() } else { self.durable.records(table, below) };
-        let layer = self.layer.records(table);
         let above = range.start.max(durable) - durable..range.end.max(durable) - durable;
         records.extend(above.map(|at| {
-            let record = layer.get(at as usize).cloned();
+            let record = self.above.record(table, at);
             record.unwrap_or_else(|| panic!("{table:?}: records past len"))
         }));
         records
     }
 }
 
-impl<V: MapRead> MapRead for LayeredView<V> {
+impl<V: MapRead, A: Uncommitted + Send + Sync + 'static> MapRead for OverlayView<V, A> {
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
-        let layer = self.layer.rows(table).get(key).cloned();
-        layer.or_else(|| self.durable.value(table, key))
+        self.above.value(table, key).or_else(|| self.durable.value(table, key))
     }
 
     fn values(&self, table: MapId, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
-        let layer = self.layer.rows(table);
         let mut answers: Vec<Option<Bytes>> =
-            keys.iter().map(|key| layer.get(*key).cloned()).collect();
+            keys.iter().map(|key| self.above.value(table, key)).collect();
         let misses: Vec<usize> = (0..keys.len()).filter(|&at| answers[at].is_none()).collect();
         let asked: Vec<&[u8]> = misses.iter().map(|&at| keys[at]).collect();
         for (at, found) in misses.into_iter().zip(self.durable.values(table, &asked)) {
@@ -302,13 +349,11 @@ impl<V: MapRead> MapRead for LayeredView<V> {
             return Some(rows);
         }
         let left = limit - rows.len();
-        let bounds = (Bound::Included(start), Bound::Excluded(end));
-        let layer = self.layer.rows(table).range::<_, [u8]>(bounds).take(left.saturating_add(1));
-        let before = rows.len();
-        rows.extend(layer.map(|(key, value)| (key.clone(), value.clone())));
-        if rows.len() - before > left {
+        let above = self.above.rows(table, start, end, left.saturating_add(1));
+        if above.len() > left {
             return None;
         }
+        rows.extend(above);
         // two sorted runs, no key in both → stable sort = one merge pass
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         Some(rows)

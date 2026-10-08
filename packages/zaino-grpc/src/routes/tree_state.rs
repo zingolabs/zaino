@@ -8,7 +8,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
-use zaino_persistence::{IndexKind, LayeredView, MapRead, SequenceRead};
+use zaino_persistence::{IndexKind, MapRead, OverlayView, SequenceRead};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
@@ -47,7 +47,7 @@ enum State {
 /// Everything one tree-state request is answered with (`trees` = `indexed`'s served tip's)
 pub(crate) struct Answering<V> {
     pub(crate) indexed: Arc<Indexed<V>>,
-    pub(crate) trees: TreeStateReader<LayeredView<V>>,
+    pub(crate) trees: TreeStateReader<OverlayView<V>>,
     pub(crate) reads: ReadLanes,
     pub(crate) memos: Arc<Memos<V>>,
 }
@@ -66,7 +66,7 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         &self,
         memo: fn(&Memos<V>) -> &Memo<V, K, T>,
         key: K,
-        compute: impl FnOnce(&TreeStateReader<LayeredView<V>>) -> T + Send + 'static,
+        compute: impl FnOnce(&TreeStateReader<OverlayView<V>>) -> T + Send + 'static,
     ) -> Result<T, Status>
     where
         K: Eq + std::hash::Hash + Send + 'static,
@@ -88,7 +88,7 @@ impl<V: SequenceRead + MapRead> Answering<V> {
     fn state_at(
         &self,
         at: Height,
-    ) -> impl FnOnce(&TreeStateReader<LayeredView<V>>) -> Result<Bytes, Status> + Send + 'static
+    ) -> impl FnOnce(&TreeStateReader<OverlayView<V>>) -> Result<Bytes, Status> + Send + 'static
     {
         let (through, params) = (self.through(), self.served().params());
         move |trees| {
@@ -255,7 +255,7 @@ where
     let (start, max) = (request.start_index, request.max_entries);
 
     let tip = answering.served().tip().height;
-    let every = move |trees: &TreeStateReader<LayeredView<V>>| {
+    let every = move |trees: &TreeStateReader<OverlayView<V>>| {
         let mut roots = trees.subtree_roots(pool, 0, 0).map_err(to_status)?;
         roots.retain(|root| root.completing.height <= tip);
         Ok::<_, Status>(Arc::new(FramedRoots::of(&roots)))

@@ -41,10 +41,10 @@ impl<V> At<V> {
     pub fn views(&self) -> &Views<V>;                    // per index: committed view + node layer
 }
 impl<V> Views<V> {                                       // None = the index is disabled
-    pub fn compact_block(&self) -> Option<CompactBlockReader<LayeredView<V>>>;
-    pub fn tree_state(&self) -> Option<TreeStateReader<LayeredView<V>>>;
-    pub fn block_hash(&self) -> Option<BlockHashReader<LayeredView<V>>>;
-    pub fn transparent_address(&self) -> Option<TransparentAddressReader<LayeredView<V>>>;
+    pub fn compact_block(&self) -> Option<CompactBlockReader<OverlayView<V>>>;
+    pub fn tree_state(&self) -> Option<TreeStateReader<OverlayView<V>>>;
+    pub fn block_hash(&self) -> Option<BlockHashReader<OverlayView<V>>>;
+    pub fn transparent_address(&self) -> Option<TransparentAddressReader<OverlayView<V>>>;
 }
 ```
 
@@ -129,6 +129,6 @@ after:  … F ─ b1 ─ b2        (b1, b2 fetched + folded from F)
   mock validators (one lying): reorgs, finality, a restart, an index enabled late (holds the
   served tip back, every index readable throughout), a writer gone.
 
-The persistence types the overlay builds on (`Layer`, `LayeredView`, `Store::staged`) are in
+The persistence types the overlay builds on (`Overlay`, `OverlayView`, `Store::staged`) are in
 [persistence-engine.md §5](persistence-engine.md#5-layers-and-writers). How requests read
 snapshots is in [global-snapshot.md](global-snapshot.md).

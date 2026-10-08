@@ -2,7 +2,7 @@
 //!
 //! - engine crate implements [`Subject`] once, runs [`history`] under proptest + [`contract`] as
 //!   a plain test; `PROPTEST_CASES=1000` = its heavy run
-//! - store driven as a writer drives it (apply, commit), under [`Layer`]s kept as the NFS keeps
+//! - store driven as a writer drives it (apply, commit), under [`Overlay`]s kept as the NFS keeps
 //!   them (with, rebase), against `Vec` / `BTreeMap` models
 //! - storage-specific moves (power loss, background work, internal invariants) = [`Subject`]
 //!   hooks with no-op defaults
@@ -20,12 +20,13 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{
-    layer::{Layer, LayeredView},
     manifest::IndexKind,
+    overlay::{Overlay, OverlayView},
     port::{
-        Changes, MapRead, MapTable, PersistenceEngine, Schema, SequenceRead, SequenceTable, Store,
-        Tables, View, Width,
+        BlockChanges, MapRead, MapTable, PersistenceEngine, Schema, SequenceRead, SequenceTable,
+        Store, Tables, View, Width,
     },
+    write_buffer::StagedView,
 };
 
 pub const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
@@ -90,7 +91,7 @@ pub fn probed_key(n: u32) -> Vec<u8> {
     id
 }
 
-/// Tip of `Changes` `n` (from 1): height `n - 1`, hash `[n; 32]`
+/// Tip of `BlockChanges` `n` (from 1): height `n - 1`, hash `[n; 32]`
 pub fn block_ref(n: usize) -> BlockRef {
     salted_ref(n, 0)
 }
@@ -140,13 +141,13 @@ pub struct Model {
 }
 
 impl Model {
-    /// Next block, applied here, returned as `Changes`: `records` blocks + twice as many nodes,
+    /// Next block, applied here, returned as `BlockChanges`: `records` blocks + twice as many nodes,
     /// one height record, one `scanned` row per listed owner (fresh seqs), `ids` fresh `probed` ids
-    pub fn advance(&mut self, records: u8, owners: &[u8], ids: u16) -> Changes {
+    pub fn advance(&mut self, records: u8, owners: &[u8], ids: u16) -> BlockChanges {
         self.advances += 1;
         let tip = salted_ref(self.advances, self.salt);
         self.tip = Some(tip);
-        let mut changes = Changes::new(tip, SCHEMA);
+        let mut changes = BlockChanges::new(tip, SCHEMA);
         for _ in 0..records {
             let record = block(self.blocks.len() as u32);
             self.append(&mut changes, BLOCKS, record);
@@ -176,7 +177,7 @@ impl Model {
     }
 
     /// `record` on this branch, at the end of `table` here and in `changes`
-    fn append(&mut self, changes: &mut Changes, table: SequenceTable, record: Vec<u8>) {
+    fn append(&mut self, changes: &mut BlockChanges, table: SequenceTable, record: Vec<u8>) {
         let record = salted(record, self.salt);
         changes.sequence(table).append(&record);
         self.bytes += record.len();
@@ -268,9 +269,9 @@ fn owned(rows: Vec<(Bytes, Bytes)>) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 /// Block above durable, as the NFS holds it: its changes, contents through it, its layer
 struct Node {
-    changes: Changes,
+    changes: BlockChanges,
     model: Model,
-    layer: Layer,
+    layer: Overlay,
 }
 
 /// Oracle for [`history`]: `nodes` = blocks above `committed`, oldest first, the first `applied`
@@ -295,16 +296,16 @@ impl Oracle {
     }
 
     /// Newest node's layer over `durable` (`durable` = committed)
-    fn newest_view<V: View>(&self, durable: V) -> LayeredView<V> {
-        let layer = self.nodes.last().map_or_else(|| Layer::empty(&SCHEMA), |n| n.layer.clone());
-        LayeredView::new(durable, layer)
+    fn newest_view<V: View>(&self, durable: V) -> OverlayView<V> {
+        let layer = self.nodes.last().map_or_else(|| Overlay::empty(&SCHEMA), |n| n.layer.clone());
+        OverlayView::new(durable, layer)
     }
 
     /// Node on the current branch above the newest: parent's layer `.with` its changes
     fn grow(&mut self, (records, owners, ids): (u8, &[u8], u16)) {
         let (mut model, layer) = match self.nodes.last() {
             Some(node) => (node.model.clone(), node.layer.clone()),
-            None => (self.committed.clone(), Layer::empty(&SCHEMA)),
+            None => (self.committed.clone(), Overlay::empty(&SCHEMA)),
         };
         model.salt = self.salt;
         let changes = model.advance(records, owners, ids);
@@ -323,7 +324,7 @@ impl Oracle {
     /// their contents (oldest + newest read in full); buffered bytes >= applied item bytes, 0 iff
     /// nothing applied
     fn assert<S: Store<View: SequenceRead + MapRead>>(&self, store: &S, label: &str) {
-        self.committed.assert_view(&store.view(), &format!("{label}: view"));
+        self.committed.assert_view(&store.committed(), &format!("{label}: view"));
         self.buffered().assert_view(&store.staged(), &format!("{label}: staged"));
         let (buffered, items) = (store.buffered_bytes(), self.buffered().bytes);
         let items = items - self.committed.bytes;
@@ -333,7 +334,7 @@ impl Oracle {
             node.layer.check(label);
         }
         for node in [self.nodes.first(), self.nodes.last()].into_iter().flatten() {
-            let view = LayeredView::new(store.view(), node.layer.clone());
+            let view = OverlayView::new(store.committed(), node.layer.clone());
             node.model.assert_view(&view, &format!("{label}: node {:?}", node.model.tip));
         }
     }
@@ -346,8 +347,8 @@ struct Pinned<V> {
     buffered: Model,
     newest: Model,
     view: V,
-    staged: LayeredView<V>,
-    node: LayeredView<V>,
+    staged: StagedView<V>,
+    node: OverlayView<V>,
 }
 
 /// - `Grow`: node above the newest (`records` blocks + nodes, one height, `owners` scanned rows,
@@ -418,9 +419,9 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
 
 /// History against the subject + `Oracle`, after every step:
 ///
-/// - `view()` = committed prefix; `staged()` = committed + buffered; buffered bytes >= applied
+/// - `committed()` = committed prefix; `staged()` = committed + buffered; buffered bytes >= applied
 /// - each node's layer over the view = its contents; pinned views = their models
-/// - crash or reopen = exactly the committed nodes; [`Subject::check`] + `Layer::check` hold
+/// - crash or reopen = exactly the committed nodes; [`Subject::check`] + `Overlay::check` hold
 pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
     let mut store = open(&subject);
     let mut oracle = Oracle::default();
@@ -444,7 +445,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 oracle.committed = oracle.buffered().clone();
                 oracle.nodes.drain(..oracle.applied);
                 oracle.applied = 0;
-                oracle.rebase(&store.view());
+                oracle.rebase(&store.committed());
             }
             Step::Reorg { keep } => {
                 let unapplied = oracle.nodes.len() - oracle.applied;
@@ -460,7 +461,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 drop(store);
                 store = open(&subject);
                 oracle.applied = 0;
-                oracle.rebase(&store.view());
+                oracle.rebase(&store.committed());
                 reopened = true;
             }
             Step::Pin => {
@@ -469,9 +470,9 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                     committed: oracle.committed.clone(),
                     buffered: oracle.buffered().clone(),
                     newest: oracle.newest().clone(),
-                    view: store.view(),
+                    view: store.committed(),
                     staged: store.staged(),
-                    node: oracle.newest_view(store.view()),
+                    node: oracle.newest_view(store.committed()),
                 })
             }
             Step::Scan { from, to, limit } => {
@@ -480,7 +481,7 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 let bounds = (from.as_slice(), to.as_slice());
                 let staged = format!("{label}: staged");
                 oracle.buffered().assert_scans(&store.staged(), bounds, *limit, &staged);
-                let node = oracle.newest_view(store.view());
+                let node = oracle.newest_view(store.committed());
                 newest.assert_scans(&node, bounds, *limit, &format!("{label}: newest node"));
             }
         }
@@ -501,7 +502,7 @@ fn refused(what: &str, act: impl FnOnce()) {
     assert!(acted.is_err(), "{what}: done instead of panicking");
 }
 
-/// View = only a tip (what `Layer::rebase` + `LayeredView::new` read)
+/// View = only a tip (what `Overlay::rebase` + `OverlayView::new` read)
 #[derive(Clone)]
 struct Tip(Option<BlockRef>);
 
@@ -524,24 +525,24 @@ pub fn contract<S: Subject>(subject: S) {
     let engine = subject.engine();
     let mut model = Model::default();
     let mut store = open(&subject);
-    model.assert_view(&store.view(), "fresh");
+    model.assert_view(&store.committed(), "fresh");
     model.assert_view(&store.staged(), "fresh staged");
     assert_eq!(store.schema(), &SCHEMA, "the store keeps its schema");
-    assert_eq!(store.view().schema(), &SCHEMA, "its views read by it");
+    assert_eq!(store.committed().schema(), &SCHEMA, "its views read by it");
     assert_eq!(store.path(), subject.path(), "the store keeps its path");
 
     let empty = model.clone();
     store.apply(model.advance(2, &[1, 2], 2));
     store.apply(model.advance(0, &[], 1));
-    empty.assert_view(&store.view(), "applied, not committed: not in the view");
+    empty.assert_view(&store.committed(), "applied, not committed: not in the view");
     model.assert_view(&store.staged(), "applied: staged");
     assert!(store.buffered_bytes() > model.bytes, "buffered bytes > applied items (+ overhead)");
     store.commit().expect("commit");
-    model.assert_view(&store.view(), "committed");
+    model.assert_view(&store.committed(), "committed");
     model.assert_view(&store.staged(), "committed: staged = view");
     assert_eq!(store.buffered_bytes(), 0, "committed: nothing buffered");
     store.commit().expect("nothing buffered");
-    model.assert_view(&store.view(), "an empty commit writes nothing");
+    model.assert_view(&store.committed(), "an empty commit writes nothing");
     drop(store);
 
     for (what, schema) in [
@@ -554,12 +555,12 @@ pub fn contract<S: Subject>(subject: S) {
     }
 
     let mut store = open(&subject);
-    model.assert_view(&store.view(), "reopened");
+    model.assert_view(&store.committed(), "reopened");
     let verified = engine.verify(subject.path(), &SCHEMA).expect("verify");
     assert!(verified.is_clean() && verified.heights == 2, "{verified:?}");
 
     // store preconditions: each a panic before anything is buffered
-    let other = Layer::empty(&Schema::new(
+    let other = Overlay::empty(&Schema::new(
         IndexKind::CompactBlock,
         1,
         NetworkType::Regtest,
@@ -576,7 +577,7 @@ pub fn contract<S: Subject>(subject: S) {
         store.changes(block_ref(3)).sequence(foreign).append(&[0]);
     });
     refused("a read of another schema's table", || {
-        store.view().sequence(foreign).record(0);
+        store.committed().sequence(foreign).record(0);
     });
     let mut buffered = model.clone();
     store.apply(buffered.advance(1, &[3], 1));
@@ -584,14 +585,14 @@ pub fn contract<S: Subject>(subject: S) {
     let mut held = store.changes(block_ref(4));
     held.map(PROBED).insert(&probed_key(buffered.ids - 1), &[0; 4]);
     refused("a key the buffer holds", || store.apply(held));
-    model.assert_view(&store.view(), "after misuse: view");
+    model.assert_view(&store.committed(), "after misuse: view");
     buffered.assert_view(&store.staged(), "after misuse: staged");
     store.commit().expect("commit after misuse");
-    buffered.assert_view(&store.view(), "commits continue after misuse");
+    buffered.assert_view(&store.committed(), "commits continue after misuse");
 
     // layer preconditions (pure: `with` and `rebase` leave the layer as it was)
     let mut nodes = buffered.clone();
-    let layer = Layer::empty(&SCHEMA).with(&nodes.advance(1, &[4], 1));
+    let layer = Overlay::empty(&SCHEMA).with(&nodes.advance(1, &[4], 1));
     let mut held = layer.changes(block_ref(5));
     held.map(PROBED).insert(&probed_key(nodes.ids - 1), &[0; 4]);
     refused("with a tip not above the layer's", || drop(layer.with(&layer.changes(block_ref(4)))));
@@ -600,13 +601,13 @@ pub fn contract<S: Subject>(subject: S) {
     refused("rebase onto another branch", || drop(layer.rebase(&Tip(Some(salted_ref(4, 1))))));
     refused("rebase past the layer", || drop(layer.rebase(&Tip(Some(block_ref(5))))));
     refused("a layer under durable", || {
-        drop(LayeredView::new(Tip(Some(block_ref(4))), layer.clone()))
+        drop(OverlayView::new(Tip(Some(block_ref(4))), layer.clone()))
     });
     refused("a layer over another schema's view", || {
-        drop(LayeredView::new(store.view(), other.clone()))
+        drop(OverlayView::new(store.committed(), other.clone()))
     });
-    let view = LayeredView::new(store.view(), layer.rebase(&store.view()));
+    let view = OverlayView::new(store.committed(), layer.rebase(&store.committed()));
     nodes.assert_view(&view, "layers continue after misuse");
     let rebased = layer.rebase(&Tip(Some(block_ref(4))));
-    assert_eq!(rebased, Layer::empty(&SCHEMA), "rebase onto its tip = empty");
+    assert_eq!(rebased, Overlay::empty(&SCHEMA), "rebase onto its tip = empty");
 }

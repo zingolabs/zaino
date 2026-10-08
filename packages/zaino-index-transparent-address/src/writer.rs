@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{Changes, MapRead, Store};
+use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
 use zaino_sync::{Committer, IndexHandle, Subscription};
 
@@ -45,7 +45,11 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
 ///
 /// - projection, no lookups: a spend keyed by its outpoint (already in the block), never resolved
 ///   to an address (`docs/design/index-data-structures.md` §5)
-pub fn fold<V: MapRead>(parent: &TransparentAddressReader<V>, block: &Block, out: &mut Changes) {
+pub fn fold<V: MapRead>(
+    parent: &TransparentAddressReader<V>,
+    block: &Block,
+    out: &mut BlockChanges,
+) {
     out.assert_next(parent.view().tip(), block);
     let height = u32::from(block.header().height);
     for tx in block.transactions() {
@@ -106,7 +110,7 @@ mod tests {
         Step::Apply { height: block.header().height, data: Arc::clone(block) }
     }
 
-    /// Block 1 spends alice's block-0 receive, paying bob: its `Changes` = the spend under the
+    /// Block 1 spends alice's block-0 receive, paying bob: its `BlockChanges` = the spend under the
     /// outpoint + bob's receive (nothing looked up); read over the parent + it, alice's receive
     /// spent by block 1, bob's two unspent, the opaque output kept
     #[test]
@@ -214,16 +218,16 @@ mod tests {
             let label = &state.label;
             let store = open(&state.fs);
             // one block per commit: blocks held = commits recovered
-            let count = store.view().tip().map_or(0, |tip| u64::from(tip.height) + 1);
+            let count = store.committed().tip().map_or(0, |tip| u64::from(tip.height) + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
             assert!(acked.contains(&count), "{label}: recovered {count}");
-            assert_eq!(observed(store.view()), expected(count), "{label}");
+            assert_eq!(observed(store.committed()), expected(count), "{label}");
 
             let (sink, _handle, running) = start(store, QUEUE);
             sink.send(step(&blocks[count as usize])).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let after = observed(open(&state.fs).view());
+            let after = observed(open(&state.fs).committed());
             assert_eq!(after, expected(count + 1), "{label}: next after recovery");
         }
     }

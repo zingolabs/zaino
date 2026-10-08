@@ -15,9 +15,9 @@ crate = "zaino-internal-block-hash-to-height"
 kind = "breaking"
 section = "changed"
 description = """
-`fold(parent: &BlockHashReader<V>, block, out: &mut Changes)` appends to a caller-opened delta \
+`fold(parent: &BlockHashReader<V>, block, out: &mut BlockChanges)` appends to a caller-opened delta \
 (asserting it is the block's and the block extends the parent), replacing \
-`fold(block, network) -> Changes`; it moved into `writer.rs`. `schema(network)` is replaced by \
+`fold(block, network) -> BlockChanges`; it moved into `writer.rs`. `schema(network)` is replaced by \
 `FORMAT` + `TABLES`.
 """
 migration = """

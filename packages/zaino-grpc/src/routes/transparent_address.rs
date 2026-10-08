@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
-use zaino_persistence::{LayeredView, MapRead};
+use zaino_persistence::{MapRead, OverlayView};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::Zatoshis;
 use zaino_proto::proto::service as proto;
@@ -28,7 +28,7 @@ use crate::wire::{
 /// One request's index: the snapshot's reader (as of its tip, row-capped) + the network its
 /// addresses parse in
 pub(crate) struct Addresses<V> {
-    pub(crate) reader: TransparentAddressReader<LayeredView<V>>,
+    pub(crate) reader: TransparentAddressReader<OverlayView<V>>,
     pub(crate) network: NetworkType,
 }
 

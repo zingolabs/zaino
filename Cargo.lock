@@ -5212,6 +5212,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "crc32fast",
+ "hashbrown 0.16.1",
  "imbl",
  "libc",
  "memmap2",

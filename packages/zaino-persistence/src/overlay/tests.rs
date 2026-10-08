@@ -1,4 +1,4 @@
-//! Fire drills: each [`Layer::check`] invariant broken by hand, caught by name (check never
+//! Fire drills: each [`Overlay::check`] invariant broken by hand, caught by name (check never
 //! firing = silent pass after every conformance step)
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -10,13 +10,13 @@ use crate::conformance::{panic_message, Model, PROBED, SCHEMA};
 fn every_layer_invariant_broken_by_hand_is_caught_by_name() {
     let layer = || {
         let mut model = Model::default();
-        let layer = Layer::empty(&SCHEMA).with(&model.advance(2, &[1, 2], 2));
+        let layer = Overlay::empty(&SCHEMA).with(&model.advance(2, &[1, 2], 2));
         layer.with(&model.advance(1, &[3], 1))
     };
-    fn probed(layer: &mut Layer) -> &mut OrdMap<Bytes, Bytes> {
+    fn probed(layer: &mut Overlay) -> &mut OrdMap<Bytes, Bytes> {
         &mut layer.maps[usize::from(PROBED.id.0)]
     }
-    type Drill = (&'static str, fn(&mut Layer));
+    type Drill = (&'static str, fn(&mut Overlay));
     let drills: [Drill; 4] = [
         ("layer blocks ascending", |layer| {
             let oldest = layer.deltas.pop_front().expect("two blocks");

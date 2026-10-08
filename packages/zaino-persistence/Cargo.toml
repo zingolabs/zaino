@@ -29,6 +29,7 @@ metrics = { workspace = true }
 tracing.workspace = true
 proptest = { workspace = true, optional = true }
 imbl.workspace = true
+hashbrown.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

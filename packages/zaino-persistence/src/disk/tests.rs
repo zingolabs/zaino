@@ -142,17 +142,19 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
-        let recovered = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         let acked = usize::try_from(state.tag).expect("small");
         assert!(recovered == acked || recovered == acked + 1, "{label}: recovered {recovered}");
-        models[recovered].assert_view(&store.view(), label);
+        models[recovered].assert_view(&store.committed(), label);
         assert_tiers(&store, &state.fs, 2, true, label);
 
         let mut model = models[recovered].clone();
         store.apply(model.advance(1, &[9], 1));
         store.commit().expect("commit after recovery");
-        model
-            .assert_view(&store.view(), &format!("{label}: commits continue at the recovered end"));
+        model.assert_view(
+            &store.committed(),
+            &format!("{label}: commits continue at the recovered end"),
+        );
     }
 }
 
@@ -217,12 +219,12 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
         let mut store = DiskEngine::with_fanout(fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA)
             .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
-        let recovered = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         assert!(
             recovered == acked || recovered == acked + 1,
             "op {fail_at}: recovered {recovered}"
         );
-        models[recovered].assert_view(&store.view(), &format!("op {fail_at}"));
+        models[recovered].assert_view(&store.committed(), &format!("op {fail_at}"));
         store.apply(models[recovered].clone().advance(1, &[9], 1));
         store.commit().expect("commit after restart");
     }
@@ -256,7 +258,7 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
             });
         match opened {
             Ok(store) => {
-                model.assert_view(&store.view(), &format!("read {fail_at}"));
+                model.assert_view(&store.committed(), &format!("read {fail_at}"));
                 break;
             }
             Err(error) => {
@@ -277,7 +279,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
     };
     let store = || open(&DiskEngine::with_fanout(SimFs::new(), 2));
-    let changes = |n| Changes::new(block_ref(n), SCHEMA);
+    let changes = |n| BlockChanges::new(block_ref(n), SCHEMA);
     let committed = |store: &mut DiskStore, changes| {
         store.apply(changes);
         store.commit().expect("commit");
@@ -296,7 +298,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         changes(1).map(stray_map).insert(&[0; 16], &[0; 8])
     });
     fires("compact_block: map probed not in its schema", &|| {
-        store().view().map(stray_map).value(&[0; 16]);
+        store().committed().map(stray_map).value(&[0; 16]);
     });
     static SKIPPED: [SequenceTable; 1] = [SequenceTable::new(1, "skipped", Width::Variable)];
     fires("sequence id != its position", &|| {
@@ -304,7 +306,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
     });
     fires("changes built for another schema", &|| {
         let other = Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, TABLES);
-        store().apply(Changes::new(block_ref(1), other));
+        store().apply(BlockChanges::new(block_ref(1), other));
     });
     fires("apply at height 0, not above the last applied Some(Height(0))", &|| {
         let mut store = store();
@@ -326,7 +328,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         let mut store = store();
         committed(&mut store, one_row(1));
         committed(&mut store, one_row(2));
-        store.view().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
+        store.committed().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
     });
     // two 1-row segments at fanout 2 = merge; its duplicate panics on its thread, resumed here
     fires("strictly ascending", &|| {
@@ -357,7 +359,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     fs.corrupt(&path("blocks.dat"), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
     let store = open(&DiskEngine::new(fs.clone()));
     assert_eq!(blocks_len(&fs), committed, "uncommitted tail truncated");
-    let records = store.view().sequence(BLOCKS).records(0..4);
+    let records = store.committed().sequence(BLOCKS).records(0..4);
     assert_eq!(records, (0..4).map(block).collect::<Vec<_>>());
     drop(store);
 

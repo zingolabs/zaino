@@ -53,7 +53,7 @@ fold(&parent, &block, &fees, &mut out)?;              // Result<(), TreeSizeOutO
   later record.
 - `Err(TreeSizeOutOfRange)` = a tree past `u32` (#549).
 - `CompactBlockReader<V>` is generic over any `V: SequenceRead`: a store's
-  committed view or a `zaino_persistence::LayeredView` over one (a snapshot's:
+  committed view or a `zaino_persistence::OverlayView` over one (a snapshot's:
   `snap.views().compact_block()`). `block(h)` (one framed record, every pool)
   is its public read; the windowed range read backs `RangeCursor` (one window:
   at most 256 records, cut to a byte budget, never fewer than one; either
@@ -103,7 +103,7 @@ Routes read through one snapshot per request (`snap.views().compact_block()`,
 - `block_at(h, hash)` = `GetBlock` by hash, `h` located by the block-hash
   index: the record only if its own `hash` field is `hash`, else
   `ServeError::HashNotFound` (`Malformed` if the record will not walk).
-- `resident_block(h)` (on a `LayeredView` reader) = the record when `h` sits
+- `resident_block(h)` (on an `OverlayView` reader) = the record when `h` sits
   in the snapshot's layer above the committed records: RAM, no page read, a
   transport may answer inline; `None` = ask `block`.
 - `RangeCursor::new(reader, start, end, tip, pools)` = `GetBlockRange` of

@@ -23,7 +23,7 @@ than a B-tree ([persistence-architecture.md](./persistence-architecture.md)).
 
 Five properties hold for all of them, and they are the contract:
 
-1. **Final data only.** Non-final data stays in memory above the store (`Layer`, §5), and reorgs
+1. **Final data only.** Non-final data stays in memory above the store (`Overlay`, §5), and reorgs
    never reach storage. The LMDB store this replaced deleted and rewound on disk, which needed the
    whole block back to reverse every secondary index.
 1. **Insert only.** No update, no delete, no read-modify-write.
@@ -55,12 +55,12 @@ pub trait Store: Send + 'static {
     type View: View;
     fn schema(&self) -> &Schema;
     fn path(&self) -> &Path;
-    fn changes(&self, at: BlockRef) -> Changes;           // one block's empty delta (provided)
-    fn apply(&mut self, changes: Changes);                // buffered: not durable, not in view()
+    fn changes(&self, at: BlockRef) -> BlockChanges;           // one block's empty delta (provided)
+    fn apply(&mut self, changes: BlockChanges);                // buffered: not durable, not in view()
     fn buffered_bytes(&self) -> usize;                    // ≈ buffer's heap (RAM, not disk)
     fn commit(&mut self) -> Result<(), StoreError>;      // every buffer, one atomic commit
     fn view(&self) -> Self::View;                         // committed only
-    fn staged(&self) -> LayeredView<Self::View>;          // committed + buffered
+    fn staged(&self) -> OverlayView<Self::View>;          // committed + buffered
 }
 
 pub trait View: Clone + Send + Sync + 'static {
@@ -99,7 +99,7 @@ let mut changes = store.changes(block.at());
 changes.map(SPENT).insert(&outpoint.encode(), &encode_spend(&spend));
 store.apply(changes);
 store.commit()?;
-let spend = store.view().map(SPENT).value(&outpoint.encode());
+let spend = store.committed().map(SPENT).value(&outpoint.encode());
 ```
 
 - **Tables** are `const` handles: `SequenceTable::new(id, name, record)`,
@@ -110,23 +110,23 @@ let spend = store.view().map(SPENT).value(&outpoint.encode());
 - **`scope`** is the one hint: the leading key bytes every range read shares (0 = point lookups).
   It is a partition key, a general database idea; an engine may ignore it. Map keys compare as
   bytes and lead with at least 8 uniform bytes (a hash, a txid).
-- **`Changes`** owns one buffer per table, shaped by the schema, and is opened only by
-  `Store::changes` / `Layer::changes`. `changes.sequence(T).append(&record)` and
+- **`BlockChanges`** owns one buffer per table, shaped by the schema, and is opened only by
+  `Store::changes` / `Overlay::changes`. `changes.sequence(T).append(&record)` and
   `changes.map(T).insert(&key, &value)` hand out one table's buffer: a fixed-width table holds its
   bytes back to back with no per-item overhead, a variable one adds an end offset per item. A
   handle of another schema or an item of the wrong width panics at the call that made it, naming
   the table. Callers encode into temporaries and never manage a lifetime.
 - **Reads mirror writes**: `view.sequence(T)` (`count`, `record`, `records`) and `view.map(T)`
   (`value`, `values`, `range`) check the handle against `View::schema` and read by its position.
-- **Folds** check their preconditions with `Changes::assert_next(parent_tip, block)` (the delta
+- **Folds** check their preconditions with `BlockChanges::assert_next(parent_tip, block)` (the delta
   opened for `block`, `block` one height above `parent_tip` and linked to it by `prev_hash`,
-  genesis on an empty parent; `BlockHeader::extends`), or `Changes::assert_run` for a run.
-- **Apply** buffers one `Changes` (a `Layer`, §5): `staged()` reads it, `view()` does not, and
+  genesis on an empty parent; `BlockHeader::extends`), or `BlockChanges::assert_run` for a run.
+- **Apply** buffers one `BlockChanges` (the store's `WriteBuffer`): `staged()` reads it, `committed()` does not, and
   nothing is durable yet. Its tip must be above the last applied one.
 - **Commit** makes every buffered change and the last applied tip durable together (one fsync),
-  then moves `view()`; nothing buffered = nothing written. An `Err` poisons the store: every
+  then moves `committed()`; nothing buffered = nothing written. An `Err` poisons the store: every
   later commit panics, and recovery is a reopen (a failed sync is never retried).
-- **`view()` vs `staged()`**: serving pins `view()`, so a crash never takes back what a reader
+- **`committed()` vs `staged()`**: serving pins `committed()`, so a crash never takes back what a reader
   saw; a writer folding the next final block reads its parent through `staged()`.
 - **Reads** never return errors: a read past what was committed is a bug, and corruption panics on
   the first touch of a page whose checksum fails.
@@ -137,17 +137,17 @@ schema is a constant in the index's code, so a mismatch is a bug, not a runtime 
 | Where                          | Panics on                                                                                |
 | ------------------------------ | ---------------------------------------------------------------------------------------- |
 | `Tables::new`                  | an id != its position (a compile error when `const`)                                     |
-| `Changes::sequence` / `map`    | a table of another schema                                                                |
+| `BlockChanges::sequence` / `map`    | a table of another schema                                                                |
 | `append` / `insert`            | a fixed-width item of the wrong size                                                     |
 | `View::sequence` / `map`       | a table of another schema                                                                |
-| `Changes::assert_next` / `run` | a delta opened for another block; a block off the parent tip (an index's fold)           |
+| `BlockChanges::assert_next` / `run` | a delta opened for another block; a block off the parent tip (an index's fold)           |
 | the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes       |
 | the LSM (each batch)           | a row of the wrong widths; a duplicate key                                               |
 | sequence files (each append)   | a fixed-width record of the wrong size                                                   |
 | `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice |
 | `Store::commit`                | a commit after a failed one                                                              |
-| `Layer::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks     |
-| `LayeredView::new`             | a layer not above the durable tip (not rebased); a layer of another schema               |
+| `Overlay::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks     |
+| `OverlayView::new`             | a layer not above the durable tip (not rebased); a layer of another schema               |
 
 | Port      | `DiskEngine`                                                     | LMDB                                   | SQLite                                 |
 | --------- | ---------------------------------------------------------------- | -------------------------------------- | -------------------------------------- |
@@ -175,8 +175,8 @@ What the port deliberately does not have:
 
 ```text
 zaino-persistence/src/
-  port.rs       the traits, Schema, Changes, Verification
-  layer.rs      Layer / LayeredView: non-final data over a committed view (§5)
+  port.rs       the traits, Schema, BlockChanges, Verification
+  layer.rs      Overlay / OverlayView: non-final data over a committed view (§5)
   disk.rs       DiskEngine / DiskStore / DiskView: one manifest over both table kinds
   sequence.rs   sequence tables as positional files
   lsm/          map tables as size-tiered sorted segments
@@ -223,21 +223,21 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
 
 - `history`: random blocks over every table shape (a variable sequence, a fixed one, one in a
   sub-directory, a scoped map, a point-lookup map), held as the NFS holds them (one node per
-  block, its `Layer` = its parent's `.with` its `Changes`) and handed to the store as a writer
+  block, its `Overlay` = its parent's `.with` its `BlockChanges`) and handed to the store as a writer
   hands them: grow a node, apply the oldest unapplied nodes, commit, reorg the unapplied ones,
-  settle, reopen, power loss. After every step `view()` reads like the committed prefix,
+  settle, reopen, power loss. After every step `committed()` reads like the committed prefix,
   `staged()` like committed + buffered, `buffered_bytes()` at least the applied items (0 iff
-  none), each node's layer over `view()` like the contents through it, and `Layer::check`
+  none), each node's layer over `committed()` like the contents through it, and `Overlay::check`
   holds; a commit rebases
   every node, a crash or reopen keeps exactly what was committed. Nodes a reorg dropped are
   replaced with different bytes at the same positions and keys, so a stale item cannot pass.
   Views pinned earlier are re-checked after later steps (structural sharing never leaks a later
   write); range limits on both sides of each answer's size. The models are plain `Vec`s and
   `BTreeMap`s. Swarm-tested: whole step kinds switched off per case (no reorgs, no crashes, …).
-- `contract`: an empty open, `apply` invisible to `view()` until `commit`, an empty commit
+- `contract`: an empty open, `apply` invisible to `committed()` until `commit`, an empty commit
   writing nothing, identity refused across kind, format and network, a reopen resuming at the
-  tip, `verify` clean with every commit counted, and every `Store::apply`, `Layer::with` /
-  `rebase` and `LayeredView::new` precondition panicking with nothing buffered, work continuing
+  tip, `verify` clean with every commit counted, and every `Store::apply`, `Overlay::with` /
+  `rebase` and `OverlayView::new` precondition panicking with nothing buffered, work continuing
   after each.
 - `Model` doubles as the expected state for an engine's own crash and fault tests.
 
@@ -250,46 +250,48 @@ mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and 
 
 ## 5. Layers and writers
 
-### Buffer and layers
+### WriteBuffer and layers
 
 Data above a durable tip has one shape, whether it is a store's buffer or a non-final block in
 `zaino-nfs` ([nfs.md](./nfs.md)):
 
 ```rust
-impl Layer {
+impl Overlay {
     pub fn empty(schema: &Schema) -> Self;
     pub fn tip(&self) -> Option<BlockRef>;
-    pub fn changes(&self, at: BlockRef) -> Changes;       // the next block's empty delta
-    pub fn with(&self, changes: &Changes) -> Self;        // parent + changes, structural sharing
+    pub fn changes(&self, at: BlockRef) -> BlockChanges;       // the next block's empty delta
+    pub fn with(&self, changes: &BlockChanges) -> Self;        // parent + changes, structural sharing
     pub fn rebase(&self, durable: &impl View) -> Self;    // drop what `durable` now holds
 }
 
-impl<V: View> LayeredView<V> {
-    pub fn new(durable: V, layer: Layer) -> Self;         // layer first, then durable
+impl<V: View> OverlayView<V> {
+    pub fn new(durable: V, layer: Overlay) -> Self;         // layer first, then durable
     pub fn durable(&self) -> &V;                          // the committed view (the seam)
 }
 ```
 
-- **A block = one `Changes`**, tipped by that block and keyed exactly as the store holds it. A
+- **A block = one `BlockChanges`**, tipped by that block and keyed exactly as the store holds it. A
   layer is, per table, an `imbl` structure over its blocks' items (sequence records past the
   durable length, map rows by key) plus each block's share of them: a clone is O(tables) pointer
   copies, so a writer republishes per block and a child block shares its parent's layer.
 - **`rebase`** drops every block through durable's tip, by those shares. Durable's tip must be
   one of the layer's blocks (or below them all): past the layer or on another branch panics.
-- **`LayeredView<V>`** is a `View`, and a `SequenceRead` / `MapRead` when `V` is. A position past
+- **`OverlayView<V>`** is a `View`, and a `SequenceRead` / `MapRead` when `V` is. A position past
   the durable length reads the layer's records; a key reads the layer's rows first, and `values`
   asks durable once for the misses; `range` merges both runs (keys are unique across the two)
   and keeps the over-`limit` = `None` rule. `new` refuses a layer that is not above durable's tip,
   since an un-rebased layer would read its blocks twice.
-- **A store's buffer is a `Layer`**: `apply` adds one `Changes` in place, `staged()` =
-  `LayeredView::new(view(), buffer)`, and `commit` writes the buffer's items (map rows already in
-  key order) and empties it.
+- **A store's buffer is a `WriteBuffer`**: `apply` appends one `BlockChanges` (each table's items
+  back to back, map rows unsorted, one hash index of row numbers per map), `staged()` =
+  `OverlayView::new(committed(), buffer)`, and `commit` writes every table in parallel (the LSM
+  sorts each map's rows) and empties it. `Overlay` and `WriteBuffer` both implement
+  `Uncommitted`, what an `OverlayView` reads above its committed view.
 
 ### Writers and the NFS
 
 Non-final data lives in `zaino-nfs`: one node per block above the durable root, each holding one
-`Layer` per index (its parent's `.with` its own `Changes`); a snapshot reads every index as
-`LayeredView::new(committed view, node layer rebased onto it)`. A store only ever holds final
+`Overlay` per index (its parent's `.with` its own `BlockChanges`); a snapshot reads every index as
+`OverlayView::new(committed view, node layer rebased onto it)`. A store only ever holds final
 data. Each index writer drives its store through `zaino_sync::Committer`
 ([data-sink.md](./data-sink.md)):
 
@@ -297,7 +299,7 @@ data. Each index writer drives its store through `zaino_sync::Committer`
 | -------------------------------- | ----------------------------------------------------------- |
 | held (at or below `staged()`)    | skipped (a restart resends from the lowest durable tip)     |
 | unfolded (bulk)                  | `Store::changes`, fold onto `staged()` into it (compute pool), `Store::apply` |
-| folded (the tip)                 | `Store::apply` its `Changes` as the NFS sent them           |
+| folded (the tip)                 | `Store::apply` its `BlockChanges` as the NFS sent them           |
 | batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS |
 | `Shutdown`                       | `Store::commit`, stop                                       |
 

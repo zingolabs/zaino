@@ -8,7 +8,7 @@
 //!
 //! - insert only: a finalised block's height never changes (no tombstones, no versions)
 //! - one block = one row ([`fold`]); non-final blocks = `zaino-nfs` layers, read through a
-//!   snapshot's `LayeredView`
+//!   snapshot's `OverlayView`
 //! - segments, merges, filters, manifest, crash safety = the engine's
 
 use zaino_persistence::Tables;
@@ -31,6 +31,6 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&[], &[BY_HASH]);
 
-/// Buffered heap before a bulk commit (≈420 B/block → ≈40k blocks; max age commits first)
+/// Buffered heap before a bulk commit (max age commits first)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(16 << 20).expect("16 MiB is non-zero");

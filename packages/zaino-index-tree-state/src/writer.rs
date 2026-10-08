@@ -10,7 +10,7 @@ use std::{collections::BTreeMap, num::NonZeroUsize, slice};
 
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{Changes, IndexKind, SequenceRead, SequenceTable, Store, View};
+use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, Height, PerPool, ShieldedPool, TreeRoot, TreeSizes};
 use zaino_sync::{Committer, IndexHandle, Subscription};
 use zcash_primitives::merkle_tree::HashSer;
@@ -37,7 +37,7 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES)) at its committed tip; `batch_bytes` =
     /// buffered bytes per bulk commit (one fsync), and one run's stream bytes
     pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
-        let view = store.view();
+        let view = store.committed();
         let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
         assert_eq!(view.sequence(HEIGHTS).count(), held, "{NAME}: one record per committed height");
         Self { store: Committer::new(store, batch_bytes) }
@@ -77,7 +77,7 @@ pub enum FoldError {
 pub fn fold<V: SequenceRead>(
     parent: &TreeStateReader<V>,
     block: &Block,
-    out: &mut Changes,
+    out: &mut BlockChanges,
 ) -> Result<(), FoldError> {
     fold_run(parent, &[block], slice::from_mut(out))
 }
@@ -90,9 +90,9 @@ pub fn fold<V: SequenceRead>(
 pub(crate) fn fold_run<V: SequenceRead>(
     parent: &TreeStateReader<V>,
     blocks: &[&Block],
-    out: &mut [Changes],
+    out: &mut [BlockChanges],
 ) -> Result<(), FoldError> {
-    Changes::assert_run(parent.view().tip(), blocks, out);
+    BlockChanges::assert_run(parent.view().tip(), blocks, out);
     if blocks.is_empty() {
         return Ok(());
     }
@@ -205,7 +205,7 @@ fn split<V: SequenceRead>(
     mut sizes: TreeSizes,
     blocks: &[&Block],
     retained: &PerPool<Vec<Retained>>,
-    out: &mut [Changes],
+    out: &mut [BlockChanges],
 ) {
     let ends_of = |pool| {
         let levels = (0..MERKLE_DEPTH).map(|level| parent.len(level_table(pool, level)));
@@ -232,7 +232,7 @@ fn split<V: SequenceRead>(
 
 /// `records` appended to `table`, each at its own slot (slot != the table's `end` = a fold bug)
 fn append_in_order<R: AsRef<[u8]>>(
-    out: &mut Changes,
+    out: &mut BlockChanges,
     table: SequenceTable,
     end: &mut u64,
     records: impl Iterator<Item = (u64, R)>,
@@ -451,7 +451,7 @@ mod tests {
         }
         let chain = mock.blocks(mock.tip());
         // (tip, every table's appends) per block
-        let tables = |changes: &Changes| {
+        let tables = |changes: &BlockChanges| {
             let appends = SCHEMA
                 .sequences()
                 .iter()
@@ -480,7 +480,8 @@ mod tests {
                 if split & (1 << at) == 0 && at + 1 < chain.len() {
                     continue;
                 }
-                let mut out: Vec<Changes> = run.iter().map(|b| store.changes(b.at())).collect();
+                let mut out: Vec<BlockChanges> =
+                    run.iter().map(|b| store.changes(b.at())).collect();
                 let parent = TreeStateReader::new(store.staged());
                 fold_run(&parent, &std::mem::take(&mut run), &mut out).expect("folds");
                 for changes in out {
@@ -510,7 +511,8 @@ mod tests {
         blocks[2] = uncommittable;
         let store = open(&SimFs::new());
         let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
-        let mut out: Vec<Changes> = run.iter().map(|block| store.changes(block.at())).collect();
+        let mut out: Vec<BlockChanges> =
+            run.iter().map(|block| store.changes(block.at())).collect();
         let refused = fold_run(&TreeStateReader::new(store.staged()), &run, &mut out);
         assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
     }
@@ -595,11 +597,11 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs);
-            let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as u32);
             assert!(acked.contains(&count), "{label}: recovered {count}");
             if let Some(tip) = count.checked_sub(1) {
-                assert_eq!(trees(store.view(), tip), seen(tip), "{label}: at {tip}");
+                assert_eq!(trees(store.committed(), tip), seen(tip), "{label}: at {tip}");
             }
 
             let (sink, handle, running) = start(store, NonZeroUsize::MIN);
@@ -775,7 +777,7 @@ mod tests {
         reached(&mut handle, Some(4)).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(open(&fs).view());
+        let view = TreeStateReader::new(open(&fs).committed());
         let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
         let expected = [(2, &blocks[2]), (4, &blocks[4])].map(|(at, block)| SubtreeRoot {
             root: tree_root(&view, at),

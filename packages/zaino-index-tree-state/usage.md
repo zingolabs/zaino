@@ -99,9 +99,9 @@ encodings.
   frontiers through the same reconstruction serving uses.
 - Subtree roots are written by the same fold (an odd-index root never survives
   as an ommer, so it cannot be derived from stored nodes later).
-- One block = one delta (`Changes`): its height record, the nodes whose last
+- One block = one delta (`BlockChanges`): its height record, the nodes whose last
   leaf it holds and the subtree roots it closes, each asserted at its table's
-  end (slot = position). A commit merges the held blocks' `Changes` into one
+  end (slot = position). A commit merges the held blocks' `BlockChanges` into one
   `Store::commit`, which fsyncs only the tables that grew (~4 of 100 per
   batch).
 - `new` asserts one `heights` record per committed height.
@@ -122,7 +122,7 @@ fold(&parent, &block, &mut out)?;                   // block = next above parent
 ```
 
 - `fold` lives in `writer.rs`, beside the writer loop and its crate-internal
-  `fold_run(parent, blocks, out: &mut [Changes])` (a contiguous run, one
+  `fold_run(parent, blocks, out: &mut [BlockChanges])` (a contiguous run, one
   caller-opened delta per block, the writer's via `Run::apply_batch`).
 - The parent's state (tree sizes from its tip record, each pool's frontier,
   each table's length) is read through the reader; nothing is carried between
@@ -140,9 +140,9 @@ fold(&parent, &block, &mut out)?;                   // block = next above parent
 
 ## Non-final blocks and reorgs
 
-Blocks above the durable root are `zaino-nfs`'s: one `Layer` per block, keyed
+Blocks above the durable root are `zaino-nfs`'s: one `Overlay` per block, keyed
 exactly as the files, read through the same `TreeStateReader` over a
-`LayeredView`. A reorg moves the snapshot to another node; a block folds onto
+`OverlayView`. A reorg moves the snapshot to another node; a block folds onto
 its parent node's frontiers: no reverse fold. Nothing reorg-able is ever
 fsynced. See [`docs/design/nfs.md`](../../docs/design/nfs.md).
 

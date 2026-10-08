@@ -10,7 +10,7 @@ use std::{
     sync::Arc,
 };
 
-use zaino_persistence::{Changes, IndexKind, MapRead, Store};
+use zaino_persistence::{BlockChanges, IndexKind, MapRead, Store};
 use zaino_primitives::types::{
     Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
 };
@@ -83,7 +83,7 @@ pub enum FoldError {
 pub fn fold<V: MapRead>(
     parent: &ValueBalanceReader<V>,
     block: &Block,
-    out: &mut Changes,
+    out: &mut BlockChanges,
 ) -> Result<BlockFees, FoldError> {
     let mut fees = fold_run(parent, &[block], slice::from_mut(out))?;
     Ok(fees.pop().expect("one block in, one folded out"))
@@ -96,9 +96,9 @@ pub fn fold<V: MapRead>(
 pub(crate) fn fold_run<V: MapRead>(
     parent: &ValueBalanceReader<V>,
     blocks: &[&Block],
-    out: &mut [Changes],
+    out: &mut [BlockChanges],
 ) -> Result<Vec<BlockFees>, FoldError> {
-    Changes::assert_run(parent.view().tip(), blocks, out);
+    BlockChanges::assert_run(parent.view().tip(), blocks, out);
     run_fees(parent, blocks, |at, outpoint, value| {
         out[at].map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
     })
@@ -258,7 +258,8 @@ mod tests {
         store.apply(genesis);
 
         let run = [&*blocks[1], &*blocks[2]];
-        let mut out: Vec<Changes> = run.iter().map(|block| store.changes(block.at())).collect();
+        let mut out: Vec<BlockChanges> =
+            run.iter().map(|block| store.changes(block.at())).collect();
         let parent = ValueBalanceReader::new(store.staged());
         let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
         assert_eq!(run_fees, expected);
@@ -281,7 +282,7 @@ mod tests {
             let block_fees = fold(&ValueBalanceReader::new(store.staged()), block, &mut changes);
             let height = block.header().height;
             assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
-            let rows = |changes: &Changes| {
+            let rows = |changes: &BlockChanges| {
                 let rows = changes.inserts(OUTPUTS).map(|(key, value)| [key, value].concat());
                 rows.collect::<Vec<_>>()
             };
@@ -358,14 +359,16 @@ mod tests {
         for (case, blocks, expected) in cases {
             let store = open(&SimFs::new());
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
-            let mut out: Vec<Changes> = run.iter().map(|block| store.changes(block.at())).collect();
+            let mut out: Vec<BlockChanges> =
+                run.iter().map(|block| store.changes(block.at())).collect();
             let folded = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
 
         let (store, two) = (open(&SimFs::new()), block(two));
         let run = [&*genesis, &*two];
-        let mut out: Vec<Changes> = run.iter().map(|block| store.changes(block.at())).collect();
+        let mut out: Vec<BlockChanges> =
+            run.iter().map(|block| store.changes(block.at())).collect();
         let parent = ValueBalanceReader::new(store.staged());
         let gap = catch_unwind(AssertUnwindSafe(|| fold_run(&parent, &run, &mut out)));
         let payload = gap.expect_err("a run skipping 1");
@@ -462,7 +465,7 @@ mod tests {
         for state in states {
             let crashed = &state.label;
             let store = open(&state.fs);
-            let tip = tip_of(&store.view());
+            let tip = tip_of(&store.committed());
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
             assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
 

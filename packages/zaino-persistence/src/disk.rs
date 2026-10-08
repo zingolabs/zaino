@@ -7,8 +7,8 @@
 //!   <map>/<id>.seg      one sorted segment per batch or merge   `lsm`
 //! ```
 //!
-//! - apply → buffer ([`Layer`], RAM)
-//! - commit → buffer appended + sealed per table → manifest (commit point) → readable
+//! - apply → [`WriteBuffer`] (RAM, unsorted)
+//! - commit → every table written + sealed in parallel → manifest (commit point) → readable
 //! - failed commit poisons the store (`docs/design/durability.md` §6): recovery = reopen
 
 use std::{
@@ -19,20 +19,22 @@ use std::{
 };
 
 use bytes::Bytes;
+use rayon::prelude::*;
 use zaino_primitives::types::BlockRef;
 
 use crate::{
     dir::IndexDir,
     fs::Fs,
-    layer::{self, Layer, LayeredView},
     lsm::{decode_list, encode_list, file_name, SegmentLog, SegmentMeta, Snapshot},
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
+    overlay::OverlayView,
     pages::{scrub, Sealed},
     port::{
-        Changes, MapId, MapRead, PersistenceEngine, Schema, SequenceId, SequenceRead, Store,
+        BlockChanges, MapId, MapRead, PersistenceEngine, Schema, SequenceId, SequenceRead, Store,
         Verification, View,
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
+    write_buffer::{StagedView, WriteBuffer},
     StoreError,
 };
 
@@ -58,7 +60,7 @@ impl DiskEngine {
     }
 }
 
-/// Index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s heap (≈)
+/// Index directory's writer (holds its `LOCK`)
 #[derive(Debug)]
 pub struct DiskStore {
     dir: IndexDir,
@@ -66,8 +68,7 @@ pub struct DiskStore {
     sequences: Vec<SequenceFile>,
     maps: Vec<SegmentLog>,
     view: DiskView,
-    buffer: Layer,
-    buffered: usize,
+    buffer: Arc<WriteBuffer>,
     failed: bool,
 }
 
@@ -207,8 +208,7 @@ impl PersistenceEngine for DiskEngine {
             sequences,
             maps,
             view: DiskView { state: Arc::new(state) },
-            buffer: Layer::empty(schema),
-            buffered: 0,
+            buffer: Arc::new(WriteBuffer::empty(schema)),
             failed: false,
         })
     }
@@ -261,22 +261,16 @@ impl DiskStore {
         }
     }
 
-    /// Buffer's appends + rows written and sealed → manifest at `tip` → new view
+    /// WriteBuffer written + sealed, every table in parallel → manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
-        for (table, file) in self.schema.sequences().iter().zip(&mut self.sequences) {
-            for record in self.buffer.records(table.id) {
-                file.append(record)?;
-            }
-        }
-        let mut lists = Vec::with_capacity(self.maps.len());
-        for (table, log) in self.schema.maps().iter().zip(&mut self.maps) {
-            let rows = self.buffer.rows(table.id).iter();
-            lists.push(log.batch(rows.map(|(key, value)| (&key[..], &value[..])).collect())?);
-        }
-        let sequences =
-            self.sequences.iter_mut().map(SequenceFile::seal).collect::<io::Result<_>>()?;
+        let (schema, buffer) = (&self.schema, &*self.buffer);
+        let (sequences, maps) = rayon::join(
+            || write_sequences(&mut self.sequences, schema, buffer),
+            || write_maps(&mut self.maps, schema, buffer),
+        );
 
-        let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps: lists };
+        let body =
+            Body { committed: Committed { tip: Some(tip) }, sequences: sequences?, maps: maps? };
         self.dir.commit(&body.encode(&self.schema))?;
         for log in &mut self.maps {
             log.committed()?;
@@ -299,6 +293,32 @@ impl DiskStore {
     }
 }
 
+/// Each sequence's buffered records appended, then sealed (one table per thread)
+fn write_sequences(
+    files: &mut [SequenceFile],
+    schema: &Schema,
+    buffer: &WriteBuffer,
+) -> Result<Vec<Seals>, StoreError> {
+    let tables = files.par_iter_mut().zip(schema.sequences());
+    let sealed = tables.map(|(file, &table)| {
+        for record in buffer.records(table) {
+            file.append(record)?;
+        }
+        Ok(file.seal()?)
+    });
+    sealed.collect()
+}
+
+/// Each map's buffered rows as one segment (one table per thread)
+fn write_maps(
+    logs: &mut [SegmentLog],
+    schema: &Schema,
+    buffer: &WriteBuffer,
+) -> Result<Vec<Vec<SegmentMeta>>, StoreError> {
+    let tables = logs.par_iter_mut().zip(schema.maps());
+    tables.map(|(log, &table)| Ok(log.batch(buffer.map_rows(table))?)).collect()
+}
+
 impl Store for DiskStore {
     type View = DiskView;
 
@@ -310,34 +330,34 @@ impl Store for DiskStore {
         self.dir.path()
     }
 
-    fn apply(&mut self, changes: Changes) {
+    /// `make_mut` copies only while a [`staged`](Store::staged) view is held (folds drop theirs
+    /// before applying)
+    fn apply(&mut self, changes: BlockChanges) {
         assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
         let last = self.buffer.tip().or(self.view.tip()).map(|tip| tip.height);
         let tip = changes.tip().height;
         assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
-        self.buffer.push(&changes);
-        self.buffered += layer::heap(&changes);
+        Arc::make_mut(&mut self.buffer).push(&changes);
     }
 
     fn buffered_bytes(&self) -> usize {
-        self.buffered
+        self.buffer.heap()
     }
 
     fn commit(&mut self) -> Result<(), StoreError> {
         assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
         let Some(tip) = self.buffer.tip() else { return Ok(()) };
         self.write(tip).inspect_err(|_| self.failed = true)?;
-        self.buffer = Layer::empty(&self.schema);
-        self.buffered = 0;
+        self.buffer = Arc::new(WriteBuffer::empty(&self.schema));
         Ok(())
     }
 
-    fn view(&self) -> DiskView {
+    fn committed(&self) -> DiskView {
         self.view.clone()
     }
 
-    fn staged(&self) -> LayeredView<DiskView> {
-        LayeredView::new(self.view.clone(), self.buffer.clone())
+    fn staged(&self) -> StagedView<DiskView> {
+        OverlayView::new(self.view.clone(), Arc::clone(&self.buffer))
     }
 }
 

@@ -14,7 +14,7 @@
 //! - insert only: a spend = a new `spent` row, never a delete of its `receives` row
 //! - no outpoint → address map, no UTXO set: [`fold`] = a pure projection of one block, no lookups
 //! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
-//! - non-final blocks = `zaino-nfs` layers (keyed as the maps), read through a `LayeredView`
+//! - non-final blocks = `zaino-nfs` layers (keyed as the maps), read through an `OverlayView`
 //!
 //! # Lookup ([`TransparentAddressReader::utxos_of`], as of the served tip)
 //!
@@ -51,7 +51,7 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
-/// Buffered heap before a bulk commit (≈270 B/row → ≈250k rows; max age commits first)
+/// Buffered heap before a bulk commit (max age commits first)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
 

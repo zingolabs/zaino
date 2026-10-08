@@ -17,7 +17,7 @@ crate = "zaino-index-transparent-address"
 kind = "breaking"
 section = "changed"
 description = """
-`fold(parent, block, out: &mut Changes)` appends to a caller-opened delta (asserting it is the \
+`fold(parent, block, out: &mut BlockChanges)` appends to a caller-opened delta (asserting it is the \
 block's and the block extends the parent); it moved into `writer.rs`. `schema(network)` is \
 replaced by `FORMAT` + `TABLES`; `TransparentAddressReader::new(view)` takes no network.
 """

@@ -10,8 +10,8 @@ use std::{
 };
 
 use zaino_persistence::{
-    fs::RealFs, Changes, DiskEngine, IndexKind, MapTable, PersistenceEngine, Schema, SequenceTable,
-    Store, Tables, Width,
+    fs::RealFs, BlockChanges, DiskEngine, IndexKind, MapTable, PersistenceEngine, Schema,
+    SequenceTable, Store, Tables, Width,
 };
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
@@ -68,7 +68,7 @@ fn key(n: u64) -> [u8; 36] {
 /// Single test: nothing else allocates while one runs
 #[test]
 fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
-    type Fill = fn(&mut Changes, u64);
+    type Fill = fn(&mut BlockChanges, u64);
     let cases: [(&str, u64, Fill); 6] = [
         ("fixed 32 B, 1/block", 1, |out, n| out.sequence(FIXED).append(&key(n)[..32])),
         ("fixed 32 B, 100/block", 100, |out, n| out.sequence(FIXED).append(&key(n)[..32])),

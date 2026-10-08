@@ -11,7 +11,7 @@ use serde::Serialize;
 use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::NetworkType;
 
-use crate::{layer::LayeredView, manifest::IndexKind, StoreError};
+use crate::{manifest::IndexKind, write_buffer::StagedView, StoreError};
 
 /// Storage backend: one store per index, verified offline
 pub trait PersistenceEngine: Send + Sync + 'static {
@@ -40,30 +40,32 @@ pub trait Store: Send + 'static {
     fn path(&self) -> &Path;
 
     /// Empty delta for block `at`, one buffer per table of [`schema`](Self::schema)
-    fn changes(&self, at: BlockRef) -> Changes {
-        Changes::new(at, *self.schema())
+    fn changes(&self, at: BlockRef) -> BlockChanges {
+        BlockChanges::new(at, *self.schema())
     }
 
-    /// `changes` buffered: in [`staged`](Self::staged), not in [`view`](Self::view), not durable
+    /// `changes` buffered: in [`staged`](Self::staged), not in [`committed`](Self::committed),
+    /// not durable
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
-    fn apply(&mut self, changes: Changes);
+    fn apply(&mut self, changes: BlockChanges);
 
     /// Heap the buffer holds (≈ RAM, >= its item bytes; a writer's batch trigger)
     fn buffered_bytes(&self) -> usize;
 
-    /// Every buffered change + the last applied tip, durable together (one fsync), then in `view`
+    /// Every buffered change + the last applied tip, durable together (one fsync), then in
+    /// [`committed`](Self::committed)
     ///
     /// - nothing buffered = `Ok`, nothing written
     /// - `Err` poisons the store: every later commit panics (failed sync never retried)
     fn commit(&mut self) -> Result<(), StoreError>;
 
     /// Committed only (what serving pins: no crash takes back what a reader saw)
-    fn view(&self) -> Self::View;
+    fn committed(&self) -> Self::View;
 
     /// Committed + buffered (what a bulk fold reads its parent through)
-    fn staged(&self) -> LayeredView<Self::View>;
+    fn staged(&self) -> StagedView<Self::View>;
 }
 
 /// Committed state: fixed while held, shared by clones
@@ -293,25 +295,25 @@ impl Schema {
     }
 }
 
-/// One block's delta: buffer per table, opened by [`Store::changes`] or `Layer::changes`
+/// One block's delta: buffer per table, opened by [`Store::changes`] or `Overlay::changes`
 ///
 /// - widths checked per item on arrival (wrong = panic naming the table)
 /// - fixed-width tables: bytes only; variable: + end offset per item
 #[derive(Debug, Clone)]
-pub struct Changes {
+pub struct BlockChanges {
     tip: BlockRef,
     schema: Schema,
-    sequences: Vec<Buffer>,
-    maps: Vec<[Buffer; 2]>,
+    sequences: Vec<Items>,
+    maps: Vec<[Items; 2]>,
 }
 
-impl Changes {
+impl BlockChanges {
     pub(crate) fn new(tip: BlockRef, schema: Schema) -> Self {
         Self {
             tip,
             schema,
-            sequences: vec![Buffer::default(); schema.sequences().len()],
-            maps: vec![[Buffer::default(), Buffer::default()]; schema.maps().len()],
+            sequences: vec![Items::default(); schema.sequences().len()],
+            maps: vec![[Items::default(), Items::default()]; schema.maps().len()],
         }
     }
 
@@ -335,7 +337,7 @@ impl Changes {
 
     /// [`assert_next`](Self::assert_next) over a run: `out[i]` for `blocks[i]`, each block next
     /// above the one before it (the first above `parent`)
-    pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[Changes]) {
+    pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChanges]) {
         assert_eq!(blocks.len(), out.len(), "one delta per block of the run");
         let mut below = parent;
         for (block, out) in blocks.iter().zip(out) {
@@ -345,16 +347,16 @@ impl Changes {
     }
 
     /// `table`'s appends (panics: not in this schema)
-    pub fn sequence(&mut self, table: SequenceTable) -> SequenceBuffer<'_> {
+    pub fn sequence(&mut self, table: SequenceTable) -> SequenceAppends<'_> {
         let at = self.schema.sequence_at(table);
-        SequenceBuffer { table, buffer: &mut self.sequences[at] }
+        SequenceAppends { table, buffer: &mut self.sequences[at] }
     }
 
     /// `table`'s inserts (panics: not in this schema)
-    pub fn map(&mut self, table: MapTable) -> MapBuffer<'_> {
+    pub fn map(&mut self, table: MapTable) -> MapInserts<'_> {
         let at = self.schema.map_at(table);
         let [keys, values] = &mut self.maps[at];
-        MapBuffer { table, keys, values }
+        MapInserts { table, keys, values }
     }
 
     /// Item bytes held, every table (end offsets not counted)
@@ -373,31 +375,40 @@ impl Changes {
         let [keys, values] = &self.maps[self.schema.map_at(table)];
         keys.items(table.key).zip(values.items(table.value))
     }
+
+    pub(crate) fn sequence_items(&self, table: SequenceTable) -> &Items {
+        &self.sequences[self.schema.sequence_at(table)]
+    }
+
+    /// `[keys, values]`
+    pub(crate) fn map_items(&self, table: MapTable) -> &[Items; 2] {
+        &self.maps[self.schema.map_at(table)]
+    }
 }
 
-/// One sequence table's appends in a [`Changes`]
+/// One sequence table's appends in a [`BlockChanges`]
 #[derive(Debug)]
-pub struct SequenceBuffer<'a> {
+pub struct SequenceAppends<'a> {
     table: SequenceTable,
-    buffer: &'a mut Buffer,
+    buffer: &'a mut Items,
 }
 
-impl SequenceBuffer<'_> {
+impl SequenceAppends<'_> {
     /// `record` at the end of the table (after every earlier append to it)
     pub fn append(&mut self, record: &[u8]) {
         self.buffer.push(self.table.name, self.table.record, record);
     }
 }
 
-/// One map table's inserts in a [`Changes`]
+/// One map table's inserts in a [`BlockChanges`]
 #[derive(Debug)]
-pub struct MapBuffer<'a> {
+pub struct MapInserts<'a> {
     table: MapTable,
-    keys: &'a mut Buffer,
-    values: &'a mut Buffer,
+    keys: &'a mut Items,
+    values: &'a mut Items,
 }
 
-impl MapBuffer<'_> {
+impl MapInserts<'_> {
     /// `value` under `key` (keys unique: second insert = bug, caught at apply)
     pub fn insert(&mut self, key: &[u8], value: &[u8]) {
         self.keys.push(self.table.name, self.table.key, key);
@@ -407,12 +418,12 @@ impl MapBuffer<'_> {
 
 /// Table's items back to back; `ends` = where each ends (Variable only)
 #[derive(Debug, Clone, Default)]
-struct Buffer {
+pub(crate) struct Items {
     bytes: Vec<u8>,
     ends: Vec<usize>,
 }
 
-impl Buffer {
+impl Items {
     fn push(&mut self, table: &str, width: Width, item: &[u8]) {
         match width {
             Width::Fixed(n) => {
@@ -424,21 +435,40 @@ impl Buffer {
         self.bytes.extend_from_slice(item);
     }
 
-    fn items(&self, width: Width) -> impl Iterator<Item = &[u8]> {
-        let count = match width {
+    pub(crate) fn len(&self, width: Width) -> usize {
+        match width {
             Width::Fixed(n) => self.bytes.len() / n.get() as usize,
             Width::Variable => self.ends.len(),
-        };
-        (0..count).map(move |at| match width {
-            Width::Fixed(n) => {
-                let n = n.get() as usize;
-                &self.bytes[at * n..(at + 1) * n]
-            }
+        }
+    }
+
+    pub(crate) fn get(&self, width: Width, at: usize) -> Option<&[u8]> {
+        if at >= self.len(width) {
+            return None;
+        }
+        let range = match width {
+            Width::Fixed(n) => at * n.get() as usize..(at + 1) * n.get() as usize,
             Width::Variable => {
-                let start = at.checked_sub(1).map_or(0, |before| self.ends[before]);
-                &self.bytes[start..self.ends[at]]
+                at.checked_sub(1).map_or(0, |before| self.ends[before])..self.ends[at]
             }
-        })
+        };
+        Some(&self.bytes[range])
+    }
+
+    pub(crate) fn items(&self, width: Width) -> impl Iterator<Item = &[u8]> {
+        (0..self.len(width)).filter_map(move |at| self.get(width, at))
+    }
+
+    /// `other`'s items after these (one copy, its end offsets shifted)
+    pub(crate) fn extend(&mut self, other: &Items) {
+        let base = self.bytes.len();
+        self.ends.extend(other.ends.iter().map(|end| base + end));
+        self.bytes.extend_from_slice(&other.bytes);
+    }
+
+    /// Heap held (capacity, not length)
+    pub(crate) fn heap(&self) -> usize {
+        self.bytes.capacity() + self.ends.capacity() * size_of::<usize>()
     }
 }
 

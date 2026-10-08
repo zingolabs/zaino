@@ -140,6 +140,7 @@ rcgen = "0.14.10"
 # Persistent collections: a published snapshot shares structure with the one it
 # came from rather than copying.
 imbl = "7.0"
+hashbrown = "0.16"
 
 [profile.test]
 opt-level = 3

@@ -7,8 +7,8 @@ description = """
 First release. The persistence port every Zaino index stores through: `PersistenceEngine` \
 (`open`, `verify`), `Store` (`apply` buffers final changes, `commit` writes them in one atomic \
 commit, `view` / `staged` read), `View`, the read traits `SequenceRead` and `MapRead`, and \
-`Schema` / `Changes` (sequence and map tables, fixed or variable width). `Layer` and \
-`LayeredView` hold non-final data over a committed view by structural sharing. `DiskEngine` \
+`Schema` / `BlockChanges` (sequence and map tables, fixed or variable width). `Overlay` and \
+`OverlayView` hold non-final data over a committed view by structural sharing. `DiskEngine` \
 implements it: positional files for sequences, an LSM with binary-fuse filters and fence keys \
 for maps, one two-slot `MANIFEST` commit per directory, a CRC per 4 KiB page checked on first \
 read, background merges, all through the `fs::Fs` port. `IndexKind` names every index. Feature \
@@ -24,12 +24,12 @@ description = """
 Tables are `const` handles declared once per index: `SequenceTable::new(id, name, record)`, \
 `MapTable::new(id, name, key, value, scope)`, `Tables::new(sequences, maps)` (ids = positions, \
 checked at compile time), `Schema::new(kind, format, network, tables)` (now `Copy`, built once at \
-open; `with_sequence` / `with_map` / `sequence_ids` / `map_ids` removed). `Changes::new` is \
-private: a block's delta comes from `Store::changes(at)` or `Layer::changes(at)`, filled through \
-`changes.sequence(T).append(..)` / `changes.map(T).insert(..)` (`SequenceBuffer`, `MapBuffer`). \
+open; `with_sequence` / `with_map` / `sequence_ids` / `map_ids` removed). `BlockChanges::new` is \
+private: a block's delta comes from `Store::changes(at)` or `Overlay::changes(at)`, filled through \
+`changes.sequence(T).append(..)` / `changes.map(T).insert(..)` (`SequenceAppends`, `MapInserts`). \
 Reads mirror writes: `view.sequence(T)` (`count`, `record`, `records`) and `view.map(T)` \
 (`value`, `values`, `range`); `View::schema()`. A handle of another schema panics naming the \
-table. `Changes::assert_next` / `assert_run` = every fold's precondition (the delta's block, the \
+table. `BlockChanges::assert_next` / `assert_run` = every fold's precondition (the delta's block, the \
 parent linkage). On-disk layout unchanged.
 """
 migration = """

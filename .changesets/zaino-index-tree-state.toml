@@ -17,7 +17,7 @@ crate = "zaino-index-tree-state"
 kind = "breaking"
 section = "changed"
 description = """
-`fold(parent, block, out: &mut Changes) -> Result<(), FoldError>` appends to a caller-opened \
+`fold(parent, block, out: &mut BlockChanges) -> Result<(), FoldError>` appends to a caller-opened \
 delta (asserting it is the block's and the block extends the parent); it and the run fold moved \
 into `writer.rs`, the run fold filling one caller-opened delta per block (same batched hashing). \
 `schema(network)` is replaced by `FORMAT` + `TABLES` (the 100 tables as constants); \

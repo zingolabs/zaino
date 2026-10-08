@@ -54,7 +54,7 @@ blocks by height checked only for integrity (parent link, merkle root). The cons
 | ----------------------- | ------------------------ | ---------------- | --------------------- |
 | headers near the tip    | `HeaderChain` (RAM)      | header sync      | `VerifiedChain` users |
 | final blocks in flight  | sink queues (RAM)        | `FinalFollower`  | each writer           |
-| index data, final       | one store / index (disk) | its writer       | snapshots (`view()`)  |
+| index data, final       | one store / index (disk) | its writer       | snapshots             |
 | index data, not durable | NFS graph (RAM, `imbl`)  | NFS folds        | snapshots             |
 | what a request reads    | `Snapshot` (`ArcSwap`)   | `zaino-snapshot` | gRPC, status, metrics |
 
@@ -79,7 +79,7 @@ fetch(balancer, at, record, Urgency) -> Checked; // tip path: hash + height + me
 IndexHandle::{view() -> V, tip(), changed()};       // one index's committed view
 
 // each index crate: one fold, one writer (data-sink.md)
-fold(parent: &XReader<V>, block, [inputs,] out: &mut Changes);      // shared by writer + NFS
+fold(parent: &XReader<V>, block, [inputs,] out: &mut BlockChanges);      // shared by writer + NFS
 XIndexWriter::{new(store, batch), handle() -> IndexHandle<V>, run(blocks)};
 
 // zaino-nfs: the tip path (nfs.md)

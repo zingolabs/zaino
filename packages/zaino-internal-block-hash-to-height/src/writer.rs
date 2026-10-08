@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 
-use zaino_persistence::{Changes, MapRead, Store};
+use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
 use zaino_sync::{Committer, IndexHandle, Subscription};
 
@@ -41,7 +41,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
 }
 
 /// `block` onto `parent`: its one `by_hash` row (its own header only, nothing read)
-pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Changes) {
+pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut BlockChanges) {
     out.assert_next(parent.view().tip(), block);
     let header = block.header();
     out.map(BY_HASH).insert(&<[u8; HASH]>::from(header.hash), &encode_height(header.height));
@@ -164,7 +164,7 @@ mod tests {
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
-        let reader = BlockHashReader::new(open(&fs).view());
+        let reader = BlockHashReader::new(open(&fs).committed());
         let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
         let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
         let heights = (0..=4u32).map(|n| Some(Height::try_from(n).expect("h")));
@@ -200,12 +200,16 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs);
-            let count = store.view().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
             let expected: Vec<_> = (0..count as u32).map(|n| Height::try_from(n).ok()).collect();
             let expected = [expected, vec![None]].concat();
-            assert_eq!(located(store.view(), &blocks[..=count]), expected, "{label}: held only");
+            assert_eq!(
+                located(store.committed(), &blocks[..=count]),
+                expected,
+                "{label}: held only"
+            );
 
             let (sink, handle, running) = start(store, NonZeroUsize::MIN);
             sink.send(step(&blocks[count])).await;

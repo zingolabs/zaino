@@ -117,7 +117,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         store.apply(out);
     }
     store.commit().expect("SimFs commit");
-    let durable = [(IndexKind::BlockHash, store.view())];
+    let durable = [(IndexKind::BlockHash, store.committed())];
     let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder, a5), durable);
 
     let (relayed, unlisted) = (TransactionId::from([1; 32]), TransactionId::from([2; 32]));

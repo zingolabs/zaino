@@ -5,7 +5,7 @@ use incrementalmerkletree::{
     Address, Hashable, Position, Source,
 };
 use orchard::tree::MerkleHashOrchard;
-use zaino_persistence::{LayeredView, SequenceRead, SequenceTable, View};
+use zaino_persistence::{OverlayView, SequenceRead, SequenceTable, View};
 use zaino_primitives::types::{
     BlockRef, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
 };
@@ -47,7 +47,7 @@ impl<V: View> TreeStateReader<V> {
 }
 
 /// Snapshot's seam: its layer above the committed files
-impl<V: View> TreeStateReader<LayeredView<V>> {
+impl<V: View> TreeStateReader<OverlayView<V>> {
     /// `at` in the layer above the committed files: among the ~1000 heights every synced wallet
     /// asks about (bounded: a per-snapshot memo keyed on these stays small)
     pub fn is_non_finalized(&self, at: Height) -> bool {

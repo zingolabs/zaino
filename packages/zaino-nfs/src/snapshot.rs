@@ -14,7 +14,7 @@ use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
-use zaino_persistence::{IndexKind, Layer, LayeredView, MapRead, SequenceRead, View};
+use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zaino_sync::PerIndex;
 use zcash_protocol::consensus::NetworkType;
@@ -159,12 +159,12 @@ fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
-    layers: PerIndex<Layer>,
+    layers: PerIndex<Overlay>,
 }
 
 impl<V: View> Views<V> {
-    /// Panics: a layer of no enabled index, or off its `durable`'s chain (`Layer::rebase`)
-    pub(crate) fn new(durable: &PerIndex<V>, layers: &PerIndex<Layer>) -> Self {
+    /// Panics: a layer of no enabled index, or off its `durable`'s chain (`Overlay::rebase`)
+    pub(crate) fn new(durable: &PerIndex<V>, layers: &PerIndex<Overlay>) -> Self {
         let mut rebased = PerIndex::default();
         for (kind, layer) in layers.iter() {
             let view = durable.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()));
@@ -179,13 +179,13 @@ impl<V: View> Views<V> {
     /// - panics: an index durable below `height` unfolded there
     pub(crate) fn at(
         durable: &PerIndex<V>,
-        layers: &PerIndex<Layer>,
+        layers: &PerIndex<Overlay>,
         height: Option<Height>,
     ) -> Self {
         let mut chosen = PerIndex::default();
         for (kind, view) in durable.iter() {
             let layer = match view.tip().map(|tip| tip.height) >= height {
-                true => Layer::empty(view.schema()),
+                true => Overlay::empty(view.schema()),
                 false => layers.get(kind).cloned().unwrap_or_else(|| {
                     panic!("{}: durable below {height:?}, unfolded there", kind.name())
                 }),
@@ -196,39 +196,39 @@ impl<V: View> Views<V> {
     }
 
     /// Panics: `kind` disabled
-    pub(crate) fn layer(&self, kind: IndexKind) -> &Layer {
+    pub(crate) fn layer(&self, kind: IndexKind) -> &Overlay {
         self.layers.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()))
     }
 
-    pub(crate) fn view(&self, kind: IndexKind) -> Option<LayeredView<V>> {
+    pub(crate) fn view(&self, kind: IndexKind) -> Option<OverlayView<V>> {
         let layer = self.layers.get(kind)?.clone();
-        Some(LayeredView::new(self.durable.get(kind)?.clone(), layer))
+        Some(OverlayView::new(self.durable.get(kind)?.clone(), layer))
     }
 }
 
 impl<V: SequenceRead> Views<V> {
-    pub fn compact_block(&self) -> Option<CompactBlockReader<LayeredView<V>>> {
+    pub fn compact_block(&self) -> Option<CompactBlockReader<OverlayView<V>>> {
         let view = self.view(IndexKind::CompactBlock)?;
         Some(CompactBlockReader::new(view))
     }
 
-    pub fn tree_state(&self) -> Option<TreeStateReader<LayeredView<V>>> {
+    pub fn tree_state(&self) -> Option<TreeStateReader<OverlayView<V>>> {
         Some(TreeStateReader::new(self.view(IndexKind::TreeState)?))
     }
 }
 
 impl<V: MapRead> Views<V> {
-    pub fn block_hash(&self) -> Option<BlockHashReader<LayeredView<V>>> {
+    pub fn block_hash(&self) -> Option<BlockHashReader<OverlayView<V>>> {
         Some(BlockHashReader::new(self.view(IndexKind::BlockHash)?))
     }
 
-    pub fn transparent_address(&self) -> Option<TransparentAddressReader<LayeredView<V>>> {
+    pub fn transparent_address(&self) -> Option<TransparentAddressReader<OverlayView<V>>> {
         let view = self.view(IndexKind::TransparentAddress)?;
         Some(TransparentAddressReader::new(view))
     }
 
     /// Fold parent only (no route reads value-balance)
-    pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<LayeredView<V>>> {
+    pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<OverlayView<V>>> {
         Some(ValueBalanceReader::new(self.view(IndexKind::ValueBalance)?))
     }
 }

@@ -7,7 +7,7 @@ use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
-use zaino_persistence::{IndexKind, LayeredView, MapRead, SequenceRead};
+use zaino_persistence::{IndexKind, MapRead, OverlayView, SequenceRead};
 use zaino_primitives::types::Height;
 
 use crate::limits::Lane;
@@ -16,7 +16,7 @@ use crate::wire::{self, path, status_response, trailers, unary_response};
 use zaino_proto::proto::service as proto;
 
 /// One snapshot's compact-block records
-type Blocks<V> = CompactBlockReader<LayeredView<V>>;
+type Blocks<V> = CompactBlockReader<OverlayView<V>>;
 
 /// Kinds kept distinct (miss != bad request != corruption)
 fn to_status(error: ServeError) -> Status {

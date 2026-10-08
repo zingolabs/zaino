@@ -6,7 +6,7 @@
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
 use tokio::{sync::watch, time::Instant};
-use zaino_persistence::{Changes, Store, View};
+use zaino_persistence::{BlockChanges, Store, View};
 use zaino_primitives::types::{Block, Height};
 
 use crate::{IndexHandle, Offloaded, Step, Subscription};
@@ -29,7 +29,11 @@ pub struct Run {
 
 impl Run {
     /// Each block `store` lacks: `fold` into the delta opened for it, then applied
-    pub fn apply<S: Store>(&self, store: &mut S, mut fold: impl FnMut(&S, &Block, &mut Changes)) {
+    pub fn apply<S: Store>(
+        &self,
+        store: &mut S,
+        mut fold: impl FnMut(&S, &Block, &mut BlockChanges),
+    ) {
         for (height, block) in &self.blocks {
             if !held(store, *height) {
                 let mut changes = store.changes(block.at());
@@ -44,11 +48,12 @@ impl Run {
     pub fn apply_batch<S: Store, T>(
         &self,
         store: &mut S,
-        fold: impl FnOnce(&S, &[&Block], &mut [Changes]) -> T,
+        fold: impl FnOnce(&S, &[&Block], &mut [BlockChanges]) -> T,
     ) -> T {
         let fresh = self.blocks.iter().filter(|(height, _)| !held(store, *height));
         let fresh: Vec<&Block> = fresh.map(|(_, block)| &**block).collect();
-        let mut out: Vec<Changes> = fresh.iter().map(|block| store.changes(block.at())).collect();
+        let mut out: Vec<BlockChanges> =
+            fresh.iter().map(|block| store.changes(block.at())).collect();
         let answer = fold(store, &fresh, &mut out);
         for changes in out {
             store.apply(changes);
@@ -65,7 +70,7 @@ pub fn held<S: Store>(store: &S, height: Height) -> bool {
 impl<S: Store> Committer<S> {
     /// `batch` = buffered bytes per commit, and one run's stream bytes
     pub fn new(store: S, batch: NonZeroUsize) -> Self {
-        let committed = watch::Sender::new(store.view());
+        let committed = watch::Sender::new(store.committed());
         Self { store: Offloaded::new(store), committed, batch, oldest: None }
     }
 
@@ -117,7 +122,7 @@ impl<S: Store> Committer<S> {
     async fn commit(&mut self) {
         self.oldest = None;
         let store = self.store.get();
-        if store.staged().tip() == store.view().tip() {
+        if store.staged().tip() == store.committed().tip() {
             return;
         }
         self.store
@@ -127,7 +132,7 @@ impl<S: Store> Committer<S> {
                 }
             })
             .await;
-        self.committed.send_replace(self.store.get().view());
+        self.committed.send_replace(self.store.get().committed());
     }
 }
 
@@ -172,10 +177,12 @@ mod tests {
             let open = || engine.open(Path::new("/toy"), &SCHEMA).expect("open");
             let mut probe =
                 DiskEngine::new(SimFs::new()).open(Path::new("/p"), &SCHEMA).expect("probe");
-            let mut changes = probe.changes(blocks[0].at());
-            changes.sequence(ROWS).append(&row(&blocks[0]));
-            probe.apply(changes);
-            let batch = NonZeroUsize::new(3 * probe.buffered_bytes()).expect("nonzero");
+            for block in &blocks[..3] {
+                let mut changes = probe.changes(block.at());
+                changes.sequence(ROWS).append(&row(block));
+                probe.apply(changes);
+            }
+            let batch = NonZeroUsize::new(probe.buffered_bytes()).expect("nonzero");
             let start = |store: DiskStore| {
                 let mut committer = Committer::new(store, batch);
                 let handle = committer.handle();
@@ -229,7 +236,7 @@ mod tests {
             }
             sink.shutdown();
             writer.await.expect("writer stops at Shutdown");
-            let view = open().view();
+            let view = open().committed();
             let rows = view.sequence(ROWS);
             let rows = rows.records(0..rows.count());
             let rows: Vec<u32> =

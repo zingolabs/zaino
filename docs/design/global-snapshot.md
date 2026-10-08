@@ -171,7 +171,7 @@ pub struct ForkView { pub fork: Fork, pub folded: Option<BlockRef> }  // deepest
 | root | committed views alone |
 | final below root / never folded / unknown | `None` (final history: heights through `served()`) |
 
-- Cost: graph lookup + per-index `Layer::rebase` (≤ blocks committed since the fold), no I/O
+- Cost: graph lookup + per-index `Overlay::rebase` (≤ blocks committed since the fold), no I/O
 - An index durable at or past the block (a best node below another index's commit): its
   committed view alone, reads at heights `≤` the block (a layer rebases only onto its own blocks)
 - Sound: root ≤ final ≤ every fork's `from` (durable views on every node's ancestry)

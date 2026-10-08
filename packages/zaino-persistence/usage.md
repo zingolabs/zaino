@@ -1,8 +1,8 @@
 # zaino-persistence
 
 What every index stores through: the persistence port (`PersistenceEngine`,
-`Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `Changes`), non-final
-data over a committed view (`Layer`, `LayeredView`: what `zaino-nfs` holds
+`Store`, `View`, `SequenceRead`, `MapRead`, `Schema`, `BlockChanges`), non-final
+data over a committed view (`Overlay`, `OverlayView`: what `zaino-nfs` holds
 above the durable root and every snapshot reads through), and the engine behind it, `DiskEngine`, which keeps sequences as positional files and
 maps as an LSM, under one manifest. Design: [`docs/design/persistence-engine.md`](../../docs/design/persistence-engine.md);
 crash protocol: [`docs/design/durability.md`](../../docs/design/durability.md).
@@ -36,8 +36,8 @@ if store.buffered_bytes() >= batch {
     store.commit()?;                                      // every buffer, one fsync, then in view()
 }
 
-let view = store.view();                                  // committed only (what serving pins)
-let staged = store.staged();                              // LayeredView: committed + buffered
+let view = store.committed();                                  // committed only (what serving pins)
+let staged = store.staged();                              // StagedView: committed + buffered
 view.tip();                                               // Option<BlockRef>
 let blocks = view.sequence(BLOCKS);                       // one table of one view
 blocks.count(); blocks.record(h); blocks.records(a..b);   // zero-copy mmap slices
@@ -60,33 +60,33 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   the filter covers that prefix, and a range whose bounds share it visits only
   the segments that may hold it. Scope 0 means point lookups, with whole keys
   filtered and segments mapped for random access.
-- **`Changes`** holds one buffer per table, shaped by the schema, and is opened
-  only by `Store::changes(at)` or `Layer::changes(at)`. Fixed-width tables cost
+- **`BlockChanges`** holds one buffer per table, shaped by the schema, and is opened
+  only by `Store::changes(at)` or `Overlay::changes(at)`. Fixed-width tables cost
   only their bytes; variable ones add an end offset per item. A handle of
   another schema panics at `sequence` / `map` (writes and reads alike), a
   fixed-width item of the wrong size at `append` / `insert`, each naming the
   table.
 - **Folds** open with `out.assert_next(parent_tip, block)` (or
-  `Changes::assert_run(parent_tip, blocks, outs)` for a run): panics naming the
+  `BlockChanges::assert_run(parent_tip, blocks, outs)` for a run): panics naming the
   index on a delta opened for another block, or a block that is not one height
   above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
-- **`apply`** buffers final changes in RAM (a `Layer`): `staged()` reads them,
-  `view()` and the disk do not until `commit`. It panics, buffering nothing,
+- **`apply`** appends final changes to the store's `WriteBuffer` in RAM: each
+  table's items back to back, as `BlockChanges` holds them, map rows unsorted (the
+  LSM sorts a batch at commit) with one hash index of row numbers per map.
+  `staged()` reads them (`StagedView<V>` = `OverlayView<V, Arc<WriteBuffer>>`),
+  `committed()` and the disk do not until `commit`. It panics, buffering nothing,
   on changes built for another schema, a tip not above the last applied one,
-  or a map key the buffer already holds (or one `Changes` inserts twice).
-  `buffered_bytes()` = the heap the buffer holds (a writer's batch trigger):
-  the items' bytes plus, per item, its `Bytes` handle, allocation and tree
-  slot, and per block its delta. Derived from the buffer's types, it tracks
-  the real heap within ±30% for every table shape
-  (`tests/buffer_heap.rs` measures it with a counting allocator). A
-  buffered row costs 2–10× its item bytes: 32 B records ≈ 80 B each in bulk,
-  a 44 B map row ≈ 245 B, a block's delta ≈ 200 B on its own. A budget is
+  or a map key the buffer already holds (or one `BlockChanges` inserts twice).
+  `buffered_bytes()` = the buffer's allocated capacity (a writer's batch
+  trigger), within ±30% of the real heap for every table shape
+  (`tests/buffer_heap.rs` measures it with a counting allocator). A budget is
   RAM, not bytes on disk.
 - **`commit`:**
   - Every buffered change goes to disk in one commit at the last applied tip:
     appends are sealed (only tables that grew are fsynced) and each map's rows
-    are written as one sorted segment; then the manifest slot is written, which
-    is the commit point, and `view()` moves. Nothing buffered = `Ok`, nothing
+    are written as one sorted segment, every table on its own thread; then the
+    manifest slot is written, which
+    is the commit point, and `committed()` moves. Nothing buffered = `Ok`, nothing
     written.
   - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
     never retried; `durability.md` §6). Drop the store and reopen it: the
@@ -187,29 +187,30 @@ report.is_clean();
 - **Logs:** `Compacting segments` / `Compacted segments` (debug) and
   `Commit waited on compaction` (warn).
 
-## Non-final data: `Layer` and `LayeredView`
+## Non-final data: `Overlay` and `OverlayView`
 
-A `Layer` is one index's data above a durable tip, as of one block: per
+An `Overlay` is one index's data above a durable tip, as of one block: per
 sequence the records past durable's length, per map the rows above durable
-(`imbl`, so a clone is O(tables) pointer copies). A store's buffer is one;
-`zaino-nfs` keeps one per non-final block.
+(`imbl`, so a clone is O(tables) pointer copies). `zaino-nfs` keeps one per
+non-final block. `OverlayView<V, A>` reads any `Uncommitted` over a view: an `Overlay`
+(the default) or a store's `WriteBuffer`.
 
 ```rust
-let root = Layer::empty(store.view().schema()); // the committed view's schema
+let root = Overlay::empty(store.committed().schema()); // the committed view's schema
 let mut changes = root.changes(block.at());      // the child block's empty delta
 fold(&parent, &block, &mut changes);
 let child = root.with(&changes);            // parent + changes, structural sharing
-let view = LayeredView::new(store.view(), child.clone()); // layer first, then durable
+let view = OverlayView::new(store.committed(), child.clone()); // layer first, then durable
 view.sequence(BLOCKS).record(h); view.map(SPENT).range(&start, &end, limit); // same handles
 view.durable();                              // the committed view alone (the seam)
-let child = child.rebase(&store.view());     // after a commit: what durable holds dropped
+let child = child.rebase(&store.committed());     // after a commit: what durable holds dropped
 ```
 
 - `with` panics on a tip not above the layer's, another schema's tables, or a
   map key the layer already holds; the layer itself never changes.
 - `rebase` drops every block through durable's tip; it panics when that tip is
   past the layer or not one of its blocks (another branch).
-- `LayeredView::new` panics on a layer that is not above durable's tip (an
+- `OverlayView::new` panics on a layer that is not above durable's tip (an
   un-rebased layer would read its blocks twice) or of another schema.
 - `range` merges both runs and keeps the `None` = over `limit` rule.
 
@@ -219,14 +220,14 @@ let child = child.rebase(&store.view());     // after a commit: what durable hol
   with `Store::apply` and commit through
   [`zaino_sync::Committer`](../zaino-sync/usage.md) (batch full, after a folded
   run, or 1 s idle); a bulk fold reads its parent through `staged()`.
-- Non-final blocks never reach a store: `zaino-nfs` holds one `Layer` per index
-  per block and serves `LayeredView::new(view(), layer)` from its snapshots
+- Non-final blocks never reach a store: `zaino-nfs` holds one `Overlay` per index
+  per block and serves `OverlayView::new(view(), layer)` from its snapshots
   ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-layers-and-writers)).
 
 ## Conformance suite (feature `testing`)
 
 `conformance` tests any `PersistenceEngine` through the port alone: the store driven as a
-writer drives it (`apply`, `commit`) under `Layer`s kept as the NFS keeps them (`with`,
+writer drives it (`apply`, `commit`) under `Overlay`s kept as the NFS keeps them (`with`,
 `rebase`). An engine implements `conformance::Subject`, which is `engine()` and `path()`
 plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
 `conformance::history` under proptest and `conformance::contract` as a plain test.
