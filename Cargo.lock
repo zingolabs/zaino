@@ -6517,6 +6517,10 @@ dependencies = [
  "tokio",
  "zaino-explorer-domain",
  "zaino-explorer-zaino-client",
+ "zaino-noderpc",
+ "zaino-primitives",
+ "zaino-service",
+ "zcash_protocol",
 ]
 
 [[package]]

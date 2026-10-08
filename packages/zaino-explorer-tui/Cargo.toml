@@ -16,3 +16,10 @@ jsonrpsee = { workspace = true, features = ["http-client"] }
 ratatui = { workspace = true }
 crossterm = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+zaino-noderpc = { path = "../zaino-noderpc" }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }
+jsonrpsee = { workspace = true, features = ["server"] }
+zcash_protocol.workspace = true
