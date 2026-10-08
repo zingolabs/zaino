@@ -254,10 +254,15 @@ impl OrderedMonoidCarry for TreeStateIndex {
     }
 
     fn measure_add(a: TreeMeasure, b: TreeMeasure) -> TreeMeasure {
+        // A prefix sum of per-pool leaf counts. The method cannot return a
+        // `Result`, and a tree-size sum that leaves `u64` is a broken invariant,
+        // not a data condition, so fail loud with a named `expect` rather than
+        // silently wrapping.
+        let add = |a: u64, b: u64| a.checked_add(b).expect("tree-size prefix sum fits u64");
         TreeMeasure {
-            sapling: a.sapling + b.sapling,
-            orchard: a.orchard + b.orchard,
-            ironwood: a.ironwood + b.ironwood,
+            sapling: add(a.sapling, b.sapling),
+            orchard: add(a.orchard, b.orchard),
+            ironwood: add(a.ironwood, b.ironwood),
         }
     }
 
