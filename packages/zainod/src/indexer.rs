@@ -545,14 +545,14 @@ mod tests {
         use std::num::NonZeroU32;
         use std::time::Duration;
 
-        use zaino_header_chain::HeaderChain;
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{Block, BlockHash, Height};
+        use zaino_header_chain::testing::{insert, HeaderViews};
+        use zaino_primitives::testing::{h, MockChain};
+        use zaino_primitives::types::{Block, BlockHash};
         use zaino_proto::proto::service::{
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
-        use zaino_source::mock::MockChain;
+        use zaino_source::testing::MockValidator;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -560,27 +560,21 @@ mod tests {
         let _recording = metrics::set_default_local_recorder(&recorder);
         crate::metrics::describe_all();
 
-        let mut blocks = Chain::new();
-        let genesis = blocks.genesis().hash;
-        let a8 = blocks.extend(genesis, 8);
-        let a: Vec<Block> = blocks.path(a8.hash);
+        let mut blocks = MockChain::regtest().varied_work();
+        let a8 = blocks.mine_empty(8);
+        let a = blocks.blocks(a8);
+        let b8 = blocks.fork(h(6)).outweigh().mine_empty(2).tip();
+        let b = blocks.blocks(b8);
         let hash = |block: &Block| block.header().hash;
-        let b7 = blocks.mine_heavier(hash(&a[6]), &[hash(&a[7]), hash(&a[8])]).expect("in range");
-        let b8 = blocks.mine(b7.hash);
-        let b: Vec<Block> = blocks.path(b8.hash)[7..].to_vec();
 
         let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
-        let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
+        let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
-        let mock = Arc::new(MockChain::serving(a.clone()));
-        let genesis_height = Height::GENESIS;
-        let activations = PoolActivations {
-            sapling: genesis_height,
-            orchard: Some(genesis_height),
-            ironwood: Some(genesis_height),
-        };
+        let validator = Arc::new(MockValidator::following(&blocks, a8));
+        let activations = PoolActivations::from_validator(&blocks.blockchain_info(a8));
         let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = zaino_traffic::Trusted { source: Arc::clone(&mock), priority: 0, limits };
+        let trusted =
+            zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
         let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth);
         let view = Arc::new(view.expect("one endpoint"));
@@ -609,8 +603,8 @@ mod tests {
         let mut streamer = wallet.clone();
 
         // header sync's word, to both its readers (the NFS's watch, the view)
-        let mut publish = |added: &[Block]| {
-            headers.insert_blocks(added).expect("valid headers");
+        let mut publish = |added: &[Arc<Block>]| {
+            insert(&mut headers, added).expect("valid headers");
             if let Some(boundary) = headers.finalizable() {
                 headers.finalize(boundary).expect("in-memory store");
             }
@@ -668,20 +662,19 @@ mod tests {
 
         let open = tokio::time::timeout(Duration::from_millis(100), mempool.message()).await;
         assert!(open.is_err(), "served at A8, no arrival: a live, silent stream");
-        mock.extend_best(b.clone());
-        publish(&b);
+        validator.follow(&blocks, b8);
+        publish(&b[7..]);
         let ended = tokio::time::timeout(Duration::from_secs(60), mempool.message()).await;
         let ended = ended.expect("the reorg ends the stream").expect("OK trailers");
         assert!(ended.is_none(), "an empty mempool: no record, only the end");
         let after = streamer.get_latest_block(ChainSpec {}).await.expect("served").into_inner();
-        let b_path = blocks.path(b[1].header().hash);
-        let on_b = b_path.get(after.height as usize).map(|at| <[u8; 32]>::from(hash(at)).to_vec());
+        let on_b = b.get(after.height as usize).map(|at| <[u8; 32]>::from(hash(at)).to_vec());
         assert_eq!(Some(after.hash.clone()), on_b, "{after:?}: on B's chain, never A8");
 
-        agree_at(&b[1]).await;
+        agree_at(&b[8]).await;
         let reorged = wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
         let reorged = reorged.expect("block 7").into_inner().hash;
-        assert_eq!(reorged, <[u8; 32]>::from(hash(&b[0])).to_vec(), "7 = B7 now");
+        assert_eq!(reorged, <[u8; 32]>::from(hash(&b[7])).to_vec(), "7 = B7 now");
 
         let scrape = crate::metrics::scrape(&rendered);
         let per_index = |family: &'static str| {

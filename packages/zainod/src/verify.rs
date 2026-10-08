@@ -130,11 +130,7 @@ mod tests {
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::fs::RealFs;
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        Block, CompactCiphertext, SaplingData, SaplingOutput, Script, Transaction, TransactionId,
-        TransparentData, TransparentOutput, Zatoshis,
-    };
+    use zaino_primitives::testing::{h, p2pkh, MockChain, Upgrades};
 
     use zaino_sync::{FeeSink, Final, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
@@ -145,39 +141,16 @@ mod tests {
     #[tokio::test]
     async fn verify_scrubs_every_sealed_file_and_exits_by_the_corruption_rule() {
         let root = tempfile::tempdir().expect("tempdir");
-        // heights 0..4: each a coinbase paying one p2pkh, plus one sapling output
-        let coinbase = |height: u32| {
-            let mut cmu = [0u8; 32];
-            cmu[..4].copy_from_slice(&(height + 1).to_le_bytes());
-            Transaction {
-                txid: TransactionId::from([0xa0 + height as u8; 32]),
-                transparent: TransparentData {
-                    coinbase: true,
-                    inputs: Vec::new(),
-                    outputs: vec![TransparentOutput {
-                        value: Zatoshis::new(500).expect("in supply"),
-                        script: Script::new(
-                            [&[0x76, 0xa9, 0x14][..], &[0x11; 20], &[0x88, 0xac]].concat(),
-                        ),
-                    }],
-                },
-                sprout: Default::default(),
-                sapling: SaplingData {
-                    outputs: vec![SaplingOutput {
-                        cmu: cmu.into(),
-                        ephemeral_key: [2u8; 32].into(),
-                        enc_ciphertext: [3u8; CompactCiphertext::LENGTH].into(),
-                    }],
-                    ..Default::default()
-                },
-                orchard: Default::default(),
-                ironwood: Default::default(),
-            }
-        };
-        let mut chain = Chain::with_genesis(vec![coinbase(0)]);
-        let tip =
-            (1..4).fold(chain.genesis(), |tip, h| chain.mine_with(tip.hash, vec![coinbase(h)]));
-        let blocks: Vec<Arc<Block>> = chain.path(tip.hash).into_iter().map(Arc::new).collect();
+        // heights 0..4 (every upgrade from genesis): each a coinbase paying one p2pkh 500, plus
+        // one sapling output (leaf = height + 1)
+        let miner = p2pkh([0x11; 20]);
+        let mut chain = MockChain::regtest()
+            .upgrades(Upgrades::all_at(h(0)))
+            .genesis_with(|b| b.coinbase(|c| c.pay(&miner, 500).sapling_output(1)));
+        for leaf in 2..=4 {
+            chain.mine(|b| b.coinbase(|c| c.pay(&miner, 500).sapling_output(leaf)));
+        }
+        let blocks = chain.blocks(chain.tip());
 
         let (cb, vb, bh, ts, ta) = (
             root.path().join("cb"),
