@@ -104,6 +104,22 @@ There is one writer, which is why publication is a plain store rather than a
 compare-and-swap. Adding a second writer breaks more than the store: the epoch
 bump assumes exclusive access to what changed.
 
+## Treestate over the window
+
+`HeadSnapshot` implements `TreestateWindowRead`, the window half of the treestate
+capability. The window holds no commitment tree of its own, so it cannot answer a
+treestate alone: `window_treestate(seed, at)` folds the window's blocks from
+`seed` — the finalised treestate at the watermark, which the composer reads from
+the store and passes in — up to `at`, reusing the `tree_state` index's own
+per-block extraction so the folded value is byte-identical to the one the store
+will hold once those blocks finalise. A hole between the seed and `at` (an
+initial-build gap) is `NotServiceable`; `at` above the tip is `Ok(None)`. On a
+reorg the window refolds from the same seed over its new best chain, so a
+treestate served after a reorg reflects the new branch. `window_subtree_roots`
+reports the subtrees the window completes above the seed, which the composer
+concatenates after the finalised tier's. This also supplies the window's tree
+sizes, closing the NFS `tree_size = 0` gap for the treestate read.
+
 ## Testing: two styles, and which to use
 
 **Stepped** — `spawn_without_writer` + `advance_once`, both compiled out of

@@ -97,6 +97,13 @@ that builds them backs `TreestateRead` locally.
   `finalState` bytes, and the note-presence activation proxy (an empty tree is
   reported absent). Both the finalised store and the non-finalised window call
   it, so a treestate served either side of the seam renders identically.
+- `serve::{seed_value, fold_window, window_subtree_roots}` back the window tier:
+  `seed_value` rebuilds the finalised frontier from the seed treestate (the
+  legacy bytes round-trip exactly), `fold_window` folds the window's blocks onto
+  it via the index's own per-block extraction, and `window_subtree_roots` reports
+  the subtrees the window completes above the seed. `sets::current_zaino::tree_state_ctx`
+  projects a domain `Block` to the per-block context those take, so the window's
+  leaf order matches the index's.
 
 ## Subtree-roots indexes
 

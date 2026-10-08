@@ -5945,6 +5945,7 @@ dependencies = [
  "zaino-address",
  "zaino-chain-head",
  "zaino-component",
+ "zaino-indexes",
  "zaino-primitives",
  "zaino-service",
  "zaino-source",

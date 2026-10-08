@@ -337,6 +337,45 @@ pub trait TreestateRead: Send + Sync {
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
 }
 
+/// The non-finalised window's half of the treestate capability.
+///
+/// A bounded window holds no commitment tree of its own, so it cannot answer a
+/// treestate alone: it folds its blocks forward from the finalised frontier at
+/// the watermark — the `seed`, which the composer reads from the finalised store
+/// and passes in. `seed` is the treestate the store reports at the watermark, or
+/// `None` when the store holds nothing and the window reaches genesis. On a reorg
+/// the window simply refolds from the same seed, so a treestate it serves always
+/// reflects the window's current best chain.
+///
+/// This is the treestate analogue of
+/// [`AddressReceiveRead`](crate::AddressReceiveRead): a narrower,
+/// window-answerable shape the composer joins with the finalised tier, named here
+/// so a routing can bound the non-finalised side on it.
+pub trait TreestateWindowRead: Send + Sync {
+    /// The treestate at `at` — a height the window covers, contiguous above the
+    /// seed — folded from `seed`. `NotServiceable(Treestate)` when the window
+    /// does not reach down to the seam (an initial-build gap) and `Ok(None)` when
+    /// `at` is above the window tip.
+    fn window_treestate(
+        &self,
+        seed: Option<&Treestate>,
+        at: Height,
+    ) -> impl Future<Output = Result<Option<Treestate>, TreestateReadError>> + Send;
+
+    /// The subtree roots the window completes above the seed for `pool`, with
+    /// global subtree index in `[start_index, start_index + limit)` (unbounded
+    /// when `limit` is `None`), ascending. A window completion always has a higher
+    /// index than every finalised one, so the composer concatenates these after
+    /// the finalised tier's same-range page.
+    fn window_subtree_roots(
+        &self,
+        seed: Option<&Treestate>,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
+}
+
 /// The default per-request ceiling on how many address-history entries a single
 /// query may collect, across every address it reads.
 ///

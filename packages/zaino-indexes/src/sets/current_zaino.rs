@@ -60,6 +60,16 @@ pub struct CurrentZainoContext {
     pub ironwood_txs: Vec<OrchardTxCompact>,
 }
 
+/// The `tree_state` per-block context for a domain [`Block`] — each pool's note
+/// commitments in chain order.
+///
+/// The one projection the non-finalised window's treestate fold reuses, so the
+/// window's leaf order is exactly the one the `tree_state` index built with and
+/// cannot drift from it.
+pub fn tree_state_ctx(block: &Block) -> TreeStateCtx {
+    context_from_block(block).context()
+}
+
 /// Build context from a domain Block.
 pub fn context_from_block(block: &Block) -> CurrentZainoContext {
     let height = BlockHeight::new(u64::from(block.header.height));

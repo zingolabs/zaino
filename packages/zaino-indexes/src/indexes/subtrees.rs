@@ -251,7 +251,7 @@ fn convert_leaves<P: Pool>(commitments: &[NoteCommitment]) -> Result<Vec<P::Leaf
 /// the carried frontier through the [`TreeSegment`] algebra — and folded up to
 /// `level`, which reconstructs the straddling subtree even when its left half
 /// lies in the carried (pre-block) state.
-fn completed_subtrees<H: Hashable + Clone + Send + Sync>(
+pub(crate) fn completed_subtrees<H: Hashable + Clone + Send + Sync>(
     before: &Frontier<H, DEPTH>,
     leaves: &[H],
     level: u8,

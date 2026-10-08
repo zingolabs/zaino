@@ -57,6 +57,7 @@ pub use reads::{
     BlockVerboseRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
     HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid, RawTransactionRead, ReadBudget,
     ResolvedInput, SpendRead, TransactionRead, TransactionView, TransactionViewRead, TreestateRead,
+    TreestateWindowRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use tx_out::TxOutRead;
