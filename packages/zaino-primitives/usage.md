@@ -31,9 +31,11 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 ```
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
-  `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, and the zatoshi quantity
-  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis` (see below).
+  `BlockHash`, `TransactionId`, `Height`, `BlockRef`, `TreeRoot`,
+  `Treestate`, `ShieldedPool`, `PoolActivations` (per-pool activation heights,
+  built from the validator's reported upgrade schedule by consensus branch id),
+  `ChainMetadata`, and the zatoshi quantity family `Zatoshis` /
+  `ZatoshisFlowSum` / `SignedZatoshis` (see below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,

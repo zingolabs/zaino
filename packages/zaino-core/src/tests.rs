@@ -21,7 +21,7 @@ use zaino_source::{RetryPolicy, SendRawTransactionError, ValidatorClient};
 
 use zaino_primitives::types::{
     BlockRef, Height, HeightRange, RawTransaction, ShieldedPool, TransactionId,
-    TransactionLocation, TransparentAddress,
+    TransactionLocation, TransparentAddress, Treestate,
 };
 use zaino_service::{Answerable, Capability};
 
@@ -272,7 +272,11 @@ async fn raw_transaction_maps_a_missing_txid_to_none() {
 }
 
 #[tokio::test]
-async fn subtree_roots_are_remote_under_light_routing() {
+async fn subtree_roots_are_local_under_light_routing() {
+    // `Treestate = Local`, so subtree roots are composed from the tiers (the
+    // finalised store's page then the window's completions), not relayed. The
+    // empty tiers hold none, so the composed answer is empty — and it never
+    // consults the validator to get there.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     let roots = TreestateRead::subtree_roots(&snapshot, ShieldedPool::Sapling, 0, None)
@@ -295,17 +299,17 @@ async fn compact_block_nullifiers_are_served_locally() {
 }
 
 #[tokio::test]
-async fn treestate_is_remote_under_light_routing() {
-    // No treestate seeded: the mock answers HeightNotFound, which the passthrough
-    // provider maps to a definitive read failure. Proves treestate routes to the
-    // passthrough provider, as `LightWalletLocalRouting::Treestate = Passthrough` says.
+async fn treestate_is_local_under_light_routing() {
+    // `Treestate = Local`: the read is composed from the chain tiers, not relayed.
+    // The tiers here are empty, so a height neither covers is `NotServiceable` —
+    // the local "not built to here", distinct from the passthrough mock's `Fatal`
+    // miss a relayed read would have returned. That it is `NotServiceable` and not
+    // that `Fatal` is the proof it did not pass through.
     let engine = engine_with(MockChain::new());
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
     match TreestateRead::treestate(&snapshot, height(5)).await {
-        Err(TreestateReadError::Fatal(msg)) => {
-            assert!(msg.contains("no treestate at height"), "got: {msg}")
-        }
-        other => panic!("expected a definitive miss, got {other:?}"),
+        Err(TreestateReadError::NotServiceable(Capability::Treestate)) => {}
+        other => panic!("expected a local NotServiceable, got {other:?}"),
     }
 }
 
@@ -321,6 +325,16 @@ fn engine_over_a_serviceable_store(
         tip: tip.map(|h| BlockRef {
             height: height(h),
             hash: [0u8; 32].into(),
+        }),
+        // Treestate is now served locally, so the finalised mock scripts one for
+        // the conformance read-set to exercise it.
+        treestate: Some(Treestate {
+            block_hash: [0u8; 32].into(),
+            height: height(tip.unwrap_or(0)),
+            time: 0,
+            sapling: None,
+            orchard: None,
+            ironwood: None,
         }),
         ..MockService::default()
     });
@@ -344,8 +358,12 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
         manifest.get(Capability::AddressHistory),
         Answerable::ToHeight(height(42))
     );
+    // Local: treestate follows the store, to its tip.
+    assert_eq!(
+        manifest.get(Capability::Treestate),
+        Answerable::ToHeight(height(42))
+    );
     // Passthrough: live, the validator answers.
-    assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
     assert_eq!(manifest.get(Capability::RawTransaction), Answerable::Live);
     assert_eq!(manifest.get(Capability::Broadcast), Answerable::Live);
     // Withheld: absent, whatever the providers could answer.
@@ -360,10 +378,11 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
 fn a_store_with_no_progress_makes_local_capabilities_not_yet() {
     let manifest = engine_over_a_serviceable_store(None).serviceability();
     assert_eq!(manifest.get(Capability::Blocks), Answerable::NotYet);
-    // Address history is local too, so it follows the store's progress.
+    // Address history and treestate are local too, so they follow the store's
+    // progress.
     assert_eq!(manifest.get(Capability::AddressHistory), Answerable::NotYet);
-    // Passthrough and withheld are unaffected by the store's progress.
-    assert_eq!(manifest.get(Capability::Treestate), Answerable::Live);
+    assert_eq!(manifest.get(Capability::Treestate), Answerable::NotYet);
+    // Withheld is unaffected by the store's progress.
     assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
 }
 
@@ -851,9 +870,9 @@ mod transaction_reads {
         use crate::routing::NodeRpcLocalRouting;
         use zaino_service::NodeRpcService;
 
-        // The production node-RPC routing: address history and spend status are
-        // served locally, treestate passes through, transaction location is
-        // withheld. One definition, in `crate::routing`.
+        // The production node-RPC routing: address history, spend status and
+        // treestate are served locally, transaction location is withheld. One
+        // definition, in `crate::routing`.
         fn assert_node_rpc<T: NodeRpcService>() {}
         assert_node_rpc::<
             Engine<

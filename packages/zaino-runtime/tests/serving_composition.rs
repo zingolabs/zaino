@@ -28,7 +28,7 @@ async fn one_engine_drives_both_ports() {
     });
 
     // One engine, two profile views: the light-serve port and the node-rpc port.
-    let light = LightServe::new(engine.clone());
+    let light = LightServe::new(engine.clone(), Network::MainNetwork);
     let node = NodeRpc::new(engine, Network::MainNetwork);
 
     // Both observe the same pinned tip, each rendering it in its own wire shape.

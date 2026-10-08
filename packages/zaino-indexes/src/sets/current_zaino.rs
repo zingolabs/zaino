@@ -25,6 +25,7 @@ use crate::indexes::transparent_data::{
     TransparentDataCtx, TransparentDataIndex, TransparentTxCompact,
 };
 use crate::indexes::transparent_spends::{SpendCtx, TransparentSpendsIndex};
+use crate::indexes::tree_state::TreeStateCtx;
 use crate::indexes::txid_location::{TxidLocationCtx, TxidLocationIndex};
 use crate::indexes::txids::{TxidsCtx, TxidsIndex};
 
@@ -57,6 +58,16 @@ pub struct CurrentZainoContext {
     /// reuses [`OrchardTxCompact`]; a separate pool. Feeds both the chain-metadata
     /// index's ironwood tree size and the [`IronwoodIndex`] serving index.
     pub ironwood_txs: Vec<OrchardTxCompact>,
+}
+
+/// The `tree_state` per-block context for a domain [`Block`] — each pool's note
+/// commitments in chain order.
+///
+/// The one projection the non-finalised window's treestate fold reuses, so the
+/// window's leaf order is exactly the one the `tree_state` index built with and
+/// cannot drift from it.
+pub fn tree_state_ctx(block: &Block) -> TreeStateCtx {
+    context_from_block(block).context()
 }
 
 /// Build context from a domain Block.
@@ -366,6 +377,37 @@ impl ProvideContext<IronwoodCtx> for CurrentZainoContext {
         IronwoodCtx {
             height: self.height,
             txs: self.ironwood_txs.clone(),
+        }
+    }
+}
+
+impl ProvideContext<TreeStateCtx> for CurrentZainoContext {
+    fn context(&self) -> TreeStateCtx {
+        // Every pool's note commitments, in chain/transaction order: a Sapling
+        // output carries its `cmu`, an Orchard/Ironwood action its `cmx`. The
+        // tree index appends these as leaves, so the order here *is* the leaf
+        // order (and the Merkle hash is order-sensitive).
+        let sapling_cmus = self
+            .sapling_txs
+            .iter()
+            .flat_map(|tx| tx.outputs.iter().map(|(cmu, _epk, _ct)| *cmu))
+            .collect();
+        let orchard_cmxs = self
+            .orchard_txs
+            .iter()
+            .flat_map(|tx| tx.actions.iter().map(|(_nf, cmx, _epk, _ct)| *cmx))
+            .collect();
+        let ironwood_cmxs = self
+            .ironwood_txs
+            .iter()
+            .flat_map(|tx| tx.actions.iter().map(|(_nf, cmx, _epk, _ct)| *cmx))
+            .collect();
+        TreeStateCtx {
+            height: self.height,
+            hash: self.hash,
+            sapling_cmus,
+            orchard_cmxs,
+            ironwood_cmxs,
         }
     }
 }

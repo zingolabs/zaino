@@ -81,6 +81,14 @@ struct Args {
     /// resumes just past the backend's committed watermark. Set it to bench a
     /// specific chain region — the cumulative indexes then count from this height,
     /// so served tree sizes are window-relative (throughput is unaffected).
+    ///
+    /// Must target an empty store, or one whose walk-ordered indexes hold nothing
+    /// at or above this height. Walk-ordered namespaces are written with a sorted
+    /// append, so a start that lands on or below an already-indexed height fails
+    /// the first commit with a typed `OutOfOrderAppend`. Benches run on a fresh
+    /// `--db` each time, so this only bites when an explicit start is pointed at a
+    /// reused, non-empty store — use a fresh `--db` (or omit `--start` to resume
+    /// from the watermark).
     #[arg(long, env = "SYNC_START")]
     start: Option<u32>,
 

@@ -39,6 +39,7 @@ mod address;
 mod index_coverage;
 mod spend;
 mod spend_resolve;
+mod tree_state;
 mod watermark_repair;
 
 pub use index_coverage::{IndexCoverageError, UnstampedIndexes};
@@ -63,13 +64,15 @@ use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, BlockSelector, Height, HeightRange};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockSelector, Height, HeightRange, PoolActivations,
+};
 use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
 };
 use zaino_service::error::{BlockReadError, ReadError, Transient};
-use zaino_service::{Answerable, ServiceabilityManifest, ServiceableRange};
+use zaino_service::{Answerable, Capability, ServiceabilityManifest, ServiceableRange};
 use zaino_service::{
     ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, Serviceable, Snapshot, TakeSnapshot,
 };
@@ -83,16 +86,28 @@ use zaino_sync::primitives::BlockHeight;
 /// is the static promise the serving reads bound on.
 pub struct StoreReader<B, M> {
     backend: Arc<B>,
+    /// The per-pool activation schedule the treestate read renders against,
+    /// learned from the validator at boot. Pinned into every snapshot.
+    activations: PoolActivations,
     index_set: PhantomData<M>,
 }
 
 impl<B, M> StoreReader<B, M> {
-    /// A reader over `backend`, built to the index set `M`. The finalised
-    /// tip is read live from the backend's watermark at snapshot time, not
-    /// passed in.
+    /// A reader over `backend`, built to the index set `M`, with no activation
+    /// schedule — treestate reports every pool absent, which suits a reader that
+    /// serves no treestate. The finalised tip is read live from the backend's
+    /// watermark at snapshot time, not passed in.
     pub fn new(backend: Arc<B>) -> Self {
+        Self::with_activations(backend, PoolActivations::unknown())
+    }
+
+    /// A reader over `backend` carrying the validator-reported activation
+    /// schedule, so its treestate read tells an active-but-empty pool (serve the
+    /// empty tree) from one below its activation (absent).
+    pub fn with_activations(backend: Arc<B>, activations: PoolActivations) -> Self {
         Self {
             backend,
+            activations,
             index_set: PhantomData,
         }
     }
@@ -105,6 +120,7 @@ impl<B, M> Clone for StoreReader<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
+            activations: self.activations,
             index_set: PhantomData,
         }
     }
@@ -136,6 +152,7 @@ where
 
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
         let backend = self.backend.clone();
+        let activations = self.activations;
         async move {
             // Consume the writer's watermark — the finalised tip this view can
             // answer up to — and pin it. Reads through the snapshot hit live
@@ -164,6 +181,7 @@ where
                 backend: backend.clone(),
                 watermark,
                 pinned_tip,
+                activations,
                 index_set: PhantomData,
             })
         }
@@ -178,6 +196,8 @@ pub struct StoreSnapshot<B, M> {
     watermark: Option<Height>,
     /// The block at the watermark, composed from the headers index at pin time.
     pinned_tip: Option<BlockRef>,
+    /// The per-pool activation schedule, pinned from the reader.
+    activations: PoolActivations,
     index_set: PhantomData<M>,
 }
 
@@ -188,6 +208,7 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
             backend: self.backend.clone(),
             watermark: self.watermark,
             pinned_tip: self.pinned_tip,
+            activations: self.activations,
             index_set: PhantomData,
         }
     }
@@ -238,6 +259,21 @@ where
             let height = match at {
                 BlockSelector::Height(height) => Some(height),
                 BlockSelector::Hash(hash) => {
+                    // By-hash resolution reads the `hash_to_height` index, which
+                    // is `Scattered` and so may still be deferred during the
+                    // initial catch-up. While it is incomplete the mapping is
+                    // partial, so a miss would be a false "no such block": refuse
+                    // instead. Height-addressed reads below do not touch it and
+                    // serve throughout.
+                    if let Some(capability) = serviceability_gate::<B>(
+                        &reader,
+                        &[hash_to_height::ID.into()],
+                        Capability::Blocks,
+                    )
+                    .map_err(|e| BlockReadError::Transient(format!("by-hash readiness: {e}")))?
+                    {
+                        return Err(BlockReadError::NotServiceable(capability));
+                    }
                     resolve_hash::<B>(&reader, hash).map_err(|t| BlockReadError::Transient(t.0))?
                 }
             };
@@ -377,6 +413,30 @@ fn resolve_hash<B: Backend>(
         }
         None => Ok(None),
     }
+}
+
+/// The store-tier serviceability gate: whether every backing namespace is
+/// complete on the pinned reader, for a read whose answer is composed from
+/// scattered namespaces the backend may still be building during the initial
+/// bulk catch-up.
+///
+/// Returns `Some(capability)` when any `namespaces` entry is still incomplete
+/// ([`BackendReader::is_complete`] is `false`), so the caller answers
+/// `NotServiceable(capability)` rather than serving partial — or
+/// empty-as-complete — data; `None` when all are complete and the read may
+/// proceed. One manifest probe per namespace, checked once per read rather than
+/// per entry: completeness is a property of the namespace, not of any one key.
+pub(crate) fn serviceability_gate<B: Backend>(
+    reader: &B::Reader,
+    namespaces: &[Namespace],
+    capability: Capability,
+) -> Result<Option<Capability>, zaino_persistence::ReadError> {
+    for namespace in namespaces {
+        if !reader.is_complete(*namespace)? {
+            return Ok(Some(capability));
+        }
+    }
+    Ok(None)
 }
 
 /// Compose a true `CompactBlock` at `height` on read from the granular indexes
@@ -544,4 +604,364 @@ where
             u32::from(height),
         ))
     })
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    //! Store readiness during the initial bulk catch-up.
+    //!
+    //! A store whose scattered namespaces are deferred must answer
+    //! `NotServiceable` for the reads they back — address history, spend status,
+    //! and by-hash block resolution — never partial or empty-as-complete data,
+    //! while height-addressed compact reads keep serving. After `finish_bulk`
+    //! every read serves and matches a store built directly from the same
+    //! commits.
+
+    use std::sync::Arc;
+
+    use zaino_address::transparent_address_key;
+    use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
+    use zaino_indexes::index_set::IndexSet;
+    use zaino_indexes::indexes::address_history::{self, AddrId, AddrKey, AddressHistoryIndex};
+    use zaino_indexes::indexes::chain_metadata::{self, ChainMetadataIndex};
+    use zaino_indexes::indexes::hash_to_height::{self, HashToHeightIndex};
+    use zaino_indexes::indexes::headers::{self, HeaderValue, HeadersIndex};
+    use zaino_indexes::indexes::ironwood::{self, IronwoodBlockValue, IronwoodIndex};
+    use zaino_indexes::indexes::orchard::{self, OrchardBlockValue, OrchardIndex};
+    use zaino_indexes::indexes::sapling::{self, SaplingBlockValue, SaplingIndex};
+    use zaino_indexes::indexes::transparent_data::{
+        self, TransparentBlockValue, TransparentDataIndex,
+    };
+    use zaino_indexes::indexes::transparent_spends::{self, OutpointKey, TransparentSpendsIndex};
+    use zaino_indexes::indexes::txid_location::{self, TxidLocationIndex};
+    use zaino_indexes::indexes::txids::{self, TxidsIndex, TxidsValue};
+    use zaino_indexes::sets::transparent_history::TransparentHistory;
+    use zaino_persistence::{Backend, BackendWriter, BulkPolicy, NamespaceSpec, WriteOp};
+    use zaino_persistence_codec::{put, reserved_namespaces, version_stamp, watermark};
+    use zaino_primitives::types::{
+        BlockHash, BlockSelector, ChainMetadata, CompactDifficulty, Height, HeightRange, Outpoint,
+        TransactionId, TransparentAddress, Zatoshis,
+    };
+    use zaino_service::error::{AddressReadError, BlockReadError, SpendReadError};
+    use zaino_service::SpendStatus::Spent;
+    use zaino_service::{
+        AddressRead, Capability, CompactBlockRead, ReadBudget, SpendRead, TakeSnapshot,
+    };
+    use zaino_sync::primitives::BlockHeight;
+
+    use super::{StoreReader, StoreSnapshot};
+
+    /// A mainnet/testnet P2PKH address that `transparent_address_key` resolves,
+    /// so a receive written under its derived id is found by the read side.
+    const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
+    /// The one block height the fixture indexes.
+    const H: u32 = 5;
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
+    fn block_hash() -> BlockHash {
+        BlockHash::from([7u8; 32])
+    }
+
+    /// The outpoint the fixture records a spend of (distinct from the address's
+    /// receive, so the address balance nets no spend).
+    fn spent_outpoint() -> Outpoint {
+        Outpoint {
+            txid: TransactionId::from([0x22u8; 32]),
+            index: 0,
+        }
+    }
+
+    fn spender() -> TransactionId {
+        TransactionId::from([0x33u8; 32])
+    }
+
+    fn receive_value() -> Zatoshis {
+        Zatoshis::new(100).expect("valid amount")
+    }
+
+    fn query_range() -> HeightRange {
+        HeightRange {
+            start: height(0),
+            end: height(10),
+        }
+    }
+
+    fn address() -> TransparentAddress {
+        TransparentAddress::new(TESTNET_P2PKH.to_owned())
+    }
+
+    /// The namespace specs the runtime's `open_store` declares for this set.
+    fn specs() -> Vec<NamespaceSpec> {
+        TransparentHistory::pipelines()
+            .namespace_specs()
+            .into_iter()
+            .chain(reserved_namespaces().map(NamespaceSpec::meta))
+            .collect()
+    }
+
+    fn open_at(path: &std::path::Path) -> LmdbBackend {
+        LmdbBackend::open(LmdbConfig {
+            path: path.to_path_buf(),
+            map_size_bytes: 16 << 20,
+            namespaces: specs(),
+        })
+        .expect("open lmdb store")
+    }
+
+    /// Every op the fixture commits: version stamps, an empty-transaction compact
+    /// block at height `H`, its hash→height mapping, one address receive, one
+    /// recorded spend, and the watermark.
+    fn store_ops() -> Vec<WriteOp> {
+        let bh = BlockHeight::new(u64::from(H));
+        let (script_type, hash160) =
+            transparent_address_key(&address()).expect("a transparent address");
+
+        let mut ops = vec![
+            version_stamp::<HeadersIndex>(headers::ID.into()),
+            version_stamp::<TxidsIndex>(txids::ID.into()),
+            version_stamp::<HashToHeightIndex>(hash_to_height::ID.into()),
+            version_stamp::<TransparentDataIndex>(transparent_data::ID.into()),
+            version_stamp::<SaplingIndex>(sapling::ID.into()),
+            version_stamp::<OrchardIndex>(orchard::ID.into()),
+            version_stamp::<IronwoodIndex>(ironwood::ID.into()),
+            version_stamp::<ChainMetadataIndex>(chain_metadata::ID.into()),
+            version_stamp::<AddressHistoryIndex>(address_history::ID.into()),
+            version_stamp::<TransparentSpendsIndex>(transparent_spends::ID.into()),
+            version_stamp::<TxidLocationIndex>(txid_location::ID.into()),
+        ];
+
+        // An empty-transaction compact block: every pool present at `H` with a
+        // zero-length tx list, so `read_compact_block` composes a valid block.
+        ops.push(put::<HeadersIndex>(
+            headers::ID.into(),
+            &bh,
+            &HeaderValue {
+                hash: block_hash(),
+                prev_hash: BlockHash::from([6u8; 32]),
+                time: 3,
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            },
+        ));
+        ops.push(put::<TxidsIndex>(
+            txids::ID.into(),
+            &bh,
+            &TxidsValue(Vec::new()),
+        ));
+        ops.push(put::<TransparentDataIndex>(
+            transparent_data::ID.into(),
+            &bh,
+            &TransparentBlockValue(Vec::new()),
+        ));
+        ops.push(put::<SaplingIndex>(
+            sapling::ID.into(),
+            &bh,
+            &SaplingBlockValue(Vec::new()),
+        ));
+        ops.push(put::<OrchardIndex>(
+            orchard::ID.into(),
+            &bh,
+            &OrchardBlockValue(Vec::new()),
+        ));
+        ops.push(put::<IronwoodIndex>(
+            ironwood::ID.into(),
+            &bh,
+            &IronwoodBlockValue(Vec::new()),
+        ));
+        ops.push(put::<ChainMetadataIndex>(
+            chain_metadata::ID.into(),
+            &bh,
+            &ChainMetadata::ZERO,
+        ));
+
+        // The by-hash mapping (scattered).
+        ops.push(put::<HashToHeightIndex>(
+            hash_to_height::ID.into(),
+            &block_hash(),
+            &bh,
+        ));
+
+        // One receive to the queried address (scattered), unspent.
+        ops.push(put::<AddressHistoryIndex>(
+            address_history::ID.into(),
+            &AddrKey {
+                addr: AddrId {
+                    script_type,
+                    hash: hash160,
+                },
+                height: bh,
+                txid: TransactionId::from([0x11u8; 32]),
+                output_index: 0,
+            },
+            &receive_value(),
+        ));
+
+        // One recorded spend of a different outpoint (scattered).
+        ops.push(put::<TransparentSpendsIndex>(
+            transparent_spends::ID.into(),
+            &OutpointKey {
+                prev_txid: spent_outpoint().txid,
+                prev_index: spent_outpoint().index,
+            },
+            &spender(),
+        ));
+
+        ops.push(watermark::stamp(height(H)));
+        ops
+    }
+
+    fn commit(backend: &LmdbBackend, ops: Vec<WriteOp>) {
+        let mut writer = backend.writer().expect("writer");
+        writer.commit(ops).expect("commit");
+    }
+
+    async fn snapshot(backend: Arc<LmdbBackend>) -> StoreSnapshot<LmdbBackend, TransparentHistory> {
+        StoreReader::<_, TransparentHistory>::new(backend)
+            .snapshot()
+            .await
+            .expect("snapshot")
+    }
+
+    /// In bulk mode with deferred scattered commits, the reads backed by a
+    /// deferred namespace answer `NotServiceable` with the capability the spec's
+    /// readiness table names; after `finish_bulk` they serve and match a store
+    /// built directly from the same commits. Height-addressed compact reads serve
+    /// throughout.
+    #[tokio::test]
+    async fn deferred_scattered_reads_are_not_serviceable_until_finish_bulk() {
+        // A reference store built with plain, non-deferred commits.
+        let reference_dir = tempfile::tempdir().expect("tempdir");
+        let reference = Arc::new(open_at(reference_dir.path()));
+        commit(&reference, store_ops());
+        let reference = snapshot(reference).await;
+
+        // The store under test, built through bulk mode.
+        let deferred_dir = tempfile::tempdir().expect("tempdir");
+        let backend = Arc::new(open_at(deferred_dir.path()));
+        backend
+            .begin_bulk(BulkPolicy { enabled: true })
+            .expect("begin_bulk");
+        commit(&backend, store_ops());
+
+        // --- During bulk: deferred namespaces are not serviceable. ---
+        {
+            let snap = snapshot(backend.clone()).await;
+            let mut budget = ReadBudget::for_request();
+
+            // Height-addressed compact read serves (its indexes are walk-ordered).
+            let by_height = snap
+                .compact_block(BlockSelector::Height(height(H)))
+                .await
+                .expect("height-addressed compact read serves in bulk mode")
+                .expect("the block is present");
+            assert_eq!(by_height.height, H);
+
+            // By-hash resolution reads the deferred `hash_to_height` index.
+            assert!(
+                matches!(
+                    snap.compact_block(BlockSelector::Hash(block_hash())).await,
+                    Err(BlockReadError::NotServiceable(Capability::Blocks))
+                ),
+                "by-hash block read is NotServiceable(Blocks) while hash_to_height is deferred"
+            );
+
+            // Address history is backed by three deferred namespaces.
+            assert!(
+                matches!(
+                    snap.balance(&address(), query_range(), &mut budget).await,
+                    Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+                ),
+                "address balance is NotServiceable(AddressHistory) while its namespaces are deferred"
+            );
+
+            // Spend status is backed by two deferred namespaces.
+            assert!(
+                matches!(
+                    snap.spend_status(spent_outpoint()).await,
+                    Err(SpendReadError::NotServiceable(Capability::SpendStatus))
+                ),
+                "spend status is NotServiceable(SpendStatus) while its namespaces are deferred"
+            );
+        }
+
+        // --- After finish_bulk: every read serves and matches the direct build. ---
+        backend.finish_bulk().expect("finish_bulk");
+        let snap = snapshot(backend.clone()).await;
+        let mut budget = ReadBudget::for_request();
+        let mut reference_budget = ReadBudget::for_request();
+
+        let balance = snap
+            .balance(&address(), query_range(), &mut budget)
+            .await
+            .expect("address balance serves after finish_bulk");
+        assert_eq!(balance.balance, receive_value());
+        assert_eq!(
+            balance,
+            reference
+                .balance(&address(), query_range(), &mut reference_budget)
+                .await
+                .expect("reference balance"),
+            "the deferred build's balance matches the direct build"
+        );
+
+        let spend = snap
+            .spend_status(spent_outpoint())
+            .await
+            .expect("spend status serves after finish_bulk");
+        assert_eq!(spend, Spent { by: spender() });
+        assert_eq!(
+            spend,
+            reference
+                .spend_status(spent_outpoint())
+                .await
+                .expect("reference spend status"),
+            "the deferred build's spend status matches the direct build"
+        );
+
+        let by_hash = snap
+            .compact_block(BlockSelector::Hash(block_hash()))
+            .await
+            .expect("by-hash compact read serves after finish_bulk")
+            .expect("the block resolves by hash");
+        assert_eq!(by_hash.height, H);
+        assert_eq!(by_hash.hash, block_hash());
+    }
+
+    /// `spend_info` goes through the same readiness gate as `spend_status`:
+    /// `NotServiceable(SpendStatus)` while its scattered namespaces are deferred,
+    /// and past the gate once `finish_bulk` completes them. (The deeper spend
+    /// resolution `spend_info` then performs is exercised elsewhere; here the
+    /// point is only that the gate flips.)
+    #[tokio::test]
+    async fn spend_info_is_gated_and_then_ungated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = Arc::new(open_at(dir.path()));
+        backend
+            .begin_bulk(BulkPolicy { enabled: true })
+            .expect("begin_bulk");
+        commit(&backend, store_ops());
+
+        {
+            let snap = snapshot(backend.clone()).await;
+            assert!(
+                matches!(
+                    snap.spend_info(spent_outpoint()).await,
+                    Err(SpendReadError::NotServiceable(Capability::SpendStatus))
+                ),
+                "spend_info is NotServiceable while transparent_spends is deferred"
+            );
+        }
+
+        backend.finish_bulk().expect("finish_bulk");
+        let snap = snapshot(backend).await;
+        assert!(
+            !matches!(
+                snap.spend_info(spent_outpoint()).await,
+                Err(SpendReadError::NotServiceable(_))
+            ),
+            "the readiness gate is lifted after finish_bulk"
+        );
+    }
 }

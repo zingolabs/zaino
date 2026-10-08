@@ -47,7 +47,7 @@ async fn a_real_jsonrpc_server_boots_and_stops_as_a_component() {
 async fn a_real_grpc_server_boots_and_stops_as_a_component() {
     let engine = MockIndexerService::new(MockChain::default());
     let server = GrpcServer::new(
-        LightServe::new(engine),
+        LightServe::new(engine, Network::MainNetwork),
         "127.0.0.1:0".parse().expect("valid addr"),
     );
     let component = RunComponent::new(ComponentName("light-serve"), server);

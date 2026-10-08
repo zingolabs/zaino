@@ -3,7 +3,9 @@
 use crate::descriptor::{BlockLocal, Fold};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractLocal, IndexDef, MergeFold, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, KeyOrder, PersistentRecord,
+};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -80,6 +82,10 @@ impl EntryCodec for RunningSumIndex {
     type Value = RunningSum;
     type PersistentKey = PersistentSumKey;
     type PersistentValue = PersistentRunningSum;
+
+    // Collapses onto one fixed key (a running tip total), so its key is not
+    // append-ordered by the chain walk.
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(SumKey, RunningSum)> {
         vec![(SumKey, RunningSum(1))]

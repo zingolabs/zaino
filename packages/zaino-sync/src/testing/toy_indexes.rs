@@ -8,21 +8,130 @@
 //! [`RunningSumIndex`](running_sum_index).
 //!
 //! SelfCumulative indexes: [`CumulativeSumIndex`](cumulative_sum_index) (×Monoidal,
-//! collapsed to a tip total) and [`CumulativeSeriesIndex`](cumulative_series_index)
-//! (×Append, a retained per-height series).
+//! collapsed to a tip total), [`CumulativeSeriesIndex`](cumulative_series_index)
+//! (×Append, a retained per-height series, sequential carry) and
+//! `ToyMerkleIndex` (×Append, an **ordered-monoid** carry that the bridge
+//! builds in parallel).
 //!
 //! [`ProvideContext`]: crate::traits::ProvideContext
 
+pub mod concat_fold_index;
+pub mod concat_index;
 pub mod count_index;
+pub mod cross_double_index;
 pub mod cumulative_series_index;
 pub mod cumulative_sum_index;
 pub mod running_sum_index;
+pub mod toy_merkle_index;
 pub mod value_index;
 
 use crate::primitives::BlockHeight;
 use crate::traits::ProvideContext;
 
 use super::TestBlockContext;
+
+// ---------------------------------------------------------------------------
+// Shared support for the two non-commutative concat toy indexes
+// ---------------------------------------------------------------------------
+
+/// A chain-ordered concatenation of block heights, shared by the `Monoidal`
+/// ([`concat_index`]) and `Fold` ([`concat_fold_index`]) concat toys.
+///
+/// Its combine is deliberately **non-commutative**: `A` followed by `B` lays
+/// `A`'s heights before `B`'s. That is what makes the two toys detect a merge
+/// that folds deltas in completion order rather than chain order — an ordinary
+/// `+`/count accumulator stays correct under reordering and so hides the bug.
+///
+/// It records `first` (the chain-earliest height folded in) so the collapsed
+/// batch value can be keyed by it: each batch persists one entry
+/// `first_height -> joined_text`, and reading the namespace in key order
+/// reassembles the whole chain.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConcatAcc {
+    first: Option<BlockHeight>,
+    text: String,
+}
+
+impl ConcatAcc {
+    /// The identity: an empty concatenation.
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// A single height.
+    pub fn singleton(height: BlockHeight) -> Self {
+        Self {
+            first: Some(height),
+            text: height.to_string(),
+        }
+    }
+
+    /// `self` followed by `next` — associative, **not** commutative.
+    pub fn followed_by(self, next: Self) -> Self {
+        match (self.first, next.first) {
+            (None, _) => next,
+            (_, None) => self,
+            (Some(first), _) => Self {
+                first: Some(first),
+                text: format!("{},{}", self.text, next.text),
+            },
+        }
+    }
+
+    /// Append one more height on the right (the `Fold` step).
+    pub fn push_height(&mut self, height: BlockHeight) {
+        if self.first.is_none() {
+            self.first = Some(height);
+            self.text = height.to_string();
+        } else {
+            self.text.push(',');
+            self.text.push_str(&height.to_string());
+        }
+    }
+
+    /// The chain-earliest height, if any — the key this batch persists under.
+    pub fn first(&self) -> Option<BlockHeight> {
+        self.first
+    }
+
+    /// The joined text (`"3,4,5"`).
+    pub fn into_text(self) -> String {
+        self.text
+    }
+
+    /// Reassemble an accumulator from persisted `(first_height, text)` entries,
+    /// in chain order. The mechanical inverse of persisting each batch's
+    /// collapsed value; only entry-order matters, so it sorts by height first.
+    pub fn from_entries(mut entries: Vec<(BlockHeight, String)>) -> Self {
+        entries.sort_by_key(|(height, _)| *height);
+        entries
+            .into_iter()
+            .fold(Self::empty(), |acc, (first, text)| {
+                acc.followed_by(Self {
+                    first: Some(first),
+                    text,
+                })
+            })
+    }
+}
+
+/// On-disk record for a concat toy's joined-text value: the UTF-8 bytes,
+/// length-framed.
+#[derive(zaino_persistence_codec::PersistentRecord)]
+pub struct PersistentConcat(Vec<u8>);
+
+impl zaino_persistence_codec::PersistentRecord for PersistentConcat {
+    type Domain = String;
+
+    fn from_domain(domain: &String) -> Self {
+        Self(domain.clone().into_bytes())
+    }
+
+    fn into_domain(self) -> Result<String, zaino_persistence_codec::DecodeError> {
+        String::from_utf8(self.0)
+            .map_err(|err| zaino_persistence_codec::DecodeError::Invalid(err.to_string()))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // ProvideContext projections: set-wide → per-index
@@ -60,6 +169,97 @@ impl ProvideContext<cumulative_series_index::Context> for TestBlockContext {
             value: self.value,
         }
     }
+}
+
+impl ProvideContext<concat_index::Context> for TestBlockContext {
+    fn context(&self) -> concat_index::Context {
+        concat_index::Context {
+            height: BlockHeight::new(self.height),
+        }
+    }
+}
+
+impl ProvideContext<concat_fold_index::Context> for TestBlockContext {
+    fn context(&self) -> concat_fold_index::Context {
+        concat_fold_index::Context {
+            height: BlockHeight::new(self.height),
+        }
+    }
+}
+
+impl ProvideContext<toy_merkle_index::Context> for TestBlockContext {
+    fn context(&self) -> toy_merkle_index::Context {
+        // The set-wide context carries only a `value`; interpret it as this
+        // block's leaf count and derive deterministic leaves from the height.
+        toy_merkle_index::Context {
+            height: BlockHeight::new(self.height),
+            leaves: toy_merkle_index::leaves_for(self.height, self.value),
+        }
+    }
+}
+
+impl ProvideContext<cross_double_index::Context> for TestBlockContext {
+    fn context(&self) -> cross_double_index::Context {
+        cross_double_index::Context {
+            height: BlockHeight::new(self.height),
+        }
+    }
+}
+
+/// Sync `n_blocks` (heights `0..n_blocks`) through a single concat toy index in
+/// batches of `batch_size`, then read its namespace back as the heights joined
+/// in chain order.
+///
+/// Extraction runs reversed (via [`ReverseExtractionGuard`]) so the merge sees
+/// deltas out of chain order on every batch — the result equals the chain-order
+/// concatenation only if the bridge reorders by offset before merging. Because
+/// each batch collapses to one `first_height -> text` entry, reading the
+/// namespace in key order reassembles the whole chain across batches.
+///
+/// [`ReverseExtractionGuard`]: crate::engine::ReverseExtractionGuard
+#[cfg(test)]
+pub(crate) fn run_toy_sync<I>(n_blocks: u64, batch_size: u32) -> String
+where
+    I: crate::pipeline::IntoIndexPipeline<TestBlockContext>
+        + crate::traits::IndexDef
+        + zaino_persistence_codec::EntryCodec<Key = BlockHeight, Value = String>,
+{
+    use crate::engine::{EngineConfig, ReverseExtractionGuard, SyncEngine};
+    use crate::index_pipelines::IndexPipelines;
+    use crate::testing::InMemoryBackend;
+
+    let backend = InMemoryBackend::new();
+    let set = IndexPipelines::new().with::<I>();
+    let mut engine = SyncEngine::from_pipelines(
+        set,
+        backend.clone(),
+        EngineConfig {
+            batch_size,
+            start_height: BlockHeight::new(0),
+        },
+    )
+    .expect("valid index set");
+
+    let blocks: Vec<_> = (0..n_blocks)
+        .map(|height| TestBlockContext { height, value: 0 })
+        .collect();
+
+    {
+        let _reversed = ReverseExtractionGuard::new();
+        engine.sync_range(blocks).expect("sync succeeds");
+    }
+
+    let mut entries: Vec<(Vec<u8>, Vec<u8>)> =
+        backend.entries(I::NAME.into()).into_iter().collect();
+    // Keys are big-endian heights, so byte order is chain order.
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries
+        .into_iter()
+        .map(|(_, value)| {
+            zaino_persistence_codec::decode_value::<I>(&value).expect("concat value decodes")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 // ---------------------------------------------------------------------------

@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use zaino_consensus::MAX_BLOCK_REORG_HEIGHT;
 use zaino_indexer::FetchConcurrency;
 
+/// Re-exported so a config holder constructing a [`StoreConfig`] can name the
+/// deferral policy without reaching into `zaino-indexer`.
+pub use zaino_indexer::DeferralPolicy;
+
 /// The finalised index store (LMDB).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,6 +27,14 @@ pub struct StoreConfig {
     /// bound at open time).
     #[serde(default = "StoreConfig::default_map_size_gb")]
     pub map_size_gb: usize,
+    /// Whether the initial index catch-up may defer its scattered (hash-keyed)
+    /// writes to sorted run logs and bulk-load them in key order — `auto` (the
+    /// default) to defer once the catch-up gap warrants it, `off` to reproduce
+    /// the direct write path exactly. `off` trades a faster first sync for
+    /// reach-climb availability, or suits a deployment without the temporary disk
+    /// the run logs need.
+    #[serde(default)]
+    pub deferred_writes: DeferralPolicy,
 }
 
 impl StoreConfig {

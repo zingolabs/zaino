@@ -32,8 +32,8 @@
 
 use zaino_address::{script_paying, transparent_address_key};
 use zaino_indexes::capabilities::local::{self, Backs};
-use zaino_indexes::indexes::address_history::{read_receives, AddrId, ReceivesReadError};
-use zaino_indexes::indexes::transparent_spends::OutpointKey;
+use zaino_indexes::indexes::address_history::{self, read_receives, AddrId, ReceivesReadError};
+use zaino_indexes::indexes::transparent_spends::{self, OutpointKey};
 use zaino_indexes::indexes::txid_location::{self, TxLocation, TxidLocationIndex};
 use zaino_persistence::Backend;
 use zaino_primitives::types::{
@@ -41,11 +41,11 @@ use zaino_primitives::types::{
     TransactionId, TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_service::error::AddressReadError;
-use zaino_service::{AddressRead, LocatedTxid, ReadBudget};
+use zaino_service::{AddressRead, Capability, LocatedTxid, ReadBudget};
 use zaino_sync::primitives::BlockHeight;
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
-use crate::{read_keyed, StoreSnapshot};
+use crate::{read_keyed, serviceability_gate, StoreSnapshot};
 
 /// One receive of the queried address, joined with where it was spent if the
 /// finalised range spent it.
@@ -260,6 +260,24 @@ where
             return Ok(Vec::new());
         };
         let reader = self.reader()?;
+        // Address history is composed from three scattered namespaces (the
+        // receives, the spend join, and the in-block position). While any is
+        // still deferred during the initial catch-up the answer would be partial,
+        // so refuse the whole read rather than net a half-built history. Checked
+        // once per read on the pinned reader, not per receive.
+        if let Some(capability) = serviceability_gate::<B>(
+            &reader,
+            &[
+                address_history::ID.into(),
+                transparent_spends::ID.into(),
+                txid_location::ID.into(),
+            ],
+            Capability::AddressHistory,
+        )
+        .map_err(|e| transient(format!("address-history readiness: {e}")))?
+        {
+            return Err(AddressReadError::NotServiceable(capability));
+        }
         let receives = read_receives(&reader, AddrId { script_type, hash }, start, end, budget)
             .map_err(|e| receives_read_error(addr, e))?;
 

@@ -17,8 +17,8 @@ deployment = "light-wallet-passthrough"   # the default
 | Deployment | Builds | Serves | Listens on |
 |---|---|---|---|
 | `light-wallet-passthrough` | compact blocks | `CompactTxStreamer` gRPC, transparent address history **relayed** to the validator | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
-| `light-wallet-local` | `TransparentHistory` | `CompactTxStreamer` gRPC, transparent address history served **locally** | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
-| `node-rpc-local` | `TransparentHistory` | Zcash node JSON-RPC (zcashd-compatible), with `getaddressdeltas` and `getspentinfo` served **locally** | `serve.jsonrpc_listen_address` (default `127.0.0.1:8232`) |
+| `light-wallet-local` | `LightWalletLocal` | `CompactTxStreamer` gRPC, transparent address history and treestate served **locally** | `serve.grpc_listen_address` (default `127.0.0.1:8137`) |
+| `node-rpc-local` | `NodeRpcLocal` | Zcash node JSON-RPC (zcashd-compatible), with `getaddressdeltas`, `getspentinfo` and `z_gettreestate` served **locally** | `serve.jsonrpc_listen_address` (default `127.0.0.1:8232`) |
 
 All are layered from `ZAINO_`-prefixed env with `__` for nesting, e.g.
 `ZAINO_DEPLOYMENT=node-rpc-local` and
@@ -33,14 +33,16 @@ serves, the routing the engine is composed under and the index set the store
 builds; see the runtime's guide. `light-wallet-passthrough` builds only the
 compact-block set and relays transparent address queries to the validator —
 cheaper on disk, but it discloses the wallet's queried addresses. `light-wallet-local`
-and `node-rpc-local` build the `TransparentHistory` set and serve address history
-from it: the light wallet keeps its queried addresses off the validator, and the
-node deployment answers `getaddressdeltas` and `getspentinfo`, which a plain-RPC
-validator cannot. Serving locally has an operational cost: the `TransparentHistory`
-deployments must sync that index from genesis, so a data directory synced under a
-smaller (for example compact-block-only) build is refused at boot by the
-index-coverage guard — point the deployment at a fresh, empty data directory and
-resync from genesis. `indexer::select_deployment` is the one `match` over
+and `node-rpc-local` build the transparent-history indexes plus the commitment-tree
+(`tree_state`, `subtrees_*`) indexes and serve address history and treestate from
+them: the light wallet keeps its queried addresses off the validator and drops the
+per-scan-batch treestate round trip, and the node deployment also answers
+`getaddressdeltas` and `getspentinfo`, which a plain-RPC validator cannot. Serving
+locally has an operational cost: these deployments must sync the extra indexes from
+genesis, so a data directory synced under a smaller (for example compact-block-only)
+build is refused at boot by the index-coverage guard — point the deployment at a
+fresh, empty data directory and resync from genesis. `indexer::select_deployment`
+is the one `match` over
 `DeploymentKind`: each arm names a deployment and the serving adapter that speaks
 its use case's protocol, hands both to the runtime's `boot_indexed`, and nothing
 else. Adding a deployment is adding an arm; the compiler checks the arm's shape at
@@ -71,6 +73,33 @@ standard read, projected by walking the encoding, so proofs and signatures are
 stepped over rather than deserialised. `compact` needs a validator serving
 zaino's pre-index compact read, i.e. the zebra fork over either transport. The
 mainnet RPC fixture takes the same choice from `ZAINO_TEST_FETCH`.
+
+## Deferred writes
+
+`[store] deferred_writes` controls how the initial index catch-up writes its
+scattered (hash-keyed) namespaces — address history, transparent spends,
+transaction location:
+
+```toml
+[store]
+deferred_writes = "auto"   # the default
+# deferred_writes = "off"  # write directly, as without the feature
+```
+
+`auto` lets the store defer those writes to sorted run logs during a large
+catch-up and bulk-load them in key order at the end, which removes the random
+B-tree inserts that otherwise dominate a first mainnet sync of the
+`TransparentHistory` set. The run logs need temporary disk roughly the raw size
+of those three namespaces, released as each finishes (see the backend's guide).
+`off` reproduces the direct write path exactly, for a deployment that would
+rather climb to reach incrementally than spend that disk. Either way, address
+and spend reads are refused as not-yet-serviceable until the load completes, and
+compact-block reads serve throughout; a load left unfinished by a crash is
+completed on the next boot before the indexer reports Ready.
+
+The ztest/deploy fixtures take the same choice from `ZAINO_TEST_DEFERRED_WRITES`
+(`auto` or `off`), so a cluster A/B can toggle it without a rebuild; an
+unrecognised value fails to boot rather than guessing.
 
 ## Boot-time checks
 

@@ -19,7 +19,7 @@ use zaino_primitives::types::Height;
 use zaino_runtime::{OrchestraBuilder, RunComponent, ValidatorComponent};
 use zaino_source::mock::{test_block, MockChain};
 use zaino_source::{RetryPolicy, ValidatorClient};
-use zaino_store::{StoreReader, WatermarkRepair};
+use zaino_store::StoreReader;
 use zaino_store_service::StoreComponent;
 use zaino_sync::primitives::BlockHeight;
 
@@ -107,12 +107,17 @@ async fn a_watermark_ahead_of_the_index_is_re_stamped_at_the_highest_header() {
         .commit(vec![watermark::stamp(height(1_002))])
         .expect("stamp");
 
-    assert_eq!(
-        store.reader().repair_watermark().expect("repair runs"),
-        Some(WatermarkRepair {
-            claimed: height(1_002),
-            corrected: height(2),
-        })
+    let repair = store
+        .reader()
+        .repair_watermark()
+        .expect("repair runs")
+        .expect("the stamp was ahead of the index");
+    assert_eq!(repair.claimed, height(1_002));
+    assert_eq!(repair.corrected, height(2));
+    assert!(
+        repair.trimmed.is_empty(),
+        "nothing was held above the corrected tip, so nothing is trimmed: {:?}",
+        repair.trimmed
     );
     assert_eq!(
         watermark::read(&backend.reader().expect("reader")).expect("read"),
@@ -139,13 +144,20 @@ async fn a_hole_below_a_held_watermark_moves_the_stamp_beneath_it() {
         }])
         .expect("delete");
 
+    let repair = store
+        .reader()
+        .repair_watermark()
+        .expect("repair runs")
+        .expect("the hole moves the stamp beneath it");
+    assert_eq!(repair.claimed, height(2));
     assert_eq!(
-        store.reader().repair_watermark().expect("repair runs"),
-        Some(WatermarkRepair {
-            claimed: height(2),
-            corrected: height(0),
-        }),
+        repair.corrected,
+        height(0),
         "the stamp moves below the lowest hole so the indexer re-covers it"
+    );
+    assert!(
+        !repair.trimmed.is_empty(),
+        "the walk-ordered heights above the corrected tip are trimmed so resume can re-append them"
     );
     assert_eq!(
         watermark::read(&backend.reader().expect("reader")).expect("read"),

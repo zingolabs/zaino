@@ -6,4 +6,6 @@
 
 pub mod compact_blocks;
 pub mod current_zaino;
+pub mod light_wallet_local;
+pub mod node_rpc_local;
 pub mod transparent_history;

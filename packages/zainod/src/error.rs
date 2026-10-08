@@ -44,6 +44,22 @@ pub enum IndexerError {
     #[cfg(feature = "ztest-fixture")]
     #[error("`ZAINO_DEPLOYMENT` is not valid Unicode")]
     FixtureDeploymentEnv(#[source] std::env::VarError),
+    /// A fixture's deferred-writes env var names no policy.
+    #[cfg(feature = "ztest-fixture")]
+    #[error(
+        "`ZAINO_TEST_DEFERRED_WRITES={value}` names no deferral policy (expected `auto` or `off`)"
+    )]
+    FixtureDeferredWrites {
+        /// The value the variable held.
+        value: String,
+        /// Why it did not parse as a deferral policy.
+        #[source]
+        source: serde::de::value::Error,
+    },
+    /// A fixture's deferred-writes env var is not valid Unicode.
+    #[cfg(feature = "ztest-fixture")]
+    #[error("`ZAINO_TEST_DEFERRED_WRITES` is not valid Unicode")]
+    FixtureDeferredWritesEnv(#[source] std::env::VarError),
     /// A fatal runtime escalation — the caller's run loop restarts the daemon.
     #[error("restart zaino")]
     Restart,

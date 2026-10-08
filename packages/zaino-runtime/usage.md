@@ -32,19 +32,28 @@ choices, not the use case's. The light-wallet demand has two deployments:
   `LightWalletPassthroughRouting` (address history relayed to the validator), with
   the `LightWalletPassthroughSource` bundle. It discloses the wallet's queried
   addresses to the validator but builds no transparent index.
-- `LightWalletLocal` — the `TransparentHistory` index set (compact blocks plus the
-  address-history, transparent-spends and txid-location indexes) and
-  `LightWalletLocalRouting` (address history served locally), with the shared
-  `LightWalletSource` bundle. It serves the wallet's transparent address reads from
-  its own indexes, so it discloses no queried addresses and demands no address
-  source port.
+- `LightWalletLocal` — the `LightWalletLocal` index set (`TransparentHistory` plus
+  the `tree_state` and per-pool `subtrees_*` indexes) and `LightWalletLocalRouting`
+  (address history *and* treestate served locally), with the shared
+  `LightWalletSource` bundle. It serves the wallet's transparent address reads and
+  its treestate from its own indexes, so it discloses no queried addresses, removes
+  the per-scan-batch treestate round trip to the validator, and demands no address
+  or treestate source port. Boot reads the validator's upgrade schedule once and
+  pins the per-pool activation heights into the store, so treestate tells an
+  active-but-empty pool (serve the empty tree) from one below activation (absent);
+  a validator that cannot describe its chain fails the boot rather than defaulting
+  to a wrong schedule.
 
 The node-RPC / block-explorer demand has one deployment, `NodeRpcLocal`: the
-`TransparentHistory` index set, address history and spend lookup both served
+`NodeRpcLocal` index set (`TransparentHistory` plus the `tree_state` and per-pool
+`subtrees_*` indexes), address history, spend lookup and treestate all served
 locally and every other placement relayed to the validator or withheld
 (`NodeRpcLocalRouting`), with the `NodeRpcSource` bundle. It serves
-`getaddressdeltas` and `getspentinfo` from its own indexes, which a plain-RPC
-validator cannot answer, so `NodeRpcSource` names no address or spend source port.
+`getaddressdeltas`, `getspentinfo`, `z_gettreestate` and `z_getsubtreesbyindex`
+from its own indexes, the first two of which a plain-RPC validator cannot answer,
+so `NodeRpcSource` names no address, spend or treestate source port. Like the
+light-wallet-local deployment, boot reads the validator's upgrade schedule once
+and pins the per-pool activation heights into the store.
 
 The module tree groups deployments by use case: `deployment/light_wallet.rs` and
 `deployment/node_rpc.rs` each hold what their deployments share — the common

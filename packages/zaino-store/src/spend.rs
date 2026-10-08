@@ -25,15 +25,15 @@
 
 use zaino_indexes::capabilities::local::{self, Backs};
 use zaino_indexes::indexes::transparent_data::{self, TransparentDataIndex};
-use zaino_indexes::indexes::transparent_spends::{read_spender, OutpointKey};
+use zaino_indexes::indexes::transparent_spends::{self, read_spender, OutpointKey};
 use zaino_indexes::indexes::txid_location::{self, TxidLocationIndex};
 use zaino_persistence::Backend;
 use zaino_primitives::types::{Height, Outpoint, TransparentSpend};
 use zaino_service::error::SpendReadError;
-use zaino_service::{SpendRead, SpendStatus};
+use zaino_service::{Capability, SpendRead, SpendStatus};
 
 use crate::spend_resolve::{resolve_spend, ResolveError};
-use crate::{read_index_value, read_keyed, StoreSnapshot};
+use crate::{read_index_value, read_keyed, serviceability_gate, StoreSnapshot};
 
 /// The store answers spend status wherever its index set builds the three
 /// indexes the capability composes from.
@@ -47,6 +47,7 @@ where
         let reader = backend
             .reader()
             .map_err(|e| SpendReadError::Fatal(format!("open reader: {e}")))?;
+        spend_status_gate::<B>(&reader)?;
 
         let key = OutpointKey {
             prev_txid: outpoint.txid,
@@ -75,6 +76,7 @@ where
         let reader = backend
             .reader()
             .map_err(|e| SpendReadError::Fatal(format!("open reader: {e}")))?;
+        spend_status_gate::<B>(&reader)?;
 
         let key = OutpointKey {
             prev_txid: outpoint.txid,
@@ -93,6 +95,27 @@ where
                 block_index: resolved.block_index,
             }))
     }
+}
+
+/// Refuse a spend read whose backing scattered namespaces are still deferred.
+///
+/// Spend status is composed from the spends index and the location index (which
+/// resolves "no spend recorded" into unspent-vs-never-created). Both are
+/// `Scattered` and may still be building during the initial catch-up, so while
+/// either is incomplete the read answers `NotServiceable(SpendStatus)` rather
+/// than reading an absent spend as unspent. One completeness probe per namespace
+/// on the pinned reader, checked once per read.
+fn spend_status_gate<B: Backend + 'static>(reader: &B::Reader) -> Result<(), SpendReadError> {
+    if let Some(capability) = serviceability_gate::<B>(
+        reader,
+        &[transparent_spends::ID.into(), txid_location::ID.into()],
+        Capability::SpendStatus,
+    )
+    .map_err(|e| SpendReadError::Transient(format!("spend-status readiness: {e}")))?
+    {
+        return Err(SpendReadError::NotServiceable(capability));
+    }
+    Ok(())
 }
 
 /// Fold a shared spend-resolution failure into this read's error, preserving its

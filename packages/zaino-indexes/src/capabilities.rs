@@ -40,10 +40,10 @@ pub fn capability_indexes(capability: Capability) -> &'static [IndexId] {
         Capability::TransactionLocation => local::TransactionLocation::INDEXES,
         Capability::AddressHistory => local::AddressHistory::INDEXES,
         Capability::SpendStatus => local::SpendStatus::INDEXES,
+        Capability::Treestate => local::Treestate::INDEXES,
+        Capability::SubtreeRoots => local::SubtreeRoots::INDEXES,
         // No local index — answered, if at all, by another provider.
         Capability::RawTransaction
-        | Capability::Treestate
-        | Capability::SubtreeRoots
         | Capability::Mempool
         | Capability::Broadcast
         | Capability::NodeStatus
@@ -125,9 +125,13 @@ mod tests {
 
     #[test]
     fn passthrough_capabilities_have_no_backing_index() {
-        assert!(capability_indexes(Capability::Treestate).is_empty());
         assert!(capability_indexes(Capability::Broadcast).is_empty());
+        assert!(capability_indexes(Capability::Mempool).is_empty());
         assert!(!capability_indexes(Capability::Blocks).is_empty());
+        // Treestate and subtree roots are now locally backed by the tree_state
+        // and per-pool subtree indexes.
+        assert!(!capability_indexes(Capability::Treestate).is_empty());
+        assert!(!capability_indexes(Capability::SubtreeRoots).is_empty());
     }
 
     #[test]

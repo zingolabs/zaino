@@ -23,7 +23,7 @@ use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{
     context_from_block, context_from_pre_index_compact_block, CurrentZaino, CurrentZainoContext,
 };
-use zaino_persistence::Namespace;
+use zaino_persistence::NamespaceSpec;
 use zaino_persistence_codec::reserved_namespaces;
 use zaino_primitives::types::BlockSelector;
 use zaino_primitives::types::Height;
@@ -213,11 +213,10 @@ pub fn open_rpc_source(addr: &str) -> Result<RpcSource, BoxError> {
 /// front — one per index in the set, plus the engine's reserved watermark /
 /// format-version namespaces.
 pub fn open_backend(db: &Path, map_size_gb: usize) -> Result<LmdbBackend, BoxError> {
-    let namespaces: Vec<Namespace> = CurrentZaino::pipelines()
-        .index_ids()
+    let namespaces: Vec<NamespaceSpec> = CurrentZaino::pipelines()
+        .namespace_specs()
         .into_iter()
-        .map(Namespace::from)
-        .chain(reserved_namespaces())
+        .chain(reserved_namespaces().map(NamespaceSpec::meta))
         .collect();
     Ok(LmdbBackend::open(LmdbConfig {
         path: db.to_path_buf(),

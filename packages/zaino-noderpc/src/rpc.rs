@@ -497,7 +497,8 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
             ErrorCode::InternalError.code(),
             ReadError::from(source).to_string(),
         ),
-        // A treestate read is passthrough to the validator: none of its three
+        // A treestate read is served from wherever the engine's placement answers
+        // it (a local index or a passthrough relay); none of its three error
         // cases is bad client input (a malformed height/hash is rejected at the
         // wire boundary, and an unknown block is a `NotFound` above), so each is
         // an internal error. Each variant's own `Display` names the reason without

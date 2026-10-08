@@ -9,7 +9,9 @@
 use crate::descriptor::{Monoidal, SelfCumulative};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractCumulative, IndexDef, MergeMonoidal, Schema};
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, KeyOrder, PersistentRecord,
+};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -104,6 +106,10 @@ impl EntryCodec for CumulativeSumIndex {
     type Value = CumulativeSum;
     type PersistentKey = PersistentCumSumKey;
     type PersistentValue = PersistentCumulativeSum;
+
+    // Collapses onto one fixed key (a cumulative tip total), so its key is not
+    // append-ordered by the chain walk.
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(CumSumKey, CumulativeSum)> {
         vec![(CumSumKey, CumulativeSum(1))]

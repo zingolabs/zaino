@@ -11,7 +11,9 @@ use crate::descriptor::{Append, SelfCumulative};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{CumulativeAppend, ExtractCumulative, IndexDef, MergeAppend, Schema};
 use zaino_persistence_codec::keys::HeightKey;
-use zaino_persistence_codec::{DecodeError as PersistDecodeError, EntryCodec, PersistentRecord};
+use zaino_persistence_codec::{
+    DecodeError as PersistDecodeError, EntryCodec, KeyOrder, PersistentRecord,
+};
 
 /// Block context: the block's height and its value.
 pub struct Context {
@@ -91,6 +93,8 @@ impl EntryCodec for CumulativeSeriesIndex {
     // The key is a plain block height — reuse the shared height record.
     type PersistentKey = HeightKey<BlockHeight>;
     type PersistentValue = PersistentRunningTotal;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, RunningTotal)> {
         vec![(BlockHeight::new(1), RunningTotal(1))]

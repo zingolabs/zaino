@@ -194,6 +194,7 @@ mistakes its design is trying to prevent.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the storage backend port, and why index code never names a concrete store.
+- [`zaino-backend-lmdb`](./packages/zaino-backend-lmdb/usage.md): the LMDB adapter, its append and key-order enforcement, and the scattered-write deferral with its crash and disk contract.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
@@ -212,6 +213,7 @@ mistakes its design is trying to prevent.
 - [`zaino-runtime`](./packages/zaino-runtime/usage.md): deployments — how each use case is served, as types checked where the engine is composed — and the supervision they run under.
 - [`zaino-service`](./packages/zaino-service/usage.md): the inner driving surface — use cases as demand, read-sets as capability bundles, and the three layers of availability.
 - [`zaino-sync`](./packages/zaino-sync/usage.md): the DAG-driven parallel sync engine, and its `sync-profile` feature for in-process batch/phase timing attribution.
+- [`zaino-indexer`](./packages/zaino-indexer/usage.md): the index writer wired as a supervised component, the source-generic provisioner, and the bulk-mode bracket around the initial catch-up.
 - [`zaino-indexes`](./packages/zaino-indexes/usage.md): materialisations as types, and each local capability declared once with the indexes it composes from.
 - [`zaino-store`](./packages/zaino-store/usage.md): the finalised tier as a provider — reads composed on read from the index set, present only where the set builds them, and the watermark repair.
 - [`zaino-store-service`](./packages/zaino-store-service/usage.md): the runtime half of the store tandem — presents the store reader to the Orchestra as a supervised component.

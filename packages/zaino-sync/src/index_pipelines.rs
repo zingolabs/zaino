@@ -4,9 +4,9 @@
 //! into an `IndexPipelines`, and hands the set to the engine. The set handles
 //! DAG construction and validation internally.
 
+use crate::backend::NamespaceSpec;
 use crate::dag::{DagError, DependencyDag};
 use crate::pipeline::{IndexPipeline, IntoIndexPipeline};
-use crate::primitives::IndexId;
 
 /// The dependency DAG and the boxed pipelines a built index set hands to the engine.
 type BuiltIndexSet<Ctx> = (DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>);
@@ -46,17 +46,26 @@ impl<Ctx: Send + Sync + 'static> IndexPipelines<Ctx> {
         self
     }
 
-    /// The [`IndexId`] of every registered index, in registration order.
+    /// The [`NamespaceSpec`] of every registered index, in registration order —
+    /// each index's namespace paired with the key order its codec states.
     ///
     /// These map one-to-one onto the persistence namespaces the engine writes
     /// each index under. A backend that must declare its namespaces before use
     /// (e.g. LMDB) opens exactly these, plus the engine's reserved bookkeeping
-    /// namespaces ([`zaino_persistence_codec::reserved_namespaces`]). A backend
-    /// that creates namespaces lazily (e.g. the in-memory one) can ignore this.
-    pub fn index_ids(&self) -> Vec<IndexId> {
+    /// namespaces ([`zaino_persistence_codec::reserved_namespaces`], tagged
+    /// [`KeyOrder::Meta`](crate::backend::KeyOrder::Meta) by the caller). A
+    /// backend that creates namespaces lazily (e.g. the in-memory one) can
+    /// ignore this.
+    pub fn namespace_specs(&self) -> Vec<NamespaceSpec> {
         self.pipelines
             .iter()
-            .map(|pipeline| pipeline.descriptor().name)
+            .map(|pipeline| {
+                let descriptor = pipeline.descriptor();
+                NamespaceSpec {
+                    namespace: descriptor.name.into(),
+                    key_order: descriptor.key_order,
+                }
+            })
             .collect()
     }
 

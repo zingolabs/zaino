@@ -23,12 +23,13 @@ use zaino_primitives::types::{
     Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
     TransparentSpend,
 };
+use zaino_primitives::types::{PoolActivations, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::{
-    AddressReadError, BlockReadError, ReadError, SpendReadError, Transient,
+    AddressReadError, BlockReadError, ReadError, SpendReadError, Transient, TreestateReadError,
 };
 use zaino_service::{
-    AddressReceiveRead, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary, SpendRead,
-    SpendStatus, TakeSnapshot,
+    AddressReceiveRead, Capability, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary,
+    PoolActivationSource, SpendRead, SpendStatus, TakeSnapshot, TreestateRead, TreestateWindowRead,
 };
 
 /// A fixed non-finalised window backed by an in-memory map.
@@ -264,6 +265,74 @@ impl AddressReceiveRead for StubNonFinalised {
             }
         }
         Ok(spends)
+    }
+}
+
+impl StubNonFinalised {
+    /// A canned treestate at a height the window holds — block identity from the
+    /// stored block, every pool absent. Enough to stand in for a tier under a
+    /// `Local` treestate placement without computing real frontiers (this crate
+    /// has no commitment-tree algebra).
+    fn scripted_treestate(&self, at: Height) -> Option<Treestate> {
+        self.blocks.get(&at).map(|block| Treestate {
+            block_hash: block.hash,
+            height: at,
+            time: block.time,
+            sapling: None,
+            orchard: None,
+            ironwood: None,
+        })
+    }
+}
+
+/// The finalised-tier treestate read, so the stub can stand in as the `F` side of
+/// a `Local` placement. A height the window holds answers; above it is
+/// `NotServiceable`, never an empty tree.
+impl TreestateRead for StubNonFinalised {
+    async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
+        self.scripted_treestate(at)
+            .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
+    }
+
+    async fn subtree_roots(
+        &self,
+        _pool: ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        Ok(Vec::new())
+    }
+}
+
+/// The stub reports no activation schedule, so a routing that reads it from the
+/// finalised tier compiles; the stub's treestate is scripted directly, so the
+/// schedule never gates it.
+impl PoolActivationSource for StubNonFinalised {
+    fn pool_activations(&self) -> PoolActivations {
+        PoolActivations::unknown()
+    }
+}
+
+/// The window-tier treestate read, so the stub can stand in as the `N` side. A
+/// height the window holds answers; above it is a domain miss.
+impl TreestateWindowRead for StubNonFinalised {
+    async fn window_treestate(
+        &self,
+        _seed: Option<&Treestate>,
+        _activations: PoolActivations,
+        at: Height,
+    ) -> Result<Option<Treestate>, TreestateReadError> {
+        Ok(self.scripted_treestate(at))
+    }
+
+    async fn window_subtree_roots(
+        &self,
+        _seed: Option<&Treestate>,
+        _pool: ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        Ok(Vec::new())
     }
 }
 

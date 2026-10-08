@@ -7,7 +7,10 @@
 //! let backend = LmdbBackend::open(LmdbConfig {
 //!     path: "/tmp/zaino-db".into(),
 //!     map_size_bytes: 1 << 30, // 1 GB
-//!     namespaces: &["headers", "tx_count", "_engine_meta"],
+//!     namespaces: vec![
+//!         NamespaceSpec { namespace: Namespace::new("headers"), key_order: KeyOrder::WalkOrdered },
+//!         NamespaceSpec::meta(Namespace::new("_watermark")),
+//!     ],
 //! })?;
 //! ```
 //!
@@ -24,7 +27,9 @@
 //! or one scan, never once per key, and not `block_in_place`, which panics on a
 //! current-thread runtime.
 
-use std::collections::HashMap;
+mod deferred;
+
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -39,9 +44,12 @@ use lmdb::{
 };
 use lmdb_sys::{MDB_FIRST, MDB_NEXT, MDB_SET_RANGE};
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError,
-    RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, BulkPolicy, CommitError, FlushError, KeyOrder,
+    Namespace, NamespaceSpec, OpenError, RangeVisitor, RawKey, RawValue, ReadError, WriteOp,
 };
+
+use deferred::manifest::MANIFEST_NAMESPACE;
+use deferred::{Deferral, Prepared};
 
 /// Configuration for [`LmdbBackend`].
 pub struct LmdbConfig {
@@ -50,8 +58,10 @@ pub struct LmdbConfig {
     /// Maximum database size in bytes. LMDB requires this upfront.
     /// Defaults to 1 GB if not set.
     pub map_size_bytes: usize,
-    /// Namespaces to create (one LMDB named database each).
-    pub namespaces: Vec<Namespace>,
+    /// Namespaces to create (one LMDB named database each), each paired with its
+    /// [`KeyOrder`]. The order is carried for the
+    /// deferral machinery; opening a database does not yet depend on it.
+    pub namespaces: Vec<NamespaceSpec>,
 }
 
 impl Default for LmdbConfig {
@@ -78,6 +88,13 @@ impl Default for LmdbConfig {
 pub struct LmdbBackend {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    /// Each namespace's [`KeyOrder`], so a writer selects
+    /// [`WriteFlags::APPEND`] for the [`WalkOrdered`](KeyOrder::WalkOrdered)
+    /// ones. Holds `Copy` entries; cloning per handle is cheap.
+    key_orders: HashMap<Namespace, KeyOrder>,
+    /// The shared deferral controller: bulk-mode state and the open run logs,
+    /// shared (`Arc`) across every writer and the backend's bulk methods.
+    deferral: Arc<Deferral>,
     /// Commits so far, shared across the writers this backend hands out, so
     /// the periodic env-stats cadence holds across the fresh writer each batch
     /// opens. Present only under `sync-profile`.
@@ -102,11 +119,11 @@ impl LmdbBackend {
     pub fn open(config: LmdbConfig) -> Result<Self, OpenError> {
         std::fs::create_dir_all(&config.path).map_err(|e| open_error("create directory", e))?;
 
-        // One database per namespace, plus LMDB's unnamed root database, which
-        // holds the names of the rest.
+        // One database per namespace, one for the reserved deferral manifest
+        // (see [`MANIFEST_NAMESPACE`]), and one of slack.
         let max_dbs = u32::try_from(config.namespaces.len())
             .ok()
-            .and_then(|count| count.checked_add(1))
+            .and_then(|count| count.checked_add(2))
             .ok_or(TooManyNamespaces {
                 count: config.namespaces.len(),
             })
@@ -145,18 +162,66 @@ impl LmdbBackend {
             .map_err(|e| open_error("open environment", e))?;
 
         let mut dbs = HashMap::new();
-        for ns in &config.namespaces {
-            let db = open_or_create_db(&env, ns.as_str())
+        let mut key_orders = HashMap::new();
+        // The reserved deferral manifest namespace is registered here, not by
+        // callers: it is backend bookkeeping, tagged `Meta`.
+        for spec in config
+            .namespaces
+            .iter()
+            .copied()
+            .chain(std::iter::once(NamespaceSpec::meta(MANIFEST_NAMESPACE)))
+        {
+            let db = open_or_create_db(&env, spec.namespace.as_str())
                 .map_err(|e| open_error("create database", e))?;
-            dbs.insert(*ns, db);
+            dbs.insert(spec.namespace, db);
+            key_orders.insert(spec.namespace, spec.key_order);
         }
+
+        let deferral = Deferral::open(&env, &dbs, config.path.join("deferred"))?;
 
         Ok(Self {
             env: Arc::new(env),
             dbs,
+            key_orders,
+            deferral: Arc::new(deferral),
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
+    }
+
+    /// Whether each `Scattered` namespace's tree is currently empty.
+    ///
+    /// Read at [`begin_bulk`](Backend::begin_bulk) to decide which namespaces may
+    /// start deferring: a namespace already holding direct entries (a prior run
+    /// built it without deferral) must stay on the direct path, because
+    /// `finish_bulk` appends into an empty tree. One read transaction, one
+    /// first-key probe per namespace; the result never outlives the call.
+    fn scattered_emptiness(&self) -> Result<HashMap<Namespace, bool>, CommitError> {
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| commit_error("begin emptiness txn", e))?;
+        let mut emptiness = HashMap::new();
+        for (namespace, order) in &self.key_orders {
+            if !matches!(order, KeyOrder::Scattered) {
+                continue;
+            }
+            let db = self
+                .dbs
+                .get(namespace)
+                .copied()
+                .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))?;
+            let cursor = txn
+                .open_ro_cursor(db)
+                .map_err(|e| commit_error("open emptiness cursor", e))?;
+            let empty = match cursor.get(None, None, MDB_FIRST) {
+                Ok((Some(_), _)) => false,
+                Ok((None, _)) | Err(lmdb::Error::NotFound) => true,
+                Err(e) => return Err(commit_error("probe namespace emptiness", e)),
+            };
+            emptiness.insert(*namespace, empty);
+        }
+        Ok(emptiness)
     }
 }
 
@@ -169,7 +234,7 @@ impl LmdbBackend {
 /// `lmdb::Error`), never stringified — so the cause chain stays inspectable.
 /// `matches!` keeps this to the one variant we distinguish without a catch-all
 /// match over LMDB's error enum.
-fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
+pub(crate) fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
     if matches!(error, lmdb::Error::MapFull) {
         CommitError::OutOfSpace
     } else {
@@ -183,7 +248,7 @@ fn commit_error(operation: &'static str, error: lmdb::Error) -> CommitError {
 /// Build an [`OpenError`] that keeps the underlying error as a typed source
 /// (boxed at the port boundary), rather than stringifying it. Generic over the
 /// cause so it serves both the filesystem (`io::Error`) and LMDB open steps.
-fn open_error(
+pub(crate) fn open_error(
     operation: &'static str,
     source: impl std::error::Error + Send + Sync + 'static,
 ) -> OpenError {
@@ -226,6 +291,8 @@ impl Backend for LmdbBackend {
         Ok(LmdbWriter {
             env: Arc::clone(&self.env),
             dbs: self.dbs.clone(),
+            key_orders: self.key_orders.clone(),
+            deferral: Arc::clone(&self.deferral),
             #[cfg(feature = "sync-profile")]
             commit_counter: Arc::clone(&self.commit_counter),
         })
@@ -235,6 +302,32 @@ impl Backend for LmdbBackend {
         self.env
             .sync(true)
             .map_err(|e| FlushError::IoError(Box::new(e)))
+    }
+
+    fn begin_bulk(&self, policy: BulkPolicy) -> Result<(), CommitError> {
+        // Which `Scattered` namespaces may *start* deferring: only those whose
+        // tree is empty, so `finish_bulk`'s append-into-empty-tree pass holds.
+        // Probed only when deferral is enabled (otherwise nothing new defers).
+        let scattered_empty = if policy.enabled {
+            self.scattered_emptiness()?
+        } else {
+            HashMap::new()
+        };
+        self.deferral.begin_bulk(policy, scattered_empty);
+        Ok(())
+    }
+
+    fn finish_bulk(&self) -> Result<(), CommitError> {
+        deferred::merge::finish_bulk(&self.deferral, &self.env, &self.dbs)
+    }
+
+    /// A bulk load is pending exactly when a run log is still open — a namespace
+    /// with a manifest entry, loaded at [`open`](Self::open) and kept until
+    /// [`finish_bulk`](Self::finish_bulk) clears it. A clean store has none, so a
+    /// freshly opened backend reports `true` only after a crash that left a
+    /// deferred namespace unmerged.
+    fn bulk_pending(&self) -> Result<bool, ReadError> {
+        Ok(self.deferral.bulk_pending())
     }
 }
 
@@ -368,12 +461,37 @@ impl BackendReader for LmdbReader {
             Err(e) => Err(read_error("first key", e)),
         }
     }
+
+    /// A namespace is incomplete exactly while it has a deferral manifest entry:
+    /// its writes are in the run log, not yet merged into the tree. The manifest
+    /// is the single source of truth, so this is one point lookup in the reserved
+    /// manifest namespace — no shared in-memory state to consult.
+    ///
+    /// `WalkOrdered` and `Meta` namespaces never get a manifest entry, so they
+    /// read complete throughout; a deferred `Scattered` namespace reads complete
+    /// again once [`finish_bulk`](LmdbBackend::finish_bulk) clears its entry.
+    fn is_complete(&self, namespace: Namespace) -> Result<bool, ReadError> {
+        let meta_db = self.resolve_db(MANIFEST_NAMESPACE)?;
+        let txn = self
+            .env
+            .begin_ro_txn()
+            .map_err(|e| read_error("begin read transaction", e))?;
+        match txn.get(meta_db, &deferred::manifest::run_key(namespace)) {
+            Ok(_) => Ok(false),
+            Err(lmdb::Error::NotFound) => Ok(true),
+            Err(e) => Err(read_error("is_complete", e)),
+        }
+    }
 }
 
 /// LMDB write handle.
 pub struct LmdbWriter {
     env: Arc<Environment>,
     dbs: HashMap<Namespace, Database>,
+    key_orders: HashMap<Namespace, KeyOrder>,
+    /// The shared deferral controller: routes `Scattered` puts to run logs while
+    /// bulk mode is active and holds the open log handles.
+    deferral: Arc<Deferral>,
     #[cfg(feature = "sync-profile")]
     commit_counter: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -384,6 +502,108 @@ impl LmdbWriter {
             .get(&namespace)
             .copied()
             .ok_or_else(|| CommitError::NamespaceNotFound(namespace.to_string()))
+    }
+
+    /// Apply one op with a plain overwriting put (or a delete): the path for
+    /// meta and scattered namespaces, and the per-commit fallback for a
+    /// walk-ordered namespace whose ops cannot be safely reordered. Overwrite
+    /// and delete semantics follow the order ops are applied in.
+    fn apply_plain(&self, txn: &mut lmdb::RwTransaction, op: WriteOp) -> Result<(), CommitError> {
+        match op {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } => {
+                let db = self.resolve_db(namespace)?;
+                txn.put(db, &key, &value, WriteFlags::empty())
+                    .map_err(|e| commit_error("put", e))
+            }
+            WriteOp::Delete { namespace, key } => {
+                let db = self.resolve_db(namespace)?;
+                match txn.del(db, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => Ok(()),
+                    Err(e) => Err(commit_error("delete", e)),
+                }
+            }
+        }
+    }
+
+    /// Apply one walk-ordered namespace's ops from a single commit as a sorted
+    /// append.
+    ///
+    /// The engine extracts in parallel, so `ops` are in completion order, not
+    /// key order. Deduplicate puts keeping the last value for a repeated key
+    /// (matching a plain put's last-write-wins), sort by key, and `APPEND` the
+    /// result; `OutOfOrderAppend` then fires only when a key is not strictly
+    /// greater than the namespace's existing max from *prior* commits.
+    ///
+    /// Deletes and puts in the same commit: when no key is both deleted and put,
+    /// the deletes are applied first and the sorted puts appended after — which
+    /// equals applying the ops in sequence, because the two key sets are
+    /// disjoint. When a key is both deleted and put (e.g. a delete then a re-put
+    /// of the same height), the reorder would not match sequential application,
+    /// so the whole namespace falls back to a sequential plain put/delete for
+    /// this commit — correct, only without the append's speed. This case does
+    /// not arise on the engine's append-only catch-up; it is here for
+    /// correctness under arbitrary commits.
+    fn apply_walk_ordered(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        db: Database,
+        namespace: Namespace,
+        ops: Vec<WriteOp>,
+    ) -> Result<(), CommitError> {
+        let conflict = {
+            let deleted: HashSet<&[u8]> = ops
+                .iter()
+                .filter_map(|op| match op {
+                    WriteOp::Delete { key, .. } => Some(key.as_slice()),
+                    WriteOp::Put { .. } => None,
+                })
+                .collect();
+            !deleted.is_empty()
+                && ops.iter().any(
+                    |op| matches!(op, WriteOp::Put { key, .. } if deleted.contains(key.as_slice())),
+                )
+        };
+
+        if conflict {
+            for op in ops {
+                self.apply_plain(txn, op)?;
+            }
+            return Ok(());
+        }
+
+        // Disjoint delete/put key sets: deletes first (so the append sees the
+        // post-delete max), then the deduplicated, sorted puts. A `BTreeMap`
+        // sorts by key and, inserting in arrival order, keeps the last value for
+        // a repeated key — it also moves values in rather than copying them.
+        let mut puts: BTreeMap<RawKey, RawValue> = BTreeMap::new();
+        for op in ops {
+            match op {
+                WriteOp::Delete { key, .. } => match txn.del(db, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(e) => return Err(commit_error("delete", e)),
+                },
+                WriteOp::Put { key, value, .. } => {
+                    puts.insert(key, value);
+                }
+            }
+        }
+        for (key, value) in puts {
+            match txn.put(db, &key, &value, WriteFlags::APPEND) {
+                Ok(()) => {}
+                Err(e @ lmdb::Error::KeyExist) => {
+                    return Err(CommitError::OutOfOrderAppend {
+                        namespace: namespace.to_string(),
+                        source: Box::new(e),
+                    });
+                }
+                Err(e) => return Err(commit_error("put", e)),
+            }
+        }
+        Ok(())
     }
 
     /// Emit env-wide LMDB B-tree stats once every [`STATS_EVERY_N_COMMITS`]
@@ -416,12 +636,14 @@ impl LmdbWriter {
     }
 }
 
-/// Blocking: `commit` waits on LMDB's single-writer lock, then on page writes.
-/// See the crate docs.
-impl BackendWriter for LmdbWriter {
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+impl LmdbWriter {
+    /// Apply the transaction ops of a commit — the batch's direct ops plus the
+    /// deferral manifest puts [`prepare`](Deferral::prepare) folded in — and
+    /// commit the transaction. The deferral segment appends are finalised by the
+    /// caller against this result.
+    fn commit_direct(&self, direct: Vec<WriteOp>) -> Result<(), CommitError> {
         #[cfg(feature = "sync-profile")]
-        let op_count = ops.len();
+        let op_count = direct.len();
         #[cfg(feature = "sync-profile")]
         let put_start = std::time::Instant::now();
 
@@ -430,27 +652,28 @@ impl BackendWriter for LmdbWriter {
             .begin_rw_txn()
             .map_err(|e| commit_error("begin rw txn", e))?;
 
-        for op in ops {
-            match op {
-                WriteOp::Put {
-                    namespace,
-                    key,
-                    value,
-                } => {
-                    let db = self.resolve_db(namespace)?;
-                    txn.put(db, &key, &value, WriteFlags::empty())
-                        .map_err(|e| commit_error("put", e))?;
-                }
-                WriteOp::Delete { namespace, key } => {
-                    let db = self.resolve_db(namespace)?;
-                    match txn.del(db, &key, None) {
-                        Ok(()) | Err(lmdb::Error::NotFound) => {}
-                        Err(e) => {
-                            return Err(commit_error("delete", e));
-                        }
-                    }
-                }
+        // A walk-ordered namespace is written with `MDB_APPEND`, which demands
+        // every put be strictly greater than the current last key — including
+        // keys put earlier in the *same* transaction. But the engine extracts a
+        // batch's blocks in parallel (rayon), so a batch's puts for one namespace
+        // arrive in completion order, not key order. Group each walk-ordered
+        // namespace's ops, sort its puts, and append them in order; everything
+        // else (meta, scattered) keeps the arrival order its overwrite/delete
+        // semantics depend on.
+        let mut walk: HashMap<Namespace, Vec<WriteOp>> = HashMap::new();
+        for op in direct {
+            let namespace = match &op {
+                WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => *namespace,
+            };
+            if matches!(self.key_orders.get(&namespace), Some(KeyOrder::WalkOrdered)) {
+                walk.entry(namespace).or_default().push(op);
+            } else {
+                self.apply_plain(&mut txn, op)?;
             }
+        }
+        for (namespace, ops) in walk {
+            let db = self.resolve_db(namespace)?;
+            self.apply_walk_ordered(&mut txn, db, namespace, ops)?;
         }
 
         // The put loop (building the write txn in memory) is measured
@@ -476,6 +699,42 @@ impl BackendWriter for LmdbWriter {
     }
 }
 
+/// Blocking: `commit` waits on LMDB's single-writer lock, then on page writes.
+/// See the crate docs.
+impl BackendWriter for LmdbWriter {
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
+        // Deferral partitions the batch: `Scattered` puts for deferred namespaces
+        // are sorted, appended to their run logs and fsynced here; everything else
+        // (plus a manifest run-entry put per deferred namespace) comes back as
+        // direct ops for the transaction. Outside bulk mode nothing is deferred
+        // and `direct` is the batch unchanged, so the path matches today's.
+        let Prepared { direct, actions } = self.deferral.prepare(&self.key_orders, ops)?;
+
+        // Fault injection: model a crash in the window after the segment fsyncs
+        // and before the transaction commits. The watermark/manifest transaction
+        // is skipped, leaving the fsynced bytes orphaned for the reopen to
+        // truncate — the crash the review focuses on.
+        #[cfg(test)]
+        if deferred::fault::take_stop_after_fsync() {
+            return Ok(());
+        }
+
+        match self.commit_direct(direct) {
+            Ok(()) => {
+                self.deferral.finalize_committed(actions);
+                Ok(())
+            }
+            Err(error) => {
+                // The transaction did not commit, so the appended segments are
+                // uncommitted: roll the run logs back to their committed length,
+                // keeping disk consistent with the manifest without a restart.
+                self.deferral.finalize_aborted(actions);
+                Err(error)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -485,7 +744,19 @@ mod tests {
         LmdbConfig {
             path: dir.to_path_buf(),
             map_size_bytes: 1 << 20, // 1 MB for tests
-            namespaces,
+            namespaces: namespaces.into_iter().map(spec).collect(),
+        }
+    }
+
+    /// A namespace spec for these raw-KV tests. They exercise the generic
+    /// put/scan/delete/range path, not key ordering, so `Scattered` — the plain
+    /// overwriting put, with no append-order constraint — is the neutral choice.
+    /// Append enforcement for `WalkOrdered` namespaces is covered by
+    /// [`walk_ordered_rejects_descending_key`] and the conformance suite.
+    fn spec(namespace: Namespace) -> NamespaceSpec {
+        NamespaceSpec {
+            namespace,
+            key_order: KeyOrder::Scattered,
         }
     }
 
@@ -786,7 +1057,7 @@ mod tests {
         let config = LmdbConfig {
             path: tmp.path().to_path_buf(),
             map_size_bytes: 64 << 10, // 64 KiB
-            namespaces: vec![ns],
+            namespaces: vec![spec(ns)],
         };
         let backend = LmdbBackend::open(config).expect("open");
         let mut writer = backend.writer().expect("writer");
@@ -831,5 +1102,231 @@ mod tests {
             let val = reader.get(ns, b"durable").expect("get").expect("persisted");
             assert_eq!(val, b"yes");
         }
+    }
+
+    /// A `WalkOrdered` namespace rejects a key that is not strictly greater than
+    /// its last — both a lower key and a repeat — with the typed
+    /// `OutOfOrderAppend` naming it; a `Scattered` namespace accepts the same
+    /// descending sequence. This is the append enforcement the spec relies on to
+    /// fail a mis-stated key order loudly.
+    #[test]
+    fn walk_ordered_rejects_descending_key() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let walk = Namespace::new("walk");
+        let scattered = Namespace::new("scattered");
+        let config = LmdbConfig {
+            path: tmp.path().to_path_buf(),
+            map_size_bytes: 1 << 20,
+            namespaces: vec![
+                NamespaceSpec {
+                    namespace: walk,
+                    key_order: KeyOrder::WalkOrdered,
+                },
+                NamespaceSpec {
+                    namespace: scattered,
+                    key_order: KeyOrder::Scattered,
+                },
+            ],
+        };
+        let backend = LmdbBackend::open(config).expect("open");
+        let mut writer = backend.writer().expect("writer");
+
+        let height_key = |height: u32| height.to_be_bytes().to_vec();
+        // The value echoes the key; its exact bytes are immaterial to the test.
+        let put = |namespace, height: u32| WriteOp::Put {
+            namespace,
+            key: height_key(height),
+            value: height_key(height),
+        };
+
+        // Walk-ordered: an ascending append is fine; a lower key, then a repeat
+        // of the last key, each fail with OutOfOrderAppend naming the namespace.
+        writer.commit(vec![put(walk, 5)]).expect("ascending append");
+        for regress in [3u32, 5u32] {
+            let err = writer
+                .commit(vec![put(walk, regress)])
+                .expect_err("a non-ascending key must be rejected");
+            assert!(
+                matches!(&err, CommitError::OutOfOrderAppend { namespace, .. } if namespace == walk.as_str()),
+                "expected OutOfOrderAppend naming {walk}, got: {err:?}"
+            );
+        }
+
+        // Scattered: the same descending sequence is accepted and stored.
+        writer.commit(vec![put(scattered, 5)]).expect("scattered 5");
+        writer
+            .commit(vec![put(scattered, 3)])
+            .expect("scattered accepts a descending key");
+
+        let reader = backend.reader().expect("reader");
+        assert_eq!(
+            reader.get(scattered, &height_key(3)).expect("get"),
+            Some(height_key(3))
+        );
+        assert_eq!(
+            reader.get(scattered, &height_key(5)).expect("get"),
+            Some(height_key(5))
+        );
+        // The rejected walk puts left nothing behind: only the one accepted key.
+        assert_eq!(reader.get(walk, &height_key(3)).expect("get"), None);
+        assert_eq!(
+            reader.get(walk, &height_key(5)).expect("get"),
+            Some(height_key(5))
+        );
+    }
+}
+
+/// The generic backend conformance suite ([`zaino_persistence::conformance`]),
+/// run against the LMDB backend.
+///
+/// LMDB is persistent, so the factory's [`reopen`](conformance::BackendFactory::reopen)
+/// reopens the same temp-dir environment and the persistence and restart
+/// properties run for real (unlike the in-memory backend, whose `reopen` is
+/// `None`). One `#[test]` per property gives a precise failure site; the
+/// aggregate [`run_all`](conformance::run_all) guards against a property being
+/// added upstream and not wired here.
+#[cfg(test)]
+mod conformance_tests {
+    use std::sync::Mutex;
+
+    use super::{LmdbBackend, LmdbConfig};
+    use zaino_persistence::conformance::{self, BackendFactory};
+    use zaino_persistence::NamespaceSpec;
+
+    /// Opens LMDB environments under one temp dir for a conformance run.
+    ///
+    /// [`fresh`](BackendFactory::fresh) must hand back an *empty* backend every
+    /// time — [`run_all`](conformance::run_all) calls it once per property on the
+    /// same factory — while [`reopen`](BackendFactory::reopen) must reopen the
+    /// exact storage the most recent `fresh` created. So each `fresh` allocates a
+    /// new, never-before-used generation subdirectory (LMDB creates it empty) and
+    /// records it; `reopen` reopens that same generation.
+    struct LmdbFactory {
+        root: tempfile::TempDir,
+        generation: Mutex<u32>,
+    }
+
+    impl LmdbFactory {
+        fn new() -> Self {
+            Self {
+                root: tempfile::tempdir().expect("tempdir"),
+                generation: Mutex::new(0),
+            }
+        }
+
+        fn config(&self, generation: u32, namespaces: &[NamespaceSpec]) -> LmdbConfig {
+            LmdbConfig {
+                path: self.root.path().join(format!("gen-{generation}")),
+                map_size_bytes: 1 << 20, // 1 MiB: the conformance data is tiny.
+                namespaces: namespaces.to_vec(),
+            }
+        }
+
+        fn next_generation(&self) -> u32 {
+            let mut generation = self.generation.lock().expect("generation mutex poisoned");
+            *generation += 1;
+            *generation
+        }
+
+        fn current_generation(&self) -> u32 {
+            *self.generation.lock().expect("generation mutex poisoned")
+        }
+    }
+
+    impl BackendFactory for LmdbFactory {
+        type B = LmdbBackend;
+
+        fn fresh(&self, namespaces: &[NamespaceSpec]) -> Self::B {
+            let generation = self.next_generation();
+            LmdbBackend::open(self.config(generation, namespaces)).expect("open lmdb backend")
+        }
+
+        fn reopen(&self, namespaces: &[NamespaceSpec]) -> Option<Self::B> {
+            let generation = self.current_generation();
+            Some(
+                LmdbBackend::open(self.config(generation, namespaces))
+                    .expect("reopen lmdb backend"),
+            )
+        }
+    }
+
+    #[test]
+    fn get_put_delete_round_trip() {
+        conformance::get_put_delete_round_trip(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn commit_is_atomic_across_namespaces() {
+        conformance::commit_is_atomic_across_namespaces(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn scan_returns_bytewise_key_order() {
+        conformance::scan_returns_bytewise_key_order(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn scan_range_is_ascending_and_half_open() {
+        conformance::scan_range_is_ascending_and_half_open(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn first_key_is_smallest_or_none() {
+        conformance::first_key_is_smallest_or_none(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn namespaces_are_isolated() {
+        conformance::namespaces_are_isolated(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn walk_ordered_rejects_or_stores_non_ascending_put() {
+        conformance::walk_ordered_rejects_or_stores_non_ascending_put(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn walk_ordered_accepts_shuffled_batch_with_last_write_wins() {
+        conformance::walk_ordered_accepts_shuffled_batch_with_last_write_wins(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn reopen_persists_committed_data() {
+        conformance::reopen_persists_committed_data(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn bulk_disabled_matches_direct() {
+        conformance::bulk_disabled_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn bulk_enabled_after_finish_matches_direct() {
+        conformance::bulk_enabled_after_finish_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn is_complete_true_outside_bulk_mode() {
+        conformance::is_complete_true_outside_bulk_mode(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn is_complete_inside_bulk_mode() {
+        conformance::is_complete_inside_bulk_mode(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn finish_bulk_is_idempotent() {
+        conformance::finish_bulk_is_idempotent(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn restart_in_bulk_mode_matches_direct() {
+        conformance::restart_in_bulk_mode_matches_direct(&LmdbFactory::new());
+    }
+
+    #[test]
+    fn run_all_aggregate() {
+        conformance::run_all(&LmdbFactory::new());
     }
 }

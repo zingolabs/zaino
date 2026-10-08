@@ -23,9 +23,13 @@ index_set! {
 ```
 
 `sets::compact_blocks::CompactBlocks` is the compact-block set a lightwalletd
-deployment needs; `sets::current_zaino::CurrentZaino` is the full set. A store
-reader is parametrised by one of these (`StoreReader<B, M>`), and its serving
-reads exist only where `M` builds what they compose from.
+deployment needs; `sets::current_zaino::CurrentZaino` is the full set.
+`sets::transparent_history::TransparentHistory` adds the indexes a local address
+read composes from, and `sets::light_wallet_local::LightWalletLocal` adds the
+`tree_state` index on top of those, so a light-wallet deployment serves both
+address history and `GetTreeState` locally. A store reader is parametrised by one
+of these (`StoreReader<B, M>`), and its serving reads exist only where `M` builds
+what they compose from.
 
 ## Local capabilities are declared once
 
@@ -54,3 +58,79 @@ from those lists: `ToHeight(w)` when every backing index is stamped and a
 watermark is committed, `NotYet` when stamped but no watermark yet, `Absent`
 otherwise — including for capabilities with no local index at all, which the
 composer holding a passthrough provider widens.
+
+`local::Treestate` (`tree_state` + `headers`) and `local::SubtreeRoots` (the
+three `subtrees_*` indexes) are the treestate-serving capabilities, so a set
+that builds them backs `TreestateRead` locally.
+
+## Treestate domain primitives
+
+`indexes::tree_state` holds the commitment-tree (treestate) domain layer and the
+`tree_state` index built on it.
+
+- `segment::TreeSegment<H>` is the ordered-monoid algebra over a contiguous run
+  of note-commitment leaves, generic over a pool's Merkle hash `H`. `lift`
+  builds a run's complete nodes (hashing each once, parallel across a level),
+  `combine(a, b)` joins two adjacent runs with **at most one hash per level**
+  along the seam (associative, not commutative), and `frontier_at(size)` reads
+  any height's frontier as a pure lookup. `carry_segment` renders a stored
+  carry frontier as the segment a batch combines onto.
+- `pools::{sapling_leaf, orchard_leaf, ironwood_leaf}` convert a note
+  commitment's bytes (`cmu` / `cmx`) to the tree's leaf hash, returning `None`
+  for a non-canonical field encoding. Ironwood shares Orchard's Pallas leaf.
+- `codec::legacy_tree_bytes` / `legacy_tree_from_bytes` are zcashd's legacy
+  `CommitmentTree` encoding — the exact bytes `z_gettreestate`'s `finalState`
+  carries — and its inverse. `codec::TreeStateValue` is a height's per-pool
+  frontiers; `TreeStateIndex` is its `EntryCodec` (height key, `WalkOrdered`),
+  persisting each pool as a big-endian size plus the v1 non-empty-frontier
+  bytes. An all-empty value (every pool size 0) is a height no pool is active at;
+  below a pool's activation height and active-but-empty are the same empty
+  frontier here, distinguished at serve time from the network's activation
+  heights.
+- `sync::TreeStateIndex` is the wired `SelfCumulative<OrderedMonoid>` × Append
+  index: height → `TreeStateValue`, built during a sync through the existing
+  append-cumulative bridge's ordered-monoid scan over the three pools.
+  `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
+  chain order — projected from `CurrentZainoContext`.
+- `serve::pool_treestate` (and `TreeStateValue::pool_treestates`) render a
+  stored frontier as the domain `PoolTreestate` — the root and the legacy
+  `finalState` bytes — against a per-pool activation height (`PoolActivations`):
+  a pool is reported from its activation on, empty tree included, and absent
+  below it or when unscheduled. Both the finalised store and the non-finalised
+  window call it, so a treestate served either side of the seam renders
+  identically.
+- `serve::{seed_value, fold_window, window_subtree_roots}` back the window tier:
+  `seed_value` rebuilds the finalised frontier from the seed treestate (the
+  legacy bytes round-trip exactly), `fold_window` folds the window's blocks onto
+  it via the index's own per-block extraction, and `window_subtree_roots` reports
+  the subtrees the window completes above the seed. `sets::current_zaino::tree_state_ctx`
+  projects a domain `Block` to the per-block context those take, so the window's
+  leaf order matches the index's.
+
+## Subtree-roots indexes
+
+`indexes::subtrees` holds the per-pool subtree-roots indexes backing
+`GetSubtreeRoots` / `z_getsubtreesbyindex`: a completed subtree is the perfect
+subtree of `2^16` consecutive note-commitment leaves, keyed by subtree index.
+
+- `SubtreesIndex<P>` is one generic index parametrised by a `pool::Pool`
+  (`SaplingPool` / `OrchardPool` / `IronwoodPool`, aliased
+  `SaplingSubtreesIndex` etc.), so each pool is its own `WalkOrdered` namespace
+  (`subtrees_sapling`, `subtrees_orchard`, `subtrees_ironwood`) with no
+  duplicated logic. The key is the subtree index (`u32` big-endian);
+  `codec::SubtreeRoot` is the value — a 32-byte root in internal (unreversed)
+  order, the orientation every pool stores and serves; the hash of the block
+  that completed the subtree (also internal order, which the serve path reverses
+  to display order for the `GetSubtreeRoots` wire); plus the completing height
+  (`z_getsubtreesbyindex`'s `end_height`).
+- It is a `CrossIndex` × Append over two declared dependencies — `tree_state`
+  and the pool's compact index — because a subtree root domain-depends on both
+  the commitment tree just before the completing block and that block's own
+  leaves. Extraction reads `tree_state`'s frontier at `h−1` through the
+  `DepsReader`, re-lifts this block's leaves onto it, and reads the frontier at
+  each completion size, folding it to the level-16 node. Only the ~1,900 mainnet
+  blocks that cross a `2^16` boundary emit anything; every other block emits an
+  empty delta.
+- The subtree level is a const 16 (`pool::SUBTREE_LEVEL`); `Pool::SUBTREE_LEVEL`
+  defaults to it and is lowered only by a test pool, so completions can be driven
+  with a handful of leaves.

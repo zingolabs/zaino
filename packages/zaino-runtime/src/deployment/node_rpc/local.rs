@@ -1,16 +1,17 @@
-//! The node-RPC / explorer use case, served with transparent address history and
-//! spend lookups composed locally from Zaino's own indexes and every other node
-//! and chain read the explorer parses itself relayed to the validator.
+//! The node-RPC / explorer use case, served with transparent address history,
+//! spend lookups and commitment treestate composed locally from Zaino's own
+//! indexes and every other node and chain read the explorer parses itself relayed
+//! to the validator.
 
 use zaino_core::routing::NodeRpcLocalRouting;
-use zaino_indexes::sets::transparent_history::TransparentHistory;
+use zaino_indexes::sets::node_rpc_local::NodeRpcLocal as NodeRpcLocalIndexes;
 use zaino_service::use_cases::NodeRpc;
 use zaino_source::{
     GetBlock, GetBlockByHash, GetBlockDecoded, GetBlockDecodedByHash, GetBlockHeader,
     GetBlockVerbose, GetBlockVerboseByHash, GetBlockchainInfo, GetDifficulty, GetMempoolMetadata,
     GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs,
-    GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetSubtreeRoots, GetTransaction,
-    GetTransactionVerbose, GetTreestate, GetTxOut, Ping, SendRawTransaction,
+    GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetTransaction,
+    GetTransactionVerbose, GetTxOut, Ping, SendRawTransaction,
 };
 
 use crate::config::IndexedDeploymentConfig;
@@ -19,17 +20,17 @@ use crate::plan::RuntimePlan;
 use crate::signals::ReadinessCriteria;
 
 /// The node-RPC / explorer use case served with compact blocks, transparent
-/// address history and spend lookups composed locally from Zaino's own indexes,
-/// and every other read the explorer parses itself — full and verbose blocks,
-/// decoded transactions, the chain-info aggregate, treestate, raw transactions,
-/// the node-status reads and the mempool listing — relayed to the validator;
-/// transaction location withheld.
+/// address history, spend lookups and commitment treestate composed locally from
+/// Zaino's own indexes, and every other read the explorer parses itself — full
+/// and verbose blocks, decoded transactions, the chain-info aggregate, raw
+/// transactions, the node-status reads and the mempool listing — relayed to the
+/// validator; transaction location withheld.
 ///
 /// Address history is local because the explorer's address page needs
 /// `getaddressdeltas` — full transparent history with receives and spends —
 /// which no validator answers in plain RPC mode: Zebra has no such method. The
-/// finalised store answers the whole address read over the [`TransparentHistory`]
-/// index set, the non-finalised window reports its own receives and spends, and
+/// finalised store answers the whole address read over the [`NodeRpcLocalIndexes`]
+/// set, the non-finalised window reports its own receives and spends, and
 /// the composer threads them across the seam. Serving it locally also means the
 /// deployment relays no address queries to the validator, so it discloses
 /// no queried addresses and demands no address source port (see
@@ -37,16 +38,26 @@ use crate::signals::ReadinessCriteria;
 ///
 /// Spend lookup (`getspentinfo`) is local for the same reason: it is another
 /// indexer-only method Zebra answers with `-32601`. It reads the spends index
-/// [`TransparentHistory`] already builds — across the seam, so a spend in the
-/// volatile window of an output created below the watermark is located — and so
-/// demands no spend source port either.
+/// the set already builds — across the seam, so a spend in the volatile window of
+/// an output created below the watermark is located — and so demands no spend
+/// source port either.
+///
+/// Treestate is local for the companion reason to the light-wallet-local
+/// deployment: the set builds the `tree_state` and per-pool `subtrees_*` indexes,
+/// so `z_gettreestate` and `z_getsubtreesbyindex` are answered from Zaino's own
+/// commitment-tree frontiers — the finalised store up to the watermark, the
+/// window folding forward above it — rather than relayed. Boot reads the
+/// validator's upgrade schedule once and pins the per-pool activation heights into
+/// the store, so treestate tells an active-but-empty pool from an inactive one;
+/// this is wired generically in [`boot_indexed`](crate::boot_indexed) for every
+/// indexed deployment, not per deployment here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NodeRpcLocal;
 
 impl Deployment for NodeRpcLocal {
     type UseCase = NodeRpc;
     type Routing = NodeRpcLocalRouting;
-    type Indexes = TransparentHistory;
+    type Indexes = NodeRpcLocalIndexes;
 }
 
 impl RuntimePlan for NodeRpcLocal {
@@ -66,14 +77,14 @@ impl RuntimePlan for NodeRpcLocal {
 /// compute "the union of the source bounds of the impls this routing selects".
 /// The set is derived from the `Src` bounds of the engine's node-RPC read and
 /// control impls (block, verbose block, raw block, transaction, transaction
-/// view, chain info, passthrough treestate, node status, mempool
-/// listing/subscribe, broadcast) — not from memory. It names no address source
-/// port: address history is served locally, so the engine's address read
-/// dispatches to the store and head tiers, not the validator. That is what lets
-/// the deployment run over a plain-RPC validator that cannot answer
-/// `getaddressdeltas` at all. Safe to be wrong in one direction: a port missing
-/// here fails the demand bound at the wiring, naming it, which is exactly what
-/// the deployability assertion below proves.
+/// view, chain info, node status, mempool listing/subscribe, broadcast) — not
+/// from memory. It names no address, spend or treestate source port: all three
+/// are served locally, so the engine's address, spend and treestate reads
+/// dispatch to the store and head tiers, not the validator. That is what lets the
+/// deployment run over a plain-RPC validator that cannot answer `getaddressdeltas`,
+/// `getspentinfo` or `z_gettreestate` at all. Safe to be wrong in one direction:
+/// a port missing here fails the demand bound at the wiring, naming it, which is
+/// exactly what the deployability assertion below proves.
 pub trait NodeRpcSource:
     IndexedSource
     + GetBlock
@@ -87,8 +98,6 @@ pub trait NodeRpcSource:
     + GetBlockDecoded
     + GetBlockDecodedByHash
     + GetTransaction
-    + GetTreestate
-    + GetSubtreeRoots
     + GetBlockchainInfo
     + GetNodeInfo
     + GetMiningInfo
@@ -117,8 +126,6 @@ impl<S> NodeRpcSource for S where
         + GetBlockDecoded
         + GetBlockDecodedByHash
         + GetTransaction
-        + GetTreestate
-        + GetSubtreeRoots
         + GetBlockchainInfo
         + GetNodeInfo
         + GetMiningInfo

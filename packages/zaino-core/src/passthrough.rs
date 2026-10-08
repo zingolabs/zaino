@@ -439,9 +439,10 @@ impl<Src> PassthroughProvider<Src>
 where
     Src: GetTreestate,
 {
-    /// The commitment treestate at `at`, live from the validator. Zaino does not
-    /// index treestate, so this is passthrough. A height with no treestate is a
-    /// definitive (non-retryable) answer; a transport failure is transient.
+    /// The commitment treestate at `at`, live from the validator: the relay path
+    /// a routing takes when it places treestate `Passthrough` rather than reading
+    /// a local `tree_state` index. A height with no treestate is a definitive
+    /// (non-retryable) answer; a transport failure is transient.
     pub(crate) async fn treestate(&self, at: Height) -> Result<Treestate, TreestateReadError> {
         match self.source.get_treestate(at).await {
             Ok(treestate) => Ok(treestate),

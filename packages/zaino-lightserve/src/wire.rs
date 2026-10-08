@@ -12,6 +12,7 @@ use zaino_primitives::types::{
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
+use zcash_protocol::consensus::Network;
 
 pub(crate) trait ToWire {
     type Wire;
@@ -65,36 +66,47 @@ impl ToWire for ChainMetadata {
     }
 }
 
-impl ToWire for Treestate {
-    type Wire = proto::TreeState;
+/// The lightwalletd/BIP70 network name, matching zebra's `bip70_network_name`
+/// (the same value lightwalletd's `GetLightdInfo.chainName` carries): mainnet is
+/// "main", every test network — public testnet and regtest alike — is "test".
+/// `zcash_protocol`'s `Network` collapses regtest into `TestNetwork` upstream, so
+/// regtest reaches here as "test", which is exactly what zebra renders.
+pub(crate) fn bip70_network_name(network: Network) -> &'static str {
+    match network {
+        Network::MainNetwork => "main",
+        Network::TestNetwork => "test",
+    }
+}
 
-    fn to_wire(self) -> proto::TreeState {
-        proto::TreeState {
-            // The handler is not parameterised by the network (see
-            // `get_lightd_info`), so `network` rides out empty best-effort — a
-            // wallet reads the height and the serialized trees, not this field.
-            network: String::new(),
-            height: u64::from(self.height),
-            // Display (big-endian) order, as `z_gettreestate` reports the hash.
-            hash: self.block_hash.to_string(),
-            // `BlockTime` is a Unix-epoch `u32`; the wire field is the same.
-            time: self.time,
-            // Each pool's serialized tree rides out as lowercase hex; an inactive
-            // pool at this block is signalled by an empty string, never a
-            // serialized empty tree (which would claim the pool is active).
-            sapling_tree: self
-                .sapling
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-            orchard_tree: self
-                .orchard
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-            ironwood_tree: self
-                .ironwood
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-        }
+/// A treestate as the wire `TreeState`, rendered for the network the adapter
+/// serves. Not a `ToWire` impl: the conversion needs the served network (the
+/// domain `Treestate` does not carry it), which the trait's parameterless
+/// `to_wire` cannot supply.
+pub(crate) fn treestate_to_wire(treestate: Treestate, network: Network) -> proto::TreeState {
+    proto::TreeState {
+        // The BIP70 network name, as zebra and lightwalletd render it; the
+        // handler is parameterised by the network it serves.
+        network: bip70_network_name(network).to_string(),
+        height: u64::from(treestate.height),
+        // Display (big-endian) order, as `z_gettreestate` reports the hash.
+        hash: treestate.block_hash.to_string(),
+        // `BlockTime` is a Unix-epoch `u32`; the wire field is the same.
+        time: treestate.time,
+        // Each pool's serialized tree rides out as lowercase hex; an inactive
+        // pool at this block is signalled by an empty string, never a
+        // serialized empty tree (which would claim the pool is active).
+        sapling_tree: treestate
+            .sapling
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
+        orchard_tree: treestate
+            .orchard
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
+        ironwood_tree: treestate
+            .ironwood
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
     }
 }
 
@@ -102,12 +114,15 @@ impl ToWire for SubtreeRoot {
     type Wire = proto::SubtreeRoot;
 
     fn to_wire(self) -> proto::SubtreeRoot {
+        // The root is a commitment-tree value, not an identifier, so it rides out
+        // in internal (unreversed) order. The completing block hash is a block
+        // identifier, so — like every hash on this interface, and matching
+        // lightwalletd — it is reversed to display (big-endian) order.
+        let mut completing_block_hash = <[u8; 32]>::from(self.completing_block_hash);
+        completing_block_hash.reverse();
         proto::SubtreeRoot {
             root_hash: <[u8; 32]>::from(self.root).to_vec(),
-            // The domain subtree root carries only the root and the completing
-            // height (as `z_getsubtreesbyindex` reports), not the completing
-            // block hash, so that field rides out empty.
-            completing_block_hash: Vec::new(),
+            completing_block_hash: completing_block_hash.to_vec(),
             completing_block_height: u64::from(self.end_height),
         }
     }
@@ -247,8 +262,9 @@ pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex_bytes, ToWire};
+    use super::{bip70_network_name, hex_bytes, treestate_to_wire, ToWire};
     use zaino_primitives::types::{BlockHash, Height, SubtreeRoot, Treestate};
+    use zcash_protocol::consensus::Network;
     // `PoolTreestate`/`TreeRoot` are domain component types the `zaino-primitives`
     // facade does not re-export; the production conversions never name them, only
     // these tests construct them, so they come straight from primitives here.
@@ -256,8 +272,8 @@ mod tests {
 
     /// A treestate maps field-for-field to the wire shape: height/time straight
     /// through, the hash in display (big-endian) order, an active pool's tree as
-    /// lowercase hex, and an inactive pool as the empty string (never a
-    /// serialized empty tree).
+    /// lowercase hex, an inactive pool as the empty string (never a serialized
+    /// empty tree), and the network rendered as the served chain's BIP70 name.
     #[test]
     fn treestate_maps_to_wire() {
         let treestate = Treestate {
@@ -272,7 +288,7 @@ mod tests {
             ironwood: None,
         };
 
-        let wire = treestate.to_wire();
+        let wire = treestate_to_wire(treestate, Network::MainNetwork);
         assert_eq!(wire.height, 2_800_000u64);
         assert_eq!(wire.time, 1_700_000_000u32);
         // Display order: the all-0xAB hash renders the same forwards, but the
@@ -281,22 +297,61 @@ mod tests {
         assert_eq!(wire.sapling_tree, "deadbeef");
         assert_eq!(wire.orchard_tree, "");
         assert_eq!(wire.ironwood_tree, "");
-        assert_eq!(wire.network, "");
+        assert_eq!(wire.network, "main");
     }
 
-    /// A subtree root maps its root bytes and completing height; the completing
-    /// block hash the domain does not carry rides out empty.
+    /// The network field tracks the served chain's BIP70 name: "main" on
+    /// mainnet, "test" on every test network (public testnet and regtest, which
+    /// `zcash_protocol`'s `Network` collapses into `TestNetwork`). This is the
+    /// field an in-cluster byte-compare against zebra flagged as the sole
+    /// difference, so it is pinned per network.
+    #[test]
+    fn treestate_network_tracks_served_chain() {
+        let at = |network| {
+            let treestate = Treestate {
+                block_hash: BlockHash::from([0x00u8; 32]),
+                height: Height::try_from(1).expect("valid height"),
+                time: 0,
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            };
+            treestate_to_wire(treestate, network).network
+        };
+        assert_eq!(at(Network::MainNetwork), "main");
+        assert_eq!(at(Network::TestNetwork), "test");
+        assert_eq!(bip70_network_name(Network::MainNetwork), "main");
+        assert_eq!(bip70_network_name(Network::TestNetwork), "test");
+    }
+
+    /// A subtree root maps its root bytes (internal order), its completing
+    /// height, and the completing block hash reversed to display order.
     #[test]
     fn subtree_root_maps_to_wire() {
+        // An asymmetric hash so a missing or doubled reversal is visible: internal
+        // order counts up, display order counts down.
+        let mut internal = [0u8; 32];
+        for (i, byte) in internal.iter_mut().enumerate() {
+            *byte = u8::try_from(i).expect("index < 32");
+        }
+        let mut display = internal;
+        display.reverse();
+
         let root = SubtreeRoot {
             root: TreeRoot::from([0x11u8; 32]),
+            completing_block_hash: BlockHash::from(internal),
             end_height: Height::try_from(1_000_000).expect("valid height"),
         };
 
         let wire = root.to_wire();
+        // The root rides out in its natural (internal) order, not reversed.
         assert_eq!(wire.root_hash, vec![0x11u8; 32]);
         assert_eq!(wire.completing_block_height, 1_000_000u64);
-        assert!(wire.completing_block_hash.is_empty());
+        assert_eq!(
+            wire.completing_block_hash,
+            display.to_vec(),
+            "the completing block hash is reversed to display order"
+        );
     }
 
     #[test]
@@ -361,5 +416,160 @@ mod tests {
         assert_eq!(mined.height, 1_234_567u64);
         assert_eq!(at(TransactionLocation::NonBestChain).height, u64::MAX);
         assert_eq!(at(TransactionLocation::Mempool).height, 0u64);
+    }
+
+    /// The `z_gettreestate` fixtures captured from zebra 6.4.2 (mainnet). One
+    /// source of truth: the same file `zaino-indexes` tests read.
+    const TREESTATE_FIXTURE: &str =
+        include_str!("../../zaino-indexes/tests/fixtures/treestate/zebra-mainnet.json");
+
+    /// Decode a hex string into exactly 32 bytes.
+    fn bytes32(hex: &str) -> [u8; 32] {
+        decode_hex(hex).try_into().expect("a 32-byte value")
+    }
+
+    /// Decode a lowercase/uppercase hex string into bytes (test-local, so the
+    /// crate needs no hex dependency for this golden).
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        fn nibble(c: u8) -> u8 {
+            match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                b'A'..=b'F' => c - b'A' + 10,
+                _ => panic!("invalid hex digit {c:#x}"),
+            }
+        }
+        let bytes = hex.as_bytes();
+        assert!(bytes.len().is_multiple_of(2), "even-length hex");
+        bytes
+            .chunks_exact(2)
+            .map(|pair| (nibble(pair[0]) << 4) | nibble(pair[1]))
+            .collect()
+    }
+
+    /// Reverse 32 bytes (display order <-> internal order).
+    fn reversed(mut bytes: [u8; 32]) -> [u8; 32] {
+        bytes.reverse();
+        bytes
+    }
+
+    /// Golden `GetTreeState` proto rendering against the zebra mainnet fixtures.
+    ///
+    /// The lightwalletd `TreeState` carries each pool's serialized tree as the
+    /// legacy `finalState` hex (verbatim, natural order) and the block hash in
+    /// display order; it has no `finalRoot`, so no root orientation arises here. A
+    /// pool with no tree at this height rides out as the empty string, and
+    /// Ironwood is unscheduled on mainnet (empty).
+    #[test]
+    fn treestate_renders_zebra_fixture_state_and_hash() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        let entries = fixture["z_gettreestate"]
+            .as_object()
+            .expect("z_gettreestate object");
+
+        let pool_from_fixture = |commitments: &serde_json::Value| -> Option<PoolTreestate> {
+            let final_state = commitments["finalState"].as_str()?;
+            Some(PoolTreestate {
+                // The proto never reads the root; the index would supply one.
+                final_root: None,
+                final_state: decode_hex(final_state),
+            })
+        };
+
+        for (height_key, response) in entries {
+            let result = &response["result"];
+            let hash_display = result["hash"].as_str().expect("hash");
+            let height_num = result["height"].as_u64().expect("height");
+            let time_num = result["time"].as_u64().expect("time");
+
+            let treestate = Treestate {
+                block_hash: BlockHash::from(reversed(bytes32(hash_display))),
+                height: Height::try_from(u32::try_from(height_num).expect("height fits u32"))
+                    .expect("valid height"),
+                time: u32::try_from(time_num).expect("time fits u32"),
+                sapling: pool_from_fixture(&result["sapling"]["commitments"]),
+                orchard: pool_from_fixture(&result["orchard"]["commitments"]),
+                ironwood: None,
+            };
+
+            // The fixtures are captured from zebra mainnet, so the served
+            // network renders "main".
+            let wire = treestate_to_wire(treestate, Network::MainNetwork);
+            assert_eq!(wire.height, height_num, "height at {height_key}");
+            assert_eq!(u64::from(wire.time), time_num, "time at {height_key}");
+            assert_eq!(wire.network, "main", "network at {height_key}");
+            assert_eq!(
+                wire.hash, hash_display,
+                "display-order hash at {height_key}"
+            );
+
+            let expected_tree = |pool: &str| -> String {
+                result[pool]["commitments"]["finalState"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert_eq!(
+                wire.sapling_tree,
+                expected_tree("sapling"),
+                "sapling tree at {height_key}"
+            );
+            assert_eq!(
+                wire.orchard_tree,
+                expected_tree("orchard"),
+                "orchard tree at {height_key}"
+            );
+            assert_eq!(wire.ironwood_tree, "", "ironwood empty at {height_key}");
+        }
+    }
+
+    /// Golden `GetSubtreeRoots` proto rendering: the root rides out as raw bytes
+    /// in internal (unreversed) order for both pools, so `root_hash` is the
+    /// fixture root's bytes verbatim, while the completing block hash is reversed
+    /// to display order. The fixture carries no completing block hash for these
+    /// heights, so the hash is a constructed asymmetric value and the orientation
+    /// is what the test pins.
+    #[test]
+    fn subtree_roots_render_internal_bytes_from_fixture() {
+        // Asymmetric under reversal, so a missing or doubled reversal shows up.
+        let mut internal_hash = [0u8; 32];
+        for (i, byte) in internal_hash.iter_mut().enumerate() {
+            *byte = u8::try_from(i).expect("index < 32");
+        }
+        let mut display_hash = internal_hash;
+        display_hash.reverse();
+
+        let fixture: serde_json::Value =
+            serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        for pool_name in ["sapling", "orchard"] {
+            let subtrees = fixture["z_getsubtreesbyindex"][pool_name]["result"]["subtrees"]
+                .as_array()
+                .expect("subtrees array");
+            for subtree in subtrees {
+                let root_hex = subtree["root"].as_str().expect("root hex");
+                let end_height = subtree["end_height"].as_u64().expect("end_height");
+                let domain = SubtreeRoot {
+                    root: TreeRoot::from(bytes32(root_hex)),
+                    completing_block_hash: BlockHash::from(internal_hash),
+                    end_height: Height::try_from(
+                        u32::try_from(end_height).expect("height fits u32"),
+                    )
+                    .expect("valid height"),
+                };
+                let wire = domain.to_wire();
+                assert_eq!(
+                    wire.root_hash,
+                    decode_hex(root_hex),
+                    "{pool_name} root verbatim"
+                );
+                assert_eq!(wire.completing_block_height, end_height);
+                assert_eq!(
+                    wire.completing_block_hash,
+                    display_hash.to_vec(),
+                    "{pool_name} completing block hash in display order"
+                );
+            }
+        }
     }
 }

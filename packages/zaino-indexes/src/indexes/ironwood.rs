@@ -8,7 +8,7 @@
 
 use zaino_persistence_codec::keys::HeightKey;
 use zaino_persistence_codec::layout::{Cursor, Writer};
-use zaino_persistence_codec::{DecodeError, EntryCodec, PersistentRecord, RecordLayout};
+use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord, RecordLayout};
 use zaino_primitives::types::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::primitives::{BlockHeight, IndexId};
@@ -84,6 +84,8 @@ impl EntryCodec for IronwoodIndex {
     type Value = IronwoodBlockValue;
     type PersistentKey = HeightKey<BlockHeight>;
     type PersistentValue = PersistentIronwoodValue;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::WalkOrdered;
 
     fn fingerprint_samples() -> Vec<(BlockHeight, IronwoodBlockValue)> {
         vec![(

@@ -44,9 +44,10 @@ use crate::{
     BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment,
     CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
     IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
-    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
-    ReadBudget, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TransactionViewRead, TreestateRead, TxOutRead,
+    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, PoolActivationSource,
+    RawTransactionRead, ReadBudget, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
+    TakeSnapshot, TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
+    TreestateWindowRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -77,6 +78,9 @@ pub struct MockChain {
     /// Scripted subtree roots for [`TreestateRead::subtree_roots`], returned for
     /// any pool/index query.
     pub subtree_roots: Vec<SubtreeRoot>,
+    /// The per-pool activation schedule this mock tier reports through
+    /// [`PoolActivationSource`]. Defaults to unknown (every pool unscheduled).
+    pub pool_activations: zaino_primitives::types::PoolActivations,
     /// Scripted `getdifficulty` answer. `Some` is returned by
     /// [`NodeStatusRead::difficulty`]; `None` answers `NotReady` (no validator
     /// behind the mock).
@@ -478,6 +482,38 @@ impl TreestateRead for MockSnapshot {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Ok(self.chain.subtree_roots.clone())
+    }
+}
+
+impl PoolActivationSource for MockSnapshot {
+    fn pool_activations(&self) -> zaino_primitives::types::PoolActivations {
+        self.chain.pool_activations
+    }
+}
+
+impl TreestateWindowRead for MockSnapshot {
+    async fn window_treestate(
+        &self,
+        _seed: Option<&Treestate>,
+        _activations: zaino_primitives::types::PoolActivations,
+        _at: Height,
+    ) -> Result<Option<Treestate>, TreestateReadError> {
+        // The window half of the mock: a scripted treestate is returned for any
+        // in-window height, mirroring the finalised half, so a mock tier can
+        // stand in for the non-finalised side of a `Local` treestate placement.
+        Ok(self.chain.treestate.clone())
+    }
+
+    async fn window_subtree_roots(
+        &self,
+        _seed: Option<&Treestate>,
+        _pool: ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        // The window completes no subtrees the finalised half did not; the mock
+        // reports none of its own.
+        Ok(Vec::new())
     }
 }
 

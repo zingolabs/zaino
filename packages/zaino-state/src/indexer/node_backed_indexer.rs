@@ -1045,6 +1045,8 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Zcas
                 })?;
             subtrees.push(zaino_primitives::types::SubtreeRoot {
                 root: zaino_primitives::types::TreeRoot::from(root),
+                // Deprecated path: the completing block hash is not resolved here.
+                completing_block_hash: zaino_primitives::types::BlockHash::ZERO,
                 end_height,
             });
         }

@@ -170,7 +170,7 @@ impl DependencyDag {
             parallel_merge: matches!(composition, CompositionType::Monoidal),
             sequential_merge: matches!(composition, CompositionType::Fold),
             requires_phase_gate: matches!(scope, InputScope::CrossIndex),
-            requires_self_feedback: matches!(scope, InputScope::SelfCumulative),
+            requires_self_feedback: matches!(scope, InputScope::SelfCumulative { .. }),
         }
     }
 }
@@ -305,7 +305,7 @@ fn derive_firing_rule(upstream: &Descriptor, _downstream: &Descriptor) -> Firing
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::SourceAccess;
+    use crate::descriptor::{KeyOrder, SourceAccess};
 
     const A: IndexId = IndexId::new("a");
     const B: IndexId = IndexId::new("b");
@@ -325,6 +325,7 @@ mod tests {
             composition: CompositionType::Append,
             dependencies: deps,
             source_access: SourceAccess::None,
+            key_order: KeyOrder::WalkOrdered,
         }
     }
 

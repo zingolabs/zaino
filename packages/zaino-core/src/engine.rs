@@ -16,12 +16,12 @@
 //!
 //! # Presence is checked at the wiring
 //!
-//! The light table over the light-wallet index set serves the light-wallet
-//! use case — the set builds the transparent history the `Local` address
-//! read composes from:
+//! The light table over the light-wallet-local index set serves the light-wallet
+//! use case — the set builds the transparent history the `Local` address read
+//! composes from and the `tree_state` index the `Local` treestate read reads:
 //!
 //! ```
-//! use zaino_indexes::sets::transparent_history::TransparentHistory;
+//! use zaino_indexes::sets::light_wallet_local::LightWalletLocal;
 //! use zaino_persistence::in_memory::InMemoryBackend;
 //! use zaino_core::routing::LightWalletLocalRouting;
 //! use zaino_service::testing::MockIndexerService;
@@ -33,7 +33,7 @@
 //!
 //! fn wired<S: LightWalletService>() {}
 //! wired::<Engine<
-//!     StoreReader<InMemoryBackend, TransparentHistory>,
+//!     StoreReader<InMemoryBackend, LightWalletLocal>,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
 //!     LightWalletLocalRouting,
@@ -92,21 +92,22 @@
 //! >>();
 //! ```
 //!
-//! And a placement no provider can take at all — treestate has no local
-//! index on any tier — is an impl that does not exist for any providers:
+//! And withholding a capability the use case *demands* leaves the read
+//! unimplemented — `Withheld` takes no placement impl, so a light-wallet engine
+//! that withholds treestate does not satisfy `LightWalletService`:
 //!
 //! ```compile_fail,E0277
-//! use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
+//! use zaino_core::routing::{Passthrough, Routing, Withheld};
 //! use zaino_service::testing::MockIndexerService;
 //! use zaino_service::LightWalletService;
 //! use zaino_source::mock::MockChain;
 //! use zaino_source::ValidatorClient;
 //! use zaino_core::Engine;
 //!
-//! struct TreestateLocal;
-//! impl Routing for TreestateLocal {
+//! struct TreestateWithheld;
+//! impl Routing for TreestateWithheld {
 //!     type Address = Passthrough;
-//!     type Treestate = Local;
+//!     type Treestate = Withheld;
 //!     type Spend = Withheld;
 //!     type TransactionLocation = Withheld;
 //! }
@@ -116,7 +117,7 @@
 //!     MockIndexerService,
 //!     MockIndexerService,
 //!     ValidatorClient<MockChain>,
-//!     TreestateLocal,
+//!     TreestateWithheld,
 //! >>();
 //! ```
 

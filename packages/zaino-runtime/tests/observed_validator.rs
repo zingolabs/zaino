@@ -9,6 +9,7 @@ use zaino_runtime::{
     ValidatorUnreachable,
 };
 use zaino_service::testing::{MockChain, MockIndexerService};
+use zcash_protocol::consensus::Network;
 
 /// A stub reachability probe.
 struct Probe(bool);
@@ -58,7 +59,10 @@ async fn the_validator_boots_before_the_servers() {
     let grpc = RunComponent::new(
         ComponentName("light-serve"),
         GrpcServer::new(
-            LightServe::new(MockIndexerService::new(MockChain::default())),
+            LightServe::new(
+                MockIndexerService::new(MockChain::default()),
+                Network::MainNetwork,
+            ),
             "127.0.0.1:0".parse().expect("valid addr"),
         ),
     );

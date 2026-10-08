@@ -29,7 +29,7 @@ address history is answered:
 pub struct LightWalletLocalRouting;
 impl Routing for LightWalletLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
-    type Treestate = Passthrough;     // relayed to the validator
+    type Treestate = Local;           // served from Zaino's own tree_state + subtrees
     type Spend = Withheld;            // a node read; not offered
     type TransactionLocation = Withheld;
 }
@@ -57,14 +57,14 @@ read through `AddressReceiveRead`).
 `NodeRpcLocalRouting` is the node-RPC / explorer deployment's routing. The node
 reads the explorer adds (full and verbose blocks, decoded transactions, the
 chain-info aggregate, the node-status reads) are always passthrough and so are not
-on the table at all; what the table decides is that address history and spend
-status are both served locally:
+on the table at all; what the table decides is that address history, spend
+status and treestate are all served locally:
 
 ```rust,ignore
 pub struct NodeRpcLocalRouting;
 impl Routing for NodeRpcLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
-    type Treestate = Passthrough;
+    type Treestate = Local;           // served from Zaino's own tree_state + subtrees
     type Spend = Local;               // getspentinfo, from the local spends index
     type TransactionLocation = Withheld;
 }
@@ -74,9 +74,12 @@ Address history is `Local` because the explorer's address page needs
 `getaddressdeltas` — full transparent history, receives and spends — which no
 validator answers in plain RPC mode: Zebra has no such method. Spend status is
 `Local` for the same reason: `getspentinfo` is another indexer-only method Zebra
-answers with `-32601`, read from the spends index `TransparentHistory` builds
-across the seam. The deployment therefore indexes transparent history itself (the
-`TransparentHistory` set) and discloses no queried addresses to the validator.
+answers with `-32601`, read from the spends index across the seam. Treestate is
+`Local` too: `z_gettreestate` and `z_getsubtreesbyindex` are answered from the
+`tree_state` and per-pool `subtrees_*` indexes — the finalised store up to the
+watermark, the window folding forward above it. The deployment therefore indexes
+transparent history and the commitment tree itself (the `NodeRpcLocal` set) and
+discloses no queried addresses to the validator.
 
 Routing is a property of the deployment, not of the use case it serves: the
 demand traits in `zaino-service` say nothing about placement, so a second
@@ -109,7 +112,7 @@ that capability and on the provider ports that placement needs:
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
 | address history | `R::Address` | `Local`: finalised store `AddressRead`, head `AddressReceiveRead` (receives + the spends it saw), threaded across the seam; `Passthrough`: the four address source ports |
-| treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
+| treestate, subtree roots | `R::Treestate` | `Local`: finalised store `TreestateRead` at or below the watermark, head `TreestateWindowRead` above it (folding from the finalised seed the store supplies); subtree roots are the store's page then the window's higher-indexed completions. `Passthrough`: the treestate + subtree-roots source ports |
 | spend status / location (`getspentinfo`) | `R::Spend` | `Local` only: both tiers `SpendRead`; the head is asked first (a spend there is the newer fact) and the store second, so a spend above the watermark of an output created below it is located |
 
 `BlockRead` (full `Block`, header, by-hash height, and the ascending

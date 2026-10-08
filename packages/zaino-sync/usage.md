@@ -8,6 +8,108 @@ in downstream crates.
 
 [`zaino-persistence`]: ../zaino-persistence/usage.md
 
+## Composition merge order
+
+An index declares a composition — `Append`, `Monoidal`, or `Fold` — that says how a
+batch's per-block deltas combine. The engine extracts blocks in parallel and out of
+chain order, then merges **every** composition in chain order: each delta is tagged
+with its block offset and the batch is reordered before the combine runs.
+
+`Monoidal`'s combine must be associative with an identity but is **not** assumed
+commutative, and `Fold` is outright order-dependent; neither an index nor an engine
+optimisation may rely on a commutative merge. A commutative fast path, if ever
+wanted, must be a separately named composition.
+
+## Scope and carry algebra
+
+Orthogonally, an index declares a scope — `BlockLocal`, `SelfCumulative`, or
+`CrossIndex` — that says what an extraction needs beyond the current block.
+`SelfCumulative` needs the index's own accumulated state from prior blocks, and
+is parameterised by a **carry algebra** describing how that state composes:
+`SelfCumulative<C: CarryAlgebra = Sequential>`. The parameter defaults to
+`Sequential`, so `type Scope = SelfCumulative;` keeps today's block-at-a-time
+`extract(ctx, prior)` behaviour. `OrderedMonoid` is the opt-in for a carry that
+is an ordered monoid with a measure, letting a batch be built in parallel.
+
+The carry is a parameter of the scope marker precisely because it is meaningful
+only for a cumulative scope: `BlockLocal` and `CrossIndex` are not generic over
+a carry and cannot name one. The runtime mirror carries it as
+`InputScope::SelfCumulative { carry }`; see the `descriptor` module.
+
+### Ordered-monoid carry: parallel per-height build
+
+`(SelfCumulative, Append)` is served by one bridge regardless of carry algebra —
+same `key = height` append output, same `O(1)` carry resume (point-read the
+value at the watermark). The carry algebra chooses only the **execution
+strategy**, at the type level, with no runtime detection:
+
+- `Sequential` (the default): extraction folds the carry block by block in chain
+  order, via `ExtractCumulative::extract(ctx, prior)`. The scheduler emits the
+  batch one block at a time.
+- `OrderedMonoid`: the index also implements `OrderedMonoidCarry`, declaring its
+  carry an ordered monoid with a measure. The scheduler then emits the batch
+  block-parallel (extraction threads no carry — it only buffers each block's
+  `(offset, context)`), and the bridge builds the whole batch's per-height series
+  in parallel at merge time:
+
+  1. **measure** — prefix-sum each block's `measure_of` onto the carry's
+     `carry_measure` to get its absolute start position (a commutative sum);
+  2. **lift** — `lift(ctx, start)` builds each block's `Segment` independently,
+     in parallel (all the hashing happens here);
+  3. **reduce** — an order-preserving `reduce(identity, combine)` folds the batch
+     into one segment; `combine` is associative but **not** commutative, so the
+     reduce only ever combines adjacent operands in chain order;
+  4. **stitch** — one `combine(carry_segment, batch)` joins the batch onto the
+     carried state;
+  5. **project** — each height's value is a pure lookup, `project(full,
+     end_of_block)`, in parallel — no height re-hashes a node that straddles a
+     block boundary;
+  6. the carry advances to the last height's value (`PriorState = Value`).
+
+  This is the "monoid with a measure" (finger-tree) pattern. It turns a serial
+  per-height fold into parallel work and serves any chain-ordered state whose
+  carry is an ordered monoid: commitment-tree frontiers, cumulative chainwork,
+  value pools.
+
+  **Memory:** the combined segment retains every complete node of the batch (so
+  `project` is a lookup), bounded by the index's `Segment` representation — for a
+  binary commitment tree, `≈ 2 × leaves` nodes per batch (≈25 MB for a spam-era
+  500k-leaf batch). The next batch still waits for this one to merge and commit,
+  so the per-index buffer never mixes batches.
+
+## CrossIndex reads: `DepsReader`
+
+A `CrossIndex` index needs another index's output for the blocks it processes.
+It declares those indexes in `DEPENDENCIES` and implements `ExtractCross`, whose
+`extract(ctx, deps: &DepsReader<'_>)` receives a read handle over its
+dependencies. `DepsReader::get::<D>(&key) -> Result<Option<D::Value>,
+DepsReadError>` is a typed point read through `D`'s codec; it refuses any index
+not in the declared set with `DepsReadError::Undeclared`, and surfaces backend
+and decode failures as `DepsReadError::Read` / `Decode` (each a typed `#[source]`
+cause). The pair `(CrossIndex, Append)` is served by `CrossBridge`, a
+block-parallel bridge like `LocalBridge`.
+
+What a dependency read sees, and when it runs:
+
+- **Committed state overlaid with the dependency's pending batch.** The engine
+  commits one atomic transaction per batch across every index plus the
+  watermark, so a dependency cannot have *backend-committed* the batch a cross
+  index is extracting — the two commit together. `DepsReader` therefore resolves
+  a read against the dependency's ops already persisted into the pending atomic
+  commit (an in-memory overlay, keyed by namespace and key, latest-wins, a
+  delete tombstoning a committed value) layered over the committed backend
+  reader. So a cross index reads its dependencies' *same-batch* output.
+- **Per-batch gating on the dependency's persist.** A cross index's batch is
+  released only once every dependency has persisted that batch (the DAG's
+  `Pipelined` firing rule) — the overlay's horizon. Past the gate the batch is
+  block-parallel: each block's read is independent, with no inter-block carry.
+- **Atomic commit.** The cross index's entries and its dependencies' entries for
+  the batch are written in the one atomic transaction.
+
+Note: the `Barrier` firing rule (for a dependency read forward/globally) is not
+yet implemented; the scheduler conservatively blocks such an edge. Cross indexes
+with a backward (`R≤`) read pattern use `Pipelined`, which is implemented.
+
 ## Sync profiling (`sync-profile` feature)
 
 Off by default and compiled out entirely when off (no `Instant::now`, no extra

@@ -10,9 +10,9 @@ use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange,
-    Outpoint, RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail,
-    TransactionId, TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput,
-    TransparentReceive, TransparentSpend, Treestate, Utxo,
+    Outpoint, PoolActivations, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
+    TransactionDetail, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
+    TransparentOutput, TransparentReceive, TransparentSpend, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -331,6 +331,57 @@ pub trait TreestateRead: Send + Sync {
     /// pages the frontier and how the `z_getsubtreesbyindex` source answers.
     fn subtree_roots(
         &self,
+        pool: ShieldedPool,
+        start_index: u16,
+        limit: Option<u16>,
+    ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
+}
+
+/// The per-pool activation schedule a tier was built against, so a treestate
+/// read can tell an active-but-empty pool (serve the empty tree) from one below
+/// its activation (absent). The finalised store holds it; the composer reads it
+/// from there to pass into the window's fold. Learned from the validator at boot,
+/// never compiled in.
+pub trait PoolActivationSource: Send + Sync {
+    /// The activation schedule this tier serves against.
+    fn pool_activations(&self) -> PoolActivations;
+}
+
+/// The non-finalised window's half of the treestate capability.
+///
+/// A bounded window holds no commitment tree of its own, so it cannot answer a
+/// treestate alone: it folds its blocks forward from the finalised frontier at
+/// the watermark — the `seed`, which the composer reads from the finalised store
+/// and passes in. `seed` is the treestate the store reports at the watermark, or
+/// `None` when the store holds nothing and the window reaches genesis. On a reorg
+/// the window simply refolds from the same seed, so a treestate it serves always
+/// reflects the window's current best chain.
+///
+/// This is the treestate analogue of
+/// [`AddressReceiveRead`](crate::AddressReceiveRead): a narrower,
+/// window-answerable shape the composer joins with the finalised tier, named here
+/// so a routing can bound the non-finalised side on it.
+pub trait TreestateWindowRead: Send + Sync {
+    /// The treestate at `at` — a height the window covers, contiguous above the
+    /// seed — folded from `seed`. `NotServiceable(Treestate)` when the window
+    /// does not reach down to the seam (an initial-build gap) and `Ok(None)` when
+    /// `at` is above the window tip.
+    fn window_treestate(
+        &self,
+        seed: Option<&Treestate>,
+        activations: PoolActivations,
+        at: Height,
+    ) -> impl Future<Output = Result<Option<Treestate>, TreestateReadError>> + Send;
+
+    /// The subtree roots the window completes above the seed for `pool`, with
+    /// global subtree index in `[start_index, start_index + limit)` (unbounded
+    /// when `limit` is `None`), ascending. A window completion always has a higher
+    /// index than every finalised one, so the composer concatenates these after
+    /// the finalised tier's same-range page. Activation plays no part — a subtree
+    /// completes only once `2^16` notes exist, so the pool is certainly active.
+    fn window_subtree_roots(
+        &self,
+        seed: Option<&Treestate>,
         pool: ShieldedPool,
         start_index: u16,
         limit: Option<u16>,

@@ -211,7 +211,7 @@ pub struct UnifiedReceiversResponse {
 
 /// One shielded pool's commitment-tree state in a `z_gettreestate` response,
 /// nested under the pool key as `{commitments: {...}}`, matching zcashd/zebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PoolTreestateResponse {
     /// The pool's commitment-tree root and serialized state.
     pub commitments: CommitmentsResponse,
@@ -223,23 +223,25 @@ pub struct PoolTreestateResponse {
 /// order; `finalState` is the serialized note-commitment tree as hex, in its
 /// natural order. `finalRoot` is absent when the source does not report one —
 /// the RPC backend discards it (see [`crate::wire::treestate_to_wire`]), so it is
-/// `Option` rather than always present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// `Option` rather than always present. Both are absent for a pool with no tree
+/// at the block, which renders as an empty object.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct CommitmentsResponse {
     /// Root of the pool's note-commitment tree after this block, as hex (display
     /// order). Absent when the source does not report it.
     #[serde(rename = "finalRoot", skip_serializing_if = "Option::is_none")]
     pub final_root: Option<String>,
-    /// The pool's serialized note-commitment tree, as hex.
-    #[serde(rename = "finalState")]
-    pub final_state: String,
+    /// The pool's serialized note-commitment tree, as hex. Absent when the pool
+    /// has no tree at this block.
+    #[serde(rename = "finalState", skip_serializing_if = "Option::is_none")]
+    pub final_state: Option<String>,
 }
 
 /// The `z_gettreestate` response, in zcashd/zebra's shape.
 ///
-/// A pool key (`sapling`, `orchard`, `ironwood`) is present only when the pool
-/// is active at this block — an inactive pool omits the key rather than
-/// rendering an empty tree, matching the source's `Option` per pool.
+/// `sapling` and `orchard` are always present: a pool with no tree at this block
+/// renders `{"commitments": {}}`, as zebra does below the pool's activation.
+/// `ironwood` is present only when the pool has a tree at this block.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TreestateResponse {
     /// Hash of the block these trees are the state after, as hex (display order).
@@ -248,12 +250,10 @@ pub struct TreestateResponse {
     pub height: u32,
     /// Block time, in seconds since the Unix epoch.
     pub time: u32,
-    /// Sapling commitment tree; absent before Sapling activation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sapling: Option<PoolTreestateResponse>,
-    /// Orchard commitment tree; absent before Orchard activation.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub orchard: Option<PoolTreestateResponse>,
+    /// Sapling commitment tree; empty commitments before Sapling activation.
+    pub sapling: PoolTreestateResponse,
+    /// Orchard commitment tree; empty commitments before Orchard activation.
+    pub orchard: PoolTreestateResponse,
     /// Ironwood commitment tree; absent before NU6.3.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ironwood: Option<PoolTreestateResponse>,

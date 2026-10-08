@@ -206,12 +206,36 @@ impl Scheduler {
             }
 
             // How many blocks to emit depends on the index's scope:
-            // - BlockLocal: all available (fully parallel, no inter-block deps)
-            // - SelfCumulative/CrossIndex: one at a time (sequential)
+            // - BlockLocal: all available (fully parallel, no inter-block deps).
+            // - CrossIndex: all available once the dependency gate is open. Each
+            //   block reads the dependencies' already-fixed batch output
+            //   independently, so the batch is block-parallel — the gate (a
+            //   full-batch wait on the dependency), not a per-block carry, is what
+            //   serialised it. The `firing_rules_satisfied` check above *is* that
+            //   gate; past it, emit the whole batch like BlockLocal.
+            // - SelfCumulative with a `Sequential` carry: one at a time — each
+            //   block's extraction needs the previous block's carry.
+            // - SelfCumulative with an `OrderedMonoid` carry: all available.
+            //   Extraction threads no carry — it only buffers each block's
+            //   `(offset, context)`, and the bridge does the measure prefix, lift,
+            //   ordered reduce and projection at merge time — so the batch is
+            //   block-parallel like BlockLocal. The next batch still waits for this
+            //   one to merge+commit (the pending-merge gate), so the single
+            //   per-index buffer never mixes batches.
             let is_parallel = self
                 .dag
                 .node(id)
-                .map(|n| n.descriptor.scope == crate::descriptor::InputScope::BlockLocal)
+                .map(|n| {
+                    use crate::descriptor::{CarryType, InputScope};
+                    matches!(
+                        n.descriptor.scope,
+                        InputScope::BlockLocal
+                            | InputScope::CrossIndex
+                            | InputScope::SelfCumulative {
+                                carry: CarryType::OrderedMonoid
+                            }
+                    )
+                })
                 .unwrap_or(false);
 
             let limit = if is_parallel {
@@ -476,7 +500,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{CompositionType, Descriptor, InputScope, SourceAccess};
+    use crate::descriptor::{CompositionType, Descriptor, InputScope, KeyOrder, SourceAccess};
 
     fn desc(name: &'static str, deps: &'static [IndexId]) -> Descriptor {
         Descriptor {
@@ -485,6 +509,7 @@ mod tests {
             composition: CompositionType::Append,
             dependencies: deps,
             source_access: SourceAccess::None,
+            key_order: KeyOrder::WalkOrdered,
         }
     }
 

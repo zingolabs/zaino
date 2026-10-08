@@ -5,7 +5,7 @@
 
 use zaino_persistence_codec::keys::HashKey;
 use zaino_persistence_codec::{
-    decode_value, encode_key, DecodeError, EntryCodec, PersistentRecord,
+    decode_value, encode_key, DecodeError, EntryCodec, KeyOrder, PersistentRecord,
 };
 use zaino_primitives::types::{OutputIndex, TransactionId};
 use zaino_sync::backend::{BackendReader, ReadError};
@@ -106,6 +106,8 @@ impl EntryCodec for TransparentSpendsIndex {
     type PersistentKey = PersistentOutpointKey;
     // The value is a plain 32-byte spending txid — reuse the shared hash record.
     type PersistentValue = HashKey<TransactionId>;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(OutpointKey, TransactionId)> {
         vec![(

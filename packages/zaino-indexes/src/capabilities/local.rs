@@ -34,8 +34,10 @@ use crate::indexes::headers::HeadersIndex;
 use crate::indexes::ironwood::IronwoodIndex;
 use crate::indexes::orchard::OrchardIndex;
 use crate::indexes::sapling::SaplingIndex;
+use crate::indexes::subtrees::{IronwoodSubtreesIndex, OrchardSubtreesIndex, SaplingSubtreesIndex};
 use crate::indexes::transparent_data::TransparentDataIndex;
 use crate::indexes::transparent_spends::TransparentSpendsIndex;
+use crate::indexes::tree_state::TreeStateIndex;
 use crate::indexes::txid_location::TxidLocationIndex;
 use crate::indexes::txids::TxidsIndex;
 
@@ -110,6 +112,26 @@ local_capability! {
         TransparentSpendsIndex,
         TxidLocationIndex,
         TransparentDataIndex,
+    ]
+}
+
+local_capability! {
+    /// A height's commitment-tree state, served from the local `tree_state`
+    /// index. The frontier at the height supplies the serialized tree and its
+    /// root; the headers index supplies the block hash and time the treestate is
+    /// reported against, so both back the read.
+    Treestate = Treestate backed by [TreeStateIndex, HeadersIndex]
+}
+
+local_capability! {
+    /// Completed note-commitment subtree roots, one namespace per shielded pool.
+    /// All three back the capability: a `GetSubtreeRoots` read selects a pool at
+    /// request time, so a store missing any pool's index could not answer every
+    /// request the capability admits.
+    SubtreeRoots = SubtreeRoots backed by [
+        SaplingSubtreesIndex,
+        OrchardSubtreesIndex,
+        IronwoodSubtreesIndex,
     ]
 }
 

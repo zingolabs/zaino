@@ -45,6 +45,7 @@ mod service;
 mod snapshot;
 mod spend;
 mod subscriber;
+mod tree_state;
 
 #[cfg(test)]
 mod tests;

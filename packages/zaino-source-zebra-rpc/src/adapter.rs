@@ -439,6 +439,18 @@ impl ZebraRpcAdapter {
             }
         }
     }
+
+    /// The best-chain block hash at `height`, via `getblockhash`. Used to label a
+    /// completed subtree with the hash of the block that completed it, which
+    /// `z_getsubtreesbyindex` does not report.
+    async fn block_hash_at<E>(&self, height: Height) -> Result<BlockHash, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        let params = vec![serde_json::Value::Number(u32::from(height).into())];
+        self.call_parsed("getblockhash", params, parse::parse_block_hash)
+            .await
+    }
 }
 
 impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
@@ -843,8 +855,23 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
         if let Some(limit) = limit {
             params.push(serde_json::Value::Number(limit.into()));
         }
-        self.call_parsed("z_getsubtreesbyindex", params, parse::parse_subtree_roots)
-            .await
+        let partial: Vec<(zaino_primitives::types::TreeRoot, Height)> = self
+            .call_parsed("z_getsubtreesbyindex", params, parse::parse_subtree_roots)
+            .await?;
+
+        // `z_getsubtreesbyindex` reports no completing block hash, so resolve it
+        // by height — one `getblockhash` per subtree — and assemble the domain
+        // value the wire needs.
+        let mut roots = Vec::with_capacity(partial.len());
+        for (root, end_height) in partial {
+            let completing_block_hash = self.block_hash_at(end_height).await?;
+            roots.push(zaino_primitives::types::SubtreeRoot {
+                root,
+                completing_block_hash,
+                end_height,
+            });
+        }
+        Ok(roots)
     }
 }
 

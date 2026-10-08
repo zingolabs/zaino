@@ -5901,6 +5901,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "zaino-persistence",
+ "zaino-persistence-codec",
+ "zaino-sync",
 ]
 
 [[package]]
@@ -5943,6 +5945,7 @@ dependencies = [
  "zaino-address",
  "zaino-chain-head",
  "zaino-component",
+ "zaino-indexes",
  "zaino-primitives",
  "zaino-service",
  "zaino-source",
@@ -6103,13 +6106,23 @@ dependencies = [
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "incrementalmerkletree",
+ "orchard",
+ "proptest",
+ "rayon",
+ "sapling-crypto",
+ "serde_json",
  "strum",
+ "tempfile",
  "thiserror 2.0.18",
+ "zaino-backend-lmdb",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",
  "zaino-service",
  "zaino-sync",
+ "zcash_primitives",
 ]
 
 [[package]]
@@ -6117,6 +6130,7 @@ name = "zaino-lightserve"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
@@ -6131,6 +6145,7 @@ dependencies = [
  "zaino-source",
  "zaino-store",
  "zaino-sync",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -6503,6 +6518,8 @@ dependencies = [
 name = "zaino-sync"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
+ "proptest",
  "rayon",
  "strum",
  "thiserror 2.0.18",

@@ -9,16 +9,30 @@ license.workspace = true
 description = "Zcash index definitions for the zaino sync engine."
 
 [dependencies]
+incrementalmerkletree = { workspace = true, features = ["legacy-api"] }
+orchard = { version = "0.15.3", default-features = false }
+rayon.workspace = true
+sapling-crypto.workspace = true
 strum = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
 zaino-primitives.workspace = true
 zaino-service = { version = "0.1.0", path = "../zaino-service" }
 zaino-sync.workspace = true
+zcash_primitives.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
 
 [dev-dependencies]
+hex.workspace = true
+incrementalmerkletree = { workspace = true, features = ["legacy-api"] }
+orchard = { version = "0.15.3", default-features = false }
+proptest.workspace = true
+sapling-crypto.workspace = true
+serde_json.workspace = true
+tempfile = "3"
+zaino-backend-lmdb = { path = "../zaino-backend-lmdb" }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zcash_primitives.workspace = true

@@ -642,8 +642,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(utxos.into_iter().map(utxo_to_wire).collect())
     }
 
-    /// `z_gettreestate`: the commitment treestate as of a block, relayed from the
-    /// validator (passthrough — Zaino indexes no commitment-tree frontier).
+    /// `z_gettreestate`: the commitment treestate as of a block. The adapter
+    /// serves whatever the engine's placement answers for this read — a local
+    /// treestate index where the deployment keeps one, a passthrough relay to
+    /// the validator otherwise — and renders the domain answer to wire.
     ///
     /// The id is a height (decimal string) or a block hash; a hash resolves to a
     /// height over the local header read, so a hash no retained chain holds is a
@@ -677,8 +679,9 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `z_getsubtreesbyindex`: a contiguous run of complete note-commitment
-    /// subtree roots for a pool, from `start_index`, relayed from the validator
-    /// (passthrough). A `start_index` past the end is an empty list, not an error.
+    /// subtree roots for a pool, from `start_index`. The adapter serves whatever
+    /// the engine's placement answers — a local index, or a passthrough relay to
+    /// the validator. A `start_index` past the end is an empty list, not an error.
     pub(crate) async fn get_subtrees_by_index(
         &self,
         pool: &str,
@@ -1812,12 +1815,18 @@ mod tests {
     /// Internal consensus bytes for a display-order hex string — the byte-reverse
     /// of what the wire shows, which is what the domain holds.
     fn internal_32(display: &str) -> [u8; 32] {
-        let mut bytes: [u8; 32] = crate::wire::bytes_from_hex(display)
-            .expect("valid hex")
-            .try_into()
-            .expect("32 bytes");
+        let mut bytes = bytes_32(display);
         bytes.reverse();
         bytes
+    }
+
+    /// The 32 bytes of a hex string as-is (no reversal) — what the domain holds
+    /// for a pool whose root the wire reports in internal order.
+    fn bytes_32(hex: &str) -> [u8; 32] {
+        crate::wire::bytes_from_hex(hex)
+            .expect("valid hex")
+            .try_into()
+            .expect("32 bytes")
     }
 
     // The zebra 6.4.2 oracle's `z_gettreestate` for mainnet block 3,504,000.
@@ -1830,8 +1839,10 @@ mod tests {
         "508f7635a3cfe34c075db790ed40718790a1769e7c3aefc552f760a560959004";
     const ORACLE_TS_SAPLING_STATE: &str = "0160c72cab16f15c5c11d78c884c4422c007535f35d1a1d7908aff22055a53593001e5cc5669de5cacf869cc0003e0233b0431a7ae0825796787a0efaad424f8b8471f01d65a1968b0f1aee87e050ffae478cc1a14b8f5f7d8f2bf1fa45d0fe12aba0d4b013993ca56d08b8124f5ab2de6567cd4c3894461eb460fdf173f7f87a8a539874101741e0b7be991afd113b871b5e51c40e687e4b26afb1f0edc9eb219d502e39127015c8052bfb21142c65e344f2fe9812943961fd5ff1ee6fb4a4cf883bfe7911e130001264c58515528f2124f65c77ac463f9566b1923b6c6385aac6af851a7fb6fcb3b0137d7cec383b6df2b52e213494653f8a9b6b3ed0a41dcbe2c1b2f0b8fdb2097390199bfe33d66256709dd8a8153cf74fbf8be691d13b1ee2b71a9f07bce973edb66000001f92c540ae773f1d228d9738e1c40f3cdef9e343f2d87bbf21a6e7ae7d6d0285a0192be9f32e586be896e877ada27571e75fef34ab58a0f2ba9467f3df65929cc00000187f6927e99046bbbfc9e2687bdf2edfb26ead45cf35d0f0333d7210b65bac708010f56c531fa62b5e1d6fbc1e8a7cc38bd788bb8627d4ad65cd944cef525a7a4250000000190eb9e2bc82b8b980aaa63ba44db65328553ba840c38c5011a465efd8b233b2200013e2598f743726006b8de42476ed56a55a75629a7b82e430c4e7c101a69e9b02a011619f99023a69bb647eab2d2aa1a73c3673c74bb033c3c4930eacda19e6fd93b0000000160272b134ca494b602137d89e528c751c06d3ef4a87a45f33af343c15060cc1e0000000000";
 
-    /// Build a [`PoolTreestate`] from an oracle display-order root and a hex state.
-    fn oracle_pool(root_display: &str, state_hex: &str) -> zaino_primitives::types::PoolTreestate {
+    /// Build a Sapling [`PoolTreestate`]: the wire reports its root in display
+    /// (reversed) order, so the internally held root is the reverse of the
+    /// display-order oracle string.
+    fn sapling_pool(root_display: &str, state_hex: &str) -> zaino_primitives::types::PoolTreestate {
         zaino_primitives::types::PoolTreestate {
             final_root: Some(zaino_primitives::types::TreeRoot::from(internal_32(
                 root_display,
@@ -1840,9 +1851,25 @@ mod tests {
         }
     }
 
+    /// Build an Orchard/Ironwood [`PoolTreestate`]: the wire reports the root in
+    /// internal order, so the held root is the wire string as-is (no reversal).
+    fn internal_root_pool(
+        root_internal: &str,
+        state_hex: &str,
+    ) -> zaino_primitives::types::PoolTreestate {
+        zaino_primitives::types::PoolTreestate {
+            final_root: Some(zaino_primitives::types::TreeRoot::from(bytes_32(
+                root_internal,
+            ))),
+            final_state: crate::wire::bytes_from_hex(state_hex).expect("valid state hex"),
+        }
+    }
+
     /// `z_gettreestate` renders the oracle's nested shape: the block hash in
     /// display order, each active pool under `{commitments: {finalRoot, finalState}}`,
-    /// the root reversed to display order and the state as-is. Served passthrough,
+    /// the state as-is, and the root in the pool's wire orientation — Sapling
+    /// reversed to display order, Orchard and Ironwood in internal order (verified
+    /// against zebra by the `zaino-indexes` treestate golden). Served passthrough,
     /// scripted through the service mock.
     #[tokio::test]
     async fn z_gettreestate_renders_the_oracle_nested_shape() {
@@ -1851,9 +1878,12 @@ mod tests {
             block_hash: BlockHash::from(internal_32(ORACLE_TS_HASH)),
             height: Height::try_from(3_504_000).expect("valid height"),
             time: 1_790_963_775,
-            sapling: Some(oracle_pool(ORACLE_TS_SAPLING_ROOT, ORACLE_TS_SAPLING_STATE)),
-            orchard: Some(oracle_pool(ORACLE_TS_ORCHARD_ROOT, "00")),
-            ironwood: Some(oracle_pool(ORACLE_TS_IRONWOOD_ROOT, "00")),
+            sapling: Some(sapling_pool(
+                ORACLE_TS_SAPLING_ROOT,
+                ORACLE_TS_SAPLING_STATE,
+            )),
+            orchard: Some(internal_root_pool(ORACLE_TS_ORCHARD_ROOT, "00")),
+            ironwood: Some(internal_root_pool(ORACLE_TS_IRONWOOD_ROOT, "00")),
         };
         let engine = MockIndexerService::new(MockChain {
             treestate: Some(treestate),
@@ -1959,15 +1989,16 @@ mod tests {
         }
     }
 
-    /// A pre-activation pool omits its key, rather than rendering an empty tree.
+    /// A pre-activation Orchard renders empty commitments, as zebra does; a
+    /// pre-activation Ironwood omits its key.
     #[tokio::test]
-    async fn z_gettreestate_omits_an_inactive_pool() {
+    async fn z_gettreestate_renders_an_inactive_pool_as_zebra_does() {
         use zaino_primitives::types::Treestate;
         let treestate = Treestate {
             block_hash: BlockHash::from([0x11u8; 32]),
             height: Height::try_from(100).expect("valid height"),
             time: 1_600_000_000,
-            sapling: Some(oracle_pool(ORACLE_TS_SAPLING_ROOT, "00")),
+            sapling: Some(sapling_pool(ORACLE_TS_SAPLING_ROOT, "00")),
             orchard: None,
             ironwood: None,
         };
@@ -1980,9 +2011,14 @@ mod tests {
             .expect("serialize");
         let obj = json.as_object().expect("a JSON object");
         assert!(obj.contains_key("sapling"));
+        assert_eq!(
+            obj.get("orchard"),
+            Some(&serde_json::json!({ "commitments": {} })),
+            "an inactive orchard renders empty commitments: {obj:?}"
+        );
         assert!(
-            !obj.contains_key("orchard") && !obj.contains_key("ironwood"),
-            "an inactive pool omits its key: {obj:?}"
+            !obj.contains_key("ironwood"),
+            "an inactive ironwood omits its key: {obj:?}"
         );
     }
 
@@ -1996,7 +2032,7 @@ mod tests {
     /// and each subtree's root (natural order) with its completing height.
     #[tokio::test]
     async fn z_getsubtreesbyindex_renders_the_oracle_shape() {
-        use zaino_primitives::types::{SubtreeRoot, TreeRoot};
+        use zaino_primitives::types::{BlockHash, SubtreeRoot, TreeRoot};
         let roots = vec![
             SubtreeRoot {
                 root: TreeRoot::from(
@@ -2005,6 +2041,7 @@ mod tests {
                     )
                     .expect("32 bytes"),
                 ),
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(558_822).expect("valid height"),
             },
             SubtreeRoot {
@@ -2014,6 +2051,7 @@ mod tests {
                     )
                     .expect("32 bytes"),
                 ),
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(670_209).expect("valid height"),
             },
         ];

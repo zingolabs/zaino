@@ -780,10 +780,11 @@ mod tests {
     /// `{pool, start_index, subtrees}` object.
     #[tokio::test(flavor = "multi_thread")]
     async fn zcashex_one_point_zero_z_getsubtreesbyindex_succeeds() {
-        use zaino_primitives::types::{SubtreeRoot, TreeRoot};
+        use zaino_primitives::types::{BlockHash, SubtreeRoot, TreeRoot};
         let (addr, handle) = spawn_server(MockChain {
             subtree_roots: vec![SubtreeRoot {
                 root: TreeRoot::from([0xABu8; 32]),
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(558_822).expect("valid height"),
             }],
             ..Default::default()

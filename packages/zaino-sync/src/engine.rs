@@ -32,6 +32,7 @@ use crate::index_pipelines::IndexPipelines;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
+use crate::traits::{DepsReader, PendingOverlay};
 use zaino_primitives::types::Height;
 
 /// Configuration for the sync engine.
@@ -407,12 +408,37 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         Ok(extract_jobs)
     }
 
-    /// Run extractions in parallel via rayon's work-stealing pool.
+    /// Run a dispatch's extractions, routing by scope.
+    ///
+    /// Cross-index jobs need a [`DepsReader`] over their dependencies' output, so
+    /// they take a separate, dependency-reading path
+    /// ([`run_cross_extractions`](Self::run_cross_extractions)). Everything else
+    /// (BlockLocal, SelfCumulative) extracts from the block context alone and
+    /// fans out over rayon ([`run_local_extractions`](Self::run_local_extractions)).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
+    fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
+        let (cross_jobs, local_jobs): (Vec<&ExtractJob>, Vec<&ExtractJob>) =
+            jobs.iter().partition(|job| self.is_cross(job.index));
+
+        self.run_local_extractions(&local_jobs)?;
+        self.run_cross_extractions(&cross_jobs)
+    }
+
+    /// Whether `index`'s declared scope is [`CrossIndex`].
+    ///
+    /// [`CrossIndex`]: crate::descriptor::InputScope::CrossIndex
+    fn is_cross(&self, index: IndexId) -> bool {
+        self.pipelines.get(&index).is_some_and(|pipeline| {
+            pipeline.descriptor().scope == crate::descriptor::InputScope::CrossIndex
+        })
+    }
+
+    /// Run non-cross extractions in parallel via rayon's work-stealing pool.
     ///
     /// Prepares (pipeline, context) pairs on the calling thread, then
     /// fans out via `par_iter`. Borrows from `self` — no Arc cloning.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
-    fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
+    fn run_local_extractions(&self, jobs: &[&ExtractJob]) -> Result<(), SyncError> {
         let work: Vec<_> = jobs
             .iter()
             .map(|job| {
@@ -424,20 +450,84 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     .pipelines
                     .get(&job.index)
                     .expect("scheduler only emits registered indexes");
-                (pipeline, ctx)
+                (job.global_offset, pipeline, ctx)
             })
             .collect();
+
+        // Test-only: run a batch's extractions sequentially in reversed chain
+        // order. A bridge that merges deltas in completion order rather than
+        // chain order then produces a wrong (reversed) result deterministically,
+        // which pins the ordering contract (see `ReverseExtractionGuard`).
+        #[cfg(test)]
+        if reverse_extraction_order() {
+            for (offset, pipeline, ctx) in work.iter().rev() {
+                pipeline.extract_one(*offset, ctx)?;
+            }
+            return Ok(());
+        }
 
         // Capture current span so rayon threads inherit the trace context.
         #[cfg(feature = "tracing")]
         let parent_span = tracing::Span::current();
-        work.par_iter().try_for_each(|(pipeline, ctx)| {
+        work.par_iter().try_for_each(|(offset, pipeline, ctx)| {
             #[cfg(feature = "tracing")]
             let _guard = parent_span.enter();
-            pipeline.extract_one(ctx)
+            pipeline.extract_one(*offset, ctx)
         })?;
 
         Ok(())
+    }
+
+    /// Run cross-index extractions over a [`DepsReader`] built once for this
+    /// dispatch.
+    ///
+    /// The overlay is built from the ops already persisted into not-yet-committed
+    /// batches (a dependency's batch-β output lives there until the shared atomic
+    /// commit), and one backend reader is pinned for the whole set — the reader
+    /// port is not `Sync`, so the batch's cross reads run over this one handle
+    /// rather than fanning out. That is cheap: the scheduler already removed the
+    /// expensive serialisation (the full-batch gate), and each read here is a
+    /// point lookup. Each job gets a `DepsReader` scoped to its own declared
+    /// dependencies.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
+    fn run_cross_extractions(&self, jobs: &[&ExtractJob]) -> Result<(), SyncError> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let overlay = self.build_pending_overlay();
+        let reader = self.backend.reader()?;
+
+        for job in jobs {
+            let ctx = self
+                .buffer
+                .get(job.global_offset)
+                .expect("block available — scheduler verified watermark");
+            let pipeline = self
+                .pipelines
+                .get(&job.index)
+                .expect("scheduler only emits registered indexes");
+            let deps = DepsReader::new(&reader, &overlay, pipeline.descriptor().dependencies);
+            pipeline.extract_one_cross(job.global_offset, &ctx, &deps)?;
+        }
+
+        Ok(())
+    }
+
+    /// Build the [`PendingOverlay`] from the ops stashed for not-yet-committed
+    /// batches.
+    ///
+    /// Applied in ascending batch order so a later batch's write of a key shadows
+    /// an earlier one (latest-wins); within a batch, persist order already places
+    /// the last writer last.
+    fn build_pending_overlay(&self) -> PendingOverlay {
+        let mut overlay = PendingOverlay::default();
+        let mut batches: Vec<BatchIndex> = self.pending_ops.keys().copied().collect();
+        batches.sort_by_key(BatchIndex::value);
+        for batch in batches {
+            overlay.apply(&self.pending_ops[&batch]);
+        }
+        overlay
     }
 
     /// Report completed extractions to the scheduler.
@@ -681,5 +771,48 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// The per-batch profiles emitted during this sync run.
     pub(crate) fn profile_records(&self) -> &[crate::profile::BatchProfileRecord] {
         self.profile.records()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// When set on the current thread, [`SyncEngine::run_extractions_parallel`]
+    /// extracts a batch sequentially in reversed chain order instead of fanning
+    /// out over rayon. It is thread-local (not global) because the test harness
+    /// runs tests concurrently on a reused thread pool; a global flag would bleed
+    /// between tests, and the engine drives a sync synchronously on the thread
+    /// that sets it.
+    static REVERSE_EXTRACTION_ORDER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread forces reversed extraction order.
+#[cfg(test)]
+fn reverse_extraction_order() -> bool {
+    REVERSE_EXTRACTION_ORDER.with(std::cell::Cell::get)
+}
+
+/// RAII switch that forces reversed per-batch extraction order on the current
+/// thread for as long as it is held.
+///
+/// The non-commutative toy indexes use it to guarantee that merge sees deltas
+/// in a non-chain order, so the chain-order merge contract is exercised
+/// deterministically rather than depending on how rayon happens to schedule.
+/// Dropping it (including on unwind) clears the flag, so no later test on the
+/// same reused harness thread inherits it.
+#[cfg(test)]
+pub(crate) struct ReverseExtractionGuard(());
+
+#[cfg(test)]
+impl ReverseExtractionGuard {
+    pub(crate) fn new() -> Self {
+        REVERSE_EXTRACTION_ORDER.with(|flag| flag.set(true));
+        Self(())
+    }
+}
+
+#[cfg(test)]
+impl Drop for ReverseExtractionGuard {
+    fn drop(&mut self) {
+        REVERSE_EXTRACTION_ORDER.with(|flag| flag.set(false));
     }
 }

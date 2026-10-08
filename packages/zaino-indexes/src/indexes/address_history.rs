@@ -14,7 +14,7 @@
 //! without this index depending on the address-string parser.
 
 use zaino_persistence_codec::{
-    decode_key, decode_value, DecodeError, EntryCodec, PersistentRecord,
+    decode_key, decode_value, DecodeError, EntryCodec, KeyOrder, PersistentRecord,
 };
 use zaino_primitives::types::{
     classify_script, OutputIndex, Script, ScriptType, TransactionId, Zatoshis,
@@ -179,6 +179,8 @@ impl EntryCodec for AddressHistoryIndex {
     type Value = Zatoshis;
     type PersistentKey = PersistentAddrKey;
     type PersistentValue = PersistentReceiveValue;
+
+    const KEY_ORDER: KeyOrder = KeyOrder::Scattered;
 
     fn fingerprint_samples() -> Vec<(AddrKey, Zatoshis)> {
         // Cover every ScriptType variant, since the type byte is part of the key.
