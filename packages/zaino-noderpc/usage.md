@@ -36,13 +36,16 @@ in internal order per the lightwalletd protocol.)
 (passthrough — Zaino indexes no commitment-tree frontier). `z_gettreestate`
 takes a height (decimal string) or a block hash (resolved to a height over the
 local header read) and nests each active pool under its key as
-`{commitments: {finalRoot, finalState}}`: the block hash and `finalRoot` render
-in display order, `finalState` as hex in natural order, and an inactive pool
-omits its key. `finalRoot` is absent against the RPC backend, which discards it
-on parse (a recorded divergence from zebra). `z_getsubtreesbyindex` takes
-`pool, startIndex, (limit?)` and returns `{pool, start_index, subtrees}` with
-each root in natural order; a `startIndex` past the end is an empty `subtrees`
-list, not an error.
+`{commitments: {finalRoot, finalState}}`: the block hash renders in display
+order, `finalRoot` in each pool's own order (Sapling display/byte-reversed,
+Orchard and Ironwood internal — matched to zebra), `finalState` as hex in natural
+order, and a pool with no tree at this height omits its key (a divergence from
+zebra, which reports `{commitments: {}}` for a scheduled pool below activation —
+the domain cannot tell that apart from an unscheduled pool). `finalRoot` is absent
+against the RPC backend, which discards it on parse; the local tree index reports
+it. `z_getsubtreesbyindex` takes `pool, startIndex, (limit?)` and returns
+`{pool, start_index, subtrees}` with each root in natural (internal) order; a
+`startIndex` past the end is an empty `subtrees` list, not an error.
 
 `getblockhash` resolves a height to the block's hash (display order) **locally**
 over the chain view's header read (`BlockHashRead::block_hash`), with no validator

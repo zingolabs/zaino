@@ -181,12 +181,17 @@ pub(crate) fn utxo_to_wire(utxo: zaino_primitives::types::Utxo) -> AddressUtxoEn
 /// (domain -> wire).
 ///
 /// The block hash renders in display order; each active pool nests under its key
-/// as `{commitments: {finalRoot?, finalState}}`, and an inactive pool omits the
-/// key. `finalRoot` is in display (byte-reversed) order and is absent when the
-/// source does not report one: the RPC backend discards it on parse (its own
-/// reply documents the field as unused), so against that backend `finalRoot` is
-/// currently omitted — a recorded divergence from zebra, which emits it. A local
-/// tree index or a combined root read would restore it.
+/// as `{commitments: {finalRoot?, finalState}}`, and a pool with no tree at this
+/// height omits the key (a documented divergence from zebra, which reports
+/// `{commitments: {}}` for a scheduled pool below its activation — the domain
+/// cannot tell that apart from an unscheduled pool, so it reports neither).
+///
+/// `finalRoot`'s byte orientation is per pool, verified against zebra by the
+/// `zaino-indexes` treestate golden: Sapling reports it in display (byte-reversed)
+/// order, Orchard and Ironwood in internal order. The domain holds every root in
+/// internal order, so Sapling reverses at the wire and the others do not.
+/// `finalRoot` is absent when the source does not report one (the passthrough RPC
+/// backend discards it on parse); the local tree index does report it.
 pub(crate) fn treestate_to_wire(
     treestate: zaino_primitives::types::Treestate,
 ) -> TreestateResponse {
@@ -194,19 +199,29 @@ pub(crate) fn treestate_to_wire(
         hash: block_hash_to_display(treestate.block_hash),
         height: treestate.height.into(),
         time: treestate.time,
-        sapling: treestate.sapling.map(pool_treestate_to_wire),
-        orchard: treestate.orchard.map(pool_treestate_to_wire),
-        ironwood: treestate.ironwood.map(pool_treestate_to_wire),
+        sapling: treestate
+            .sapling
+            .map(|pool| pool_treestate_to_wire(pool, to_display_hex)),
+        orchard: treestate
+            .orchard
+            .map(|pool| pool_treestate_to_wire(pool, to_hex)),
+        ironwood: treestate
+            .ironwood
+            .map(|pool| pool_treestate_to_wire(pool, to_hex)),
     }
 }
 
-/// Render one pool's treestate (domain -> wire). `finalRoot` is reversed to
-/// display order (see [`treestate_to_wire`]); `finalState` is the serialized tree
-/// as hex in its natural order.
-fn pool_treestate_to_wire(pool: zaino_primitives::types::PoolTreestate) -> PoolTreestateResponse {
+/// Render one pool's treestate (domain -> wire). `root_to_hex` encodes the root
+/// in the pool's wire orientation — [`to_display_hex`] (reversed) for Sapling,
+/// [`to_hex`] (internal) for Orchard and Ironwood (see [`treestate_to_wire`]).
+/// `finalState` is the serialized tree as hex in its natural order.
+fn pool_treestate_to_wire(
+    pool: zaino_primitives::types::PoolTreestate,
+    root_to_hex: fn([u8; 32]) -> String,
+) -> PoolTreestateResponse {
     PoolTreestateResponse {
         commitments: CommitmentsResponse {
-            final_root: pool.final_root.map(|root| to_display_hex(root.into())),
+            final_root: pool.final_root.map(|root| root_to_hex(root.into())),
             final_state: bytes_to_hex(&pool.final_state),
         },
     }
@@ -2642,5 +2657,210 @@ mod tests {
             arr[1].get("logicalts").and_then(Value::as_u64),
             Some(1_600_000_600)
         );
+    }
+
+    /// The `z_gettreestate` fixtures captured from zebra 6.4.2 (mainnet). One
+    /// source of truth: this is the same file `zaino-indexes` tests read.
+    const TREESTATE_FIXTURE: &str =
+        include_str!("../../zaino-indexes/tests/fixtures/treestate/zebra-mainnet.json");
+
+    /// Decode a hex string into exactly 32 bytes.
+    fn bytes32(hex: &str) -> [u8; 32] {
+        super::bytes_from_hex(hex)
+            .expect("fixture hex decodes")
+            .try_into()
+            .expect("a 32-byte value")
+    }
+
+    /// Reverse 32 bytes (display order <-> internal order).
+    fn reversed(mut bytes: [u8; 32]) -> [u8; 32] {
+        bytes.reverse();
+        bytes
+    }
+
+    /// Golden `z_gettreestate` rendering against the zebra mainnet fixtures.
+    ///
+    /// The domain holds every root in internal byte order, so the fixture roots
+    /// are converted to internal order to build the domain value — Sapling's
+    /// `finalRoot` is display (reversed) on the wire, Orchard's is internal — and
+    /// the renderer must reproduce each pool's on-wire orientation exactly. A
+    /// uniform reversal (the earlier bug) renders Orchard's root backwards and
+    /// fails here. `finalState` is a serialized blob rendered verbatim as hex.
+    #[test]
+    fn treestate_renders_zebra_fixture_roots_and_state() {
+        use super::treestate_to_wire;
+        use zaino_primitives::types::{BlockHash, Height, PoolTreestate, TreeRoot, Treestate};
+
+        let fixture: Value = serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        let entries = fixture["z_gettreestate"]
+            .as_object()
+            .expect("z_gettreestate object");
+
+        // A pool is Some only when the fixture reports a tree (`finalState`);
+        // below activation the fixture's `commitments` is `{}`, which the domain
+        // represents as the pool being absent. `reverse` is set for Sapling, whose
+        // `finalRoot` the wire reports in display (reversed) order.
+        let pool_from_fixture = |commitments: &Value, reverse: bool| -> Option<PoolTreestate> {
+            let final_state = commitments["finalState"].as_str()?;
+            let final_root = commitments["finalRoot"]
+                .as_str()
+                .expect("a tree reports a finalRoot");
+            let root = bytes32(final_root);
+            let internal = if reverse { reversed(root) } else { root };
+            Some(PoolTreestate {
+                final_root: Some(TreeRoot::from(internal)),
+                final_state: super::bytes_from_hex(final_state).expect("finalState hex"),
+            })
+        };
+
+        let mut orchard_content_heights = 0usize;
+        for (height_key, response) in entries {
+            let result = &response["result"];
+            let hash_display = result["hash"].as_str().expect("hash");
+            let height_num = result["height"].as_u64().expect("height");
+            let time_num = result["time"].as_u64().expect("time");
+
+            let treestate = Treestate {
+                block_hash: BlockHash::from(reversed(bytes32(hash_display))),
+                height: Height::try_from(u32::try_from(height_num).expect("height fits u32"))
+                    .expect("valid height"),
+                time: u32::try_from(time_num).expect("time fits u32"),
+                sapling: pool_from_fixture(&result["sapling"]["commitments"], true),
+                orchard: pool_from_fixture(&result["orchard"]["commitments"], false),
+                // Ironwood (NU6.3) is unscheduled on mainnet, so zebra never
+                // reports it and the domain holds None.
+                ironwood: None,
+            };
+
+            let json = serde_json::to_value(treestate_to_wire(treestate)).expect("serialize");
+            assert_eq!(
+                json["hash"],
+                Value::from(hash_display),
+                "hash at {height_key}"
+            );
+            assert_eq!(
+                json["height"],
+                Value::from(height_num),
+                "height at {height_key}"
+            );
+            assert_eq!(json["time"], Value::from(time_num), "time at {height_key}");
+
+            for pool in ["sapling", "orchard"] {
+                let commitments = &result[pool]["commitments"];
+                match commitments["finalState"].as_str() {
+                    Some(final_state) => {
+                        let final_root = commitments["finalRoot"].as_str().expect("finalRoot");
+                        let rendered = &json[pool]["commitments"];
+                        assert_eq!(
+                            rendered["finalState"],
+                            Value::from(final_state),
+                            "{pool} finalState at {height_key}"
+                        );
+                        assert_eq!(
+                            rendered["finalRoot"],
+                            Value::from(final_root),
+                            "{pool} finalRoot orientation at {height_key}"
+                        );
+                        if pool == "orchard" {
+                            orchard_content_heights += 1;
+                        }
+                    }
+                    None => {
+                        // Below activation the domain has no tree, so Zaino omits
+                        // the pool key. Documented divergence from zebra, which
+                        // emits `{commitments: {}}`; the domain cannot tell a
+                        // scheduled-but-pre-activation pool from an unscheduled one.
+                        assert!(
+                            json.get(pool).is_none(),
+                            "{pool} omitted when inactive at {height_key}"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            orchard_content_heights >= 2,
+            "Orchard content orientation checked at >= 2 heights (got {orchard_content_heights})"
+        );
+    }
+
+    /// A pool whose source reports no root (the passthrough RPC backend discards
+    /// it) renders `commitments` with `finalState` only — no `finalRoot` key, not
+    /// a null — and an inactive pool is omitted entirely.
+    #[test]
+    fn treestate_omits_final_root_when_absent_and_inactive_pool() {
+        use super::treestate_to_wire;
+        use zaino_primitives::types::{BlockHash, Height, PoolTreestate, Treestate};
+
+        let treestate = Treestate {
+            block_hash: BlockHash::from([0x11u8; 32]),
+            height: Height::try_from(2_000_000).expect("valid height"),
+            time: 1_677_602_242,
+            sapling: Some(PoolTreestate {
+                final_root: None,
+                final_state: vec![0x00, 0x00, 0x00],
+            }),
+            orchard: None,
+            ironwood: None,
+        };
+
+        let json = serde_json::to_value(treestate_to_wire(treestate)).expect("serialize");
+        let sapling = json["sapling"]["commitments"]
+            .as_object()
+            .expect("sapling commitments object");
+        assert_eq!(sorted_keys(&json["sapling"]["commitments"]), ["finalState"]);
+        assert_eq!(
+            sapling.get("finalState").and_then(Value::as_str),
+            Some("000000")
+        );
+        assert!(json.get("orchard").is_none(), "inactive orchard is omitted");
+        assert!(
+            json.get("ironwood").is_none(),
+            "inactive ironwood is omitted"
+        );
+    }
+
+    /// Golden `z_getsubtreesbyindex` rendering: subtree roots are reported in
+    /// internal (unreversed) order for both pools, so the renderer must emit the
+    /// fixture hex verbatim (a reversal would fail). The pool name and the echoed
+    /// `start_index` ride out as-is.
+    #[test]
+    fn subtree_roots_render_in_internal_order_from_fixture() {
+        use super::subtree_roots_to_wire;
+        use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, TreeRoot};
+
+        let fixture: Value = serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        for (pool, pool_name) in [
+            (ShieldedPool::Sapling, "sapling"),
+            (ShieldedPool::Orchard, "orchard"),
+        ] {
+            let subtrees = fixture["z_getsubtreesbyindex"][pool_name]["result"]["subtrees"]
+                .as_array()
+                .expect("subtrees array");
+            let roots: Vec<SubtreeRoot> = subtrees
+                .iter()
+                .map(|subtree| SubtreeRoot {
+                    root: TreeRoot::from(bytes32(subtree["root"].as_str().expect("root hex"))),
+                    end_height: Height::try_from(
+                        u32::try_from(subtree["end_height"].as_u64().expect("end_height"))
+                            .expect("height fits u32"),
+                    )
+                    .expect("valid height"),
+                })
+                .collect();
+
+            let json = serde_json::to_value(subtree_roots_to_wire(pool, 0, roots)).expect("ser");
+            assert_eq!(json["pool"], Value::from(pool_name));
+            assert_eq!(json["start_index"], Value::from(0u16));
+            let rendered = json["subtrees"].as_array().expect("subtrees out");
+            assert_eq!(rendered.len(), subtrees.len());
+            for (out, fixture_entry) in rendered.iter().zip(subtrees) {
+                assert_eq!(
+                    out["root"], fixture_entry["root"],
+                    "{pool_name} root verbatim"
+                );
+                assert_eq!(out["end_height"], fixture_entry["end_height"]);
+            }
+        }
     }
 }
