@@ -350,16 +350,13 @@ mod tests {
     use std::time::Duration;
 
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
-    };
+    use zaino_primitives::testing::{p2pkh, MockChain};
     use zaino_proto::proto::service as proto;
     use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 
     use super::GrpcService;
     use crate::service::Routes;
-    use crate::testing::{indexed, routes, snapshot};
+    use crate::testing::{indexed, routes, snapshot, MAINNET};
 
     /// R11, W4: a wallet on an h2 >= 0.4.16 client (charges every DATA frame < 256 B against a
     /// connection budget until read: `GOAWAY too_many_data_frames`, lightwalletd #593), reading
@@ -371,35 +368,19 @@ mod tests {
         const COUNT: u32 = 10_000;
         // `t1Hsc…` = hash160 `00…00`
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
-        let alice = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
-        let pays_alice = |height: u32| Transaction {
-            txid: TransactionId::from({
-                let mut txid = [0x5a; 32];
-                txid[..4].copy_from_slice(&height.to_le_bytes());
-                txid
-            }),
-            transparent: TransparentData {
-                coinbase: true,
-                inputs: Vec::new(),
-                outputs: vec![TransparentOutput {
-                    value: Zatoshis::new(1_000).expect("in supply"),
-                    script: Script::new(alice.clone()),
-                }],
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let mut chain = Chain::with_genesis(vec![pays_alice(0)]);
-        let tip = (1..COUNT)
-            .fold(chain.genesis(), |tip, h| chain.mine_with(tip.hash, vec![pays_alice(h)]));
-        let blocks = chain.path(tip.hash);
+        let alice = p2pkh([0x00; 20]);
+        let mut chain = MockChain::regtest()
+            .network(MAINNET)
+            .genesis_with(|b| b.coinbase(|c| c.pay(&alice, 1_000)));
+        for _ in 1..COUNT {
+            chain.mine(|b| b.coinbase(|c| c.pay(&alice, 1_000)));
+        }
+        let tip = chain.tip();
         let views = vec![
-            indexed(IndexKind::CompactBlock, &blocks),
-            indexed(IndexKind::TransparentAddress, &blocks),
+            indexed(IndexKind::CompactBlock, &chain, tip),
+            indexed(IndexKind::TransparentAddress, &chain, tip),
         ];
-        let routes = Routes { snapshots: snapshot(&blocks, views), ..routes() };
+        let routes = Routes { snapshots: snapshot(&chain, tip, views), ..routes() };
 
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
         let bind = probe.local_addr().expect("local addr");

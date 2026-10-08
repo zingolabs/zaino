@@ -5061,7 +5061,6 @@ dependencies = [
  "zaino-index-transparent-address",
  "zaino-index-tree-state",
  "zaino-internal-block-hash-to-height",
- "zaino-internal-value-balance",
  "zaino-nfs",
  "zaino-persistence",
  "zaino-primitives",

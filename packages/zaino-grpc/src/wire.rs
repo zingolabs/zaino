@@ -310,7 +310,7 @@ mod tests {
 
     use super::{path, request_limit};
     use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot};
+    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
 
     /// A body over its method's cap is `RESOURCE_EXHAUSTED` before any decode; one byte under is
     /// decoded as usual (then refused for what it says: a hash is 32 bytes)
@@ -318,11 +318,11 @@ mod tests {
     async fn a_request_body_over_its_cap_is_refused_before_it_is_decoded() {
         use tower::Service as _;
 
-        let chain = zaino_primitives::testing::Chain::new();
-        let genesis = chain.path(chain.genesis().hash);
-        let compact = indexed(IndexKind::CompactBlock, &genesis);
-        let mut router =
-            dispatch(Routes { snapshots: snapshot(&genesis, vec![compact]), ..routes() });
+        let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
+        let genesis = chain.genesis();
+        let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
+        let snapshots = snapshot(&chain, genesis, vec![compact]);
+        let mut router = dispatch(Routes { snapshots, ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {

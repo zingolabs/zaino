@@ -1,5 +1,5 @@
-//! Shared route-test infra: `Routes` over a `MockChain` validator, request builders, indexes
-//! folded from genesis and served through one fixed snapshot
+//! Shared route-test infra: `Routes` over a `MockValidator`, request builders, indexes folded
+//! from a `MockChain`'s genesis and served through one fixed snapshot
 
 use std::sync::Arc;
 
@@ -7,46 +7,29 @@ use http::Request;
 use http_body_util::Full;
 use tokio::sync::watch;
 use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet, ObservationFold};
-use zaino_header_chain::VerifiedChain;
-use zaino_index_tree_state::PoolActivations;
+use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
-use zaino_persistence::{
-    DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, Store,
-};
-use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
+use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
+use zaino_primitives::testing::MockChain;
+use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_snapshot::{Publisher, Snapshots};
-use zaino_source::mock::MockChain;
+use zaino_source::testing::MockValidator;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
 use crate::service::{Dispatch, Routes};
 
-/// Network every test index is built on (the transparent tests' addresses are mainnet ones)
+/// Network the routes declare (the transparent tests' addresses are mainnet ones)
 pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
     zcash_protocol::consensus::NetworkType::Main;
 
-/// Compact-block's store on [`MAINNET`]
-pub(super) const COMPACT_BLOCK: Schema = Schema::new(
-    IndexKind::CompactBlock,
-    zaino_index_compact_block::FORMAT,
-    MAINNET,
-    zaino_index_compact_block::TABLES,
-);
-
-/// `path` on a fresh in-memory filesystem, as `schema`'s store
-pub(super) fn store(path: &str, schema: &Schema) -> DiskStore {
-    let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
-    engine.open(std::path::Path::new(path), schema).expect("open")
-}
-
-/// `kind` folded through `blocks` from genesis by its own fold, committed (compact-block's fees
-/// from value-balance's fold, as the NFS folds them)
-pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView) {
+/// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
+/// (compact-block's fees = the builder's: value-balance's fold derives the same, in its tests)
+pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (IndexKind, DiskView) {
     use zaino_index_compact_block as compact_block;
     use zaino_index_transparent_address as transparent_address;
     use zaino_index_tree_state as tree_state;
     use zaino_internal_block_hash_to_height as block_hash;
-    use zaino_internal_value_balance as value_balance;
 
     let (format, tables) = match kind {
         IndexKind::CompactBlock => (compact_block::FORMAT, compact_block::TABLES),
@@ -55,32 +38,28 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
         IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
         IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
     };
-    let mut index = store(kind.name(), &Schema::new(kind, format, MAINNET, tables));
-    let fees =
-        Schema::new(IndexKind::ValueBalance, value_balance::FORMAT, MAINNET, value_balance::TABLES);
-    let mut fees = store("fees", &fees);
-    for block in blocks {
+    let schema = Schema::new(kind, format, chain.schedule().network, tables);
+    let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
+    let mut index = engine.open(std::path::Path::new(kind.name()), &schema).expect("open");
+    for block in chain.blocks(tip) {
         let parent = index.staged();
         let mut out = index.changes(block.at());
         match kind {
             IndexKind::CompactBlock => {
-                let mut outputs = fees.changes(block.at());
-                let paid = value_balance::ValueBalanceReader::new(fees.staged());
-                let paid = value_balance::fold(&paid, block, &mut outputs).expect("prevouts held");
-                fees.apply(outputs);
                 let parent = compact_block::CompactBlockReader::new(parent);
-                compact_block::fold(&parent, block, &paid, &mut out).expect("small tree sizes");
+                let fees = chain.fees(block.header().hash);
+                compact_block::fold(&parent, &block, &fees, &mut out).expect("small tree sizes");
             }
             IndexKind::TreeState => {
                 let parent = tree_state::TreeStateReader::new(parent);
-                tree_state::fold(&parent, block, &mut out).expect("canonical commitments");
+                tree_state::fold(&parent, &block, &mut out).expect("canonical commitments");
             }
             IndexKind::TransparentAddress => {
                 let parent = transparent_address::TransparentAddressReader::new(parent);
-                transparent_address::fold(&parent, block, &mut out);
+                transparent_address::fold(&parent, &block, &mut out);
             }
             IndexKind::BlockHash => {
-                block_hash::fold(&block_hash::BlockHashReader::new(parent), block, &mut out);
+                block_hash::fold(&block_hash::BlockHashReader::new(parent), &block, &mut out);
             }
             IndexKind::ValueBalance | IndexKind::HeaderChain => unreachable!("refused above"),
         }
@@ -90,40 +69,44 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
     (kind, index.view())
 }
 
-/// `views` served at `path`'s last block (the NFS root), every pool active from genesis
-pub(super) fn indexed_at(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> Indexed<DiskView> {
-    let tip = path.last().expect("a path holds genesis").header();
-    let tip = BlockRef { hash: tip.hash, height: tip.height };
-    let genesis = Height::GENESIS;
-    let activations =
-        PoolActivations { sapling: genesis, orchard: Some(genesis), ironwood: Some(genesis) };
-    let params = ChainParams { network: MAINNET, activations };
-    Indexed::fixed(Arc::new(VerifiedChain::regtest(path)), tip, params, views)
+/// `views` served at `tip` (the NFS root): genesis ..= `tip` verified, the chain's own params
+pub(super) fn indexed_at(
+    chain: &MockChain,
+    tip: BlockRef,
+    views: Vec<(IndexKind, DiskView)>,
+) -> Indexed<DiskView> {
+    let params = ChainParams::of(chain, tip);
+    Indexed::fixed(Arc::new(chain.verified(tip)), tip, params, views)
 }
 
-/// One snapshot for good: [`indexed_at`], `path` verified, `held_by` holding its tip, `ours` our
-/// relays (servable)
+/// One snapshot for good: [`indexed_at`], `held_by` holding `tip`, `ours` our relays (servable)
 pub(super) fn snapshot_held(
-    path: &[Block],
+    chain: &MockChain,
+    tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
     held_by: EndpointSet,
     ours: &[(TransactionId, bytes::Bytes)],
 ) -> Snapshots<DiskView> {
-    let chain = Some(Arc::new(VerifiedChain::regtest(path)));
-    let view = ChainViewSnapshot::fixed(chain, held_by, &["node:8232"], ours, &[]);
-    Snapshots::fixed(Some(Arc::new(indexed_at(path, views))), Arc::new(view))
+    let verified = Some(Arc::new(chain.verified(tip)));
+    let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours, &[]);
+    Snapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
 
 /// [`snapshot_held`] by no validator, empty mempool (index methods only)
-pub(super) fn snapshot(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> Snapshots<DiskView> {
-    snapshot_held(path, views, EndpointSet::default(), &[])
+pub(super) fn snapshot(
+    chain: &MockChain,
+    tip: BlockRef,
+    views: Vec<(IndexKind, DiskView)>,
+) -> Snapshots<DiskView> {
+    snapshot_held(chain, tip, views, EndpointSet::default(), &[])
 }
 
 /// The always-on routes over `node` (the balancer's driver + the view's poll fold back,
 /// unspawned); nothing verified, nothing served, never republished
 pub(super) fn routes_over(
-    node: &Arc<MockChain>,
-) -> (Routes<MockChain, DiskView>, TrafficDriver<MockChain>, ObservationFold<MockChain>) {
+    node: &Arc<MockValidator>,
+) -> (Routes<MockValidator, DiskView>, TrafficDriver<MockValidator>, ObservationFold<MockValidator>)
+{
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
@@ -147,7 +130,7 @@ pub(super) type NfsPublishes = watch::Sender<Option<Arc<Indexed<DiskView>>>>;
 /// `routes` read a live publisher over their chain view and the returned NFS watch (the
 /// publisher back, unspawned)
 pub(super) fn published(
-    routes: &mut Routes<MockChain, DiskView>,
+    routes: &mut Routes<MockValidator, DiskView>,
 ) -> (Publisher<DiskView>, NfsPublishes) {
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::new(indexed, routes.submit.subscriber(), ReorgDepth::CONSENSUS);
@@ -155,12 +138,15 @@ pub(super) fn published(
     (publisher, nfs)
 }
 
-/// [`routes_over`] an empty, never-polled node, for tests that only serve indexes
-pub(super) fn routes() -> Routes<MockChain, DiskView> {
-    routes_over(&Arc::new(MockChain::new())).0
+/// [`routes_over`] a never-polled node at a bare genesis, for tests that only serve indexes
+pub(super) fn routes() -> Routes<MockValidator, DiskView> {
+    let chain = MockChain::regtest();
+    routes_over(&Arc::new(MockValidator::following(&chain, chain.genesis()))).0
 }
 
-pub(super) fn dispatch(routes: Routes<MockChain, DiskView>) -> Dispatch<MockChain, DiskView> {
+pub(super) fn dispatch(
+    routes: Routes<MockValidator, DiskView>,
+) -> Dispatch<MockValidator, DiskView> {
     Dispatch::new(routes, &crate::GrpcLimits::default())
 }
 

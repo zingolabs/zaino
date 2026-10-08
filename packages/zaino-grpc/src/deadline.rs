@@ -296,13 +296,14 @@ mod tests {
         use zaino_proto::proto::service as proto;
 
         use crate::service::Routes;
-        use crate::testing::{dispatch, indexed, routes, snapshot};
+        use crate::testing::{dispatch, indexed, routes, snapshot, MAINNET};
         use crate::wire::path;
 
-        let chain = zaino_primitives::testing::Chain::new();
-        let blocks = chain.path(chain.genesis().hash);
-        let views = vec![indexed(IndexKind::TransparentAddress, &blocks)];
-        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, views), ..routes() });
+        let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
+        let genesis = chain.genesis();
+        let views = vec![indexed(IndexKind::TransparentAddress, &chain, genesis)];
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, genesis, views), ..routes() });
 
         let alice = proto::Address { address: "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned() };
         let mut framed = Vec::new();

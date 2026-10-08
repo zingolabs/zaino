@@ -67,7 +67,6 @@ zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
-zaino-internal-value-balance.workspace = true
 zaino-internal-block-hash-to-height.workspace = true
 zaino-snapshot = { path = "../zaino-snapshot", features = ["testing"] }
 

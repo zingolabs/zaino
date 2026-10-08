@@ -201,10 +201,11 @@ mod tests {
     use http::{HeaderMap, HeaderValue, Response};
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
+    use zaino_primitives::testing::{h, MockChain};
 
     use super::Routes;
     use crate::testing::{
-        dispatch, framed_request, indexed, request, routes, snapshot, snapshot_held,
+        dispatch, framed_request, indexed, request, routes, snapshot, snapshot_held, MAINNET,
     };
     use crate::wire::path;
 
@@ -234,12 +235,11 @@ mod tests {
             assert_eq!((status.code(), status.message().to_owned()), want, "{path}");
         }
 
-        let mut chain = zaino_primitives::testing::Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 1);
-        let blocks = chain.path(tip.hash);
-        let compact = indexed(IndexKind::CompactBlock, &blocks);
+        let mut chain = MockChain::regtest().network(MAINNET);
+        let tip = chain.mine_empty(1);
+        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
         let mut serving =
-            dispatch(Routes { snapshots: snapshot(&blocks, vec![compact]), ..routes() });
+            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
         let off = |method: &str, index: &str| {
             (Unimplemented, format!("{method} needs the {index} index, which is not enabled"))
         };
@@ -279,15 +279,17 @@ mod tests {
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
 
-        let mut chain = zaino_primitives::testing::Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 3);
-        let blocks = chain.path(tip.hash);
-        let views =
-            vec![indexed(IndexKind::CompactBlock, &blocks), indexed(IndexKind::TreeState, &blocks)];
+        let mut chain = MockChain::regtest().network(MAINNET);
+        let tip = chain.mine_empty(3);
+        let views = vec![
+            indexed(IndexKind::CompactBlock, &chain, tip),
+            indexed(IndexKind::TreeState, &chain, tip),
+        ];
         let raw = zaino_source::testing::fixtures::transactions(2_000_000).remove(0);
         let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
-        let snapshots = snapshot_held(&blocks[..=2], views, EndpointSet::at([0]), &ours);
+        let two = chain.at(h(2));
+        let snapshots = snapshot_held(&chain, two, views, EndpointSet::at([0]), &ours);
         let mut router = dispatch(Routes { snapshots, ..routes() });
         let mut call = |path: &'static str, message: Vec<u8>| {
             let response = router.call(framed_request(path, message.into()));
@@ -304,7 +306,7 @@ mod tests {
 
         let (_, latest, _) = call(path::GET_LATEST_BLOCK, Vec::new()).await;
         let latest = proto::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
-        let tip_hash = <[u8; 32]>::from(blocks[2].header().hash).to_vec();
+        let tip_hash = <[u8; 32]>::from(two.hash).to_vec();
         assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the snapshot's tip");
 
         let range = proto::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
@@ -319,10 +321,8 @@ mod tests {
             served.push((block.height, block.hash));
             rest = tail;
         }
-        let expected: Vec<_> = (0..=2u64)
-            .map(|height| {
-                (height, <[u8; 32]>::from(blocks[height as usize].header().hash).to_vec())
-            })
+        let expected: Vec<_> = (0..=2u32)
+            .map(|at| (u64::from(at), <[u8; 32]>::from(chain.at(h(at)).hash).to_vec()))
             .collect();
         assert_eq!(served, expected, "clamped at the snapshot tip, not the index's");
 
@@ -366,12 +366,11 @@ mod tests {
         use tower::Service as _;
         use zaino_proto::proto::service as proto;
 
-        let mut chain = zaino_primitives::testing::Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 1);
-        let blocks = chain.path(tip.hash);
+        let mut chain = MockChain::regtest().network(MAINNET);
+        let tip = chain.mine_empty(1);
         let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
-        let views = kinds.into_iter().map(|kind| indexed(kind, &blocks)).collect();
-        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, views), ..routes() });
+        let views = kinds.into_iter().map(|kind| indexed(kind, &chain, tip)).collect();
+        let mut router = dispatch(Routes { snapshots: snapshot(&chain, tip, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
         let range = proto::BlockRange {
@@ -384,7 +383,8 @@ mod tests {
             (path::GET_BLOCK, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
             (path::GET_BLOCK_RANGE, range.encode_to_vec()),
             (path::GET_BLOCK_RANGE_NULLIFIERS, range.encode_to_vec()),
-            (path::GET_TREE_STATE, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
+            // 1 = Sapling's activation (below it: no tree state)
+            (path::GET_TREE_STATE, proto::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
             (path::GET_LATEST_TREE_STATE, Vec::new()),
             (
                 path::GET_ADDRESS_UTXOS,

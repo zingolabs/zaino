@@ -292,49 +292,34 @@ mod tests {
     async fn a_populated_transparent_index_answers_utxos_and_balances_in_both_shapes() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{
-            Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
-        };
+        use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
+        use zaino_primitives::types::Script;
         use zaino_proto::proto::service as proto;
-        use zaino_source::mock::MockChain;
+        use zaino_source::testing::{decoded, raw_transparent, MockValidator};
 
         // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         const BOB: &str = "t3Mg6o2UpMFVtrzqGs7f2VTS6DaiPnFT5rL";
-        let alice_script = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
-        let bob_script = [&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat();
+        let alice = p2pkh([0x00; 20]);
+        let bob = Script::new([&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat());
+        let miner = p2pkh([0x33; 20]);
 
-        // 0: alice 500 (vout 0), bob 70 (vout 1); 1: alice 300
-        let pays = |tag: u8, outputs: Vec<(Vec<u8>, u64)>| Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: Vec::new(),
-                outputs: outputs
-                    .into_iter()
-                    .map(|(script, value)| TransparentOutput {
-                        value: Zatoshis::new(value).expect("in supply"),
-                        script: Script::new(script),
-                    })
-                    .collect(),
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let genesis = pays(0x10, vec![(alice_script.clone(), 500), (bob_script.clone(), 70)]);
-        let mut chain = Chain::with_genesis(vec![genesis]);
-        let tip = chain
-            .mine_with(chain.genesis().hash, vec![pays(0x11, vec![(alice_script.clone(), 300)])]);
-        let blocks = chain.path(tip.hash);
-        let index = indexed(IndexKind::TransparentAddress, &blocks);
+        // 1: a coinbase funds the miner 870; 2: alice 500 (vout 0), bob 70 (vout 1), change 300
+        // (vout 2); 3: the change to alice (real bytes: a validator serves them)
+        let mut chain = MockChain::regtest().network(crate::testing::MAINNET);
+        chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&miner, 870)));
+        let pays = [(&alice, 500), (&bob, 70), (&miner, 300)];
+        let (first, first_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &pays);
+        chain.mine(|b| b.raw_tx(decoded(first_raw.clone())));
+        let change = outpoint(<[u8; 32]>::from(first), 2);
+        let (second, second_raw) = raw_transparent(&[change], &[(&alice, 300)]);
+        let tip = chain.mine(|b| b.raw_tx(decoded(second_raw.clone())));
+        let index = indexed(IndexKind::TransparentAddress, &chain, tip);
 
         // the validator serves the same chain the index holds
-        let node = std::sync::Arc::new(MockChain::serving(chain.path(tip.hash)));
+        let node = std::sync::Arc::new(MockValidator::following(&chain, tip));
         let (routes, balancing, _) = routes_over(&node);
-        let routes = Routes { snapshots: snapshot(&blocks, vec![index]), ..routes };
+        let routes = Routes { snapshots: snapshot(&chain, tip, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
@@ -383,19 +368,19 @@ mod tests {
         let alice_utxos = vec![
             proto::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
-                txid: vec![0x10; 32],
+                txid: <[u8; 32]>::from(first).to_vec(),
                 index: 0,
-                script: alice_script.clone(),
+                script: alice.as_bytes().to_vec(),
                 value_zat: 500,
-                height: 0,
+                height: 2,
             },
             proto::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
-                txid: vec![0x11; 32],
+                txid: <[u8; 32]>::from(second).to_vec(),
                 index: 0,
-                script: alice_script.clone(),
+                script: alice.as_bytes().to_vec(),
                 value_zat: 300,
-                height: 1,
+                height: 3,
             },
         ];
         assert_eq!(list.address_utxos, alice_utxos);
@@ -493,13 +478,12 @@ mod tests {
         let status = response.headers().get("grpc-status");
         assert_eq!(status, Some(&HeaderValue::from_static("3")), "invalid argument");
 
-        // GetTaddressTransactions: index names the txids, a validator supplies the bytes
-        // (`MockChain`: a mined tx's body = its txid, height = its best-chain block)
+        // GetTaddressTransactions: index names the txids, a validator supplies the bytes + height
         let filter = proto::TransparentAddressBlockFilter {
             address: ALICE.to_owned(),
             range: Some(proto::BlockRange {
                 start: Some(proto::BlockId { height: 0, hash: Vec::new() }),
-                end: Some(proto::BlockId { height: 1, hash: Vec::new() }),
+                end: Some(proto::BlockId { height: 3, hash: Vec::new() }),
                 pool_types: Vec::new(),
             }),
         };
@@ -522,8 +506,8 @@ mod tests {
             answers.push(txs);
         }
         let alice_txs = vec![
-            proto::RawTransaction { data: vec![0x10; 32].into(), height: 0 },
-            proto::RawTransaction { data: vec![0x11; 32].into(), height: 1 },
+            proto::RawTransaction { data: first_raw.into(), height: 2 },
+            proto::RawTransaction { data: second_raw.into(), height: 3 },
         ];
         assert_eq!(answers[0], alice_txs, "both of alice's, height order, validator bytes");
         assert_eq!(answers[0], answers[1], "the deprecated alias answers identically");
@@ -535,34 +519,19 @@ mod tests {
     async fn a_foreign_network_address_is_refused_by_every_transparent_method() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::Chain;
-        use zaino_primitives::types::{
-            Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
-        };
+        use zaino_primitives::testing::{p2pkh, MockChain};
         use zaino_proto::proto::service as proto;
         use zcash_address::ToAddress as _;
         use zcash_protocol::consensus::NetworkType;
 
-        let chain = Chain::with_genesis(vec![Transaction {
-            txid: TransactionId::from([0x10; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: Vec::new(),
-                outputs: vec![TransparentOutput {
-                    value: Zatoshis::new(500).expect("in supply"),
-                    script: Script::new(
-                        [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat(),
-                    ),
-                }],
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }]);
-        let blocks = chain.path(chain.genesis().hash);
-        let index = indexed(IndexKind::TransparentAddress, &blocks);
-        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, vec![index]), ..routes() });
+        let alice = p2pkh([0x00; 20]);
+        let chain = MockChain::regtest()
+            .network(crate::testing::MAINNET)
+            .genesis_with(|b| b.coinbase(|c| c.pay(&alice, 500)));
+        let genesis = chain.genesis();
+        let index = indexed(IndexKind::TransparentAddress, &chain, genesis);
+        let snapshots = snapshot(&chain, genesis, vec![index]);
+        let mut router = dispatch(Routes { snapshots, ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =

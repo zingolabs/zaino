@@ -273,24 +273,15 @@ fn root(root: &SubtreeRoot) -> Bytes {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use http::{HeaderValue, Response};
     use prost::Message as _;
     use tonic::{body::Body, Status};
-    use zaino_chainview::{ChainViewSnapshot, EndpointSet};
-    use zaino_header_chain::VerifiedChain;
-    use zaino_index_tree_state::PoolActivations;
-    use zaino_nfs::{ChainParams, Indexed};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        BlockRef, CompactCiphertext, Height, SaplingData, SaplingOutput, SubtreeRoot, Transaction,
-        TransactionId,
-    };
+    use zaino_primitives::testing::{h, MockChain, Upgrades};
+    use zaino_primitives::types::{BlockRef, SubtreeRoot};
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
     use zaino_proto::proto::service as proto;
-    use zaino_snapshot::Snapshots;
+    use zcash_protocol::consensus::NetworkUpgrade;
 
     use crate::service::Routes;
     use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
@@ -347,10 +338,14 @@ mod tests {
         use http_body_util::BodyExt as _;
         use tower::Service as _;
 
-        let chain = Chain::with_genesis(vec![one_output(0x51)]);
-        let blocks = chain.path(chain.genesis().hash);
-        let trees = indexed(IndexKind::TreeState, &blocks);
-        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, vec![trees]), ..routes() });
+        let chain = MockChain::regtest()
+            .network(MAINNET)
+            .upgrades(Upgrades::all_at(h(0)))
+            .genesis_with(|b| b.coinbase(|c| c.sapling_output(1)));
+        let genesis = chain.genesis();
+        let trees = indexed(IndexKind::TreeState, &chain, genesis);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, genesis, vec![trees]), ..routes() });
 
         let (sapling, orchard, ironwood) = (0, 1, 2);
         let ok = || (None, Some("0".to_owned()), 0);
@@ -380,27 +375,6 @@ mod tests {
         }
     }
 
-    /// One sapling output per block (a small LE value: canonical under both moduli)
-    fn one_output(seed: u8) -> Transaction {
-        let mut cmu = [0u8; 32];
-        cmu[0] = 7;
-        Transaction {
-            txid: TransactionId::from([seed; 32]),
-            transparent: Default::default(),
-            sprout: Default::default(),
-            sapling: SaplingData {
-                outputs: vec![SaplingOutput {
-                    cmu: cmu.into(),
-                    ephemeral_key: [2u8; 32].into(),
-                    enc_ciphertext: CompactCiphertext::from([3u8; CompactCiphertext::LENGTH]),
-                }],
-                ..Default::default()
-            },
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        }
-    }
-
     /// W6, R10: exactly the requested height, display-order hash, each pool `""` below its upgrade
     /// and its tree from it on (`000000` while empty: pepper-sync rejects `""` there); below
     /// Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
@@ -408,21 +382,18 @@ mod tests {
     async fn tree_state_fields_follow_the_validators_activation_schedule() {
         use tower::Service as _;
 
-        let mut chain = Chain::with_genesis(vec![one_output(0x40)]);
-        let tip = (1..4u8).fold(chain.genesis(), |tip, height| {
-            chain.mine_with(tip.hash, vec![one_output(0x40 + height)])
-        });
-        let blocks = chain.path(tip.hash);
-        let trees = indexed(IndexKind::TreeState, &blocks);
-        let h = |n: u32| Height::try_from(n).expect("h");
-        let activations =
-            PoolActivations { sapling: h(1), orchard: Some(h(2)), ironwood: Some(h(3)) };
-        let params = ChainParams { network: MAINNET, activations };
-        let verified = Arc::new(VerifiedChain::regtest(&blocks));
-        let indexed = Indexed::fixed(Arc::clone(&verified), tip, params, vec![trees]);
-        let view = ChainViewSnapshot::fixed(Some(verified), EndpointSet::default(), &[], &[], &[]);
-        let snapshots = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view));
-        let mut router = dispatch(Routes { snapshots, ..routes() });
+        // Sapling at 1, NU5 (orchard) at 2, NU6.3 (ironwood) at 3; one sapling output per block
+        let upgrades = Upgrades::all_at(h(1))
+            .onward(NetworkUpgrade::Nu5, h(2))
+            .onward(NetworkUpgrade::Nu6_3, h(3));
+        let mut chain = MockChain::regtest().network(MAINNET).upgrades(upgrades);
+        for leaf in 1..=3 {
+            chain.mine(|b| b.coinbase(|c| c.sapling_output(leaf)));
+        }
+        let tip = chain.tip();
+        let trees = indexed(IndexKind::TreeState, &chain, tip);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![trees]), ..routes() });
 
         let mut ask = |path: &'static str, body: Vec<u8>| {
             let request = framed_request(path, body.into());
@@ -445,11 +416,7 @@ mod tests {
             }
         };
         let at = |height| proto::BlockId { height, hash: Vec::new() }.encode_to_vec();
-        let display = |height: usize| {
-            let mut hash = <[u8; 32]>::from(blocks[height].header().hash);
-            hash.reverse();
-            hex::encode(hash)
-        };
+        let display = |height: u32| chain.at(h(height)).hash.to_string();
 
         let (blank, empty) = (String::new, || "000000".to_owned());
         let expected = [
@@ -471,13 +438,22 @@ mod tests {
     async fn a_populated_tree_state_index_answers_by_height_at_the_tip_and_by_hash() {
         use tower::Service as _;
 
-        let chain = Chain::with_genesis(vec![one_output(0x33)]);
-        let blocks = chain.path(chain.genesis().hash);
-        let block = blocks[0].clone();
-        let hash = <[u8; 32]>::from(block.header().hash);
-        let trees = indexed(IndexKind::TreeState, &blocks);
-        let mut router =
-            dispatch(Routes { snapshots: snapshot(&blocks, vec![trees.clone()]), ..routes() });
+        // every upgrade from genesis: its one sapling output lands at 0
+        let at_genesis = |leaf: u32| {
+            MockChain::regtest()
+                .network(MAINNET)
+                .upgrades(Upgrades::all_at(h(0)))
+                .genesis_with(|b| b.coinbase(|c| c.sapling_output(leaf)))
+        };
+        let chain = at_genesis(7);
+        let genesis = chain.genesis();
+        let block = chain.block(genesis.hash);
+        let hash = <[u8; 32]>::from(genesis.hash);
+        let trees = indexed(IndexKind::TreeState, &chain, genesis);
+        let mut router = dispatch(Routes {
+            snapshots: snapshot(&chain, genesis, vec![trees.clone()]),
+            ..routes()
+        });
 
         async fn tree_state_of(response: Response<Body>) -> proto::TreeState {
             use http_body_util::BodyExt as _;
@@ -534,22 +510,22 @@ mod tests {
         assert_eq!(status(&response), tonic::Code::Unimplemented);
 
         // Block-hash index holding the same block at 0, and one holding another block there
-        let located_by = |locator: Vec<zaino_primitives::types::Block>| {
-            let views = vec![trees.clone(), indexed(IndexKind::BlockHash, &locator)];
-            dispatch(Routes { snapshots: snapshot(&blocks, views), ..routes() })
+        let located_by = |locator: &MockChain| {
+            let views =
+                vec![trees.clone(), indexed(IndexKind::BlockHash, locator, locator.genesis())];
+            dispatch(Routes { snapshots: snapshot(&chain, genesis, views), ..routes() })
         };
-        let mut linked = located_by(blocks.clone());
+        let mut linked = located_by(&chain);
         let response = linked.call(by_hash(hash)).await.expect("answers");
         assert_eq!(status(&response), tonic::Code::Ok);
         assert_eq!(tree_state_of(response).await, state, "same answer as by height");
         let response = linked.call(by_hash([0xee; 32])).await.expect("answers");
         assert_eq!(status(&response), tonic::Code::NotFound, "a hash no index holds");
 
-        // another genesis (another txid → another merkle root → another hash)
-        let other = Chain::with_genesis(vec![one_output(0x34)]);
-        let other = other.path(other.genesis().hash);
-        let other_hash = <[u8; 32]>::from(other[0].header().hash);
-        let mut forked = located_by(other);
+        // another genesis (another leaf → another txid → another merkle root → another hash)
+        let other = at_genesis(8);
+        let other_hash = <[u8; 32]>::from(other.genesis().hash);
+        let mut forked = located_by(&other);
         let response = forked.call(by_hash(other_hash)).await.expect("answers");
         let located = status(&response);
         assert_eq!(located, tonic::Code::NotFound, "located at 0, another block held there");

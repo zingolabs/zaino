@@ -281,22 +281,13 @@ mod deprecated_nullifiers {
 mod tests {
     use http::{HeaderMap, HeaderValue, Response};
     use tonic::{body::Body, Status};
-    use zaino_persistence::{IndexKind, Store};
+    use zaino_persistence::IndexKind;
+    use zaino_primitives::testing::{h, MockChain};
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
-    use zaino_snapshot::Snapshots;
 
     use crate::service::Routes;
-    use crate::testing::{
-        dispatch, framed_request, indexed, routes, snapshot, store, COMPACT_BLOCK,
-    };
+    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
     use crate::wire::path;
-
-    /// `testing::block(0..count)` committed as compact-block's only view, served at `count - 1`
-    fn compact(count: u32) -> Snapshots<zaino_persistence::DiskView> {
-        use zaino_index_compact_block::testing;
-        let committed = testing::committed(store("/cb", &COMPACT_BLOCK), count);
-        snapshot(&testing::chain(count), vec![(IndexKind::CompactBlock, committed.view())])
-    }
 
     /// `GetBlock` by hash: the block-hash index locates, the compact index answers only where it
     /// holds that same block; no locator wired = `Unimplemented`
@@ -305,27 +296,25 @@ mod tests {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_index_compact_block::testing;
         use zaino_proto::proto::service as proto;
 
-        let committed = testing::committed(store("/cb", &COMPACT_BLOCK), 3);
-        // Locator's chain = the compact index's through 1 (same sample tx), then a sibling at 2
-        let held = |at: u32| <[u8; 32]>::from(testing::block(at).0.header().hash);
-        let sample = testing::block(0).0.transactions().to_vec();
-        let mut other = zaino_primitives::testing::Chain::with_genesis(sample.clone());
-        let one = other.mine_with(other.genesis().hash, sample);
-        let other_2 = other.mine(one.hash);
-        let located = other.path(other_2.hash);
-        assert_eq!(<[u8; 32]>::from(one.hash), held(1), "the compact index's block 1");
-        let locator = indexed(IndexKind::BlockHash, &located);
+        // compact index over 0..=2; locator over 0, 1, then a sibling at 2
+        let mut chain = MockChain::regtest().network(MAINNET);
+        let two = chain.mine_empty(2);
+        let other_2 = chain.fork(h(1)).mine_empty(1).tip();
+        let held = |at: u32| <[u8; 32]>::from(chain.at(h(at)).hash);
+        let locator = indexed(IndexKind::BlockHash, &chain, other_2);
         let other_2 = <[u8; 32]>::from(other_2.hash);
 
-        let path_of = testing::chain(3);
-        let compact = (IndexKind::CompactBlock, committed.view());
-        let unlocated =
-            dispatch(Routes { snapshots: snapshot(&path_of, vec![compact.clone()]), ..routes() });
-        let mut router =
-            dispatch(Routes { snapshots: snapshot(&path_of, vec![compact, locator]), ..routes() });
+        let compact = indexed(IndexKind::CompactBlock, &chain, two);
+        let unlocated = dispatch(Routes {
+            snapshots: snapshot(&chain, two, vec![compact.clone()]),
+            ..routes()
+        });
+        let mut router = dispatch(Routes {
+            snapshots: snapshot(&chain, two, vec![compact, locator]),
+            ..routes()
+        });
         let request = |hash: Vec<u8>, height: u64| {
             framed_request(path::GET_BLOCK, proto::BlockId { height, hash }.encode_to_vec().into())
         };
@@ -367,7 +356,11 @@ mod tests {
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
 
-        let mut router = dispatch(Routes { snapshots: compact(6), ..routes() });
+        let mut chain = MockChain::regtest().network(MAINNET);
+        let tip = chain.mine_empty(5);
+        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
         let past = |h: u32| format!("block%20{h}%20is%20above%20the%20served%20tip%205");
         let cases = [
             (path::GET_BLOCK_RANGE, (1, 4), (vec![1, 2, 3, 4], "0", None)),
@@ -404,16 +397,38 @@ mod tests {
         }
     }
 
-    /// Body = the stored bytes
+    /// Blocks 1..=5: a coinbase paying alice, then one tx spending it into every pool (transparent
+    /// in + out, a sapling spend + output, one orchard, two ironwood actions); body = stored bytes
     #[tokio::test]
     async fn get_block_and_get_block_range_answer_from_stored_records() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
+        use zaino_primitives::testing::{outpoint, p2pkh};
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
 
-        let mut router = dispatch(Routes { snapshots: compact(6), ..routes() });
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest().network(MAINNET);
+        for at in 1..=5u8 {
+            let leaf = u32::from(at);
+            chain.mine(|b| {
+                b.coinbase(|c| c.txid([at; 32]).pay(&alice, 17_345)).tx(|t| {
+                    t.spend(outpoint([at; 32], 0))
+                        .pay(&alice, 12_345)
+                        .fee(5_000)
+                        .sapling_spend([0x30 + at; 32])
+                        .sapling_output(leaf)
+                        .orchard_action([0x70 + at; 32], leaf)
+                        .ironwood_action([0x80 + at; 32], 2 * leaf)
+                        .ironwood_action([0x90 + at; 32], 2 * leaf + 1)
+                })
+            });
+        }
+        let tip = chain.tip();
+        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
             response.into_body().collect().await.expect("body").to_bytes()
@@ -429,7 +444,7 @@ mod tests {
         let body = body_of(response).await;
         let decoded = cf::CompactBlock::decode(&body[FRAME_HEADER..]).expect("one framed message");
         assert_eq!(decoded.height, 3);
-        assert_eq!(decoded.vtx[0].vin.len(), 1, "GetBlock carries transparent");
+        assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
 
         // Data frames, then trailers (streamed `grpc-status` = trailers only: undrained = none)
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
@@ -497,8 +512,9 @@ mod tests {
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let decoded =
             cf::CompactBlock::decode(&chunks.concat()[FRAME_HEADER..]).expect("framed message");
-        assert_eq!(decoded.vtx[0].vin.len(), 1, "transparent requested, so kept");
-        assert!(decoded.vtx[0].actions.is_empty(), "orchard not requested");
+        assert_eq!(decoded.vtx.len(), 2, "transparent requested: the coinbase kept too");
+        assert_eq!(decoded.vtx[1].vin.len(), 1, "transparent requested, so kept");
+        assert!(decoded.vtx[1].actions.is_empty(), "orchard not requested");
 
         // TODO: REMOVE with the deprecated alias. `[TRANSPARENT]` ignored → shielded default;
         // every nullifier kept, everything else gone

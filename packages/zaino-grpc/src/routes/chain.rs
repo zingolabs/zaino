@@ -239,10 +239,10 @@ mod tests {
     use zaino_proto::proto::service::PoolType;
 
     use http::HeaderValue;
-    use zaino_header_chain::VerifiedChain;
-    use zaino_primitives::testing::Chain;
+    use zaino_header_chain::testing::HeaderViews;
+    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::BlockRef;
-    use zaino_source::mock::MockChain;
+    use zaino_source::testing::{raw_transaction, MockValidator, Port};
 
     use crate::testing::{dispatch, framed_request, indexed_at, published, routes_over};
     use crate::wire::path;
@@ -390,14 +390,13 @@ mod tests {
 
     /// Over a live publisher, `UNAVAILABLE` naming why until all three hold:
     /// - no verified tip; then verified, no polled validator holding it; then held, nothing served
-    /// - served at 5 → the holder's `getblockchaininfo` + the served height (one load, no
-    ///   validator call)
+    /// - served at 5 → the holder's `getblockchaininfo` (every upgrade through NU6.3 active from
+    ///   1) + the served height (one load, no validator call)
     #[tokio::test(start_paused = true)]
     async fn lightd_info_refuses_until_a_held_tip_and_a_served_one_then_answers_from_one_load() {
-        let mut chain = Chain::new();
-        let tip_7 = chain.extend(chain.genesis().hash, 7);
-        let path = chain.path(tip_7.hash);
-        let node = Arc::new(MockChain::serving(path.clone()));
+        let mut chain = MockChain::regtest();
+        let tip_7 = chain.mine_empty(7);
+        let node = Arc::new(MockValidator::following(&chain, tip_7));
         let (mut routes, balancing, fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let snapshots = routes.snapshots.clone();
@@ -410,7 +409,7 @@ mod tests {
         tokio::spawn(publisher.run(cancel.clone()));
 
         assert!(refused("no verified header chain tip yet"));
-        routes.submit.set_verified(Some(VerifiedChain::regtest(&path)));
+        routes.submit.set_verified(Some(chain.verified(tip_7)));
         let unheld = "no trusted validator holds the verified tip 7 (of 1 configured)";
         rounds("verified, unheld", || refused(unheld)).await;
         tokio::spawn(balancing.run(cancel.clone()));
@@ -418,20 +417,21 @@ mod tests {
         rounds("held, nothing served", || refused("the indexes are syncing: nothing served yet"))
             .await;
 
-        nfs.send_replace(Some(Arc::new(indexed_at(&path[..=5], Vec::new()))));
+        nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));
         rounds("served", || info().is_ok()).await;
         let expected = LightdInfo {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             vendor: "zaino".to_owned(),
             taddr_support: true,
             chain_name: "main".to_owned(),
-            consensus_branch_id: "00000000".to_owned(),
+            sapling_activation_height: 1,
+            consensus_branch_id: "37a5165b".to_owned(),
             estimated_height: 7,
             block_height: 5,
             lightwallet_protocol_version: "v0.5.0".to_owned(),
             ..Default::default()
         };
-        assert_eq!(info().expect("served"), expected, "mock: tip 7 held, 5 served");
+        assert_eq!(info().expect("served"), expected, "tip 7 held (NU6.3's branch), 5 served");
 
         cancel.cancel();
         folding.await.expect("the fold ran to its cancel");
@@ -452,12 +452,17 @@ mod tests {
         use zaino_proto::proto::service as proto;
 
         const SUBSCRIBERS: usize = 1_000;
-        let tx = |seed: u8| (TransactionId::from([seed; 32]), vec![seed; 300]);
-        let mut chain = Chain::new();
-        let tip_10 = chain.extend(chain.genesis().hash, 10);
-        let tip_11 = chain.mine(tip_10.hash);
-        let node = Arc::new(MockChain::new());
-        node.set_reachable(false);
+        // (bytes, height 0 = unmined) per seed, in the view's (txid) order
+        let unmined = |seeds: &[u32]| {
+            let mut txs: Vec<_> = seeds.iter().map(|seed| raw_transaction(*seed, 0)).collect();
+            txs.sort_by_key(|(txid, _)| *txid);
+            txs.into_iter().map(|(_, raw)| (raw, 0)).collect::<Vec<_>>()
+        };
+        let mut chain = MockChain::regtest();
+        let tip_10 = chain.mine_empty(10);
+        let tip_11 = chain.mine_empty(1);
+        let node = Arc::new(MockValidator::following(&chain, chain.genesis()));
+        node.reachable(&Port::ALL, false);
         let (mut routes, balancing, fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let (view, snapshots) = (Arc::clone(&routes.submit), routes.snapshots.clone());
@@ -468,11 +473,9 @@ mod tests {
         tokio::spawn(fold.run(cancel.child_token()));
         let mut router = dispatch(routes);
         // the header chain's verdict + the NFS's served tip, standing in for both
-        let verified =
-            |tip: BlockRef| view.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
+        let verified = |tip: BlockRef| view.set_verified(Some(chain.verified(tip)));
         let serve = |tip: BlockRef| {
-            let indexed = indexed_at(&chain.path(tip.hash), Vec::new());
-            nfs.send_replace(Some(Arc::new(indexed)));
+            nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
         };
         let stream = || framed_request(path::GET_MEMPOOL_STREAM, bytes::Bytes::new());
 
@@ -480,11 +483,11 @@ mod tests {
         let status = below.headers().get("grpc-status");
         assert_eq!(status, Some(&HeaderValue::from_static("14")), "no verified tip: UNAVAILABLE");
 
-        node.extend_best(chain.path(tip_10.hash));
-        for (txid, raw) in [1u8, 2].map(tx) {
-            node.mempool_insert(txid, raw);
+        node.follow(&chain, tip_10);
+        for seed in [1, 2] {
+            node.mempool_insert(raw_transaction(seed, 0).1, 1_000);
         }
-        node.set_reachable(true);
+        node.reachable(&Port::ALL, true);
         verified(tip_10);
         let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
         rounds("both listed", listed).await;
@@ -497,7 +500,7 @@ mod tests {
             while !rest.is_empty() {
                 let (message, tail) = split_frame(rest).expect("whole frame");
                 let record = proto::RawTransaction::decode(message).expect("decodes");
-                records.push((record.data[0], record.height));
+                records.push((record.data.to_vec(), record.height));
                 rest = tail;
             }
             records
@@ -522,32 +525,33 @@ mod tests {
             first.expect("subscribers")
         }
         let opening = next_record(&mut subscribers).await;
-        assert_eq!(decoded(opening), [(1, 0), (2, 0)], "the mempool at the block, unmined");
+        assert_eq!(decoded(opening), unmined(&[1, 2]), "the mempool at the block, unmined");
 
-        // a burst of two, then one more: each once, in order, to every subscriber
-        for (txid, raw) in [3u8, 4].map(tx) {
-            node.mempool_insert(txid, raw);
+        // a burst of two (one poll: txid order), then one more: each once, in order, to every
+        // subscriber
+        for seed in [3, 4] {
+            node.mempool_insert(raw_transaction(seed, 0).1, 1_000);
         }
         let burst = [next_record(&mut subscribers).await, next_record(&mut subscribers).await];
-        assert_eq!(burst.map(decoded), [vec![(3, 0)], vec![(4, 0)]]);
-        let (txid, raw) = tx(5);
-        node.mempool_insert(txid, raw);
-        assert_eq!(decoded(next_record(&mut subscribers).await), [(5, 0)]);
+        let [first, second] = <[_; 2]>::try_from(unmined(&[3, 4])).expect("two");
+        assert_eq!(burst.map(decoded), [vec![first.clone()], vec![second.clone()]]);
+        node.mempool_insert(raw_transaction(5, 0).1, 1_000);
+        assert_eq!(decoded(next_record(&mut subscribers).await), unmined(&[5]));
 
         // late subscriber: the same opening and the same log, by pointer
         let late = router.call(stream()).await.expect("router answers").into_body();
         let mut late = [Box::pin(late)];
         let late_opening = next_record(&mut late).await;
-        assert_eq!(decoded(late_opening), [(1, 0), (2, 0)], "same block, same opening");
+        assert_eq!(decoded(late_opening), unmined(&[1, 2]), "same block, same opening");
         let late_log = [
             next_record(&mut late).await,
             next_record(&mut late).await,
             next_record(&mut late).await,
         ];
-        assert_eq!(late_log.map(decoded), [vec![(3, 0)], vec![(4, 0)], vec![(5, 0)]]);
+        assert_eq!(late_log.map(decoded), [vec![first], vec![second], unmined(&[5])]);
 
         // block 11 verified and held, not yet served: every stream stays open
-        node.extend_best([chain.block(tip_11.hash).clone()]);
+        node.follow(&chain, tip_11);
         rounds("11 held", || reader.current().endpoints()[0].tip() == Some(tip_11)).await;
         verified(tip_11);
         rounds("11 best", || snapshots.load().tips().best == Some(tip_11)).await;
@@ -568,7 +572,7 @@ mod tests {
         assert_eq!(snapshots.load().tips().served, Some(tip_11), "ended ⇒ the new tip served");
         let again = router.call(stream()).await.expect("router answers").into_body();
         let reopened = next_record(&mut [Box::pin(again)]).await;
-        let now = [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
+        let now = unmined(&[1, 2, 3, 4, 5]);
         assert_eq!(decoded(reopened), now, "the new tip opens on the mempool as it stands");
         cancel.cancel();
     }
@@ -605,11 +609,11 @@ mod tests {
         chosen.sort_by_key(|(tx, _)| <[u8; 32]>::from(tx.txid)); // the view's (txid) order
         let txid = |tx: &Transaction| <[u8; 32]>::from(tx.txid);
 
-        let mut chain = Chain::new();
-        let tip = chain.extend(chain.genesis().hash, 10);
-        let node = Arc::new(MockChain::serving(chain.path(tip.hash)));
-        for (tx, raw) in &chosen {
-            node.mempool_insert(tx.txid, raw.clone());
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(10);
+        let node = Arc::new(MockValidator::following(&chain, tip));
+        for (_, raw) in &chosen {
+            node.mempool_insert(raw.clone(), 1_000);
         }
         let (mut routes, balancing, fold) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);
@@ -618,7 +622,7 @@ mod tests {
         tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(fold.run(cancel.child_token()));
-        routes.submit.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
+        routes.submit.set_verified(Some(chain.verified(tip)));
         let mut router = dispatch(routes);
         let three = || snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
         rounds("three servable", three).await;
