@@ -5269,7 +5269,6 @@ dependencies = [
  "tracing",
  "zaino-chainview",
  "zaino-header-chain",
- "zaino-index-tree-state",
  "zaino-internal-block-hash-to-height",
  "zaino-nfs",
  "zaino-persistence",

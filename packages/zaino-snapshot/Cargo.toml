@@ -43,7 +43,6 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
-zaino-index-tree-state.workspace = true
 zaino-internal-block-hash-to-height.workspace = true
 zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }

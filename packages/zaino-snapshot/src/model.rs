@@ -16,13 +16,12 @@ use bytes::Bytes;
 use futures::FutureExt;
 use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, EndpointSet};
+use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
-use zaino_index_tree_state::PoolActivations;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_primitives::testing::Chain;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, TransactionId};
-use zcash_protocol::consensus::NetworkType;
+use zaino_primitives::testing::MockChain;
+use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
 
 use crate::publisher::Core;
 use crate::{MempoolTail, Snapshot, Tips, Unready};
@@ -30,7 +29,7 @@ use crate::{MempoolTail, Snapshot, Tips, Unready};
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
-/// - `Reorg`: top `depth` (above final) replaced by `len` heavier blocks
+/// - `Reorg`: top `depth` (above final) replaced by `len` blocks, the first outweighing them
 /// - `Sight` = held, unlisted; `List` = a held one turned servable; `Relay` = ours (servable)
 /// - `ServeBest` = NFS `lag` below the best; `ServeOld` = an earlier best tip (reorg in flight)
 /// - paired `bool` = published now (else coalesced with the next)
@@ -93,7 +92,7 @@ struct Tailed {
 
 /// `held` = bitmask over `ADDRESSES`; `mempool` = txid → servable
 struct Model {
-    builder: Chain,
+    builder: MockChain,
     headers: HeaderChain,
     old_tips: Vec<BlockRef>,
     held: u8,
@@ -124,9 +123,10 @@ impl Model {
     }
 
     fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
-        let params = ChainParams { network: NetworkType::Regtest, activations: ACTIVATIONS };
+        let served = self.served?;
+        let params = ChainParams::of(&self.builder, served);
         let none: [(IndexKind, DiskView); 0] = [];
-        Some(Arc::new(Indexed::fixed(self.chain(), self.served?, params, none)))
+        Some(Arc::new(Indexed::fixed(self.chain(), served, params, none)))
     }
 
     fn servable(&self) -> BTreeSet<TransactionId> {
@@ -136,7 +136,7 @@ impl Model {
     /// Path membership by the builder, not `hash_at`
     fn on_best(&self, at: BlockRef) -> bool {
         let best = self.headers.best().expect("genesis verified").block;
-        let path = self.builder.path(best.hash);
+        let path = self.builder.blocks(best);
         path.get(u32::from(at.height) as usize).is_some_and(|block| block.header().hash == at.hash)
     }
 
@@ -145,20 +145,17 @@ impl Model {
         let txid = |pick: u8| TransactionId::from([pick; 32]);
         match *input {
             Input::Extend(count) => {
-                let tip = self.builder.extend(best.hash, count);
+                let tip = self.builder.branch(best).mine_empty(count).tip();
                 let above = u32::from(best.height) as usize + 1;
-                self.headers.insert_blocks(&self.builder.path(tip.hash)[above..]).expect("valid");
+                insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
             }
             Input::Reorg { depth, len } => {
                 let floor = self.headers.final_tip().map_or(0, |tip| u32::from(tip.height));
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
-                let path: Vec<BlockHash> =
-                    self.builder.path(best.hash).iter().map(|b| b.header().hash).collect();
-                let (parent, replaced) = (path[at as usize], &path[at as usize + 1..]);
-                let Some(heavy) = self.builder.mine_heavier(parent, replaced) else { return };
-                let tip = self.builder.extend(heavy.hash, len - 1);
+                let parent = self.builder.blocks(best)[at as usize].at();
+                let tip = self.builder.branch(parent).outweigh().mine_empty(len).tip();
                 let above = at as usize + 1;
-                self.headers.insert_blocks(&self.builder.path(tip.hash)[above..]).expect("valid");
+                insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
                 if self.headers.best().expect("verified").block.hash != best.hash {
                     self.old_tips.push(best);
                 }
@@ -179,9 +176,7 @@ impl Model {
             Input::Drop(pick) => drop(self.mempool.remove(&txid(pick))),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
-                let block = &self.builder.path(best.hash)[height as usize];
-                let header = block.header();
-                self.served = Some(BlockRef { hash: header.hash, height: header.height });
+                self.served = Some(self.builder.blocks(best)[height as usize].at());
             }
             Input::ServeOld { pick } => {
                 let old = self.old_tips.get(usize::from(pick) % self.old_tips.len().max(1));
@@ -224,14 +219,9 @@ impl Model {
     }
 }
 
-const ACTIVATIONS: PoolActivations =
-    PoolActivations { sapling: Height::GENESIS, orchard: None, ironwood: None };
-
 fn run(moves: Vec<(Input, bool)>) {
-    let builder = Chain::new();
-    let genesis = builder.genesis().hash;
-    let mut headers = HeaderChain::regtest_in_memory(genesis, DEPTH);
-    headers.insert_blocks(&builder.path(genesis)).expect("genesis");
+    let builder = MockChain::regtest().varied_work();
+    let headers = builder.header_chain(DEPTH);
     let mut model = Model {
         builder,
         headers,
