@@ -870,9 +870,9 @@ mod transaction_reads {
         use crate::routing::NodeRpcLocalRouting;
         use zaino_service::NodeRpcService;
 
-        // The production node-RPC routing: address history and spend status are
-        // served locally, treestate passes through, transaction location is
-        // withheld. One definition, in `crate::routing`.
+        // The production node-RPC routing: address history, spend status and
+        // treestate are served locally, transaction location is withheld. One
+        // definition, in `crate::routing`.
         fn assert_node_rpc<T: NodeRpcService>() {}
         assert_node_rpc::<
             Engine<

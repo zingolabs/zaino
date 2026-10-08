@@ -57,14 +57,14 @@ read through `AddressReceiveRead`).
 `NodeRpcLocalRouting` is the node-RPC / explorer deployment's routing. The node
 reads the explorer adds (full and verbose blocks, decoded transactions, the
 chain-info aggregate, the node-status reads) are always passthrough and so are not
-on the table at all; what the table decides is that address history and spend
-status are both served locally:
+on the table at all; what the table decides is that address history, spend
+status and treestate are all served locally:
 
 ```rust,ignore
 pub struct NodeRpcLocalRouting;
 impl Routing for NodeRpcLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
-    type Treestate = Passthrough;
+    type Treestate = Local;           // served from Zaino's own tree_state + subtrees
     type Spend = Local;               // getspentinfo, from the local spends index
     type TransactionLocation = Withheld;
 }
@@ -74,9 +74,12 @@ Address history is `Local` because the explorer's address page needs
 `getaddressdeltas` — full transparent history, receives and spends — which no
 validator answers in plain RPC mode: Zebra has no such method. Spend status is
 `Local` for the same reason: `getspentinfo` is another indexer-only method Zebra
-answers with `-32601`, read from the spends index `TransparentHistory` builds
-across the seam. The deployment therefore indexes transparent history itself (the
-`TransparentHistory` set) and discloses no queried addresses to the validator.
+answers with `-32601`, read from the spends index across the seam. Treestate is
+`Local` too: `z_gettreestate` and `z_getsubtreesbyindex` are answered from the
+`tree_state` and per-pool `subtrees_*` indexes — the finalised store up to the
+watermark, the window folding forward above it. The deployment therefore indexes
+transparent history and the commitment tree itself (the `NodeRpcLocal` set) and
+discloses no queried addresses to the validator.
 
 Routing is a property of the deployment, not of the use case it serves: the
 demand traits in `zaino-service` say nothing about placement, so a second
