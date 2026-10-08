@@ -77,10 +77,10 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
     }
 }
 
-/// From genesis through the chain itself: 201 headers, each the new best, cumulative work = the
-/// sum of each header's; finalized behind a 10-block bound into a store, reopened, and the rest
-/// verified from the reopened tail (no context lost across a restart); the published chain
-/// answers every height, final or not, and its locator ends at the final tip
+/// From genesis through the chain itself: 201 headers, each the new best (vouched as it lands),
+/// cumulative work = the sum of each header's; finalized behind a 10-block bound into a store,
+/// reopened, and the rest verified from the reopened tail (no context lost across a restart); the
+/// published chain answers every height, final or not, and its locator ends at the final tip
 #[test]
 fn mainnet_from_genesis_through_a_store_and_a_reopen() {
     let headers = headers(GENESIS_RANGE);
@@ -91,9 +91,10 @@ fn mainnet_from_genesis_through_a_store_and_a_reopen() {
     let mut chain = HeaderChain::open(mainnet, depth, store(Arc::clone(&fs), NetworkType::Main));
     let checked = |header: &Header| check(&mainnet, header.clone()).expect("mainnet header");
 
-    for header in &headers[..200] {
+    for (at, header) in headers[..200].iter().enumerate() {
         let inserted = chain.insert(&checked(header), now).expect("mainnet header");
         assert_eq!(inserted, Inserted::Best { reorg: false });
+        chain.vouch(BlockRef { hash: header.hash(), height: height(at as u32) });
         if let Some(boundary) = chain.finalizable() {
             chain.finalize(boundary).expect("store commits");
         }

@@ -121,6 +121,12 @@ fn every_invariant_check_fires_on_its_planted_bug() {
                 c.leaves.remove(&side);
             }),
         ),
+        (
+            "vouched, its parent not",
+            Box::new(move |c| {
+                c.nodes.get_mut(&at[8]).expect("held").vouched = false;
+            }),
+        ),
     ];
     for (expected, plant) in drills {
         let mut chain = valid();
@@ -136,7 +142,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     };
     let off_best = BlockRef { hash: side, height: Height::try_from(12u32).expect("h") };
     let shallow = BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") };
-    let preconditions: [(&str, Plant); 3] = [
+    let preconditions: [(&str, Plant); 4] = [
         (
             "H3: checked under this chain's rules",
             Box::new(move |c| {
@@ -152,6 +158,16 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         (
             "H2: the final boundary stays `depth` below the best",
             Box::new(move |c| {
+                let _ = c.finalize(shallow);
+            }),
+        ),
+        (
+            "H6: only a vouched block",
+            Box::new(move |c| {
+                c.depth = ReorgDepth::new(NonZeroU32::MIN);
+                at.iter().chain([&side]).for_each(|hash| {
+                    c.nodes.get_mut(hash).into_iter().for_each(|node| node.vouched = false);
+                });
                 let _ = c.finalize(shallow);
             }),
         ),

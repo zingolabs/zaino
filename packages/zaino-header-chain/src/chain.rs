@@ -7,7 +7,8 @@
 //! ```
 //!
 //! - pure core: no clock (time is an input), no lock; one owner (`HeaderSync`) drives it
-//! - H1, H2, H4, H5 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
+//! - H1, H2, H4, H5, H6 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
+//! - final = min(highest vouched on best, best − depth) (H6: [`HeaderChain::vouch`])
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, VecDeque};
@@ -44,7 +45,8 @@ pub enum Inserted {
     Best { reorg: bool },
 }
 
-/// `received` = arrival order (H1 tie: first received wins; eviction tie: last received goes)
+/// - `received` = arrival order (H1 tie: first received wins; eviction tie: last received goes)
+/// - `vouched` closed under parents (H6)
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Node {
     pub(crate) record: Record,
@@ -52,6 +54,7 @@ pub(crate) struct Node {
     pub(crate) parent: BlockHash,
     pub(crate) received: u64,
     children: u32,
+    vouched: bool,
 }
 
 impl Node {
@@ -175,7 +178,8 @@ impl HeaderChain {
         };
 
         self.received += 1;
-        let node = Node { record, height, parent: prev, received: self.received, children: 0 };
+        let received = self.received;
+        let node = Node { record, height, parent: prev, received, children: 0, vouched: false };
         self.nodes.insert(hash, node);
         self.leaves.insert(hash);
         if let Some(parent) = self.nodes.get_mut(&prev) {
@@ -196,10 +200,32 @@ impl HeaderChain {
         Ok(inserted)
     }
 
-    /// Best-chain block at the final boundary (`depth` below the best tip), once deep enough
+    /// A trusted validator had `block` on its best chain: it + every ancestor vouched (H6)
+    ///
+    /// - permanent (zebra commits only valid blocks); not held above the final tip = no-op
+    pub fn vouch(&mut self, block: BlockRef) {
+        let mut at = block.hash;
+        if self.nodes.get(&at).is_none_or(|node| node.height != block.height) {
+            return;
+        }
+        while let Some(node) = self.nodes.get_mut(&at).filter(|node| !node.vouched) {
+            node.vouched = true;
+            at = node.parent;
+        }
+    }
+
+    /// Highest height a fetch may reach: `depth` + `run` above the final tip (bounds the tree
+    /// whatever finality does)
+    pub fn ceiling(&self, run: u32) -> Height {
+        let above = self.depth.get().saturating_add(run).saturating_sub(1);
+        self.base().checked_add(above).expect("no chain nears the protocol's maximum height")
+    }
+
+    /// Best-chain block final moves to next: min(highest vouched, best − depth), above the
+    /// final tip
     pub fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
-        let boundary = best.block.height.checked_sub(self.depth.get())?;
+        let boundary = best.block.height.checked_sub(self.depth.get())?.min(self.vouched()?);
         let hash = self.best_path.get(self.offset(boundary)?)?.hash;
         Some(BlockRef { hash, height: boundary })
     }
@@ -211,6 +237,8 @@ impl HeaderChain {
         let best = self.best().expect("a best-branch block has a best tip");
         let deep = u32::from(best.block.height) - u32::from(through.height);
         assert!(deep >= self.depth.get(), "H2: the final boundary stays `depth` below the best");
+        let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);
+        assert!(vouched, "H6: only a vouched block (or an ancestor of one) becomes final");
 
         let count = self.offset(through.height).expect("on the best branch") + 1;
         let newly: Vec<(Height, Record)> =
@@ -239,7 +267,7 @@ impl HeaderChain {
         Ok(())
     }
 
-    /// H1, H2, H4, H5 and the tree's own bookkeeping; panics naming the invariant broken
+    /// H1, H2, H4, H5, H6 and the tree's own bookkeeping; panics naming the invariant broken
     ///
     /// - O(nodes): tests run it after every mutation, the driver after every run in debug builds
     pub fn check(&self) {
@@ -271,6 +299,8 @@ impl HeaderChain {
             };
             let own = expand(node.record.bits).and_then(work).expect("verified nBits");
             assert_eq!(parent_work + own, node.record.cumulative_work, "tree: cumulative work");
+            let parent_vouched = self.nodes.get(&node.parent).is_none_or(|parent| parent.vouched);
+            assert!(!node.vouched || parent_vouched, "H6: {hash:?} vouched, its parent not");
             *children.entry(node.parent).or_default() += 1;
         }
         for (hash, node) in &self.nodes {
@@ -318,6 +348,15 @@ impl HeaderChain {
         self.offset(block.height)
             .and_then(|at| self.best_path.get(at))
             .is_some_and(|record| record.hash == block.hash)
+    }
+
+    /// Highest vouched best-branch height, else the final tip (final ⇒ vouched: H6)
+    fn vouched(&self) -> Option<Height> {
+        let top = self.best_path.iter().rposition(|record| self.nodes[&record.hash].vouched);
+        match top {
+            Some(at) => self.base().checked_add(u32::try_from(at).expect("heights fit u32")),
+            None => self.final_tip().map(|tip| tip.height),
+        }
     }
 
     fn max_side_nodes(&self) -> usize {

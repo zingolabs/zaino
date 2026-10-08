@@ -5,14 +5,18 @@
 //! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
 //!   the final chain as a list; best = the max-work leaf (first received on a tie), eviction =
 //!   the lowest-work side leaf (last received on a tie), both recomputed from scratch
-//! - checked after every move: `check()`, best, final tip, boundary, tree size, every height of
-//!   the published chain (header fields, final ones from the store), its locator, its forks and
-//!   their branches, `holds` for every header ever mined, and the chain published one move earlier
-//!   still answering as it did (H5)
+//! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`; a trusted run =
+//!   its last header vouched, then finality
+//! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
+//!   parent); final target = min(highest vouched on best, best − depth)
+//! - checked after every move: `check()`, best, final tip, boundary, tree size + its bound (H9),
+//!   every height of the published chain (header fields, final ones from the store), its locator,
+//!   its forks and their branches, `holds` for every header ever mined, and the chain published
+//!   one move earlier still answering as it did (H5)
 //! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -30,19 +34,24 @@ use crate::{
 };
 
 const DEPTH: u32 = 3;
+/// Headers a fetch may reach past `depth` above the final tip (`HeaderSync`'s batch)
+const RUN: u32 = 6;
 const SIDE_NODES: usize = 4 * DEPTH as usize;
 const SIDE_TIPS: usize = 32;
 /// Work ≈ 16 · 512 · 4096 a header
 const BITS: [u32; 3] = [0x200f_0f0f, 0x1f7f_ffff, 0x1f0f_ffff];
 
-/// - `Extend`: `bits.len()` headers on mined `parent`; `early` = first at its median time past
+/// - `Extend`: `bits.len()` headers on mined `parent`; `early` = first at its median time past;
+///   `trusted` = a validator's run (its last accepted header vouched, then finality)
 /// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
 /// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
 /// - `Future`: a header `ahead` s past the clock's horizon (H7: deferred)
 /// - `Clock`: clock forward, every deferred header offered again (the driver's retry)
+/// - `Vouch`: a poll's claim (any mined header, held or not)
 #[derive(Debug, Clone)]
 enum Move {
-    Extend { parent: usize, gap: u32, early: bool, bits: Vec<usize> },
+    Extend { parent: usize, gap: u32, early: bool, bits: Vec<usize>, trusted: bool },
+    Vouch { mined: usize },
     Orphan { parent: usize },
     Spray { from: usize, branches: usize },
     Future { parent: usize, ahead: u32 },
@@ -60,8 +69,10 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
     );
     prop::collection::vec(
         prop_oneof![
-            10 => (any(), 1u32..=300, prop::bool::weighted(0.1), bits)
-                .prop_map(|(parent, gap, early, bits)| Move::Extend { parent, gap, early, bits }),
+            10 => (any(), 1u32..=300, prop::bool::weighted(0.1), bits, prop::bool::ANY).prop_map(
+                |(parent, gap, early, bits, trusted)| Move::Extend { parent, gap, early, bits, trusted }
+            ),
+            2 => any().prop_map(|mined| Move::Vouch { mined }),
             1 => any().prop_map(|parent| Move::Orphan { parent }),
             1 => (any(), 1usize..=40).prop_map(|(from, branches)| Move::Spray { from, branches }),
             1 => (any(), 1u32..=3_600).prop_map(|(parent, ahead)| Move::Future { parent, ahead }),
@@ -82,12 +93,14 @@ struct Alive {
     received: u64,
 }
 
-/// `finals[h]` = the final record at height `h`
+/// - `finals[h]` = the final record at height `h`
+/// - `vouched` = live headers vouched (their live ancestors too, derived)
 struct Model {
     genesis: BlockHash,
     mined: Vec<Header>,
     by_hash: HashMap<BlockHash, Header>,
     alive: HashMap<BlockHash, Alive>,
+    vouched: HashSet<BlockHash>,
     finals: Vec<Record>,
     received: u64,
     deferred: Vec<Header>,
@@ -234,13 +247,42 @@ impl Model {
                     (alive.record.cumulative_work, Reverse(alive.received))
                 })
                 .expect("a side leaf");
-            self.alive.remove(&victim);
+            let gone = self.alive.remove(&victim).expect("a live leaf");
+            if self.vouched.remove(&victim) && self.alive.contains_key(&gone.parent) {
+                self.vouched.insert(gone.parent);
+            }
         }
+    }
+
+    fn vouch(&mut self, block: BlockRef) {
+        if self.alive.get(&block.hash).is_some_and(|alive| alive.height == block.height) {
+            self.vouched.insert(block.hash);
+        }
+    }
+
+    /// Highest best-path height some vouched header descends from, else the final tip's
+    fn vouched_height(&self) -> Option<Height> {
+        let mut covered = HashSet::new();
+        for vouched in &self.vouched {
+            let mut at = *vouched;
+            while let Some(alive) = self.alive.get(&at) {
+                covered.insert(at);
+                at = alive.parent;
+            }
+        }
+        let path = self.best_path();
+        let top = (self.finals.len()..path.len()).rev().find(|h| covered.contains(&path[*h].hash));
+        top.map(|h| height(h as u32)).or(self.final_tip().map(|tip| tip.height))
+    }
+
+    /// Highest height `HeaderSync` fetches
+    fn ceiling(&self) -> Height {
+        height(self.finals.len() as u32 + DEPTH + RUN - 1)
     }
 
     fn finalizable(&self) -> Option<BlockRef> {
         let best = self.best()?;
-        let boundary = best.block.height.checked_sub(DEPTH)?;
+        let boundary = best.block.height.checked_sub(DEPTH)?.min(self.vouched_height()?);
         (u32::from(boundary) >= self.finals.len() as u32).then(|| BlockRef {
             hash: self.best_path()[u32::from(boundary) as usize].hash,
             height: boundary,
@@ -264,6 +306,7 @@ impl Model {
             .map(|(hash, _)| *hash)
             .collect();
         self.alive.retain(|hash, _| keep.contains(hash));
+        self.vouched.retain(|hash| keep.contains(hash));
     }
 
     /// zcashd's locator in closed form: 12 consecutive heights from the best, then best − 9 − 2^k
@@ -392,6 +435,7 @@ fn run(moves: Vec<Move>) {
         mined: vec![genesis.clone()],
         by_hash: HashMap::new(),
         alive: HashMap::new(),
+        vouched: HashSet::new(),
         finals: Vec::new(),
         received: 0,
         deferred: Vec::new(),
@@ -399,7 +443,12 @@ fn run(moves: Vec<Move>) {
     };
     let mut published: Option<(VerifiedChain, Vec<Record>, Vec<Fork>)> = None;
 
+    // the driver's: nothing above the ceiling offered (H9)
     let offer = |chain: &mut HeaderChain, model: &mut Model, header: &Header, context: &str| {
+        let at = model.parent(header.prev_hash(), header.hash());
+        if at.is_ok_and(|(at, _)| at > model.ceiling()) {
+            return false;
+        }
         let expected = model.offer(header);
         let checked = check(&params, header.clone()).expect("stage A: palette nBits, regtest");
         let inserted = chain.insert(&checked, model.now);
@@ -421,9 +470,10 @@ fn run(moves: Vec<Move>) {
     for (step, next) in moves.into_iter().enumerate() {
         let context = format!("step {step} {next:?}");
         match next {
-            Move::Extend { parent, gap, early, bits } => {
+            Move::Extend { parent, gap, early, bits, trusted } => {
                 let parent = model.mined[parent % model.mined.len()].clone();
                 let (mut prev, mut time) = (parent.hash(), parent.time());
+                let mut last = None;
                 for (at, palette) in bits.into_iter().enumerate() {
                     time = match early && at == 0 {
                         true => model.median_time_past(prev),
@@ -434,7 +484,34 @@ fn run(moves: Vec<Move>) {
                         break;
                     }
                     prev = header.hash();
+                    last = Some(BlockRef { hash: prev, height: builder.templates[&prev].height });
                 }
+                if let (true, Some(last)) = (trusted, last) {
+                    chain.vouch(last);
+                    model.vouch(last);
+                    let boundary = model.finalizable();
+                    assert_eq!(chain.finalizable(), boundary, "{context}: run's boundary");
+                    if let Some(boundary) = boundary {
+                        chain.finalize(boundary).expect("store commits");
+                        model.finalize(boundary);
+                    }
+                    // liveness: final = min(vouched, best − depth), no further input
+                    assert_eq!(chain.finalizable(), None, "{context}: final caught up");
+                    let best = chain.best().expect("a run inserted").block;
+                    let deep = best.height.checked_sub(DEPTH);
+                    let final_height = chain.final_tip().map(|tip| tip.height);
+                    let caught = best != last || final_height >= deep;
+                    assert!(caught, "{context}: a run ending at the best = final at best − depth");
+                }
+            }
+            Move::Vouch { mined } => {
+                let header = &model.mined[mined % model.mined.len()];
+                let at = BlockRef {
+                    hash: header.hash(),
+                    height: builder.templates[&header.hash()].height,
+                };
+                chain.vouch(at);
+                model.vouch(at);
             }
             Move::Orphan { parent } => {
                 let parent = model.mined[parent % model.mined.len()].clone();
@@ -478,11 +555,13 @@ fn run(moves: Vec<Move>) {
                     chain.finalize(boundary).expect("store commits");
                     model.finalize(boundary);
                 }
+                assert_eq!(chain.finalizable(), None, "{context}: one call reaches the target");
             }
             Move::Reopen => {
                 fs = fs.restarted();
                 chain = open(Arc::clone(&fs));
                 model.alive.clear();
+                model.vouched.clear();
                 published = None;
             }
         }
@@ -491,7 +570,11 @@ fn run(moves: Vec<Move>) {
         assert_eq!(chain.best(), model.best(), "{context}: best");
         assert_eq!(chain.final_tip(), model.final_tip(), "{context}: final tip");
         assert_eq!(chain.finalizable(), model.finalizable(), "{context}: boundary");
+        assert_eq!(chain.ceiling(RUN), model.ceiling(), "{context}: ceiling");
         assert_eq!(chain.tree_len(), model.alive.len(), "{context}: live tree");
+        let unfinal = model.best_path().len() - model.finals.len();
+        let bound = (DEPTH + RUN) as usize;
+        assert!(unfinal <= bound, "{context}: H9, {unfinal} unfinal on best > {bound}");
         let path = model.best_path();
         let Some(verified) = chain.verified() else {
             assert!(path.is_empty(), "{context}: published = nothing verified");

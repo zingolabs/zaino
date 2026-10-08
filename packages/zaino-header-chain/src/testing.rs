@@ -62,12 +62,16 @@ impl HeaderViews for MockChain {
     }
 }
 
-/// Each header of `blocks` in order, stage A then B; the first refusal ends it
+/// Each header of `blocks` in order, stage A then B, the last vouched (a trusted validator's run);
+/// the first refusal ends it
 pub fn insert(chain: &mut HeaderChain, blocks: &[Arc<Block>]) -> Result<(), Rejected> {
     for block in blocks {
         let raw = encode_header(block.header());
         let header = decode_header(&raw).expect("MockChain headers decode");
         chain.insert(&check(chain.params(), header)?, i64::MAX / 2)?;
+    }
+    if let Some(last) = blocks.last() {
+        chain.vouch(BlockRef { hash: last.header().hash, height: last.header().height });
     }
     Ok(())
 }
