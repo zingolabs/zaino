@@ -5,9 +5,9 @@ use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
-use zaino_header_chain::HeaderChain;
-use zaino_primitives::testing::Chain;
-use zaino_primitives::types::{BlockRef, Height, ReorgDepth};
+use zaino_header_chain::testing::HeaderViews;
+use zaino_primitives::testing::{h as height, MockChain};
+use zaino_primitives::types::{Height, ReorgDepth};
 
 use super::Holders;
 use zaino_traffic::ValidatorId;
@@ -26,15 +26,12 @@ fn fired(run: impl FnOnce()) -> Option<String> {
 #[test]
 fn every_holders_check_fires_on_its_planted_bug() {
     let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nz"));
-    let mut world = Chain::new();
-    let genesis = world.genesis().hash;
-    let tip = world.extend(genesis, 10);
-    let path = world.path(tip.hash);
-    let at = |h: u32| BlockRef { hash: path[h as usize].header().hash, height: height(h) };
-    let fork = world.extend(at(8).hash, 1);
-    let mut chain = HeaderChain::regtest_in_memory(genesis, depth);
-    chain.insert_blocks(&path).expect("valid chain");
-    let verified = Arc::new(chain.verified().expect("verified"));
+    let mut world = MockChain::regtest();
+    let tip = world.mine_empty(10);
+    let trunk: Vec<_> = (0..=10).map(|at| world.at(height(at))).collect();
+    let at = |h: u32| trunk[h as usize];
+    let fork = world.fork(height(8)).mine_empty(1).tip();
+    let verified = Arc::new(world.verified(tip));
     let endpoint = |at: usize| ValidatorId::new(at).expect("< MAX");
     let valid = || {
         let mut holders = Holders::new(3, depth);
@@ -109,8 +106,4 @@ fn every_holders_check_fires_on_its_planted_bug() {
     }
     let held = valid().holders(at(7));
     assert_eq!(held.positions().collect::<Vec<_>>(), [0], "a valid call passes: 1 holds ≤ 5");
-}
-
-fn height(h: u32) -> Height {
-    Height::try_from(h).expect("small")
 }

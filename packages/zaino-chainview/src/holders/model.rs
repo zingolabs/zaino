@@ -1,7 +1,7 @@
 //! `Holders` against a naive oracle (V1, V2): random validator histories, answered as zebrad
 //! answers, `check()` after every step
 //!
-//! - world = one block tree (`testing::Chain`, real headers), each validator a path in it
+//! - world = one block tree (`MockChain`, real headers), each validator a path in it
 //! - ours = a real `HeaderChain` fed whole validator chains (regtest: most work = longest)
 //! - oracle = each validator's whole chain at every moment it answered since its last poll
 //! - swarm: whole step kinds switched off per case
@@ -10,8 +10,9 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use proptest::prelude::*;
-use zaino_header_chain::{HeaderChain, VerifiedChain};
-use zaino_primitives::testing::Chain;
+use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::VerifiedChain;
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 
 use super::{Holders, PollStamp};
@@ -111,10 +112,10 @@ fn holds(path: &[BlockHash], block: BlockRef) -> bool {
 fn run(n: usize, off: u8, steps: Vec<Step>) {
     assert!((1..=VALIDATORS).contains(&n), "model: 1..=VALIDATORS validators");
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
-    let mut world = Chain::new();
+    let mut world = MockChain::regtest();
     let genesis = world.genesis().hash;
     let mut nodes: Vec<Vec<BlockHash>> = vec![vec![genesis]; n];
-    let mut ours = HeaderChain::regtest_in_memory(genesis, depth);
+    let mut ours = world.header_chain(depth);
     let mut holders = Holders::new(n, depth);
     let mut known = vec![Known::Silent; n];
     let mut verified: Option<VerifiedChain> = None;
@@ -122,12 +123,12 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
     let mut polls = vec![0usize; n];
     let mut fetched: Vec<Option<(Vec<BlockHash>, PollStamp, usize)>> = vec![None; n];
 
-    let mine = |world: &mut Chain, path: &mut Vec<BlockHash>, count: u32| {
+    let mine = |world: &mut MockChain, path: &mut Vec<BlockHash>, count: u32| {
         for _ in 0..count {
-            path.push(world.mine(*path.last().expect("genesis held")).hash);
+            path.push(world.branch(tip(path)).mine_empty(1).tip().hash);
         }
     };
-    let fork = |world: &mut Chain, path: &mut Vec<BlockHash>, drop: u32, count: u32| {
+    let fork = |world: &mut MockChain, path: &mut Vec<BlockHash>, drop: u32, count: u32| {
         path.truncate(path.len().saturating_sub(drop as usize).max(1));
         mine(world, path, count);
     };
@@ -160,9 +161,9 @@ fn run(n: usize, off: u8, steps: Vec<Step>) {
                 fork(&mut world, &mut nodes[node % n], drop, count)
             }
             Step::Learn { node } => {
-                let path = world.path(tip(&nodes[node % n]).hash);
+                let path = world.blocks(tip(&nodes[node % n]));
                 let above = ours.final_tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
-                let _refused = ours.insert_blocks(path.get(above..).unwrap_or_default());
+                let _refused = insert(&mut ours, path.get(above..).unwrap_or_default());
                 verified = ours.verified();
                 holders.verified(verified.clone().map(Arc::new));
             }

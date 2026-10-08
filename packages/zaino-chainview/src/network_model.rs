@@ -15,10 +15,10 @@ use std::time::Duration;
 
 use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
-use zaino_header_chain::HeaderChain;
-use zaino_primitives::testing::Chain;
+use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zaino_source::mock::MockChain;
+use zaino_source::testing::{MockValidator, Port};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
 use crate::{ChainView, EndpointSet};
@@ -75,10 +75,9 @@ proptest! {
     }
 }
 
-/// `best` = genesis first
 struct Node {
-    mock: Arc<MockChain>,
-    best: Vec<BlockHash>,
+    validator: Arc<MockValidator>,
+    tip: BlockRef,
 }
 
 /// What the view last read from one endpoint, and the best it asked under
@@ -93,22 +92,26 @@ struct Seen {
 /// `chain` = every block any node mined (one tree, real headers)
 struct Sim {
     nodes: Vec<Node>,
-    chain: Chain,
+    chain: MockChain,
 }
 
 impl Sim {
-    fn mine(&mut self, node: usize, count: u32) {
-        let best = &mut self.nodes[node].best;
-        for _ in 0..count {
-            best.push(self.chain.mine(*best.last().expect("genesis")).hash);
-        }
+    /// `count` blocks on `parent`, `node` following the new tip (reorg = another tip)
+    fn mine(&mut self, node: usize, parent: BlockRef, count: u32) {
+        let tip = self.chain.branch(parent).mine_empty(count).tip();
+        self.follow(node, tip);
     }
 
-    /// Mock re-served from genesis, genesis included (a zebrad always holds it; reorg = another
-    /// best chain)
-    fn serve(&self, node: usize) {
-        let node = &self.nodes[node];
-        node.mock.extend_best(node.best.iter().map(|own| self.chain.block(*own).clone()));
+    fn follow(&mut self, node: usize, tip: BlockRef) {
+        let node = &mut self.nodes[node];
+        node.tip = tip;
+        node.validator.follow(&self.chain, tip);
+    }
+
+    /// Genesis ..= `node`'s tip
+    fn path(&self, node: usize) -> Vec<BlockHash> {
+        let blocks = self.chain.blocks(self.nodes[node].tip);
+        blocks.iter().map(|block| block.header().hash).collect()
     }
 }
 
@@ -129,20 +132,18 @@ fn holders(seen: &[Option<Seen>], best: BlockRef) -> (EndpointSet, EndpointSet) 
 }
 
 async fn run(n: usize, moves: Vec<Move>) {
-    let mut chain = Chain::new();
-    let shared = chain.extend(chain.genesis().hash, 3);
-    let genesis: Vec<BlockHash> = chain.path(shared.hash).iter().map(|b| b.header().hash).collect();
+    let mut chain = MockChain::regtest();
+    let shared = chain.mine_empty(3);
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
-    let mut headers = HeaderChain::regtest_in_memory(chain.genesis().hash, depth);
-    let mut sim = Sim { nodes: Vec::new(), chain };
-    for index in 0..n {
-        let mock = Arc::new(MockChain::new());
-        sim.nodes.push(Node { mock, best: genesis.clone() });
-        sim.serve(index);
-    }
+    let mut headers = chain.header_chain(depth);
+    let nodes = (0..n).map(|_| {
+        let validator = Arc::new(MockValidator::following(&chain, shared));
+        Node { validator, tip: shared }
+    });
+    let mut sim = Sim { nodes: nodes.collect(), chain };
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = sim.nodes.iter().map(|node| Trusted {
-        source: Arc::clone(&node.mock),
+        source: Arc::clone(&node.validator),
         priority: 0,
         limits,
     });
@@ -160,25 +161,25 @@ async fn run(n: usize, moves: Vec<Move>) {
     for (step, next) in moves.into_iter().enumerate() {
         match next {
             Move::Mine { node, count } => {
-                sim.mine(node % n, count);
-                sim.serve(node % n);
+                let node = node % n;
+                sim.mine(node, sim.nodes[node].tip, count);
             }
             Move::Relay { from, to } => {
-                let (from, to) = (from % n, to % n);
-                if sim.nodes[from].best.len() > sim.nodes[to].best.len() {
-                    sim.nodes[to].best = sim.nodes[from].best.clone();
-                    sim.serve(to);
+                let (from, to) = (sim.nodes[from % n].tip, to % n);
+                if from.height > sim.nodes[to].tip.height {
+                    sim.follow(to, from);
                 }
             }
             Move::Fork { node, drop, mine } => {
                 let node = node % n;
-                let best = &mut sim.nodes[node].best;
-                best.truncate(best.len().saturating_sub(drop as usize).max(1));
-                sim.mine(node, mine);
-                sim.serve(node);
+                let tip = sim.nodes[node].tip;
+                let kept = (u32::from(tip.height) + 1).saturating_sub(drop).max(1) - 1;
+                let base = sim.chain.blocks(tip)[kept as usize].header().hash;
+                let base = BlockRef { hash: base, height: Height::try_from(kept).expect("small") };
+                sim.mine(node, base, mine);
             }
             Move::Reachable { node, reachable } => {
-                sim.nodes[node % n].mock.set_reachable(reachable)
+                sim.nodes[node % n].validator.reachable(&Port::ALL, reachable)
             }
             Move::Poll { node } => {
                 let node = node % n;
@@ -193,7 +194,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                         continue;
                     }
                     let observation = watch.borrow_and_update().clone().expect("polled");
-                    let chain = sim.nodes[index].best.clone();
+                    let chain = sim.path(index);
                     let down = observation.health == Health::Down;
                     seen[index] = match observation.polled {
                         Ok(_) => Some(Seen { chain, reporting: true, down, under }),
@@ -203,8 +204,9 @@ async fn run(n: usize, moves: Vec<Move>) {
                     };
                     // header sync's part: what was read, verified (most work wins, tie = first)
                     if let Some(read) = seen[index].as_ref().filter(|seen| seen.reporting) {
-                        let tip = *read.chain.last().expect("genesis");
-                        let _side_or_known = headers.insert_blocks(&sim.chain.path(tip));
+                        let height = Height::try_from(read.chain.len() as u32 - 1).expect("small");
+                        let tip = BlockRef { hash: *read.chain.last().expect("genesis"), height };
+                        let _side_or_known = insert(&mut headers, &sim.chain.blocks(tip));
                     }
                 }
                 view.set_verified(headers.verified());
