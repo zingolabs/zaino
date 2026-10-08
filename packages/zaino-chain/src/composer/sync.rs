@@ -104,7 +104,7 @@ impl ChainViewSync {
     /// separate and says whether the *database* is healthy; this says whether
     /// anything is still feeding it.
     pub fn status(&self) -> ComponentStatus {
-        *self.status.borrow()
+        self.status.borrow().clone()
     }
 
     /// Stops the loop.

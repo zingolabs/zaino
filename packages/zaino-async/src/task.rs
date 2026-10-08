@@ -111,9 +111,32 @@ impl<T: Send + 'static> Task<T> {
     }
 }
 
+/// Run a blocking `body` on the runtime's blocking pool, awaiting its result and
+/// rendering a panic as a named [`TaskError`] — the [`Task::join`] treatment for
+/// work that cannot be made async, such as synchronous disk I/O.
+///
+/// A blocking closure cannot be cooperatively cancelled, so unlike [`Task`] this
+/// takes no [`CancellationToken`]: the only failures it renders are a panic and
+/// the runtime dropping the blocking task on shutdown (surfaced as
+/// [`TaskError::Cancelled`]).
+pub async fn run_blocking<F, T>(name: TaskName, body: F) -> Result<T, TaskError>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(body).await {
+        Ok(value) => Ok(value),
+        Err(err) if err.is_panic() => Err(TaskError::Panicked {
+            name,
+            message: panic_message(&*err.into_panic()),
+        }),
+        Err(_) => Err(TaskError::Cancelled { name }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Task, TaskError, TaskName};
+    use super::{Task, TaskError, TaskName, run_blocking};
 
     #[tokio::test]
     async fn joins_a_returned_value() {
@@ -139,6 +162,27 @@ mod tests {
             Err(TaskError::Panicked { name, message }) => {
                 assert_eq!(name, TaskName("doomed"));
                 assert_eq!(message, "boom at the seam");
+            }
+            other => panic!("expected a named panic, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn run_blocking_returns_its_value() {
+        let sum = run_blocking(TaskName("adder"), || 6 * 7)
+            .await
+            .expect("no panic");
+        assert_eq!(sum, 42);
+    }
+
+    #[tokio::test]
+    async fn run_blocking_renders_a_panic_as_a_named_error() {
+        let result: Result<(), TaskError> =
+            run_blocking(TaskName("blocker"), || panic!("kaboom in the pool")).await;
+        match result {
+            Err(TaskError::Panicked { name, message }) => {
+                assert_eq!(name, TaskName("blocker"));
+                assert_eq!(message, "kaboom in the pool");
             }
             other => panic!("expected a named panic, got {other:?}"),
         }
