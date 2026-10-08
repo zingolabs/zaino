@@ -120,6 +120,15 @@ impl<P: Pool> ExtractCross for SubtreesIndex<P> {
         ctx: &TreeStateCtx,
         deps: &DepsReader<'_>,
     ) -> Result<Vec<SubtreeEntry>, SubtreesError> {
+        let commitments = P::commitments(ctx);
+
+        // A block with no leaves for this pool can complete nothing, so it needs
+        // neither the h−1 frontier nor any leaf decode. The overwhelming majority
+        // of blocks take this exit.
+        if commitments.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let height = u64::from(ctx.height);
 
         // The commitment-tree frontier just before this block. At genesis there
@@ -138,23 +147,53 @@ impl<P: Pool> ExtractCross for SubtreesIndex<P> {
             P::frontier(&prior).clone()
         };
 
-        let leaves = convert_leaves::<P>(P::commitments(ctx))?;
-
-        completed_subtrees(&before, &leaves, P::SUBTREE_LEVEL)
-            .into_iter()
-            .map(|(subtree, node)| {
-                let index = u32::try_from(subtree)
-                    .map_err(|_| SubtreesError::SubtreeIndexOverflow { index: subtree })?;
-                Ok(SubtreeEntry {
-                    index,
-                    root: SubtreeRoot {
-                        root: P::root_bytes(&node),
-                        completing_height: ctx.height,
-                    },
-                })
-            })
-            .collect()
+        subtree_entries::<P>(&before, commitments, ctx.height)
     }
+}
+
+/// The subtree entries a block completes, deciding from leaf **counts** first so
+/// the commitments are decoded only when at least one subtree completes.
+///
+/// `size_after = size_before + commitments.len()` needs no decode; the boundary
+/// check `first <= last` then decides whether to decode the leaves and build the
+/// roots at all. This is the cost guarantee: a non-completing block does no
+/// hashing and no field-element decode (see the module docs).
+fn subtree_entries<P: Pool>(
+    before: &Frontier<P::Leaf, DEPTH>,
+    commitments: &[NoteCommitment],
+    completing_height: BlockHeight,
+) -> Result<Vec<SubtreeEntry>, SubtreesError> {
+    let level = P::SUBTREE_LEVEL;
+    let span = 1u64
+        .checked_shl(u32::from(level))
+        .expect("subtree span 2^level fits u64");
+    let size_before = before.tree_size();
+    let count = u64::try_from(commitments.len()).expect("commitment count fits u64");
+    let size_after = size_before
+        .checked_add(count)
+        .expect("a pool's tree size fits u64");
+
+    // Completion boundaries in `(size_before, size_after]` are at `m·span`; if
+    // none fall in the range, emit nothing without touching the leaves.
+    if size_before / span + 1 > size_after / span {
+        return Ok(Vec::new());
+    }
+
+    let leaves = convert_leaves::<P>(commitments)?;
+    completed_subtrees(before, &leaves, level)
+        .into_iter()
+        .map(|(subtree, node)| {
+            let index = u32::try_from(subtree)
+                .map_err(|_| SubtreesError::SubtreeIndexOverflow { index: subtree })?;
+            Ok(SubtreeEntry {
+                index,
+                root: SubtreeRoot {
+                    root: P::root_bytes(&node),
+                    completing_height,
+                },
+            })
+        })
+        .collect()
 }
 
 impl<P: Pool> MergeAppend for SubtreesIndex<P> {}
@@ -181,9 +220,17 @@ impl<P: Pool> Schema<Vec<Vec<SubtreeEntry>>> for SubtreesIndex<P> {
     }
 }
 
+/// Test-only tally of [`convert_leaves`] calls, so a test can prove a
+/// non-completing block decodes no leaves.
+#[cfg(test)]
+static LEAF_DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Convert a pool's note commitments to its leaves, failing on the first
 /// non-canonical encoding.
 fn convert_leaves<P: Pool>(commitments: &[NoteCommitment]) -> Result<Vec<P::Leaf>, SubtreesError> {
+    #[cfg(test)]
+    LEAF_DECODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     commitments
         .iter()
         .map(|commitment| {
@@ -214,7 +261,9 @@ fn completed_subtrees<H: Hashable + Clone + Send + Sync>(
     let size_after = size_before
         .checked_add(added)
         .expect("a pool's tree size fits u64");
-    let span = 1u64 << u32::from(level);
+    let span = 1u64
+        .checked_shl(u32::from(level))
+        .expect("subtree span 2^level fits u64");
 
     // Completion boundaries in `(size_before, size_after]` are at `m·span` for
     // `m` in `first..=last`; subtree index is `m − 1`.
@@ -233,7 +282,9 @@ fn completed_subtrees<H: Hashable + Clone + Send + Sync>(
 
     (first..=last)
         .map(|m| {
-            let completion_size = m * span;
+            let completion_size = m
+                .checked_mul(span)
+                .expect("completion size m·span fits u64");
             let frontier = combined
                 .frontier_at(completion_size)
                 .expect("a completed subtree's completion frontier was retained by lift/combine");
@@ -268,6 +319,7 @@ mod tests {
     use sapling_crypto::Node as SaplingNode;
 
     use crate::indexes::tree_state::pools::sapling_leaf;
+    use crate::indexes::tree_state::TreeStateValue;
 
     /// A canonical Sapling leaf from a seed in the low 8 bytes.
     fn leaf(seed: u64) -> SaplingNode {
@@ -373,5 +425,76 @@ mod tests {
         // block's final leaf), so subtrees 0..=4 complete.
         let indices = check(5, 35, 3);
         assert_eq!(indices, vec![0, 1, 2, 3, 4]);
+    }
+
+    /// A pool with subtree level 2 (span 4), so a handful of commitments spans a
+    /// completion boundary.
+    struct TestPool;
+
+    impl Pool for TestPool {
+        type Leaf = SaplingNode;
+
+        const NAME: IndexId = IndexId::new("subtrees_unit_test");
+        const COMPACT: IndexId = crate::indexes::sapling::ID;
+        const POOL: &'static str = "sapling-test";
+        const SUBTREE_LEVEL: u8 = 2;
+
+        fn commitments(ctx: &TreeStateCtx) -> &[NoteCommitment] {
+            &ctx.sapling_cmus
+        }
+
+        fn leaf(bytes: [u8; 32]) -> Option<SaplingNode> {
+            sapling_leaf(bytes)
+        }
+
+        fn frontier(value: &TreeStateValue) -> &Frontier<SaplingNode, DEPTH> {
+            &value.sapling
+        }
+
+        fn root_bytes(node: &SaplingNode) -> [u8; 32] {
+            node.to_bytes()
+        }
+    }
+
+    /// A canonical note commitment from a seed in its low 8 bytes.
+    fn commitment(seed: u64) -> NoteCommitment {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        NoteCommitment::from(bytes)
+    }
+
+    // The cost guarantee: a block whose leaves complete no subtree must not decode
+    // any commitment to a field element. `subtree_entries` is the sole caller of
+    // `convert_leaves` in this test binary, so the global decode tally is
+    // race-free here.
+    #[test]
+    fn non_completing_block_decodes_no_leaves() {
+        use std::sync::atomic::Ordering;
+
+        let before = Frontier::<SaplingNode, DEPTH>::empty();
+
+        // span 4; 3 commitments from empty cross no boundary.
+        let non_completing: Vec<NoteCommitment> = (0..3).map(commitment).collect();
+        LEAF_DECODE_CALLS.store(0, Ordering::Relaxed);
+        let entries = subtree_entries::<TestPool>(&before, &non_completing, BlockHeight::new(7))
+            .expect("extraction succeeds");
+        assert!(entries.is_empty(), "no subtree completes");
+        assert_eq!(
+            LEAF_DECODE_CALLS.load(Ordering::Relaxed),
+            0,
+            "a non-completing block must not decode any leaf",
+        );
+
+        // A completing block (4 commitments → subtree 0) does decode, proving the
+        // tally is live and the short-circuit is what suppressed it above.
+        let completing: Vec<NoteCommitment> = (0..4).map(commitment).collect();
+        let entries = subtree_entries::<TestPool>(&before, &completing, BlockHeight::new(7))
+            .expect("extraction succeeds");
+        assert_eq!(entries.len(), 1, "subtree 0 completes");
+        assert_eq!(
+            LEAF_DECODE_CALLS.load(Ordering::Relaxed),
+            1,
+            "a completing block decodes its leaves exactly once",
+        );
     }
 }

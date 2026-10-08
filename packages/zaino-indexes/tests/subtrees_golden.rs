@@ -1,14 +1,14 @@
-//! Golden cross-check of the first Sapling and Orchard subtree roots against
-//! zebra's `z_getsubtreesbyindex` fixtures.
+//! Fixture-shape check for the Sapling and Orchard `z_getsubtreesbyindex`
+//! golden data.
 //!
-//! Computing these roots requires the first `3 · 2^16` note-commitment leaves of
-//! each pool, which are mainnet data far too large to commit to the repo. So the
-//! leaf-driven equality is `#[ignore]`d here and validated in the Task 10 cluster
-//! run (a full mainnet build with zebra cross-checks). This file pins the fixture
-//! shape the cluster run compares against, and records the byte orientation:
-//! subtree roots are reported — and stored by this crate — in internal
-//! (unreversed) order for both pools, unlike `z_gettreestate`'s Sapling
-//! `finalRoot`.
+//! The leaf-driven equality — this crate's first three subtree roots per pool
+//! equal these fixtures — needs the first `3 · 2^16` note-commitment leaves of
+//! each pool, which are mainnet data far too large to commit to the repo, so it
+//! is performed only by the Task 10 cluster run (a full mainnet build with zebra
+//! cross-checks). This file pins the fixture shape that run compares against, and
+//! records the byte orientation: subtree roots are reported — and stored by this
+//! crate — in internal (unreversed) order for both pools, unlike
+//! `z_gettreestate`'s Sapling `finalRoot`.
 
 use serde_json::Value;
 
@@ -49,15 +49,4 @@ fn fixture_subtree_roots_are_well_formed() {
             last_height = end_height;
         }
     }
-}
-
-/// Leaf-driven cross-check: the first three Sapling / Orchard subtree roots this
-/// crate builds equal the zebra fixtures. Requires the first `3 · 2^16` leaves of
-/// each pool (mainnet data, not in the repo), so it is validated in the Task 10
-/// cluster build rather than here.
-#[test]
-#[ignore = "needs 3·2^16 mainnet leaves per pool; validated in the Task 10 cluster run"]
-fn built_subtree_roots_match_zebra() {
-    // Intentionally empty: the equality is asserted against a full mainnet build
-    // with zebra cross-checks in Task 10. See the module docs.
 }
