@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use zaino_chainview::{ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_index_tree_state::PoolActivations;
-use zaino_nfs::{ChainParams, Snapshot as Indexed};
+use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, TransactionId};

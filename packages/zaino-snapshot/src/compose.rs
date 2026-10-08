@@ -2,7 +2,7 @@
 
 use zaino_chainview::ChainViewSnapshot;
 use zaino_header_chain::VerifiedChain;
-use zaino_nfs::Snapshot as Indexed;
+use zaino_nfs::Indexed;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 
 use crate::snapshot::{Snapshot, Tips};
@@ -15,12 +15,12 @@ pub(crate) fn compose<V>(
     depth: ReorgDepth,
 ) -> Tips {
     let chain = view.chain().map(|chain| &**chain);
-    let served = indexed.map(Indexed::tip);
+    let served = indexed.map(|indexed| indexed.served().tip());
     Tips {
         best: chain.map(VerifiedChain::best),
         final_tip: chain.and_then(VerifiedChain::final_tip),
         served,
-        held_by: view.tip().map(|tip| tip.held_by).unwrap_or_default(),
+        held_by: view.held_by(),
         synced: chain.is_some_and(|chain| synced(was_synced, served, chain, depth)),
     }
 }
@@ -47,9 +47,9 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
     assert_eq!(tips.best, chain.map(|chain| chain.best()), "G3: best = the view chain's");
     let final_tip = chain.and_then(|chain| chain.final_tip());
     assert_eq!(tips.final_tip, final_tip, "G3: final = the view chain's");
-    let held_by = next.view.tip().map(|tip| tip.held_by).unwrap_or_default();
+    let held_by = next.view.held_by();
     assert_eq!(tips.held_by, held_by, "G3: held_by = the view's holders of best");
-    let served = next.indexed.as_ref().map(|indexed| indexed.tip());
+    let served = next.indexed.as_ref().map(|indexed| indexed.served().tip());
     assert_eq!(tips.served, served, "G3: served = the NFS's");
 
     if tips.synced {

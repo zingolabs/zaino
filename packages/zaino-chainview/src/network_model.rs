@@ -21,7 +21,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::mock::MockChain;
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
-use crate::{ChainView, EndpointSet, Unserved};
+use crate::{ChainView, EndpointSet};
 
 const DEPTH: u32 = 3;
 const MAX_NODES: usize = 5;
@@ -56,12 +56,11 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 128, ..ProptestConfig::default() })]
 
-    /// After every poll, tip = the header chain's best
+    /// After every poll, best = the header chain's best
     ///
     /// - holders ⊆ reporting validators whose polled chain holds it, ⊇ those claiming it or
-    ///   polled under it; no holder = no tip (`NotHeld`)
-    /// - each endpoint's own tip = its polled chain's (none once `Down`); epoch moves iff the tip
-    ///   block does (or left and came back within the step; holders-only = the unit test's)
+    ///   polled under it; no holder = no mempool
+    /// - each endpoint's own tip = its polled chain's (none once `Down`)
     #[test]
     fn the_tip_is_the_verified_best_and_its_holders_are_the_validators_asked_holding_it(
         nodes in 1..=MAX_NODES,
@@ -156,9 +155,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let member = |node: usize| ValidatorId::new(node).expect("< MAX_NODES");
     let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(member(node))).collect();
     let reader = view.subscriber();
-    let mut tips = reader.subscribe_tip();
     let mut seen: Vec<Option<Seen>> = vec![None; n];
-    let (mut tip_was, mut epoch_was) = (None, reader.tail().ok());
 
     for (step, next) in moves.into_iter().enumerate() {
         match next {
@@ -216,20 +213,17 @@ async fn run(n: usize, moves: Vec<Move>) {
                 let context = format!("step {step} poll {node} best {best:?}: {seen:?}");
                 let pinned = reader.current();
                 assert_eq!(pinned.best(), best, "{context}");
-                let tip = pinned.tip().map(|tip| (tip.block, tip.held_by));
-                match (best, tip) {
-                    (Some(best), Some((block, held))) => {
+                let held = pinned.held_by();
+                match best {
+                    Some(best) => {
                         let (must, may) = holders(&seen, best);
-                        assert_eq!(block, best, "{context}: the tip = the verified best");
                         assert!(held.covers(must), "{context}: {held:?} ⊇ {must:?}");
                         assert!(may.covers(held), "{context}: {held:?} ⊆ {may:?}");
                     }
-                    (Some(best), None) => {
-                        let (must, _) = holders(&seen, best);
-                        assert!(must.is_empty(), "{context}: {must:?} hold it, no tip");
-                    }
-                    (None, tip) => assert_eq!(tip, None, "{context}: nothing verified, no tip"),
+                    None => assert!(held.is_empty(), "{context}: nothing verified, no holder"),
                 }
+                let gated = pinned.mempool().is_some();
+                assert_eq!(gated, !held.is_empty(), "{context}: mempool iff a holder");
                 for (index, seen) in seen.iter().enumerate() {
                     let theirs = seen.as_ref().filter(|seen| !seen.down).and_then(|seen| {
                         let height = Height::try_from(seen.chain.len() as u32 - 1).expect("small");
@@ -241,31 +235,6 @@ async fn run(n: usize, moves: Vec<Move>) {
                         "{context}: endpoint {index}"
                     );
                 }
-                let block = tip.map(|(block, _)| block);
-                let epoch = reader.tail();
-                let moved = match (&epoch_was, &epoch) {
-                    (Some(was), Ok(now)) => !was.same_epoch(now),
-                    (None, Err(_)) => false,
-                    _ => true,
-                };
-                // several folds per step: the tip may leave and come back (watch = any change)
-                let passed_through = tips.has_changed().expect("view alive");
-                tips.borrow_and_update();
-                let context =
-                    format!("{context}: the feed opens a new epoch iff the tip block moves");
-                assert!(block == tip_was || moved, "{context}");
-                assert!(block != tip_was || !moved || passed_through, "{context}");
-                if tip.is_none() {
-                    let refused = match best {
-                        None => Unserved::NoBestTip,
-                        Some(best) => {
-                            Unserved::NotHeld { height: u32::from(best.height), configured: n }
-                        }
-                    };
-                    assert_eq!(pinned.mempool().err(), Some(refused), "{context}");
-                    assert_eq!(epoch.as_ref().err(), Some(&refused), "{context}: feed refuses too");
-                }
-                (tip_was, epoch_was) = (block, epoch.ok());
             }
         }
     }

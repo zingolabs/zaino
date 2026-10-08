@@ -6,7 +6,7 @@ mod emit;
 mod fetch;
 mod fold;
 mod graph;
-mod report;
+mod progress;
 mod snapshot;
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::{IndexKind, Layer, MapRead, SequenceRead};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 use zaino_source::ChainDataSource;
 use zaino_sync::{compute, Final, Human, IndexerDataSink, PerIndex, Step, Subscription};
 use zaino_traffic::TrafficBalancer;
@@ -29,13 +29,11 @@ use zaino_traffic::TrafficBalancer;
 use crate::core::{Diverged, Input, NfsCore, Output, SnapshotTip};
 use crate::fetch::{fetch, Checked};
 use crate::fold::{fold_block, Folded};
-use crate::report::Progress;
-use crate::snapshot::Publisher;
 
 pub use crate::emit::describe_metrics;
 pub use crate::fold::{FoldError, INDEXES};
-pub use crate::report::REPORT_INTERVAL;
-pub use crate::snapshot::{At, Branch, ChainParams, NfsHandle, Published, Snapshot, Views};
+pub use crate::progress::NfsProgress;
+pub use crate::snapshot::{At, Branch, ChainParams, Indexed, Published, Views};
 
 #[derive(Debug, thiserror::Error)]
 pub enum NfsError {
@@ -54,9 +52,8 @@ pub enum NfsError {
 
 /// `NfsCore` run against the balancer, real folds, writers and readers
 /// - Inputs: the verified chain, checked bodies, fold results, each index's committed view
-/// - Outputs: fetches (tasks), folds (compute pool), the final stream, [`Snapshot`]s
-/// - `handed` = last block handed to the indexes (folded, or sent unfolded); `served` = last
-///   published tip (reorgs and new tips logged against it)
+/// - Outputs: fetches (tasks), folds (compute pool), the final stream, [`Indexed`] publishes
+/// - `served` = last published tip (reorgs and new tips logged against it)
 pub struct Nfs<S, V> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: TrafficBalancer<S>,
@@ -65,22 +62,19 @@ pub struct Nfs<S, V> {
     sink: IndexerDataSink<Final>,
     committed: PerIndex<watch::Receiver<V>>,
     root: PerIndex<Layer>,
-    published: Publisher<V>,
-    handed: watch::Sender<Option<Height>>,
-    progress: Arc<Progress>,
+    published: watch::Sender<Option<Arc<Indexed<V>>>>,
+    progress: NfsProgress,
     served: Option<BlockRef>,
 }
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     /// - `balancer` = who serves each body (each answer checked; its driver runs elsewhere)
     /// - `lookahead` = bodies fetched or folding ahead of the next one needed
-    /// - `_depth`: unread (side nodes = what `chain` holds, its H4 bound); goes with zainod's call
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         balancer: TrafficBalancer<S>,
         params: ChainParams,
         lookahead: NonZeroUsize,
-        _depth: ReorgDepth,
     ) -> Self {
         Self {
             chain,
@@ -90,9 +84,8 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             sink: IndexerDataSink::new("final"),
             committed: PerIndex::default(),
             root: PerIndex::default(),
-            published: Publisher::new(),
-            handed: watch::Sender::new(None),
-            progress: Arc::default(),
+            published: watch::Sender::new(None),
+            progress: NfsProgress::default(),
             served: None,
         }
     }
@@ -116,31 +109,21 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         self.sink.subscribe(kind.name(), queue)
     }
 
-    pub fn handle(&self) -> NfsHandle<V> {
-        self.published.handle()
-    }
-
-    /// Every publish as a watch: served tip moved or a durable tip moved
+    /// Every publish as a watch: served tip moved or a durable tip moved (the global snapshot's
+    /// input)
     pub fn indexed(&self) -> Published<V> {
         self.published.subscribe()
     }
 
-    /// Last height handed to the indexes (sync progress between their commits)
-    pub fn subscribe_handed(&self) -> watch::Receiver<Option<Height>> {
-        self.handed.subscribe()
+    /// Blocks handed to the indexes (sync progress between their commits)
+    pub fn progress(&self) -> NfsProgress {
+        self.progress.clone()
     }
 
     /// - Cancel → `Ok`
     /// - Either way: the final stream ends with `Shutdown` (every writer commits, stops)
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), NfsError> {
-        let report = report::run(Arc::clone(&self.progress));
-        let follow = async {
-            tokio::select! {
-                followed = self.follow() => followed,
-                () = report => unreachable!("the reporter loops until dropped"),
-            }
-        };
-        let followed = cancel.run_until_cancelled(follow).await;
+        let followed = cancel.run_until_cancelled(self.follow()).await;
         self.sink.shutdown();
         followed.unwrap_or(Ok(()))
     }
@@ -160,10 +143,6 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         let mut input = self.chain.borrow_and_update().clone().map(Input::Chain);
         loop {
             if let Some(input) = input.take() {
-                if let Input::Chain(chain) = &input {
-                    emit::best(chain.best().height);
-                    self.progress.target(chain.best().height);
-                }
                 let outputs = core.step(input).map_err(|diverged| self.diverged(diverged))?;
                 for output in outputs {
                     self.execute(output, &committed, &mut work, &mut fetches).await;
@@ -228,18 +207,16 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             Output::Publish(SnapshotTip { chain, tip, root, graph }) => {
                 self.log_served(&chain, tip);
                 let durable = committed.clone();
-                let snapshot = Snapshot::new(chain, tip, root, self.params, durable, graph);
-                self.published.publish(snapshot);
+                let indexed = Indexed::new(chain, tip, root, self.params, durable, graph);
+                self.published.send_replace(Some(Arc::new(indexed)));
             }
         }
     }
 
     /// `block` handed to the indexes: folded, or sent unfolded (each block counted once per branch)
     fn hand(&self, block: &Block) {
-        let height = block.header().height;
         emit::handed(block);
-        self.progress.handed(height);
-        self.handed.send_replace(Some(height));
+        self.progress.hand(block.header().height);
     }
 
     /// Served tip moved: a reorg (the last one off `chain`'s best), or a new best tip (~75 s apart)

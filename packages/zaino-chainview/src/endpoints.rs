@@ -23,7 +23,7 @@ impl EndpointSet {
         self.0 &= !(1u64 << endpoint.get());
     }
 
-    pub(crate) fn contains(&self, endpoint: ValidatorId) -> bool {
+    pub fn contains(&self, endpoint: ValidatorId) -> bool {
         self.0 & (1u64 << endpoint.get()) != 0
     }
 

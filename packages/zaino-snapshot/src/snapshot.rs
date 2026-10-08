@@ -2,10 +2,9 @@
 
 use std::sync::Arc;
 
-use serde::Serialize;
-use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView, Unserved};
+use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
 use zaino_header_chain::{Fork, VerifiedChain};
-use zaino_nfs::{At, Snapshot as Indexed};
+use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
 use zaino_primitives::types::{BlockHash, BlockRef, BlockchainInfo, Height};
 
@@ -40,22 +39,23 @@ pub enum Unavailable {
     NothingServed,
 }
 
-impl From<Unserved> for Unavailable {
-    fn from(unserved: Unserved) -> Self {
-        match unserved {
-            Unserved::NoBestTip => Self::NoChain,
-            Unserved::NotHeld { height, configured } => Self::NotHeld { height, configured },
-        }
-    }
-}
-
 /// `/readyz` reasons, in order
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unready {
     HeadersSyncing,
     TipNotHeld,
     Syncing,
+}
+
+impl Unready {
+    /// `/readyz` + `/statusz` text
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HeadersSyncing => "headers_syncing",
+            Self::TipNotHeld => "tip_not_held",
+            Self::Syncing => "syncing",
+        }
+    }
 }
 
 /// One publish: tips, the NFS's latest, the chain view's latest, the mempool epoch at `served`
@@ -89,7 +89,7 @@ impl<V> Snapshot<V> {
 
     /// Gate: `held_by` ≠ ∅ (G6)
     pub fn mempool(&self) -> Result<MempoolView<'_>, Unavailable> {
-        Ok(self.view.mempool()?)
+        self.view.mempool().ok_or_else(|| self.unheld())
     }
 
     /// The epoch at `tips.served`: ends once the served tip moves (G5)
@@ -100,8 +100,19 @@ impl<V> Snapshot<V> {
 
     /// `GetLightdInfo`: a holder's `getblockchaininfo` + the served height, one load
     pub fn lightd(&self) -> Result<(&BlockchainInfo, Height), Unavailable> {
-        let info = self.view.validator_info()?;
+        let info = self.view.validator_info().ok_or_else(|| self.unheld())?;
         Ok((info, self.served()?.tip().height))
+    }
+
+    /// Why no trusted validator vouches for the best block
+    fn unheld(&self) -> Unavailable {
+        match self.tips.best {
+            None => Unavailable::NoChain,
+            Some(best) => Unavailable::NotHeld {
+                height: u32::from(best.height),
+                configured: self.view.endpoints().len(),
+            },
+        }
     }
 
     /// Validator facts, alarms, the mempool's spread
@@ -137,7 +148,7 @@ impl<V> Snapshot<V> {
 }
 
 impl<V: View> Snapshot<V> {
-    /// Index state as of any folded block or the NFS root (`zaino_nfs::Snapshot::at`)
+    /// Index state as of any folded block or the NFS root ([`Indexed::at`])
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         self.indexed.as_ref()?.at(hash)
     }

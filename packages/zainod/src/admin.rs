@@ -2,7 +2,8 @@
 //!
 //! - Own thread + current-thread runtime: a probe answered from the saturated serving runtime
 //!   measures its queue, and a timed-out liveness probe gets the pod killed
-//! - `/readyz` + `/statusz` = [`crate::status`] (watch borrows only, answered inline)
+//! - `/readyz` + `/statusz` + `/metrics`' gauges = [`crate::status`] (one snapshot load each;
+//!   `/readyz` + `/statusz` answered inline)
 
 use std::{
     convert::Infallible,
@@ -150,12 +151,7 @@ async fn route(
         // Off the admin runtime: `render` walks every handle, and this thread answers probes
         "/metrics" => {
             let handle = handle.clone();
-            match tokio::task::spawn_blocking(move || {
-                crate::metrics::collect_process_metrics();
-                handle.render()
-            })
-            .await
-            {
+            match tokio::task::spawn_blocking(move || crate::metrics::scrape(&handle)).await {
                 Ok(scrape) => body(StatusCode::OK, EXPOSITION_CONTENT_TYPE, scrape),
                 Err(e) => {
                     error!(%e, "rendering the scrape panicked");

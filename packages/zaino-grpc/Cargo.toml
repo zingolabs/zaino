@@ -54,6 +54,7 @@ zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-nfs.workspace = true
 zaino-sync.workspace = true
 zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
+zaino-snapshot = { version = "0.1.0", path = "../zaino-snapshot" }
 
 [dev-dependencies]
 rcgen = { workspace = true }
@@ -68,6 +69,7 @@ zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-internal-value-balance.workspace = true
 zaino-internal-block-hash-to-height.workspace = true
+zaino-snapshot = { path = "../zaino-snapshot", features = ["testing"] }
 
 [lints.rust]
 unreachable_pub = "warn"

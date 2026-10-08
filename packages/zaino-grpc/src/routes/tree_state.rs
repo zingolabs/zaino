@@ -1,5 +1,5 @@
 //! Tree-state methods: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` (framed once per
-//! snapshot), all at heights `<=` the snapshot's tip
+//! NFS publish), all at heights `<=` the served tip
 
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
-use zaino_nfs::Snapshot;
+use zaino_nfs::{At, Indexed};
 use zaino_persistence::{LayeredView, MapRead, SequenceRead};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
@@ -20,15 +20,17 @@ use crate::limits::ReadLanes;
 use crate::memo::PerView;
 use crate::wire::{self, path, status_response, streamed_response, unary_response};
 
-/// Framed answers per snapshot: the layer heights every synced wallet asks, the tip, and each
+/// Framed answers per NFS publish: the layer heights every synced wallet asks, the tip, and each
 /// pool's root list as of the tip (sliced per request)
+///
+/// - keyed on the `Indexed` publish, not the global snapshot (that one moves per chain-view fold)
 pub(crate) struct Memos<V> {
     states: Memo<V, State, Result<Bytes, Status>>,
     roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
-/// One answer kind, keyed by `K`, per snapshot
-type Memo<V, K, T> = PerView<Snapshot<V>, K, T>;
+/// One answer kind, keyed by `K`, per NFS publish
+type Memo<V, K, T> = PerView<Indexed<V>, K, T>;
 
 impl<V> Default for Memos<V> {
     fn default() -> Self {
@@ -42,16 +44,20 @@ enum State {
     At(Height),
 }
 
-/// Everything one tree-state request is answered with (`trees` = `snap`'s)
+/// Everything one tree-state request is answered with (`trees` = `indexed`'s served tip's)
 pub(crate) struct Answering<V> {
-    pub(crate) snap: Arc<Snapshot<V>>,
+    pub(crate) indexed: Arc<Indexed<V>>,
     pub(crate) trees: TreeStateReader<LayeredView<V>>,
     pub(crate) reads: ReadLanes,
     pub(crate) memos: Arc<Memos<V>>,
 }
 
 impl<V: SequenceRead + MapRead> Answering<V> {
-    /// Framed on first ask per snapshot, on the point lane (single flight); then inline
+    fn served(&self) -> &At<V> {
+        self.indexed.served()
+    }
+
+    /// Framed on first ask per NFS publish, on the point lane (single flight); then inline
     async fn once<K, T>(
         &self,
         memo: fn(&Memos<V>) -> &Memo<V, K, T>,
@@ -62,12 +68,12 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         K: Eq + std::hash::Hash + Send + 'static,
         T: Clone + Send + 'static,
     {
-        if let Some(hit) = memo(&self.memos).cached(&self.snap, &key) {
+        if let Some(hit) = memo(&self.memos).cached(&self.indexed, &key) {
             return Ok(hit);
         }
-        let (memos, snap, trees) =
-            (Arc::clone(&self.memos), Arc::clone(&self.snap), self.trees.clone());
-        let compute = move || memo(&memos).get_or_compute(&snap, key, || compute(&trees));
+        let (memos, indexed, trees) =
+            (Arc::clone(&self.memos), Arc::clone(&self.indexed), self.trees.clone());
+        let compute = move || memo(&memos).get_or_compute(&indexed, key, || compute(&trees));
         self.reads.read(Lane::Point, compute).await
     }
 
@@ -77,7 +83,7 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         at: Height,
     ) -> impl FnOnce(&TreeStateReader<LayeredView<V>>) -> Result<Bytes, Status> + Send + 'static
     {
-        let (tip, params) = (self.snap.tip().height, self.snap.params());
+        let (tip, params) = (self.served().tip().height, self.served().params());
         move |trees| {
             if at > tip {
                 return Err(to_status(ServeError::NotFound { height: at }));
@@ -158,7 +164,7 @@ where
 }
 
 async fn latest<V: SequenceRead + MapRead>(answering: &Answering<V>) -> Result<Bytes, Status> {
-    let state = answering.state_at(answering.snap.tip().height);
+    let state = answering.state_at(answering.served().tip().height);
     answering.once(|memos| &memos.states, State::Latest, state).await?
 }
 
@@ -183,7 +189,7 @@ where
         return answering.reads.read(Lane::Point, move || state(&trees)).await?;
     }
 
-    let (height, hash) = wire::locate(&answering.snap, &id.hash, "GetTreeState")?;
+    let (height, hash) = wire::locate(answering.served(), &id.hash, "GetTreeState")?;
     let (trees, state) = (answering.trees.clone(), answering.state_at(height));
     let framed = answering.reads.read(Lane::Point, move || {
         let held = trees.treestate(height).map(|state| state.block_hash);
@@ -247,7 +253,7 @@ where
     let start = u16::try_from(request.start_index).map_err(|_| ceiling("startIndex"))?;
     let max = u16::try_from(request.max_entries).map_err(|_| ceiling("maxEntries"))?;
 
-    let tip = answering.snap.tip().height;
+    let tip = answering.served().tip().height;
     let every = move |trees: &TreeStateReader<LayeredView<V>>| {
         let mut roots = trees.subtree_roots(pool, 0, 0).map_err(to_status)?;
         roots.retain(|root| root.completing.height <= tip);
@@ -275,9 +281,10 @@ mod tests {
     use http::{HeaderValue, Response};
     use prost::Message as _;
     use tonic::{body::Body, Status};
+    use zaino_chainview::{ChainViewSnapshot, EndpointSet};
     use zaino_header_chain::VerifiedChain;
     use zaino_index_tree_state::PoolActivations;
-    use zaino_nfs::{ChainParams, NfsHandle};
+    use zaino_nfs::{ChainParams, Indexed};
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::{
@@ -286,6 +293,7 @@ mod tests {
     };
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
     use zaino_proto::proto::service as proto;
+    use zaino_snapshot::Snapshots;
 
     use crate::service::Routes;
     use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
@@ -368,8 +376,10 @@ mod tests {
             PoolActivations { sapling: h(1), orchard: Some(h(2)), ironwood: Some(h(3)) };
         let params = ChainParams { network: MAINNET, activations };
         let verified = Arc::new(VerifiedChain::regtest(&blocks));
-        let nfs = NfsHandle::fixed(verified, tip, params, vec![trees]);
-        let mut router = dispatch(Routes { nfs, ..routes() });
+        let indexed = Indexed::fixed(Arc::clone(&verified), tip, params, vec![trees]);
+        let view = ChainViewSnapshot::fixed(Some(verified), EndpointSet::default(), &[], &[], &[]);
+        let snapshots = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view));
+        let mut router = dispatch(Routes { snapshots, ..routes() });
 
         let mut ask = |path: &'static str, body: Vec<u8>| {
             let request = framed_request(path, body.into());
@@ -411,7 +421,7 @@ mod tests {
         let hash = <[u8; 32]>::from(block.header().hash);
         let trees = indexed(IndexKind::TreeState, &blocks);
         let mut router =
-            dispatch(Routes { nfs: snapshot(&blocks, vec![trees.clone()]), ..routes() });
+            dispatch(Routes { snapshots: snapshot(&blocks, vec![trees.clone()]), ..routes() });
 
         async fn tree_state_of(response: Response<Body>) -> proto::TreeState {
             use http_body_util::BodyExt as _;
@@ -470,7 +480,7 @@ mod tests {
         // Block-hash index holding the same block at 0, and one holding another block there
         let located_by = |locator: Vec<zaino_primitives::types::Block>| {
             let views = vec![trees.clone(), indexed(IndexKind::BlockHash, &locator)];
-            dispatch(Routes { nfs: snapshot(&blocks, views), ..routes() })
+            dispatch(Routes { snapshots: snapshot(&blocks, views), ..routes() })
         };
         let mut linked = located_by(blocks.clone());
         let response = linked.call(by_hash(hash)).await.expect("answers");

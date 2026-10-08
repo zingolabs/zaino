@@ -32,7 +32,7 @@ zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 zcash_protocol.workspace = true
 
 [features]
-# `NfsHandle::{fixed, unpublished}` (snapshots without a driver) + `ChainParams::of(MockChain)`
+# `Indexed::fixed` + `NfsProgress::fixed` (no driver) + `ChainParams::of(MockChain)`
 testing = ["zaino-primitives/testing"]
 
 [lints.rust]

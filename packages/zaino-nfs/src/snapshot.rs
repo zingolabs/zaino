@@ -1,8 +1,9 @@
-//! [`Snapshot`]: one served tip across every enabled index, what a request reads (`nfs.md` §6)
+//! [`Indexed`]: one served tip across every enabled index, the global snapshot's index half
+//! (`nfs.md` §6)
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the committed view
 //! - Layers rebased onto the committed views they pair with, at build (decision 4)
-//! - [`Snapshot::at`]: any folded node or the root, side branches included (G7)
+//! - [`Indexed::at`]: any folded node or the root, side branches included (G7)
 
 use std::sync::Arc;
 
@@ -74,7 +75,7 @@ impl<V> At<V> {
 ///
 /// - `served` = deepest folded best block, else `root` (lowest durable tip)
 /// - `durable` = each index's committed view as of this publish (republished per commit)
-pub struct Snapshot<V> {
+pub struct Indexed<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
     served: At<V>,
@@ -82,7 +83,7 @@ pub struct Snapshot<V> {
     graph: Graph<Folded>,
 }
 
-impl<V: View> Snapshot<V> {
+impl<V: View> Indexed<V> {
     /// Panics: `tip` neither a node of `graph` nor `root`
     pub(crate) fn new(
         chain: Arc<VerifiedChain>,
@@ -112,27 +113,14 @@ impl<V: View> Snapshot<V> {
     }
 }
 
-impl<V> Snapshot<V> {
+impl<V> Indexed<V> {
+    /// Chain `served` was judged under (the global snapshot judges under the chain view's)
     pub fn chain(&self) -> &Arc<VerifiedChain> {
         &self.chain
     }
 
     pub fn served(&self) -> &At<V> {
         &self.served
-    }
-
-    /// = `served().tip()`
-    pub fn tip(&self) -> BlockRef {
-        self.served.block
-    }
-
-    pub fn params(&self) -> ChainParams {
-        self.served.params
-    }
-
-    /// = `served().views()`
-    pub fn views(&self) -> &Views<V> {
-        &self.served.views
     }
 
     /// `hash` = a node folded in this snapshot (the root excluded)
@@ -149,7 +137,7 @@ fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -
 
 /// Every enabled index as of one block: its committed view + its layer above it
 ///
-/// - Snapshot's state, and a fold's parent
+/// - [`At`]'s state, and a fold's parent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -222,35 +210,12 @@ impl<V: MapRead> Views<V> {
     }
 }
 
-/// Latest [`Snapshot`] (`None` = nothing published yet), swapped whole per publish
-pub type Published<V> = watch::Receiver<Option<Arc<Snapshot<V>>>>;
+/// Latest [`Indexed`] (`None` = nothing folded or committed yet), swapped whole per publish
+pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;
 
-/// Reader's end: the latest [`Snapshot`], swapped whole per publish
-pub struct NfsHandle<V> {
-    published: Published<V>,
-}
-
-impl<V> Clone for NfsHandle<V> {
-    fn clone(&self) -> Self {
-        Self { published: self.published.clone() }
-    }
-}
-
-impl<V> NfsHandle<V> {
-    /// One load (`None` = nothing published yet)
-    pub fn snapshot(&self) -> Option<Arc<Snapshot<V>>> {
-        self.published.borrow().clone()
-    }
-
-    /// Next publish (`Err` = the driver stopped)
-    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
-        self.published.changed().await
-    }
-}
-
-/// Snapshots and handles no driver publishes into (consumers' tests)
+/// No driver publishes into it (consumers' tests)
 #[cfg(any(test, feature = "testing"))]
-impl<V: View> Snapshot<V> {
+impl<V: View> Indexed<V> {
     /// At `tip` on `chain`, `tip` = the root: each enabled index = its committed view, no layer
     pub fn fixed(
         chain: Arc<VerifiedChain>,
@@ -261,49 +226,6 @@ impl<V: View> Snapshot<V> {
         let mut views = PerIndex::default();
         durable.into_iter().for_each(|(kind, view)| views.insert(kind, view));
         Self::new(chain, tip, Some(tip), params, views, Graph::new())
-    }
-}
-
-#[cfg(any(test, feature = "testing"))]
-impl<V: View> NfsHandle<V> {
-    /// Nothing published yet (a booting NFS)
-    pub fn unpublished() -> Self {
-        Publisher::new().handle()
-    }
-
-    /// [`Snapshot::fixed`] for good
-    pub fn fixed(
-        chain: Arc<VerifiedChain>,
-        tip: BlockRef,
-        params: ChainParams,
-        durable: impl IntoIterator<Item = (IndexKind, V)>,
-    ) -> Self {
-        let published = Publisher::new();
-        published.publish(Snapshot::fixed(chain, tip, params, durable));
-        published.handle()
-    }
-}
-
-/// Driver's end of every [`NfsHandle`] and [`Published`] watch
-pub(crate) struct Publisher<V> {
-    published: watch::Sender<Option<Arc<Snapshot<V>>>>,
-}
-
-impl<V> Publisher<V> {
-    pub(crate) fn new() -> Self {
-        Self { published: watch::channel(None).0 }
-    }
-
-    pub(crate) fn handle(&self) -> NfsHandle<V> {
-        NfsHandle { published: self.published.subscribe() }
-    }
-
-    pub(crate) fn subscribe(&self) -> Published<V> {
-        self.published.subscribe()
-    }
-
-    pub(crate) fn publish(&self, snapshot: Snapshot<V>) {
-        self.published.send_replace(Some(Arc::new(snapshot)));
     }
 }
 

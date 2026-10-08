@@ -27,7 +27,7 @@ use zaino_sync::Human;
 
 use crate::config::{DaemonConfig, SnapshotConfig};
 use crate::error::IndexerError;
-use crate::status::{self, Phase, Snapshot};
+use crate::status::{self, Bootstrap, Phase};
 use zaino_sync::ByteSize;
 
 const STAGING: &str = ".zaino-snapshot";
@@ -55,7 +55,7 @@ struct Manifest {
 }
 
 fn error(message: impl std::fmt::Display) -> IndexerError {
-    IndexerError::Snapshot(message.to_string())
+    IndexerError::Bootstrap(message.to_string())
 }
 
 /// Fills every enabled index whose directory is missing or empty; a no-op once none is
@@ -91,7 +91,7 @@ pub(crate) async fn bootstrap(
     let archive_url =
         manifest_url.join(&manifest.archive).map_err(|e| error(format!("archive url: {e}")))?;
     let source = archive_url.host_str().unwrap_or_default().to_owned();
-    let progress = |phase, done, total, rate| Snapshot {
+    let progress = |phase, done, total, rate| Bootstrap {
         phase,
         source: source.clone(),
         height: manifest.height,
@@ -112,7 +112,7 @@ pub(crate) async fn bootstrap(
         aria2
             .download(archive_url.as_str(), ARCHIVE, |state| {
                 let total = state.total.max(manifest.bytes);
-                status::snapshot(Some(progress(
+                status::bootstrap(Some(progress(
                     Phase::Downloading,
                     state.done,
                     total,
@@ -167,7 +167,7 @@ pub(crate) async fn bootstrap(
     for (dir, path) in &empty {
         install(&staging.join(UNPACKED).join(dir), path)?;
     }
-    status::snapshot(None);
+    status::bootstrap(None);
     std::fs::remove_dir_all(&staging).map_err(|e| error(format!("{}: {e}", staging.display())))?;
     info!(
         indexes = empty.len(),
@@ -237,7 +237,7 @@ fn install(src: &Path, index: &Path) -> Result<(), IndexerError> {
 async fn tracked<T: Send + 'static>(
     phase: Phase,
     total: u64,
-    progress: &impl Fn(Phase, u64, u64, Option<u64>) -> Snapshot,
+    progress: &impl Fn(Phase, u64, u64, Option<u64>) -> Bootstrap,
     work: impl FnOnce(Arc<AtomicU64>) -> T + Send + 'static,
 ) -> Result<T, IndexerError> {
     let read = Arc::new(AtomicU64::new(0));
@@ -252,7 +252,7 @@ async fn tracked<T: Send + 'static>(
             done = &mut job => return Ok(done?),
             _ = ticks.tick() => {
                 let done = read.load(Ordering::Relaxed);
-                status::snapshot(Some(progress(phase, done, total, None)));
+                status::bootstrap(Some(progress(phase, done, total, None)));
                 if logged.elapsed() >= LOG_EVERY {
                     logged = Instant::now();
                     info!(done = %ByteSize(done), total = %ByteSize(total), "{}", match phase {

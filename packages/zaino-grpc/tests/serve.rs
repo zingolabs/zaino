@@ -27,10 +27,10 @@ fn routes() -> Routes<MockChain, DiskView> {
     );
     let chain = chain.expect("one endpoint");
     Routes {
-        chain: Arc::new(chain),
+        snapshots: zaino_snapshot::Snapshots::fixed(None, chain.subscriber().current()),
+        submit: Arc::new(chain),
         validators,
         network,
-        nfs: zaino_nfs::NfsHandle::unpublished(),
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     }
 }

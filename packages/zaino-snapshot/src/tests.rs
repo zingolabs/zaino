@@ -4,6 +4,7 @@ use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use tokio::sync::watch;
@@ -12,20 +13,24 @@ use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_index_tree_state::PoolActivations;
 use zaino_internal_block_hash_to_height as block_hash;
-use zaino_nfs::{ChainParams, Snapshot as Indexed};
+use zaino_nfs::{ChainParams, Indexed, NfsProgress};
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
 use zaino_source::mock::MockChain;
-use zaino_traffic::{Limits, TrafficBalancer, Trusted};
+use zaino_traffic::{
+    Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
+};
 use zcash_protocol::consensus::NetworkType;
 
 use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
-use crate::{describe_metrics, emit_gauges, Publisher, Report, Snapshot, SnapshotError, Tips};
+use crate::{
+    describe_metrics, emit_gauges, Publisher, Report, Snapshot, SnapshotError, Snapshots, Tips,
+};
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const PARAMS: ChainParams = ChainParams {
@@ -83,9 +88,10 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     assert!(matches!(stopped, Err(SnapshotError::IndexedGone)), "{stopped:?}");
 }
 
-/// A 0..=5 final through 2, side S4..=S5 off A3; one of two validators holds A5; block-hash
-/// durable through A5 (the only index), served A5; one relayed tx, one unlisted: the `/statusz`
-/// body field by field, then the gauges a scrape renders from the same snapshot
+/// A 0..=5 final through 2, side S4..=S5 off A3; one of two validators holds A5 (the balancer:
+/// one live at 12 ms, one degraded after 3 failures); block-hash durable through A5 (the only
+/// index), served A5, handed 5; one relayed tx, one unlisted: the `/statusz` body field by
+/// field, then the gauges a scrape renders from the same snapshot
 #[test]
 fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let mut builder = Chain::new();
@@ -125,9 +131,19 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         &[(relayed, Bytes::from_static(b"relayed"))],
         &[(unlisted, Bytes::from_static(b"unlisted"))],
     );
-    let core = Core::new(Some(Arc::new(indexed)), Arc::new(view), DEPTH);
-    let snap = core.handle().load();
-    let handed = Some(Height::try_from(5u32).expect("h"));
+    let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
+    let progress = NfsProgress::fixed(Some(Height::try_from(5u32).expect("h")));
+    let member = |at: usize, health, failures, latency| MemberRow {
+        id: MemberId::Trusted(ValidatorId::new(at).expect("small")),
+        health,
+        failures,
+        benched_until: None,
+        latency: Duration::from_millis(latency),
+        in_flight: 0,
+    };
+    let members = MemberTable {
+        rows: vec![member(0, Health::Live, 0, 12), member(1, Health::Degraded, 3, 40)],
+    };
 
     let block = |block: &Block| {
         let at = at(block);
@@ -136,12 +152,14 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let work = chain.forks()[0].cumulative_work.to_string();
     let disabled =
         |name: &str| serde_json::json!({ "name": name, "enabled": false, "durable": null });
-    let validator = |address: &str| {
-        serde_json::json!({
-            "address": address, "agreement": "unknown", "height": null, "stale_blocks": null,
-            "streaming": false, "release": null, "peers": [],
-        })
-    };
+    let validator =
+        |address: &str, state: &str, latency_ms: u64, failures: u32, at: Option<u32>| {
+            serde_json::json!({
+                "address": address, "state": state, "agreement": "unknown", "height": at,
+                "stale_blocks": at.map(|_| 0), "latency_ms": latency_ms, "failures": failures,
+                "observed_s_ago": null, "streaming": false, "release": null, "peers": [],
+            })
+        };
     let expected = serde_json::json!({
         "seq": 0,
         "tips": {
@@ -157,7 +175,10 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             disabled("tree_state"),
             disabled("transparent_address"),
         ],
-        "validators": [validator(addresses[0]), validator(addresses[1])],
+        "validators": [
+            validator(addresses[0], "live", 12, 0, Some(5)),
+            validator(addresses[1], "degraded", 40, 3, None),
+        ],
         "alarms": {
             "partitioned": false, "eclipsed": false, "finality_paused": false,
             "stale": [], "ending": [],
@@ -170,21 +191,31 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             { "from": block(&a[3]), "tip": block(&s[5]), "cumulative_work": work, "folded": null },
         ],
     });
-    let report = serde_json::to_value(Report::of(&snap, handed)).expect("serializes");
+    let report = serde_json::to_value(Report::of(&snap, &progress, &members)).expect("serializes");
     assert_eq!(report, expected);
 
     let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
     let render = recorder.handle();
     metrics::with_local_recorder(&recorder, || {
         describe_metrics();
-        emit_gauges(&snap, handed);
+        emit_gauges(&snap, &progress);
     });
     let rendered = render.render();
+    let first = addresses[0];
     for line in [
-        "zaino_best_tip 5",
-        "zaino_fetch_height 5",
-        "zaino_index_finalized_height{index=\"block_hash\"} 5",
-        "zaino_index_synced{index=\"block_hash\"} 1",
+        "zaino_best_tip 5".to_owned(),
+        "zaino_fetch_height 5".to_owned(),
+        "zaino_index_finalized_height{index=\"block_hash\"} 5".to_owned(),
+        "zaino_index_synced{index=\"block_hash\"} 1".to_owned(),
+        "zaino_chainview_best_height 5".to_owned(),
+        "zaino_chainview_tip_holders 1".to_owned(),
+        "zaino_chainview_finality_paused 0".to_owned(),
+        "zaino_chainview_mempool_transactions{state=\"verified\"} 0".to_owned(),
+        "zaino_chainview_mempool_transactions{state=\"ours_unverified\"} 2".to_owned(),
+        format!("zaino_chainview_endpoint_state{{endpoint=\"{first}\",state=\"pending\"}} 1"),
+        format!("zaino_chainview_agreement{{endpoint=\"{first}\",agreement=\"unknown\"}} 1"),
+        format!("zaino_chainview_push_stream{{endpoint=\"{first}\"}} 0"),
+        format!("zaino_chainview_tip_height{{endpoint=\"{first}\"}} 5"),
     ] {
         assert!(rendered.lines().any(|at| at == line), "{line:?} not in:\n{rendered}");
     }

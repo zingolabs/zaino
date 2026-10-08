@@ -2,9 +2,9 @@
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
-//! - one [`Snapshot`] per index request or stream, pinned for its life: every index answers at
-//!   heights `<=` its tip (`GetLatestBlock` = that tip)
-//! - no snapshot yet (a booting NFS) = every index method `UNAVAILABLE`
+//! - one global [`Snapshot`](zaino_snapshot::Snapshot) per request or stream (G1), pinned for
+//!   its life: every index answers at heights `<=` its served tip (`GetLatestBlock` = that tip)
+//! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a disabled `[index.*]` = its methods `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
 
@@ -19,25 +19,27 @@ use std::{
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
-use zaino_nfs::{NfsHandle, Snapshot};
 use zaino_persistence::{IndexKind, MapRead, SequenceRead};
+use zaino_snapshot::{Snapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::limits::ReadLanes;
 use crate::routes::{blocks, chain, transparent_address, tree_state};
-use crate::wire::{frame, path, status_response, unary_response};
+use crate::wire::{self, frame, path, status_response, unary_response};
 
-/// What one `GrpcService` answers from: chain view, validators, the NFS's snapshots
+/// What one `GrpcService` answers from
 ///
+/// - `snapshots` = every read (chain, indexes, mempool, validator facts)
+/// - `submit` = `SendTransaction` only; `validators` = `GetTransaction` + address tx bytes
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
 /// - `max_address_rows` = receives one transparent-address request may walk
 pub struct Routes<S: ChainDataSource, V> {
-    pub chain: Arc<ChainView<S>>,
+    pub snapshots: Snapshots<V>,
+    pub submit: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
     pub network: NetworkType,
-    pub nfs: NfsHandle<V>,
     pub max_address_rows: NonZeroUsize,
 }
 
@@ -74,30 +76,32 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
     {
         let routes = &self.routes;
         let reads = || self.reads.clone();
+        let snap = routes.snapshots.load();
+        let unavailable = |why: Unavailable| status_response(wire::unavailable(why));
         match path {
             path::GET_LATEST_BLOCK
             | path::GET_BLOCK
             | path::GET_BLOCK_RANGE
             | path::GET_BLOCK_RANGE_NULLIFIERS => {
-                let snap = match self.snapshot() {
-                    Ok(snap) => snap,
-                    Err(syncing) => return status_response(syncing),
+                let at = match snap.served() {
+                    Ok(at) => at,
+                    Err(why) => return unavailable(why),
                 };
-                let Some(blocks) = snap.views().compact_block() else {
+                let Some(blocks) = at.views().compact_block() else {
                     return not_enabled(path, IndexKind::CompactBlock.name());
                 };
-                blocks::dispatch(&snap, blocks, path, body, reads()).await
+                blocks::dispatch(at, blocks, path, body, reads()).await
             }
             path::GET_TREE_STATE | path::GET_LATEST_TREE_STATE | path::GET_SUBTREE_ROOTS => {
-                let snap = match self.snapshot() {
-                    Ok(snap) => snap,
-                    Err(syncing) => return status_response(syncing),
+                // the NFS publish itself: memo identity (`served()` = its served tip)
+                let Some(indexed) = snap.indexed() else {
+                    return unavailable(Unavailable::NothingServed);
                 };
-                let Some(trees) = snap.views().tree_state() else {
+                let Some(trees) = indexed.served().views().tree_state() else {
                     return not_enabled(path, IndexKind::TreeState.name());
                 };
-                let memos = Arc::clone(&self.tree_states);
-                let answering = tree_state::Answering { snap, trees, reads: reads(), memos };
+                let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&self.tree_states));
+                let answering = tree_state::Answering { indexed, trees, reads: reads(), memos };
                 tree_state::dispatch(answering, path, body).await
             }
             path::GET_ADDRESS_UTXOS
@@ -106,16 +110,15 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
             | path::GET_TADDRESS_BALANCE_STREAM
             | path::GET_TADDRESS_TRANSACTIONS
             | path::GET_TADDRESS_TXIDS => {
-                let snap = match self.snapshot() {
-                    Ok(snap) => snap,
-                    Err(syncing) => return status_response(syncing),
+                let at = match snap.served() {
+                    Ok(at) => at,
+                    Err(why) => return unavailable(why),
                 };
-                let Some(reader) = snap.views().transparent_address() else {
+                let Some(reader) = at.views().transparent_address() else {
                     return not_enabled(path, IndexKind::TransparentAddress.name());
                 };
-                let reader = reader.as_of(snap.tip().height).with_max_rows(routes.max_address_rows);
-                let index =
-                    transparent_address::Addresses { reader, network: snap.params().network };
+                let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
+                let index = transparent_address::Addresses { reader, network: at.params().network };
                 match path {
                     path::GET_TADDRESS_TRANSACTIONS | path::GET_TADDRESS_TXIDS => {
                         let validators = routes.validators.clone();
@@ -124,29 +127,25 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
                     _ => transparent_address::dispatch(index, path, body, reads()).await,
                 }
             }
-            path::SEND_TRANSACTION | path::GET_MEMPOOL_TX | path::GET_MEMPOOL_STREAM => {
-                chain::dispatch(&routes.chain, path, body).await
-            }
+            path::SEND_TRANSACTION => match chain::send(&routes.submit, body).await {
+                Ok(record) => unary_response(record),
+                Err(status) => status_response(status),
+            },
+            path::GET_MEMPOOL_TX => match chain::mempool_tx(&snap, body).await {
+                Ok(records) => wire::streamed_response(records),
+                Err(status) => status_response(status),
+            },
+            path::GET_MEMPOOL_STREAM => chain::mempool_stream(&snap),
             path::GET_TRANSACTION => match chain::transaction(&routes.validators, body).await {
                 Ok(record) => unary_response(record),
                 Err(status) => status_response(status),
             },
-            path::GET_LIGHTD_INFO => {
-                let view = routes.chain.subscriber();
-                let served = routes.nfs.snapshot().map(|snap| snap.tip().height);
-                match chain::lightd_info(&view, served, routes.network) {
-                    Ok(info) => unary_response(frame(&info)),
-                    Err(status) => status_response(status),
-                }
-            }
+            path::GET_LIGHTD_INFO => match chain::lightd_info(&snap, routes.network) {
+                Ok(info) => unary_response(frame(&info)),
+                Err(status) => status_response(status),
+            },
             unknown => status_response(Status::unimplemented(format!("{unknown}: no such method"))),
         }
-    }
-
-    /// Current snapshot (`UNAVAILABLE` before the first: retry, indexes opening)
-    fn snapshot(&self) -> Result<Arc<Snapshot<V>>, Status> {
-        let snap = self.routes.nfs.snapshot();
-        snap.ok_or_else(|| Status::unavailable("the indexes are syncing: nothing served yet"))
     }
 }
 
@@ -187,11 +186,12 @@ where
 mod tests {
     use http::{HeaderMap, HeaderValue, Response};
     use tonic::{body::Body, Status};
-    use zaino_nfs::NfsHandle;
     use zaino_persistence::IndexKind;
 
     use super::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, request, routes, snapshot};
+    use crate::testing::{
+        dispatch, framed_request, indexed, request, routes, snapshot, snapshot_held,
+    };
     use crate::wire::path;
 
     /// - Nothing published: every index method `UNAVAILABLE` (retry), `GetLightdInfo` without a
@@ -202,7 +202,7 @@ mod tests {
         use tonic::Code::{Unavailable, Unimplemented};
         use tower::Service as _;
 
-        let mut booting = dispatch(Routes { nfs: NfsHandle::unpublished(), ..routes() });
+        let mut booting = dispatch(routes());
         let unknown = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping";
         let health = "/grpc.health.v1.Health/Check";
         let syncing = "the indexes are syncing: nothing served yet".to_owned();
@@ -224,7 +224,8 @@ mod tests {
         let tip = chain.extend(chain.genesis().hash, 1);
         let blocks = chain.path(tip.hash);
         let compact = indexed(IndexKind::CompactBlock, &blocks);
-        let mut serving = dispatch(Routes { nfs: snapshot(&blocks, vec![compact]), ..routes() });
+        let mut serving =
+            dispatch(Routes { snapshots: snapshot(&blocks, vec![compact]), ..routes() });
         let off = |method: &str, index: &str| {
             (Unimplemented, format!("{method} needs the {index} index, which is not enabled"))
         };
@@ -246,14 +247,19 @@ mod tests {
         }
     }
 
-    /// R12: one snapshot, every RPC at one tip
-    /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip)
-    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 stops at 2, `GetLatestTreeState` = 2's
+    /// G1, R12: one global snapshot, every RPC at one tip
+    /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip);
+    ///   validator 0 holds 2, one tx of ours relayed
+    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 stops at 2, `GetLatestTreeState` = 2's,
+    ///   `GetLightdInfo.blockHeight` = 2 + the holder's branch
     /// - `GetTreeState` 3 = a miss (never past the served tip); block hash = its tree state's
+    /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
+    ///   fixed snapshot never moves on)
     #[tokio::test]
-    async fn get_latest_block_get_block_range_and_get_tree_state_agree_on_the_snapshot_tip() {
+    async fn every_rpc_agrees_on_one_snapshot() {
         use prost::Message as _;
         use tower::Service as _;
+        use zaino_chainview::EndpointSet;
         use zaino_proto::frame::{split_frame, FRAME_HEADER};
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
@@ -263,7 +269,11 @@ mod tests {
         let blocks = chain.path(tip.hash);
         let views =
             vec![indexed(IndexKind::CompactBlock, &blocks), indexed(IndexKind::TreeState, &blocks)];
-        let mut router = dispatch(Routes { nfs: snapshot(&blocks[..=2], views), ..routes() });
+        let raw = zaino_source::mock::fixture_transactions(2_000_000).remove(0);
+        let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
+        let ours = [(txid, bytes::Bytes::from(raw.clone()))];
+        let snapshots = snapshot_held(&blocks[..=2], views, EndpointSet::at([0]), &ours);
+        let mut router = dispatch(Routes { snapshots, ..routes() });
         let mut call = |path: &'static str, message: Vec<u8>| {
             let response = router.call(framed_request(path, message.into()));
             async move {
@@ -309,6 +319,27 @@ mod tests {
         assert_eq!(code, Some(tonic::Code::NotFound), "3 held, past the served tip");
         let (code, _, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
         assert_eq!(code, Some(tonic::Code::NotFound), "GetBlock agrees");
+
+        let (_, info, _) = call(path::GET_LIGHTD_INFO, Vec::new()).await;
+        let info = proto::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
+        let lightd = (info.block_height, info.estimated_height, info.consensus_branch_id.as_str());
+        assert_eq!(lightd, (2, 2, "00000000"), "served height + the holder's view, one load");
+
+        let every = vec![1, 2, 3, 4];
+        let request = proto::GetMempoolTxRequest { pool_types: every, ..Default::default() };
+        let request = request.encode_to_vec();
+        let (_, listed, trailers) = call(path::GET_MEMPOOL_TX, request).await;
+        let (compact, rest) = split_frame(&listed).expect("one CompactTx");
+        let compact = cf::CompactTx::decode(compact).expect("a CompactTx");
+        let ours = <[u8; 32]>::from(txid).to_vec();
+        assert_eq!((compact.txid, rest.len()), (ours, 0), "held: our relay, compacted");
+        assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
+        let (_, streamed, trailers) = call(path::GET_MEMPOOL_STREAM, Vec::new()).await;
+        let (opening, rest) = split_frame(&streamed).expect("the opening");
+        let opening = proto::RawTransaction::decode(opening).expect("a RawTransaction");
+        let opened = (opening.data.as_ref(), opening.height, rest.len());
+        assert_eq!(opened, (&raw[..], 0, 0), "our relay, unmined, then the end");
+        assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
     }
 
     /// Every index path on one router, each index enabled: each answers `OK` off its own index;
@@ -324,7 +355,7 @@ mod tests {
         let blocks = chain.path(tip.hash);
         let kinds = [IndexKind::CompactBlock, IndexKind::TreeState, IndexKind::TransparentAddress];
         let views = kinds.into_iter().map(|kind| indexed(kind, &blocks)).collect();
-        let mut router = dispatch(Routes { nfs: snapshot(&blocks, views), ..routes() });
+        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, views), ..routes() });
 
         let address = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs".to_owned();
         let range = proto::BlockRange {

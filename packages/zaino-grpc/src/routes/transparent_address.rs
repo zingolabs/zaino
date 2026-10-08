@@ -334,7 +334,7 @@ mod tests {
         // the validator serves the same chain the index holds
         let node = std::sync::Arc::new(MockChain::serving(chain.path(tip.hash)));
         let (routes, balancing, _) = routes_over(&node);
-        let routes = Routes { nfs: snapshot(&blocks, vec![index]), ..routes };
+        let routes = Routes { snapshots: snapshot(&blocks, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
@@ -556,7 +556,7 @@ mod tests {
         }]);
         let blocks = chain.path(chain.genesis().hash);
         let index = indexed(IndexKind::TransparentAddress, &blocks);
-        let mut router = dispatch(Routes { nfs: snapshot(&blocks, vec![index]), ..routes() });
+        let mut router = dispatch(Routes { snapshots: snapshot(&blocks, vec![index]), ..routes() });
 
         let mainnet = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         let testnet =

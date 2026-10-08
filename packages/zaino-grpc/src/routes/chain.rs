@@ -1,5 +1,6 @@
-//! Methods no index backs: `SendTransaction` + mempool methods (chain view), `GetTransaction`
-//! (forwarded: consensus bytes, usage.md "Why `GetTransaction` forwards"), `GetLightdInfo`
+//! Methods no index backs: `SendTransaction` (chain view), mempool methods + `GetLightdInfo`
+//! (the snapshot's chain view half), `GetTransaction` (forwarded: consensus bytes, usage.md "Why
+//! `GetTransaction` forwards")
 //!
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = the validator's network-tip estimate ("how far behind")
@@ -8,50 +9,31 @@ use http::{HeaderValue, Response};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
-use zaino_chainview::{ChainView, ChainViewSubscriber, MempoolEntry, SubmitError};
+use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
-    BlockchainInfo, Height, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
+    BlockchainInfo, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
 };
 use zaino_proto::proto::service::{self as proto, LightdInfo, RawTransaction};
+use zaino_snapshot::Snapshot;
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::wire::{self, decode_request, frame, path, status_response, trailers};
-
-pub(crate) async fn dispatch<S: ChainDataSource, B>(
-    view: &ChainView<S>,
-    path: &str,
-    body: B,
-) -> Response<Body>
-where
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    match path {
-        path::SEND_TRANSACTION => match send(view, body).await {
-            Ok(record) => wire::unary_response(record),
-            Err(status) => status_response(status),
-        },
-        path::GET_MEMPOOL_STREAM => stream(&view.subscriber()),
-        path::GET_MEMPOOL_TX => match compact(&view.subscriber(), body).await {
-            Ok(records) => wire::streamed_response(records),
-            Err(status) => status_response(status),
-        },
-        _ => status_response(Status::unimplemented("not a chainview method")),
-    }
-}
+use crate::wire::{self, decode_request, frame, status_response, trailers};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
-/// - Materialised, not lazy (CPU over in-memory bytes; pinned view never held across awaits)
+/// - Materialised, not lazy (CPU over in-memory bytes)
 /// - consensus parse once per entry ([`Projection`](zaino_chainview::Projection), slot 0, every
 ///   pool); per request only the slot and the pool selection, over the cached bytes
 /// - a transaction the selection leaves with no component is dropped, as from a block
 ///   ([`project_tx_at`]); slots stay the listing's
-async fn compact<B>(view: &ChainViewSubscriber, body: B) -> Result<Vec<bytes::Bytes>, Status>
+pub(crate) async fn mempool_tx<V, B>(
+    snap: &Snapshot<V>,
+    body: B,
+) -> Result<Vec<bytes::Bytes>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -59,8 +41,7 @@ where
     let request: proto::GetMempoolTxRequest = decode_request(body).await?;
     let pools = wire::pools(&request.pool_types)?;
 
-    let pinned = view.current();
-    let mempool = pinned.mempool().map_err(|below| Status::unavailable(below.to_string()))?;
+    let mempool = snap.mempool().map_err(wire::unavailable)?;
 
     let mut framed = Vec::new();
     for (slot, entry) in mempool.excluding(&request.exclude_txid_suffixes).into_iter().enumerate() {
@@ -80,7 +61,10 @@ fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
 
 /// Submitted (§6); rejection = domain answer, only unreachable = a status (wallet tells "no"
 /// from "unreachable")
-async fn send<S: ChainDataSource, B>(view: &ChainView<S>, body: B) -> Result<bytes::Bytes, Status>
+pub(crate) async fn send<S: ChainDataSource, B>(
+    view: &ChainView<S>,
+    body: B,
+) -> Result<bytes::Bytes, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -112,14 +96,15 @@ fn unmined(entry: &MempoolEntry) -> proto::RawTransaction {
     proto::RawTransaction { data: entry.raw.clone(), height: 0 }
 }
 
-/// `GetMempoolStream`: mempool at the tip as one chunk, then each arrival, closed by a mined
-/// block (no held verified tip = `UNAVAILABLE`, never a silent stream)
+/// `GetMempoolStream`: the servable mempool as one chunk, then each arrival, closed once the
+/// served tip moves (no holder of the verified best = `UNAVAILABLE`, never a silent stream)
 ///
+/// - end ⇒ the next load serves the new tip (`GetLatestBlock` ≥ it: G5)
 /// - each record encoded once (first subscriber to reach it); the rest share it by refcount
-fn stream(view: &ChainViewSubscriber) -> Response<Body> {
-    let tail = match view.tail() {
+pub(crate) fn mempool_stream<V>(snap: &Snapshot<V>) -> Response<Body> {
+    let tail = match snap.mempool_stream() {
         Ok(tail) => tail,
-        Err(below) => return status_response(Status::unavailable(below.to_string())),
+        Err(why) => return status_response(wire::unavailable(why)),
     };
     let opening = tail.opening_rendered(|entries| {
         wire::frame_all(&entries.iter().map(unmined).collect::<Vec<_>>())
@@ -193,22 +178,20 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
-/// Serving metadata + served height + validators' view of the network
+/// Serving metadata + served height + validators' view of the network, from one snapshot
 ///
-/// - `served` = the snapshot tip `GetLatestBlock` serves (`LightdInfo.blockHeight` agrees)
+/// - `blockHeight` = the served tip `GetLatestBlock` serves; branch + schedule = a holder's (one
+///   load: the two never disagree)
 /// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
-/// - one pinned view, no validator call (validator half = as of its last poll tick)
-/// - no held verified tip = `UNAVAILABLE` (no stand-in branch, schedule or tip)
+/// - no validator call (validator half = as of its last poll tick)
+/// - no holder or nothing served = `UNAVAILABLE` (no stand-in branch, schedule or tip)
 /// - `lightwalletProtocolVersion` = vendored protos' release (pepper-sync refuses < v0.5.0)
-pub(crate) fn lightd_info(
-    view: &ChainViewSubscriber,
-    served: Option<Height>,
+pub(crate) fn lightd_info<V>(
+    snap: &Snapshot<V>,
     network: NetworkType,
 ) -> Result<LightdInfo, Status> {
-    let pinned = view.current();
-    let chain = pinned.validator_info().map_err(|below| Status::unavailable(below.to_string()))?;
-    // nothing served yet: 0 (the proto has no "none")
-    let block_height = served.map_or(0, u64::from);
+    let (chain, served) = snap.lightd().map_err(wire::unavailable)?;
+    let block_height = u64::from(served);
 
     Ok(with_validator_view(
         LightdInfo {
@@ -254,12 +237,25 @@ mod tests {
     use zaino_proto::frame::split_frame;
     use zaino_proto::proto::service::PoolType;
 
+    use http::HeaderValue;
     use zaino_header_chain::VerifiedChain;
     use zaino_primitives::testing::Chain;
     use zaino_primitives::types::BlockRef;
     use zaino_source::mock::MockChain;
 
-    use crate::testing::{dispatch, framed_request, routes_over};
+    use crate::testing::{dispatch, framed_request, indexed_at, published, routes_over};
+    use crate::wire::path;
+
+    /// Up to 10 poll rounds (paused clock: instant) until `done`
+    async fn rounds(what: &str, done: impl Fn() -> bool) {
+        for _ in 0..10 {
+            if done() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+        panic!("never {what}");
+    }
 
     /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
     /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
@@ -379,32 +375,38 @@ mod tests {
         assert_eq!(upgrade, ("", 0), "none scheduled");
     }
 
-    /// - No verified tip, then a verified tip no polled validator holds = `UNAVAILABLE` naming why
-    /// - Holder polled → its `getblockchaininfo` + served height (sync fn = no validator call)
+    /// Over a live publisher, `UNAVAILABLE` naming why until all three hold:
+    /// - no verified tip; then verified, no polled validator holding it; then held, nothing served
+    /// - served at 5 → the holder's `getblockchaininfo` + the served height (one load, no
+    ///   validator call)
     #[tokio::test(start_paused = true)]
-    async fn lightd_info_refuses_without_a_held_tip_then_answers_from_the_holders_view() {
+    async fn lightd_info_refuses_until_a_held_tip_and_a_served_one_then_answers_from_one_load() {
         let mut chain = Chain::new();
         let tip_7 = chain.extend(chain.genesis().hash, 7);
-        let node = Arc::new(MockChain::serving(chain.path(tip_7.hash)));
-        let (routes, balancing, fold) = routes_over(&node);
-        let view = routes.chain;
-        let info = || lightd_info(&view.subscriber(), None, NetworkType::Main);
-
-        let why = |refused: Status| (refused.code(), refused.message().to_owned());
-        let refused = info().expect_err("no verified tip");
-        let headers = "no verified header chain tip yet".to_owned();
-        assert_eq!(why(refused), (tonic::Code::Unavailable, headers));
-        view.set_verified(Some(VerifiedChain::regtest(&chain.path(tip_7.hash))));
-        let refused = info().expect_err("verified, not yet held");
-        let unheld = "no trusted validator holds the verified tip 7 (of 1 configured)".to_owned();
-        assert_eq!(why(refused), (tonic::Code::Unavailable, unheld));
-
+        let path = chain.path(tip_7.hash);
+        let node = Arc::new(MockChain::serving(path.clone()));
+        let (mut routes, balancing, fold) = routes_over(&node);
+        let (publisher, nfs) = published(&mut routes);
+        let snapshots = routes.snapshots.clone();
+        let info = || lightd_info(&snapshots.load(), NetworkType::Main);
+        let refused = |why: &str| {
+            let refused = info().map_err(|status| (status.code(), status.message().to_owned()));
+            refused.err() == Some((tonic::Code::Unavailable, why.to_owned()))
+        };
         let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(publisher.run(cancel.clone()));
+
+        assert!(refused("no verified header chain tip yet"));
+        routes.submit.set_verified(Some(VerifiedChain::regtest(&path)));
+        let unheld = "no trusted validator holds the verified tip 7 (of 1 configured)";
+        rounds("verified, unheld", || refused(unheld)).await;
         tokio::spawn(balancing.run(cancel.clone()));
         let folding = tokio::spawn(fold.run(cancel.clone()));
-        let mut tip = view.subscriber().subscribe_tip();
-        tip.wait_for(Option::is_some).await.expect("view alive");
+        rounds("held, nothing served", || refused("the indexes are syncing: nothing served yet"))
+            .await;
 
+        nfs.send_replace(Some(Arc::new(indexed_at(&path[..=5], Vec::new()))));
+        rounds("served", || info().is_ok()).await;
         let expected = LightdInfo {
             version: env!("CARGO_PKG_VERSION").to_owned(),
             vendor: "zaino".to_owned(),
@@ -412,26 +414,25 @@ mod tests {
             chain_name: "main".to_owned(),
             consensus_branch_id: "00000000".to_owned(),
             estimated_height: 7,
-            block_height: 0,
+            block_height: 5,
             lightwallet_protocol_version: "v0.5.0".to_owned(),
             ..Default::default()
         };
-        assert_eq!(info().expect("held"), expected, "mock: tip 7, nothing served");
-        let five = Height::try_from(5u32).ok();
-        let served = lightd_info(&view.subscriber(), five, NetworkType::Main).expect("held");
-        assert_eq!(served, LightdInfo { block_height: 5, ..expected }, "the snapshot tip");
+        assert_eq!(info().expect("served"), expected, "mock: tip 7 held, 5 served");
 
         cancel.cancel();
         folding.await.expect("the fold ran to its cancel");
     }
 
-    /// 1,000 subscribers on one thread (a block of wallets):
+    /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:
     /// - refused without a verified tip
-    /// - mempool at the block, then each arrival once, in order, same bytes (shared by refcount)
-    /// - late subscriber = same log; next block ends all in `OK` trailers
+    /// - mempool at the served tip, then each arrival once, in order, same bytes (shared by
+    ///   refcount)
+    /// - late subscriber = same log; a new best block alone ends nothing; the served tip moving
+    ///   ends all in `OK` trailers, and the next load serves the new tip (G5)
     /// - resubscribe opens on the mempool as it now stands
     #[tokio::test(start_paused = true)]
-    async fn a_thousand_mempool_streams_share_one_encoded_log_until_a_block() {
+    async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
@@ -444,27 +445,23 @@ mod tests {
         let tip_11 = chain.mine(tip_10.hash);
         let node = Arc::new(MockChain::new());
         node.set_reachable(false);
-        let (routes, balancing, fold) = routes_over(&node);
-        let view = Arc::clone(&routes.chain);
+        let (mut routes, balancing, fold) = routes_over(&node);
+        let (publisher, nfs) = published(&mut routes);
+        let (view, snapshots) = (Arc::clone(&routes.submit), routes.snapshots.clone());
         let reader = view.subscriber();
         let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(fold.run(cancel.child_token()));
         let mut router = dispatch(routes);
-        // the header chain's verdict, standing in for header sync
+        // the header chain's verdict + the NFS's served tip, standing in for both
         let verified =
             |tip: BlockRef| view.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
+        let serve = |tip: BlockRef| {
+            let indexed = indexed_at(&chain.path(tip.hash), Vec::new());
+            nfs.send_replace(Some(Arc::new(indexed)));
+        };
         let stream = || framed_request(path::GET_MEMPOOL_STREAM, bytes::Bytes::new());
-        // Up to 10 poll rounds (paused clock: instant), until the fold lands
-        async fn rounds(until: impl Fn() -> bool) {
-            for _ in 0..10 {
-                if until() {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-            panic!("the fold never landed");
-        }
 
         let below = router.call(stream()).await.expect("router answers");
         let status = below.headers().get("grpc-status");
@@ -476,7 +473,10 @@ mod tests {
         }
         node.set_reachable(true);
         verified(tip_10);
-        rounds(|| reader.current().mempool().is_ok_and(|m| m.entries().count() == 2)).await;
+        let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
+        rounds("both listed", listed).await;
+        serve(tip_10);
+        rounds("10 served", || snapshots.load().tips().served == Some(tip_10)).await;
 
         let decoded = |chunk: bytes::Bytes| {
             let mut records = Vec::new();
@@ -533,20 +533,30 @@ mod tests {
         ];
         assert_eq!(late_log.map(decoded), [vec![(3, 0)], vec![(4, 0)], vec![(5, 0)]]);
 
+        // block 11 verified and held, not yet served: every stream stays open
         node.extend_best([chain.block(tip_11.hash).clone()]);
-        rounds(|| reader.current().endpoints()[0].tip() == Some(tip_11)).await;
+        rounds("11 held", || reader.current().endpoints()[0].tip() == Some(tip_11)).await;
         verified(tip_11);
+        rounds("11 best", || snapshots.load().tips().best == Some(tip_11)).await;
         subscribers.extend(late);
+        let open = tokio::time::timeout(std::time::Duration::from_millis(50), async {
+            subscribers[0].frame().await
+        });
+        assert!(open.await.is_err(), "best moved, served did not: still streaming");
+
+        // the NFS serves 11: every stream ends, and the next load serves 11
+        serve(tip_11);
         for body in &mut subscribers {
             let ended = body.frame().await.expect("a frame").expect("ok");
-            let trailers = ended.into_trailers().expect("the block ends the stream in trailers");
+            let trailers = ended.into_trailers().expect("the tip ends the stream in trailers");
             assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
             assert!(body.frame().await.is_none(), "nothing after the trailers");
         }
+        assert_eq!(snapshots.load().tips().served, Some(tip_11), "ended ⇒ the new tip served");
         let again = router.call(stream()).await.expect("router answers").into_body();
         let reopened = next_record(&mut [Box::pin(again)]).await;
         let now = [(1, 0), (2, 0), (3, 0), (4, 0), (5, 0)];
-        assert_eq!(decoded(reopened), now, "the new block opens on the mempool as it stands");
+        assert_eq!(decoded(reopened), now, "the new tip opens on the mempool as it stands");
         cancel.cancel();
     }
 
@@ -588,19 +598,17 @@ mod tests {
         for (tx, raw) in &chosen {
             node.mempool_insert(tx.txid, raw.clone());
         }
-        let (routes, balancing, fold) = routes_over(&node);
-        let reader = routes.chain.subscriber();
+        let (mut routes, balancing, fold) = routes_over(&node);
+        let (publisher, _nfs) = published(&mut routes);
+        let (reader, snapshots) = (routes.submit.subscriber(), routes.snapshots.clone());
         let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(publisher.run(cancel.child_token()));
         tokio::spawn(balancing.run(cancel.child_token()));
         tokio::spawn(fold.run(cancel.child_token()));
-        routes.chain.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
+        routes.submit.set_verified(Some(VerifiedChain::regtest(&chain.path(tip.hash))));
         let mut router = dispatch(routes);
-        for _ in 0..10 {
-            if reader.current().mempool().is_ok_and(|m| m.entries().count() == 3) {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        }
+        let three = || snapshots.load().mempool().is_ok_and(|m| m.entries().count() == 3);
+        rounds("three servable", three).await;
 
         let mut ask = async |request: proto::GetMempoolTxRequest| {
             let request = framed_request(path::GET_MEMPOOL_TX, request.encode_to_vec().into());

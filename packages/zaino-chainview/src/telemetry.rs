@@ -1,38 +1,23 @@
-//! Endpoint telemetry: gauges each fold, a log line per alarm edge
+//! Endpoint telemetry: alarm conditions per fold, event histograms + counters
 //!
 //! - Observation only: never moves the tip, never gates serving or sync (false alarm = a log line)
+//! - State gauges + alarm edge logs = `zaino-snapshot`'s (at scrape, per publish)
 
 use std::collections::HashSet;
-
-use tracing::{info, warn};
-use zaino_primitives::types::EndOfService;
 
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
 use zaino_traffic::{Health, ValidatorId};
 
-use crate::endpoints::{Agreement, EndpointSet, ValidatorMetadata};
-use crate::snapshot::{ChainViewSnapshot, Sighting};
+use crate::endpoints::{EndpointSet, ValidatorMetadata};
+use crate::snapshot::Sighting;
 use crate::submit::Ended;
 
 mod names {
-    pub(super) const ENDPOINT_STATE: &str = "zaino.chainview.endpoint_state";
-    pub(super) const AGREEMENT: &str = "zaino.chainview.agreement";
-    pub(super) const TIP_HEIGHT: &str = "zaino.chainview.tip_height";
-    pub(super) const STALE_BLOCKS: &str = "zaino.chainview.stale_blocks";
-    pub(super) const PEERS: &str = "zaino.chainview.peers";
-    pub(super) const TIP_HOLDERS: &str = "zaino.chainview.tip_holders";
-    pub(super) const BEST_HEIGHT: &str = "zaino.chainview.best_height";
-    pub(super) const SHARED_OUTBOUND_MIN: &str = "zaino.chainview.shared_outbound_min";
-    pub(super) const MEMPOOL_TRANSACTIONS: &str = "zaino.chainview.mempool_transactions";
     pub(super) const FIRST_TRUSTED: &str = "zaino.chainview.first_trusted_seconds";
     pub(super) const ALL_TRUSTED: &str = "zaino.chainview.all_trusted_seconds";
     pub(super) const RESIDENCE: &str = "zaino.chainview.residence_seconds";
-    pub(super) const RELEASE: &str = "zaino.chainview.release";
-    pub(super) const PUSH_STREAM: &str = "zaino.chainview.push_stream";
     pub(super) const SUBMISSIONS: &str = "zaino.chainview.submissions_total";
     pub(super) const SUBMISSION_ATTEMPTS: &str = "zaino.chainview.submission_attempts";
-    pub(super) const END_OF_SERVICE_HEIGHT: &str = "zaino.chainview.end_of_service_height";
-    pub(super) const FINALITY_PAUSED: &str = "zaino.chainview.finality_paused";
 }
 
 /// Sub-second relay hops to hour-long residence
@@ -49,7 +34,7 @@ pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
 
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge, describe_histogram};
+    use metrics::{describe_counter, describe_histogram};
 
     describe_counter!(
         names::SUBMISSIONS,
@@ -59,12 +44,6 @@ pub fn describe_metrics() {
     describe_histogram!(
         names::SUBMISSION_ATTEMPTS,
         "Entries one submission pushed to before it ended, by outcome"
-    );
-
-    describe_gauge!(
-        names::MEMPOOL_TRANSACTIONS,
-        "Held mempool transactions, by state (verified = a trusted listing; ours_unverified = our \
-         relay, unlisted)"
     );
     describe_histogram!(
         names::FIRST_TRUSTED,
@@ -81,46 +60,9 @@ pub fn describe_metrics() {
         metrics::Unit::Seconds,
         "First sighting to leaving the view, by how (block = at a tip move; unlisted = evicted)"
     );
-
-    describe_gauge!(
-        names::ENDPOINT_STATE,
-        "1 on the endpoint's health as of its last poll, by endpoint"
-    );
-    describe_gauge!(
-        names::AGREEMENT,
-        "1 on where the endpoint's chain stands against the verified best block, by endpoint"
-    );
-    describe_gauge!(names::TIP_HEIGHT, "Endpoint's own best-chain tip height, by endpoint");
-    describe_gauge!(
-        names::STALE_BLOCKS,
-        "Blocks the endpoint's tip trails its own clock-based network estimate, by endpoint"
-    );
-    describe_gauge!(names::PEERS, "Endpoint's getpeerinfo connections, by endpoint and direction");
-    describe_gauge!(names::PUSH_STREAM, "1 while the endpoint's indexer push streams are up");
-    describe_gauge!(
-        names::RELEASE,
-        "1 on the endpoint's release, by endpoint, build and user agent"
-    );
-    describe_gauge!(
-        names::END_OF_SERVICE_HEIGHT,
-        "Height past which the endpoint's release halts (mainnet; absent = not enforced/unknown)"
-    );
-    describe_gauge!(
-        names::TIP_HOLDERS,
-        "Trusted validators holding the verified best block (0 = no tip: nothing served)"
-    );
-    describe_gauge!(names::BEST_HEIGHT, "Height of the header chain's most-work verified block");
-    describe_gauge!(
-        names::FINALITY_PAUSED,
-        "1 while the final boundary waits for a trusted validator to hold it"
-    );
-    describe_gauge!(
-        names::SHARED_OUTBOUND_MIN,
-        "Fewest outbound peers any two live endpoints share; 0 = possible partition"
-    );
 }
 
-/// Raised conditions; logged on each edge, not each fold
+/// Raised conditions as of one fold (`zaino-snapshot` logs each edge)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Alarms {
     stale: EndpointSet,
@@ -158,7 +100,7 @@ impl Alarms {
 }
 
 /// Outbound peers per live endpoint that reported any (inbound addrs = ephemeral ports)
-fn outbound(endpoints: &imbl::Vector<ValidatorMetadata>) -> Vec<HashSet<&str>> {
+pub(crate) fn outbound(endpoints: &imbl::Vector<ValidatorMetadata>) -> Vec<HashSet<&str>> {
     endpoints
         .iter()
         .filter(|meta| meta.health == Health::Live)
@@ -170,7 +112,7 @@ fn outbound(endpoints: &imbl::Vector<ValidatorMetadata>) -> Vec<HashSet<&str>> {
 }
 
 /// Least pairwise overlap; `None` below two endpoints with outbound peers
-fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
+pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
     let pairs = outbound.iter().enumerate().flat_map(|(at, left)| {
         outbound[at + 1..].iter().map(move |right| left.intersection(right).count())
     });
@@ -203,17 +145,6 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_pause
         finality_paused,
     }
 }
-
-const STATES: [Health; 5] =
-    [Health::Pending, Health::Live, Health::Degraded, Health::Down, Health::CatchingUp];
-
-const AGREEMENTS: [Agreement; 5] = [
-    Agreement::Unknown,
-    Agreement::Agreed,
-    Agreement::Ahead,
-    Agreement::Behind,
-    Agreement::Diverged,
-];
 
 fn origin(sighting: &Sighting) -> &'static str {
     match sighting.ours() {
@@ -257,108 +188,6 @@ pub(crate) fn submitted(ended: &Ended, attempts: usize) {
     };
     metrics::counter!(names::SUBMISSIONS, "outcome" => outcome).increment(1);
     metrics::histogram!(names::SUBMISSION_ATTEMPTS, "outcome" => outcome).record(attempts as f64);
-}
-
-/// Every gauge from `snapshot`, then a log line per alarm that rose or cleared since `previous`
-pub(crate) fn emit(snapshot: &ChainViewSnapshot, previous: Alarms) {
-    let verified = snapshot.mempool.values().filter(|s| !s.trusted().is_empty()).count();
-    let held = snapshot.mempool.len();
-    metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => "verified").set(verified as f64);
-    metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => "ours_unverified")
-        .set((held - verified) as f64);
-
-    for meta in snapshot.endpoints.iter() {
-        let endpoint = meta.address.clone();
-        for state in STATES {
-            let labels = [("endpoint", endpoint.clone()), ("state", state.label().to_owned())];
-            metrics::gauge!(names::ENDPOINT_STATE, &labels).set(f64::from(meta.health == state));
-        }
-        for agreement in AGREEMENTS {
-            let label = agreement.label().to_owned();
-            let labels = [("endpoint", endpoint.clone()), ("agreement", label)];
-            metrics::gauge!(names::AGREEMENT, &labels).set(f64::from(meta.agreement == agreement));
-        }
-        if let Some(tip) = meta.tip() {
-            metrics::gauge!(names::TIP_HEIGHT, "endpoint" => endpoint.clone())
-                .set(f64::from(u32::from(tip.height)));
-        }
-        if let Some(behind) = meta.stale_blocks() {
-            metrics::gauge!(names::STALE_BLOCKS, "endpoint" => endpoint.clone())
-                .set(f64::from(behind));
-        }
-        let inbound = meta.peers.iter().filter(|peer| peer.inbound).count();
-        for (direction, count) in [("inbound", inbound), ("outbound", meta.peers.len() - inbound)] {
-            metrics::gauge!(names::PEERS, "endpoint" => endpoint.clone(), "direction" => direction)
-                .set(count as f64);
-        }
-        metrics::gauge!(names::PUSH_STREAM, "endpoint" => endpoint.clone())
-            .set(f64::from(meta.streaming));
-        if let Some(release) = &meta.release {
-            let labels = [
-                ("endpoint", endpoint.clone()),
-                ("build", release.build.clone()),
-                ("user_agent", release.user_agent.clone()),
-            ];
-            metrics::gauge!(names::RELEASE, &labels).set(1.0);
-            if let EndOfService::At { height, .. } = release.end_of_service {
-                metrics::gauge!(names::END_OF_SERVICE_HEIGHT, "endpoint" => endpoint.clone())
-                    .set(f64::from(u32::from(height)));
-            }
-        }
-    }
-    let holders = snapshot.tip.map_or(0, |tip| tip.held_by.count());
-    metrics::gauge!(names::TIP_HOLDERS).set(holders as f64);
-    if let Some(best) = snapshot.best() {
-        metrics::gauge!(names::BEST_HEIGHT).set(f64::from(u32::from(best.height)));
-    }
-    if let Some(shared) = shared_outbound_min(&outbound(&snapshot.endpoints)) {
-        metrics::gauge!(names::SHARED_OUTBOUND_MIN).set(shared as f64);
-    }
-    let now = snapshot.alarms;
-    metrics::gauge!(names::FINALITY_PAUSED).set(f64::from(now.finality_paused));
-
-    for index in (0..snapshot.endpoints.len()).filter_map(ValidatorId::new) {
-        let Some(meta) = snapshot.endpoints.get(index.get()) else { continue };
-        let tip = meta.tip().map(|tip| u32::from(tip.height));
-        let estimated = meta.info.as_ref().map(|info| u32::from(info.estimated_height));
-        match (previous.stale.contains(index), now.stale.contains(index)) {
-            (false, true) => warn!(
-                endpoint = %meta.address, ?tip, ?estimated,
-                "Validator tip stale against its own clock (stalled or eclipsed)"
-            ),
-            (true, false) => info!(endpoint = %meta.address, ?tip, "Validator tip fresh again"),
-            _ => {}
-        }
-        let left = meta.blocks_to_end_of_service();
-        let build = meta.release.as_ref().map(|release| release.build.as_str());
-        match (previous.ending.contains(index), now.ending.contains(index)) {
-            (false, true) => warn!(
-                endpoint = %meta.address, ?build, ?left,
-                "Validator release reaches end of service soon (it halts there): upgrade it"
-            ),
-            (true, false) => info!(endpoint = %meta.address, ?build, "Validator release upgraded"),
-            _ => {}
-        }
-    }
-    match (previous.partitioned, now.partitioned) {
-        (false, true) => warn!("Two live validators share no outbound peer (possible partition)"),
-        (true, false) => info!("Live validators share outbound peers again"),
-        _ => {}
-    }
-    match (previous.eclipsed, now.eclipsed) {
-        (false, true) => warn!(
-            max = ECLIPSE_OUTBOUND_MAX,
-            "Live validators reach few distinct outbound peers (possible eclipse)"
-        ),
-        (true, false) => info!("Live validators reach enough distinct outbound peers again"),
-        _ => {}
-    }
-    let best = snapshot.best().map(|best| u32::from(best.height));
-    match (previous.finality_paused, now.finality_paused) {
-        (false, true) => warn!(?best, "Finality paused: no trusted validator holds the boundary"),
-        (true, false) => info!(?best, "Finality resumed"),
-        _ => {}
-    }
 }
 
 #[cfg(test)]

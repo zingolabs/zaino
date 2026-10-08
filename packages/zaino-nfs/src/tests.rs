@@ -26,9 +26,9 @@ use zaino_persistence::{
 };
 use zaino_primitives::testing::Chain;
 use zaino_primitives::types::{
-    Block, BlockHash, CompactCiphertext, OrchardAction, OrchardData, OutPoint, SaplingData,
-    SaplingOutput, Script, Transaction, TransactionId, TransparentData, TransparentOutput,
-    Zatoshis,
+    Block, BlockHash, CompactCiphertext, OrchardAction, OrchardData, OutPoint, ReorgDepth,
+    SaplingData, SaplingOutput, Script, Transaction, TransactionId, TransparentData,
+    TransparentOutput, Zatoshis,
 };
 use zaino_source::mock::MockChain;
 use zaino_source::{
@@ -302,18 +302,19 @@ async fn commit(
 ///   block's path vs the chain's; each index reads through the block, or (durable at or past it)
 ///   its durable tip alone (R12); either = the oracle there
 fn verify(
-    snapshot: &Snapshot<DiskView>,
+    snapshot: &Indexed<DiskView>,
     blocks: &Chain,
     mined: &[BlockHash],
     oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
     context: &str,
 ) {
-    let (chain, tip) = (snapshot.chain(), snapshot.tip());
+    let (chain, tip) = (snapshot.chain(), snapshot.served().tip());
     assert_eq!(chain.hash_at(tip.height), Some(tip.hash), "{context}: N4 tip {tip:?} off best");
     assert_eq!(snapshot.served().branch(), Branch::Best, "{context}: N4 served on the best");
     let durable: Vec<(IndexKind, Option<BlockRef>)> = snapshot.durable().collect();
     let root = durable.iter().filter_map(|(_, tip)| *tip).min_by_key(|tip| tip.height);
-    let lowest = INDEXES.iter().filter_map(|&(kind, ..)| snapshot.views().view(kind)?.tip());
+    let lowest =
+        INDEXES.iter().filter_map(|&(kind, ..)| snapshot.served().views().view(kind)?.tip());
     let lowest = lowest.map(|at| at.height).min();
     assert_eq!(lowest, Some(tip.height), "{context}: N4 the tip = the lowest index view");
 
@@ -434,7 +435,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let lookahead = NonZeroUsize::new(4).expect("nonzero");
 
     for (run, moves) in runs.iter().enumerate() {
-        let mut nfs = Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead, depth);
+        let mut nfs = Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead);
         let value_balance = indexes[0].2.subscribe();
         let durable: Vec<watch::Receiver<DiskView>> =
             indexes.iter().map(|(_, _, committed)| committed.subscribe()).collect();
@@ -463,7 +464,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
                 })
             })
             .collect();
-        let mut handle = nfs.handle();
+        let (mut indexed, progress) = (nfs.indexed(), nfs.progress());
         let cancel = CancellationToken::new();
         let mut driver = tokio::spawn(nfs.run(cancel.clone()));
 
@@ -484,22 +485,23 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
             };
             let settled_heights: Vec<Option<Height>> =
                 crashes.iter().map(|crash| final_height.min(crash.or(final_height))).collect();
-            let mut seen: Option<Arc<Snapshot<DiskView>>> = None;
+            let mut seen: Option<Arc<Indexed<DiskView>>> = None;
             let settled = async {
                 loop {
                     let new = |latest: &Arc<_>| {
                         !seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, latest))
                     };
-                    if let Some(latest) = handle.snapshot().filter(new) {
+                    let latest = indexed.borrow_and_update().clone();
+                    if let Some(latest) = latest.filter(new) {
                         verify(&latest, &blocks, &mined, &mut oracles, &context);
                         seen = Some(latest);
                     }
                     let durable = durable_heights() == settled_heights;
-                    if durable && seen.as_ref().is_some_and(|seen| seen.tip() == best) {
+                    if durable && seen.as_ref().is_some_and(|seen| seen.served().tip() == best) {
                         return;
                     }
                     tokio::select! {
-                        Ok(()) = handle.changed() => {}
+                        Ok(()) = indexed.changed() => {}
                         stopped = &mut driver => match stopped {
                             Err(join) => std::panic::resume_unwind(join.into_panic()),
                             Ok(result) => panic!("{context}: driver stopped: {result:?}"),
@@ -513,6 +515,8 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
                 let (durable, settled) = (durable_heights(), settled_heights);
                 panic!("{context}: never settled: {best:?}, durable {durable:?} != {settled:?}");
             }
+            let handed = progress.handed().expect("blocks handed");
+            assert!(handed <= best.height, "{context}: handed {handed:?} past best {best:?}");
         }
 
         cancel.cancel();
@@ -565,7 +569,7 @@ async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
     let nfs = || -> Nfs<_, DiskView> {
-        Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead, depth)
+        Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead)
     };
     let engine = DiskEngine::new(SimFs::new());
     let schema = schema(IndexKind::BlockHash);

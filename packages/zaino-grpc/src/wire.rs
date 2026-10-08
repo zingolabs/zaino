@@ -59,6 +59,11 @@ pub(crate) mod path {
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetMempoolStream";
 }
 
+/// No answer from this snapshot: retry (`UNAVAILABLE`, the reason as its message)
+pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
+    Status::unavailable(why.to_string())
+}
+
 /// Client height → [`Height`] (past the protocol ceiling = the client's error, never a service's)
 pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
     Height::try_from(raw).map_err(|_| {
@@ -66,23 +71,23 @@ pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
     })
 }
 
-/// `BlockID.hash` → `(height, hash)` via `snap`'s block-hash index, at or below its tip
+/// `BlockID.hash` → `(height, hash)` via `at`'s block-hash index, at or below its tip
 ///
 /// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
 ///   a time; a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::MapRead>(
-    snap: &zaino_nfs::Snapshot<V>,
+    at: &zaino_nfs::At<V>,
     raw: &[u8],
     method: &str,
 ) -> Result<(Height, [u8; 32]), Status> {
     let hash: [u8; 32] =
         raw.try_into().map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
-    let locator = snap.views().block_hash().ok_or_else(|| {
+    let locator = at.views().block_hash().ok_or_else(|| {
         Status::unimplemented(format!(
             "{method} by hash resolves through the block-hash index, which is off"
         ))
     })?;
-    let height = locator.height_of(&hash.into()).filter(|&height| height <= snap.tip().height);
+    let height = locator.height_of(&hash.into()).filter(|&height| height <= at.tip().height);
     let missing = || Status::not_found("block hash is not in the index");
     Ok((height.ok_or_else(missing)?, hash))
 }
@@ -305,7 +310,8 @@ mod tests {
         let chain = zaino_primitives::testing::Chain::new();
         let genesis = chain.path(chain.genesis().hash);
         let compact = indexed(IndexKind::CompactBlock, &genesis);
-        let mut router = dispatch(Routes { nfs: snapshot(&genesis, vec![compact]), ..routes() });
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&genesis, vec![compact]), ..routes() });
 
         // `BlockID.hash` bytes field: tag + 3-byte varint length + payload
         let block_id = |payload: usize| {

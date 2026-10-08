@@ -26,9 +26,7 @@ use zaino_source::{
 };
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
-use crate::{
-    Agreement, ChainView, Count, EndpointSet, MempoolEntry, Projection, SubmitError, Unserved,
-};
+use crate::{Agreement, ChainView, Count, EndpointSet, MempoolEntry, Projection, SubmitError};
 
 /// The view over `validators` (`addresses` in order), its balancer + poll fold spawned (they run
 /// once the test awaits)
@@ -245,11 +243,13 @@ fn transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
 
 /// N=1, its window holding the verified tip
 ///
-/// - tail = servable mempool at its tip block, then each later crossing once (never one the
-///   opening carried); silent on an empty mempool; ended by a mined block
-/// - late subscriber = same opening + every arrival since (one log per block)
+/// - mempool refused until a polled validator holds the verified best; then its listings, each
+///   at its validator's fee
+/// - `arrivals` since a pinned view = each crossing into servable once (a flap out and back,
+///   or a drop: nothing); ours servable before any listing
+/// - a mined block: the mempool as it now stands (ours listed)
 #[tokio::test(start_paused = true)]
-async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival_once() {
+async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_crossing_into_servable() {
     let mut chain = Chain::new();
     let tip_10 = chain.extend(chain.genesis().hash, 10);
     let validator = Arc::new(FakeValidator::default());
@@ -268,16 +268,14 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     let reader = view.subscriber();
 
-    assert_eq!(reader.current().mempool().err(), Some(Unserved::NoBestTip), "no verified tip yet");
-    assert!(reader.tail().is_err(), "no tip: the stream is refused, not opened silent");
+    assert!(reader.current().mempool().is_none(), "no verified tip yet");
     view.set_verified(verified(&chain, tip_10));
-    let unheld = reader.current().mempool().err();
-    assert_eq!(unheld, Some(Unserved::NotHeld { height: 10, configured: 1 }), "nothing polled");
+    let unheld = reader.current();
+    assert_eq!((unheld.best(), unheld.mempool().is_none()), (Some(tip_10), true), "not polled");
 
     polled(&balancer).await;
     let pinned = reader.current();
-    let tip = pinned.tip().expect("the validator holds the verified tip");
-    assert_eq!((tip.block, tip.held_by), (tip_10, EndpointSet::at([0])));
+    assert_eq!((pinned.best(), pinned.held_by()), (Some(tip_10), EndpointSet::at([0])));
     let entry = |seed: u8, fee: u64| MempoolEntry {
         txid: TransactionId::from([seed; 32]),
         raw: Bytes::from(vec![seed; 8]),
@@ -287,12 +285,9 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let entries: Vec<_> = pinned.mempool().expect("tip held").entries().collect();
     assert_eq!(entries, [entry(1, 1_000), entry(2, 2_000)], "each entry: its validator's fee");
 
-    let mut tail = reader.tail().expect("tip held");
-    assert_eq!(tail.opening(), [entry(1, 1_000), entry(2, 2_000)], "the whole servable mempool");
-
-    // - tx 2 flaps out and back (rode the opening → re-crossing not logged)
-    // - tx 1 dropped (propagation churn: nothing to send); tx 3 arrives; ours (tx 9) servable
-    //   before any listing
+    // - tx 2 flaps out and back (servable in `pinned` → no arrival)
+    // - tx 1 dropped (propagation churn: no arrival); tx 3 arrives; ours (tx 9) servable before
+    //   any listing
     validator.edit(|fake| fake.listed.retain(|txid| *txid != TransactionId::from([2u8; 32])));
     polled(&balancer).await;
     validator.edit(|fake| {
@@ -304,39 +299,25 @@ async fn a_single_endpoint_tail_sends_the_mempool_at_its_block_then_each_arrival
     let ours = view.submit(sent.clone()).await.expect("accepted");
     assert_eq!(ours, txid, "the txid from the bytes, not the validator's word");
 
-    async fn next(tail: &mut crate::MempoolTail) -> Option<MempoolEntry> {
-        tail.next().await.map(|logged| logged.entry.clone())
-    }
     let raw = Bytes::from(sent);
     let projection = Projection::default();
     let unpriced = MempoolEntry { txid: ours, raw, fee: None, projection };
-    assert_eq!(next(&mut tail).await, Some(entry(3, 3_000)), "tx 2 rode the opening: skipped");
-    assert_eq!(next(&mut tail).await, Some(unpriced.clone()), "our own send, before any listing");
-    let silent = tokio::time::timeout(Duration::from_millis(50), tail.next()).await;
-    assert!(silent.is_err(), "nothing new, no block mined: a live, silent stream");
+    let mut arrived = vec![entry(3, 3_000), unpriced];
+    arrived.sort_by_key(|entry| entry.txid);
+    assert_eq!(reader.current().arrivals(Some(&pinned)), arrived, "tx 3 + ours, tx 2 not again");
+    assert_eq!(reader.current().arrivals(Some(&reader.current())), [], "nothing since itself");
 
-    // late subscriber: same opening (tx 1 included: never un-sent within a block) + every arrival
-    // since, from the same log
-    let mut late = reader.tail().expect("tip held");
-    assert!(late.same_epoch(&tail), "one log per tip block");
-    assert_eq!(late.opening(), [entry(1, 1_000), entry(2, 2_000)]);
-    assert_eq!(next(&mut late).await, Some(entry(3, 3_000)));
-    assert_eq!(next(&mut late).await, Some(unpriced));
-
-    // block 11 = the one stream end, for every tail on the old tip
+    // block 11: the mempool as it now stands (ours listed)
     let tip_11 = chain.mine(tip_10.hash);
     validator.serve(&chain, tip_11);
     polled(&balancer).await;
     view.set_verified(verified(&chain, tip_11));
-    assert!(tail.next().await.is_none(), "the stream ends on a mined block");
-    assert!(late.next().await.is_none(), "late subscriber too");
-    assert!(tail.next().await.is_none(), "and stays ended");
-    let fresh = reader.tail().expect("tip held");
-    let opened: Vec<_> = fresh.opening().iter().map(|entry| entry.txid).collect();
+    let mined = reader.current();
+    let now: Vec<_> = mined.mempool().expect("held").entries().map(|entry| entry.txid).collect();
     let mut current = [2u8, 3].map(|seed| TransactionId::from([seed; 32])).to_vec();
     current.push(ours);
     current.sort();
-    assert_eq!(opened, current, "the new tip opens on the mempool as it now stands (ours listed)");
+    assert_eq!(now, current, "tx 1 gone, ours listed");
     cancel.cancel();
 }
 
@@ -361,7 +342,6 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
 
     let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
     let reader = view.subscriber();
-    let tip = reader.subscribe_tip();
 
     polled(&balancer).await;
     assert_eq!(reader.current().endpoints()[0].health, Health::Live, "listed its mempool");
@@ -374,8 +354,9 @@ async fn a_catching_up_validator_holds_the_tip_with_no_mempool() {
     });
     polled(&balancer).await;
     view.set_verified(verified(&chain, tip_at(11)));
-    assert_eq!(tip.borrow().map(|tip| tip.block), Some(tip_at(11)), "its chain still holds it");
     let catching_up = reader.current();
+    let held = (catching_up.best(), catching_up.held_by());
+    assert_eq!(held, (Some(tip_at(11)), EndpointSet::at([0])), "its chain still holds it");
     let meta = &catching_up.endpoints()[0];
     let answered = (meta.health, meta.tip(), meta.stale_blocks());
     assert_eq!(answered, (Health::CatchingUp, Some(tip_at(11)), Some(29)), "an answer, no failure");
@@ -438,22 +419,19 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 
     // one validator holding the verified block = a tip (one admission proves validity)
     polled(&balancer).await;
-    let pinned = reader.current();
-    let tip = pinned.tip().expect("a holds the verified block");
-    assert_eq!((tip.block, tip.held_by), (agreed, EndpointSet::at([0])));
-    assert_eq!(estimate(&pinned), Ok(105), "the holder's chain description");
-    let spread = pinned.spread(&tx7).expect("endpoint a reported it");
+    let first = reader.current();
+    assert_eq!((first.best(), first.held_by()), (Some(agreed), EndpointSet::at([0])));
+    assert_eq!(estimate(&first), Some(105), "the holder's chain description");
+    let spread = first.spread(&tx7).expect("endpoint a reported it");
     let one_of_one = Count { seen: 1, of: 1 };
     assert_eq!(spread.trusted, one_of_one, "b, c not yet read");
     assert!(spread.timeline.all_trusted.is_some(), "every reader so far lists it");
-    let mut tail = reader.tail().expect("a tip");
-    let opened: Vec<_> = tail.opening().iter().map(|entry| entry.txid).collect();
-    assert_eq!(opened, [tx7], "in the opening of the first block with a tip");
+    let servable: Vec<_> = first.arrivals(None).iter().map(|entry| entry.txid).collect();
+    assert_eq!(servable, [tx7], "servable once a holder lists it");
 
     validators[1].chain.set_reachable(true);
     polled(&balancer).await;
-    let tip = reader.current().tip().expect("a and b hold it");
-    assert_eq!(tip.held_by, EndpointSet::at([0, 1]));
+    assert_eq!(reader.current().held_by(), EndpointSet::at([0, 1]), "a and b hold it");
 
     // c claims a higher tip (fork from 90, never verified): moves nothing, holds nothing
     let claimed = chain.extend(at_90.hash, 30);
@@ -465,10 +443,10 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     validators[2].chain.set_reachable(true);
     polled(&balancer).await;
     let pinned = reader.current();
-    let tip = pinned.tip().expect("a and b still hold it");
-    assert_eq!((tip.block, tip.held_by), (agreed, EndpointSet::at([0, 1])), "never the claim");
+    let held = (pinned.best(), pinned.held_by());
+    assert_eq!(held, (Some(agreed), EndpointSet::at([0, 1])), "never the claim");
     assert_eq!(pinned.endpoints()[2].agreement, Agreement::Diverged, "holds neither 100 nor 97");
-    assert_eq!(estimate(&pinned), Ok(105), "never the outlier's");
+    assert_eq!(estimate(&pinned), Some(105), "never the outlier's");
     let trusted = pinned.spread(&tx7).map(|spread| spread.trusted);
     assert_eq!(trusted, Some(Count { seen: 2, of: 3 }), "a and c list it, of three read");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
@@ -481,8 +459,8 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
             .map(|(address, peer)| (address, vec![outbound(peer)]));
     assert_eq!(peers, expected, "each validator's peers, keyed by its configured address");
 
-    let again = tokio::time::timeout(Duration::from_millis(20), tail.next()).await;
-    assert!(again.is_err(), "a second sighting spreads it, never re-sends it");
+    let again = pinned.arrivals(Some(&first));
+    assert_eq!(again, [], "a second sighting spreads it, never arrives again");
     cancel.cancel();
 }
 
@@ -512,7 +490,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
 
     polled(&balancer).await;
     view.set_verified(verified(&chain, agreed));
-    assert!(reader.current().tip().is_some(), "every one holds the verified tip");
+    assert!(!reader.current().held_by().is_empty(), "every one holds the verified tip");
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.read(|f| f.pushes)).collect() };
 
     let (expired_txid, expired) = transaction(1, 50);
@@ -536,8 +514,10 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert!(spread.ours && spread.servable);
     assert_eq!(spread.trusted, Count { seen: 0, of: 3 }, "not polled since");
     assert_eq!(spread.timeline.first_trusted, None);
-    let mempool = pinned.mempool().expect("tip held");
-    let served = mempool.get(&txid).expect("`ours` is servable with zero sightings");
+    let servable = |view: &crate::ChainViewSnapshot| {
+        view.mempool().expect("tip held").entries().find(|entry| entry.txid == txid)
+    };
+    let served = servable(&pinned).expect("`ours` is servable with zero sightings");
     let raw = Bytes::from(sent.clone());
     let unpriced = MempoolEntry { txid, raw, fee: None, projection: Projection::default() };
     assert_eq!(served, unpriced, "a wallet sees its own send before it propagates, unpriced");
@@ -546,15 +526,14 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
         served.projection.get_or_render(render(b"unpriced")),
         Ok(Bytes::from_static(b"unpriced"))
     );
-    let again = reader.current().mempool().expect("tip held").get(&txid).expect("held");
+    let again = servable(&reader.current()).expect("held");
     let cached = again.projection.get_or_render(render(b"rendered twice"));
     assert_eq!(cached, Ok(Bytes::from_static(b"unpriced")), "one render per (raw, fee)");
 
     // a lists what it accepted: the first listing prices it (bytes held, none refetched)
     polled(&balancer).await;
     let pinned = reader.current();
-    let listed = pinned.mempool().expect("tip held").get(&txid);
-    let listed = listed.expect("still servable");
+    let listed = servable(&pinned).expect("still servable");
     let rerendered = listed.projection.get_or_render(render(b"priced"));
     assert_eq!(rerendered, Ok(Bytes::from_static(b"priced")), "priced → stale projection dropped");
     let priced = (Bytes::from(sent), Some(fee_of(&txid)));
@@ -795,8 +774,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
 /// Holding re-asked every poll (`getblockhash`, never a walk)
 ///
 /// - verified tip ahead of the laggards → held by whoever has it, the rest `Behind`
-/// - its only holder gone → no tip at all (fail closed: nothing proves the block valid)
-/// - holders-only change → tip watch moves, epoch doesn't
+/// - its only holder gone → no holder, no mempool (fail closed: nothing proves the block valid)
 /// - a heavier fork only one validator holds → it alone holds the tip, the others `Diverged`
 /// - that one reorging away mid-poll → one wrong poll, dropped at the next
 #[tokio::test(start_paused = true)]
@@ -812,19 +790,19 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     }
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
-    let mut tips = reader.subscribe_tip();
     let held_by = |positions: &[usize]| EndpointSet::at(positions.iter().copied());
     let agreements = || -> Vec<Agreement> {
         reader.current().endpoints().iter().map(|meta| meta.agreement).collect()
     };
-    let tip = || reader.current().tip().map(|tip| (tip.block, tip.held_by));
-    async fn open(tail: &mut crate::MempoolTail) -> bool {
-        tokio::time::timeout(Duration::from_millis(20), tail.next()).await.is_err()
-    }
+    // best + its holders, `None` while nobody holds it
+    let tip = || {
+        let pinned = reader.current();
+        let held = pinned.held_by();
+        pinned.best().filter(|_| !held.is_empty()).map(|best| (best, held))
+    };
     polled(&balancer).await;
     view.set_verified(verified(&chain, at(100)));
     assert_eq!(tip(), Some((at(100), held_by(&[0, 1, 2]))));
-    let mut first = reader.tail().expect("a tip");
 
     // a mines 101; its header verifies: the tip moves at once, held by a alone
     validators[0].serve(&chain, at(101));
@@ -832,31 +810,23 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     view.set_verified(verified(&chain, at(101)));
     assert_eq!(tip(), Some((at(101), held_by(&[0]))), "one holder is enough");
     assert_eq!(agreements(), [Agreement::Agreed, Agreement::Behind, Agreement::Behind]);
-    assert!(first.next().await.is_none(), "a new block ends the stream");
-    let mut second = reader.tail().expect("a tip");
 
-    // a goes unreachable: no trusted validator holds 101 → no tip (never a weaker answer)
+    // a goes unreachable: no trusted validator holds 101 → no mempool (never a weaker answer)
     validators[0].chain.set_reachable(false);
     polled(&balancer).await;
     let health = reader.current().endpoints()[0].health;
     assert_eq!(health, Health::Degraded, "one failure = degraded, out of the holders");
     assert_eq!(tip(), None);
-    let refused = reader.current().mempool().err();
-    assert_eq!(refused, Some(Unserved::NotHeld { height: 101, configured: 3 }));
+    assert!(reader.current().mempool().is_none(), "no holder: refused");
     assert_eq!(reader.current().best(), Some(at(101)), "the header chain still says 101");
-    assert!(second.next().await.is_none(), "losing the tip ends the stream too");
 
     // b catches up: 101 served again; a returns: a holders-only change
     validators[1].serve(&chain, at(101));
     polled(&balancer).await;
     assert_eq!(tip(), Some((at(101), held_by(&[1]))));
-    let mut third = reader.tail().expect("a tip");
-    tips.borrow_and_update();
     validators[0].chain.set_reachable(true);
     polled(&balancer).await;
-    let joined = (*tips.borrow_and_update()).expect("a tip");
-    assert_eq!((joined.block, joined.held_by), (at(101), held_by(&[0, 1])));
-    assert!(open(&mut third).await, "holders-only change: same epoch, stream open");
+    assert_eq!(tip(), Some((at(101), held_by(&[0, 1]))));
 
     // a heavier fork from 100 that only c has: the tip follows the work, a and b diverge
     let fork = chain.mine(at(100).hash);
@@ -865,7 +835,6 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     view.set_verified(verified(&chain, fork));
     assert_eq!(tip(), Some((fork, held_by(&[2]))));
     assert_eq!(agreements(), [Agreement::Diverged, Agreement::Diverged, Agreement::Agreed]);
-    assert!(third.next().await.is_none(), "a reorg moves the tip block");
 
     // c raced: tip read on the fork, then back onto the trunk before its getblockhash answers:
     // one wrong poll (its claim still holds the fork), the next one re-asks and drops it
@@ -988,16 +957,18 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
         }
         panic!("never {what}");
     }
-    let serves_tx1 = || reader.current().mempool().is_ok_and(|mempool| mempool.get(&tx1).is_some());
+    let serves_tx1 = || {
+        let pinned = reader.current();
+        pinned.mempool().is_some_and(|mempool| mempool.entries().any(|entry| entry.txid == tx1))
+    };
 
     until("live", serves_tx1).await;
 
     validator.chain.set_reachable(false);
     until("down", || state() == Health::Down).await;
     let pinned = reader.current();
-    assert_eq!(pinned.tip(), None, "no holder left");
-    let refused = pinned.mempool().err();
-    assert_eq!(refused, Some(Unserved::NotHeld { height: 0, configured: 1 }), "fail closed");
+    assert_eq!(pinned.held_by(), EndpointSet::default(), "no holder left");
+    assert!(pinned.mempool().is_none(), "fail closed");
     let trusted = pinned.spread(&tx1).map(|spread| spread.trusted);
     assert_eq!(trusted.unwrap_or_default(), Count::default(), "retracted, and none left reading");
 
@@ -1058,8 +1029,8 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     // the published chain, not the view's best: finality lands after the run reaches the view
     let final_tip = Some(at(5_000 - 3));
     until("a's tip verified, final to depth", || published() == Some((a, final_tip))).await;
-    let tip = reader.current().tip().expect("a holds it");
-    assert_eq!((tip.block, tip.held_by), (a, EndpointSet::at([0])), "c refused, b behind");
+    let held = (reader.current().best(), reader.current().held_by());
+    assert_eq!(held, (Some(a), EndpointSet::at([0])), "c refused, b behind");
     let first = verified.borrow().clone().expect("a VerifiedChain");
     assert_eq!(first.hash_at(at(2_500).height), Some(at(2_500).hash));
     assert!(!reader.current().alarms().finality_paused(), "held each batch: final as it went");
@@ -1070,8 +1041,8 @@ async fn header_sync_verifies_every_validators_headers_and_the_tip_follows_the_w
     validators[1].serve(&chain, b);
     polled(&balancer).await;
     until("b's heavier fork verified", || reader.current().best() == Some(b)).await;
-    let tip = reader.current().tip().expect("b holds it");
-    assert_eq!((tip.block, tip.held_by), (b, EndpointSet::at([1])), "the work, not the first");
+    let held = (reader.current().best(), reader.current().held_by());
+    assert_eq!(held, (Some(b), EndpointSet::at([1])), "the work, not the first");
     assert_ne!(reader.current().best(), Some(c), "c's invalid chain never wins");
     until("b's chain published", || published().map(|(best, _)| best) == Some(b)).await;
     assert_eq!(first.best(), a, "a published chain never changes (H5)");

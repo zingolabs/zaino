@@ -1,6 +1,6 @@
-//! The fold: per-endpoint deltas in, one published snapshot out.
+//! The fold: per-endpoint deltas in, one published snapshot out
 //!
-//! - Publish **before** waking tails (a woken tail must read what woke it)
+//! - Store, then signal (a woken reader must find what woke it)
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -17,26 +17,28 @@ use zaino_primitives::types::{
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
-use crate::feed::Epoch;
 use crate::holders::{Holders, PollStamp};
 use crate::ports::Heard;
-use crate::snapshot::{ChainViewSnapshot, MempoolView, Sighting};
-use crate::telemetry::{self, Alarms};
-use crate::tip::{ChainTip, Unserved};
+use crate::snapshot::{ChainViewSnapshot, Sighting};
+use crate::telemetry;
 
 /// What a fold compares against once it has changed the state
 struct Before {
-    tip: Option<ChainTip>,
-    alarms: Alarms,
+    held: Option<BlockRef>,
     readers: EndpointSet,
     asked: Vec<Height>,
 }
 
 impl Before {
     fn of(state: &ChainViewSnapshot) -> Self {
-        let (tip, alarms, readers) = (state.tip, state.alarms, state.mempool_readers());
-        Self { tip, alarms, readers, asked: state.holders.asked() }
+        let readers = state.mempool_readers();
+        Self { held: held(state), readers, asked: state.holders.asked() }
     }
+}
+
+/// Best block, once a trusted validator holds it
+fn held(state: &ChainViewSnapshot) -> Option<BlockRef> {
+    state.best().filter(|_| !state.held_by.is_empty())
 }
 
 /// Where the holders' next `getblockhash` heights go (the balancer's `ask_each_poll`)
@@ -51,12 +53,6 @@ pub(crate) struct HeaderReport {
     pub(crate) verified: Option<Arc<VerifiedChain>>,
     pub(crate) served: Option<Served>,
     pub(crate) finality_paused: bool,
-}
-
-/// Tip (block or holders) carried by one publish
-enum TipUpdate {
-    Unchanged,
-    Set(Option<ChainTip>),
 }
 
 /// One txid a member listed; `raw` = `None` when the view already held it (bytes fetched once,
@@ -100,22 +96,15 @@ pub(crate) enum EndpointReport {
     Down,
 }
 
-/// The published cell, the tail wake, and the lock that serialises folds.
+/// The published cell + its watch, and the lock that serialises folds
 ///
 /// - non-generic: the poll fold and readers hold it (the source type stays the balancer's)
+/// - `state` = fold working copy (`imbl` throughout: cloning it to publish = `O(1)`)
 pub(crate) struct ChainViewCore {
     ask_each_poll: AskEachPoll,
-    /// Fold working copy. `imbl` throughout, so cloning it to publish is `O(1)`.
     state: Mutex<ChainViewSnapshot>,
     published: ArcSwap<ChainViewSnapshot>,
-    /// Level-triggered tip (`held_by` changes too: fetch routing reads it)
-    tip: watch::Sender<Option<ChainTip>>,
-    /// Sent iff the epoch moved or an arrival landed (tails sleep through every other fold)
-    tails: watch::Sender<()>,
-    /// Sent on every publish (a submission watching for its transaction's spread)
     published_tx: watch::Sender<()>,
-    /// Feed for the current tip block, or why there is none; written only under `state`'s lock
-    epoch: ArcSwap<Result<Arc<Epoch>, Unserved>>,
 }
 
 impl ChainViewCore {
@@ -125,28 +114,16 @@ impl ChainViewCore {
         ask_each_poll: AskEachPoll,
     ) -> Self {
         let empty = ChainViewSnapshot::empty(endpoints, depth);
-        let unserved = empty.mempool().expect_err("an empty view has no tip");
         Self {
             ask_each_poll,
             state: Mutex::new(empty.clone()),
             published: ArcSwap::from_pointee(empty),
-            tip: watch::Sender::new(None),
-            tails: watch::Sender::new(()),
             published_tx: watch::Sender::new(()),
-            epoch: ArcSwap::from_pointee(Err(unserved)),
         }
     }
 
     pub(crate) fn current(&self) -> Arc<ChainViewSnapshot> {
         self.published.load_full()
-    }
-
-    pub(crate) fn subscribe_tip(&self) -> watch::Receiver<Option<ChainTip>> {
-        self.tip.subscribe()
-    }
-
-    pub(crate) fn subscribe_tails(&self) -> watch::Receiver<()> {
-        self.tails.subscribe()
     }
 
     pub(crate) fn subscribe_published(&self) -> watch::Receiver<()> {
@@ -158,7 +135,7 @@ impl ChainViewCore {
         self.published.load().sighting(txid).is_some()
     }
 
-    /// One member's poll folded, published, tails woken; → txids not admitted (listed, bytes
+    /// One member's poll folded, published; → txids not admitted (listed, bytes
     /// nowhere: re-listed + re-fetched next poll, never lost)
     pub(crate) fn apply(
         &self,
@@ -283,7 +260,7 @@ impl ChainViewCore {
         self.settle(guard, before, Vec::new());
     }
 
-    /// After any change: tip + holders, agreement, alarms, spreads, drops, epoch, publish
+    /// After any change: holders, agreement, alarms, spreads, drops, publish
     fn settle(
         &self,
         mut guard: std::sync::MutexGuard<'_, ChainViewSnapshot>,
@@ -294,9 +271,7 @@ impl ChainViewCore {
         if cfg!(debug_assertions) {
             state.holders.check();
         }
-        let best = state.holders.best();
-        let held_by = best.map(|best| state.holders.holders(best)).unwrap_or_default();
-        state.tip = best.filter(|_| !held_by.is_empty()).map(|block| ChainTip { block, held_by });
+        state.held_by = state.best().map(|best| state.holders.holders(best)).unwrap_or_default();
         for (index, meta) in state.endpoints.iter_mut().enumerate() {
             let index = ValidatorId::new(index).expect("configured below EndpointSet::MAX");
             meta.agreement = state.holders.agreement(index);
@@ -317,42 +292,26 @@ impl ChainViewCore {
             }
         }
 
-        let tip_changed = state.tip != before.tip;
-        let tip_moved = state.tip.map(|tip| tip.block) != before.tip.map(|tip| tip.block);
-        // Unsighted entries do not survive a tip move (an `ours` nobody lists after a block =
-        // mined or gone).
+        // unsighted entries do not survive a held-tip move (an `ours` nobody lists after a block =
+        // mined or gone)
+        let moved = held(state) != before.held;
         let dropped: Vec<TransactionId> = state
             .mempool
             .iter()
-            .filter(|(_, sighting)| {
-                sighting.trusted().is_empty() && (tip_moved || !sighting.ours())
-            })
+            .filter(|(_, sighting)| sighting.trusted().is_empty() && (moved || !sighting.ours()))
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {
             if let Some(gone) = state.mempool.remove(txid) {
-                telemetry::left(&gone, tip_moved);
+                telemetry::left(&gone, moved);
             }
         }
 
-        if tip_moved {
-            self.rotate(state);
-        } else if let Err(unserved) = state.mempool() {
-            // the refusal stays current as holders come and go
-            self.epoch.store(Arc::new(Err(unserved)));
-        }
-        let new_tip = state.tip;
-        let arrived = self.record_arrivals(state, &touched);
         let asked = state.holders.asked();
-        let tip = match tip_changed {
-            true => TipUpdate::Set(new_tip),
-            false => TipUpdate::Unchanged,
-        };
-        let published = self.publish(guard, tip, tip_moved || arrived);
+        self.publish(guard);
         if asked != before.asked {
             (self.ask_each_poll)(asked);
         }
-        telemetry::emit(&published, before.alarms);
     }
 
     /// Mark a transaction as relayed by us, admitting it before it has propagated (§6).
@@ -367,69 +326,21 @@ impl ChainViewCore {
             }
         }
 
-        let arrived = self.record_arrivals(&mut state, &[txid]);
-        self.publish(state, TipUpdate::Unchanged, arrived);
+        self.publish(state);
     }
 
-    /// New tip block: the old epoch sealed (its tails drain, then end), a new one opened on the
-    /// servable mempool (none while unserved)
-    fn rotate(&self, state: &ChainViewSnapshot) {
-        let opened =
-            state.mempool().map(|mempool| Arc::new(Epoch::open(mempool.entries().collect())));
-        if let Ok(sealed) = self.epoch.swap(Arc::new(opened)).as_ref() {
-            sealed.seal();
-        }
-    }
-
-    /// Logs every touched txid that crossed into servable; `true` = any did
-    ///
-    /// - before = the last published view (every fold publishes under this lock): a point
-    ///   lookup per touched txid, never a pass over the mempool
-    fn record_arrivals(&self, state: &mut ChainViewSnapshot, touched: &[TransactionId]) -> bool {
-        let before = self.published.load();
-        let epoch = self.epoch.load();
-        let mut arrived = false;
-        for txid in touched {
-            let was = before.sighting(txid).is_some_and(|sighting| sighting.servable());
-            let now = MempoolView::of(state).get(txid);
-            if let (false, Some(entry), Ok(epoch)) = (was, now, epoch.as_ref()) {
-                epoch.append(entry);
-                arrived = true;
-            }
-        }
-        arrived
-    }
-
-    /// Feed for the current tip block, or why there is none
-    pub(crate) fn epoch(&self) -> Result<Arc<Epoch>, Unserved> {
-        self.epoch.load().as_ref().clone()
-    }
-
-    /// Store, then signal (a woken reader must find what woke it)
-    fn publish(
-        &self,
-        state: std::sync::MutexGuard<'_, ChainViewSnapshot>,
-        tip: TipUpdate,
-        wake_tails: bool,
-    ) -> Arc<ChainViewSnapshot> {
-        let published = Arc::new(state.clone());
+    /// Stored under the fold lock (publishes in fold order), then signalled
+    fn publish(&self, state: std::sync::MutexGuard<'_, ChainViewSnapshot>) {
+        self.published.store(Arc::new(state.clone()));
         drop(state);
-        self.published.store(Arc::clone(&published));
-        if let TipUpdate::Set(tip) = tip {
-            self.tip.send_replace(tip);
-        }
-        if wake_tails {
-            self.tails.send_replace(());
-        }
         self.published_tx.send_replace(());
-        published
     }
 }
 
 impl std::fmt::Debug for ChainViewCore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let pinned = self.published.load();
-        f.debug_struct("ChainViewCore").field("tip", &pinned.tip()).finish_non_exhaustive()
+        f.debug_struct("ChainViewCore").field("best", &pinned.best()).finish_non_exhaustive()
     }
 }
 

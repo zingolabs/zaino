@@ -5,15 +5,17 @@ use std::sync::Arc;
 
 use http::Request;
 use http_body_util::Full;
-use zaino_chainview::{ChainView, ObservationFold};
+use tokio::sync::watch;
+use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet, ObservationFold};
 use zaino_header_chain::VerifiedChain;
 use zaino_index_tree_state::PoolActivations;
-use zaino_nfs::{ChainParams, NfsHandle};
+use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{
     DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
-use zaino_primitives::types::{Block, BlockRef, Height};
+use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
+use zaino_snapshot::{Publisher, Snapshots};
 use zaino_source::mock::MockChain;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
@@ -89,37 +91,69 @@ pub(super) fn indexed(kind: IndexKind, blocks: &[Block]) -> (IndexKind, DiskView
     (kind, index.view())
 }
 
-/// One snapshot for good: `views` served at `path`'s last block, every pool active from genesis
-pub(super) fn snapshot(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> NfsHandle<DiskView> {
+/// `views` served at `path`'s last block (the NFS root), every pool active from genesis
+pub(super) fn indexed_at(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> Indexed<DiskView> {
     let tip = path.last().expect("a path holds genesis").header();
     let tip = BlockRef { hash: tip.hash, height: tip.height };
     let genesis = Height::GENESIS;
     let activations =
         PoolActivations { sapling: genesis, orchard: Some(genesis), ironwood: Some(genesis) };
     let params = ChainParams { network: MAINNET, activations };
-    NfsHandle::fixed(Arc::new(VerifiedChain::regtest(path)), tip, params, views)
+    Indexed::fixed(Arc::new(VerifiedChain::regtest(path)), tip, params, views)
+}
+
+/// One snapshot for good: [`indexed_at`], `path` verified, `held_by` holding its tip, `ours` our
+/// relays (servable)
+pub(super) fn snapshot_held(
+    path: &[Block],
+    views: Vec<(IndexKind, DiskView)>,
+    held_by: EndpointSet,
+    ours: &[(TransactionId, bytes::Bytes)],
+) -> Snapshots<DiskView> {
+    let chain = Some(Arc::new(VerifiedChain::regtest(path)));
+    let view = ChainViewSnapshot::fixed(chain, held_by, &["node:8232"], ours, &[]);
+    Snapshots::fixed(Some(Arc::new(indexed_at(path, views))), Arc::new(view))
+}
+
+/// [`snapshot_held`] by no validator, empty mempool (index methods only)
+pub(super) fn snapshot(path: &[Block], views: Vec<(IndexKind, DiskView)>) -> Snapshots<DiskView> {
+    snapshot_held(path, views, EndpointSet::default(), &[])
 }
 
 /// The always-on routes over `node` (the balancer's driver + the view's poll fold back,
-/// unspawned); nothing served yet
+/// unspawned); nothing verified, nothing served, never republished
 pub(super) fn routes_over(
     node: &Arc<MockChain>,
 ) -> (Routes<MockChain, DiskView>, TrafficDriver<MockChain>, ObservationFold<MockChain>) {
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
-    let depth = zaino_primitives::types::ReorgDepth::CONSENSUS;
-    let view = ChainView::new(vec!["node:8232".to_owned()], validators.clone(), depth);
+    let view =
+        ChainView::new(vec!["node:8232".to_owned()], validators.clone(), ReorgDepth::CONSENSUS);
     let view = view.expect("one endpoint");
     let fold = view.observation_fold();
     let routes = Routes {
-        chain: Arc::new(view),
+        snapshots: Snapshots::fixed(None, view.subscriber().current()),
+        submit: Arc::new(view),
         validators,
         network: MAINNET,
-        nfs: NfsHandle::unpublished(),
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     };
     (routes, driver, fold)
+}
+
+/// Stands in for the NFS's publication watch
+pub(super) type NfsPublishes = watch::Sender<Option<Arc<Indexed<DiskView>>>>;
+
+/// `routes` read a live publisher over their chain view and the returned NFS watch (the
+/// publisher back, unspawned)
+pub(super) fn published(
+    routes: &mut Routes<MockChain, DiskView>,
+) -> (Publisher<DiskView>, NfsPublishes) {
+    let (nfs, indexed) = watch::channel(None);
+    let publisher = Publisher::new(indexed, routes.submit.subscriber(), ReorgDepth::CONSENSUS);
+    routes.snapshots = publisher.handle();
+    (publisher, nfs)
 }
 
 /// [`routes_over`] an empty, never-polled node, for tests that only serve indexes

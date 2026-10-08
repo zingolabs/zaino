@@ -10,21 +10,20 @@ use crate::indexer::start_indexer;
 use tracing::{error, info, Instrument as _};
 
 mod admin;
+#[cfg(feature = "snapshot")]
+mod bootstrap;
 mod chainview;
 pub mod cli;
 mod config;
 pub mod error;
 mod fd_limit;
-mod index_report;
 mod indexer;
 pub mod logging;
 mod metrics;
 mod notify;
 pub mod paths;
 mod peers;
-mod serving;
-#[cfg(feature = "snapshot")]
-mod snapshot;
+mod progress;
 mod status;
 mod stores;
 pub mod verify;
@@ -55,7 +54,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     // After the admin listener (`/statusz` reports the bootstrap), before any index opens
     #[cfg(feature = "snapshot")]
     if let Some(snapshot) = &config.snapshot {
-        crate::snapshot::bootstrap(snapshot, &config)
+        crate::bootstrap::bootstrap(snapshot, &config)
             .instrument(crate::logging::component("Snapshot"))
             .await
             .inspect_err(|error| error!(%error, "Startup failed"))?;

@@ -16,7 +16,6 @@ use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
 
 use crate::endpoints::ValidatorMetadata;
 use crate::error::{ConfigError, SubmitError};
-use crate::feed::MempoolTail;
 use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
 use crate::observe::ObservationFold;
@@ -25,7 +24,6 @@ use crate::ports::ValidatorP2pSource;
 use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
-use crate::tip::{ChainTip, Unserved};
 
 /// One view over N validators.
 ///
@@ -146,7 +144,7 @@ impl<S: ChainDataSource> ChainView<S> {
 /// - expired: ZIP-203, invalid in any block above its expiry height (next block = tip + 1)
 /// - wrong branch: v5+ embeds the branch it was signed for; the next block's must match
 fn precheck(view: &ChainViewSnapshot, prepared: &Prepared) -> Result<(), SendRawTransactionError> {
-    let Ok(info) = view.validator_info() else { return Ok(()) };
+    let Some(info) = view.validator_info() else { return Ok(()) };
     let next = info.blocks.next();
     if let Some(expiry) = prepared.expiry_height.filter(|&expiry| next > expiry) {
         return Err(SendRawTransactionError::Rejected(format!(
@@ -296,20 +294,5 @@ impl ChainViewSubscriber {
     /// Every publish (one per fold): [`current`](Self::current) has moved
     pub fn subscribe_published(&self) -> tokio::sync::watch::Receiver<()> {
         self.core.subscribe_published()
-    }
-
-    /// Latest tip, level-triggered (`None` = unserved): what block sync follows
-    pub fn subscribe_tip(&self) -> tokio::sync::watch::Receiver<Option<ChainTip>> {
-        self.core.subscribe_tip()
-    }
-
-    /// One `GetMempoolStream`: the servable mempool at the current tip block, then each
-    /// arrival, until the block moves (no tip = the refusal)
-    ///
-    /// - wake subscribed **before** the epoch is read (a fold landing between = one spurious
-    ///   wake, never a missed arrival)
-    pub fn tail(&self) -> Result<MempoolTail, Unserved> {
-        let wake = self.core.subscribe_tails();
-        Ok(MempoolTail::new(self.core.epoch()?, wake))
     }
 }

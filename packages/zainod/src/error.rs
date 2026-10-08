@@ -17,6 +17,8 @@ pub enum IndexerError {
     #[error(transparent)]
     Nfs(#[from] zaino_nfs::NfsError),
     #[error(transparent)]
+    Snapshot(#[from] zaino_snapshot::SnapshotError),
+    #[error(transparent)]
     Grpc(#[from] zaino_grpc::GrpcServeError),
     #[error(transparent)]
     Tls(#[from] zaino_grpc::TlsError),
@@ -26,7 +28,7 @@ pub enum IndexerError {
     MetricsError(String),
     #[cfg(feature = "snapshot")]
     #[error("index snapshot: {0}")]
-    Snapshot(String),
+    Bootstrap(String),
     #[error("{task} task ended before shutdown")]
     TaskEnded { task: &'static str },
 }

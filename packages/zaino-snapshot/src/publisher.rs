@@ -16,7 +16,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainViewSnapshot, ChainViewSubscriber};
-use zaino_nfs::{Published, Snapshot as Indexed};
+use zaino_nfs::{Indexed, Published};
 use zaino_primitives::types::ReorgDepth;
 
 use crate::compose::{check, compose};
@@ -50,6 +50,16 @@ impl<V> Snapshots<V> {
     /// Next publish (`Err` = the publisher stopped)
     pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
         self.changed.changed().await
+    }
+}
+
+#[cfg(any(test, feature = "testing"))]
+impl<V> Snapshots<V> {
+    /// One snapshot for good, no publisher (consumers' tests)
+    ///
+    /// - never republished: `changed()` errs, a tail ends after its opening
+    pub fn fixed(indexed: Option<Arc<Indexed<V>>>, view: Arc<ChainViewSnapshot>) -> Self {
+        Core::new(indexed, view, ReorgDepth::CONSENSUS).handle()
     }
 }
 

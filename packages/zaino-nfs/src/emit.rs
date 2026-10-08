@@ -1,11 +1,11 @@
-//! NFS metrics (names = ztest's `zainod` families: a rename breaks its sync probes)
+//! NFS event counters (names = ztest's `zainod` families: a rename breaks its sync probes)
+//!
+//! - State gauges (`zaino_best_tip`, `zaino_fetch_height`) = `zaino-snapshot`'s, at scrape
 
-use zaino_primitives::types::{Block, Height, Transaction};
+use zaino_primitives::types::{Block, Transaction};
 
 mod names {
-    pub(super) const BEST_TIP: &str = "zaino.best_tip";
     pub(super) const REORGS_TOTAL: &str = "zaino.reorgs_total";
-    pub(super) const FETCH_HEIGHT: &str = "zaino.fetch_height";
     pub(super) const FETCH_BLOCKS_TOTAL: &str = "zaino.fetch.blocks_total";
     pub(super) const FETCH_TRANSACTIONS_TOTAL: &str = "zaino.fetch.transactions_total";
     pub(super) const FETCH_TRANSPARENT_INPUTS_TOTAL: &str = "zaino.fetch.transparent_inputs_total";
@@ -19,19 +19,14 @@ mod names {
 
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
-    use metrics::{describe_counter, describe_gauge};
+    use metrics::describe_counter;
 
-    describe_gauge!(names::BEST_TIP, "Verified tip height the NFS follows");
     describe_counter!(
         names::REORGS_TOTAL,
         "Served tips replaced by another branch rather than extended"
     );
     // published from boot (unregistered until first reorg = indistinguishable from unemitted)
     metrics::counter!(names::REORGS_TOTAL).absolute(0);
-    describe_gauge!(
-        names::FETCH_HEIGHT,
-        "Highest height handed to the indexes (folded, or sent final unfolded); rewinds on a reorg"
-    );
     for (name, what) in [
         (names::FETCH_BLOCKS_TOTAL, "Blocks"),
         (names::FETCH_TRANSACTIONS_TOTAL, "Transactions"),
@@ -49,10 +44,6 @@ pub fn describe_metrics() {
     }
 }
 
-pub(crate) fn best(height: Height) {
-    metrics::gauge!(names::BEST_TIP).set(f64::from(u32::from(height)));
-}
-
 pub(crate) fn reorg() {
     metrics::counter!(names::REORGS_TOTAL).increment(1);
 }
@@ -62,7 +53,6 @@ pub(crate) fn handed(block: &Block) {
     let txs = block.transactions();
     let sum = |count: fn(&Transaction) -> usize| txs.iter().map(count).sum::<usize>() as u64;
 
-    metrics::gauge!(names::FETCH_HEIGHT).set(f64::from(u32::from(block.header().height)));
     metrics::counter!(names::FETCH_BLOCKS_TOTAL).increment(1);
     metrics::counter!(names::FETCH_TRANSACTIONS_TOTAL).increment(txs.len() as u64);
     metrics::counter!(names::FETCH_TRANSPARENT_INPUTS_TOTAL)

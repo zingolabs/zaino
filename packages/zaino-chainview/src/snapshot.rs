@@ -20,8 +20,7 @@ use zaino_traffic::{Health, ValidatorId};
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
 use crate::holders::Holders;
 use crate::peers::{Overheard, Pending};
-use crate::telemetry::Alarms;
-use crate::tip::{ChainTip, Unserved};
+use crate::telemetry::{self, Alarms};
 
 /// One unconfirmed transaction, as served
 ///
@@ -201,15 +200,16 @@ impl Sighting {
     }
 }
 
-/// One coherent answer: the verified tip, the mempool, every trusted validator's metadata
+/// One coherent answer: the verified chain, its holders, the mempool, every trusted validator's
+/// metadata
 ///
-/// [`tip`](Self::tip) is `None` without a verified best block a trusted validator holds — no
-/// answer rather than a weak one — and [`mempool`](Self::mempool) refuses on the same condition.
+/// - [`mempool`](Self::mempool) + [`validator_info`](Self::validator_info) `None` while no
+///   trusted validator holds the verified best block (no answer rather than a weak one)
+/// - `held_by` = `holders`' holders of the best block, as of the last fold
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
-    /// The verified chain + who holds what of it
     pub(crate) holders: Holders,
-    pub(crate) tip: Option<ChainTip>,
+    pub(crate) held_by: EndpointSet,
     /// Ordered, so two readers of one view walk the mempool identically.
     pub(crate) mempool: OrdMap<TransactionId, Sighting>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
@@ -224,7 +224,7 @@ impl ChainViewSnapshot {
     pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
         Self {
             holders: Holders::new(endpoints.len(), depth),
-            tip: None,
+            held_by: EndpointSet::default(),
             mempool: OrdMap::new(),
             endpoints,
             alarms: Alarms::default(),
@@ -236,6 +236,8 @@ impl ChainViewSnapshot {
 
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
     /// endpoint per address; `ours` servable (our relay), `unlisted` held, not servable
+    ///
+    /// - each holder's `getblockchaininfo` = the best block, no upgrade, branch id 0
     #[cfg(any(test, feature = "testing"))]
     pub fn fixed(
         chain: Option<Arc<VerifiedChain>>,
@@ -244,11 +246,28 @@ impl ChainViewSnapshot {
         ours: &[(TransactionId, Bytes)],
         unlisted: &[(TransactionId, Bytes)],
     ) -> Self {
+        use zaino_primitives::types::{ConsensusBranchId, ConsensusBranchIds, Height};
+
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
         view.holders.verified(chain);
-        let held = view.best().filter(|_| !held_by.is_empty());
-        view.tip = held.map(|block| ChainTip { block, held_by });
+        view.held_by = view.best().map_or_else(EndpointSet::default, |_| held_by);
+        if let Some(best) = view.best() {
+            let branch = ConsensusBranchId::new(0);
+            let info = BlockchainInfo {
+                blocks: best.height,
+                estimated_height: best.height,
+                best_block_hash: best.hash,
+                sapling_activation: Height::GENESIS,
+                upgrades: Vec::new(),
+                consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+            };
+            for at in view.held_by.positions() {
+                if let Some(meta) = view.endpoints.get_mut(at) {
+                    meta.info = Some(info.clone());
+                }
+            }
+        }
         for (sightings, servable) in [(ours, true), (unlisted, false)] {
             for (txid, raw) in sightings {
                 let sighting = Sighting::new(raw.clone(), None, servable, None);
@@ -267,9 +286,9 @@ impl ChainViewSnapshot {
         }
     }
 
-    /// The verified best block and its trusted holders; `None` = [`unserved`](Self::unserved)
-    pub fn tip(&self) -> Option<ChainTip> {
-        self.tip
+    /// Trusted validators whose chain holds the verified best block (V1; empty = no chain yet)
+    pub fn held_by(&self) -> EndpointSet {
+        self.held_by
     }
 
     /// The header chain's best block, whether or not a trusted validator holds it
@@ -299,22 +318,6 @@ impl ChainViewSnapshot {
         servable.map(|(txid, sighting)| sighting.entry(txid)).collect()
     }
 
-    /// Why there is no tip (`None` = there is one)
-    pub fn unserved(&self) -> Option<Unserved> {
-        match (self.tip, self.best()) {
-            (Some(_), _) => None,
-            (None, None) => Some(Unserved::NoBestTip),
-            (None, Some(best)) => Some(Unserved::NotHeld {
-                height: u32::from(best.height),
-                configured: self.endpoints.len(),
-            }),
-        }
-    }
-
-    fn served(&self) -> Result<ChainTip, Unserved> {
-        self.tip.ok_or_else(|| self.unserved().unwrap_or(Unserved::NoBestTip))
-    }
-
     /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry only, never gates)
     pub fn alarms(&self) -> Alarms {
         self.alarms
@@ -325,16 +328,17 @@ impl ChainViewSnapshot {
         &self.endpoints
     }
 
-    /// `getblockchaininfo` of the first trusted validator holding the tip
+    /// `getblockchaininfo` of the first trusted validator holding the best block (`None` = none
+    /// holds it)
     ///
-    /// - holders share the tip block → one schedule, one branch; every holder has stored one
-    pub fn validator_info(&self) -> Result<&BlockchainInfo, Unserved> {
-        let tip = self.served()?;
-        let info = tip.held_by.positions().find_map(|at| self.endpoints.get(at)?.info.as_ref());
-        info.ok_or(Unserved::NotHeld {
-            height: u32::from(tip.block.height),
-            configured: self.endpoints.len(),
-        })
+    /// - holders share the best block → one schedule, one branch
+    pub fn validator_info(&self) -> Option<&BlockchainInfo> {
+        self.held_by.positions().find_map(|at| self.endpoints.get(at)?.info.as_ref())
+    }
+
+    /// Fewest outbound peers any two live validators share (`None` below two reporting any)
+    pub fn shared_outbound_min(&self) -> Option<usize> {
+        telemetry::shared_outbound_min(&telemetry::outbound(&self.endpoints))
     }
 
     /// Where one transaction has been seen, regardless of whether it is servable.
@@ -368,37 +372,21 @@ impl ChainViewSnapshot {
             .map(move |(txid, sighting)| (*txid, sighting.spread(readers, &self.peers_live)))
     }
 
-    /// The mempool, or the refusal that stands in for it without a tip
-    ///
-    /// A `Result` rather than an empty answer: with no tip there is no honest answer to give,
-    /// and a caller must not be able to forget that (§5, fail closed).
-    pub fn mempool(&self) -> Result<MempoolView<'_>, Unserved> {
-        self.served().map(|_| MempoolView(self))
+    /// The servable mempool; `None` while no trusted validator holds the best block (§5, fail
+    /// closed: no empty stand-in)
+    pub fn mempool(&self) -> Option<MempoolView<'_>> {
+        (!self.held_by.is_empty()).then_some(MempoolView(self))
     }
 }
 
-/// The servable mempool of a snapshot that has a tip.
+/// The servable mempool of a snapshot whose best block a trusted validator holds
 ///
 /// Every method here applies the per-transaction rule — listed by any validator, or `ours` —
 /// so nothing below it can leak out.
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolView<'a>(&'a ChainViewSnapshot);
 
-impl<'a> MempoolView<'a> {
-    /// Callers checked `snapshot.mempool()` already (a tail's anchor)
-    pub(crate) fn of(snapshot: &'a ChainViewSnapshot) -> Self {
-        Self(snapshot)
-    }
-
-    /// One servable unconfirmed transaction.
-    pub(crate) fn get(&self, txid: &TransactionId) -> Option<MempoolEntry> {
-        self.0
-            .mempool
-            .get(txid)
-            .filter(|sighting| sighting.servable())
-            .map(|sighting| sighting.entry(*txid))
-    }
-
+impl MempoolView<'_> {
     /// Every servable unconfirmed transaction, in txid order.
     pub fn entries(&self) -> impl Iterator<Item = MempoolEntry> + '_ {
         self.0

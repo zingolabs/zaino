@@ -52,8 +52,9 @@ jsonrpc_address = "10.0.0.7:8232"
 The daemon spawns the balancer's driver first (the upgrade schedule is a poll's),
 then header sync, the observation fold, each push stream (when `indexer_address`
 is set: its callbacks → `TrafficBalancer::pushed`) and the peer watch (when
-`[p2p]` is on). `zaino-grpc`'s `Routes.chain` holds the view: it answers
-`SendTransaction`, `GetMempoolTx`, `GetMempoolStream` and `GetLightdInfo`.
+`[p2p]` is on). `zaino-grpc`'s `Routes.submit` holds the view for `SendTransaction`;
+`GetMempoolTx`, `GetMempoolStream` and `GetLightdInfo` read its publishes through
+`zaino-snapshot` (one global snapshot per request).
 
 ## Membership
 
@@ -107,11 +108,11 @@ finality asks who holds the boundary, so both read one chain.
 moves (`zaino-header-chain`'s usage: `hash_at`, `header_at`, `locator`). `run` returns `Err(HeaderStoreFailed)` when a final header cannot be
 committed: zainod's supervisor ends the process on it.
 
-The view serves from `ChainTip { block, held_by }`:
+Each snapshot carries `best()` and `held_by()`:
 
-- `block` = `best`, never a validator's claim. A validator reporting a higher
-  tip moves nothing until its headers arrive and verify.
-- `held_by` = the validators that **hold** `block`. Holding is a question, not
+- `best()` = the header chain's best, never a validator's claim. A validator
+  reporting a higher tip moves nothing until its headers arrive and verify.
+- `held_by()` = the validators that **hold** `best`. Holding is a question, not
   a walk (`verified-chain.md` §7): a validator holds `(h, hash)` iff its
   `getblockhash h` = `hash`. Each poll asks it at the final boundary (`depth`
   below the best) and at the best, beside its claim; header sync adds the last
@@ -123,10 +124,10 @@ The view serves from `ChainTip { block, held_by }`:
   only under the poll it was read under (one fetched before a newer poll is
   dropped). A race (it moved between the items of one batch) costs one wrong
   poll; the next one re-asks.
-- `held_by` empty → no tip (`Unserved::NotHeld`); nothing verified yet →
-  `Unserved::NoBestTip`. Both fail closed (`UNAVAILABLE`): a verified header
-  says the work is real, not that the block is valid, and only a validator
-  holding it vouches for the body.
+- `held_by()` empty → `mempool()` and `validator_info()` are `None`; the global
+  snapshot answers `Unavailable::NotHeld` (or `NoChain` with nothing verified).
+  Both fail closed (`UNAVAILABLE`): a verified header says the work is real, not
+  that the block is valid, and only a validator holding it vouches for the body.
 
 Finality moves only past a block `depth` deep and held by a trusted validator
 (the same question), so a reorg the trusted set could still follow never crosses
@@ -153,21 +154,15 @@ Cheap to clone; cannot drive polling or submit.
 
 - `current()` → `Arc<ChainViewSnapshot>`; pin once per request and ask it
   everything
-- `subscribe_tip()` → `watch::Receiver<Option<ChainTip>>`, level-triggered
-  (`None` = unserved): what block sync follows (never misses the latest tip).
-  It changes when the tip block changes and when `held_by` alone changes
-  (fetch routing reads it)
-- `tail()` → `Result<MempoolTail, Unserved>` for one `GetMempoolStream` client
-- `subscribe_published()` → `watch::Receiver<()>`, changed on every publish (every fold):
-  `zaino-snapshot`'s publisher reads `current()` on each
+- `subscribe_published()` → `watch::Receiver<()>`, changed on every publish (every fold,
+  stored in fold order): `zaino-snapshot`'s publisher reads `current()` on each
 
 `ChainViewSnapshot` exposes `chain()` (the `VerifiedChain` every standing was judged under),
-`arrivals(since)` (transactions servable in it but not in `since`, `None` = every servable one;
-an `imbl` diff, so consecutive publishes cost what changed), `tip()`, `best()` (verified, held or
-not),
-`unserved()`, `mempool()` (below), `validator_info()` (the first holder's
-`BlockchainInfo`, `Err(Unserved)` without a tip; `GetLightdInfo` serves it with
-no validator call), and `endpoints()`: per-endpoint `ValidatorMetadata` in
+`best()` (verified, held or not), `held_by()`, `arrivals(since)` (transactions servable in it
+but not in `since`, `None` = every servable one; an `imbl` diff, so consecutive publishes cost
+what changed), `mempool()` (below), `validator_info()` (the first holder's `BlockchainInfo`,
+`None` without a holder; `GetLightdInfo` serves it with no validator call), `alarms()`,
+`shared_outbound_min()`, `spreads()` and `endpoints()`: per-endpoint `ValidatorMetadata` in
 configured order (address, own tip via `tip()`, `zaino_traffic::Health` as of its
 last poll, `Agreement` with the verified best block, last-observed time, peers,
 release, push-stream state, `blocks_to_end_of_service()`). Latency and failure
@@ -196,7 +191,7 @@ peers.announce(peer, vec![txid]);                    // one `inv` (after peer_wa
 let entered: Vec<SocketAddr> = peers.pushes();       // entries pushed to, in order
 ```
 
-`ChainTip::held_by` is an `EndpointSet` bitset over `ValidatorId`s:
+`held_by()` is an `EndpointSet` bitset over `ValidatorId`s:
 `positions()` yields each member's position in the configured list (the
 balancer's order), and `EndpointSet::at(positions)` builds one from positions.
 
@@ -206,7 +201,7 @@ balancer's order), and `EndpointSet::at(positions)` builds one from positions.
 # use zaino_chainview::ChainViewSubscriber;
 # fn serve(view: &ChainViewSubscriber, exclude: Vec<Vec<u8>>) -> Result<(), Box<dyn std::error::Error>> {
 let pinned = view.current();
-let entries = pinned.mempool()?.excluding(&exclude); // Err(Unserved) = UNAVAILABLE
+let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclude);
 # let _ = entries;
 # Ok(())
 # }
@@ -221,8 +216,12 @@ transaction bytes and `fee: Option<Zatoshis>`, the first fee a validator listed
 `None` = our own submission that no validator has listed yet.
 
 A transaction leaves the view only when every endpoint stops listing it; a new
-tip does not clear the view. An unlisted `ours` entry is dropped at the next tip
-move.
+tip does not clear the view. An unlisted `ours` entry is dropped at the next move
+of the held best block.
+
+`GetMempoolStream`'s epochs are `zaino-snapshot`'s (keyed by the served tip): it
+appends `arrivals(since)` between two consecutive publishes, so the view keeps no
+feed of its own.
 
 ## Submission
 
@@ -268,41 +267,6 @@ answers, servable or not:
 The same milestones feed histograms (Telemetry below). Nothing streams it to
 wallets yet.
 
-## `GetMempoolStream`: the mempool at the block, then each arrival, ending on a block
-
-One append-only log per tip block, written once and read by cursors (design:
-`src/feed.rs`).
-
-```rust
-# use zaino_chainview::ChainViewSubscriber;
-# fn frame(_: &[u8]) -> bytes::Bytes { bytes::Bytes::new() }
-# async fn stream(view: &ChainViewSubscriber) -> Result<(), zaino_chainview::Unserved> {
-let mut tail = view.tail()?; // unserved: refuse the stream (UNAVAILABLE)
-let opening = tail.opening_rendered(|entries| frame(&entries[0].raw)); // once per block
-while let Some(logged) = tail.next().await {
-    let record = logged.rendered(|entry| frame(&entry.raw)); // once per transaction
-}
-// `None` = the tip block moved or the tip went unserved: end the stream
-# Ok(())
-# }
-```
-
-- `opening()` is the servable mempool at the tip block. Clients resubscribe on
-  every block and learn of in-between arrivals only this way.
-- `next()` yields each transaction that crossed into servable after it, once. One
-  the opening carried is never repeated, even if it drops out and back.
-- Every tail on a block reads the same log: a late subscriber gets the same
-  opening and every arrival since. The stream never un-sends within a block; a
-  transaction gone mid-block reaches a client only as the block that ends it.
-- It ends when the **tip block changes** (including a retreat onto an ancestor),
-  not when the mempool empties and not when only `held_by` changes. An empty
-  mempool with no new block is a live, silent stream.
-- `rendered` / `opening_rendered` cache the serving layer's wire bytes: the first
-  caller encodes, every other subscriber shares them by refcount. One serving
-  layer = one wire form.
-- Cost per tail: an `Arc` and a cursor; per arrival, one read lock and one `Arc`
-  clone. Nothing grows with the number of arrivals.
-
 ## Cadence and failure
 
 The balancer's (`zaino-traffic`'s usage, "Polling and observations"): poll 1 s
@@ -327,8 +291,8 @@ warns every 60 s with its tip height and hash until the mempool answers, then lo
 on show, it holds nothing until it answers again, its sightings stay. `Down`
 retracts its sightings, claim and answers (never held stale); the balancer keeps
 probing every 30 s and its first answer back restores them. A validator going
-away never ends `run`; only cancel does. With no holder left the tip and mempool
-fail closed, which is the only consequence.
+away never ends `run`; only cancel does. With no holder left the mempool and
+validator info fail closed, which is the only consequence.
 
 ## Ports
 
@@ -366,23 +330,10 @@ trusted validator's `sendrawtransaction` as the verdict.
 ## Telemetry
 
 Observation only: none of it decides membership or gates serving.
-`zainod` registers the descriptions through `describe_metrics()`.
-
-| Gauge (`zaino.chainview.*`) | Labels | Value |
-|---|---|---|
-| `endpoint_state` | `endpoint`, `state` | 1 on its `Health` as of its last poll |
-| `agreement` | `endpoint`, `agreement` | 1 on the current `Agreement` |
-| `tip_height` | `endpoint` | the endpoint's own tip height |
-| `stale_blocks` | `endpoint` | `estimatedheight` − tip height |
-| `peers` | `endpoint`, `direction` | inbound / outbound connections |
-| `release` | `endpoint`, `build`, `user_agent` | 1 on the endpoint's release |
-| `push_stream` | `endpoint` | 1 while its indexer push streams are up |
-| `end_of_service_height` | `endpoint` | height past which its release halts |
-| `best_height` | | the header chain's most-work verified block |
-| `finality_paused` | | 1 while the final boundary waits for a trusted holder |
-| `tip_holders` | | trusted validators holding the verified tip |
-| `shared_outbound_min` | | fewest outbound peers two live endpoints share |
-| `mempool_transactions` | `state` | held: `verified`, `ours_unverified` |
+`zainod` registers the descriptions through `describe_metrics()`. The
+`zaino.chainview.*` state gauges (endpoint state, agreement, heights, peers,
+release, holders, alarms, mempool counts) are `zaino-snapshot`'s, set from
+`ChainViewSnapshot` at scrape; this crate emits only events:
 
 | Histogram | Labels | Value |
 |---|---|---|
@@ -395,7 +346,8 @@ Observation only: none of it decides membership or gates serving.
 `unreachable`) counts ended submissions. Bucket edges come with
 `METRIC_BUCKETS`.
 
-One WARN when a condition rises, one INFO when it clears:
+`alarms()` raises these conditions each fold; `zaino-snapshot`'s publisher logs
+one WARN when one rises, one INFO when it clears:
 
 - stale tip: a `Live` endpoint's tip ≥ 24 blocks behind its own clock-based
   estimate

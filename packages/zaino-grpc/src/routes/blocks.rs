@@ -7,7 +7,7 @@ use http_body::Frame;
 use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
-use zaino_nfs::Snapshot;
+use zaino_nfs::At;
 use zaino_persistence::{LayeredView, MapRead, SequenceRead};
 use zaino_primitives::types::Height;
 
@@ -30,7 +30,7 @@ fn to_status(error: ServeError) -> Status {
 }
 
 pub(crate) async fn dispatch<V, B>(
-    snap: &Snapshot<V>,
+    at: &At<V>,
     blocks: Blocks<V>,
     path: &str,
     body: B,
@@ -41,10 +41,10 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let tip = snap.tip().height;
+    let tip = at.tip().height;
     let answer = match path {
-        path::GET_LATEST_BLOCK => Ok(unary_response(latest(snap))),
-        path::GET_BLOCK => block(snap, blocks, body, &reads).await.map(unary_response),
+        path::GET_LATEST_BLOCK => Ok(unary_response(latest(at))),
+        path::GET_BLOCK => block(at, blocks, body, &reads).await.map(unary_response),
         path::GET_BLOCK_RANGE => {
             let range = range(blocks, tip, body).await;
             range.map(|cursor| range_response(cursor, reads, Ok))
@@ -106,8 +106,8 @@ fn range_response<V: SequenceRead>(
 }
 
 /// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)
-fn latest<V>(snap: &Snapshot<V>) -> Bytes {
-    let tip = snap.tip();
+fn latest<V>(at: &At<V>) -> Bytes {
+    let tip = at.tip();
     let hash = <[u8; 32]>::from(tip.hash).to_vec();
     wire::frame(&proto::BlockId { height: tip.height.into(), hash })
 }
@@ -117,7 +117,7 @@ fn latest<V>(snap: &Snapshot<V>) -> Bytes {
 /// - TODO: deprecate pending light-client ZIP updates (`GetBlockRange` defaults shielded-only:
 ///   one block != range of one; `BlockID` has no `poolTypes`; kept = lightwalletd parity)
 async fn block<V, B>(
-    snap: &Snapshot<V>,
+    at: &At<V>,
     blocks: Blocks<V>,
     body: B,
     reads: &ReadLanes,
@@ -131,14 +131,14 @@ where
 
     // Hash wins when given (names one block across a reorg; a height doesn't)
     if !id.hash.is_empty() {
-        let (height, hash) = wire::locate(snap, &id.hash, "GetBlock")?;
+        let (height, hash) = wire::locate(at, &id.hash, "GetBlock")?;
         let read = move || blocks.block_at(height, &hash).map_err(to_status);
         return reads.read(Lane::Point, read).await?;
     }
 
     let height = wire::height(id.height, "height")?;
     let missing = move || to_status(ServeError::NotFound { height });
-    if height > snap.tip().height {
+    if height > at.tip().height {
         return Err(missing());
     }
     // the snapshot's layer (pepper-sync's reorg check at the tip): RAM, answered inline
@@ -267,9 +267,9 @@ mod deprecated_nullifiers {
 mod tests {
     use http::{HeaderMap, HeaderValue, Response};
     use tonic::{body::Body, Status};
-    use zaino_nfs::NfsHandle;
     use zaino_persistence::{IndexKind, Store};
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
+    use zaino_snapshot::Snapshots;
 
     use crate::service::Routes;
     use crate::testing::{
@@ -278,7 +278,7 @@ mod tests {
     use crate::wire::path;
 
     /// `testing::block(0..count)` committed as compact-block's only view, served at `count - 1`
-    fn compact(count: u32) -> NfsHandle<zaino_persistence::DiskView> {
+    fn compact(count: u32) -> Snapshots<zaino_persistence::DiskView> {
         use zaino_index_compact_block::testing;
         let committed = testing::committed(store("/cb", &COMPACT_BLOCK), count);
         snapshot(&testing::chain(count), vec![(IndexKind::CompactBlock, committed.view())])
@@ -309,9 +309,9 @@ mod tests {
         let path_of = testing::chain(3);
         let compact = (IndexKind::CompactBlock, committed.view());
         let unlocated =
-            dispatch(Routes { nfs: snapshot(&path_of, vec![compact.clone()]), ..routes() });
+            dispatch(Routes { snapshots: snapshot(&path_of, vec![compact.clone()]), ..routes() });
         let mut router =
-            dispatch(Routes { nfs: snapshot(&path_of, vec![compact, locator]), ..routes() });
+            dispatch(Routes { snapshots: snapshot(&path_of, vec![compact, locator]), ..routes() });
         let request = |hash: Vec<u8>, height: u64| {
             framed_request(path::GET_BLOCK, proto::BlockId { height, hash }.encode_to_vec().into())
         };
@@ -351,7 +351,7 @@ mod tests {
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
 
-        let mut router = dispatch(Routes { nfs: compact(6), ..routes() });
+        let mut router = dispatch(Routes { snapshots: compact(6), ..routes() });
 
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
             response.into_body().collect().await.expect("body").to_bytes()
