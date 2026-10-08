@@ -1,0 +1,21 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a11c6b-147c-7b42-b63c-ecdc96200462"
+
+[[changes]]
+crate       = "zaino-component"
+kind        = "breaking"
+description = """
+`Task`, `TaskName` and `TaskError` move to zaino-async: a component runs on a task rather than defining one. `CancellationToken` is re-exported from this crate so an implementor needs to name only one."""
+migration   = """
+Import `Task`, `TaskName` and `TaskError` from `zaino_async` instead of `zaino_component`. `ComponentStatus` is now `Clone` and no longer `Copy`, so read it out of a watch with `.clone()`."""
+
+[[changes]]
+crate       = "zaino-component"
+kind        = "feature"
+description = """
+A component status now carries the cause of its condition: the failing error's full source chain when unhealthy, cleared on any clean transition. Adds `RunLoop` for a supervised run body, `Progress` for bring-up progress, and `ReachabilityProbe` for asking whether a dependency is reachable."""
+
+[[changes]]
+crate       = "zaino-chain"
+kind        = "internal"
+description = "Clone the component status out of its watch, which no longer yields a `Copy` value."
