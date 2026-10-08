@@ -4,9 +4,10 @@
 //! [`TransparentHistory`]'s indexes — compact-block serving plus the transparent
 //! history a local address read composes from — plus the `tree_state` index,
 //! which serves `GetTreeState` / `GetLatestTreeState` from zaino's own
-//! commitment-tree frontiers rather than a validator round trip per scan batch.
-//! Task 7 adds the per-pool subtree-roots indexes; Task 8 flips a light-wallet
-//! deployment's routing onto this set.
+//! commitment-tree frontiers rather than a validator round trip per scan batch,
+//! and the three per-pool subtree-roots indexes
+//! (`subtrees_{sapling,orchard,ironwood}`) that back `GetSubtreeRoots` /
+//! `z_getsubtreesbyindex`.
 //!
 //! Provisioned from the same [`CurrentZainoContext`] as the other sets: the
 //! tree-state index projects its per-pool note commitments from the context the
@@ -24,6 +25,7 @@ use crate::indexes::headers::HeadersIndex;
 use crate::indexes::ironwood::IronwoodIndex;
 use crate::indexes::orchard::OrchardIndex;
 use crate::indexes::sapling::SaplingIndex;
+use crate::indexes::subtrees::{IronwoodSubtreesIndex, OrchardSubtreesIndex, SaplingSubtreesIndex};
 use crate::indexes::transparent_data::TransparentDataIndex;
 use crate::indexes::transparent_spends::TransparentSpendsIndex;
 use crate::indexes::tree_state::TreeStateIndex;
@@ -47,5 +49,8 @@ index_set! {
         TransparentSpendsIndex,
         TxidLocationIndex,
         TreeStateIndex,
+        SaplingSubtreesIndex,
+        OrchardSubtreesIndex,
+        IronwoodSubtreesIndex,
     }
 }

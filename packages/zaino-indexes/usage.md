@@ -88,3 +88,29 @@ composer holding a passthrough provider widens.
   append-cumulative bridge's ordered-monoid scan over the three pools.
   `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
   chain order — projected from `CurrentZainoContext`.
+
+## Subtree-roots indexes
+
+`indexes::subtrees` holds the per-pool subtree-roots indexes backing
+`GetSubtreeRoots` / `z_getsubtreesbyindex`: a completed subtree is the perfect
+subtree of `2^16` consecutive note-commitment leaves, keyed by subtree index.
+
+- `SubtreesIndex<P>` is one generic index parametrised by a `pool::Pool`
+  (`SaplingPool` / `OrchardPool` / `IronwoodPool`, aliased
+  `SaplingSubtreesIndex` etc.), so each pool is its own `WalkOrdered` namespace
+  (`subtrees_sapling`, `subtrees_orchard`, `subtrees_ironwood`) with no
+  duplicated logic. The key is the subtree index (`u32` big-endian);
+  `codec::SubtreeRoot` is the value — a 32-byte root in internal (unreversed)
+  order, the orientation every pool stores and serves, plus the completing
+  height (`z_getsubtreesbyindex`'s `end_height`).
+- It is a `CrossIndex` × Append over two declared dependencies — `tree_state`
+  and the pool's compact index — because a subtree root domain-depends on both
+  the commitment tree just before the completing block and that block's own
+  leaves. Extraction reads `tree_state`'s frontier at `h−1` through the
+  `DepsReader`, re-lifts this block's leaves onto it, and reads the frontier at
+  each completion size, folding it to the level-16 node. Only the ~1,900 mainnet
+  blocks that cross a `2^16` boundary emit anything; every other block emits an
+  empty delta.
+- The subtree level is a const 16 (`pool::SUBTREE_LEVEL`); `Pool::SUBTREE_LEVEL`
+  defaults to it and is lowered only by a test pool, so completions can be driven
+  with a handful of leaves.

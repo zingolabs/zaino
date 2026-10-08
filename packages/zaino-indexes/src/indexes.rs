@@ -10,6 +10,7 @@ pub mod headers;
 pub mod ironwood;
 pub mod orchard;
 pub mod sapling;
+pub mod subtrees;
 pub mod transparent_data;
 pub mod transparent_spends;
 pub mod tree_state;
@@ -50,6 +51,12 @@ mod key_order_tests {
         );
         assert_eq!(
             super::chain_metadata::ChainMetadataIndex::KEY_ORDER,
+            KeyOrder::WalkOrdered
+        );
+        // The subtree-roots indexes key on the subtree index (u32 big-endian),
+        // which is numeric/walk order; the codec is generic, so one pool pins all.
+        assert_eq!(
+            super::subtrees::SaplingSubtreesIndex::KEY_ORDER,
             KeyOrder::WalkOrdered
         );
     }
