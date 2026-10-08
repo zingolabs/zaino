@@ -45,11 +45,15 @@ choices, not the use case's. The light-wallet demand has two deployments:
   to a wrong schedule.
 
 The node-RPC / block-explorer demand has one deployment, `NodeRpcLocal`: the
-`TransparentHistory` index set, address history and spend lookup both served
+`NodeRpcLocal` index set (`TransparentHistory` plus the `tree_state` and per-pool
+`subtrees_*` indexes), address history, spend lookup and treestate all served
 locally and every other placement relayed to the validator or withheld
 (`NodeRpcLocalRouting`), with the `NodeRpcSource` bundle. It serves
-`getaddressdeltas` and `getspentinfo` from its own indexes, which a plain-RPC
-validator cannot answer, so `NodeRpcSource` names no address or spend source port.
+`getaddressdeltas`, `getspentinfo`, `z_gettreestate` and `z_getsubtreesbyindex`
+from its own indexes, the first two of which a plain-RPC validator cannot answer,
+so `NodeRpcSource` names no address, spend or treestate source port. Like the
+light-wallet-local deployment, boot reads the validator's upgrade schedule once
+and pins the per-pool activation heights into the store.
 
 The module tree groups deployments by use case: `deployment/light_wallet.rs` and
 `deployment/node_rpc.rs` each hold what their deployments share — the common
