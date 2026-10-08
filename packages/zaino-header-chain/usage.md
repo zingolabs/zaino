@@ -160,6 +160,7 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
   ```rust,ignore
   use zaino_header_chain::testing::{insert, HeaderViews};
 
+  let params = chain.header_params();                  // its rules, over a store of your own
   let mut headers = chain.header_chain(depth);         // genesis inserted
   insert(&mut headers, &chain.blocks(tip))?;           // a path, as header sync would
   let verified = chain.verified(tip);                  // nothing final

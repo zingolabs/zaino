@@ -13,6 +13,8 @@ use zcash_protocol::consensus::NetworkUpgrade;
 use crate::{check, decode_header, HeaderChain, HeaderStore, Params, Rejected, VerifiedChain};
 
 pub trait HeaderViews {
+    /// Rules a header chain over this chain runs under (a test opening its own store)
+    fn header_params(&self) -> Params;
     /// Fresh `SimFs` store, genesis inserted
     fn header_chain(&self, depth: ReorgDepth) -> HeaderChain;
     /// Genesis ..= `tip`, nothing final
@@ -22,19 +24,24 @@ pub trait HeaderViews {
 }
 
 impl HeaderViews for MockChain {
-    fn header_chain(&self, depth: ReorgDepth) -> HeaderChain {
+    fn header_params(&self) -> Params {
         let schedule = self.schedule();
         let never = Height::try_from(u32::MAX >> 1).expect("the protocol's maximum height");
         let blossom = schedule.upgrades.activation(NetworkUpgrade::Blossom).unwrap_or(never);
         let nu7 = schedule.upgrades.activation(NetworkUpgrade::Nu7);
         let regtest = Params::regtest(blossom, nu7).with_genesis(self.genesis().hash);
         let params = Params { network: schedule.network, ..regtest };
-        let params = match schedule.work {
+        match schedule.work {
             Work::Limit => params,
             Work::Varied => params.any_bits(),
-        };
-        let store = HeaderStore::open(SimFs::new(), Path::new("/headers"), schedule.network);
-        let mut chain = HeaderChain::open(params, depth, store.expect("a fresh SimFs store opens"));
+        }
+    }
+
+    fn header_chain(&self, depth: ReorgDepth) -> HeaderChain {
+        let network = self.schedule().network;
+        let store = HeaderStore::open(SimFs::new(), Path::new("/headers"), network);
+        let store = store.expect("a fresh SimFs store opens");
+        let mut chain = HeaderChain::open(self.header_params(), depth, store);
         insert(&mut chain, &self.blocks(self.genesis())).expect("MockChain genesis verifies");
         chain
     }
