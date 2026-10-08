@@ -68,24 +68,25 @@ use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES};
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs).open(&path, &schema)?;
-let writer = CompactBlockIndexWriter::new(store, batch_bytes);
-let blocks = nfs.subscribe(IndexKind::CompactBlock, writer.committed(), queue_bytes);
+let writer = CompactBlockIndexWriter::new(store, batch_bytes, value_balance.handle());
+let handle = writer.handle();               // serves only while value-balance does
+let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);
+nfs.add(IndexKind::CompactBlock, handle);
 tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink subscription
 ```
 
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
   `S::View: SequenceRead`; zainod picks `DiskEngine`. Its name is
   `IndexKind::CompactBlock.name()` = `"compact_block"`.
-- `new` asserts one record per committed height. `committed()` = the
-  committed-view watch the NFS reads (its durable tip).
-- `run(blocks, fees)` follows the final stream through `zaino_sync::Committer`
-  ([the shape every writer shares](../zaino-sync/usage.md#committer)): per run,
-  one fee step off value-balance's `FeeSink` per unfolded step (held ones
-  included), then on the CPU pool each unfolded step not held folded onto
-  `staged()` with its fees into the delta `Run::apply` opened for it, each
-  folded step applied as the NFS sent it.
-  Commits: batch full, after each folded run, or 1 s idle. It ends after its
-  stream's `Shutdown` and the fee stream's.
+- `new` asserts one record per committed height. `handle()` = the
+  `IndexHandle` the NFS reads (committed view, durable tip), `requiring`
+  value-balance's (its fee source).
+- `run(blocks, fees)` follows the final stream (from `FinalFollower`) through
+  `zaino_sync::Committer` ([the shape every writer shares](../zaino-sync/usage.md#committer)):
+  per run, one fee step off value-balance's `FeeSink` per block (held ones
+  included), then on the CPU pool each block not held folded onto `staged()`
+  with its fees into the delta `Run::apply` opened for it. Commits: batch full
+  or 1 s idle. It ends after its stream's `Shutdown` and the fee stream's.
 - Fallible only at boot (the engine's `open` → `StoreError`). `run` panics on a
   failed commit, a tree size past `u32` (#549), out-of-step fees, and when
   value-balance's fee sink drops

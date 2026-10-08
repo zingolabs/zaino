@@ -1,10 +1,10 @@
 # zaino-internal-value-balance
 
 The value-balance index. Serves no RPC itself: it resolves every transaction's
-[`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block. In
-bulk sync its writer sends them into a `zaino_sync::FeeSink`, one per unfolded
-step, which compact-block reads to fill `CompactTx.fee`; at the tip the NFS
-folds this index first and hands compact-block's fold the fees directly.
+[`Fee`](../zaino-primitives/usage.md) and derives one `BlockFees` per block. Its
+writer sends them into a `zaino_sync::FeeSink`, one per final step, which
+compact-block's writer reads to fill `CompactTx.fee`; at the tip the NFS folds
+this index first and hands compact-block's fold the fees directly.
 
 The only term a block does not carry is what each transparent input spends, so
 the index keeps one map on the
@@ -31,8 +31,9 @@ let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
 let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
 let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
-// subscribed before compact_block (the NFS asserts it): its fees feed compact-block's fold
-let blocks = nfs.subscribe(IndexKind::ValueBalance, writer.committed(), queue);
+let handle = writer.handle();               // also CompactBlockIndexWriter::new's fee source
+let blocks = follower.subscribe(IndexKind::ValueBalance, handle.tip(), queue);
+nfs.add(IndexKind::ValueBalance, handle);   // before compact_block: its fees feed that fold
 tokio::spawn(writer.run(blocks, fee_sink));
 ```
 
@@ -44,11 +45,11 @@ tokio::spawn(writer.run(blocks, fee_sink));
   sink. Fallible only at boot (the engine's `open` → `StoreError`); a failed
   commit or an unresolvable fee panics
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- One `BlockFees` per **unfolded** step goes into the fee sink, held heights
-  included; folded steps send nothing. On a panic the fee sink drops without
-  `Shutdown`, so compact-block panics on its next pop.
-- `committed()` = the committed-view watch the NFS reads (no route reads this
-  index; the NFS's folds read it through `ValueBalanceReader`).
+- One `BlockFees` per step goes into the fee sink, held heights included. On a
+  panic the fee sink drops without `Shutdown`, so compact-block panics on its
+  next pop.
+- `handle()` = the `IndexHandle` the NFS reads (no route reads this index; the
+  NFS's folds read it through `ValueBalanceReader`).
 
 ## Folding
 
@@ -71,7 +72,7 @@ let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, an
   through it; the NFS tests price compact-block's fold with it.
 - `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
   internal (fees are the only consumer).
-- The writer folds a run's unfolded steps at once (`fold_run`, crate-internal,
+- The writer folds a run's blocks at once (`fold_run`, crate-internal,
   through `Run::apply_batch`: one caller-opened delta per block): block `k`
   resolves against `parent` plus the outputs of blocks `0..=k`, and every
   prevout from outside the run is asked in one `MapRead::values` call. A
@@ -84,18 +85,17 @@ let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, an
 
 ## Resolved per run
 
-Each run (`Committer::next`, queued steps to `batch_bytes`) folds its unfolded
-steps it does not hold as one `fold_run` onto `staged()` on the CPU pool and
-applies them; held ones (a restart's resend) are priced by `fees` with no rows.
-Every unfolded step's fees go out, held ones first. Resolving at
-commit time instead would deadlock, since compact-block waits on fees step by
-step while a commit waits for a whole batch.
+Each run (`Committer::next`, queued steps to `batch_bytes`) folds the blocks
+it does not hold as one `fold_run` onto `staged()` on the CPU pool and applies
+them; held ones (a restart's resend) are priced by `fees` with no rows. Every
+step's fees go out, held ones first. Resolving at commit time instead would
+deadlock, since compact-block waits on fees step by step while a commit waits
+for a whole batch.
 
 | Step | Outputs | Fees on the sink |
 |---|---|---|
-| unfolded, held (a restart, this index ahead) | already stored | yes (compact-block may be behind) |
-| unfolded, new | applied | yes |
-| folded | applied as the NFS sent them | no |
+| held (a restart, this index ahead) | already stored | yes (compact-block may be behind) |
+| new | applied | yes |
 
 A fold error panics the writer (`value_balance index: ` + the `FoldError`).
 

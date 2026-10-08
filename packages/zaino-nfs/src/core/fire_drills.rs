@@ -10,23 +10,18 @@ use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::testing::Lie;
+use zaino_sync::check_block;
 
-use super::{Diverged, Indexes, Input, NfsCore, Output, Sent};
-use crate::fetch::{check_block, Checked};
+use super::{Indexes, Input, NfsCore, Output};
 use crate::fired;
-use crate::graph::{Graph, Node};
+use crate::graph::Node;
 
 fn h(n: u32) -> Height {
     Height::try_from(n).expect("h")
 }
 
-/// Each index its own group
-fn alone(count: usize) -> Vec<Indexes> {
-    (0..count).map(Indexes::one).collect()
-}
-
-fn depth() -> ReorgDepth {
-    ReorgDepth::new(NonZeroU32::new(3).expect("nz"))
+fn both() -> Indexes {
+    Indexes::one(0).union(Indexes::one(1))
 }
 
 /// Trunk A 0..=9, side S 5..=8 off A4, side Q 4..=7 off A3
@@ -59,23 +54,16 @@ impl World {
         Arc::clone(self.builder.block(hash))
     }
 
-    /// Body of `hash` checked against its own branch's header
-    fn checked(&self, hash: BlockHash) -> Checked {
-        let at = self.at(hash);
-        let record = self.builder.verified(at).header_at(at.height).expect("on its own branch");
-        check_block(Block::clone(&self.block(hash)), at.height, &record).expect("its own body")
-    }
-
     fn node(&self, hash: BlockHash) -> Node<Height> {
         let at = self.at(hash);
         let parent = self.builder.block(hash).header().prev_hash;
-        let (block, folded, covers) = (self.block(hash), Arc::new(at.height), Indexes::first(2));
-        Node { at, parent, block, folded, covers }
+        Node { at, parent, block: self.block(hash), folded: Arc::new(at.height), covers: both() }
     }
 
     /// Header chain over `blocks` (genesis first), finalized through `final_height`
     fn verified(&self, blocks: &[BlockHash], final_height: u32) -> Arc<VerifiedChain> {
-        let mut headers = self.builder.header_chain(depth());
+        let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nz"));
+        let mut headers = self.builder.header_chain(depth);
         let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
         insert(&mut headers, &path).expect("valid");
         let through = self.at(blocks[final_height as usize]);
@@ -83,44 +71,42 @@ impl World {
         Arc::new(headers.verified().expect("verified"))
     }
 
-    /// `input`, then every fetch and fold answered honestly (payload = height) unless held, every
-    /// send delivered
+    /// Both indexes serving at `durable`
+    fn serving(&self, durable: [BlockHash; 2]) -> Input<Height> {
+        Input::Indexes(durable.iter().map(|hash| (Some(self.at(*hash)), true)).collect())
+    }
+
+    /// `input`, then every fetch and fold answered honestly (payload = height) unless held
     fn drive(&self, core: &mut NfsCore<Height>, input: Input<Height>, hold: Hold) {
-        let outputs = core.step(input).expect("durable tips on the chain");
-        for output in outputs {
+        for output in core.step(input) {
             let input = match output {
-                Output::Fetch { at, record, .. } if Some(at.hash) != hold.fetch => {
+                Output::Fetch { at, record } if Some(at.hash) != hold.fetch => {
                     let block = Block::clone(&self.block(at.hash));
                     Input::Body(check_block(block, at.height, &record).expect("honest"))
                 }
-                Output::Fold { at, .. } if Some(at.hash) != hold.fold => {
-                    Input::Folded { at, folded: Arc::new(at.height) }
+                Output::Fold { at, covers, .. } if Some(at.hash) != hold.fold => {
+                    Input::Folded { at, covers, folded: Arc::new(at.height) }
                 }
-                Output::Send(_) => Input::Delivered,
                 _ => continue,
             };
             self.drive(core, input, hold);
         }
     }
 
-    /// - A0, A1 sent unfolded; A2..=A4 sent folded; durable A3 / A2 (root A2)
+    /// - Both serving from A1; best S6, then A9 (final 4); durable A3 / A2 (root A2)
     /// - nodes A3..=A6 + side S5, S6 (fork A4 = final); A7 folding, A8 ready, A9 asked
     fn valid(&self) -> NfsCore<Height> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
-        let mut core = NfsCore::new(4, vec![None, None], alone(2));
+        let mut core = NfsCore::new(4, 2);
         self.drive(&mut core, Input::Chain(self.verified(&a[..=4], 1)), all);
-        for index in 0..2 {
-            let tip = Some(self.at(a[1]));
-            self.drive(&mut core, Input::Durable { index, tip }, all);
-        }
+        self.drive(&mut core, self.serving([a[1], a[1]]), all);
         let on_s = [&a[..=4], &self.s[..2]].concat();
         self.drive(&mut core, Input::Chain(self.verified(&on_s, 1)), all);
         let back_on_a = self.verified(&[&on_s[..], &a[5..]].concat(), 4);
         let hold = Hold { fetch: Some(a[9]), fold: Some(a[7]) };
         self.drive(&mut core, Input::Chain(back_on_a), hold);
-        self.drive(&mut core, Input::Durable { index: 0, tip: Some(self.at(a[3])) }, all);
-        self.drive(&mut core, Input::Durable { index: 1, tip: Some(self.at(a[2])) }, all);
+        self.drive(&mut core, self.serving([a[3], a[2]]), all);
         core
     }
 }
@@ -141,54 +127,16 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     let expected = BTreeSet::from([a[3], a[4], a[5], a[6], s[0], s[1]]);
     let ready: Vec<Height> = valid.ready.keys().copied().collect();
     let folding: Vec<BlockHash> = valid.folding.keys().copied().collect();
-    let sent = Some(Sent { at: world.at(a[4]), folded: true });
+    let shown = valid.shown.as_ref().map(|shown| shown.tip);
     assert_eq!(
-        (
-            nodes,
-            ready,
-            folding,
-            valid.wanted.get(&h(9)) == Some(&a[9]),
-            valid.sent,
-            valid.shown.tip
-        ),
-        (expected, vec![h(8)], vec![a[7]], true, sent, Some(world.at(a[6]))),
+        (nodes, ready, folding, valid.wanted.get(&h(9)) == Some(&a[9]), shown),
+        (expected, vec![h(8)], vec![a[7]], true, Some(world.at(a[6]))),
         "the planted state"
     );
 
     type Plant<'a> = Box<dyn Fn(&mut NfsCore<Height>) + 'a>;
     let drills: Vec<(&str, Plant)> = vec![
         ("nothing before a chain", Box::new(|c| c.chain = None)),
-        ("J1: joined = whole groups, never none", Box::new(|c| c.joined = Indexes::default())),
-        (
-            "J1: joined = whole groups, never none",
-            Box::new(|c| {
-                c.groups = vec![Indexes::first(2)];
-                c.joined = Indexes::one(0);
-            }),
-        ),
-        (
-            "J2: a lagging group at the root joins",
-            Box::new(|c| {
-                c.joined = Indexes::one(0);
-                c.durable[1] = c.durable[0];
-            }),
-        ),
-        ("N5: at most lookahead sends in flight", Box::new(|c| c.undelivered = 5)),
-        (
-            "N3: the stream at or past the lowest durable tip",
-            Box::new(|c| c.durable.fill(Some(world.at(a[5])))),
-        ),
-        (
-            "N5: nothing sent past the final tip",
-            Box::new(|c| c.sent = Some(Sent { at: world.at(a[5]), folded: true })),
-        ),
-        (
-            "N5: a sent block is never retracted",
-            Box::new(|c| {
-                let at = BlockRef { hash: a[3], height: h(4) };
-                c.sent = Some(Sent { at, folded: true });
-            }),
-        ),
         (
             "N1: every node's block = its own header",
             Box::new(|c| c.graph.insert(Node { block: world.block(a[6]), ..world.node(a[5]) })),
@@ -211,55 +159,38 @@ fn every_invariant_check_fires_on_its_planted_bug() {
             Box::new(|c| c.graph.insert(world.node(s[2]))),
         ),
         (
-            "J3: a node folds joined indexes only",
+            "N2: a node folds serving indexes only",
             Box::new(|c| {
-                let covers = Indexes::first(2).union(Indexes::one(5));
+                let covers = both().union(Indexes::one(5));
                 c.graph.insert(Node { covers, ..world.node(a[5]) });
             }),
         ),
         (
-            "J4: a node's indexes ⊆ its parent node's",
-            Box::new(|c| c.graph.insert(Node { covers: Indexes::one(0), ..world.node(a[5]) })),
-        ),
-        (
-            "N3: a node sent final stays until every joined index holds it",
-            Box::new(|c| [a[4], a[5], a[6], s[0], s[1]].iter().for_each(|h| c.graph.remove(h))),
-        ),
-        (
             "N4: served tip = the deepest folded best block",
-            Box::new(|c| c.shown.tip = Some(world.at(a[5]))),
-        ),
-        ("N4: nothing served while restarting", Box::new(|c| c.durable[0] = Some(world.at(a[5])))),
-        (
-            "N4: published indexes = the served block's, the joined",
-            Box::new(|c| c.shown.covers = Indexes::one(0)),
+            Box::new(|c| c.shown.as_mut().expect("published").tip = world.at(a[5])),
         ),
         (
-            "N4: published indexes = the served block's, the joined",
-            Box::new(|c| c.shown.joined = Indexes::one(0)),
-        ),
-        (
-            "fetch: ready bodies above the last sent",
-            Box::new(|c| drop(c.ready.insert(h(4), world.checked(a[4])))),
+            "fetch: ready bodies above the root",
+            Box::new(|c| drop(c.ready.insert(h(2), world.block(a[2])))),
         ),
         (
             "N1: every ready body is best",
-            Box::new(|c| drop(c.ready.insert(h(8), world.checked(s[3])))),
+            Box::new(|c| drop(c.ready.insert(h(8), world.block(s[3])))),
         ),
         (
             "fetch: a folded block is not ready",
-            Box::new(|c| drop(c.ready.insert(h(6), world.checked(a[6])))),
+            Box::new(|c| drop(c.ready.insert(h(6), world.block(a[6])))),
         ),
         ("fetch: a ready body is not wanted", Box::new(|c| _ = c.wanted.insert(h(8), a[8]))),
-        ("fetch: wants above the last sent", Box::new(|c| _ = c.wanted.insert(h(1), a[1]))),
+        ("fetch: wants above the root", Box::new(|c| _ = c.wanted.insert(h(1), a[1]))),
         ("N1: every want is best", Box::new(|c| _ = c.wanted.insert(h(9), BlockHash::ZERO))),
         ("fetch: a folded block is not wanted", Box::new(|c| _ = c.wanted.insert(h(6), a[6]))),
         (
             "fold: nothing folds twice",
-            Box::new(|c| drop(c.folding.insert(a[6], (world.block(a[6]), Indexes::first(2))))),
+            Box::new(|c| drop(c.folding.insert(a[6], (world.block(a[6]), both())))),
         ),
         (
-            "J3: a fold covers joined indexes only",
+            "N2: a fold covers serving indexes only",
             Box::new(|c| drop(c.folding.insert(a[8], (world.block(a[8]), Indexes::one(5))))),
         ),
     ];
@@ -271,76 +202,37 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
 
     // preconditions: caller / driver bug → named panic
-    let rewound = world.verified(&a[..=4], 1);
-    let on_q = world.verified(&[&a[..=3], &q[..]].concat(), 4);
-    let step = |plant: &dyn Fn(&mut NfsCore<Height>), input: Input<Height>| {
-        let mut core = world.valid();
-        plant(&mut core);
-        fired(|| drop(core.step(input)))
-    };
-    let durable = |index, tip: BlockHash| Input::Durable { index, tip: Some(world.at(tip)) };
-    let new = |durable: Vec<Option<BlockRef>>, groups| {
-        fired(|| drop(NfsCore::<Height>::new(1, durable, groups)))
-    };
-    let at = |hash: BlockHash| Some(world.at(hash));
+    let step = |input: Input<Height>| fired(|| drop(world.valid().step(input)));
     let preconditions = [
-        (
-            "at least one block in flight",
-            fired(|| drop(NfsCore::<Height>::new(0, vec![None], alone(1)))),
-        ),
-        ("an index to feed", new(vec![], vec![])),
-        ("groups partition the indexes", new(vec![None, None], alone(1))),
-        ("groups partition the indexes", new(vec![None, None], vec![Indexes::first(2); 2])),
-        (
-            "J2: an index joins at the root only",
-            fired(|| {
-                let mut core = world.valid();
-                core.joined = Indexes::one(0);
-                core.join(Indexes::one(1));
-            }),
-        ),
-        (
-            "N3: a fold on the root = every joined index durable at it",
-            step(
-                &|c| {
-                    c.sent = Some(Sent { at: world.at(a[2]), folded: true });
-                    c.durable = vec![at(a[2]), at(a[3])];
-                    c.graph = Graph::new();
-                    c.folding.clear();
-                    c.ready.insert(h(3), world.checked(a[3]));
-                },
-                Input::Chain(world.verified(a, 4)),
-            ),
-        ),
-        (
-            "J4: a refold only widens a node's indexes",
-            step(
-                &|c| drop(c.folding.insert(a[6], (world.block(a[6]), Indexes::one(0)))),
-                Input::Folded { at: world.at(a[6]), folded: Arc::new(h(6)) },
-            ),
-        ),
-        ("H2: the final tip never moves back", step(&|_| {}, Input::Chain(rewound))),
-        (
-            "H2: a final block never changes",
-            step(&|c| c.chain = Some(Arc::clone(&on_q)), Input::Chain(world.verified(a, 4))),
-        ),
-        (
-            "a fold result for a fold in flight",
-            step(&|_| {}, Input::Folded { at: world.at(a[8]), folded: Arc::new(h(8)) }),
-        ),
-        ("a durable tip of an enabled index", step(&|_| {}, durable(2, a[4]))),
-        ("a delivery for a send in flight", step(&|_| {}, Input::Delivered)),
-        ("N3: a durable tip never moves back", step(&|_| {}, durable(0, a[2]))),
-        ("N3: a durable tip is a block the stream sent", step(&|_| {}, durable(0, a[5]))),
+        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(0, 1)))),
+        ("1 to 32 indexes", fired(|| drop(NfsCore::<Height>::new(1, 0)))),
+        ("one state per enabled index", step(Input::Indexes(vec![]))),
+        ("N3: index 0's durable tip never moves back", step(world.serving([a[2], a[2]]))),
     ];
     for (expected, message) in preconditions {
         let message = message.unwrap_or_default();
         assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
     }
 
-    // bad input (not a bug): durable tip off the final chain → `Err(Diverged)`, no panic
-    let mut core = NfsCore::<Height>::new(1, vec![None, Some(world.at(q[0]))], alone(2));
-    let diverged = core.step(Input::Chain(world.verified(a, 4))).map(drop);
-    let expected = Diverged { index: 1, height: h(4), expected: q[0], got: a[4] };
-    assert_eq!(diverged, Err(expected));
+    // stale fold result (no fold in flight, or another covers): ignored, no node
+    let mut core = world.valid();
+    for (at, covers) in [(a[8], both()), (a[7], Indexes::one(0))] {
+        let stale = Input::Folded { at: world.at(at), covers, folded: Arc::new(h(0)) };
+        assert!(core.step(stale).is_empty(), "{at:?}: nothing out");
+        assert!(!core.graph.contains(&at), "{at:?}: never a node");
+    }
+    core.check();
+
+    // serving set changed: graph dropped, best nodes' bodies back to ready, served tip held
+    let mut core = world.valid();
+    let one = Input::Indexes(vec![(Some(world.at(a[3])), true), (Some(world.at(a[2])), false)]);
+    let outputs = core.step(one);
+    let refolding = matches!(&outputs[..], [Output::Fold { at, covers, .. }, ..]
+        if *at == world.at(a[4]) && *covers == Indexes::one(0));
+    assert!(refolding, "A4 refolded for index 0 alone: {outputs:?}");
+    let ready: Vec<Height> = core.ready.keys().copied().collect();
+    let held = (core.held, core.shown.as_ref().map(|shown| shown.tip));
+    assert_eq!(ready, [h(5), h(6), h(8)], "best nodes above the new root, back to ready");
+    assert_eq!(held, (Some(world.at(a[6])), Some(world.at(a[6]))), "A6 held, not republished");
+    core.check();
 }

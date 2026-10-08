@@ -4,41 +4,16 @@ id = "01a1181e-5156-71f6-bc38-e957fb7dcf70"
 crate = "zaino-sync"
 kind = "feature"
 description = """
-First release. The plumbing between the non-finalized state and the index writers: \
-`IndexerDataSink<T>`, a byte-bounded broadcast queue (`subscribe(name, budget)`, all-or-nothing \
-`send`, `shutdown`) whose items are `Final { block, folds }` steps (`Step::Apply` in height \
-order, then `Shutdown`); `FeeSink` for one index's fees into another; `Committer`, the apply / \
-commit loop every writer runs (commits when the batch fills, after a folded run, or after 1 s \
-idle; `committed()` watches the durable view); `compute` for CPU work on the rayon pool; and the \
-`zaino_sink_queue_bytes` metric.
-"""
-
-[[changes]]
-crate = "zaino-sync"
-kind = "breaking"
-section = "changed"
-description = """
-`Run::apply(store, fold)` opens each unfolded step's delta (`store.changes(block)`) and hands it \
-to `fold(store, block, &mut changes)`; new `Run::apply_batch(store, fold)` folds the unfolded \
-steps a store lacks as one batch, one opened delta per block, returning `fold`'s answer. \
-`Run::apply_folded` is now private (both apply the folded steps).
-"""
-migration = """
-Fill the `&mut Changes` the closure receives instead of returning one; replace a run fold plus \
-`apply_folded` with `apply_batch`.
-"""
-
-[[changes]]
-crate = "zaino-sync"
-kind = "breaking"
-section = "changed"
-description = """
-A folded final step whose `Folds` lack the writer's index (folded while that index lagged, \
-before it joined the NFS) is folded by the writer itself, in height order with the steps \
-folded for it: `Run::unfolded` = the steps the index folds itself, and `Run::apply_batch` \
-batches each stretch of them, returning one answer per stretch (`Vec<T>`). Before, such a \
-step panicked the writer ("not folded").
-"""
-migration = """
-`run.apply_batch(..)` now returns `Vec<T>`: flatten it (value-balance's fees) or ignore it.
+First release. The final path: `FinalFollower::new(chain, balancer, lookahead)` fetches every \
+final block of the header chain's `VerifiedChain` in order (`fetch` / `check_block`: hash, \
+coinbase height, merkle root, CVE-2012-2459; a misanswer `report`ed and re-asked) onto one \
+`IndexerDataSink<Block>`, from the lowest durable tip (`subscribe(kind, durable, queue)`); a \
+durable tip off the final chain stops it (`FollowError::Diverged`). `IndexerDataSink<T>` is a \
+byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carries \
+value-balance's fees to compact-block. `Committer` is the apply / commit loop every writer runs \
+(commits when the batch fills or after 1 s idle; `Run::{apply, apply_batch}` fold each block a \
+store lacks); `IndexHandle` is what the rest of the daemon knows about one index (`view`, `tip`, \
+`changed`, `serving(best, window)`, `requiring`). `SyncProgress` = the last height sent \
+(`zaino_fetch_height`); `zaino_fetch_*_total` and `zaino_sink_queue_bytes` metrics; `compute` \
+for CPU work on the rayon pool.
 """

@@ -12,13 +12,14 @@ use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_internal_block_hash_to_height as block_hash;
-use zaino_nfs::{ChainParams, Indexed, NfsProgress};
+use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
 use zaino_source::testing::MockValidator;
+use zaino_sync::SyncProgress;
 use zaino_traffic::{
     Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
 };
@@ -128,7 +129,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         &[(unlisted, Bytes::from_static(b"unlisted"))],
     );
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
-    let progress = NfsProgress::fixed(Some(Height::try_from(5u32).expect("h")));
+    let progress = SyncProgress::fixed(Some(Height::try_from(5u32).expect("h")));
     let member = |at: usize, health, failures, latency| MemberRow {
         id: MemberId::Trusted(ValidatorId::new(at).expect("small")),
         health,

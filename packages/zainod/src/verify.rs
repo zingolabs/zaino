@@ -132,7 +132,7 @@ mod tests {
     use zaino_persistence::fs::RealFs;
     use zaino_primitives::testing::{h, p2pkh, MockChain, Upgrades};
 
-    use zaino_sync::{FeeSink, Final, IndexerDataSink, Step};
+    use zaino_sync::{FeeSink, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
 
     /// Five indexes from one chain, scrubbed through the daemon's own config:
@@ -171,26 +171,27 @@ mod tests {
         let transparent_blocks = subscribe(IndexKind::TransparentAddress);
         let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
         let open = |path: &Path, kind| engine.open(path, &schema(kind, net)).expect("open");
-        let store = open(&cb, IndexKind::CompactBlock);
-        let compact = CompactBlockIndexWriter::new(store, batch);
-        let store = open(&vb, IndexKind::ValueBalance);
-        let fees = ValueBalanceIndexWriter::new(store, batch);
-        let store = open(&bh, IndexKind::BlockHash);
-        let hashes = BlockHashIndexWriter::new(store, batch);
-        let store = open(&ts, IndexKind::TreeState);
-        let trees = TreeStateIndexWriter::new(store, batch);
-        let store = open(&ta, IndexKind::TransparentAddress);
-        let transparent = TransparentAddressIndexWriter::new(store, batch);
+        let value_balance_store = open(&vb, IndexKind::ValueBalance);
+        let compact_block_store = open(&cb, IndexKind::CompactBlock);
+        let block_hash_store = open(&bh, IndexKind::BlockHash);
+        let tree_state_store = open(&ts, IndexKind::TreeState);
+        let transparent_address_store = open(&ta, IndexKind::TransparentAddress);
+        let value_balance = ValueBalanceIndexWriter::new(value_balance_store, batch);
+        let compact_block =
+            CompactBlockIndexWriter::new(compact_block_store, batch, value_balance.handle());
+        let block_hash = BlockHashIndexWriter::new(block_hash_store, batch);
+        let tree_state = TreeStateIndexWriter::new(tree_state_store, batch);
+        let transparent_address =
+            TransparentAddressIndexWriter::new(transparent_address_store, batch);
 
         let mut loops = tokio::task::JoinSet::new();
-        loops.spawn(compact.run(compact_blocks, compact_fees));
-        loops.spawn(fees.run(fee_blocks, fee_sink));
-        loops.spawn(hashes.run(hash_blocks));
-        loops.spawn(trees.run(tree_blocks));
-        loops.spawn(transparent.run(transparent_blocks));
+        loops.spawn(compact_block.run(compact_blocks, compact_fees));
+        loops.spawn(value_balance.run(fee_blocks, fee_sink));
+        loops.spawn(block_hash.run(hash_blocks));
+        loops.spawn(tree_state.run(tree_blocks));
+        loops.spawn(transparent_address.run(transparent_blocks));
         for block in &blocks {
-            let (height, block) = (block.header().height, Arc::clone(block));
-            let data = Arc::new(Final { block, folds: None });
+            let (height, data) = (block.header().height, Arc::clone(block));
             block_sink.send(Step::Apply { height, data }).await;
         }
         block_sink.shutdown();

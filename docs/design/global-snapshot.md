@@ -84,7 +84,9 @@ impl<V> At<V> { pub fn tip(&self) -> BlockRef; pub fn params(&self) -> ChainPara
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     pub fn indexed(&self) -> watch::Receiver<Option<Arc<Indexed<V>>>>;   // replaces handle()
-    pub fn progress(&self) -> NfsProgress;                               // replaces subscribe_handed()
+}
+impl<S: ChainDataSource> FinalFollower<S> {
+    pub fn progress(&self) -> SyncProgress;                              // last final height sent
 }
 ```
 
@@ -212,7 +214,7 @@ let snap = self.routes.snapshots.load();
 
 | Kind | Home |
 | ------------------------------------------------------------ | ------------------------------------------------------- |
-| state: tips, readiness, durable tips, validator facts, alarms, mempool counts | f(snapshot, `NfsProgress`), on demand |
+| state: tips, readiness, durable tips, validator facts, alarms, mempool counts | f(snapshot, `SyncProgress`), on demand |
 | events: `zaino_reorgs_total`, `zaino_fetch_*_total`, histograms, `Chain tip advanced`, `Chain reorg detected`, misanswers, submission ends | where they happen (unchanged) |
 | live accounting: sink queue bytes, LSM, gRPC connections, TB `MemberTable` | its owner, read at report time |
 
@@ -223,7 +225,7 @@ pub struct Report {
     seq: u64,
     tips: TipsReport,                   // best, final, served, held_by/configured, synced
     unready: Vec<&'static str>,         // Unready::label, in order
-    handed: Option<u32>,                // NfsProgress::handed
+    handed: Option<u32>,                // SyncProgress::handed
     indexes: Vec<IndexReport>,          // name, enabled, durable (empty before the NFS publishes)
     validators: Vec<ValidatorReport>,   // view facts ⨝ MemberTable (state, latency_ms, failures)
     alarms: AlarmsReport,               // partitioned, eclipsed, finality_paused, stale, ending
@@ -231,9 +233,9 @@ pub struct Report {
     forks: Vec<ForkReport>,             // from, tip, work (decimal string), folded
 }
 impl Report {
-    pub fn of<V: View>(snap: &Snapshot<V>, progress: &NfsProgress, members: &MemberTable) -> Self;
+    pub fn of<V: View>(snap: &Snapshot<V>, progress: &SyncProgress, members: &MemberTable) -> Self;
 }
-pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &NfsProgress);  // + zaino_chainview_*
+pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &SyncProgress);  // + zaino_chainview_*
 pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>);     // synced, alarms, finality
 ```
 
@@ -251,7 +253,7 @@ histograms and `zaino_build_info` unchanged:
 | Name | Today | After (at scrape) |
 | ------------------------------------- | ---------------------------- | ----------------------------------- |
 | `zaino_best_tip` | NFS, per chain input | `tips.best` |
-| `zaino_fetch_height` | NFS `hand()` | `NfsProgress::handed` |
+| `zaino_fetch_height` | NFS `hand()` | `SyncProgress::handed` |
 | `zaino_index_finalized_height{index}` | zainod task per index | `Indexed::durable` |
 | `zaino_index_synced{index}` | zainod task per index | `tips.synced`, per enabled index |
 | `zaino_chainview_*` gauges | `telemetry::emit` per fold | `snap.view()` |
@@ -295,7 +297,7 @@ histograms and `zaino_build_info` unchanged:
 | Step | Scope | Beside TB |
 | ---- | -------------------------------------------------------------------------------------------------- | ------------------ |
 | 1 | header-chain: `imbl` tree, `Fork`, `forks` / `branch` / `holds`, model | yes |
-| 2 | nfs: prune via `holds` (G8); `Indexed`, `At`, `at()`; republish per commit; `NfsProgress`; grpc + zainod read `Indexed` directly | yes (no `fetch.rs`) |
+| 2 | nfs: prune via `holds` (G8); `Indexed`, `At`, `at()`; republish per commit; `SyncProgress`; grpc + zainod read `Indexed` directly | yes (no `fetch.rs`) |
 | 3 | `zaino-snapshot`: `Snapshot`, `Publisher`, `compose` + model; `Routes.snapshots`; `serving.rs` gone | yes |
 | 4 | chain view: own epochs + `feed.rs` + `tail()` gone (feed = `zaino-snapshot`'s); `ChainTip` / `Unserved` / tip watch gone | after TB step 1 |
 | 5 | `Report`, gauges at scrape, `transitions`, one progress task, §5 deletions (name test first) | yes |
@@ -307,7 +309,7 @@ turns `Observation`s into `ChainViewSnapshot`; this design starts at that fold's
 
 - **I1 NFS**: this owns `snapshot.rs`, `graph.rs` pruning, publish sites; TB owns fetch
   scheduling (`Fetcher`, `Output::Fetch`, `Unserved`, `Misanswered`). Shared: the hand-over
-  point keeps calling `NfsProgress` + the `zaino_fetch_*` counters
+  point keeps calling `SyncProgress` + the `zaino_fetch_*` counters
 - **I2 chain view**: TB replaces pollers, `EndpointState` (→ `Health`) and latency/failures (→
   `MemberTable`); the fold, `Holders`, mempool and `ChainViewSnapshot` stay. `Report` joins
   `ChainViewSnapshot` facts (agreement, info, release, peers, streaming) with `MemberTable`
@@ -325,7 +327,7 @@ turns `Observation`s into `ChainViewSnapshot`; this design starts at that fold's
 | 2 | epoch key: served tip / best-held | served: stream end ⇒ new tip servable |
 | 3 | gauges: at scrape / per publish | scrape: no per-publish cost, always fresh, no mirror tasks |
 | 4 | side-hash `GetBlock`/`GetTreeState` via `at` | not yet: lightwalletd clients read a by-hash answer as on-chain; `/statusz` forks first |
-| 5 | progress inside the snapshot | no: `handed` moves thousands of times a second in bulk; `NfsProgress` atomics |
+| 5 | progress inside the snapshot | no: `handed` moves thousands of times a second in bulk; `SyncProgress` atomics |
 | 6 | republish `Indexed` per commit | yes: current durable tips, ≤ one per block at the tip |
 | 7 | chain: chain view's / NFS's | chain view's (holders + judgement on the latest); `Indexed.chain` kept for `at()` and asserts |
 | 8 | `at()` memo | none until measured (rebase bounded by the root's lag) |
@@ -347,7 +349,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
 **Phase 2 (call sites; deletions; built 2026-10-07)**
 
 - nfs: `Snapshot` → `Indexed`; `NfsHandle`, `handle()` and the `tip` / `params` / `views`
-  shorthands gone; `NfsProgress` (atomics: `handed`, `blocks`) replaces `subscribe_handed` +
+  shorthands gone; `SyncProgress` (atomics: `handed`, `blocks`) replaces `subscribe_handed` +
   `report.rs`; `emit::best` and the `zaino_fetch_height` set gone; `Nfs::new`'s unread `depth`
   dropped
 - chain view: the §5 deletions (`tip.rs`, `feed.rs`, epoch cell, tails watch, `tail()`,
@@ -356,7 +358,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
   snapshot's); publishes stored under the fold lock (consecutive publishes = fold order, what
   `arrivals` diffs)
 - snapshot: `Snapshots::fixed` (testing; never republished); `Report::of` joins `MemberTable`
-  and reads `NfsProgress`; `emit_gauges` reads `NfsProgress` + sets `zaino_chainview_*`; alarm +
+  and reads `SyncProgress`; `emit_gauges` reads `SyncProgress` + sets `zaino_chainview_*`; alarm +
   finality edges in `transitions` (`finality_paused` surfaced on `/statusz`)
 - grpc: `Routes { snapshots, submit, validators, network, max_address_rows }`; one `load()` per
   request; `served()?` / `mempool()?` / `mempool_stream()?` / `lightd()?`; tree-state memos keyed

@@ -24,17 +24,19 @@ use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
 let writer = TransparentAddressIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
-let blocks = nfs.subscribe(IndexKind::TransparentAddress, writer.committed(), queue_bytes);
+let handle = writer.handle();
+let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.tip(), queue_bytes);
+nfs.add(IndexKind::TransparentAddress, handle);
 tokio::spawn(writer.run(blocks)); // returns at Shutdown
 ```
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
   with `S::View: MapRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream through `zaino_sync::Committer`
-  ([the writer shape](../zaino-sync/usage.md#committer)): unfolded steps not
-  held are folded onto `staged()` on the CPU pool, each into the delta
-  `Run::apply` opened for it, folded steps applied as sent.
-  `committed()` = the committed-view watch the NFS reads.
+- `run` follows the final stream (from `FinalFollower`) through
+  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
+  blocks not held are folded onto `staged()` on the CPU pool, each into the
+  delta `Run::apply` opened for it. `handle()` = the `IndexHandle` the NFS
+  reads (committed view, serving).
 - Fallible only at boot (the engine's `open` → `StoreError`); `run` panics on a
   failed commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.transparent_address.enabled`; disabled =

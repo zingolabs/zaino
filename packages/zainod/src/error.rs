@@ -17,6 +17,8 @@ pub enum IndexerError {
     #[error(transparent)]
     Nfs(#[from] zaino_nfs::NfsError),
     #[error(transparent)]
+    Follow(#[from] zaino_sync::FollowError),
+    #[error(transparent)]
     Snapshot(#[from] zaino_snapshot::SnapshotError),
     #[error(transparent)]
     Grpc(#[from] zaino_grpc::GrpcServeError),

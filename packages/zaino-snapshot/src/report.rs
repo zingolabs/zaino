@@ -1,15 +1,16 @@
 //! Reporting from one snapshot (G9): `/statusz` ([`Report`]), gauges at scrape ([`emit_gauges`]),
 //! edge logs per publish ([`transitions`])
 //!
-//! - State = f(snapshot, `NfsProgress`, `MemberTable`): nothing mirrored between scrapes
+//! - State = f(snapshot, `SyncProgress`, `MemberTable`): nothing mirrored between scrapes
 //! - Gauge names = ztest's `zainod` families (a rename breaks its sync probes)
 
 use serde::Serialize;
 use tracing::{info, warn};
 use zaino_chainview::{Agreement, ChainViewSnapshot, EndpointSet, Spread};
-use zaino_nfs::{NfsProgress, INDEXES};
+use zaino_nfs::INDEXES;
 use zaino_persistence::{IndexKind, View};
 use zaino_primitives::types::{self, BlockRef};
+use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, MemberId, MemberTable, ValidatorId};
 
 use crate::snapshot::Snapshot;
@@ -157,7 +158,7 @@ struct ForkReport {
 
 impl Report {
     /// `members` = the traffic balancer's table (joined on `MemberId::Trusted(position)`)
-    pub fn of<V: View>(snap: &Snapshot<V>, progress: &NfsProgress, members: &MemberTable) -> Self {
+    pub fn of<V: View>(snap: &Snapshot<V>, progress: &SyncProgress, members: &MemberTable) -> Self {
         let (tips, view) = (snap.tips(), snap.view());
         let endpoints = view.endpoints();
         let named = |set: EndpointSet| -> Vec<String> {
@@ -323,7 +324,7 @@ pub fn describe_metrics() {
 }
 
 /// Every gauge from `snap` + `progress`, set at scrape (decision 3: fresh, no mirror tasks)
-pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &NfsProgress) {
+pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &SyncProgress) {
     let tips = snap.tips();
     if let Some(best) = tips.best {
         metrics::gauge!(names::BEST_TIP).set(f64::from(u32::from(best.height)));

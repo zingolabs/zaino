@@ -84,7 +84,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 ```
 
 - `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`), unready reasons,
-  `handed` (`NfsProgress::handed`), every index the NFS folds (`enabled`, `durable`), each
+  `handed` (`SyncProgress::handed`), every index the NFS folds (`enabled`, `durable`), each
   validator's facts (agreement, own height, staleness, push streams, release, peers) joined with
   its `MemberTable` row (`state`, `latency_ms` once measured, `failures`), alarms (incl.
   `finality_paused`), mempool counts, forks (work as a decimal string). zainod flattens it beside

@@ -1,22 +1,22 @@
-//! Daemon boot + pipeline composition (`docs/design/nfs.md` §7)
+//! Daemon boot + pipeline composition (`docs/design/pipeline.md`)
 //!
 //! - Only place daemon config crosses into the (config-agnostic) stack crates
 //! - Only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─▶ Nfs ──▶ final stream ─┬─▶ value_balance ─fees─┐
-//!   validators ──▶ getblock <hash> (any, checked) ┘  │                  ├─▶ compact_block ◀──────┘
-//!                                                    │                  ├─▶ block_hash
-//!                                                    │                  ├─▶ tree_state
-//!                                                    │                  └─▶ transparent_address
-//!                                                    │   ◀── each writer's committed view ──┘
+//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalFollower ─▶ final stream ─┬─▶ value_balance ─fees─┐
+//!   validators ──▶ getblock <hash> (checked) ───┤                                  ├─▶ compact_block ◀──────┘
+//!                                               │                                  ├─▶ block_hash
+//!                                               │                                  ├─▶ tree_state
+//!                                               │                                  └─▶ transparent_address
+//!                                               └─▶ Nfs (tip overlay) ◀── each writer's IndexHandle ──┘
 //!                                                    ▼
 //!                                   Indexed ─┐
 //!   ChainView (holders, mempool, facts) ─────┴─▶ Publisher ─▶ Snapshots ─▶ Routes ─▶ GrpcService
 //!   ChainView (send) + TrafficBalancer (GetTransaction) ─────────────────────┘    └▶ admin, logs
 //! ```
 //!
-//! - One NFS: fetch, fold at the tip, the final stream; one global snapshot per request
+//! - Final path: follower → writers (disk); tip path: NFS (RAM); one global snapshot per request
 //! - Each writer = its own task over its subscription; a disabled index is never opened
 //! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
 
@@ -41,10 +41,10 @@ use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
 use zaino_primitives::network::network_name;
-use zaino_primitives::types::{BlockchainInfo, ReorgDepth};
+use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
 use zaino_snapshot::Publisher;
 use zaino_source::ChainDataSource;
-use zaino_sync::{FeeSink, Final, Subscription};
+use zaino_sync::{FeeSink, FinalFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
 
 use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
@@ -176,10 +176,12 @@ async fn pipeline<S: ChainDataSource>(
     let network = config.network;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let params = ChainParams { network, activations: inputs.activations };
-    let balancer = inputs.balancer.clone();
-    let nfs = Nfs::new(inputs.chain, balancer, params, config.sync.concurrency);
-    let mut indexes = Subscribed { nfs, opened: Vec::new() };
-    // declared after the NFS: dropped first
+    let (chain, balancer, lookahead) =
+        (inputs.chain, inputs.balancer.clone(), config.sync.concurrency);
+    let follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
+    let nfs = Nfs::new(chain, balancer, params, depth, lookahead);
+    let mut indexes = Indexes { follower, nfs, opened: Vec::new() };
+    // declared after the follower: dropped first
     let mut tasks = tasks;
     let engine = DiskEngine::new(fs);
 
@@ -189,32 +191,34 @@ async fn pipeline<S: ChainDataSource>(
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
         let schema = stores::schema(IndexKind::ValueBalance, network);
         let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
-        let blocks = indexes.subscribe(IndexKind::ValueBalance, writer.committed(), &vb, &span);
+        let value_balance = writer.handle();
+        let blocks = indexes.add(IndexKind::ValueBalance, value_balance.clone(), &vb, &span);
         let run = writer.run(blocks, fee_sink);
         spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
         let schema = stores::schema(IndexKind::CompactBlock, network);
-        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
-        let blocks = indexes.subscribe(IndexKind::CompactBlock, writer.committed(), &cb, &span);
+        let new = |store, batch| CompactBlockIndexWriter::new(store, batch, value_balance);
+        let (span, writer) = open(&engine, &cb, schema, new)?;
+        let blocks = indexes.add(IndexKind::CompactBlock, writer.handle(), &cb, &span);
         let run = writer.run(blocks, fees);
         spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
         let schema = stores::schema(IndexKind::BlockHash, network);
         let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new)?;
-        let blocks = indexes.subscribe(IndexKind::BlockHash, writer.committed(), &bh, &span);
+        let blocks = indexes.add(IndexKind::BlockHash, writer.handle(), &bh, &span);
         spawn_infallible(&mut tasks, IndexKind::BlockHash.name(), span, writer.run(blocks));
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
         let schema = stores::schema(IndexKind::TreeState, network);
         let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new)?;
-        let blocks = indexes.subscribe(IndexKind::TreeState, writer.committed(), &ts, &span);
+        let blocks = indexes.add(IndexKind::TreeState, writer.handle(), &ts, &span);
         spawn_infallible(&mut tasks, IndexKind::TreeState.name(), span, writer.run(blocks));
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
         let kind = IndexKind::TransparentAddress;
         let schema = stores::schema(kind, network);
         let (span, writer) = open(&engine, &ta, schema, TransparentAddressIndexWriter::new)?;
-        let blocks = indexes.subscribe(kind, writer.committed(), &ta, &span);
+        let blocks = indexes.add(kind, writer.handle(), &ta, &span);
         spawn_infallible(&mut tasks, kind.name(), span, writer.run(blocks));
     }
     let publisher = Publisher::new(indexes.nfs.indexed(), inputs.view.subscriber(), depth);
@@ -242,8 +246,9 @@ async fn pipeline<S: ChainDataSource>(
     grpc_span.in_scope(|| info!(%endpoint, network = network_name(network), "Listening"));
 
     // --- run: nothing fallible left
-    let Subscribed { nfs, opened } = indexes;
-    let progress = nfs.progress();
+    let Indexes { follower, nfs, opened } = indexes;
+    let progress = follower.progress();
+    spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
     spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
@@ -267,22 +272,24 @@ async fn pipeline<S: ChainDataSource>(
     Ok(tasks)
 }
 
-/// The NFS + every index subscribed to it so far (each reported on once spawned)
-struct Subscribed<S> {
+/// The final path + the tip overlay + every index added so far (each reported on once spawned)
+struct Indexes<S> {
+    follower: FinalFollower<S>,
     nfs: Nfs<S, DiskView>,
     opened: Vec<crate::progress::Index>,
 }
 
-impl<S: ChainDataSource> Subscribed<S> {
-    /// `kind` enabled: its committed view in, its final stream out
-    fn subscribe(
+impl<S: ChainDataSource> Indexes<S> {
+    /// `kind` enabled: its handle to the NFS, its final stream out
+    fn add(
         &mut self,
         kind: IndexKind,
-        committed: watch::Receiver<DiskView>,
+        handle: IndexHandle<DiskView>,
         config: &IndexConfig,
         span: &Span,
-    ) -> Subscription<Final> {
-        let blocks = self.nfs.subscribe(kind, committed, config.queue_bytes);
+    ) -> Subscription<Block> {
+        let blocks = self.follower.subscribe(kind, handle.tip(), config.queue_bytes);
+        self.nfs.add(kind, handle);
         let (span, dir) = (span.clone(), config.path.clone());
         self.opened.push(crate::progress::Index { kind, span, dir });
         blocks

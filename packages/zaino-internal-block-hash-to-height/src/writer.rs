@@ -2,10 +2,9 @@
 
 use std::num::NonZeroUsize;
 
-use tokio::sync::watch;
 use zaino_persistence::{Changes, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{Committer, Final, Subscription};
+use zaino_sync::{Committer, IndexHandle, Subscription};
 
 use crate::{
     by_hash::{encode_height, BY_HASH},
@@ -23,13 +22,13 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         Self { store: Committer::new(store, batch_bytes) }
     }
 
-    /// For `Nfs::subscribe`: the committed view after every commit
-    pub fn committed(&self) -> watch::Receiver<S::View> {
-        self.store.committed()
+    /// For `Nfs::add`: committed view after every commit + serving
+    pub fn handle(&self) -> IndexHandle<S::View> {
+        self.store.handle()
     }
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
-    pub async fn run(mut self, mut blocks: Subscription<Final>) {
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
                 run.apply(store, |store, block, out| {
@@ -61,7 +60,7 @@ mod tests {
     };
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockHash, Height};
-    use zaino_sync::{Folds, IndexerDataSink, Step};
+    use zaino_sync::{IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -75,21 +74,27 @@ mod tests {
         DiskEngine::new(fs.clone()).open(Path::new("/bh"), &SCHEMA).expect("open")
     }
 
-    /// Writer on `fs`, its final stream and committed view
+    /// Writer on `fs`, its final stream and handle
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,
-    ) -> (IndexerDataSink<Final>, watch::Receiver<DiskView>, tokio::task::JoinHandle<()>) {
+    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
         let writer = BlockHashIndexWriter::new(store, batch);
-        let committed = writer.committed();
+        let handle = writer.handle();
         let mut sink = IndexerDataSink::new("final");
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, committed, running)
+        (sink, handle, running)
     }
 
-    fn step(block: &Arc<Block>, folds: Option<Folds>) -> Step<Final> {
-        let (height, block) = (block.header().height, Arc::clone(block));
-        Step::Apply { height, data: Arc::new(Final { block, folds: folds.map(Arc::new) }) }
+    fn step(block: &Arc<Block>) -> Step<Block> {
+        Step::Apply { height: block.header().height, data: Arc::clone(block) }
+    }
+
+    /// Until `handle`'s durable tip = `height`
+    async fn durable_at(handle: &mut IndexHandle<DiskView>, height: u32) {
+        while handle.tip().map(|tip| u32::from(tip.height)) != Some(height) {
+            assert!(handle.changed().await, "writer alive");
+        }
     }
 
     /// Each block → one golden row at its own tip; the reader locates every folded hash and
@@ -132,44 +137,30 @@ mod tests {
         }
     }
 
-    /// Bulk 0..=2 unfolded (committed once the stream idles), folded 3 (committed at once), then
-    /// a restart resending 2 and 3 (held: skipped) before folded 4; every hash located at its
-    /// height after a reopen, a never-sent one nowhere
+    /// 0..=3 (committed once the stream idles), then a restart resending 2 and 3 (held: skipped)
+    /// before 4; every hash located at its height after a reopen, a never-sent one nowhere
     #[tokio::test(start_paused = true)]
-    async fn unfolded_and_folded_steps_locate_every_hash_and_a_restart_skips_what_it_holds() {
+    async fn every_block_locates_its_hash_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(4);
         let blocks = chain.blocks(tip);
         let sibling = chain.fork(h(3)).mine_empty(1).tip();
-        let mut scratch = open(&SimFs::new());
-        let folds: Vec<Folds> = (blocks.iter())
-            .map(|block| {
-                let mut changes = scratch.changes(block.at());
-                fold(&BlockHashReader::new(scratch.staged()), block, &mut changes);
-                scratch.apply(changes.clone());
-                let mut folds = Folds::default();
-                folds.insert(IndexKind::BlockHash, changes);
-                folds
-            })
-            .collect();
-        let tip_of = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height));
 
-        let (sink, mut committed, running) = start(open(&fs), QUEUE);
-        for block in &blocks[..=2] {
-            sink.send(step(block, None)).await;
+        let (sink, mut handle, running) = start(open(&fs), QUEUE);
+        for block in &blocks[..=3] {
+            sink.send(step(block)).await;
         }
-        committed.wait_for(|view| tip_of(view) == Some(2)).await.expect("writer alive");
-        sink.send(step(&blocks[3], Some(folds[3].clone()))).await;
-        committed.wait_for(|view| tip_of(view) == Some(3)).await.expect("writer alive");
+        durable_at(&mut handle, 3).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
-        let (sink, committed, running) = start(open(&fs), QUEUE);
-        assert_eq!(tip_of(&committed.borrow()), Some(3), "resumes at the committed tip");
-        sink.send(step(&blocks[2], None)).await;
-        sink.send(step(&blocks[3], None)).await;
-        sink.send(step(&blocks[4], Some(folds[4].clone()))).await;
+        let (sink, handle, running) = start(open(&fs), QUEUE);
+        let resumed = handle.tip().map(|tip| u32::from(tip.height));
+        assert_eq!(resumed, Some(3), "resumes at the committed tip");
+        for block in &blocks[2..=4] {
+            sink.send(step(block)).await;
+        }
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
@@ -194,12 +185,10 @@ mod tests {
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect()
         };
         {
-            let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
+            let (sink, mut handle, running) = start(open(&fs), NonZeroUsize::MIN);
             for (acked, block) in (1u64..).zip(&blocks[..5]) {
-                sink.send(step(block, None)).await;
-                let height = Some(block.header().height);
-                let landed = committed.wait_for(|view| view.tip().map(|tip| tip.height) == height);
-                landed.await.expect("writer alive");
+                sink.send(step(block)).await;
+                durable_at(&mut handle, u32::from(block.header().height)).await;
                 fs.set_tag(acked);
             }
             sink.shutdown();
@@ -218,11 +207,11 @@ mod tests {
             let expected = [expected, vec![None]].concat();
             assert_eq!(located(store.view(), &blocks[..=count]), expected, "{label}: held only");
 
-            let (sink, committed, running) = start(store, NonZeroUsize::MIN);
-            sink.send(step(&blocks[count], None)).await;
+            let (sink, handle, running) = start(store, NonZeroUsize::MIN);
+            sink.send(step(&blocks[count])).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = located(committed.borrow().clone(), &blocks[count..=count]);
+            let next = located(handle.view(), &blocks[count..=count]);
             assert_eq!(next, [Height::try_from(count as u32).ok()], "{label}: commits continue");
         }
     }
@@ -231,10 +220,10 @@ mod tests {
     #[tokio::test]
     async fn a_failed_commit_panics_naming_the_index_and_its_directory() {
         let fs = SimFs::new();
-        let (sink, _committed, running) = start(open(&fs), NonZeroUsize::MIN);
+        let (sink, _handle, running) = start(open(&fs), NonZeroUsize::MIN);
         fs.fail_from(fs.mutations());
         let chain = MockChain::regtest();
-        sink.send(step(chain.block(chain.genesis().hash), None)).await;
+        sink.send(step(chain.block(chain.genesis().hash))).await;
         sink.shutdown();
 
         let payload = running.await.expect_err("commit failure panics").into_panic();

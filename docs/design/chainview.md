@@ -151,7 +151,7 @@ The **NFS** (`zaino-nfs`) follows the header chain's `VerifiedChain` alone. Any 
 any block: the NFS checks each fetched block's hash against `hash_at(height)` and its merkle root
 against `header_at(height)`, refuses one that differs, and asks another source. One finality (the
 header chain's final tip); a reorg is a hash comparison against the nodes it holds above it; the
-indexes see final blocks only ([nfs.md](./nfs.md) §6, [data-sink.md](./data-sink.md)).
+indexes see final blocks only ([pipeline.md](./pipeline.md)).
 
 The **header store** follows the same two watermarks as every index ([nfs.md](./nfs.md)): the
 tree above the final boundary is memory, and a header is written once it is final. One fixed-size record per height (hash, time,

@@ -5273,6 +5273,7 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
+ "zaino-sync",
  "zaino-traffic",
  "zcash_protocol",
 ]
@@ -5312,10 +5313,15 @@ dependencies = [
  "metrics",
  "metrics-util",
  "rayon",
+ "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
+ "zaino-header-chain",
  "zaino-persistence",
  "zaino-primitives",
+ "zaino-source",
+ "zaino-traffic",
  "zcash_protocol",
 ]
 

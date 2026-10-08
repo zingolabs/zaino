@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2f5fb81a432d2416647b8a9ec7917bbe2f998b3ea2dfe22844a5344fb296c3cb # shrinks to moves = [Chain { change: Extend(4), publish: true }, Advance(26), Advance(19), Chain { change: Extend(2), publish: true }, Chain { change: Reorg { depth: 5, len: 1 }, publish: false }], delays = [0], paired = false, lookahead = 1, seed = 380348290471422

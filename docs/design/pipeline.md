@@ -1,0 +1,100 @@
+# The indexing pipeline
+
+Status: **implemented** (2026-10-08). `zaino-header-chain` is still a separate crate (merging into
+`zaino-chainview` next).
+
+Zaino turns a validator's chain into five indexes and serves them. Every block takes one of two
+paths, and the two paths never meet:
+
+- **Final path (durable).** A final block goes to every index writer, which folds and commits
+  it. The writers never see a reorg.
+- **Tip path (RAM).** A block above the final tip is folded in memory by the NFS, served at once,
+  and dropped once it is durable.
+
+```text
+                             zebrad (JSON-RPC)
+                                    ▲
+                  ┌─────────────────┴─────────────────┐
+                  │ zaino-traffic   TrafficBalancer   │  who answers; hedge, retry, bench
+                  └──┬──────────────┬──────────────┬──┘
+           headers() │      block() │      block() │
+                     ▼              │              │
+            ┌──────────────────┐    │              │
+            │ zaino-chainview  │    │              │
+            │ header sync      │    │              │
+            └────────┬─────────┘    │              │
+                     │ watch<VerifiedChain>        │
+          ┌──────────┴────────────┐ │              │
+          ▼                       ▼ ▼              ▼
+  ┌────────────────────┐   ┌────────────────────────────┐
+  │ zaino-sync         │   │ zaino-nfs                  │
+  │ FinalFollower      │   │ tip overlay (RAM)          │
+  │ ≤ final tip        │   │ > each index's durable tip │
+  └─────────┬──────────┘   └──────────────▲─────┬───────┘
+            │ IndexerDataSink<Block>      │     │ Published (watch<Indexed>)
+            ▼                             │     ▼
+  ┌────────────────────┐ committed views  │  ┌──────────────────┐
+  │ 5 index writers    │──────────────────┘  │ zaino-snapshot   │◀── ChainView (mempool)
+  │ fold → commit      │                     │ one Snapshot     │
+  └────────────────────┘                     └────────┬─────────┘
+                                                      ▼
+                                             zaino-grpc, /statusz, /metrics
+```
+
+## Where data lives
+
+| Data                    | Where                    | Written by       | Read by               |
+| ----------------------- | ------------------------ | ---------------- | --------------------- |
+| final headers           | header store (disk)      | header sync      | chainview             |
+| non-final headers       | `HeaderChain` (RAM)      | header sync      | `VerifiedChain` users |
+| final blocks in flight  | sink queues (RAM)        | `FinalFollower`  | each writer           |
+| index data, final       | one store / index (disk) | its writer       | snapshots (`view()`)  |
+| index data, not durable | NFS graph (RAM, `imbl`)  | NFS folds        | snapshots             |
+| what a request reads    | `Snapshot` (`ArcSwap`)   | `zaino-snapshot` | gRPC, status, metrics |
+
+## Public interfaces
+
+```rust
+// zaino-chainview: the one answer to "what is the chain, and what is final"
+HeaderSync::subscribe(&self) -> watch::Receiver<Option<Arc<VerifiedChain>>>;
+VerifiedChain::{best(), final_tip(), hash_at(h), header_at(h), holds(at), forks()};
+
+// zaino-traffic: every request to a validator
+TrafficBalancer::block(&self, hash, Urgency) -> Answered<Block>;    // Urgency = Tip | Bulk
+TrafficBalancer::report(&self, ticket, why);                        // wrong answer: bench sender
+
+// zaino-sync: the final path (data-sink.md)
+FinalFollower::new(chain, balancer, lookahead);
+FinalFollower::subscribe(&mut self, kind, durable: Option<BlockRef>, queue) -> Subscription<Block>;
+FinalFollower::run(self, cancel) -> Result<(), FollowError>;
+fetch(balancer, at, record, Urgency) -> Checked;   // until hash, height, merkle root = the header's
+IndexHandle::{view() -> V, tip(), changed(), serving(best, window) -> bool, requiring(other)};
+
+// each index crate: one fold, one writer (data-sink.md)
+fold(parent: &XReader<V>, block, [inputs,] out: &mut Changes);      // shared by writer + NFS
+XIndexWriter::{new(store, batch), handle() -> IndexHandle<V>, run(blocks)};
+
+// zaino-nfs: the tip path (nfs.md)
+Nfs::new(chain, balancer, params, depth, lookahead);                // window = 2 · depth
+Nfs::add(&mut self, kind, index: IndexHandle<V>);
+Nfs::indexed(&self) -> Published<V>;
+Nfs::run(self, cancel) -> Result<(), NfsError>;
+
+// zaino-snapshot: what every request pins
+Snapshots::load(&self) -> Arc<Snapshot<V>>;
+Snapshot::{served() -> Result<&At<V>, Unavailable>, mempool(), lightd()};
+```
+
+## Rules
+
+1. **One fold per index, two callers.** The writer and the NFS run the same `fold`. A tip block is
+   folded twice, once in RAM and once by its writer when it turns final. That costs about 1 ms
+   per block, and it keeps the stream a plain `Block`.
+2. **Each index owns its state.** Callers ask `IndexHandle::serving(best, window)`; nobody else
+   tracks groups or join states. Compact-block's handle requires value-balance's (its fee source).
+3. **The writers never see a reorg.** Reorgs live in the NFS graph alone.
+4. **A request reads one `Snapshot`**, so every RPC in it agrees on one tip.
+
+Details: [data-sink.md](data-sink.md) (final path), [nfs.md](nfs.md) (tip path),
+[global-snapshot.md](global-snapshot.md) (snapshot), [verified-chain.md](verified-chain.md)
+(headers and finality), [traffic-balancer.md](traffic-balancer.md) (requests).

@@ -13,9 +13,9 @@ use std::{
 
 use serde::Serialize;
 use tokio::sync::watch;
-use zaino_nfs::NfsProgress;
 use zaino_persistence::DiskView;
 use zaino_snapshot::{Report, Snapshots};
+use zaino_sync::SyncProgress;
 use zaino_traffic::MemberTable;
 
 use crate::progress::Disk;
@@ -39,7 +39,7 @@ pub(crate) struct Sources {
     pub(crate) network: &'static str,
     pub(crate) started: Instant,
     pub(crate) snapshots: Snapshots<DiskView>,
-    pub(crate) progress: NfsProgress,
+    pub(crate) progress: SyncProgress,
     pub(crate) members: watch::Receiver<Arc<MemberTable>>,
     pub(crate) disk: watch::Receiver<Disk>,
 }

@@ -15,19 +15,20 @@ use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs).open(&path, &schema)?;
 let writer = TreeStateIndexWriter::new(store, batch_bytes);
-let blocks = nfs.subscribe(IndexKind::TreeState, writer.committed(), queue_bytes);
+let handle = writer.handle();
+let blocks = follower.subscribe(IndexKind::TreeState, handle.tip(), queue_bytes);
+nfs.add(IndexKind::TreeState, handle);
 tokio::spawn(writer.run(blocks));
 ```
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
   `S::View: SequenceRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream (`"tree_state"`) through `zaino_sync::Committer`
-  ([the writer shape](../zaino-sync/usage.md#committer)): per run, the unfolded
-  steps not held are folded as one [`fold_run`](#fold) onto `staged()` on the
-  CPU pool into one delta per block (`Run::apply_batch` opens them), folded
-  steps applied as the NFS sent them.
-  Commits: batch full, after each folded run, or 1 s idle. `committed()` = the
-  committed-view watch the NFS reads.
+- `run` follows the final stream (`"tree_state"`, from `FinalFollower`) through
+  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
+  per run, the blocks not held are folded as one [`fold_run`](#fold) onto
+  `staged()` on the CPU pool into one delta per block (`Run::apply_batch` opens
+  them). Commits: batch full or 1 s idle. `handle()` = the `IndexHandle` the
+  NFS reads (committed view, serving).
 - Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
   one record per committed height. `run` panics on a failed commit or an
   unfoldable block (`tree_state index: <FoldError>`,

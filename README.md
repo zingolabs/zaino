@@ -124,8 +124,9 @@ Operating it:
 
 How it is built, and why:
 - [Where data lives](./docs/design/boundaries.md): the consensus / keys / everything-else rule that decides what Zaino indexes.
-- [The non-finalized state](./docs/design/nfs.md): one folded node per block above the durable root, one final stream into the index writers, one `Snapshot` every request reads. Start here.
-- [The data sink](./docs/design/data-sink.md): the final stream feeding every index writer, its steps, the commit cadence, fees, and backpressure.
+- [The indexing pipeline](./docs/design/pipeline.md): the map. Two paths (final → writers on disk, tip → NFS in RAM), where data lives, every public interface. Start here.
+- [The final path](./docs/design/data-sink.md): `FinalFollower` → `IndexerDataSink<Block>` → index writers; commit cadence, fees, backpressure.
+- [The tip overlay](./docs/design/nfs.md): the NFS folds non-durable blocks in RAM and publishes snapshots; reorgs live here alone.
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
 - [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.

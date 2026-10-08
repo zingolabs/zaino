@@ -10,10 +10,10 @@ use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 
 use crate::core::Indexes;
-use crate::fetch::merkle_root;
 use crate::snapshot::Branch;
+use zaino_sync::merkle_root;
 
-/// `covers` = the indexes `folded` holds (joined when it folded)
+/// `covers` = the indexes `folded` holds (serving + durable below it, when it folded)
 #[derive(Debug)]
 pub(crate) struct Node<F> {
     pub(crate) at: BlockRef,
@@ -48,6 +48,7 @@ impl<F> Graph<F> {
         Self { nodes: imbl::HashMap::new() }
     }
 
+    #[cfg(test)]
     pub(crate) fn get(&self, hash: &BlockHash) -> Option<&Arc<Node<F>>> {
         self.nodes.get(hash)
     }
@@ -60,7 +61,6 @@ impl<F> Graph<F> {
         self.nodes.is_empty()
     }
 
-    #[cfg(test)]
     pub(crate) fn nodes(&self) -> impl Iterator<Item = &Arc<Node<F>>> {
         self.nodes.values()
     }
@@ -95,28 +95,9 @@ impl<F> Graph<F> {
         chain: &VerifiedChain,
         root: Option<BlockRef>,
     ) -> Option<&Arc<Node<F>>> {
-        self.best_run(chain, root, |_| true)
-    }
-
-    /// Deepest node of the best run from the root folding exactly `covers` (the fold parent)
-    pub(crate) fn covering_top(
-        &self,
-        chain: &VerifiedChain,
-        root: Option<BlockRef>,
-        covers: Indexes,
-    ) -> Option<&Arc<Node<F>>> {
-        self.best_run(chain, root, |node| node.covers == covers)
-    }
-
-    fn best_run(
-        &self,
-        chain: &VerifiedChain,
-        root: Option<BlockRef>,
-        keep: impl Fn(&Node<F>) -> bool,
-    ) -> Option<&Arc<Node<F>>> {
         let from = root.map_or(Height::GENESIS, |root| root.height.next());
         let run = from.up_to(chain.best().height).map(|height| chain.hash_at(height));
-        run.map_while(|hash| self.nodes.get(&hash?).filter(|node| keep(node))).last()
+        run.map_while(|hash| self.nodes.get(&hash?)).last()
     }
 
     /// Kept iff above `root` (every index holds the rest) and held by `chain` (G8)
@@ -153,8 +134,8 @@ impl<F> Graph<F> {
         Branch::Side { from: BlockRef { hash: lowest.parent, height } }
     }
 
-    /// N1, N2, G8, J3, J4; panics naming the invariant broken
-    pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>, joined: Indexes) {
+    /// N1, N2, G8; panics naming the invariant broken
+    pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>, serving: Indexes) {
         for node in self.nodes.values() {
             let header = node.block.header();
             let at = BlockRef { hash: header.hash, height: header.height };
@@ -168,9 +149,7 @@ impl<F> Graph<F> {
             assert!(held, "N2: every node folds on a held parent");
             let held = chain.holds(node.at);
             assert!(held, "G8: every node on the best chain or a side branch it holds");
-            assert!(joined.covers(node.covers), "J3: a node folds joined indexes only");
-            let parent = self.nodes.get(&node.parent).map_or(joined, |parent| parent.covers);
-            assert!(parent.covers(node.covers), "J4: a node's indexes ⊆ its parent node's");
+            assert!(serving.covers(node.covers), "N2: a node folds serving indexes only");
         }
     }
 }

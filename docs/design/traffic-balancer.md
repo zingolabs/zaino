@@ -3,7 +3,7 @@
 Status: **phase 2 built** (2026-10-07): every trusted-validator request goes through
 `zaino-traffic` (§9 steps 1–7 and 9); peers as members (step 8) wait for the WorkPool. §5 lists
 what changed while building each phase. Builds on [chainview.md](chainview.md) §7–§9,
-[verified-chain.md](verified-chain.md) §6–§7 and §10, [nfs.md](nfs.md) §6. Boundary with
+[verified-chain.md](verified-chain.md) §6–§7 and §10, [pipeline.md](pipeline.md). Boundary with
 `global-snapshot.md` in §6.
 
 ## 1. Today: five schedulers over the same validators

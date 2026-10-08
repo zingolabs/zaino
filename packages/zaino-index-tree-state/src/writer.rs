@@ -1,4 +1,4 @@
-//! tree_state writer: the final stream → one [`fold_run`] per run of unfolded steps → its store
+//! tree_state writer: the final stream → one [`fold_run`] per run → its store
 //!
 //! - one run = one `Hashable::combine_pairs` per level across every block of it
 //!   (`Frontier::append_batch_visiting`; node types split wide levels across cores)
@@ -10,10 +10,9 @@ use std::{collections::BTreeMap, num::NonZeroUsize, slice};
 
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
-use tokio::sync::watch;
 use zaino_persistence::{Changes, IndexKind, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, Height, PerPool, ShieldedPool, TreeRoot, TreeSizes};
-use zaino_sync::{Committer, Final, Subscription};
+use zaino_sync::{Committer, IndexHandle, Subscription};
 use zcash_primitives::merkle_tree::HashSer;
 
 use crate::{
@@ -44,13 +43,13 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
         Self { store: Committer::new(store, batch_bytes) }
     }
 
-    /// For `Nfs::subscribe`: the committed view after every commit
-    pub fn committed(&self) -> watch::Receiver<S::View> {
-        self.store.committed()
+    /// For `Nfs::add`: committed view after every commit + serving
+    pub fn handle(&self) -> IndexHandle<S::View> {
+        self.store.handle()
     }
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
-    pub async fn run(mut self, mut blocks: Subscription<Final>) {
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
                 run.apply_batch(store, |store, blocks, out| {
@@ -261,7 +260,7 @@ mod tests {
     use zaino_primitives::types::{
         BlockHash, BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot,
     };
-    use zaino_sync::{Folds, IndexerDataSink, Step};
+    use zaino_sync::{IndexerDataSink, Step};
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
     use zcash_protocol::consensus::NetworkType;
 
@@ -274,44 +273,27 @@ mod tests {
         DiskEngine::new(fs.clone()).open(Path::new("/ts"), &SCHEMA).expect("open")
     }
 
-    /// Writer over `store`, its final stream and committed view
+    /// Writer over `store`, its final stream and handle
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,
-    ) -> (IndexerDataSink<Final>, watch::Receiver<DiskView>, tokio::task::JoinHandle<()>) {
+    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
         let writer = TreeStateIndexWriter::new(store, batch);
-        let committed = writer.committed();
+        let handle = writer.handle();
         let mut sink = IndexerDataSink::new("final");
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, committed, running)
+        (sink, handle, running)
     }
 
-    /// Each block's own fold from genesis, as the NFS folds it (the folded steps' payload)
-    fn folded(chain: &[Arc<Block>]) -> Vec<Arc<Folds>> {
-        let mut scratch = open(&SimFs::new());
-        chain
-            .iter()
-            .map(|block| {
-                let mut changes = scratch.changes(block.at());
-                let parent = TreeStateReader::new(scratch.staged());
-                fold(&parent, block, &mut changes).expect("canonical commitments");
-                let mut folds = Folds::default();
-                folds.insert(IndexKind::TreeState, changes.clone());
-                scratch.apply(changes);
-                Arc::new(folds)
-            })
-            .collect()
+    fn step(block: &Arc<Block>) -> Step<Block> {
+        Step::Apply { height: block.header().height, data: Arc::clone(block) }
     }
 
-    fn step(block: &Arc<Block>, folds: Option<&Arc<Folds>>) -> Step<Final> {
-        let (height, folds) = (block.header().height, folds.map(Arc::clone));
-        Step::Apply { height, data: Arc::new(Final { block: Arc::clone(block), folds }) }
-    }
-
-    /// `committed` at `tip` (`None` = nothing)
-    async fn reached(committed: &mut watch::Receiver<DiskView>, tip: Option<u32>) {
-        let at = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height)) == tip;
-        committed.wait_for(at).await.expect("writer alive");
+    /// `handle`'s durable tip at `tip` (`None` = nothing)
+    async fn reached(handle: &mut IndexHandle<DiskView>, tip: Option<u32>) {
+        while handle.tip().map(|tip| u32::from(tip.height)) != tip {
+            assert!(handle.changed().await, "writer alive");
+        }
     }
 
     /// Cheap, order- and level-sensitive stand-in hash (trees past 2^16 leaves in milliseconds)
@@ -594,10 +576,10 @@ mod tests {
         let blocks = chain.blocks(chain.tip());
         let seen = |through: u32| naive_trees(&blocks[..=through as usize]);
         {
-            let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
+            let (sink, mut handle, running) = start(open(&fs), NonZeroUsize::MIN);
             for (acked, block) in (1u64..).zip(&blocks[..5]) {
-                sink.send(step(block, None)).await;
-                reached(&mut committed, Some(u32::from(block.header().height))).await;
+                sink.send(step(block)).await;
+                reached(&mut handle, Some(u32::from(block.header().height))).await;
                 fs.set_tag(acked);
             }
             sink.shutdown();
@@ -620,22 +602,20 @@ mod tests {
                 assert_eq!(trees(store.view(), tip), seen(tip), "{label}: at {tip}");
             }
 
-            let (sink, committed, running) = start(store, NonZeroUsize::MIN);
-            sink.send(step(&blocks[count as usize], None)).await;
+            let (sink, handle, running) = start(store, NonZeroUsize::MIN);
+            sink.send(step(&blocks[count as usize])).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let next = trees(committed.borrow().clone(), count);
+            let next = trees(handle.view(), count);
             assert_eq!(next, seen(count), "{label}: folding on after recovery");
         }
     }
 
-    /// - `Send(n)`: next `n` blocks, unfolded until `Fold`, folded after it
-    /// - `Fold`: bulk → tip handoff; `Reopen`: shutdown, reopen, resend from one below the tip
-    ///   (held: skipped)
+    /// - `Send(n)`: next `n` blocks
+    /// - `Reopen`: shutdown, reopen, resend from one below the tip (held: skipped)
     #[derive(Debug, Clone)]
     enum Move {
         Send(usize),
-        Fold,
         Reopen,
     }
 
@@ -645,16 +625,15 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random chains through random final streams (bulk runs, tip steps, restarts): once
-        /// every move commits, every height serves exactly the naive frontier's three trees and
-        /// nothing past the tip is served
+        /// Random chains through random final streams (runs, restarts): once every move commits,
+        /// every height serves exactly the naive frontier's three trees and nothing past the tip
+        /// is served
         #[test]
         fn random_histories_serve_the_naive_trees_at_every_height(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
             moves in proptest::collection::vec(
                 proptest::prop_oneof![
                     4 => (1usize..=3).prop_map(Move::Send),
-                    1 => proptest::strategy::Just(Move::Fold),
                     1 => proptest::strategy::Just(Move::Reopen),
                 ],
                 1..16,
@@ -704,36 +683,33 @@ mod tests {
             });
         }
         let chain = mock.blocks(mock.tip());
-        let folds = folded(&chain);
         let trees_through = |height: usize| naive_trees(&chain[..=height]);
 
         let fs = SimFs::new();
-        let (mut sink, mut committed, mut running) = start(open(&fs), batch);
-        let (mut sent, mut folding) = (0usize, false);
+        let (mut sink, mut handle, mut running) = start(open(&fs), batch);
+        let mut sent = 0usize;
         for (at, next) in moves.iter().enumerate() {
             match *next {
                 Move::Send(count) => {
-                    for (block, folds) in chain.iter().zip(&folds).skip(sent).take(count) {
-                        sink.send(step(block, folding.then_some(folds))).await;
+                    for block in chain.iter().skip(sent).take(count) {
+                        sink.send(step(block)).await;
                         sent += 1;
                     }
                 }
-                Move::Fold => folding = true,
                 Move::Reopen => {
                     sink.shutdown();
                     running.await.expect("stops at Shutdown");
-                    (sink, committed, running) = start(open(&fs), batch);
-                    folding = false;
+                    (sink, handle, running) = start(open(&fs), batch);
                     if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&chain[held], None)).await;
+                        sink.send(step(&chain[held])).await;
                     }
                 }
             }
             let tip = sent.checked_sub(1).map(|last| last as u32);
-            reached(&mut committed, tip).await;
+            reached(&mut handle, tip).await;
 
             let label = format!("move {at} {next:?}");
-            let reader = TreeStateReader::new(committed.borrow().clone());
+            let reader = TreeStateReader::new(handle.view());
             for height in 0..sent as u32 {
                 let served = reader.treestate(h(height));
                 let served = served.unwrap_or_else(|error| panic!("{label}: {error}"));
@@ -749,9 +725,8 @@ mod tests {
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
-    /// height, named by that block, whether folded by the writer (0..=2) or sent folded (3, 4);
-    /// resumable from any `start_index` (`start_index == count` = empty, pepper-sync's probe); a
-    /// reopen appends the next boundary after the ones on disk
+    /// height, named by that block; resumable from any `start_index` (`start_index == count` =
+    /// empty, pepper-sync's probe); a reopen appends the next boundary after the ones on disk
     #[tokio::test]
     async fn subtree_roots_resume_from_start_index() {
         const HALF: u32 = 1 << 15;
@@ -778,7 +753,6 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
-        let folds = folded(&blocks);
 
         let completing =
             |block: &Block| BlockRef { hash: block.header().hash, height: block.header().height };
@@ -794,11 +768,11 @@ mod tests {
             TreeRoot::from(bytes)
         };
 
-        let (sink, mut committed, running) = start(open(&fs), QUEUE);
-        for (at, block) in blocks[..5].iter().enumerate() {
-            sink.send(step(block, (at >= 3).then_some(&folds[at]))).await;
+        let (sink, mut handle, running) = start(open(&fs), QUEUE);
+        for block in &blocks[..5] {
+            sink.send(step(block)).await;
         }
-        reached(&mut committed, Some(4)).await;
+        reached(&mut handle, Some(4)).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
         let view = TreeStateReader::new(open(&fs).view());
@@ -817,11 +791,11 @@ mod tests {
         assert_eq!(view.subtree_roots(Sapling, 0, 0).expect("untouched pool"), Vec::new());
 
         // reopen rebuilds the subtree cursor from the files; the next boundary follows it
-        let (sink, committed, running) = start(open(&fs), QUEUE);
-        sink.send(step(&blocks[5], None)).await;
+        let (sink, handle, running) = start(open(&fs), QUEUE);
+        sink.send(step(&blocks[5])).await;
         sink.shutdown();
         running.await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(committed.borrow().clone());
+        let view = TreeStateReader::new(handle.view());
         let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
         let third = SubtreeRoot { root: tree_root(&view, 5), completing: completing(&blocks[5]) };
         assert_eq!(resumed_roots, [roots, vec![third]].concat(), "earlier entries untouched");
@@ -832,7 +806,7 @@ mod tests {
     #[tokio::test]
     async fn ironwood_serves_a_real_tree_not_an_empty_field() {
         let fs = SimFs::new();
-        let (sink, committed, running) = start(open(&fs), QUEUE);
+        let (sink, handle, running) = start(open(&fs), QUEUE);
         // ironwood-only block: sapling and orchard empty at this height
         let mut chain = MockChain::regtest();
         let one = chain.mine(|b| {
@@ -843,11 +817,11 @@ mod tests {
             })
         });
         for block in chain.blocks(one) {
-            sink.send(step(&block, None)).await;
+            sink.send(step(&block)).await;
         }
         sink.shutdown();
         running.await.expect("stops at Shutdown");
-        let reader = TreeStateReader::new(committed.borrow().clone());
+        let reader = TreeStateReader::new(handle.view());
         let trees = reader.treestate(h(1)).expect("served");
 
         let parsed = read_commitment_tree::<MerkleHashOrchard, _, 32>(trees.ironwood.as_bytes())

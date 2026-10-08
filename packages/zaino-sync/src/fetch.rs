@@ -1,4 +1,4 @@
-//! One body per wanted height, from whichever member the balancer picks (`nfs.md` §6)
+//! One body per wanted block, from whichever member the balancer picks (FinalFollower + NFS)
 //!
 //! - Checked = hash + coinbase height + merkle root vs the verified header (`verified-chain.md` §5)
 //! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again; who, hedges, retries =
@@ -13,20 +13,20 @@ use zaino_traffic::{TrafficBalancer, Urgency};
 
 /// Block that passed [`check_block`] (no other constructor)
 #[derive(Debug, Clone)]
-pub(crate) struct Checked(Arc<Block>);
+pub struct Checked(Arc<Block>);
 
 impl Checked {
-    pub(crate) fn block(&self) -> &Arc<Block> {
+    pub fn block(&self) -> &Arc<Block> {
         &self.0
     }
 
-    pub(crate) fn at(&self) -> BlockRef {
+    pub fn at(&self) -> BlockRef {
         BlockRef { hash: self.0.header().hash, height: self.0.header().height }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum Misanswer {
+pub enum Misanswer {
     #[error("served block {got}")]
     WrongBlock { got: BlockHash },
     #[error("served a block whose coinbase says height {got:?}")]
@@ -41,11 +41,7 @@ pub(crate) enum Misanswer {
 ///
 /// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
-pub(crate) fn check_block(
-    block: Block,
-    height: Height,
-    record: &Record,
-) -> Result<Checked, Misanswer> {
+pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Checked, Misanswer> {
     let header = block.header();
     if header.hash != record.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
@@ -61,13 +57,13 @@ pub(crate) fn check_block(
 }
 
 /// `None` = a repeated txid pair (CVE-2012-2459)
-pub(crate) fn merkle_root(block: &Block) -> Option<MerkleRoot> {
+pub fn merkle_root(block: &Block) -> Option<MerkleRoot> {
     let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
     MerkleRoot::of_txids(&txids)
 }
 
 /// Until a body passes [`check_block`] (drop = abandon: the balancer cancels its sends)
-pub(crate) async fn fetch<S: ChainDataSource>(
+pub async fn fetch<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
     at: BlockRef,
     record: Record,

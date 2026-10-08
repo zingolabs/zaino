@@ -1,8 +1,6 @@
-//! [`fold_block`]: one block through every enabled index, in dependency order (`nfs.md` §5)
+//! [`fold_block`]: one block through each covered index, in dependency order (`nfs.md`)
 //!
 //! - The one place indexes meet: a new index = one line here
-
-use std::sync::Arc;
 
 use zaino_index_compact_block as compact_block;
 use zaino_index_transparent_address as transparent_address;
@@ -11,7 +9,7 @@ use zaino_internal_block_hash_to_height as block_hash;
 use zaino_internal_value_balance as value_balance;
 use zaino_persistence::{Changes, IndexKind, Layer, MapRead, SequenceRead};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
-use zaino_sync::{Folds, PerIndex};
+use zaino_sync::PerIndex;
 
 use crate::snapshot::Views;
 
@@ -24,10 +22,9 @@ pub const INDEXES: [IndexKind; 5] = [
     IndexKind::TransparentAddress,
 ];
 
-/// One node's payload: what the final stream carries + each index's state as of the block
+/// One node's payload: each covered index's state as of the block
 #[derive(Debug)]
 pub(crate) struct Folded {
-    pub(crate) folds: Arc<Folds>,
     pub(crate) layers: PerIndex<Layer>,
 }
 
@@ -41,46 +38,68 @@ pub enum FoldError {
     TreeState(#[from] tree_state::FoldError),
 }
 
-/// `block` folded by every index enabled in `parent`: each into a delta its parent layer opens,
-/// each layer = parent's `.with(delta)`
+/// `block` folded by each index in `covers`: each into a delta its parent layer opens, each layer =
+/// parent's `.with(delta)`
+///
+/// - compact-block's fees: value-balance's fold, else (value-balance durable at `block`) its view
+/// - panics: a covered index absent from `parent` (compact-block: value-balance too)
 pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     parent: &Views<V>,
     block: &Block,
+    covers: &[IndexKind],
 ) -> Result<Folded, FoldError> {
-    let mut folds = Folds::default();
     let mut layers = PerIndex::default();
     let open = |kind: IndexKind| parent.layer(kind).changes(block.at());
-    let mut push = |kind: IndexKind, changes: Changes| {
-        layers.insert(kind, parent.layer(kind).with(&changes));
-        folds.insert(kind, changes);
-    };
+    let mut push =
+        |kind: IndexKind, changes: Changes| layers.insert(kind, parent.layer(kind).with(&changes));
+    let covered = |kind: IndexKind| covers.contains(&kind);
 
-    if let Some(reader) = parent.value_balance() {
+    let mut fees = None;
+    if covered(IndexKind::ValueBalance) {
+        let reader = parent.value_balance().unwrap_or_else(|| absent(IndexKind::ValueBalance));
         let mut out = open(IndexKind::ValueBalance);
-        let fees = value_balance::fold(&reader, block, &mut out)?;
+        fees = Some(value_balance::fold(&reader, block, &mut out)?);
         push(IndexKind::ValueBalance, out);
-        if let Some(reader) = parent.compact_block() {
-            let mut out = open(IndexKind::CompactBlock);
-            compact_block::fold(&reader, block, &fees, &mut out)?;
-            push(IndexKind::CompactBlock, out);
-        }
     }
-    if let Some(reader) = parent.block_hash() {
+    if covered(IndexKind::CompactBlock) {
+        let fees = match fees {
+            Some(fees) => fees,
+            None => {
+                let reader =
+                    parent.value_balance().unwrap_or_else(|| absent(IndexKind::ValueBalance));
+                let mut fees = value_balance::fees(&reader, &[block])?;
+                fees.pop().expect("one block in, one fee set out")
+            }
+        };
+        let reader = parent.compact_block().unwrap_or_else(|| absent(IndexKind::CompactBlock));
+        let mut out = open(IndexKind::CompactBlock);
+        compact_block::fold(&reader, block, &fees, &mut out)?;
+        push(IndexKind::CompactBlock, out);
+    }
+    if covered(IndexKind::BlockHash) {
+        let reader = parent.block_hash().unwrap_or_else(|| absent(IndexKind::BlockHash));
         let mut out = open(IndexKind::BlockHash);
         block_hash::fold(&reader, block, &mut out);
         push(IndexKind::BlockHash, out);
     }
-    if let Some(reader) = parent.tree_state() {
+    if covered(IndexKind::TreeState) {
+        let reader = parent.tree_state().unwrap_or_else(|| absent(IndexKind::TreeState));
         let mut out = open(IndexKind::TreeState);
         tree_state::fold(&reader, block, &mut out)?;
         push(IndexKind::TreeState, out);
     }
-    if let Some(reader) = parent.transparent_address() {
+    if covered(IndexKind::TransparentAddress) {
+        let reader =
+            parent.transparent_address().unwrap_or_else(|| absent(IndexKind::TransparentAddress));
         let mut out = open(IndexKind::TransparentAddress);
         transparent_address::fold(&reader, block, &mut out);
         push(IndexKind::TransparentAddress, out);
     }
-    Ok(Folded { folds: Arc::new(folds), layers })
+    Ok(Folded { layers })
+}
+
+fn absent(kind: IndexKind) -> ! {
+    panic!("{}: covered, absent from the fold parent", kind.name())
 }
 
 #[cfg(test)]
@@ -99,7 +118,7 @@ mod tests {
     ///
     /// - compact-block's record carries value-balance's fees (value-balance folded first)
     /// - each layer = parent layer + the block (tip = block 1, genesis read through it)
-    /// - disabled indexes: no `Changes`, no layer, no reader
+    /// - disabled indexes: no layer, no reader
     #[test]
     fn value_balance_folds_first_and_disabled_indexes_fold_nothing() {
         let alice = p2pkh([0xaa; 20]);
@@ -141,8 +160,9 @@ mod tests {
                 root.insert(kind, Layer::empty(&schema));
                 stores.push(store);
             }
-            let folded = fold_block(&Views::new(&durable, &root), genesis).expect("folds");
-            let folded = fold_block(&Views::new(&durable, &folded.layers), block).expect("folds");
+            let folded = fold_block(&Views::new(&durable, &root), genesis, enabled).expect("folds");
+            let folded =
+                fold_block(&Views::new(&durable, &folded.layers), block, enabled).expect("folds");
             let views = Views::new(&durable, &folded.layers);
 
             let reader = views.compact_block().expect("enabled");
@@ -152,15 +172,9 @@ mod tests {
                 "{enabled:?}: block 1 = its fees + sizes"
             );
             for kind in all {
-                let tips = (
-                    folded.folds.get(kind).map(Changes::tip),
-                    folded.layers.get(kind).map(Layer::tip),
-                );
-                let expected = match enabled.contains(&kind) {
-                    true => (Some(one), Some(Some(one))),
-                    false => (None, None),
-                };
-                assert_eq!(tips, expected, "{enabled:?}: {}", kind.name());
+                let tip = folded.layers.get(kind).map(Layer::tip);
+                let expected = enabled.contains(&kind).then_some(Some(one));
+                assert_eq!(tip, expected, "{enabled:?}: {}", kind.name());
             }
             let located = views
                 .block_hash()

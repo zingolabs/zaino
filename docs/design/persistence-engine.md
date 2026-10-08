@@ -252,7 +252,7 @@ mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and 
 ### Buffer and layers
 
 Data above a durable tip has one shape, whether it is a store's buffer or a non-final block in
-`zaino-nfs` ([nfs.md §4](./nfs.md#4-persistence-port)):
+`zaino-nfs` ([nfs.md](./nfs.md)):
 
 ```rust
 impl Layer {
@@ -301,6 +301,6 @@ data. Each index writer drives its store through `zaino_sync::Committer`
 | `Shutdown`                       | `Store::commit`, stop                                       |
 
 - A fold reads its parent's state off `staged()` (compact-block's tree sizes, tree-state's
-  frontiers) instead of carrying it: a restart needs no step of its own ([nfs.md](nfs.md) §5).
+  frontiers) instead of carrying it: a restart needs no step of its own ([data-sink.md](data-sink.md)).
 - A failed commit panics naming the index and its directory (`StoreError::commit_failed`): the
   store is poisoned and a restart recovers.

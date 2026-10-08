@@ -2,10 +2,9 @@
 
 use std::num::NonZeroUsize;
 
-use tokio::sync::watch;
 use zaino_persistence::{Changes, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{Committer, Final, Subscription};
+use zaino_sync::{Committer, IndexHandle, Subscription};
 
 use crate::{
     address::address_key,
@@ -24,13 +23,13 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
         Self { store: Committer::new(store, batch_bytes) }
     }
 
-    /// For `Nfs::subscribe`: the committed view after every commit
-    pub fn committed(&self) -> watch::Receiver<S::View> {
-        self.store.committed()
+    /// For `Nfs::add`: committed view after every commit + serving
+    pub fn handle(&self) -> IndexHandle<S::View> {
+        self.store.handle()
     }
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
-    pub async fn run(mut self, mut blocks: Subscription<Final>) {
+    pub async fn run(mut self, mut blocks: Subscription<Block>) {
         while let Some(run) = self.store.next(&mut blocks).await {
             let applied = move |store: &mut S| {
                 run.apply(store, |store, block, out| {
@@ -75,7 +74,7 @@ mod tests {
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
     use zaino_primitives::types::{OutPoint, Script, TransactionId, Zatoshis};
-    use zaino_sync::{Folds, IndexerDataSink, Step};
+    use zaino_sync::{IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
     use zcash_transparent::address::TransparentAddress;
 
@@ -91,37 +90,20 @@ mod tests {
         DiskEngine::new(fs.clone()).open(Path::new("/ta"), &SCHEMA).expect("open")
     }
 
-    /// Writer over `store`, its final stream and committed view
+    /// Writer over `store`, its final stream and handle
     fn start(
         store: DiskStore,
         batch: NonZeroUsize,
-    ) -> (IndexerDataSink<Final>, watch::Receiver<DiskView>, tokio::task::JoinHandle<()>) {
+    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
         let writer = TransparentAddressIndexWriter::new(store, batch);
-        let committed = writer.committed();
+        let handle = writer.handle();
         let mut sink = IndexerDataSink::new("final");
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, committed, running)
+        (sink, handle, running)
     }
 
-    /// Each block's own fold from genesis, as the NFS folds it (the folded steps' payload)
-    fn folded(chain: &[Arc<Block>]) -> Vec<Arc<Folds>> {
-        let mut scratch = open(&SimFs::new());
-        (chain.iter())
-            .map(|block| {
-                let mut changes = scratch.changes(block.at());
-                fold(&TransparentAddressReader::new(scratch.staged()), block, &mut changes);
-                scratch.apply(changes.clone());
-                let mut folds = Folds::default();
-                folds.insert(IndexKind::TransparentAddress, changes);
-                Arc::new(folds)
-            })
-            .collect()
-    }
-
-    /// `block` as the NFS sends it: unfolded, or folded (`folds`)
-    fn step(block: &Arc<Block>, folds: Option<&Arc<Folds>>) -> Step<Final> {
-        let (height, block, folds) = (block.header().height, Arc::clone(block), folds.cloned());
-        Step::Apply { height, data: Arc::new(Final { block, folds }) }
+    fn step(block: &Arc<Block>) -> Step<Block> {
+        Step::Apply { height: block.header().height, data: Arc::clone(block) }
     }
 
     /// Block 1 spends alice's block-0 receive, paying bob: its `Changes` = the spend under the
@@ -178,10 +160,11 @@ mod tests {
         assert_eq!(read.spends_of(&[alice_receive]), vec![Some(Spend { height: 1, spender })]);
     }
 
-    /// `committed` at `tip` (`None` = nothing)
-    async fn reached(committed: &mut watch::Receiver<DiskView>, tip: Option<u32>) {
-        let at = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height)) == tip;
-        committed.wait_for(at).await.expect("writer alive");
+    /// `handle`'s durable tip at `tip` (`None` = nothing)
+    async fn reached(handle: &mut IndexHandle<DiskView>, tip: Option<u32>) {
+        while handle.tip().map(|tip| u32::from(tip.height)) != tip {
+            assert!(handle.changed().await, "writer alive");
+        }
     }
 
     /// Ten one-block commits (batch = 1 byte: each block commits as it arrives; the 9th launches
@@ -205,10 +188,10 @@ mod tests {
         let blocks = chain.blocks(chain.tip());
         let fs = SimFs::recording();
         {
-            let (sink, mut committed, running) = start(open(&fs), NonZeroUsize::MIN);
+            let (sink, mut handle, running) = start(open(&fs), NonZeroUsize::MIN);
             for (acked, block) in (1u64..).zip(&blocks[..10]) {
-                sink.send(step(block, None)).await;
-                reached(&mut committed, Some(u32::from(block.header().height))).await;
+                sink.send(step(block)).await;
+                reached(&mut handle, Some(u32::from(block.header().height))).await;
                 fs.set_tag(acked);
             }
             sink.shutdown();
@@ -236,8 +219,8 @@ mod tests {
             assert!(acked.contains(&count), "{label}: recovered {count}");
             assert_eq!(observed(store.view()), expected(count), "{label}");
 
-            let (sink, _committed, running) = start(store, QUEUE);
-            sink.send(step(&blocks[count as usize], None)).await;
+            let (sink, _handle, running) = start(store, QUEUE);
+            sink.send(step(&blocks[count as usize])).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let after = observed(open(&state.fs).view());
@@ -247,8 +230,8 @@ mod tests {
 
     /// Receive in one segment, its spend in the next, queried across both, after restarts
     ///
-    /// - 0, 1 unfolded (bulk: committed once the stream idles), 2 folded (the tip)
-    /// - restart: 1 and 2 resent (held: skipped), 3 folded
+    /// - 0, 1 (committed once the stream idles), then 2
+    /// - restart: 1 and 2 resent (held: skipped), then 3
     #[tokio::test(start_paused = true)]
     async fn a_spend_in_a_later_segment_retires_a_utxo_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();
@@ -271,21 +254,18 @@ mod tests {
             b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
         });
         let blocks = chain.blocks(tip);
-        let folds = folded(&blocks);
-        let reader = |committed: &watch::Receiver<DiskView>| {
-            TransparentAddressReader::new(committed.borrow().clone())
-        };
+        let reader = |handle: &IndexHandle<DiskView>| TransparentAddressReader::new(handle.view());
         let zats = |balance: Result<Zatoshis, _>| balance.map(Zatoshis::as_u64);
 
-        let (sink, mut committed, running) = start(open(&fs), QUEUE);
+        let (sink, mut handle, running) = start(open(&fs), QUEUE);
         for block in &blocks[..2] {
-            sink.send(step(block, None)).await;
+            sink.send(step(block)).await;
         }
-        reached(&mut committed, Some(1)).await;
-        assert_eq!(zats(reader(&committed).balance(&alice)), Ok(800), "both receives unspent");
-        sink.send(step(&blocks[2], Some(&folds[2]))).await;
-        reached(&mut committed, Some(2)).await;
-        let at_two = reader(&committed);
+        reached(&mut handle, Some(1)).await;
+        assert_eq!(zats(reader(&handle).balance(&alice)), Ok(800), "both receives unspent");
+        sink.send(step(&blocks[2])).await;
+        reached(&mut handle, Some(2)).await;
+        let at_two = reader(&handle);
         assert_eq!(zats(at_two.balance(&alice)), Ok(300), "2's spend retires 0's receive");
         let utxos = at_two.utxos(&alice, h(0)).expect("utxos");
         let utxos: Vec<_> = utxos
@@ -306,15 +286,13 @@ mod tests {
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
-        let (sink, mut committed, running) = start(open(&fs), QUEUE);
-        assert_eq!(zats(reader(&committed).balance(&bob)), Ok(560), "resumed at 2, no replay");
-        for (block, folds) in
-            [(&blocks[1], None), (&blocks[2], Some(&folds[2])), (&blocks[3], Some(&folds[3]))]
-        {
-            sink.send(step(block, folds)).await;
+        let (sink, mut handle, running) = start(open(&fs), QUEUE);
+        assert_eq!(zats(reader(&handle).balance(&bob)), Ok(560), "resumed at 2, no replay");
+        for block in &blocks[1..=3] {
+            sink.send(step(block)).await;
         }
-        reached(&mut committed, Some(3)).await;
-        let at_three = reader(&committed);
+        reached(&mut handle, Some(3)).await;
+        let at_three = reader(&handle);
         assert_eq!(zats(at_three.balance(&alice)), Ok(290), "pre-restart receive spent after it");
         assert_eq!(zats(at_three.balance(&bob)), Ok(560), "resent 2 not applied twice");
         let recent = at_three.utxos(&alice, h(3)).expect("utxos").len();
@@ -323,13 +301,11 @@ mod tests {
         running.await.expect("stops at Shutdown");
     }
 
-    /// - `Send(n)`: next `n` blocks, unfolded until `Fold`, folded after it
-    /// - `Fold`: bulk → tip handoff; `Reopen`: shutdown, reopen, resend from one below the tip
-    ///   (held: skipped)
+    /// - `Send(n)`: next `n` blocks
+    /// - `Reopen`: shutdown, reopen, resend from one below the tip (held: skipped)
     #[derive(Debug, Clone)]
     enum Move {
         Send(usize),
-        Fold,
         Reopen,
     }
 
@@ -342,8 +318,8 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random spend graphs through random final streams (bulk, tip, restarts): once every
-        /// move commits, each address's utxos, balance and transactions equal a naive UTXO set's
+        /// Random spend graphs through random final streams (runs, restarts): once every move
+        /// commits, each address's utxos, balance and transactions equal a naive UTXO set's
         #[test]
         fn random_histories_answer_like_a_naive_utxo_set(
             plans in proptest::collection::vec(
@@ -356,7 +332,6 @@ mod tests {
             moves in proptest::collection::vec(
                 proptest::prop_oneof![
                     4 => (1usize..=3).prop_map(Move::Send),
-                    1 => proptest::strategy::Just(Move::Fold),
                     1 => proptest::strategy::Just(Move::Reopen),
                 ],
                 1..16,
@@ -427,7 +402,6 @@ mod tests {
             chain.mine(|b| block(b, height, plan));
         }
         let blocks = chain.blocks(chain.tip());
-        let folds = folded(&blocks);
 
         // the model's answers once `held` blocks are indexed
         let expected = |tag: u8, held: u32| {
@@ -453,31 +427,29 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let (mut sink, mut committed, mut running) = start(open(&fs), NonZeroUsize::MIN);
-        let (mut sent, mut folding) = (0usize, false);
+        let (mut sink, mut handle, mut running) = start(open(&fs), NonZeroUsize::MIN);
+        let mut sent = 0usize;
         for (at, next) in moves.iter().enumerate() {
             match *next {
                 Move::Send(count) => {
-                    for (block, block_folds) in blocks.iter().zip(&folds).skip(sent).take(count) {
-                        sink.send(step(block, folding.then_some(block_folds))).await;
+                    for block in blocks.iter().skip(sent).take(count) {
+                        sink.send(step(block)).await;
                         sent += 1;
                     }
                 }
-                Move::Fold => folding = true,
                 Move::Reopen => {
                     sink.shutdown();
                     running.await.expect("stops at Shutdown");
-                    (sink, committed, running) = start(open(&fs), NonZeroUsize::MIN);
-                    folding = false;
+                    (sink, handle, running) = start(open(&fs), NonZeroUsize::MIN);
                     if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&blocks[held], None)).await;
+                        sink.send(step(&blocks[held])).await;
                     }
                 }
             }
-            reached(&mut committed, sent.checked_sub(1).map(|last| last as u32)).await;
+            reached(&mut handle, sent.checked_sub(1).map(|last| last as u32)).await;
 
             let held = sent as u32;
-            let reader = TransparentAddressReader::new(committed.borrow().clone());
+            let reader = TransparentAddressReader::new(handle.view());
             for tag in 0..3u8 {
                 let (utxos, balance, touched) = expected(tag, held);
                 let served = reader.utxos(&address(tag), h(0)).expect("utxos");

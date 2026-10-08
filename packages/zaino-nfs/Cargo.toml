@@ -9,7 +9,7 @@ categories.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-description = "Zaino's non-finalized state: one folded node per block above the durable root, one final stream"
+description = "Zaino's non-finalized state: the tip overlay, one folded node per block above the durable views"
 
 [dependencies]
 imbl.workspace = true
@@ -32,7 +32,7 @@ zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 zcash_protocol.workspace = true
 
 [features]
-# `Indexed::fixed` + `NfsProgress::fixed` (no driver) + `ChainParams::of(MockChain)`
+# `Indexed::fixed` (no driver) + `ChainParams::of(MockChain)`
 testing = ["zaino-primitives/testing"]
 
 [lints.rust]

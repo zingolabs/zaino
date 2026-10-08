@@ -1,5 +1,5 @@
 //! [`Indexed`]: one served tip across every enabled index, the global snapshot's index half
-//! (`nfs.md` §6)
+//! (`nfs.md`)
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the committed view
 //! - Layers rebased onto the committed views they pair with, at build (decision 4)
@@ -73,15 +73,15 @@ impl<V> At<V> {
 
 /// One publish: the served tip + every folded node, judged under `chain`
 ///
-/// - `served` = deepest folded best block, else `root` (lowest durable tip of the joined indexes)
+/// - `served` = deepest folded best block, else `root` (lowest durable tip of the serving indexes)
 /// - `durable` = each enabled index's committed view as of this publish (republished per commit)
-/// - `joined` = empty layers of the indexes the root serves (a lagging index: none, `syncing`)
+/// - `serving` = indexes served (the rest: absent, [`Views::syncing`])
 pub struct Indexed<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
     served: At<V>,
     durable: PerIndex<V>,
-    joined: PerIndex<Layer>,
+    serving: Vec<IndexKind>,
     graph: Graph<Folded>,
 }
 
@@ -93,25 +93,25 @@ impl<V: View> Indexed<V> {
         root: Option<BlockRef>,
         params: ChainParams,
         durable: PerIndex<V>,
-        joined: PerIndex<Layer>,
+        serving: Vec<IndexKind>,
         graph: Graph<Folded>,
     ) -> Self {
         let base = graph.at(&chain, root, &tip.hash).expect("served tip = a node or the root");
-        let served = at(params, &durable, &joined, base);
-        Self { chain, root, served, durable, joined, graph }
+        let served = at(params, &durable, &serving, base);
+        Self { chain, root, served, durable, serving, graph }
     }
 
     /// Index state as of `hash`: a folded node (best or side) or the root, no I/O
     ///
     /// - `None` = final below the root, never folded, or unknown
     /// - an index durable at or past the block: its committed view alone (reads at heights `<=`)
-    /// - an index the block's fold (or the root) lacks: absent, [`Views::syncing`]
+    /// - an index not serving: absent, [`Views::syncing`]
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;
-        Some(at(self.served.params, &self.durable, &self.joined, base))
+        Some(at(self.served.params, &self.durable, &self.serving, base))
     }
 
-    /// Each enabled index's durable tip (lagging ones included), subscribe order
+    /// Each enabled index's durable tip (syncing ones included), subscribe order
     pub fn durable(&self) -> impl Iterator<Item = (IndexKind, Option<BlockRef>)> + '_ {
         self.durable.iter().map(|(kind, view)| (kind, view.tip()))
     }
@@ -138,22 +138,22 @@ impl<V> Indexed<V> {
     }
 }
 
-/// `joined` = the root's layers (a node: its own)
 fn at<V: View>(
     params: ChainParams,
     durable: &PerIndex<V>,
-    joined: &PerIndex<Layer>,
+    serving: &[IndexKind],
     base: Base<Folded>,
 ) -> At<V> {
-    let layers = base.folded.as_deref().map_or(joined, |folded| &folded.layers);
-    let views = Views::at(durable, layers, base.at.height);
+    let empty = PerIndex::default();
+    let layers = base.folded.as_deref().map_or(&empty, |folded| &folded.layers);
+    let views = Views::at(durable, layers, serving, Some(base.at.height));
     At { block: base.at, branch: base.branch, params, views }
 }
 
 /// Every enabled index's committed view + a layer above it for each one served
 ///
 /// - [`At`]'s state, and a fold's parent
-/// - an index without a layer: lagging (it folds itself off the stream), read as absent
+/// - an index without a layer: not serving (syncing on the final path), read as absent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -171,14 +171,26 @@ impl<V: View> Views<V> {
         Self { durable: durable.clone(), layers: rebased }
     }
 
-    /// As of the block at `height`: each of `layers`, empty for an index durable at or past it
-    /// (a layer rebases only onto one of its own blocks)
-    fn at(durable: &PerIndex<V>, layers: &PerIndex<Layer>, height: Height) -> Self {
+    /// As of the block at `height` (`None` = below genesis): each `serving` index's layer of
+    /// `layers`, empty when durable at or past `height` (a layer rebases only onto its own blocks)
+    ///
+    /// - panics: a serving index durable below `height` with no layer in `layers`
+    pub(crate) fn at(
+        durable: &PerIndex<V>,
+        layers: &PerIndex<Layer>,
+        serving: &[IndexKind],
+        height: Option<Height>,
+    ) -> Self {
         let mut chosen = PerIndex::default();
-        for (kind, layer) in layers.iter() {
+        for &kind in serving {
             let view = durable.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()));
-            let holds = view.tip().is_some_and(|tip| tip.height >= height);
-            chosen.insert(kind, if holds { Layer::empty(view.schema()) } else { layer.clone() });
+            let layer = match view.tip().map(|tip| tip.height) >= height {
+                true => Layer::empty(view.schema()),
+                false => layers.get(kind).cloned().unwrap_or_else(|| {
+                    panic!("{}: durable below {height:?}, unfolded there", kind.name())
+                }),
+            };
+            chosen.insert(kind, layer);
         }
         Self::new(durable, &chosen)
     }
@@ -234,19 +246,19 @@ pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;
 /// No driver publishes into it (consumers' tests)
 #[cfg(any(test, feature = "testing"))]
 impl<V: View> Indexed<V> {
-    /// At `tip` on `chain`, `tip` = the root: each enabled index = its committed view, no layer
+    /// At `tip` on `chain`, `tip` = the root: each enabled index serving, = its committed view
     pub fn fixed(
         chain: Arc<VerifiedChain>,
         tip: BlockRef,
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
     ) -> Self {
-        let (mut views, mut joined) = (PerIndex::default(), PerIndex::default());
+        let (mut views, mut serving) = (PerIndex::default(), Vec::new());
         for (kind, view) in durable {
-            joined.insert(kind, Layer::empty(view.schema()));
+            serving.push(kind);
             views.insert(kind, view);
         }
-        Self::new(chain, tip, Some(tip), params, views, joined, Graph::new())
+        Self::new(chain, tip, Some(tip), params, views, serving, Graph::new())
     }
 }
 

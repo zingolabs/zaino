@@ -161,10 +161,9 @@ hits, since a valid spend's prevout exists, so the filter picks the one segment 
 probe costs one block read. At mainnet scale that is about 190M outputs × 44 B, or 8.4 GB, against
 about 1.4 GB resident plus a delete path for a maintained UTXO set.
 
-The value-balance index serves nothing itself. In bulk sync it publishes each block's
-per-transaction fees into a `FeeSink`, and the compact-block index reads one fee step per unfolded
-block, pairing each block with its fees by hash; at the tip the NFS folds value-balance first and
-hands compact-block's fold the fees ([data-sink.md](./data-sink.md#indexes-publishing-to-other-indexes-fees)).
+The value-balance index serves nothing itself. Its writer publishes each block's per-transaction
+fees into a `FeeSink`, and the compact-block writer pops one fee step per block. At the tip the NFS
+folds value-balance first and hands compact-block's fold the fees ([data-sink.md](./data-sink.md#fees)).
 
 Mempool fees are not a fold. An unconfirmed transaction may spend another unconfirmed one, and the
 validator already resolved both when it admitted them, so we take the fee from its

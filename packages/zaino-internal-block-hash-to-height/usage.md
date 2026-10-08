@@ -13,16 +13,18 @@ use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
 let writer = BlockHashIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
-let blocks = nfs.subscribe(IndexKind::BlockHash, writer.committed(), queue_bytes);
+let handle = writer.handle();
+let blocks = follower.subscribe(IndexKind::BlockHash, handle.tip(), queue_bytes);
+nfs.add(IndexKind::BlockHash, handle);
 tokio::spawn(writer.run(blocks));
 ```
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
   `S::View: MapRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream (`"block_hash"`) through `zaino_sync::Committer`
-  ([the writer shape](../zaino-sync/usage.md#committer)): each unfolded step not
-  held = `fold` into the delta `Run::apply` opened for it, each folded step
-  applied as sent. `committed()` = the committed-view watch the NFS reads.
+- `run` follows the final stream (`"block_hash"`, from `FinalFollower`) through
+  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
+  each block not held = `fold` into the delta `Run::apply` opened for it.
+  `handle()` = the `IndexHandle` the NFS reads (committed view, serving).
 
 ## Folding and reading
 

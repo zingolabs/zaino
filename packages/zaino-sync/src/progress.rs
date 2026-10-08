@@ -1,4 +1,4 @@
-//! [`NfsProgress`]: blocks handed to the indexes, sampled at report time (decision 5)
+//! [`SyncProgress`]: final blocks handed to the index writers, sampled at report time
 //!
 //! - Atomics, not a watch (bulk sync hands thousands of blocks a second; readers sample)
 
@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use zaino_primitives::types::Height;
 
-/// Cheap clone, one tally per NFS
+/// Cheap clone, one tally per follower
 #[derive(Debug, Clone, Default)]
-pub struct NfsProgress(Arc<Tally>);
+pub struct SyncProgress(Arc<Tally>);
 
 /// `handed` 0 = none, else height + 1
 #[derive(Debug, Default)]
@@ -18,13 +18,13 @@ struct Tally {
     blocks: AtomicU64,
 }
 
-impl NfsProgress {
-    /// Last block handed (folded, or sent final unfolded); rewinds on a reorg
+impl SyncProgress {
+    /// Last block handed (sent on the final stream)
     pub fn handed(&self) -> Option<Height> {
         Height::try_from(self.0.handed.load(Ordering::Relaxed).checked_sub(1)?).ok()
     }
 
-    /// Blocks handed since boot (a reorg's branch counts again)
+    /// Blocks handed since boot
     pub fn blocks(&self) -> u64 {
         self.0.blocks.load(Ordering::Relaxed)
     }
@@ -36,8 +36,8 @@ impl NfsProgress {
 }
 
 #[cfg(any(test, feature = "testing"))]
-impl NfsProgress {
-    /// No NFS behind it: `handed` = `at`, one block counted per hand
+impl SyncProgress {
+    /// No follower behind it: `handed` = `at`, one block counted per hand
     pub fn fixed(at: Option<Height>) -> Self {
         let progress = Self::default();
         if let Some(at) = at {
@@ -53,13 +53,13 @@ mod tests {
 
     #[test]
     fn handed_is_the_last_height_and_blocks_count_every_hand() {
-        let progress = NfsProgress::default();
+        let progress = SyncProgress::default();
         assert_eq!((progress.handed(), progress.blocks()), (None, 0));
         let at = |h: u32| Height::try_from(h).expect("h");
-        for h in [0, 1, 2, 1] {
+        for h in [0, 1, 2] {
             progress.hand(at(h));
         }
-        assert_eq!((progress.handed(), progress.blocks()), (Some(at(1)), 4), "rewound by a reorg");
-        assert_eq!(progress.clone().handed(), Some(at(1)), "clones share one tally");
+        assert_eq!((progress.handed(), progress.blocks()), (Some(at(2)), 3));
+        assert_eq!(progress.clone().handed(), Some(at(2)), "clones share one tally");
     }
 }

@@ -33,6 +33,7 @@ zaino-header-chain.workspace = true
 zaino-nfs.workspace = true
 zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
+zaino-sync.workspace = true
 zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 
 [dev-dependencies]
@@ -48,4 +49,5 @@ zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
+zaino-sync = { workspace = true, features = ["testing"] }
 zcash_protocol.workspace = true

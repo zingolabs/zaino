@@ -1,4 +1,4 @@
-//! One progress task: every [`REPORT_INTERVAL`], read from the global snapshot + `NfsProgress`
+//! One progress task: every [`REPORT_INTERVAL`], read from the global snapshot + `SyncProgress`
 //!
 //! - `Syncing blocks` (handed, best, bps, eta) while the blocks handed trail the best; a stall
 //!   warning when a whole interval hands over nothing
@@ -15,9 +15,9 @@ use std::{
 use serde::Serialize;
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
-use zaino_nfs::NfsProgress;
 use zaino_persistence::{disk_bytes, DiskView, IndexKind};
 use zaino_snapshot::Snapshots;
+use zaino_sync::SyncProgress;
 use zaino_sync::{ByteSize, Human};
 
 use crate::error::IndexerError;
@@ -53,7 +53,7 @@ struct Sample {
 /// Until `cancel`; each walk lands in `disk`
 pub(crate) async fn run(
     snapshots: Snapshots<DiskView>,
-    progress: NfsProgress,
+    progress: SyncProgress,
     indexes: Vec<Index>,
     disk: watch::Sender<Disk>,
     cancel: tokio_util::sync::CancellationToken,
