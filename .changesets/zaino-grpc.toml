@@ -88,3 +88,14 @@ description = """
 `INVALID_ARGUMENT`; the Android SDK asks for Sapling activation − 1). From a pool's \
 activation on its tree is the serialized tree, `000000` while empty.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+`GetBlockRange` (and the deprecated `GetBlockRangeNullifiers`) reaching past the served tip \
+streams every block up to the tip, then ends `OUT_OF_RANGE` in the trailers, as lightwalletd \
+does; it used to end `OK` at the tip, which hangs the iOS downloader. A range whose first \
+height is past the tip is `OUT_OF_RANGE` before any block.
+"""

@@ -47,11 +47,11 @@ where
         path::GET_BLOCK => block(at, blocks, body, &reads).await.map(unary_response),
         path::GET_BLOCK_RANGE => {
             let range = range(blocks, tip, body).await;
-            range.map(|cursor| range_response(cursor, reads, Ok))
+            range.map(|walk| range_response(walk, reads, Ok))
         }
         path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(blocks, tip, body)
             .await
-            .map(|cursor| range_response(cursor, reads, deprecated_nullifiers::reproject)),
+            .map(|walk| range_response(walk, reads, deprecated_nullifiers::reproject)),
         _ => Err(Status::unimplemented("not a compact-block method")),
     };
 
@@ -61,17 +61,27 @@ where
     }
 }
 
+/// One range's cursor + the status its stream ends in once the cursor is spent
+///
+/// - `ends` = `OUT_OF_RANGE` when the range reaches past the snapshot's tip (lightwalletd: lazily
+///   to the tip, then the error; an early `OK` end hangs the iOS downloader for good)
+struct Walk<V> {
+    cursor: RangeCursor<V>,
+    ends: Status,
+}
+
 /// Server-streaming response, cursor chunk by chunk
 ///
 /// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
 /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
 fn range_response<V: SequenceRead>(
-    cursor: RangeCursor<V>,
+    walk: Walk<V>,
     reads: ReadLanes,
     reproject: fn(Bytes) -> Result<Bytes, Status>,
 ) -> Response<Body> {
-    let frames = futures::stream::unfold(Some((cursor, reads)), move |state| async move {
-        let (mut cursor, reads) = state?;
+    let Walk { cursor, ends } = walk;
+    let frames = futures::stream::unfold(Some((cursor, reads, ends)), move |state| async move {
+        let (mut cursor, reads, ends) = state?;
 
         // - Blocking pool for disk steps only (cold mmap refill ~11.7 ms would stall the worker)
         // - In-memory steps inline (else a task per block on the highest-volume RPC)
@@ -89,9 +99,9 @@ fn range_response<V: SequenceRead>(
         };
 
         let last = match chunk.map(|read| read.map_err(to_status).and_then(reproject)) {
-            Some(Ok(chunk)) => return Some((Ok(Frame::data(chunk)), Some((cursor, reads)))),
+            Some(Ok(chunk)) => return Some((Ok(Frame::data(chunk)), Some((cursor, reads, ends)))),
             Some(Err(status)) => trailers(&status),
-            None => trailers(&Status::ok("")),
+            None => trailers(&ends),
         };
 
         Some((Ok::<_, Status>(Frame::trailers(last)), None))
@@ -149,7 +159,7 @@ where
 }
 
 /// `GetBlockRange` (wallet-sync path: must stay cheap)
-async fn range<V, B>(blocks: Blocks<V>, tip: Height, body: B) -> Result<RangeCursor<V>, Status>
+async fn range<V, B>(blocks: Blocks<V>, tip: Height, body: B) -> Result<Walk<V>, Status>
 where
     V: SequenceRead,
     B: http_body::Body,
@@ -160,12 +170,14 @@ where
     open_range(blocks, tip, &request, wire::pools(&request.pool_types)?)
 }
 
+/// - walk order up to the first height past `tip`: a first height past it = refused before any
+///   block (lightwalletd: the first `getblock` fails)
 fn open_range<V: SequenceRead>(
     blocks: Blocks<V>,
     tip: Height,
     request: &proto::BlockRange,
     pools: Pools,
-) -> Result<RangeCursor<V>, Status> {
+) -> Result<Walk<V>, Status> {
     let start = request
         .start
         .as_ref()
@@ -179,7 +191,15 @@ fn open_range<V: SequenceRead>(
     // start > end = descending (the cursor walks it top down)
     let (start, end) = (wire::height(start, "range start")?, wire::height(end, "range end")?);
 
-    RangeCursor::new(blocks, start, end, tip, pools).map_err(to_status)
+    let past =
+        |height| Status::out_of_range(format!("block {height} is above the served tip {tip}"));
+    if start > tip {
+        return Err(past(start));
+    }
+    let ends = if end > tip { past(tip.next()) } else { Status::ok("") };
+    let cursor = RangeCursor::new(blocks, start, end, tip, pools).map_err(to_status)?;
+
+    Ok(Walk { cursor, ends })
 }
 
 // =================================================================================================
@@ -192,13 +212,12 @@ mod deprecated_nullifiers {
     use bytes::Bytes;
     use prost::Message as _;
     use tonic::Status;
-    use zaino_index_compact_block::RangeCursor;
     use zaino_primitives::types::Height;
     use zaino_proto::frame::{frame_into, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zaino_proto::proto::service as proto;
 
-    use super::{open_range, Blocks};
+    use super::{open_range, Blocks, Walk};
     use crate::wire::{self, pools};
 
     /// Proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]`
@@ -207,7 +226,7 @@ mod deprecated_nullifiers {
         blocks: Blocks<V>,
         tip: Height,
         body: B,
-    ) -> Result<RangeCursor<V>, Status>
+    ) -> Result<Walk<V>, Status>
     where
         V: zaino_persistence::SequenceRead,
         B: http_body::Body,
@@ -340,6 +359,54 @@ mod tests {
         use tonic::Code::{InvalidArgument, NotFound, Unimplemented};
         let expected = [NotFound, NotFound, InvalidArgument, Unimplemented];
         assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
+    }
+
+    /// W4 over a snapshot served at 5: a range reaching past the tip streams every block to the tip
+    /// in walk order, then `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on
+    /// one); a first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
+    #[tokio::test]
+    async fn get_block_range_past_the_tip_streams_to_it_then_ends_out_of_range() {
+        use http_body_util::BodyExt as _;
+        use prost::Message as _;
+        use tower::Service as _;
+        use zaino_proto::proto::compact_formats as cf;
+        use zaino_proto::proto::service as proto;
+
+        let mut router = dispatch(Routes { snapshots: compact(6), ..routes() });
+        let past = |h: u32| format!("block%20{h}%20is%20above%20the%20served%20tip%205");
+        let cases = [
+            (path::GET_BLOCK_RANGE, (1, 4), (vec![1, 2, 3, 4], "0", None)),
+            (path::GET_BLOCK_RANGE, (5, 1), (vec![5, 4, 3, 2, 1], "0", None)),
+            (path::GET_BLOCK_RANGE, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
+            (path::GET_BLOCK_RANGE_NULLIFIERS, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
+            (path::GET_BLOCK_RANGE, (9, 3), (vec![], "11", Some(past(9)))),
+            (path::GET_BLOCK_RANGE, (7, 9), (vec![], "11", Some(past(7)))),
+        ];
+        for (path, (start, end), expected) in cases {
+            let range = proto::BlockRange {
+                start: Some(proto::BlockId { height: start, hash: Vec::new() }),
+                end: Some(proto::BlockId { height: end, hash: Vec::new() }),
+                pool_types: Vec::new(),
+            };
+            let request = framed_request(path, range.encode_to_vec().into());
+            let response = router.call(request).await.expect("router answers");
+            let headers = response.headers().clone();
+            let body = response.into_body().collect().await.expect("body");
+            let status = body.trailers().cloned().unwrap_or(headers);
+            let text =
+                |name: &str| status.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
+            let bytes = body.to_bytes();
+            let mut rest = &bytes[..];
+            let mut heights = Vec::new();
+            while !rest.is_empty() {
+                let (message, tail) = split_frame(rest).expect("whole frame");
+                heights.push(cf::CompactBlock::decode(message).expect("a block").height);
+                rest = tail;
+            }
+            let code = text("grpc-status").expect("a status");
+            let got = (heights, code.as_str(), text("grpc-message"));
+            assert_eq!(got, (expected.0, expected.1, expected.2), "{path} {start}..={end}");
+        }
     }
 
     /// Body = the stored bytes

@@ -638,10 +638,15 @@ mod tests {
             let range = BlockRange { start: at(0), end: at(99), pool_types: Vec::new() };
             let mut stream = wallet.get_block_range(range).await.expect("range").into_inner();
             let mut last = None;
-            while let Some(block) = stream.message().await.expect("a block") {
-                last = Some((block.height, block.hash));
-            }
+            let ended = loop {
+                match stream.message().await {
+                    Ok(Some(block)) => last = Some((block.height, block.hash)),
+                    Ok(None) => break tonic::Code::Ok,
+                    Err(status) => break status.code(),
+                }
+            };
             assert_eq!(last, Some((expected.0, expected.1.to_vec())), "range ends at the tip");
+            assert_eq!(ended, tonic::Code::OutOfRange, "then OUT_OF_RANGE (99 is past it)");
             let state = wallet.get_tree_state(BlockId { height: expected.0, hash: Vec::new() });
             let state = state.await.expect("tree state").into_inner();
             assert_eq!(state.hash, BlockHash::from(expected.1).to_string(), "tree state's block");

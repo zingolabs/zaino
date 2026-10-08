@@ -250,7 +250,8 @@ mod tests {
     /// G1, R12: one global snapshot, every RPC at one tip
     /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip);
     ///   validator 0 holds 2, one tx of ours relayed
-    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 stops at 2, `GetLatestTreeState` = 2's,
+    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 = 0..=2 then `OUT_OF_RANGE`,
+    ///   `GetLatestTreeState` = 2's,
     ///   `GetLightdInfo.blockHeight` = 2 + the holder's branch
     /// - `GetTreeState` 3 = a miss (never past the served tip); block hash = its tree state's
     /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
@@ -294,7 +295,8 @@ mod tests {
 
         let range = proto::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
         let (_, streamed, trailers) = call(path::GET_BLOCK_RANGE, range.encode_to_vec()).await;
-        assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
+        let past = HeaderValue::from_static("11");
+        assert_eq!(trailers.get("grpc-status"), Some(&past), "to the tip, then OUT_OF_RANGE");
         let mut rest = &streamed[..];
         let mut served = Vec::new();
         while !rest.is_empty() {
