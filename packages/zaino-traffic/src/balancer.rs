@@ -186,10 +186,6 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
 
     /// Pending until a member serves it (rounds retried); drop = abandon
     pub async fn block(&self, hash: BlockHash, urgency: Urgency) -> Answered<Block> {
-        let class = match urgency {
-            Urgency::Tip => Class::TipBlock,
-            Urgency::Bulk => Class::BulkBlock,
-        };
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
             shared.send(
@@ -198,7 +194,35 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                 move |peers, peer| peers.block(peer, hash),
             )
         };
-        let answered = self.ask(class, Route::Any, 1, send).await;
+        self.block_by(urgency, Route::Any, send).await
+    }
+
+    /// Best-chain block at `height` from a trusted member (peers answer by hash only); pending
+    /// until one serves it; drop = abandon
+    pub async fn block_at(&self, height: Height, urgency: Urgency) -> Answered<Block> {
+        let shared = Arc::clone(&self.shared);
+        let send = move |member| {
+            let source = shared.trusted_only(member);
+            async move { source.get_block_by_height(height).await }.boxed()
+        };
+        self.block_by(urgency, Route::Trusted, send).await
+    }
+
+    /// One block ask in `urgency`'s class (rounds retried, never unanswered)
+    async fn block_by<E>(
+        &self,
+        urgency: Urgency,
+        route: Route,
+        send: impl Fn(MemberId) -> BoxFuture<'static, Result<Block, QueryError<E>>>,
+    ) -> Answered<Block>
+    where
+        E: fmt::Debug + fmt::Display,
+    {
+        let class = match urgency {
+            Urgency::Tip => Class::TipBlock,
+            Urgency::Bulk => Class::BulkBlock,
+        };
+        let answered = self.ask(class, route, 1, send).await;
         answered
             .unwrap_or_else(|_| unreachable!("block classes retry rounds, never end unanswered"))
     }

@@ -1,22 +1,23 @@
-//! [`VerifiedChain`]: the one value everything downstream reads (`verified-chain.md` §3)
+//! [`VerifiedChain`]: the one value everything downstream reads
 //!
-//! - clone = refcounts (`imbl` path, store view at the final tip): a holder's answers never change
+//! - clone = refcounts (`imbl`): a holder's answers never change
+//! - at or below the final tip = final by definition (a trusted validator held it); only the
+//!   newest `2 · depth` final headers answer by height
 
 use std::cmp::Reverse;
 
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 
-use crate::chain::{BestTip, Node};
-use crate::store::{HeaderView, Record};
+use crate::chain::{BestTip, Node, Record};
 
-/// - `above[i]` = best branch at `final + 1 + i`; at or below the final tip: the store's view
+/// - `above[i]` = best branch at `final + 1 + i`; `finals` = the newest final headers, oldest
+///   first, the final tip last
 /// - `nodes`, `leaves` = the header tree above the final tip, every branch (side ones: [`Fork`])
 #[derive(Debug, Clone)]
 pub struct VerifiedChain {
     best: BestTip,
-    final_tip: Option<BlockRef>,
     above: imbl::Vector<Record>,
-    finals: HeaderView,
+    finals: imbl::Vector<(Height, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
     leaves: imbl::HashSet<BlockHash>,
 }
@@ -35,14 +36,13 @@ const CONSECUTIVE: usize = 10;
 impl VerifiedChain {
     pub(crate) fn new(
         best: BestTip,
-        final_tip: Option<BlockRef>,
         above: imbl::Vector<Record>,
-        finals: HeaderView,
+        finals: imbl::Vector<(Height, Record)>,
         nodes: imbl::HashMap<BlockHash, Node>,
         leaves: imbl::HashSet<BlockHash>,
     ) -> Self {
-        assert_eq!(finals.tip(), final_tip, "H5: the store view sits at the final tip");
-        Self { best, final_tip, above, finals, nodes, leaves }
+        assert!(!finals.is_empty(), "H5: a published chain has a final tip (its anchor)");
+        Self { best, above, finals, nodes, leaves }
     }
 
     /// One per side leaf (≤ `SIDE_TIPS`, H4), most work first, first received on a tie
@@ -57,7 +57,8 @@ impl VerifiedChain {
         leaves.sort_by_key(|leaf| (Reverse(leaf.record.cumulative_work), leaf.received));
         let fork = |leaf: &Node| {
             let lowest = *self.off_best(leaf.record.hash).last().expect("a side leaf is off best");
-            let height = lowest.height.checked_sub(1).expect("genesis is on every best chain");
+            let height =
+                lowest.height.checked_sub(1).expect("a side node sits above the final tip");
             let from = BlockRef { hash: lowest.parent, height };
             Fork { from, tip: leaf.at(), cumulative_work: leaf.record.cumulative_work }
         };
@@ -72,7 +73,16 @@ impl VerifiedChain {
     /// On the best chain (final included), or a side block held above the final tip
     pub fn holds(&self, at: BlockRef) -> bool {
         let side = self.nodes.get(&at.hash).is_some_and(|node| node.height == at.height);
-        side || self.hash_at(at.height) == Some(at.hash)
+        side || self.on_best(at)
+    }
+
+    /// On the best chain: a held header's hash, or at or below the final tip past the headers
+    /// kept (final by definition)
+    pub fn on_best(&self, at: BlockRef) -> bool {
+        match self.header_at(at.height) {
+            Some(record) => record.hash == at.hash,
+            None => at.height <= self.final_tip().height,
+        }
     }
 
     /// Side nodes from `tip` down to the best chain, `tip` first
@@ -93,32 +103,34 @@ impl VerifiedChain {
         self.best.block
     }
 
-    /// Never moves back (`None` = nothing final yet)
-    pub fn final_tip(&self) -> Option<BlockRef> {
-        self.final_tip
+    /// Never moves back but on a re-anchor (a trusted validator far ahead)
+    pub fn final_tip(&self) -> BlockRef {
+        let (height, record) = self.finals.back().expect("a published chain has a final tip");
+        BlockRef { hash: record.hash, height: *height }
     }
 
-    /// Best-chain hash at `height` (`None` = above the best tip)
+    /// Best-chain hash at `height` (`None` = above the best tip, or final below the headers kept)
     pub fn hash_at(&self, height: Height) -> Option<BlockHash> {
         self.header_at(height).map(|record| record.hash)
     }
 
-    /// Best-chain header at `height`: hash, merkle root, time, nBits, cumulative work
+    /// Best-chain header at `height`: hash, merkle root, time
     pub fn header_at(&self, height: Height) -> Option<Record> {
         if height > self.best.block.height {
             return None;
         }
-        let base = self.final_tip.map_or(Height::GENESIS, |tip| tip.height.next());
-        match u32::from(height).checked_sub(u32::from(base)) {
-            Some(above) => self.above.get(above as usize).copied(),
-            None => self.finals.record(height),
+        let (oldest, _) = self.finals.front().expect("a published chain has a final tip");
+        let at = u32::from(height).checked_sub(u32::from(*oldest))? as usize;
+        match at.checked_sub(self.finals.len()) {
+            Some(above) => self.above.get(above).copied(),
+            None => self.finals.get(at).map(|(_, record)| *record),
         }
     }
 
     /// zcashd's `getheaders` locator: the best tip, ten consecutive ancestors, then doubling
-    /// steps, ending at the final tip (genesis while nothing is final)
+    /// steps, ending at the final tip
     pub fn locator(&self) -> Vec<BlockHash> {
-        let floor = self.final_tip.map_or(0, |tip| u32::from(tip.height));
+        let floor = u32::from(self.final_tip().height);
         let mut at = u32::from(self.best.block.height);
         let mut step = 1;
         let mut locator = Vec::new();

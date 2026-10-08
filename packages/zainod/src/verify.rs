@@ -66,7 +66,6 @@ fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
         IndexKind::BlockHash,
         IndexKind::TreeState,
         IndexKind::TransparentAddress,
-        IndexKind::HeaderChain,
     ];
 
     let engine = DiskEngine::new(RealFs::shared());
@@ -198,8 +197,6 @@ mod tests {
             indexed.expect("indexed through Shutdown");
         }
 
-        // header chain never synced here: an absent directory verifies as empty, never created
-        let hc = root.path().join("hc");
         let config_path = root.path().join("zainod.toml");
         std::fs::write(
             &config_path,
@@ -207,8 +204,7 @@ mod tests {
                 "[index.compact_block]\npath = {cb:?}\n\
                  [index.block_hash]\npath = {bh:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
-                 [index.transparent_address]\npath = {ta:?}\n\
-                 [index.header_chain]\npath = {hc:?}\n"
+                 [index.transparent_address]\npath = {ta:?}\n"
             ),
         )
         .expect("config");
@@ -233,8 +229,11 @@ mod tests {
         assert_eq!(indexes.map(|index| clean[index]["heights"].as_u64()), [Some(4); 5]);
         assert_eq!(*blocks_dat, expected);
         assert_eq!(tree_units, Some(1 + 3 * 33), "heights + 3 pools × (32 levels + subtrees)");
-        assert_eq!(clean["header_chain"], json!({ "heights": 0, "units": [] }));
-        assert!(!hc.exists(), "verify created {}", hc.display());
+        assert_eq!(
+            clean["header_chain"],
+            Value::Null,
+            "the header chain = memory, nothing to scrub"
+        );
         assert_eq!(run(&config_path), 0, "clean → exit 0");
 
         let heights = ts.join("heights.dat");
@@ -264,8 +263,7 @@ mod tests {
                 "[index.compact_block]\nenabled = false\npath = {absent:?}\n\
                  [index.block_hash]\nenabled = false\npath = {absent:?}\n\
                  [index.tree_state]\npath = {ts:?}\n\
-                 [index.transparent_address]\npath = {ta:?}\n\
-                 [index.header_chain]\npath = {hc:?}\n"
+                 [index.transparent_address]\npath = {ta:?}\n"
             ),
         )
         .expect("config");

@@ -3,14 +3,12 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_persistence::fs::SimFs;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zcash_protocol::consensus::NetworkType;
 
-use crate::rules::{equihash_valid, expected_bits, in_context, Ancestor, MEDIAN_SPAN};
+use crate::rules::{equihash_valid, expected_bits, in_context, MEDIAN_SPAN};
 use crate::testing::{insert, HeaderViews};
-use crate::{check, decode_header, link_run, Header, HeaderChain, HeaderStore, Inserted, Params};
+use crate::{decode_header, validate, Ancestor, Header, HeaderChain, Inserted, Params};
 use crate::{DecodeError, Rejected};
 use zaino_primitives::types::HeaderError;
 
@@ -36,11 +34,7 @@ fn context(headers: &[Header], at: usize) -> Vec<Ancestor> {
     headers[from..at].iter().rev().map(|h| Ancestor { bits: h.bits(), time: h.time() }).collect()
 }
 
-fn store(fs: Arc<SimFs>, network: NetworkType) -> HeaderStore {
-    HeaderStore::open(fs, std::path::Path::new("/headers"), network).expect("store opens")
-}
-
-/// Every captured header passes stage A and stage B, its nBits reproduced exactly:
+/// Every captured header passes `validate`, its nBits reproduced exactly:
 /// - mainnet: genesis's first 300 (the limit while the window runs off genesis, height 1
 ///   included), Blossom's spacing switch at 653,600, the tip in 2026
 /// - testnet: minimum difficulty from 299,188 (gap > 6 × 150 s) and Blossom at 584,000 (> 6 × 75 s)
@@ -68,82 +62,83 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
             let expected =
                 expected_bits(&params, at_height, header.time(), context[0].time, &context);
             assert_eq!(expected, Some(header.bits()), "{at_height:?}: nBits reproduced");
-            let checked = check(&params, header.clone()).expect("stage A");
-            let own = in_context(&params, checked.header(), at_height, &context, now);
-            assert!(own.is_ok(), "{at_height:?}: {own:?}");
+            let valid = validate(&params, header, at_height, &context, now);
+            assert_eq!(valid, Ok(()), "{at_height:?}");
             at_limit += usize::from(header.bits() == params.limit_bits() && start > 0);
         }
         assert_eq!(at_limit, min_difficulty, "{start}: minimum-difficulty blocks");
     }
 }
 
-/// From genesis through the chain itself: 201 headers, each the new best (vouched as it lands),
-/// cumulative work = the sum of each header's; finalized behind a 10-block bound into a store,
-/// reopened, and the rest verified from the reopened tail (no context lost across a restart); the
-/// published chain answers every height, final or not, and its locator ends at the final tip
+/// Anchored mid-chain at mainnet 3,508,500 (no history below), the next 200 real headers inserted
+/// as a trusted validator's (no rule run), each the new best, vouched as it lands, finalized
+/// behind a 10-block bound:
+/// - work counted from the anchor; only the newest 2 · depth = 20 finals answer by height, older
+///   ones = on the best chain by definition (final), a header below them = an orphan
+/// - the locator ends at the final tip; a re-anchor drops everything held before it
 #[test]
-fn mainnet_from_genesis_through_a_store_and_a_reopen() {
-    let headers = headers(GENESIS_RANGE);
-    let mainnet = Params::mainnet();
-    let now = i64::from(headers.last().expect("non-empty").time());
+fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() {
+    let headers = headers(RECENT_RANGE);
+    let at = |index: usize| BlockRef {
+        hash: headers[index].hash(),
+        height: height(3_508_500 + index as u32),
+    };
     let depth = ReorgDepth::new(NonZeroU32::new(10).expect("nz"));
-    let fs = SimFs::new();
-    let mut chain = HeaderChain::open(mainnet, depth, store(Arc::clone(&fs), NetworkType::Main));
-    let checked = |header: &Header| check(&mainnet, header.clone()).expect("mainnet header");
+    let mut chain = HeaderChain::new(depth);
+    assert_eq!(
+        (chain.best(), chain.verified().is_some()),
+        (None, false),
+        "nothing before an anchor"
+    );
+    chain.anchor(&headers[0], at(0).height);
 
-    for (at, header) in headers[..200].iter().enumerate() {
-        let inserted = chain.insert(&checked(header), now).expect("mainnet header");
-        assert_eq!(inserted, Inserted::Best { reorg: false });
-        chain.vouch(BlockRef { hash: header.hash(), height: height(at as u32) });
+    for (index, header) in headers[1..=200].iter().enumerate() {
+        assert_eq!(chain.insert(header), Ok(Inserted::Best { reorg: false }));
+        chain.vouch(at(index + 1));
         if let Some(boundary) = chain.finalizable() {
-            chain.finalize(boundary).expect("store commits");
+            chain.finalize(boundary);
         }
         chain.check();
     }
-    assert_eq!(chain.insert(&checked(&headers[180]), now), Ok(Inserted::Known), "final tail");
-    let deep = chain.insert(&checked(&headers[50]), now);
-    assert_eq!(deep, Err(Rejected::Orphan), "below the tail: no hash index over every final");
-    assert_eq!(chain.final_tip().map(|tip| tip.height), Some(height(189)));
-    assert_eq!(chain.tree_len(), 10, "only the non-final window in memory");
-    let best = chain.best().expect("best");
-    let work: u128 = headers[..200]
+    assert_eq!(chain.final_tip(), Some(at(190)));
+    assert_eq!(chain.tree_len(), 10, "only the non-final window in the tree");
+    assert_eq!(chain.insert(&headers[185]), Ok(Inserted::Known), "a kept final");
+    assert_eq!(chain.insert(&headers[50]), Err(Rejected::Orphan), "below the finals kept");
+    let best = chain.best().expect("anchored");
+    let work: u128 = headers[1..=200]
         .iter()
         .map(|h| {
             crate::target::work(crate::target::expand(h.bits()).expect("valid")).expect("fits")
         })
         .sum();
-    assert_eq!(best.cumulative_work, work);
-    assert_eq!(best.block, BlockRef { hash: headers[199].hash(), height: height(199) });
-    let verified = chain.verified().expect("verified");
-    for at in [0, 27, 150, 189, 190, 199] {
-        let header = verified.header_at(height(at)).expect("held");
-        let real = &headers[at as usize];
-        assert_eq!((header.hash, header.merkle_root), (real.hash(), real.merkle_root()), "{at}");
+    assert_eq!((best.block, best.cumulative_work), (at(200), work), "work from the anchor");
+
+    let verified = chain.verified().expect("anchored");
+    for index in [171, 189, 190, 191, 200] {
+        let header = verified.header_at(at(index).height).expect("held");
+        let real = &headers[index];
+        assert_eq!((header.hash, header.merkle_root), (real.hash(), real.merkle_root()), "{index}");
     }
-    assert_eq!(verified.hash_at(height(200)), None, "above the best");
-    let locator: Vec<BlockHash> =
-        [199, 198, 197, 196, 195, 194, 193, 192, 191, 190, 189].map(|h| headers[h].hash()).into();
+    assert_eq!(verified.header_at(at(170).height), None, "past the 20 finals kept");
+    assert!(verified.on_best(at(5)) && verified.on_best(at(170)), "final by definition");
+    let stranger = BlockRef { hash: BlockHash::from([7; 32]), height: at(195).height };
+    assert!(!verified.on_best(stranger) && !verified.holds(stranger), "not ours above final");
+    assert_eq!(verified.hash_at(at(201).height), None, "above the best");
+    let locator: Vec<BlockHash> = (190..=200).rev().map(|index| headers[index].hash()).collect();
     assert_eq!(verified.locator(), locator, "tip, then consecutive down to the final tip");
 
-    let reopened = store(fs.restarted(), NetworkType::Main);
-    let mut chain = HeaderChain::open(mainnet, depth, reopened);
-    assert_eq!(chain.best().map(|tip| tip.block.height), Some(height(189)), "tree is memory");
-    let stored = chain.verified().and_then(|verified| verified.hash_at(height(42)));
-    assert_eq!(stored, Some(headers[42].hash()), "stored below the tail");
-    for header in &headers[190..] {
-        chain.insert(&checked(header), now).expect("verified from the reopened tail");
-    }
-    assert_eq!(chain.best().map(|tip| tip.block.hash), Some(headers[300].hash()));
+    chain.anchor(&headers[250], at(250).height);
+    assert_eq!((chain.final_tip(), chain.tree_len()), (Some(at(250)), 0), "re-anchored");
+    assert_eq!(chain.insert(&headers[251]), Ok(Inserted::Best { reorg: false }));
     chain.check();
 }
 
 /// Real headers, mutated one field at a time: each refused by the rule it breaks
 /// - mainnet 3,508,600: Equihash, hash ≤ target, nBits, time, version (int32), nBits encoding
 /// - a regtest header: version > 4 valid, a non-minimal solution length refused by decode
-/// - a run: a header not linked to the one before is cut there
 /// - testnet NU7: the 102-block window at 25 s decides nBits (the 17-block rule's is refused);
 ///   the minimum-difficulty gap stays 450 s across Blossom → NU7 (451 qualifies, 450 does not)
-/// - linkage in the chain: a foreign genesis, an unknown parent, a parent off the final chain
+/// - linkage in the chain: an unknown parent, a parent off the final chain
 #[test]
 fn each_mutation_is_refused_by_its_own_rule() {
     let mainnet = Params::mainnet();
@@ -165,7 +160,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let set_u32 = |at: usize, value: u32| {
         move |raw: &mut Vec<u8>| raw[at..at + 4].copy_from_slice(&value.to_le_bytes())
     };
-    let alone = |header: &Header| check(&mainnet, header.clone()).map(|_| ());
+    let alone = |header: &Header| crate::rules::alone(&mainnet, header);
     let in_place = |header: &Header, now: i64| {
         in_context(&mainnet, header, at_height, &context, now).map(|_| ())
     };
@@ -205,7 +200,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let versioned = |version: u32| {
         let mut raw = raw.clone();
         raw[..4].copy_from_slice(&version.to_le_bytes());
-        check(&regtest, decode_header(&raw).expect("shape")).map(|_| ())
+        crate::rules::alone(&regtest, &decode_header(&raw).expect("shape"))
     };
     assert_eq!([4, 5, 0x2000_0000].map(versioned), [Ok(()), Ok(()), Ok(())], "> 4 stays valid");
     let mut padded = raw[..140].to_vec();
@@ -213,16 +208,6 @@ fn each_mutation_is_refused_by_its_own_rule() {
     padded.extend(&raw[141..]);
     let non_minimal = HeaderError::NonMinimalLength { len: 36 };
     assert_eq!(decode_header(&padded), Err(DecodeError::Header(non_minimal)));
-
-    let run = |order: [usize; 3]| {
-        let run = order.map(|at| check(&mainnet, headers[at].clone()));
-        let (kept, cut) = link_run(run);
-        (kept.iter().map(|c| c.header().hash()).collect::<Vec<_>>(), cut)
-    };
-    let linked = [10, 11, 12].map(|at| headers[at].hash()).to_vec();
-    assert_eq!(run([10, 11, 12]), (linked, None));
-    let gap = [10, 11].map(|at| headers[at].hash()).to_vec();
-    assert_eq!(run([10, 11, 13]), (gap, Some(Rejected::Unlinked)), "cut at the broken link");
 
     let testnet = Params::testnet();
     let pre_nu7 = Params { nu7: None, ..testnet };
@@ -260,18 +245,14 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let gaps = [(blossom, 450), (blossom, 451), (nu7, 450), (nu7, 451)];
     assert_eq!(gaps.map(|(at, g)| gap(&testnet, at, g)), [false, true, false, true]);
 
-    // linkage in the chain (regtest = stage A passes): foreign genesis, orphan, off the final chain
+    // linkage in the chain (trusted: no rule run): orphan, off the final chain
     let five = builder.mine_empty(5);
     let orphan = builder.mine_empty(2);
     let below = builder.fork(height(1)).mine_empty(1).tip();
-    let foreign = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.txid([0xf0; 32])));
     let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(2).expect("nz")));
     let one = |mock: &MockChain, at: BlockRef| [Arc::clone(mock.block(at.hash))];
-    let foreign_genesis = one(&foreign, foreign.genesis());
-    assert_eq!(insert(&mut chain, &foreign_genesis), Err(Rejected::WrongGenesis));
     insert(&mut chain, &builder.blocks(five)).expect("trunk");
-    let boundary = chain.finalizable().expect("6 headers, depth 2");
-    chain.finalize(boundary).expect("finalizes 0..=3");
+    chain.finalize(chain.finalizable().expect("6 headers, depth 2"));
     assert_eq!(insert(&mut chain, &one(&builder, orphan)), Err(Rejected::Orphan), "6 skipped");
     assert_eq!(insert(&mut chain, &one(&builder, below)), Err(Rejected::BelowFinal));
     chain.check();

@@ -4,19 +4,18 @@ id = "01a1181e-4ff2-7260-9b10-78e984cd6ae1"
 crate = "zainod"
 kind = "breaking"
 description = """
-zainod is rebuilt as an indexer over its trusted validators' JSON-RPC. It verifies every block \
-header from genesis by proof of work (`[index.header_chain]`, about 280 MB on mainnet, never \
-taken from a snapshot), checks every block body against its verified header before any index \
-sees it, keeps its own indexes (compact blocks with their fees, block hash, tree state, \
-transparent address), holds the last `sync.finalised_depth` blocks (default and minimum 1000 \
-off regtest) in memory, and answers every gRPC request from one snapshot at the verified tip, \
-served only while a trusted validator holds it. The Direct (ReadState) backend, the LMDB \
+zainod is rebuilt as an indexer over its trusted validators' JSON-RPC. It trusts what they hold \
+(zebra validated it): bulk sync reads every final block by height from them, each checked \
+against its own header (merkle root, coinbase height) and linked to the block before it; the tip \
+follows their headers, in memory, from their tip − depth. It keeps its own indexes (compact \
+blocks with their fees, block hash, tree state, transparent address), holds the blocks above the \
+indexes' durable tips in memory, and answers every gRPC request from one snapshot, served only \
+while a trusted validator holds its tip. The Direct (ReadState) backend, the LMDB \
 finalised-state database, the ephemeral passthrough mode and the block cache are gone.
 """
 migration = """
-The old `storage.database` directory is not read: delete it. A first start verifies every \
-header from genesis and syncs each enabled index from the validators (or from `[snapshot]`) \
-before `/readyz` passes. Indexes default to `<cache dir>/zaino/indexes/<name>` (`/app/data/indexes` \
+The old `storage.database` directory is not read: delete it. A first start syncs each enabled \
+index from the validators (or from `[snapshot]`) before `/readyz` passes. Indexes default to `<cache dir>/zaino/indexes/<name>` (`/app/data/indexes` \
 in the container image).
 """
 

@@ -86,10 +86,27 @@ crate = "zaino-chainview"
 kind = "breaking"
 section = "changed"
 description = """
-`held_by()` counts only `Live` validators (a `CatchingUp` one's tip may be stale): its last \
-poll's claim or `getblockhash` at the best. Each poll asks one `getblockhash`, at the view's \
-best as the poll starts (no final-boundary item). `Agreement::Ahead` = claims higher, its \
+`held_by()` = answering validators (`Live` or `CatchingUp`) whose claim is the best or above \
+it (a trusted validator holding a block holds every block below it). Each poll asks one \
+`getblockhash`, at the view's best as the poll starts (no final-boundary item). `Agreement::Ahead` = claims higher, its \
 answer on the verified chain. `Alarms::finality_paused` now = a block `depth` deep owed \
 finality for 60 s with the final tip unmoved (was: the boundary unheld at that instant). The \
 `Holders` core (and its per-poll stamps) is gone.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "changed"
+description = """
+Header sync trusts its validators: no header is verified (no Equihash, no proof of work, no \
+thread pool) and none is synced from genesis. With no chain, or a validator's claim − depth past \
+the fetch ceiling, it anchors the header chain at that claim − depth; above the anchor it \
+inserts each trusted header on its parent link and work. The chain is memory only: \
+`header_sync(HeaderChain::new(depth))`, `HeaderSync::run` returns `()` and `HeaderStoreFailed` \
+is gone.
+"""
+migration = """
+Build the header chain with `HeaderChain::new(depth)` (no store, no `Params`) and spawn \
+`header_sync.run(cancel)` as an infallible task.
 """

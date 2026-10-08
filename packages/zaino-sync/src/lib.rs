@@ -21,7 +21,7 @@ mod report;
 pub use committer::{held, Committer, Run};
 pub use data_sink::{Applied, IndexerDataSink, Step, Subscription, Weight};
 pub use emit::describe_metrics;
-pub use fetch::{check_block, fetch, merkle_root, Checked, Misanswer};
+pub use fetch::{check_block, check_block_at, fetch, fetch_at, merkle_root, Checked, Misanswer};
 pub use follower::{FinalFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::compute;

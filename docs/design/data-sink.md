@@ -28,18 +28,25 @@ impl<S: ChainDataSource> FinalFollower<S> {
 ```
 
 ```text
-start = lowest durable tip + 1   (each durable tip ≤ final must be the final chain's, else Diverged)
+start = lowest durable tip + 1
 loop:
-  for h in start ..= chain.final_tip():          lookahead fetches in flight, delivered in order
-      block = fetch(balancer, h, header, Bulk)   until hash + coinbase height + merkle root match
+  for h in start ..= chain.final_tip().height:   lookahead fetches in flight, delivered in order
+      block = fetch_at(balancer, h, Bulk)        a trusted member's block at h; refetched until
+                                                 coinbase height + merkle root = its own header's
+      parent = each durable tip it extends?      else Diverged (that index: resync)
+      parent = the block sent before it?         else Unlinked (validator history moved: stop)
       sink.send(Apply { h, block }).await        a full queue waits here (backpressure)
   wait for chain.changed()
 Shutdown on cancel
 ```
 
 - One loop, one fetch window, no graph. It replaces the bulk half of the old NFS.
-- `fetch` + `check_block` live in `zaino-sync`, shared with the NFS. A wrong body gets
-  `report`ed and asked again; `zaino-traffic` picks who answers.
+- Trusted = trusted: no header history read, no proof-of-work check below the final tip. The
+  zebrad serving the block already validated it; the follower only checks the body is the one
+  its header commits to and that it links to what was sent before.
+- `getblock "<height>" 0` from trusted members only (`TrafficBalancer::block_at`; peers answer
+  by hash alone). A wrong body gets `report`ed and asked again; `zaino-traffic` picks who
+  answers.
 - One stream for every index: an index far behind (enabled late) paces the others until it
   catches up.
 

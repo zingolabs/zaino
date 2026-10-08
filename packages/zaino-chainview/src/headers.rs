@@ -1,43 +1,38 @@
-//! Headers-first: every trusted validator's chain into the header chain, its [`VerifiedChain`]
-//! into the view and onto a watch (`verified-chain.md` §4)
+//! Trusted validators' headers into the header chain, its [`VerifiedChain`] into the view and onto
+//! a watch (`docs/design/pipeline.md`)
 //!
 //! ```text
 //!   view changed ─▶ answering validators' claims + getblockhash answers held ─▶ vouch, finalize
 //!               ─▶ first validator whose claim we lack (not backing off, not forked below final):
-//!                  one batch ≤ ceiling ─▶ stage A (parallel) ─▶ stage B (ordered) ─▶ vouch the
-//!                  run's last header (its best chain) ─▶ finalize ─▶ VerifiedChain → view + watch
+//!                  no chain, or its claim − depth past our ceiling ─▶ anchor at claim − depth
+//!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
+//!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ VerifiedChain → view + watch
 //! ```
 //!
-//! - one owner, no lock: the chain moves to the blocking pool for stage B + finality (store
-//!   commit = disk) and back; stage A = one blocking task per core
+//! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
+//! - anchored at a trusted validator's claim − depth, never synced from genesis (zebra validated
+//!   every block below it; bulk sync reads blocks by height, not this chain)
 //! - final = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
 //! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above final, H9)
-//! - per validator: a stall (fetch failed, retreated, invalid, from the future) backs off only it
-//!   (`RETRY`); a chain forked below our final tip is not fetched again until its claim moves
-//! - a store commit failure ends the task ([`HeaderStoreFailed`]): the supervisor ends the process
-//! - an undecodable header or one failing a rule = that validator served an invalid chain:
-//!   reported (benched); a header from the future = deferred (never blamed: H7), as is an orphan
+//! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`); a
+//!   chain forked below our final tip is not fetched again until its claim moves
 
-use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_header_chain::{
-    check, decode_header, link_run, Checked, Header, HeaderChain, Params, Rejected, VerifiedChain,
-};
+use zaino_header_chain::{decode_header, Header, HeaderChain, Rejected, VerifiedChain};
 use zaino_primitives::types::{BlockRef, Height};
 use zaino_source::{ChainDataSource, GetAtHeightError};
 use zaino_traffic::{HeaderAsk, TrafficBalancer, ValidatorId};
 
-use crate::error::HeaderStoreFailed;
 use crate::fold::ChainViewCore;
 use crate::snapshot::ChainViewSnapshot;
 
-/// Heights per fetch + verify step (tree ≤ `depth` + this above the final tip)
+/// Heights per fetch step (tree ≤ `depth` + this above the final tip)
 pub(crate) const HEADER_BATCH: u32 = 2_000;
 
 /// One validator's back-off after a stalled run
@@ -47,8 +42,7 @@ const RETRY: Duration = Duration::from_secs(5);
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
-    /// `None` only while lent to the blocking pool ([`Self::blocking`])
-    chain: Option<HeaderChain>,
+    chain: HeaderChain,
     verified: watch::Sender<Option<Arc<VerifiedChain>>>,
     members: Vec<Member>,
 }
@@ -71,13 +65,12 @@ impl Member {
     }
 }
 
-/// One batch to fetch: `member`'s heights `from..=to`, toward its `claim`
+/// - `Anchor` = the header at `at` becomes the final tip (no chain, or `member` far ahead)
+/// - `Extend` = `member`'s heights `from..=to`, toward its `claim`
 #[derive(Debug, Clone, Copy)]
-struct Run {
-    member: ValidatorId,
-    from: Height,
-    to: Height,
-    claim: BlockRef,
+enum Run {
+    Anchor { member: ValidatorId, at: Height },
+    Extend { member: ValidatorId, from: Height, to: Height, claim: BlockRef },
 }
 
 impl<S: ChainDataSource> HeaderSync<S> {
@@ -88,25 +81,25 @@ impl<S: ChainDataSource> HeaderSync<S> {
     ) -> Self {
         let verified = watch::Sender::new(chain.verified().map(Arc::new));
         let members = vec![Member::default(); core.current().endpoints().len()];
-        Self { core, balancer, chain: Some(chain), verified, members }
+        Self { core, balancer, chain, verified, members }
     }
 
-    /// The verified chain, republished whenever its best or final tip moves (`None` = nothing
-    /// verified yet)
+    /// The verified chain, republished whenever its best or final tip moves (`None` = no anchor
+    /// yet)
     pub fn subscribe(&self) -> watch::Receiver<Option<Arc<VerifiedChain>>> {
         self.verified.subscribe()
     }
 
-    /// Until `cancel` (then `Ok`): the view's facts vouched, then one run, else a wait for the
-    /// view or the earliest back-off
-    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), HeaderStoreFailed> {
+    /// Until `cancel`: the view's facts vouched, then one run, else a wait for the view or the
+    /// earliest back-off
+    pub async fn run(mut self, cancel: CancellationToken) {
         let mut published = self.core.subscribe_published();
         self.publish();
         loop {
             published.borrow_and_update();
             let step = async {
                 let view = self.core.current();
-                self.vouch(&view).await?;
+                self.vouch(&view);
                 match self.next_run(&view, Instant::now()) {
                     Ok(run) => self.fetch(run).await,
                     Err(retry) => {
@@ -120,23 +113,21 @@ impl<S: ChainDataSource> HeaderSync<S> {
                             _ = published.changed() => {}
                             () = backoff => {}
                         }
-                        Ok(())
                     }
                 }
             };
-            match cancel.run_until_cancelled(step).await {
-                None => return Ok(()),
-                Some(stepped) => stepped?,
+            if cancel.run_until_cancelled(step).await.is_none() {
+                return;
             }
         }
     }
 
     /// Answering validators' claims + `getblockhash` answers we hold: vouched (each once had it
     /// on its best chain), then finality
-    async fn vouch(&mut self, view: &ChainViewSnapshot) -> Result<(), HeaderStoreFailed> {
+    fn vouch(&mut self, view: &ChainViewSnapshot) {
         let verified = self.verified.borrow().clone();
-        let Some(verified) = verified else { return Ok(()) };
-        let floor = above_final(verified.final_tip());
+        let Some(verified) = verified else { return };
+        let floor = verified.final_tip().height.next();
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
         let answering = view.endpoints().iter().filter(|meta| meta.answering());
         let facts: Vec<BlockRef> = answering
@@ -144,24 +135,20 @@ impl<S: ChainDataSource> HeaderSync<S> {
             .filter(held)
             .collect();
         if facts.is_empty() {
-            return Ok(());
+            return;
         }
-        self.blocking(move |chain| {
-            facts.iter().for_each(|fact| chain.vouch(*fact));
-            finalize(chain)
-        })
-        .await?;
+        facts.iter().for_each(|fact| self.chain.vouch(*fact));
+        finalize(&mut self.chain);
         self.publish();
-        Ok(())
     }
 
     /// First answering validator whose claim we lack, not backing off, not forked below final;
     /// `Err` = none (the earliest back-off, if any)
     fn next_run(&mut self, view: &ChainViewSnapshot, now: Instant) -> Result<Run, Option<Instant>> {
         let verified = self.verified.borrow().clone();
-        let chain = self.chain.as_ref().expect("header chain back from the blocking pool");
+        let chain = &self.chain;
         let ceiling = chain.ceiling(HEADER_BATCH);
-        let floor = above_final(chain.final_tip());
+        let floor = chain.final_tip().map_or(Height::GENESIS, |tip| tip.height.next());
         let mut retry: Option<Instant> = None;
         for (at, meta) in view.endpoints().iter().enumerate() {
             let (Some(claim), Some(member), true) =
@@ -180,36 +167,46 @@ impl<S: ChainDataSource> HeaderSync<S> {
             if member.forked == Some(claim) {
                 continue;
             }
+            let id = ValidatorId::new(at).expect("configured below ValidatorId::MAX");
+            let trusted_final = claim.height.saturating_sub(chain.depth().get());
+            if chain.final_tip().is_none() || trusted_final > ceiling {
+                return Ok(Run::Anchor { member: id, at: trusted_final });
+            }
             let above_best = verified.as_ref().map_or(Height::GENESIS, |v| v.best().height.next());
             let next = member.next.filter(|next| *next <= claim.height);
             let from = next.unwrap_or(above_best.min(claim.height)).max(floor);
             let to = claim.height.min(ceiling);
             let to = from.checked_add(HEADER_BATCH - 1).map_or(to, |last| last.min(to));
-            let member = ValidatorId::new(at).expect("configured below ValidatorId::MAX");
             if from <= to {
-                return Ok(Run { member, from, to, claim });
+                return Ok(Run::Extend { member: id, from, to, claim });
             }
         }
         Err(retry)
     }
 
-    /// One batch from `run.member`: decoded, verified, inserted, its last header vouched; its
-    /// fetch state follows the outcome
-    async fn fetch(&mut self, run: Run) -> Result<(), HeaderStoreFailed> {
-        let after = self.fetched(run).await?;
-        self.members[run.member.get()] = after;
-        Ok(())
+    /// One run from its member; its fetch state follows the outcome
+    async fn fetch(&mut self, run: Run) {
+        let (member, after) = match run {
+            Run::Anchor { member, at } => (member, self.anchored(member, at).await),
+            Run::Extend { member, from, to, claim } => {
+                (member, self.extended(member, from, to, claim).await)
+            }
+        };
+        self.members[member.get()] = after;
     }
 
-    async fn fetched(&mut self, run: Run) -> Result<Member, HeaderStoreFailed> {
-        let Run { member, from, to, claim } = run;
+    /// `member`'s headers at `heights`, decoded; `Err` = its fetch state (stalled, reported)
+    async fn headers(
+        &self,
+        member: ValidatorId,
+        heights: Vec<Height>,
+    ) -> Result<Vec<Header>, Member> {
         let address = self.core.current().endpoints()[member.get()].address.clone();
-        let heights: Vec<Height> = from.up_to(to).collect();
         let answered = match self.balancer.headers(HeaderAsk::Pinned { member, heights }).await {
             Ok(answered) => answered,
             Err(unanswered) => {
                 warn!(endpoint = %address, %unanswered, "Header fetch failed");
-                return Ok(Member::stalled());
+                return Err(Member::stalled());
             }
         };
         let mut headers = Vec::with_capacity(answered.value.len());
@@ -218,91 +215,79 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 Ok(Ok(header)) => headers.push(header),
                 Ok(Err(malformed)) => {
                     self.balancer.report(answered.ticket, &malformed);
-                    return Ok(Member::stalled());
+                    return Err(Member::stalled());
                 }
                 // retreated since its claim was read: its next claim is read again
-                Err(GetAtHeightError::HeightNotFound(_)) => return Ok(Member::stalled()),
+                Err(GetAtHeightError::HeightNotFound(_)) => return Err(Member::stalled()),
             }
         }
-        let Some(top) = headers.last().map(|header| BlockRef { hash: header.hash(), height: to })
-        else {
-            return Ok(Member::stalled());
+        match headers.is_empty() {
+            true => Err(Member::stalled()),
+            false => Ok(headers),
+        }
+    }
+
+    /// `member`'s header at `at` = the final tip, everything held before dropped
+    async fn anchored(&mut self, member: ValidatorId, at: Height) -> Member {
+        let header = match self.headers(member, vec![at]).await {
+            Ok(mut headers) => headers.remove(0),
+            Err(after) => return after,
         };
-        let refused = self.insert(headers, top).await?;
+        self.chain.anchor(&header, at);
+        info!(height = u32::from(at), hash = %header.hash(), "Header chain anchored");
+        self.publish();
+        Member::default()
+    }
+
+    /// `member`'s heights `from..=to` inserted in order, the last vouched, then finality
+    async fn extended(
+        &mut self,
+        member: ValidatorId,
+        from: Height,
+        to: Height,
+        claim: BlockRef,
+    ) -> Member {
+        let headers = match self.headers(member, from.up_to(to).collect()).await {
+            Ok(headers) => headers,
+            Err(after) => return after,
+        };
+        let top = BlockRef { hash: headers.last().expect("non-empty").hash(), height: to };
+        let refused = headers.iter().find_map(|header| self.chain.insert(header).err());
+        if refused.is_none() {
+            self.chain.vouch(top);
+        }
+        finalize(&mut self.chain);
+        if cfg!(debug_assertions) {
+            self.chain.check();
+        }
+        self.publish();
         let verified = self.verified.borrow().clone();
         let holds = |at: BlockRef| verified.as_ref().is_some_and(|v| v.holds(at));
         let on_best = verified.as_ref().is_some_and(|v| v.hash_at(to) == Some(top.hash));
-        Ok(match refused {
+        let floor = verified.as_ref().map_or(Height::GENESIS, |v| v.final_tip().height.next());
+        match refused {
             // its whole chain read, its claim still not held (an evicted side branch)
             None if to == claim.height && !holds(claim) => Member::stalled(),
             // off our best: its branch continued from there
             None => Member { next: (!on_best).then(|| to.next()), ..Member::default() },
             // its chain leaves ours below `from`: from the final tip, then given up on this claim
-            Some(Rejected::Orphan | Rejected::BelowFinal) => {
-                match from <= above_final(verified.as_ref().and_then(|v| v.final_tip())) {
-                    true => Member { forked: Some(claim), ..Member::default() },
-                    false => Member { next: Some(Height::GENESIS), ..Member::default() },
-                }
-            }
-            Some(deferred) if deferred.is_deferred() => {
-                debug!(endpoint = %address, %deferred, "Header from the future: retried later");
-                Member::stalled()
-            }
+            Some(Rejected::Orphan | Rejected::BelowFinal) => match from <= floor {
+                true => Member { forked: Some(claim), ..Member::default() },
+                false => Member { next: Some(floor), ..Member::default() },
+            },
             Some(rejected) => {
-                self.balancer.report(answered.ticket, &rejected);
+                let address = self.core.current().endpoints()[member.get()].address.clone();
+                debug!(endpoint = %address, %rejected, "Trusted header refused");
                 Member::stalled()
             }
-        })
-    }
-
-    /// Stage A, then stage B, the run's last header vouched (fetched by height off its best
-    /// chain) and finality on the blocking pool, then publish; `Some` = the rule the run broke
-    async fn insert(
-        &mut self,
-        headers: Vec<Header>,
-        top: BlockRef,
-    ) -> Result<Option<Rejected>, HeaderStoreFailed> {
-        let params =
-            *self.chain.as_ref().expect("header chain back from the blocking pool").params();
-        let (run, cut) = stage_a(params, headers).await;
-        let refused = self
-            .blocking(move |chain| {
-                let refused = stage_b(chain, run, unix_now()).or(cut);
-                if refused.is_none() {
-                    chain.vouch(top);
-                }
-                finalize(chain).map(|()| refused)
-            })
-            .await?;
-        self.publish();
-        Ok(refused)
-    }
-
-    /// `work` on the chain, off the runtime; the chain comes back with the answer
-    async fn blocking<R: Send + 'static>(
-        &mut self,
-        work: impl FnOnce(&mut HeaderChain) -> R + Send + 'static,
-    ) -> R {
-        let mut chain = self.chain.take().expect("header chain back from the blocking pool");
-        let (chain, answer) = tokio::task::spawn_blocking(move || {
-            let answer = work(&mut chain);
-            if cfg!(debug_assertions) {
-                chain.check();
-            }
-            (chain, answer)
-        })
-        .await
-        .expect("header verification never panics");
-        self.chain = Some(chain);
-        answer
+        }
     }
 
     /// `VerifiedChain` → watch + view when its best or final tip moved
     fn publish(&mut self) {
-        let chain = self.chain.as_ref().expect("header chain back from the blocking pool");
-        let tips = (chain.best().map(|best| best.block), chain.final_tip());
-        let moved = |old: &VerifiedChain| (Some(old.best()), old.final_tip()) != tips;
-        let verified = chain.verified().map(Arc::new);
+        let tips = (self.chain.best().map(|best| best.block), self.chain.final_tip());
+        let moved = |old: &VerifiedChain| (Some(old.best()), Some(old.final_tip())) != tips;
+        let verified = self.chain.verified().map(Arc::new);
         let changed = self.verified.send_if_modified(|published| {
             let changed = published.as_deref().is_none_or(moved) && verified.is_some();
             if changed {
@@ -316,56 +301,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
     }
 }
 
-/// First height above `final_tip` (genesis while nothing is final)
-fn above_final(final_tip: Option<BlockRef>) -> Height {
-    final_tip.map_or(Height::GENESIS, |tip| tip.height.next())
-}
-
-/// Final → min(vouched, best − depth) in one commit
-fn finalize(chain: &mut HeaderChain) -> Result<(), HeaderStoreFailed> {
-    let Some(boundary) = chain.finalizable() else { return Ok(()) };
-    let before = chain.final_tip().map_or(0, |tip| u32::from(tip.height));
-    chain.finalize(boundary)?;
-    if u32::from(boundary.height) / 100_000 > before / 100_000 {
-        info!(height = u32::from(boundary.height), "Headers verified and final");
+/// Final → min(vouched, best − depth)
+fn finalize(chain: &mut HeaderChain) {
+    if let Some(boundary) = chain.finalizable() {
+        chain.finalize(boundary);
     }
-    Ok(())
-}
-
-/// Each header alone (version, nBits, solution, proof of work), one blocking task per core,
-/// then linkage within the run; cut at the first failure
-async fn stage_a(params: Params, mut headers: Vec<Header>) -> (Vec<Checked>, Option<Rejected>) {
-    let cores = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
-    let size = headers.len().div_ceil(cores).max(1);
-    let mut lanes = Vec::new();
-    while !headers.is_empty() {
-        let rest = headers.split_off(size.min(headers.len()));
-        let chunk = std::mem::replace(&mut headers, rest);
-        lanes.push(tokio::task::spawn_blocking(move || {
-            let mut checked = Vec::with_capacity(chunk.len());
-            for header in chunk {
-                let failed = check(&params, header);
-                let stop = failed.is_err();
-                checked.push(failed);
-                if stop {
-                    break;
-                }
-            }
-            checked
-        }));
-    }
-    let mut checked = Vec::new();
-    for lane in lanes {
-        checked.extend(lane.await.expect("stage A never panics"));
-    }
-    link_run(checked)
-}
-
-/// Every header of `run` in order; `Some` = the rule that refused one (the rest unread)
-fn stage_b(chain: &mut HeaderChain, run: Vec<Checked>, now: i64) -> Option<Rejected> {
-    run.iter().find_map(|header| chain.insert(header, now).err())
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64
 }

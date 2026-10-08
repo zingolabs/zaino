@@ -3,7 +3,7 @@
 Status: **phase 2 built** (2026-10-07): every trusted-validator request goes through
 `zaino-traffic` (§9 steps 1–7 and 9); peers as members (step 8) wait for the WorkPool. §5 lists
 what changed while building each phase. Builds on [chainview.md](chainview.md) §7–§9,
-[verified-chain.md](verified-chain.md) §6–§7 and §10, [pipeline.md](pipeline.md). Boundary with
+[pipeline.md](pipeline.md). Boundary with
 `global-snapshot.md` in §6.
 
 ## 1. Today: five schedulers over the same validators
@@ -30,7 +30,7 @@ see their own lane, never the member.
 | Prior art | Evidence | Used as |
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | tower `balance::p2c` + `load::PeakEwma` (0.5.3) | P2C over `Load`; cost = EWMA RTT × pending; peak jump, decay toward mean (`load/peak_ewma.rs`) | **the rule**, not the `Service`: `Service::poll_ready` cannot depend on the request (class) |
-| zebra-network `PeerSet` (`peer_set/set.rs`) | own module doc: readiness ≠ request data is a mismatch; proposed fix = "one entity holds the peer set and metadata, each backpressure category a separate `Service`" | the shape of this design; `PeerSet` kept for crawl, `inv`, broadcast (verified-chain §6) |
+| zebra-network `PeerSet` (`peer_set/set.rs`) | own module doc: readiness ≠ request data is a mismatch; proposed fix = "one entity holds the peer set and metadata, each backpressure category a separate `Service`" | the shape of this design; `PeerSet` kept for crawl, `inv`, broadcast  |
 | zebra `LoadTrackedClient` | `PeakEwma::new(EWMA_DEFAULT_RTT = timeout + 1 s, decay 200 s)` | default RTT for **peers** (pessimistic); trusted keep 30 ms (optimistic: tried first) |
 | tower `hedge` | re-sends through the **same** inner service after a rotating-histogram percentile, `min_data_points` | the percentile rule; not the middleware (hedge must exclude the first member) |
 | tower `retry::budget::TpsBudget` | deposit per call, withdraw per retry, `ttl`, `min_per_sec`, `retry_percent`; reads `tokio::time::Instant::now()` itself | its rates as a token bucket (10 % per first attempt, 1/s, cap 10; core takes time as input) |
@@ -83,8 +83,8 @@ struct Member {
 - `Health` = chainview's `EndpointState`, moved: the poll is the active check (Pending → Live /
   CatchingUp), every request outcome the passive one (`failures`). 10 consecutive → `Down`: only
   its `Poll` probe goes, at the ladder's ceiling.
-- `Bench` is orthogonal to health: a fast liar is `Live` and benched. Peers also carry the
-  verified-chain §6 score; 100 → WorkPool drops it (`Left`).
+- `Bench` is orthogonal to health: a fast liar is `Live` and benched. Peers also carry a
+  misbehaviour score (zcashd's); 100 → WorkPool drops it (`Left`).
 - `Agreement` stays out: it is derived against the verified chain (snapshot's, §6).
 
 ### Classes: priorities and budgets replace lanes
@@ -340,7 +340,7 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 1. Polling moves in: pollers, push streams, `poll_best`, `bytes`; delete `EndpointPoller`,
    `PollWaker`, `upgrade_schedule`.
 1. `HeaderSync` and submission on `headers(..)` / `submit(..)`.
-1. Peers as members via `PeerTransport` over the WorkPool (verified-chain §6): headers, blocks,
+1. Peers as members via `PeerTransport` over the WorkPool: headers, blocks,
    bytes; chainview §9's table replaced by §3's.
 1. Docs: `zaino-traffic/usage.md`, README index, chainview §7/§9 and nfs §6 point here; changesets.
 

@@ -14,7 +14,7 @@ network = "testnet"
 # listen_address = "127.0.0.1:9999"
 
 # Validators Zaino trusts (Zebra JSON-RPC), at least one, all equal
-# - tip = most-work proof-of-work verified header, served while any of them holds it
+# - tip = their most-work header (trusted: zebra validated it), served while any of them holds it
 # - one listing admits a mempool transaction; each submission attempt goes to one at random
 # - 2+ = survives one going down (no vote: more never weakens it)
 # - down at boot or later = retried, never fatal
@@ -134,11 +134,6 @@ path = "<ZAINO_DATA>/tree_state"
 # GetAddressUtxos(+Stream), GetTaddressBalance(+Stream), GetTaddressTransactions
 enabled = true
 path = "<ZAINO_DATA>/transparent_address"
-
-[index.header_chain]
-# Proof-of-work verified headers from genesis (~280 MB mainnet); the tip; always on, never from
-# a snapshot
-path = "<ZAINO_DATA>/header_chain"
 
 # Fill empty indexes from a published snapshot before boot (`snapshot` build, aria2c on PATH)
 # [snapshot]

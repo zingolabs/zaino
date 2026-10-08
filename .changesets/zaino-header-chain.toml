@@ -4,48 +4,16 @@ id = "01a1181e-517d-72c1-bff2-6fbacf2afe5d"
 crate = "zaino-header-chain"
 kind = "feature"
 description = """
-First release. The proof-of-work verified header chain: `decode_header` recomputes each hash \
-from the bytes; `check` (version, nBits, solution, Equihash (200, 9), hash ≤ target; pure) and \
-`link_run` verify a run, then `HeaderChain::insert` attaches it (difficulty adjustment, median \
-time past, 2-hour future bound, cumulative work), keeps a bounded tree of valid branches above \
-the final boundary and tracks the most-work tip. `finalize` writes final headers to \
-`HeaderStore` (on `zaino-persistence`), from which `HeaderChain::open` resumes. `VerifiedChain` \
-is an immutable snapshot of the best chain (`best`, `final_tip`, `hash_at`, `header_at`, \
-`locator`) and of the side branches held beside it (`forks`, `branch`, `holds`). Feature \
-`testing`: in-memory regtest chains.
-"""
-
-[[changes]]
-crate = "zaino-header-chain"
-kind = "breaking"
-section = "changed"
-description = """
-`schema(network)` is replaced by `FORMAT` + `TABLES` (the header store's layout version and its \
-one table); `HeaderStore::open` is unchanged.
-"""
-migration = """
-Verify a header store with `Schema::new(IndexKind::HeaderChain, FORMAT, network, TABLES)`.
-"""
-
-[[changes]]
-crate = "zaino-header-chain"
-kind = "breaking"
-section = "changed"
-description = """
-Finality is vouched: `HeaderChain::vouch(block)` records that a trusted validator once had \
-`block` on its best chain (it and every ancestor, for good), and `finalizable()` names the \
-best-chain block at min(highest vouched, best − depth); `finalize` asserts H6 (only a vouched \
-block or an ancestor of one becomes final). `ceiling(run)` = the highest height a fetch may \
-reach (`depth` + `run` above the final tip). `testing::insert` vouches its last header.
-"""
-migration = """
-Call `vouch` with the last header of each trusted run (and each trusted claim on the chain), \
-then `finalizable()` / `finalize(boundary)` with no holder gate.
-"""
-
-[[changes]]
-crate = "zaino-header-chain"
-kind = "internal"
-description = """
-`VerifiedChain::hash_at` / `header_at` below the final tip read one store record, no range read.
+First release. The Validated Header tree, in memory: `HeaderChain::new(depth)` then \
+`anchor(header, height)` (a trusted validator's header at its tip − depth = the final tip; no \
+history from genesis, no store); `insert(header)` attaches a trusted header on its parent link \
+and nBits work alone (its validator ran the consensus rules), keeps a bounded tree of branches above the final \
+boundary and tracks the most-work tip; `vouch(block)` records a trusted validator's best chain \
+had it, `finalizable()` = min(highest vouched, best − depth), `finalize` keeps the newest \
+2 · depth final headers. `VerifiedChain` is an immutable snapshot (`best`, `final_tip`, \
+`hash_at`, `header_at`, `on_best`, `holds`, `locator`, `forks`, `branch`); at or below the \
+final tip past the headers kept = final by definition. `validate(params, header, height, \
+ancestors, now)` keeps every consensus rule (Equihash (200, 9), hash ≤ target, difficulty \
+adjustment with ZIP 218's window, median time past, 2-hour future bound) as a pure fallback for \
+an untrusted source. Feature `testing`: `HeaderViews` on a `MockChain` (anchored at genesis).
 """

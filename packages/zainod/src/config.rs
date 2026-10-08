@@ -141,7 +141,6 @@ pub(crate) struct Indexes {
     block_hash: IndexTable,
     tree_state: IndexTable,
     transparent_address: IndexTable,
-    pub(crate) header_chain: HeaderChainConfig,
 }
 
 impl Default for Indexes {
@@ -167,7 +166,6 @@ struct IndexesToml {
     block_hash: IndexTableToml,
     tree_state: IndexTableToml,
     transparent_address: IndexTableToml,
-    header_chain: HeaderChainConfig,
 }
 
 #[derive(Deserialize)]
@@ -197,7 +195,6 @@ impl From<IndexesToml> for Indexes {
             block_hash: toml.block_hash.resolve(IndexKind::BlockHash),
             tree_state: toml.tree_state.resolve(IndexKind::TreeState),
             transparent_address: toml.transparent_address.resolve(IndexKind::TransparentAddress),
-            header_chain: toml.header_chain,
         }
     }
 }
@@ -206,19 +203,6 @@ impl From<IndexesToml> for Indexes {
 fn mib(value: NonZeroU32) -> NonZeroUsize {
     let bytes = usize::try_from(u64::from(value.get()) << 20).unwrap_or(usize::MAX);
     NonZeroUsize::new(bytes).expect("non-zero MiB → non-zero bytes")
-}
-
-/// `[index.header_chain]`: every final header, verified from genesis (always on, ~280 MB mainnet)
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields, default)]
-pub(crate) struct HeaderChainConfig {
-    pub(crate) path: PathBuf,
-}
-
-impl Default for HeaderChainConfig {
-    fn default() -> Self {
-        Self { path: crate::paths::default_index(IndexKind::HeaderChain) }
-    }
 }
 
 /// Wallet-facing gRPC server
@@ -554,7 +538,6 @@ impl DaemonConfig {
     /// `kind`'s directory + the `[sync]` budgets; `None` = disabled
     ///
     /// - value_balance = compact_block's fee index: on with it, `value_balance` beside its `path`
-    /// - header_chain = always on
     pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
         let index = &self.index;
         let table = |table: &IndexTable| (table.enabled, table.path.clone());
@@ -567,7 +550,6 @@ impl DaemonConfig {
             IndexKind::BlockHash => table(&index.block_hash),
             IndexKind::TreeState => table(&index.tree_state),
             IndexKind::TransparentAddress => table(&index.transparent_address),
-            IndexKind::HeaderChain => (true, index.header_chain.path.clone()),
         };
         enabled.then(|| IndexConfig { path, queue_bytes: mib(self.sync.queue_mib) })
     }
@@ -770,7 +752,6 @@ enabled = false
             IndexKind::BlockHash,
             IndexKind::TreeState,
             IndexKind::TransparentAddress,
-            IndexKind::HeaderChain,
         ];
         let expected = [
             at("/srv/zaino/compact_block".into()),
@@ -778,7 +759,6 @@ enabled = false
             at(crate::paths::default_index(IndexKind::BlockHash)),
             None,
             None,
-            at(crate::paths::default_index(IndexKind::HeaderChain)),
         ];
         assert_eq!(kinds.map(|kind| config.enabled(kind)), expected);
         let (compact_block, value_balance) =
@@ -804,6 +784,7 @@ enabled = false
             (format!("{toml}\n[fetch]\nconcurrency = 8\n"), "fetch"),
             (format!("{toml}\n[index.block_hash]\nqueue_mib = 256\n"), "queue_mib"),
             (in_sync, "batch_mib"),
+            (format!("{toml}\n[index.header_chain]\npath = \"/srv/zaino/hc\"\n"), "header_chain"),
         ] {
             let path = write(&dir, &format!("{key}.toml"), &stale);
             let err = load_config(&path).expect_err(key).to_string();
@@ -831,7 +812,6 @@ enabled = false
         for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
-        printed("index.header_chain", &["path"]);
         assert!(!body.contains("value_balance"), "internal: no table of its own");
         for kind in [IndexKind::CompactBlock, IndexKind::ValueBalance, IndexKind::TreeState] {
             let path = defaults.enabled(kind).map(|index| index.path);
@@ -1032,10 +1012,10 @@ path = "/tmp/zaino-compact-block"
         }
     }
 
-    /// - `[submission]`, `[p2p]`, `[index.header_chain]` → policy, peer config, store
+    /// - `[submission]`, `[p2p]` → policy, peer config
     /// - p2p off unless asked; regtest p2p with nobody to dial refused
     #[test]
-    fn submission_p2p_and_header_chain_become_what_the_daemon_runs() {
+    fn submission_and_p2p_become_what_the_daemon_runs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "testnet"
@@ -1052,9 +1032,6 @@ enabled = true
 peer_target = 8
 initial_peers = ["203.0.113.7:18233"]
 cache_dir = "/var/cache/zaino/peers"
-
-[index.header_chain]
-path = "/var/lib/zaino/header-chain"
 "#;
         let config = load_config(&write(&dir, "p2p.toml", toml)).expect("load");
         assert!(config.validate().is_ok());
@@ -1075,7 +1052,6 @@ path = "/var/lib/zaino/header-chain"
                 Some(PathBuf::from("/var/cache/zaino/peers")),
             )
         );
-        assert_eq!(config.index.header_chain.path, PathBuf::from("/var/lib/zaino/header-chain"));
 
         let defaults = DaemonConfig::default();
         assert!(!defaults.p2p.enabled, "off unless asked");

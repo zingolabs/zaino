@@ -50,3 +50,12 @@ read as the poll starts, and a new best wakes no poll. `Observation.asked` is `O
 migration = """
 Pass a closure returning the current best height to `poll_best` once (`ChainView::new` does).
 """
+
+[[changes]]
+crate = "zaino-traffic"
+kind = "feature"
+description = """
+`TrafficBalancer::block_at(height, urgency)`: a best-chain block by height from trusted members \
+only (peers answer by hash alone), in the same tip / bulk block classes as `block(hash, ..)`, \
+rounds retried until one serves it.
+"""

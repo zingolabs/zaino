@@ -28,7 +28,7 @@ validators it trusts for exactly that, and nothing more.
 | Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                |
 | `peers/trusted` on the extension service (§5)                                                  | planned                                |
 | Push streams (§7)                                                                              | built                                  |
-| Header chain: proof of work, most-work tip, holders, vouched finality (§2–§4)                  | built; headers from trusted validators |
+| Validated Header tree: most-work tip, holders, vouched finality (§2–§4)                        | built; headers from trusted validators |
 | Submission: random entry, watched, resubmitted (§6)                                            | built, peer + trusted entries          |
 | `zaino-peers`: zebra-network, attributed `inv`, isolated push (§8)                             | built                                  |
 | Peers in the view: mempool sightings, submission entries (§5, §6), via zainod `[p2p]`         | built                                  |
@@ -63,8 +63,8 @@ What each source is used for, and what makes it safe:
 
 | Need                    | Peers          | Trusted           | Check                                                      |
 | ----------------------- | -------------- | ----------------- | ---------------------------------------------------------- |
-| Headers / best tip      | ✓ preferred    | ✓                 | proof of work, difficulty, time, linkage (§2)              |
-| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle and auth-data roots against the header chain |
+| Headers / best tip      | ✓ preferred    | ✓                 | trusted: linkage + work; untrusted: every rule (§2)        |
+| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle root against the header (bulk: linkage)      |
 | Mempool bytes           | ✓ first        | on miss           | txid recomputed from the bytes                             |
 | Mempool admission + fee | —              | ✓ **only source** | zebrad admitted it after full validation                   |
 | Mined transaction by id | —              | ✓ **only source** | peers serve mempool transactions only                      |
@@ -89,8 +89,10 @@ set). A trusted validator answers the question; Zaino asks it.
 
 ## 2. The best chain: proof of work
 
-The best chain is the valid header chain with the most cumulative work. Headers come from every
-source; how one was received never changes how it is checked.
+The best chain is the Validated Header tree's branch with the most cumulative work. A trusted
+validator's header enters on its parent link and nBits work alone (that validator ran the rules
+below); `zaino_header_chain::validate` runs them for an untrusted source. Today every header
+comes from a trusted validator.
 
 | Rule          | Check                                                                                                                                                        |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -98,20 +100,14 @@ source; how one was received never changes how it is checked.
 | Difficulty    | `nBits` = what the adjustment rule expects: 17-block averaging window, median time of 11, damping 4, clamps +16 % / −32 %, testnet's minimum-difficulty rule |
 | Time          | later than the median of the previous 11; at most 2 h ahead of the local clock                                                                               |
 | Linkage       | `prev_hash` = the parent's hash, recomputed from its bytes                                                                                                   |
-| Work          | `2^256 / (target + 1)` per header, summed from genesis                                                                                                       |
+| Work          | `2^256 / (target + 1)` per header, summed from the anchor                                                                                                    |
 
-Equihash costs 156 µs per header on one core (200 mainnet headers, 2026-10-06). One header every
-75 s at the tip is free, and verifying all ~3.5 M mainnet headers takes about nine minutes on one
-core, a fraction of that across cores, since each solution is independent. The difficulty rule is
+Equihash costs 156 µs per header on one core (200 mainnet headers, 2026-10-06). The difficulty rule is
 a port of zebra-state's `AdjustedDifficulty` (zebra-state itself brings RocksDB); its test oracle
 is the real chain, every mainnet header's `nBits` reproduced.
 
 On regtest zebrad disables proof of work, and so does Zaino: a property of the declared network,
 like the reorg bound.
-
-Headers are verified **from genesis, once**. The verified chain is persisted (§3), and that record
-is the checkpoint every restart resumes from: never a height a validator or a compiled-in list
-supplied.
 
 Above the final boundary the chain is a tree: every valid branch is kept, and the best tip is the
 leaf with the most work.
@@ -128,40 +124,21 @@ leaf with the most work.
 
 ## 3. Where it sits in sync
 
-Sync is headers-first: the header chain decides the chain, and block sync fills it in.
+Near the tip, the Validated Header tree decides the chain and the NFS fills it in.
 
 ```text
-  peers ─┐
-         ├─ headers ─▶ HeaderChain ── best tip (watch) ───────────▶ Nfs ──▶ final stream ──▶ indexes
-trusted ─┘              │    │                                       ▲  │
-                        │    └─ hash_at(h) ── is this block on it? ──┘  │
-                        │                                               │
-                        └─ header store (final records, own files)      │
-                                                                        │
-  peers ─┐                                                              │
-         ├─ blocks by hash (any source, each checked) ──────────────────┘
-trusted ─┘
+trusted ── headers ─▶ HeaderChain ── VerifiedChain (watch) ──▶ Nfs ──▶ final stream ──▶ indexes
+                          │                                    ▲
+                          └─ header_at(h): hash, merkle root ──┘ (each fetched block checked)
 ```
 
-`HeaderChain` lives in its own crate, `zaino-header-chain`: the verification rules as pure
-functions, the branch tree in memory, and a store on `zaino-persistence`. It publishes the best
-tip on a `watch` channel and answers `hash_at(height)` on the best chain.
+`HeaderChain` (`zaino-header-chain`) is in memory only: anchored at a trusted validator's
+tip − depth, the branch tree above the final tip, and the newest `2 · depth` final headers.
 
-The **NFS** (`zaino-nfs`) follows the header chain's `VerifiedChain` alone. Any source may serve
-any block: the NFS checks each fetched block's hash against `hash_at(height)` and its merkle root
-against `header_at(height)`, refuses one that differs, and asks another source. One finality (the
-header chain's final tip); a reorg is a hash comparison against the nodes it holds above it; the
-indexes see final blocks only ([pipeline.md](./pipeline.md)).
-
-The **header store** follows the same two watermarks as every index ([nfs.md](./nfs.md)): the
-tree above the final boundary is memory, and a header is written once it is final. One fixed-size record per height (hash, time,
-`nBits`, cumulative work: ~80 B, ~280 MB for mainnet), encoded by named functions next to a golden
-test, as every disk layout is.
-
-**Existing indexes are checked by their tip alone.** Every block hash commits to its parent's, so
-an index whose durable tip hash equals the verified chain's hash at that height holds exactly the
-verified chain below it. The NFS compares each index's durable tip against the
-chain it follows; under the header chain that comparison is against verified work.
+The **NFS** (`zaino-nfs`) follows the `VerifiedChain` alone. It fetches each best-chain block
+above its root, checks its hash and merkle root against `header_at(height)` and refuses one that
+differs. One finality (the tree's final tip); a reorg is a hash comparison against the nodes it
+holds above it; the indexes see final blocks only ([pipeline.md](./pipeline.md)).
 
 ## 4. Finality
 
@@ -180,8 +157,7 @@ the network outmines it, and Zaino reorgs away. To keep such a block out of the 
 **a block is written as final only once a trusted validator has had it (or a descendant) on its
 own best chain**: vouched, a permanent fact (zebra commits only valid blocks). Every trusted
 header run vouches itself, as do validators' claims and `getblockhash` answers on our chain, so
-final = `min(highest vouched, best − depth)`
-([verified-chain.md §7](./verified-chain.md#7-trusted-validators-vouched-once-held-now)).
+final = `min(highest vouched, best − depth)`.
 
 This costs no latency: the boundary is 1,000 blocks behind the tip, and a trusted validator
 vouched for it long before. With every trusted validator gone while peers alone extend the
@@ -339,8 +315,7 @@ under it.
 - **Batches.** JSON-RPC batch requests (zebrad hands an array straight to jsonrpsee, whose batch
   limit is unlimited) carry N calls in one round trip and one permit; a work-queue-full item is
   that item's own refusal, re-asked by the balancer. A poll is at most two round trips: `getblockchaininfo` +
-  `getrawmempool true` + `getblockhash` at the view's best as the poll starts (does it hold it:
-  [verified-chain.md §7](./verified-chain.md#7-trusted-validators-vouched-once-held-now))
+  `getrawmempool true` + `getblockhash` at the view's best as the poll starts (its chain = ours)
   (+ `getpeerinfo`, `getinfo`, `getdeprecationinfo` once a minute), then one
   `getrawtransaction` batch for new mempool
   transactions, bounded at 100 calls and 8 MiB so the hex reply stays under zebrad's 50 MiB
@@ -361,8 +336,7 @@ under it.
 The p2p layer is `zebra-network`: handshake, address book, crawler, per-peer limits, and a peer
 set exposed as a load-balanced tower service. Zaino embeds it with an inbound service that answers
 nothing, and binds its listener to loopback: Zaino serves no peer. It brings `zebra-chain`, whose
-crypto crates match the forks Zaino already patches in, and whose difficulty and work types the
-header chain reuses.
+crypto crates match the forks Zaino already patches in.
 
 | Request                                      | Used for                                        |
 | -------------------------------------------- | ----------------------------------------------- |
@@ -460,15 +434,11 @@ shim; routing replaces `fetch.primary_validator`.
    service
 1. Batched ticks, routing (§7, §9): **done**
 1. Push streams (§7): **done**
-1. Header chain: verification from genesis, header store, most-work tip driving sync, block
+1. Validated Header tree: trusted anchor at tip − depth, most-work tip driving the NFS, block
    checks, finality gate (§2–§4): **done**; submission's trusted-only form (§6): **done**
 1. Peers: headers, blocks, mempool sightings, submission entries, the unverified stream (§5, §6,
    §8): the `zaino-peers` crate, mempool sightings and submission entries **done**; headers and
    blocks from peers next
-
-Phase 5 takes headers from trusted validators' RPC. The source carries no trust (every header is
-verified the same way); it lets the verifier be proven against mainnet before the p2p transport
-adds failure modes of its own.
 
 ## Measurements behind this design
 

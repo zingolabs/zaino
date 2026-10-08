@@ -70,3 +70,12 @@ migration = """
 Match `Rejected { message, .. }` where `Rejected(message)` was matched; build it with the code \
 the validator would answer.
 """
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`ChainDataSource::get_block_by_height(height)`: `getblock "<height>" 0`, decoded like \
+`get_block_by_hash`; above the tip = `GetAtHeightError::HeightNotFound`. `MockValidator` answers \
+it from its best chain, telling its scripted `Lie` too.
+"""

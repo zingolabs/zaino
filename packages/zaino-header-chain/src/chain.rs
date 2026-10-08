@@ -1,24 +1,27 @@
-//! Verified header tree above the final boundary + its most-work tip
+//! Trusted validators' header tree above the final boundary + its most-work tip
 //!
 //! ```text
-//!   final (store + last CONTEXT in memory)     tree (every valid branch, bounded)
+//!   anchor ─ final (last 2·depth in memory)       tree (every branch, bounded)
 //!   ●──●──●──●──●  final tip ──┬──●──●──●──●   A   work 1000.7   ◀── best (best_path)
 //!                              └──●──●         B   work 1000.2   (kept: may still win)
 //! ```
 //!
-//! - pure core: no clock (time is an input), no lock; one owner (`HeaderSync`) drives it
-//! - H1, H2, H4, H5, H6 (`docs/design/verified-chain.md` §10) asserted by [`HeaderChain::check`]
+//! - trusted: a header enters on its parent link + its nBits work alone (zebra validated it);
+//!   consensus rules = [`validate`](crate::validate), for an untrusted source
+//! - anchored, never from genesis: [`HeaderChain::anchor`] = one trusted header as the final tip,
+//!   work counted from it
+//! - pure core: no clock, no lock, no I/O; one owner (`HeaderSync`) drives it
+//! - H1 best = max work, H2 descends from final, H4 bounded, H5 published never changes, H6 final
+//!   = vouched: asserted by [`HeaderChain::check`]
 //! - final = min(highest vouched on best, best − depth) (H6: [`HeaderChain::vouch`])
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
-use zaino_persistence::StoreError;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, MerkleRoot, ReorgDepth};
 
-use crate::params::Params;
-use crate::rules::{in_context, Ancestor, Checked, Rejected, CONTEXT};
-use crate::store::{HeaderStore, Record};
+use crate::header::Header;
+use crate::rules::Rejected;
 use crate::target::{expand, work};
 use crate::verified::VerifiedChain;
 
@@ -26,6 +29,19 @@ use crate::verified::VerifiedChain;
 const SIDE_TIPS: usize = 32;
 /// Side-branch nodes held, per block of reorg depth (H4)
 const SIDE_NODES_PER_DEPTH: usize = 4;
+/// Final headers kept, per block of reorg depth (the NFS reads up to `2 · depth` below best)
+const FINALS_PER_DEPTH: usize = 2;
+
+/// One header as the chain keeps it: identity, the fields block checks read, the work from the
+/// anchor up to it
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Record {
+    pub hash: BlockHash,
+    pub merkle_root: MerkleRoot,
+    pub time: u32,
+    pub(crate) bits: u32,
+    pub(crate) cumulative_work: u128,
+}
 
 /// Best tip + the work behind it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,13 +79,12 @@ impl Node {
     }
 }
 
+/// - `finals` = the newest final headers, oldest first, the final tip last (empty = no anchor)
 /// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
-/// - `nodes`, `leaves` = `imbl` (O(1) into each [`VerifiedChain`])
+/// - every collection `imbl` (O(1) into each [`VerifiedChain`])
 pub struct HeaderChain {
-    params: Params,
     depth: ReorgDepth,
-    store: HeaderStore,
-    finals: VecDeque<(Height, Record)>,
+    finals: imbl::Vector<(Height, Record)>,
     nodes: imbl::HashMap<BlockHash, Node>,
     leaves: imbl::HashSet<BlockHash>,
     best_path: imbl::Vector<Record>,
@@ -77,19 +92,11 @@ pub struct HeaderChain {
 }
 
 impl HeaderChain {
-    /// Resumes from `store`'s final headers (verified once, when they were written); empty =
-    /// the first header accepted is this network's genesis
-    pub fn open(params: Params, depth: ReorgDepth, store: HeaderStore) -> Self {
-        let mut finals = VecDeque::new();
-        if let Some(tip) = store.tip() {
-            let from = tip.height.saturating_sub(CONTEXT as u32 - 1);
-            finals = from.up_to(tip.height).zip(store.view().records(from, tip.height)).collect();
-        }
+    /// Empty: nothing held until [`anchor`](Self::anchor)
+    pub fn new(depth: ReorgDepth) -> Self {
         Self {
-            params,
             depth,
-            store,
-            finals,
+            finals: imbl::Vector::new(),
             nodes: imbl::HashMap::new(),
             leaves: imbl::HashSet::new(),
             best_path: imbl::Vector::new(),
@@ -97,11 +104,27 @@ impl HeaderChain {
         }
     }
 
-    pub fn params(&self) -> &Params {
-        &self.params
+    /// `header` at `height`, from a trusted validator, = the final tip; everything held before
+    /// dropped (a start, or a jump to a validator far ahead)
+    pub fn anchor(&mut self, header: &Header, height: Height) {
+        let record = Record {
+            hash: header.hash(),
+            merkle_root: header.merkle_root(),
+            time: header.time(),
+            bits: header.bits(),
+            cumulative_work: 0,
+        };
+        self.finals = imbl::vector![(height, record)];
+        self.nodes = imbl::HashMap::new();
+        self.leaves = imbl::HashSet::new();
+        self.best_path = imbl::Vector::new();
     }
 
-    /// `None` = nothing verified yet
+    pub fn depth(&self) -> ReorgDepth {
+        self.depth
+    }
+
+    /// `None` = no anchor yet
     pub fn best(&self) -> Option<BestTip> {
         match self.best_path.last() {
             Some(record) => {
@@ -117,18 +140,18 @@ impl HeaderChain {
         }
     }
 
-    /// Last final header (`None` = none final yet)
+    /// Last final header (`None` = no anchor yet)
     pub fn final_tip(&self) -> Option<BlockRef> {
         let (height, record) = self.finals.back()?;
         Some(BlockRef { hash: record.hash, height: *height })
     }
 
-    /// Immutable snapshot of the best chain (`None` = nothing verified yet)
+    /// Immutable snapshot of the best chain (`None` = no anchor yet)
     pub fn verified(&self) -> Option<VerifiedChain> {
         let best = self.best()?;
-        let (above, finals) = (self.best_path.clone(), self.store.view());
+        let (above, finals) = (self.best_path.clone(), self.finals.clone());
         let (nodes, leaves) = (self.nodes.clone(), self.leaves.clone());
-        Some(VerifiedChain::new(best, self.final_tip(), above, finals, nodes, leaves))
+        Some(VerifiedChain::new(best, above, finals, nodes, leaves))
     }
 
     /// Headers held above the final tip, every branch
@@ -137,28 +160,16 @@ impl HeaderChain {
         self.nodes.len()
     }
 
-    /// Stage B: attach, nBits, time rules, work, best, bounds; `now_unix` = the local clock
-    pub fn insert(&mut self, checked: &Checked, now_unix: i64) -> Result<Inserted, Rejected> {
-        assert_eq!(checked.network(), self.params.network, "H3: checked under this chain's rules");
-        let header = checked.header();
+    /// A trusted header: attach to a held parent, its work, best, bounds
+    pub fn insert(&mut self, header: &Header) -> Result<Inserted, Rejected> {
         let hash = header.hash();
         if self.nodes.contains_key(&hash) || self.is_final(hash) {
             return Ok(Inserted::Known);
         }
         let prev = header.prev_hash();
-        let (height, parent_work) = if prev == BlockHash::ZERO {
-            if hash != self.params.genesis {
-                return Err(Rejected::WrongGenesis);
-            }
-            // unknown with a final tip = final below the tail
-            if self.final_tip().is_some() {
-                return Err(Rejected::BelowFinal);
-            }
-            (Height::GENESIS, 0)
-        } else if let Some(parent) = self.nodes.get(&prev) {
+        let (height, parent_work) = if let Some(parent) = self.nodes.get(&prev) {
             (parent.height.next(), parent.record.cumulative_work)
-        } else if self.final_tip().is_some_and(|tip| tip.hash == prev) {
-            let (height, record) = self.finals.back().expect("a final tip has a record");
+        } else if let Some((height, record)) = self.finals.back().filter(|(_, r)| r.hash == prev) {
             (height.next(), record.cumulative_work)
         } else if self.is_final(prev) {
             return Err(Rejected::BelowFinal);
@@ -166,14 +177,14 @@ impl HeaderChain {
             return Err(Rejected::Orphan);
         };
 
-        let context = self.context(prev, height);
-        let own = in_context(&self.params, header, height, &context, now_unix)?;
+        let bits = header.bits();
+        let own = expand(bits).and_then(work).ok_or(Rejected::Bits { bits })?;
         let cumulative_work = parent_work.checked_add(own).ok_or(Rejected::WorkOverflow)?;
         let record = Record {
             hash,
             merkle_root: header.merkle_root(),
             time: header.time(),
-            bits: header.bits(),
+            bits,
             cumulative_work,
         };
 
@@ -230,9 +241,9 @@ impl HeaderChain {
         Some(BlockRef { hash, height: boundary })
     }
 
-    /// Every best-chain header up to `through` becomes final: written (one commit, before anything
-    /// in memory moves), every branch not descending from it pruned
-    pub fn finalize(&mut self, through: BlockRef) -> Result<(), StoreError> {
+    /// Every best-chain header up to `through` becomes final, every branch not descending from
+    /// it pruned; the newest `2 · depth` finals kept
+    pub fn finalize(&mut self, through: BlockRef) {
         assert!(self.on_best(through), "H2: only a best-branch block becomes final");
         let best = self.best().expect("a best-branch block has a best tip");
         let deep = u32::from(best.block.height) - u32::from(through.height);
@@ -243,8 +254,6 @@ impl HeaderChain {
         let count = self.offset(through.height).expect("on the best branch") + 1;
         let newly: Vec<(Height, Record)> =
             self.base().up_to(through.height).zip(self.best_path.iter().copied()).collect();
-        self.store.append(&newly)?;
-
         let side: Vec<BlockHash> =
             self.leaves.iter().copied().filter(|leaf| *leaf != best.block.hash).collect();
         for leaf in side {
@@ -256,15 +265,15 @@ impl HeaderChain {
                 }
             }
         }
+        let kept = FINALS_PER_DEPTH * self.depth.get() as usize;
         for (height, record) in newly {
             self.nodes.remove(&record.hash);
             self.finals.push_back((height, record));
-            if self.finals.len() > CONTEXT {
-                self.finals.pop_front();
-            }
+        }
+        if self.finals.len() > kept {
+            self.finals = self.finals.skip(self.finals.len() - kept);
         }
         self.best_path = self.best_path.skip(count);
-        Ok(())
     }
 
     /// H1, H2, H4, H5, H6 and the tree's own bookkeeping; panics naming the invariant broken
@@ -272,7 +281,12 @@ impl HeaderChain {
     /// - O(nodes): tests run it after every mutation, the driver after every run in debug builds
     pub fn check(&self) {
         let final_tip = self.final_tip();
-        assert_eq!(self.store.tip(), final_tip, "H2: final tip = the store's committed tip");
+        assert!(final_tip.is_some() || self.nodes.is_empty(), "H2: nothing held before an anchor");
+        let kept = FINALS_PER_DEPTH * self.depth.get() as usize;
+        assert!(self.finals.len() <= kept.max(1), "H2: at most 2 · depth finals kept");
+        let mut pairs = self.finals.iter().zip(self.finals.iter().skip(1));
+        let contiguous = pairs.all(|((below, _), (above, _))| below.next() == *above);
+        assert!(contiguous, "H2: finals one height apart");
         let base = self.base();
         let mut children: HashMap<BlockHash, u32> = HashMap::new();
         for (hash, node) in &self.nodes {
@@ -291,13 +305,9 @@ impl HeaderChain {
                     assert!(!off_final, "H2: {hash:?} does not descend from the final tip");
                     self.finals.back().map_or(0, |(_, record)| record.cumulative_work)
                 }
-                (None, None) => {
-                    let genesis = *hash == self.params.genesis && node.height == Height::GENESIS;
-                    assert!(genesis, "H2: {hash:?} descends from nothing held");
-                    0
-                }
+                (None, None) => unreachable!("H2: nothing held before an anchor"),
             };
-            let own = expand(node.record.bits).and_then(work).expect("verified nBits");
+            let own = expand(node.record.bits).and_then(work).expect("nBits checked on insert");
             assert_eq!(parent_work + own, node.record.cumulative_work, "tree: cumulative work");
             let parent_vouched = self.nodes.get(&node.parent).is_none_or(|parent| parent.vouched);
             assert!(!node.vouched || parent_vouched, "H6: {hash:?} vouched, its parent not");
@@ -435,29 +445,6 @@ impl HeaderChain {
 
     fn is_final(&self, hash: BlockHash) -> bool {
         self.finals.iter().any(|(_, record)| record.hash == hash)
-    }
-
-    /// Up to `CONTEXT` ancestors of a header at `height` whose parent is `prev`, newest first
-    fn context(&self, prev: BlockHash, height: Height) -> Vec<Ancestor> {
-        let mut context = Vec::with_capacity(CONTEXT);
-        if height == Height::GENESIS {
-            return context;
-        }
-        let mut at = prev;
-        while let Some(node) = self.nodes.get(&at) {
-            context.push(Ancestor { bits: node.record.bits, time: node.record.time });
-            if context.len() == CONTEXT {
-                return context;
-            }
-            at = node.parent;
-        }
-        let below = self.finals.iter().rev().skip_while(|(_, record)| record.hash != at);
-        context.extend(
-            below
-                .take(CONTEXT - context.len())
-                .map(|(_, record)| Ancestor { bits: record.bits, time: record.time }),
-        );
-        context
     }
 }
 

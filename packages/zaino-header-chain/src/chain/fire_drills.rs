@@ -1,4 +1,4 @@
-//! Fire drills (`verified-chain.md` §10 layer 4): each check in `check()` and each precondition
+//! Fire drills: each check in `check()` and each precondition
 //! assert, seen firing on a planted bug (a check never seen firing is not known to work)
 
 use std::num::NonZeroU32;
@@ -10,7 +10,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 
 use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
-use crate::{check, decode_header, Checked, Inserted, Params};
+use crate::{decode_header, Inserted};
 
 /// Panic message of `run`, `None` = it returned
 fn fired(run: impl FnOnce()) -> Option<String> {
@@ -46,8 +46,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(9).expect("nz")));
         insert(&mut chain, &builder.blocks(tip)).expect("valid");
         insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
-        let boundary = chain.finalizable().expect("12 − 9");
-        chain.finalize(boundary).expect("store commits");
+        chain.finalize(chain.finalizable().expect("12 − 9"));
         chain
     };
     assert_eq!(fired(|| valid().check()), None, "the unplanted chain passes");
@@ -76,9 +75,15 @@ fn every_invariant_check_fires_on_its_planted_bug() {
             }),
         ),
         (
-            "H2: final tip = the store's committed tip",
+            "H2: nothing held before an anchor",
             Box::new(|c| {
-                c.finals.pop_back();
+                c.finals.clear();
+            }),
+        ),
+        (
+            "H2: finals one height apart",
+            Box::new(|c| {
+                c.finals.remove(1);
             }),
         ),
         (
@@ -136,30 +141,13 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
 
     // preconditions: a caller bug panics naming the invariant
-    let mainnet_checked: Checked = {
-        let raw = &include_bytes!("../../tests/fixtures/mainnet_0.headers")[..1487];
-        check(&Params::mainnet(), decode_header(raw).expect("genesis")).expect("stage A")
-    };
     let off_best = BlockRef { hash: side, height: Height::try_from(12u32).expect("h") };
     let shallow = BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") };
-    let preconditions: [(&str, Plant); 4] = [
-        (
-            "H3: checked under this chain's rules",
-            Box::new(move |c| {
-                let _ = c.insert(&mainnet_checked, 0);
-            }),
-        ),
-        (
-            "H2: only a best-branch block becomes final",
-            Box::new(move |c| {
-                let _ = c.finalize(off_best);
-            }),
-        ),
+    let preconditions: [(&str, Plant); 3] = [
+        ("H2: only a best-branch block becomes final", Box::new(move |c| c.finalize(off_best))),
         (
             "H2: the final boundary stays `depth` below the best",
-            Box::new(move |c| {
-                let _ = c.finalize(shallow);
-            }),
+            Box::new(move |c| c.finalize(shallow)),
         ),
         (
             "H6: only a vouched block",
@@ -168,7 +156,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
                 at.iter().chain([&side]).for_each(|hash| {
                     c.nodes.get_mut(hash).into_iter().for_each(|node| node.vouched = false);
                 });
-                let _ = c.finalize(shallow);
+                c.finalize(shallow);
             }),
         ),
     ];
@@ -179,6 +167,5 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
     let mut chain = valid();
     let header = decode_header(&builder.header_bytes(side)).expect("real header");
-    let checked = check(chain.params(), header).expect("stage A");
-    assert_eq!(chain.insert(&checked, 0), Ok(Inserted::Known), "a valid call passes");
+    assert_eq!(chain.insert(&header), Ok(Inserted::Known), "a valid call passes");
 }

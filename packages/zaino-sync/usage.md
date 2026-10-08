@@ -35,13 +35,17 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
   `progress()`; `run(cancel)`.
-- Streams `lowest durable + 1 ..= final tip`, `lookahead` fetches in flight, delivered in order;
-  waits for the next chain past the final tip.
-- Nothing sent until every durable tip at or below the final tip is the final chain's block there
-  (`FollowError::Diverged`: resync). A durable tip above the final tip waits.
+- Streams `lowest durable + 1 ..= final tip`, by height from trusted members
+  (`fetch_at` → `TrafficBalancer::block_at`), `lookahead` in flight, delivered in order; waits
+  for the next chain past the final tip. Reads only `final_tip().height`: no header history.
+- Each block's parent must be each durable tip it extends (`FollowError::Diverged`, naming the
+  index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
+  moved). Either stops the follower; nothing is skipped.
 - Cancel → `Ok`; either way every queue ends with `Shutdown`.
-- `fetch(balancer, at, record, urgency)` / `check_block`: one body until its hash, coinbase
-  height and merkle root match the verified header (a misanswer `report`ed); shared with the NFS.
+- `fetch_at(balancer, height, urgency)` / `check_block_at`: one body until its coinbase height
+  and merkle root match its own header (a misanswer `report`ed).
+- `fetch(balancer, at, record, urgency)` / `check_block`: by hash, held to a verified header
+  (hash, coinbase height, merkle root); the NFS's.
 - `SyncProgress`: `handed()` = last height sent, `blocks()` = blocks sent since boot (atomics).
 
 ## `IndexHandle`

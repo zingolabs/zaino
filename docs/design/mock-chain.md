@@ -208,7 +208,7 @@ impl ChainParams { pub fn of(chain: &MockChain, tip: BlockRef) -> Self; }
   opens mainnet-schema stores)
 - `fixtures` (captured mainnet blocks) = a pure move of `mock::fixture_*` (done, phase 2)
 - One per simulated node over one shared `MockChain`: the chainview network model and
-  verified-chain.md §10's simulation = N `follow` calls
+  network simulation = N `follow` calls
 
 ### Values under test stay visible
 
@@ -292,7 +292,7 @@ deleted in the step that removes its last caller):
    `core/fire_drills.rs`
 1. `zaino-grpc`: `testing.rs` keeps request framing + `routes_over`; routes and `tests/serve.rs`
 1. `zainod`: `indexer.rs`, `serving.rs`, `verify.rs`; then delete `Chain` and every helper left in
-   the table; update `docs/testing.md`, `verified-chain.md` §10, each touched crate's `usage.md`
+   the table; update `docs/testing.md`, each touched crate's `usage.md`
    (`zaino-persistence` untouched throughout; any change there = the heavy proptest loop)
 
 All done (steps 1–4 phase 2a, 5–8 phase 2b, plus `zaino-traffic` and `zaino-snapshot`, built

@@ -73,7 +73,7 @@ impl FromIterator<ValidatorId> for EndpointSet {
     }
 }
 
-/// Its chain vs the verified best block, as of its last answered poll (`verified-chain.md` §7)
+/// Its chain vs the verified best block, as of its last answered poll
 ///
 /// - `Ahead` = claims higher, its `getblockhash` answer on the verified chain
 /// - `Behind` = its claim on the verified chain, below best
@@ -140,9 +140,13 @@ impl ValidatorMetadata {
         matches!(self.health, Health::Live | Health::CatchingUp)
     }
 
-    /// `Live` and its last poll holds `best` (claim, or `getblockhash` there)
-    pub(crate) fn holds(&self, best: BlockRef) -> bool {
-        self.health == Health::Live && (self.tip() == Some(best) || self.held == Some(best))
+    /// Answering (catching up included), its claim = `chain`'s best, or above it with its last
+    /// `getblockhash` answer on `chain` (trusted: holding a block = holding every block below it)
+    pub(crate) fn holds(&self, chain: &VerifiedChain) -> bool {
+        let best = chain.best();
+        let ours = self.held.is_some_and(|held| chain.on_best(held));
+        let above = |claim: BlockRef| claim == best || (claim.height > best.height && ours);
+        self.answering() && self.tip().is_some_and(above)
     }
 
     /// §7, in order: claim = best; claims higher, `held` verified; claim verified, below; else
@@ -150,8 +154,7 @@ impl ValidatorMetadata {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;
         };
-        let (best, verified) =
-            (chain.best(), |at: BlockRef| chain.hash_at(at.height) == Some(at.hash));
+        let (best, verified) = (chain.best(), |at: BlockRef| chain.on_best(at));
         if claim == best {
             Agreement::Agreed
         } else if claim.height > best.height && self.held.is_some_and(verified) {

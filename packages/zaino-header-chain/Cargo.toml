@@ -7,20 +7,19 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 repository.workspace = true
-description = "Proof-of-work verified header chain: the most-work tip, from genesis"
+description = "Validated Header tree: the most-work tip above a trusted anchor"
 
 [dependencies]
 equihash = "0.3"
 imbl.workspace = true
 thiserror.workspace = true
 uint = "0.9"
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zaino-primitives.workspace = true
 zcash_protocol.workspace = true
 
 [features]
 # `testing::{HeaderViews, insert}`
-testing = ["zaino-primitives/testing", "zaino-persistence/testing"]
+testing = ["zaino-primitives/testing"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -31,5 +30,4 @@ hex.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }

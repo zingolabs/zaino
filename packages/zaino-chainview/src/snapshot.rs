@@ -240,11 +240,10 @@ impl ChainViewSnapshot {
     /// Header sync's word: `owed_since` restarts when the final tip moves, ends when nothing is
     /// owed (≤ `depth` unfinal on the best)
     pub(crate) fn verified(&mut self, chain: Option<Arc<VerifiedChain>>, now: Instant) {
-        let final_tip =
-            |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().and_then(|c| c.final_tip());
+        let final_tip = |chain: &Option<Arc<VerifiedChain>>| chain.as_ref().map(|c| c.final_tip());
         let moved = final_tip(&chain) != final_tip(&self.chain);
         let owed = chain.as_deref().is_some_and(|chain| {
-            let base = chain.final_tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let base = u32::from(chain.final_tip().height) + 1;
             (u32::from(chain.best().height) + 1).saturating_sub(base) > self.depth.get()
         });
         self.owed_since = match (owed, moved) {
@@ -263,7 +262,7 @@ impl ChainViewSnapshot {
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
     /// endpoint per address; `ours` servable (our relay), `unlisted` held, not servable
     ///
-    /// - each holder's `getblockchaininfo` = the best block, no upgrade, branch id 0
+    /// - each holder `Live`, its `getblockchaininfo` = the best block, no upgrade, branch id 0
     #[cfg(any(test, feature = "testing"))]
     pub fn fixed(
         chain: Option<Arc<VerifiedChain>>,
@@ -291,6 +290,7 @@ impl ChainViewSnapshot {
             for at in view.held_by.positions() {
                 if let Some(meta) = view.endpoints.get_mut(at) {
                     meta.info = Some(info.clone());
+                    meta.health = Health::Live;
                 }
             }
         }
@@ -399,10 +399,11 @@ impl ChainViewSnapshot {
             .map(move |(txid, sighting)| (*txid, sighting.spread(readers, &self.peers_live)))
     }
 
-    /// The servable mempool; `None` while no trusted validator holds the best block (§5, fail
-    /// closed: no empty stand-in)
+    /// The servable mempool; `None` while no `Live` trusted validator (its mempool listing) holds
+    /// the best block (§5, fail closed: no empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
-        (!self.held_by.is_empty()).then_some(MempoolView(self))
+        let live = |at: usize| self.endpoints.get(at).is_some_and(|m| m.health == Health::Live);
+        self.held_by.positions().any(live).then_some(MempoolView(self))
     }
 }
 

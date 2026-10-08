@@ -1,22 +1,22 @@
-//! Header rules: stage A (the header alone) and stage B (against its ancestors and the clock)
+//! [`validate`]: every consensus rule a header must meet, for an untrusted source (a trusted
+//! validator's headers skip it: zebra ran it)
 //!
 //! - adjustment = zcashd `pow.cpp` (`CalculateNextWorkRequired`) + ZIP 218 (window by height)
 //! - time and order = zebra-state `service/check.rs` (`difficulty_threshold_and_time_are_valid`)
 //!   + zebra-chain `src/block/header.rs` (`time_is_valid_at`)
-//! - stage A: cheap rules first, Equihash last (156 µs: a junk header never costs it)
+//! - cheap rules first, Equihash last (156 µs: a junk header never costs it)
 
 use std::cmp::{max, min};
 
 use zaino_primitives::types::{Height, REGTEST_SOLUTION, STANDARD_SOLUTION};
-use zcash_protocol::consensus::NetworkType;
 
 use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
 use crate::target::{expand, mean, meets, to_compact, work, U256};
 
 pub(crate) const MEDIAN_SPAN: usize = 11;
-/// Ancestors the rules read: the largest averaging window, then one more median span below it
-pub(crate) const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_SPAN;
+/// Ancestors [`validate`] reads: the largest averaging window, then one more median span below it
+pub const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_SPAN;
 
 const DAMPING_FACTOR: i64 = 4;
 const MAX_ADJUST_UP_PERCENT: i64 = 16;
@@ -29,9 +29,9 @@ const MIN_VERSION: i32 = 4;
 
 /// One ancestor as the rules read it
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Ancestor {
-    pub(crate) bits: u32,
-    pub(crate) time: u32,
+pub struct Ancestor {
+    pub bits: u32,
+    pub time: u32,
 }
 
 /// Which rule refused a header (`Ok` = it extends its parent validly)
@@ -55,10 +55,6 @@ pub enum Rejected {
     AboveTarget { bits: u32 },
     #[error("Equihash solution invalid")]
     Solution,
-    #[error("prev_hash is not the hash of the header before it in the run")]
-    Unlinked,
-    #[error("genesis is not this network's")]
-    WrongGenesis,
     #[error("parent unknown (fetch it first)")]
     Orphan,
     #[error("parent below the final boundary, off the final chain")]
@@ -74,27 +70,23 @@ impl Rejected {
     }
 }
 
-/// Header past stage A under one network's rules: only these enter a [`HeaderChain`]
+/// Every consensus rule `header` at `height` must meet: alone (version, nBits, solution, proof of
+/// work), then against `ancestors` (newest first, up to `CONTEXT`; empty = genesis) and the clock
 ///
-/// [`HeaderChain`]: crate::HeaderChain
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Checked {
-    header: Header,
-    network: NetworkType,
+/// - for an untrusted source only: a trusted validator's headers skip it (zebra ran it)
+pub fn validate(
+    params: &Params,
+    header: &Header,
+    height: Height,
+    ancestors: &[Ancestor],
+    now_unix: i64,
+) -> Result<(), Rejected> {
+    alone(params, header)?;
+    in_context(params, header, height, ancestors, now_unix).map(drop)
 }
 
-impl Checked {
-    pub(crate) fn header(&self) -> &Header {
-        &self.header
-    }
-
-    pub(crate) fn network(&self) -> NetworkType {
-        self.network
-    }
-}
-
-/// Stage A: what `header` alone decides (version, nBits, solution, proof of work); pure, parallel
-pub fn check(params: &Params, header: Header) -> Result<Checked, Rejected> {
+/// What `header` alone decides (version, nBits, solution, proof of work)
+pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
     if header.version() < MIN_VERSION {
         return Err(Rejected::Version { version: header.version() });
     }
@@ -110,30 +102,12 @@ pub fn check(params: &Params, header: Header) -> Result<Checked, Rejected> {
         if !meets(header.hash().into(), target) {
             return Err(Rejected::AboveTarget { bits });
         }
-        equihash_valid(&header)?;
+        equihash_valid(header)?;
     }
-    Ok(Checked { header, network: params.network })
+    Ok(())
 }
 
-/// Stage A's last step: each `prev_hash` = the hash before it; the run cut at its first failure
-pub fn link_run(
-    checked: impl IntoIterator<Item = Result<Checked, Rejected>>,
-) -> (Vec<Checked>, Option<Rejected>) {
-    let mut run: Vec<Checked> = Vec::new();
-    for header in checked {
-        let header = match header {
-            Ok(header) => header,
-            Err(rejected) => return (run, Some(rejected)),
-        };
-        if run.last().is_some_and(|last| last.header.hash() != header.header.prev_hash()) {
-            return (run, Some(Rejected::Unlinked));
-        }
-        run.push(header);
-    }
-    (run, None)
-}
-
-/// Stage B: `header` at `height` after `context` (ancestors, newest first; empty for genesis)
+/// `header` at `height` after `context` (ancestors, newest first; empty for genesis) and the clock
 ///
 /// - returns the header's own work (`2^256 / (target + 1)`)
 pub(crate) fn in_context(
@@ -144,7 +118,7 @@ pub(crate) fn in_context(
     now_unix: i64,
 ) -> Result<u128, Rejected> {
     let bits = header.bits();
-    let own = expand(bits).and_then(work).expect("stage A checked nBits");
+    let own = expand(bits).and_then(work).expect("`alone` checked nBits");
     let time = header.time();
 
     if let Some(parent) = context.first() {

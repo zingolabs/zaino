@@ -96,12 +96,13 @@ fn load_fixtures() -> HashMap<String, String> {
             .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
             .trim()
             .to_string();
+        map.insert(expected.height.to_string(), hex.clone());
         map.insert(expected.hash.to_string(), hex);
     }
     map
 }
 
-/// Minimal HTTP server: `getblock` → canned fixture hex, unknown hash → `-8`
+/// Minimal HTTP server: `getblock <hash or height>` → canned fixture hex, unknown → `-8`
 async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>) {
     loop {
         let (mut stream, _) = match listener.accept().await {
@@ -189,6 +190,18 @@ async fn block_parity_with_explorer_offline() {
             .await
             .unwrap_or_else(|e| panic!("getblock {} failed: {e}", expected.hash));
         assert_eq!(block.header().height, height, "coinbase height");
+        let by_height = adapter
+            .get_block_by_height(height)
+            .await
+            .unwrap_or_else(|e| panic!("getblock \"{height}\" failed: {e}"));
+        let txids = |block: &zaino_primitives::types::Block| {
+            block.transactions().iter().map(|tx| tx.txid).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (by_height.header(), txids(&by_height)),
+            (block.header(), txids(&block)),
+            "getblock by height = by hash at {height}"
+        );
 
         let header = block.header();
         let (hash, prev_hash) = (header.hash.to_string(), header.prev_hash.to_string());

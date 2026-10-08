@@ -162,7 +162,7 @@ impl Model {
             }
             Input::Finalize => {
                 if let Some(boundary) = self.headers.finalizable() {
-                    self.headers.finalize(boundary).expect("in-memory store");
+                    self.headers.finalize(boundary);
                 }
             }
             Input::Hold(mask) => self.held = mask,
@@ -211,7 +211,7 @@ impl Model {
         self.synced = synced;
         Tips {
             best: Some(best),
-            final_tip: chain.final_tip(),
+            final_tip: Some(chain.final_tip()),
             served: self.served,
             held_by: self.held_by(),
             synced,
@@ -257,8 +257,8 @@ fn run(moves: Vec<(Input, bool)>) {
                     tails.push(Tailed { tail, epoch, received, ended: false });
                 }
                 Err(refused) => {
-                    let held = !snap.tips().held_by.is_empty();
-                    assert!(!held, "{context}: G6 a held tip refused a stream: {refused}");
+                    let held = crate::compose::live_holder(&snap);
+                    assert!(!held, "{context}: G6 a live-held tip refused a stream: {refused}");
                 }
             }
         }

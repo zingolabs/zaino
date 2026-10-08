@@ -87,7 +87,7 @@ impl<V> Snapshot<V> {
         Ok(indexed.served())
     }
 
-    /// Gate: `held_by` ≠ ∅ (G6)
+    /// Gate: a `Live` validator holds the tip (G6)
     pub fn mempool(&self) -> Result<MempoolView<'_>, Unavailable> {
         self.view.mempool().ok_or_else(|| self.unheld())
     }

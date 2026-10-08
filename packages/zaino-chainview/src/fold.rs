@@ -242,12 +242,12 @@ impl ChainViewCore {
         touched: Vec<TransactionId>,
     ) {
         let state = &mut *guard;
-        let (best, chain) = (state.best(), state.chain.clone());
+        let chain = state.chain.clone();
         let holding = state
             .endpoints
             .iter()
             .enumerate()
-            .filter(|(_, meta)| best.is_some_and(|best| meta.holds(best)));
+            .filter(|(_, meta)| chain.as_deref().is_some_and(|chain| meta.holds(chain)));
         state.held_by = holding.filter_map(|(at, _)| ValidatorId::new(at)).collect();
         for meta in state.endpoints.iter_mut() {
             meta.agreement = meta.agreement_with(chain.as_deref());

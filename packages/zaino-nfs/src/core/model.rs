@@ -179,10 +179,10 @@ impl Sim {
         toy
     }
 
+    /// Genesis ..= the header chain's best, from the builder (the chain keeps no deep history)
     fn best_path(&self) -> Vec<BlockHash> {
-        let chain = self.headers.verified().expect("genesis verified");
-        let best = u32::from(chain.best().height);
-        (0..=best).map(|h| chain.hash_at(height(h)).expect("best path")).collect()
+        let best = self.headers.best().expect("anchored at genesis").block;
+        self.builder.blocks(best).iter().map(|block| block.header().hash).collect()
     }
 
     fn durable(&self) -> Vec<Option<BlockRef>> {
@@ -238,7 +238,7 @@ impl Sim {
             }
             Change::Finalize => {
                 if let Some(boundary) = self.headers.finalizable() {
-                    self.headers.finalize(boundary).expect("in-memory store");
+                    self.headers.finalize(boundary);
                 }
                 return;
             }
@@ -405,7 +405,7 @@ impl Sim {
 
     /// Each writer behind the final tip, no commit due: one scheduled after its delay
     fn schedule_commits(&mut self) {
-        let final_tip = self.given.as_ref().and_then(|chain| chain.final_tip());
+        let final_tip = self.given.as_ref().map(|chain| chain.final_tip());
         for index in 0..self.writers.len() {
             let writer = &self.writers[index];
             let behind = final_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height);
@@ -439,7 +439,7 @@ impl Sim {
                     Input::Folded { at, covers, folded: Arc::new(toys) }
                 }
                 Due::Commit(index) => {
-                    let final_tip = self.given.as_ref().and_then(|chain| chain.final_tip());
+                    let final_tip = self.given.as_ref().map(|chain| chain.final_tip());
                     let writer = &mut self.writers[index];
                     writer.committing = false;
                     if final_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height) {
@@ -489,7 +489,8 @@ impl Sim {
         let chain = Arc::clone(self.given.as_ref().expect("published"));
         let best = chain.best();
         for second in 0..SETTLE {
-            let durable = self.writers.iter().all(|writer| writer.durable == chain.final_tip());
+            let durable =
+                self.writers.iter().all(|writer| writer.durable == Some(chain.final_tip()));
             if durable && self.published == Some(best) {
                 return;
             }

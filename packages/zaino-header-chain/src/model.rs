@@ -1,64 +1,56 @@
-//! Header trees at random against a naive model (`verified-chain.md` §10 layer 2)
+//! Header trees at random against a naive model
 //!
-//! - rules: regtest's (PoW off; linkage, median time, the clock on) with any nBits, so work varies
-//!   per branch and the most work is not the highest
+//! - trusted headers (no rule run) with any nBits, so work varies per branch and the most work is
+//!   not the highest; anchored at genesis (work counted from it)
 //! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
-//!   the final chain as a list; best = the max-work leaf (first received on a tie), eviction =
-//!   the lowest-work side leaf (last received on a tie), both recomputed from scratch
+//!   the final chain as a list (the chain keeps only its newest `2 · DEPTH`); best = the max-work
+//!   leaf (first received on a tie), eviction = the lowest-work side leaf (last received on a
+//!   tie), both recomputed from scratch
 //! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`; a trusted run =
 //!   its last header vouched, then finality
 //! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
 //!   parent); final target = min(highest vouched on best, best − depth)
 //! - checked after every move: `check()`, best, final tip, boundary, tree size + its bound (H9),
-//!   every height of the published chain (header fields, final ones from the store), its locator,
-//!   its forks and their branches, `holds` for every header ever mined, and the chain published
-//!   one move earlier still answering as it did (H5)
+//!   every height of the published chain (kept finals and above; older finals = on best by
+//!   definition), its locator, its forks and their branches, `holds` for every header ever mined,
+//!   and the chain published one move earlier still answering as it did (H5)
 //! - forks oracle: each side leaf's mined ancestry against the best path (common prefix = `from`)
 
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
-use std::sync::Arc;
 
 use proptest::prelude::*;
-use zaino_persistence::fs::SimFs;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zcash_protocol::consensus::NetworkType;
 
-use crate::rules::{median_time, Rejected, CONTEXT, MAX_FUTURE, MEDIAN_SPAN};
+use crate::rules::{median_time, Rejected, MEDIAN_SPAN};
 use crate::target::{expand, work};
-use crate::{
-    check, decode_header, BestTip, Fork, Header, HeaderChain, HeaderStore, Inserted, Params,
-    Record, VerifiedChain,
-};
+use crate::{decode_header, BestTip, Fork, Header, HeaderChain, Inserted, Record, VerifiedChain};
 
 const DEPTH: u32 = 3;
 /// Headers a fetch may reach past `depth` above the final tip (`HeaderSync`'s batch)
 const RUN: u32 = 6;
 const SIDE_NODES: usize = 4 * DEPTH as usize;
 const SIDE_TIPS: usize = 32;
+/// Finals the chain keeps by height
+const KEPT: usize = 2 * DEPTH as usize;
 /// Work ≈ 16 · 512 · 4096 a header
 const BITS: [u32; 3] = [0x200f_0f0f, 0x1f7f_ffff, 0x1f0f_ffff];
 
-/// - `Extend`: `bits.len()` headers on mined `parent`; `early` = first at its median time past;
-///   `trusted` = a validator's run (its last accepted header vouched, then finality)
+/// - `Extend`: `bits.len()` headers on mined `parent`, `gap` s apart; `trusted` = a validator's
+///   run (its last accepted header vouched, then finality)
 /// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
 /// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
-/// - `Future`: a header `ahead` s past the clock's horizon (H7: deferred)
-/// - `Clock`: clock forward, every deferred header offered again (the driver's retry)
 /// - `Vouch`: a poll's claim (any mined header, held or not)
 #[derive(Debug, Clone)]
 enum Move {
-    Extend { parent: usize, gap: u32, early: bool, bits: Vec<usize>, trusted: bool },
+    Extend { parent: usize, gap: u32, bits: Vec<usize>, trusted: bool },
     Vouch { mined: usize },
     Orphan { parent: usize },
     Spray { from: usize, branches: usize },
-    Future { parent: usize, ahead: u32 },
-    Clock { advance: u32 },
     Reinsert { mined: usize },
     Finalize,
-    Reopen,
 }
 
 fn moves() -> impl Strategy<Value = Vec<Move>> {
@@ -69,17 +61,14 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
     );
     prop::collection::vec(
         prop_oneof![
-            10 => (any(), 1u32..=300, prop::bool::weighted(0.1), bits, prop::bool::ANY).prop_map(
-                |(parent, gap, early, bits, trusted)| Move::Extend { parent, gap, early, bits, trusted }
+            10 => (any(), 1u32..=300, bits, prop::bool::ANY).prop_map(
+                |(parent, gap, bits, trusted)| Move::Extend { parent, gap, bits, trusted }
             ),
             2 => any().prop_map(|mined| Move::Vouch { mined }),
             1 => any().prop_map(|parent| Move::Orphan { parent }),
             1 => (any(), 1usize..=40).prop_map(|(from, branches)| Move::Spray { from, branches }),
-            1 => (any(), 1u32..=3_600).prop_map(|(parent, ahead)| Move::Future { parent, ahead }),
-            1 => (0u32..=10_800).prop_map(|advance| Move::Clock { advance }),
             1 => any().prop_map(|mined| Move::Reinsert { mined }),
             3 => Just(Move::Finalize),
-            1 => Just(Move::Reopen),
         ],
         1..100,
     )
@@ -96,21 +85,23 @@ struct Alive {
 /// - `finals[h]` = the final record at height `h`
 /// - `vouched` = live headers vouched (their live ancestors too, derived)
 struct Model {
-    genesis: BlockHash,
     mined: Vec<Header>,
     by_hash: HashMap<BlockHash, Header>,
     alive: HashMap<BlockHash, Alive>,
     vouched: HashSet<BlockHash>,
     finals: Vec<Record>,
     received: u64,
-    deferred: Vec<Header>,
-    now: i64,
 }
 
 impl Model {
     fn final_tip(&self) -> Option<BlockRef> {
         let record = self.finals.last()?;
         Some(BlockRef { hash: record.hash, height: height(self.finals.len() as u32 - 1) })
+    }
+
+    /// Lowest final height the chain still answers by height
+    fn kept_from(&self) -> usize {
+        self.finals.len().saturating_sub(KEPT)
     }
 
     fn leaves(&self) -> Vec<BlockHash> {
@@ -151,18 +142,11 @@ impl Model {
     }
 
     fn tail(&self) -> &[Record] {
-        &self.finals[self.finals.len().saturating_sub(CONTEXT)..]
+        &self.finals[self.kept_from()..]
     }
 
     /// Height + work of `prev`'s child, or the linkage rejection
-    fn parent(&self, prev: BlockHash, hash: BlockHash) -> Result<(Height, u128), Rejected> {
-        if prev == BlockHash::ZERO {
-            return match (hash == self.genesis, self.finals.is_empty()) {
-                (false, _) => Err(Rejected::WrongGenesis),
-                (true, true) => Ok((Height::GENESIS, 0)),
-                (true, false) => Err(Rejected::BelowFinal),
-            };
-        }
+    fn parent(&self, prev: BlockHash) -> Result<(Height, u128), Rejected> {
         if let Some(alive) = self.alive.get(&prev) {
             return Ok((alive.height.next(), alive.record.cumulative_work));
         }
@@ -175,7 +159,7 @@ impl Model {
         }
     }
 
-    /// Median time past of a child of `prev`
+    /// Median time past of a child of `prev` (the builder's: a valid MockChain time)
     fn median_time_past(&self, prev: BlockHash) -> u32 {
         let mut times = Vec::new();
         let mut at = prev;
@@ -194,23 +178,12 @@ impl Model {
         if self.alive.contains_key(&hash) || self.tail().iter().any(|r| r.hash == hash) {
             return Ok(Inserted::Known);
         }
-        let (at, parent_work) = self.parent(header.prev_hash(), hash)?;
-        let time = header.time();
-        if at != Height::GENESIS {
-            let median_time_past = self.median_time_past(header.prev_hash());
-            if time <= median_time_past {
-                return Err(Rejected::TimeTooEarly { time, median_time_past });
-            }
-        }
-        let horizon = self.now + MAX_FUTURE;
-        if i64::from(time) > horizon {
-            return Err(Rejected::FromTheFuture { time, max: horizon });
-        }
+        let (at, parent_work) = self.parent(header.prev_hash())?;
         let own = work(expand(header.bits()).expect("palette bits")).expect("fits");
         let record = Record {
             hash,
             merkle_root: header.merkle_root(),
-            time,
+            time: header.time(),
             bits: header.bits(),
             cumulative_work: parent_work + own,
         };
@@ -309,6 +282,16 @@ impl Model {
         self.vouched.retain(|hash| keep.contains(hash));
     }
 
+    /// `holds`: on the best path (older finals than the chain keeps = on it by definition), or a
+    /// live side node
+    fn holds(&self, at: BlockRef, path: &[Record]) -> bool {
+        let index = u32::from(at.height) as usize;
+        let final_unkept = index < self.kept_from();
+        let on_best = path.get(index).is_some_and(|record| record.hash == at.hash);
+        let side = self.alive.get(&at.hash).is_some_and(|alive| alive.height == at.height);
+        final_unkept || on_best || side
+    }
+
     /// zcashd's locator in closed form: 12 consecutive heights from the best, then best − 9 − 2^k
     /// (k ≥ 2), each clamped to the floor, ending at the floor
     fn locator(&self) -> Vec<BlockHash> {
@@ -362,7 +345,7 @@ fn height(h: u32) -> Height {
 /// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
 ///
 /// - `templates[hash]` = block whose bytes `hash`'s header was cut from (itself unless edited)
-/// - edited = `prev_hash` + `time` rewritten (an early time or a parent `MockChain` never held)
+/// - edited = `prev_hash` + `time` rewritten (a parent `MockChain` never held)
 struct Builder {
     chain: MockChain,
     templates: HashMap<BlockHash, BlockRef>,
@@ -421,42 +404,36 @@ fn run(moves: Vec<Move>) {
     let chain = MockChain::regtest().varied_work();
     let mut builder = Builder { chain, templates: HashMap::new() };
     let genesis = builder.genesis();
-    let params = Params::regtest(height(1), None).with_genesis(genesis.hash()).any_bits();
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
-    let mut fs = SimFs::new();
-    let path = std::path::Path::new("/headers");
-    let open = |fs: Arc<SimFs>| {
-        let store = HeaderStore::open(fs, path, NetworkType::Regtest).expect("store opens");
-        HeaderChain::open(params, depth, store)
+    let mut chain = HeaderChain::new(depth);
+    chain.anchor(&genesis, Height::GENESIS);
+    let anchor = Record {
+        hash: genesis.hash(),
+        merkle_root: genesis.merkle_root(),
+        time: genesis.time(),
+        bits: genesis.bits(),
+        cumulative_work: 0,
     };
-    let mut chain = open(Arc::clone(&fs));
     let mut model = Model {
-        genesis: genesis.hash(),
         mined: vec![genesis.clone()],
-        by_hash: HashMap::new(),
+        by_hash: HashMap::from([(genesis.hash(), genesis.clone())]),
         alive: HashMap::new(),
         vouched: HashSet::new(),
-        finals: Vec::new(),
+        finals: vec![anchor],
         received: 0,
-        deferred: Vec::new(),
-        now: i64::from(genesis.time()) + 30 * 24 * 3600,
     };
-    let mut published: Option<(VerifiedChain, Vec<Record>, Vec<Fork>)> = None;
+    // (published chain, the model's path then, the lowest height it answered by height, forks)
+    let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
 
     // the driver's: nothing above the ceiling offered (H9)
     let offer = |chain: &mut HeaderChain, model: &mut Model, header: &Header, context: &str| {
-        let at = model.parent(header.prev_hash(), header.hash());
+        let at = model.parent(header.prev_hash());
         if at.is_ok_and(|(at, _)| at > model.ceiling()) {
             return false;
         }
         let expected = model.offer(header);
-        let checked = check(&params, header.clone()).expect("stage A: palette nBits, regtest");
-        let inserted = chain.insert(&checked, model.now);
-        assert_eq!(inserted, expected, "{context}: insert {header:?}");
+        assert_eq!(chain.insert(header), expected, "{context}: insert {header:?}");
         chain.check();
-        if expected.is_err_and(|rejected| rejected.is_deferred()) {
-            model.deferred.push(header.clone());
-        }
         expected.is_ok()
     };
     let mine = |builder: &mut Builder, model: &mut Model, prev: BlockHash, time: u32, bits: u32| {
@@ -466,19 +443,15 @@ fn run(moves: Vec<Move>) {
         header
     };
 
-    offer(&mut chain, &mut model, &genesis, "genesis");
     for (step, next) in moves.into_iter().enumerate() {
         let context = format!("step {step} {next:?}");
         match next {
-            Move::Extend { parent, gap, early, bits, trusted } => {
+            Move::Extend { parent, gap, bits, trusted } => {
                 let parent = model.mined[parent % model.mined.len()].clone();
                 let (mut prev, mut time) = (parent.hash(), parent.time());
                 let mut last = None;
-                for (at, palette) in bits.into_iter().enumerate() {
-                    time = match early && at == 0 {
-                        true => model.median_time_past(prev),
-                        false => time + gap,
-                    };
+                for palette in bits {
+                    time += gap;
                     let header = mine(&mut builder, &mut model, prev, time, BITS[palette]);
                     if !offer(&mut chain, &mut model, &header, &context) {
                         break;
@@ -492,12 +465,12 @@ fn run(moves: Vec<Move>) {
                     let boundary = model.finalizable();
                     assert_eq!(chain.finalizable(), boundary, "{context}: run's boundary");
                     if let Some(boundary) = boundary {
-                        chain.finalize(boundary).expect("store commits");
+                        chain.finalize(boundary);
                         model.finalize(boundary);
                     }
                     // liveness: final = min(vouched, best − depth), no further input
                     assert_eq!(chain.finalizable(), None, "{context}: final caught up");
-                    let best = chain.best().expect("a run inserted").block;
+                    let best = chain.best().expect("anchored").block;
                     let deep = best.height.checked_sub(DEPTH);
                     let final_height = chain.final_tip().map(|tip| tip.height);
                     let caught = best != last || final_height >= deep;
@@ -532,18 +505,6 @@ fn run(moves: Vec<Move>) {
                     offer(&mut chain, &mut model, &header, &context);
                 }
             }
-            Move::Future { parent, ahead } => {
-                let parent = model.mined[parent % model.mined.len()].clone();
-                let time = u32::try_from(model.now + MAX_FUTURE).expect("fits") + ahead;
-                let header = mine(&mut builder, &mut model, parent.hash(), time, BITS[0]);
-                offer(&mut chain, &mut model, &header, &context);
-            }
-            Move::Clock { advance } => {
-                model.now += i64::from(advance);
-                for header in std::mem::take(&mut model.deferred) {
-                    offer(&mut chain, &mut model, &header, &context);
-                }
-            }
             Move::Reinsert { mined } => {
                 let again = model.mined[mined % model.mined.len()].clone();
                 offer(&mut chain, &mut model, &again, &context);
@@ -552,17 +513,10 @@ fn run(moves: Vec<Move>) {
                 let boundary = model.finalizable();
                 assert_eq!(chain.finalizable(), boundary, "{context}");
                 if let Some(boundary) = boundary {
-                    chain.finalize(boundary).expect("store commits");
+                    chain.finalize(boundary);
                     model.finalize(boundary);
                 }
                 assert_eq!(chain.finalizable(), None, "{context}: one call reaches the target");
-            }
-            Move::Reopen => {
-                fs = fs.restarted();
-                chain = open(Arc::clone(&fs));
-                model.alive.clear();
-                model.vouched.clear();
-                published = None;
             }
         }
 
@@ -576,13 +530,18 @@ fn run(moves: Vec<Move>) {
         let bound = (DEPTH + RUN) as usize;
         assert!(unfinal <= bound, "{context}: H9, {unfinal} unfinal on best > {bound}");
         let path = model.best_path();
-        let Some(verified) = chain.verified() else {
-            assert!(path.is_empty(), "{context}: published = nothing verified");
-            continue;
+        let kept_from = model.kept_from();
+        let verified = chain.verified().expect("anchored");
+        let answers = |chain: &VerifiedChain, path: &[Record]| -> Vec<Option<Record>> {
+            (0..path.len() as u32).map(|at| chain.header_at(height(at))).collect()
         };
-        let held: Vec<Option<Record>> =
-            (0..path.len() as u32).map(|at| verified.header_at(height(at))).collect();
-        assert_eq!(held, path.iter().copied().map(Some).collect::<Vec<_>>(), "{context}: path");
+        let expected = |path: &[Record], kept_from: usize| -> Vec<Option<Record>> {
+            path.iter()
+                .enumerate()
+                .map(|(at, record)| (at >= kept_from).then_some(*record))
+                .collect()
+        };
+        assert_eq!(answers(&verified, &path), expected(&path, kept_from), "{context}: path");
         assert_eq!(verified.hash_at(height(path.len() as u32)), None, "{context}: above best");
         assert_eq!(verified.locator(), model.locator(), "{context}: locator");
 
@@ -595,24 +554,23 @@ fn run(moves: Vec<Move>) {
         for header in &model.mined {
             let hash = header.hash();
             let at = BlockRef { hash, height: builder.templates[&hash].height };
-            let on_best = path.get(u32::from(at.height) as usize).is_some_and(|r| r.hash == hash);
-            let expected = on_best || model.alive.contains_key(&hash);
-            assert_eq!(verified.holds(at), expected, "{context}: holds {at:?}");
-            for height in at.height.checked_sub(1).into_iter().chain([at.height.next()]) {
-                let elsewhere = BlockRef { hash, height };
-                assert!(!verified.holds(elsewhere), "{context}: holds {elsewhere:?}");
+            for at in at.height.checked_sub(1).into_iter().chain([at.height, at.height.next()]) {
+                let at = BlockRef { hash, height: at };
+                assert_eq!(verified.holds(at), model.holds(at, &path), "{context}: holds {at:?}");
             }
         }
 
-        if let Some((old, old_path, old_forks)) = &published {
-            let answers: Vec<Option<Record>> =
-                (0..old_path.len() as u32).map(|at| old.header_at(height(at))).collect();
-            let expected: Vec<Option<Record>> = old_path.iter().copied().map(Some).collect();
-            assert_eq!(answers, expected, "{context}: H5, a published chain never changes");
+        if let Some((old, old_path, old_kept_from, old_forks)) = &published {
+            let answered = answers(old, old_path);
+            assert_eq!(
+                answered,
+                expected(old_path, *old_kept_from),
+                "{context}: H5, a published chain never changes"
+            );
             assert_eq!(old.forks(), *old_forks, "{context}: H5, nor its forks");
-            let final_height = |chain: &VerifiedChain| chain.final_tip().map(|tip| tip.height);
+            let final_height = |chain: &VerifiedChain| chain.final_tip().height;
             assert!(final_height(&verified) >= final_height(old), "{context}: H2, final moves up");
         }
-        published = Some((verified, path, forks));
+        published = Some((verified, path, kept_from, forks));
     }
 }

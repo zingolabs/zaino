@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 2f5fb81a432d2416647b8a9ec7917bbe2f998b3ea2dfe22844a5344fb296c3cb # shrinks to moves = [Chain { change: Extend(4), publish: true }, Advance(26), Advance(19), Chain { change: Extend(2), publish: true }, Chain { change: Reorg { depth: 5, len: 1 }, publish: false }], delays = [0], paired = false, lookahead = 1, seed = 380348290471422
+cc 6af8100df61063443b0c07afde4be650176da3f4a4e923664bdd74a86136360a # shrinks to moves = [Chain { change: Extend(4), publish: false }, Chain { change: Reorg { depth: 1, len: 6 }, publish: false }, Chain { change: Finalize, publish: false }, Restart { reset: true, wipe: None }], delays = [0], lookahead = 1, seed = 0

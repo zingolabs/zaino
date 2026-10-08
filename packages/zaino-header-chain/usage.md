@@ -1,182 +1,112 @@
 # `zaino-header-chain` — usage
 
-The best chain by proof of work (`docs/design/verified-chain.md` §3–§4, §10): every
-header verified from genesis, the bounded tree of valid branches above the final
-boundary, the tip with the most cumulative work, and the immutable
-`VerifiedChain` everything downstream reads. Headers may come from any source;
-how one arrived never changes how it is checked.
+The Validated Header tree: each header validated either by the trusted validator that served it
+or by Zaino's `validate`. Anchored at a trusted validator's tip − depth (no history from
+genesis): the bounded tree of branches above the final boundary, the tip with the most cumulative
+work, and the immutable `VerifiedChain` everything downstream reads. A trusted header enters on
+its parent link and its nBits work alone (its validator already ran the consensus rules).
+`validate` runs those rules for an untrusted source; today every header comes from a trusted
+validator.
 
 ```rust,ignore
-use zaino_header_chain::{check, decode_header, link_run, HeaderChain, HeaderStore, Params};
+use zaino_header_chain::{decode_header, HeaderChain, Inserted};
 
-let store = HeaderStore::open(fs, &path, NetworkType::Main)?;
-let mut chain = HeaderChain::open(Params::mainnet(), depth, store); // resumes from disk
+let mut chain = HeaderChain::new(depth);              // in memory, nothing held
+chain.anchor(&decode_header(&raw)?, claim_height - depth); // a trusted header = the final tip
 
-// stage A: each header alone (pure: run it in parallel, off the runtime), then the run's links
-let checked = headers.into_iter().map(|raw| check(&params, decode_header(&raw)?));
-let (run, cut) = link_run(checked);                  // cut = the rule the run broke, if any
-
-// stage B: in order, on the one owner
-for header in &run {
-    match chain.insert(header, now_unix)? {          // attach, nBits, time, work, best, bounds
+for header in &run {                                  // a trusted validator's headers, in order
+    match chain.insert(header)? {                     // parent link + work, best, bounds
         Inserted::Best { reorg } => { /* new most-work tip */ }
         Inserted::Side | Inserted::Known => {}
     }
 }
-chain.vouch(last_of_the_run);                        // a trusted validator's best chain had it
-if let Some(boundary) = chain.finalizable() {        // min(highest vouched, best − depth)
-    chain.finalize(boundary)?;                       // a store error: end the process
+chain.vouch(last_of_the_run);                         // a trusted validator's best chain had it
+if let Some(boundary) = chain.finalizable() {         // min(highest vouched, best − depth)
+    chain.finalize(boundary);
 }
-let published = chain.verified();                    // Option<VerifiedChain>
-let ceiling = chain.ceiling(batch);                  // fetch no higher (bounds the tree)
+let published = chain.verified();                     // Option<VerifiedChain> (None = no anchor)
+let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds the tree)
 ```
 
-## Rules
+## Insert (trusted)
 
-Stage A (`check`, the header alone) then stage B (`HeaderChain::insert`, against its
-ancestors and the clock). Each refusal names its rule (`Rejected`):
+`HeaderChain::insert(&header)` refuses only what breaks the tree, each by name (`Rejected`):
+`Orphan` (parent unknown: no orphan pool), `BelowFinal` (parent final but off the final chain),
+`Bits` (nBits not a valid compact target: no work to count), `WorkOverflow`. Work is counted from
+the anchor (work 0). `anchor(header, height)` drops everything held and makes `header` the final
+tip: a start, or a jump to a trusted validator far ahead.
 
-| Rule | Stage | Check | Source |
-| --- | --- | --- | --- |
-| `Version` | A | `nVersion` read as int32 ≥ 4: the high bit set = negative = invalid; > 4 stays valid | zcashd `CBlockHeader` |
-| `Bits` | A | nBits a valid compact target | zebra-chain `work::difficulty` |
-| `SolutionSize` | A | 1,344 bytes (200, 9); 36 on regtest | zebra-chain `work::equihash` |
-| `AboveTarget` | A | hash ≤ target (off on regtest) | zebra-chain `work::difficulty` |
-| `Solution` | A | Equihash (200, 9) on the 108 bytes before the nonce (off on regtest) | zebra-chain `work::equihash` |
-| `Unlinked` | A | each header's `prev_hash` = the hash before it in the run | — |
-| `TimeTooEarly` | B | after the median of the previous 11 times (not genesis) | zebra-state `check.rs` |
-| `TimeTooLate` | B | ≤ that median + 90 min (mainnet from height 2, testnet from 653,606) | protocol spec §7.6 |
-| `Difficulty` | B | nBits = `ThresholdBits(h)` (below) | zcashd `pow.cpp`, ZIP 218 |
-| `FromTheFuture` | B | ≤ the local clock + 2 h; **deferred**, never cached or blamed (`is_deferred`) | zebra-chain `time_is_valid_at` |
-| `WrongGenesis`, `Orphan`, `BelowFinal`, `WorkOverflow` | B | genesis = this network's; parent held (no orphan pool); parent not off the final chain | — |
+## `validate` (untrusted fallback)
 
-A solution length must be a minimal compactSize (`fd 24 00` for 36 bytes is
-refused by `decode_header` as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
+`validate(params, header, height, ancestors, now)` runs every consensus rule: alone (version ≥ 4
+as int32, nBits valid, solution size, hash ≤ target, Equihash (200, 9); proof of work off on
+regtest) then against up to `CONTEXT` = 113 ancestors (median time past, + 90 min, nBits =
+zcashd's `CalculateNextWorkRequired` + ZIP 218's window by height, testnet's minimum-difficulty
+gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`). Nothing in Zaino
+feeds it untrusted headers yet; it is tested against captured mainnet and testnet ranges.
 
-**Difficulty by height.** Spacing is 150 s before Blossom, 75 s from Blossom, 25 s
-from NU7; the averaging window is 17 blocks, 102 from NU7 (ZIP 218: every use of the
-window takes the checked height's, so it straddles the activation). The threshold is
-`rules::threshold(params, mean target, timespan, height)` — zcashd's
-`CalculateNextWorkRequired` (damping 4, −16 % / +32 %, at most the limit) — with
-the mean taken as Σ quotients + ⌊Σ remainders / n⌋ (102 testnet targets overflow
-256 bits). Testnet's minimum-difficulty rule (from 299,188): a gap over 6 × spacing,
-18 × spacing from NU7 — 450 s on both sides of NU7 (451 qualifies, 450 does not).
-While the window reaches past genesis, nBits is the limit outright (zcashd; zebra
-6.x mints the wrong nBits at mainnet height 1). Regtest: nBits = the limit, proof of
-work off, as zebrad.
-
-`Params` carries the NU7 height (Testnet 4,465,026; Mainnet `None` until set;
-`Params::regtest(blossom, nu7)`). The rules read up to `CONTEXT` = 113 ancestors
-(102 + 11).
+A solution length must be a minimal compactSize (`decode_header` refuses `fd 24 00` for 36 bytes
+as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 
 ## The tree, the best tip, finality
 
-- Every valid branch above the final tip is kept, within bounds (H4): at most
-  `4 · depth` side-branch nodes and 32 side-branch tips; past either, the
-  lowest-work side leaf is evicted (the last received on a tie). The best branch is
-  never evicted; a driver fetching nothing above `ceiling(batch)` (`depth` + `batch`
-  above the final tip) keeps it within `depth + batch` whatever finality does (H9).
-- The best tip is the leaf with the most cumulative work; a tie keeps the first
-  received (H1). `Inserted::Best { reorg }` says whether it extends the old one.
-- An orphan (unknown parent) is refused, never pooled: the next request uses the
-  locator, which reaches back to the fork.
-- Finality (H6): `vouch(block)` records that a trusted validator once had `block`
-  on its best chain (the last header of a run it served by height, its claim, its
-  `getblockhash` answer): `block` and every ancestor are vouched, for good (a
-  block not held above the final tip = no-op; peer headers arrive unvouched). On a
-  reorg the highest vouched block on the best branch falls to the fork point; the
-  ancestors stay vouched. `finalizable()` names the best-chain block at
-  `min(highest vouched, best − depth)` above the final tip (work never gates it:
-  peers alone never finalize); `finalize(block)` commits every best-chain header up
-  to it in one commit (the store first, memory after) and prunes every branch not
-  descending from it. Call both after every run and every vouch: final then =
-  `min(vouched, best − depth)`. Finalizing a block off the best branch, shallower
-  than `depth` (H2) or above the highest vouched (H6) is a caller bug: it panics
-  naming the invariant.
-- The tree is memory: a reopen resumes at the final tip, and branches above it
-  come back as their headers do. The last 113 final headers stay in memory as
-  context; a header whose parent is final but older than that is `Orphan`.
+- Every branch above the final tip is kept, within bounds (H4): at most `4 · depth` side-branch
+  nodes and 32 side-branch tips; past either, the lowest-work side leaf goes (last received on a
+  tie). A driver fetching nothing above `ceiling(batch)` keeps the best branch within
+  `depth + batch` of the final tip (H9).
+- The best tip is the leaf with the most cumulative work; a tie keeps the first received (H1).
+- Finality (H6): `vouch(block)` records that a trusted validator once had `block` on its best
+  chain (it and every ancestor, for good). `finalizable()` names the best-chain block at
+  `min(highest vouched, best − depth)`; `finalize(block)` moves every best-chain header up to it
+  into the finals and prunes every branch not descending from it. Finalizing a block off the best
+  branch, shallower than `depth` (H2) or above the highest vouched (H6) is a caller bug: it
+  panics naming the invariant.
+- Memory only: the newest `2 · depth` final headers stay, answering by height; older finals are
+  final by definition (`on_best` = true) and a header whose parent is one of them = `Orphan`.
 
 ## `VerifiedChain`
 
-`HeaderChain::verified()` is an immutable snapshot (clone = refcounts: an `imbl`
-path above the final tip, the store's committed view below it). A holder's
-answers never change (H5), whatever the chain does after.
+`HeaderChain::verified()` is an immutable snapshot (clone = refcounts: `imbl` throughout). A
+holder's answers never change (H5).
 
 | Method | Answer |
 | --- | --- |
 | `best()` | the most-work tip |
-| `final_tip()` | the last final block (`None` = nothing final); never moves back |
-| `hash_at(h)` / `header_at(h)` | the best chain at any `h ≤ best` (final heights from the store): hash, merkle root, time, nBits, cumulative work |
-| `locator()` | zcashd's `GetLocator`: the tip, consecutive ancestors, then doubling steps, ending at the final tip (genesis while nothing is final) |
-| `forks()` | one `Fork { from, tip, cumulative_work }` per side leaf (at most 32, H4), most work first; `from` = its best-chain parent, at or above the final tip |
-| `branch(tip)` | the side blocks above the fork's `from` up to `tip`, ascending (empty = `tip` not a side block) |
-| `holds(at)` | `at` on the best chain (final included), or a side block held above the final tip: what a consumer of side state may keep (the NFS prunes by it) |
-
-The tree above the final tip (`nodes`, `leaves`) is `imbl` too: `verified()` shares it, so a
-published chain's forks never change either.
+| `final_tip()` | the last final block (always set: the anchor at least) |
+| `hash_at(h)` / `header_at(h)` | the best chain above the final tip and the newest `2 · depth` finals; `None` above best or below the finals kept |
+| `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the final tip past the finals kept |
+| `holds(at)` | `on_best(at)`, or a side block held above the final tip (the NFS prunes by it) |
+| `locator()` | zcashd's `GetLocator`, ending at the final tip |
+| `forks()` / `branch(tip)` | one `Fork` per side leaf (≤ 32, most work first) / its side blocks above `from` |
 
 ## Invariants, checked
 
-`HeaderChain::check()` asserts H1 (best = max-work leaf, first received), H2 (every
-node descends from the final tip; final tip = the store's), H4 (bounds), H5
-(`best_path` = a held chain from the final tip), H6 (vouched closed under parents)
-and the tree's own bookkeeping
-(cumulative work, child counts, leaf set), naming the invariant in its panic. It
-is O(nodes): tests run it after every mutation, the driver after every run in
-debug builds. Every mutating method opens with `assert!`s naming the invariant
-its caller must keep (H2, H3: a `Checked` from another network's rules).
-
-## Store
-
-`HeaderStore` holds one 88-byte record per final height (`hash · merkle root · time
-· nBits · cumulative work`, `store::encode` / `decode` beside a golden test) in one
-checksummed log, committed through the `zaino-persistence` manifest as
-`IndexKind::HeaderChain` (its tables: `TABLES`, layout version `FORMAT`, both
-exported for `zainod verify`). It is written only with headers verified from genesis, so
-a reopen never re-verifies and never starts from a checkpoint someone supplied.
+`HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finals contiguous and at most
+`2 · depth`, every node descends from the final tip), H4, H5, H6 and the tree's bookkeeping
+(cumulative work, child counts, leaf set), naming the invariant in its panic.
 
 ## Tests
 
-- Real chain, captured by `examples/capture_headers.rs` (`main` | `test`): mainnet
-  0–300, 653,500–653,700 (Blossom), 3,508,500–3,508,800; testnet 299,000–299,400
-  (minimum difficulty from 299,188) and 583,800–584,200 (Blossom). Every header
-  passes stage A and B and every nBits is reproduced; the genesis range runs
-  through a store and a reopen. The testnet NU7 range (4,464,900–4,465,300) needs a
-  validator that activated NU7 (zebra ≥ 7) and is not captured yet.
-- zcashd's `pow_tests.cpp` vectors through `threshold`; each mutation of a real
-  header refused by its own rule (version high bit, non-minimal length, a pre-NU7
-  nBits after NU7, the 450 / 451 s gap, linkage).
-- Model (`random_header_trees_answer_like_the_naive_model`): random trees under
-  any-nBits rules (work varies, most work ≠ highest) with orphan runs, side-branch
-  sprays past the bounds, future headers then clock advances, vouches, trusted runs
-  (their last header vouched, then final = min(vouched, best − depth) at once),
-  finalizations and reopens, nothing offered above the ceiling, against a naive
-  tree; `check()` after every insert; the unfinal best branch within `depth + run`
-  (H9); `forks` / `branch` / `holds` against each side leaf's mined ancestry.
-- Fire drills: each check in `check()` and each precondition, seen firing on a
-  planted bug.
-- Builder agreement (`testing::the_builders_best_tip_is_the_real_header_chains_best`):
-  random `MockChain` shapes (extend, fork, outweigh, revive, side branch; limit and
-  varied work), every new block inserted, `MockChain::tip()` = `HeaderChain::best()`
-  after each, an outweigh always the best.
-- For consumers' tests (`testing` feature), `testing::HeaderViews` on a
-  `zaino_primitives::testing::MockChain`: the rules its schedule implies
-  (`Params::regtest` at its Blossom / NU7 heights over its genesis; any nBits only when
-  the chain declared `varied_work()`), a fresh `SimFs` store, real header bytes through
-  stage A and B.
+- Captured headers (`examples/capture_headers.rs`): mainnet 0–300, 653,500–653,700 (Blossom),
+  3,508,500–3,508,800; testnet 299,000–299,400 and 583,800–584,200. Every header passes
+  `validate`, every nBits reproduced; each mutation of a real header refused by its own rule; a
+  chain anchored mid-mainnet follows 200 trusted headers with no history below.
+- Model (`random_header_trees_answer_like_the_naive_model`): random trusted trees with any nBits
+  (orphans, side sprays past the bounds, vouches, trusted runs, finalizations) against a naive
+  tree; `check()` after every insert.
+- Fire drills: each check in `check()` and each precondition, seen firing on a planted bug.
+- Builder agreement (`testing`): random `MockChain` shapes, `MockChain::tip()` =
+  `HeaderChain::best()` after each.
+- For consumers' tests (`testing` feature), `testing::HeaderViews` on a `MockChain`:
 
   ```rust,ignore
   use zaino_header_chain::testing::{insert, HeaderViews};
 
-  let params = chain.header_params();                  // its rules, over a store of your own
-  let mut headers = chain.header_chain(depth);         // genesis inserted
+  let mut headers = chain.header_chain(depth);         // anchored at genesis
   insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
-  let verified = chain.verified(tip);                  // nothing final
+  let verified = chain.verified(tip);                  // final = genesis
   let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
   ```
-
-  A `VerifiedChain` in a test is one verified, never a stand-in.
 
 Heavy run after any change here (the in-code 256 cases are the light run):
 
@@ -184,6 +114,6 @@ Heavy run after any change here (the in-code 256 cases are the light run):
 end=$((SECONDS + 180)); round=0
 while [ $SECONDS -lt $end ]; do
   round=$((round + 1))
-  PROPTEST_CASES=1000 cargo test -p zaino-header-chain || { echo "FAILED in round $round"; break; }
+  PROPTEST_CASES=1000 cargo test -p zaino-header-chain --features testing || { echo "FAILED in round $round"; break; }
 done
 ```

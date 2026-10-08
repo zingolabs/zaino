@@ -22,7 +22,7 @@ mod network_model;
 mod tests;
 
 pub use endpoints::{Agreement, EndpointSet, ValidatorMetadata};
-pub use error::{ConfigError, HeaderStoreFailed, SubmitError};
+pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
 pub use observe::ObservationFold;
 pub use peers::PeerWatch;

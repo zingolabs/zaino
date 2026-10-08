@@ -206,7 +206,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         if last == Some(tip) {
             return;
         }
-        let left = last.filter(|last| chain.hash_at(last.height) != Some(last.hash));
+        let left = last.filter(|last| !chain.on_best(*last));
         if let Some(left) = left {
             emit::reorg();
             let (from, to) = (u32::from(left.height), u32::from(tip.height));
@@ -218,7 +218,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         let time = chain.header_at(tip.height).map_or(0, |record| record.time);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| since.as_secs());
         let age = Human(Duration::from_secs(now.saturating_sub(u64::from(time))));
-        let finalized = chain.final_tip().map_or(0, |tip| u32::from(tip.height));
+        let finalized = u32::from(chain.final_tip().height);
         let (height, hash) = (u32::from(tip.height), tip.hash);
         info!(height, %hash, %age, finalized, "Chain tip advanced");
     }

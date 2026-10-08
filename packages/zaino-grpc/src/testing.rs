@@ -36,7 +36,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
         IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
         IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
-        IndexKind::ValueBalance | IndexKind::HeaderChain => panic!("not a served index"),
+        IndexKind::ValueBalance => panic!("not a served index"),
     };
     let schema = Schema::new(kind, format, chain.schedule().network, tables);
     let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
@@ -61,7 +61,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
             IndexKind::BlockHash => {
                 block_hash::fold(&block_hash::BlockHashReader::new(parent), &block, &mut out);
             }
-            IndexKind::ValueBalance | IndexKind::HeaderChain => unreachable!("refused above"),
+            IndexKind::ValueBalance => unreachable!("refused above"),
         }
         index.apply(out);
     }

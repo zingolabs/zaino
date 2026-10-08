@@ -60,7 +60,6 @@ pub(crate) fn schema(kind: IndexKind) -> Schema {
         IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
         IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
         IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
-        IndexKind::HeaderChain => panic!("not an NFS index"),
     };
     Schema::new(kind, format, NETWORK, tables)
 }
@@ -97,7 +96,6 @@ fn own_fold(
             let parent = TransparentAddressReader::new(parent);
             zaino_index_transparent_address::fold(&parent, block, out);
         }
-        IndexKind::HeaderChain => panic!("not an NFS index"),
     }
 }
 
@@ -152,7 +150,7 @@ fn verify(
     context: &str,
 ) {
     let (chain, tip) = (snapshot.chain(), snapshot.served().tip());
-    assert_eq!(chain.hash_at(tip.height), Some(tip.hash), "{context}: N4 tip {tip:?} off best");
+    assert!(chain.on_best(tip), "{context}: N4 tip {tip:?} off best");
     assert_eq!(snapshot.served().branch(), Branch::Best, "{context}: N4 served on the best");
     let durable: Vec<(IndexKind, Option<BlockRef>)> = snapshot.durable().collect();
     let views = snapshot.served().views();
@@ -171,7 +169,8 @@ fn verify(
         let block = at.tip();
         let path = blocks.blocks(blocks.block(*hash).at());
         let path: Vec<BlockHash> = path.iter().map(|b| b.header().hash).collect();
-        let shared = (0..path.len()).take_while(|&h| chain.hash_at(height(h)) == Some(path[h]));
+        let on_best = |h: usize| chain.on_best(BlockRef { hash: path[h], height: height(h) });
+        let shared = (0..path.len()).take_while(|&h| on_best(h));
         let branch = match shared.count() {
             all if all == path.len() => Branch::Best,
             shared => Branch::Side {
@@ -263,7 +262,6 @@ impl Pipeline {
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks));
                 }
-                IndexKind::HeaderChain => panic!("not an NFS index"),
             }
         }
         if let Some(unused) = fee_sink {
@@ -433,7 +431,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
             let context = format!("run {run} move {at}");
             insert(&mut headers, added).expect("valid headers");
             if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
-                headers.finalize(boundary).expect("in-memory store");
+                headers.finalize(boundary);
             }
             if let Some(tip) = added.last() {
                 members.iter().for_each(|member| member.follow(&blocks, tip.at()));
@@ -488,7 +486,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let mut add = |added: &[Arc<Block>]| {
         insert(&mut headers, added).expect("valid headers");
         if let Some(boundary) = headers.finalizable() {
-            headers.finalize(boundary).expect("in-memory store");
+            headers.finalize(boundary);
         }
         if let Some(tip) = added.last() {
             member.follow(&blocks, tip.at());

@@ -5,10 +5,13 @@ crate = "zaino-sync"
 kind = "feature"
 description = """
 First release. The final path: `FinalFollower::new(chain, balancer, lookahead)` fetches every \
-final block of the header chain's `VerifiedChain` in order (`fetch` / `check_block`: hash, \
-coinbase height, merkle root, CVE-2012-2459; a misanswer `report`ed and re-asked) onto one \
-`IndexerDataSink<Block>`, from the lowest durable tip (`subscribe(kind, durable, queue)`); a \
-durable tip off the final chain stops it (`FollowError::Diverged`). `IndexerDataSink<T>` is a \
+block up to the `VerifiedChain`'s final tip height, by height from trusted members, in order \
+(`fetch_at` / `check_block_at`: coinbase height + merkle root vs its own header, \
+CVE-2012-2459; a misanswer `report`ed and re-asked; no header history read) onto one \
+`IndexerDataSink<Block>`, from the lowest durable tip (`subscribe(kind, durable, queue)`). Each \
+block must extend the block sent before it (`FollowError::Unlinked`) and each durable tip it \
+reaches (`FollowError::Diverged`, naming the index). `fetch` / `check_block` fetch by hash \
+against a verified header (the NFS's). `IndexerDataSink<T>` is a \
 byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carries \
 value-balance's fees to compact-block. `Committer` is the apply / commit loop every writer runs \
 (commits when the batch fills or 1 s after its oldest uncommitted run; `Run::{apply, apply_batch}` fold each block a \

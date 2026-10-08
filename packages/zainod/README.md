@@ -49,8 +49,7 @@ Unknown keys fail the load. Sections:
 - `[sync]`: `finalised_depth`, `concurrency`, and the `queue_mib` budget every
   index shares (each index's write buffer is its own, not configured)
 - one `[index.<name>]` table per index (`compact_block`, `block_hash`,
-  `tree_state`, `transparent_address`, each with `enabled` and `path`;
-  `header_chain` with `path` only)
+  `tree_state`, `transparent_address`, each with `enabled` and `path`)
 - `[metrics]`: the optional admin listener (`listen_address`)
 - `[snapshot]`: optional, `snapshot` builds only (`manifest`, `connections`)
 

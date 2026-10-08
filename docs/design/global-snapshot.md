@@ -1,8 +1,7 @@
 # One global snapshot: what Zaino serves, in one value
 
 Status: **implemented** (phases 1 + 2, §9; 2026-10-07). §1 = the shape before. Builds on [nfs.md](nfs.md) (served tip, views),
-[chainview.md](chainview.md) (mempool, validators), [verified-chain.md](verified-chain.md) (best,
-final, side branches). Runs beside [traffic-balancer.md](traffic-balancer.md) (§7: the seam).
+[chainview.md](chainview.md) (mempool, validators, best, final, side branches). Runs beside [traffic-balancer.md](traffic-balancer.md) (§7: the seam).
 
 **Rule:** every read of chain, index, mempool or validator state, by a route, a probe, a scrape
 or a log line, comes from one `Arc<Snapshot>` loaded once. Nothing else answers "what do we serve".

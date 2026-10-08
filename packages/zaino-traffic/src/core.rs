@@ -35,6 +35,8 @@ pub(crate) enum Route {
     Any,
     Only(MemberId),
     Peers,
+    /// Trusted members only (a question peers cannot answer: a block by height)
+    Trusted,
     /// Within the best tier with room: the first of these, else P2C
     Prefer(Vec<MemberId>),
 }
@@ -45,6 +47,7 @@ impl Route {
             Self::Any | Self::Prefer(_) => true,
             Self::Only(only) => *only == member,
             Self::Peers => matches!(member, MemberId::Peer(_)),
+            Self::Trusted => matches!(member, MemberId::Trusted(_)),
         }
     }
 }

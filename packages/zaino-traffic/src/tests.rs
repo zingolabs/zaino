@@ -29,7 +29,8 @@ fn v(index: usize) -> ValidatorId {
 /// - lookup: absent on ours → partner; unknown everywhere → unanswered with the absence
 /// - pinned headers, bytes from the best tier (ours: not listed there = `NotFound` item)
 /// - submit: pinned, accepted; garbage = unanswered with the rejection
-/// - block: ours first; reported → benched (table, entries), the re-ask served by partner
+/// - block: ours first; reported → benched (table, entries), the re-ask served by partner, by
+///   hash and by height alike
 #[tokio::test(start_paused = true)]
 async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_another_serves() {
     let mut chain = MockChain::regtest();
@@ -84,6 +85,9 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     balancer.report(first.ticket, &std::io::Error::other("merkle root mismatch"));
     let again = balancer.block(hash, Urgency::Bulk).await;
     assert_eq!(again.from, MemberId::Trusted(v(1)), "the reported member benched");
+    let by_height = balancer.block_at(h(2), Urgency::Bulk).await;
+    let served = (by_height.from, by_height.value.header().hash);
+    assert_eq!(served, (MemberId::Trusted(v(1)), hash), "by height: the benched member skipped");
     tokio::time::sleep(Duration::from_millis(1)).await;
     let table = balancer.members().borrow().clone();
     let benched: Vec<bool> = table.rows.iter().map(|row| row.benched_until.is_some()).collect();
@@ -249,6 +253,7 @@ impl PeerTransport for Pool {
 /// Trusted member down from the start, one peer joined:
 /// - tip block + peer headers served by the peer (`Peer(3)`)
 /// - lookup never reaches it: unanswered, the trusted member's transport failure as `last`
+/// - a block by height never reaches it: pending until the trusted member is back
 /// - the peer leaves: a block ask pends (no member left), served once the trusted member is back
 #[tokio::test(start_paused = true)]
 async fn peers_serve_checkable_asks_and_never_lookups() {
@@ -282,6 +287,10 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
         _ => None,
     };
     assert_eq!(mode, Some(FailureMode::Connection), "never asked of the peer");
+    let by_height = balancer.block_at(h(1), Urgency::Bulk);
+    tokio::pin!(by_height);
+    let unserved = tokio::time::timeout(Duration::from_secs(10), &mut by_height).await;
+    assert!(unserved.is_err(), "by height: never asked of the peer, pending for a trusted one");
 
     joins.unbounded_send(Membership::Left(PeerId(3))).expect("driver running");
     tokio::time::sleep(Duration::from_millis(1)).await;
@@ -292,5 +301,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     validator.reachable(&Port::ALL, true);
     let back = pending.await;
     assert_eq!(back.from, MemberId::Trusted(v(0)));
+    let at_one = by_height.await;
+    assert_eq!((at_one.from, at_one.value.header().hash), (MemberId::Trusted(v(0)), hash));
     cancel.cancel();
 }

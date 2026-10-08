@@ -109,8 +109,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
     let chainview_span = component("ChainView");
-    let chainview =
-        chainview_span.in_scope(|| crate::chainview::connect(&config, Arc::clone(&fs)))?;
+    let chainview = chainview_span.in_scope(|| crate::chainview::connect(&config))?;
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
     let balancing = chainview.balancing.run(cancel.child_token());
@@ -127,7 +126,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
     let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
 
     let run = chainview.header_sync.run(cancel.child_token());
-    spawn(&mut tasks, "header-sync", chainview_span.clone(), run);
+    spawn_infallible(&mut tasks, "header-sync", chainview_span.clone(), run);
     if let Some((starting, watch)) = chainview.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
         let token = cancel.child_token();
@@ -618,7 +617,7 @@ mod tests {
         let mut publish = |added: &[Arc<Block>]| {
             insert(&mut headers, added).expect("valid headers");
             if let Some(boundary) = headers.finalizable() {
-                headers.finalize(boundary).expect("in-memory store");
+                headers.finalize(boundary);
             }
             verified.send_replace(headers.verified().map(Arc::new));
             view.set_verified(headers.verified());

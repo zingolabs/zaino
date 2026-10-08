@@ -16,7 +16,6 @@ pub(crate) fn schema(kind: IndexKind, network: NetworkType) -> Schema {
         IndexKind::BlockHash => (block_hash::FORMAT, block_hash::TABLES),
         IndexKind::TreeState => (tree_state::FORMAT, tree_state::TABLES),
         IndexKind::TransparentAddress => (transparent_address::FORMAT, transparent_address::TABLES),
-        IndexKind::HeaderChain => (zaino_header_chain::FORMAT, zaino_header_chain::TABLES),
     };
     Schema::new(kind, format, network, tables)
 }

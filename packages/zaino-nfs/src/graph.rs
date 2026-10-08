@@ -152,5 +152,5 @@ impl<F> Graph<F> {
 }
 
 pub(crate) fn on_best(chain: &VerifiedChain, at: BlockRef) -> bool {
-    chain.hash_at(at.height) == Some(at.hash)
+    chain.on_best(at)
 }

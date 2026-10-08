@@ -5020,7 +5020,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-header-chain",
- "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
  "zaino-traffic",
@@ -5087,7 +5086,6 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "uint 0.9.5",
- "zaino-persistence",
  "zaino-primitives",
  "zcash_protocol",
 ]

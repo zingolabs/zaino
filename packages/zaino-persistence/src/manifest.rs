@@ -33,7 +33,6 @@ pub enum IndexKind {
     TransparentAddress = 3,
     BlockHash = 4,
     ValueBalance = 5,
-    HeaderChain = 6,
 }
 
 impl IndexKind {
@@ -45,7 +44,6 @@ impl IndexKind {
             Self::TransparentAddress => "transparent_address",
             Self::BlockHash => "block_hash",
             Self::ValueBalance => "value_balance",
-            Self::HeaderChain => "header_chain",
         }
     }
 }
@@ -306,7 +304,6 @@ mod tests {
             (IndexKind::TransparentAddress, 3, "transparent_address"),
             (IndexKind::BlockHash, 4, "block_hash"),
             (IndexKind::ValueBalance, 5, "value_balance"),
-            (IndexKind::HeaderChain, 6, "header_chain"),
         ];
         for (kind, tag, name) in table {
             assert_eq!((kind as u8, kind.name()), (tag, name), "{kind:?}");

@@ -1,4 +1,4 @@
-//! Fire drills (`verified-chain.md` §10 layer 4): each `check()` assertion and precondition seen
+//! Fire drills: each `check()` assertion and precondition seen
 //! firing on a planted bug (never seen firing = not known to work)
 
 use std::time::{Duration, Instant};

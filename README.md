@@ -33,7 +33,7 @@ packages/                          Cargo workspace members
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
   # indexing
   zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, snapshots
-  zaino-header-chain/                Proof-of-work verified header chain from genesis
+  zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
   zaino-sync/                        Final stream (sink + queues) + the writers' Committer
   zaino-index-compact-block/         Height → gRPC-framed compact block (one sequence)
   zaino-internal-block-hash-to-height/  Hash ↔ height, the by-hash locator
@@ -146,7 +146,7 @@ prevents.
 - [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers — request classes with reserved permits, one hedge / retry / blame policy under one budget, `report` benching exactly the member that misanswered, and every trusted validator's poll.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — attributed transaction announcements (the chain view's mempool sightings) and the isolated per-attempt submission push; peers never decide the tip.
-- [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the proof-of-work verified header tree from genesis — which rules, the most-work tip, and why finality is the caller's gate.
+- [`zaino-header-chain`](./packages/zaino-header-chain/usage.md): the Validated Header tree, each header validated by the trusted validator that served it or by Zaino, anchored at a trusted tip − depth (no history from genesis) — the most-work tip, vouched finality, and `validate`, the consensus rules kept as the fallback for an untrusted source.
 - [`zaino-nfs`](./packages/zaino-nfs/usage.md): the non-finalized state — `Nfs` fetches and folds every block (all indexes, in dependency order) as it joins the verified best, is the one sender of the final stream (lockstep finality), and publishes one `Indexed` across every index that moves to the fork point the moment a reorg lands.
 - [`zaino-snapshot`](./packages/zaino-snapshot/usage.md): one published `Snapshot` of everything served — the chain view's and the NFS's latest in one atomic publication, read once per gRPC request, probe and scrape; the mempool stream keyed to the served tip; the `/statusz` report, the gauges and the alarm logs derived from it.
 - [`zaino-sync`](./packages/zaino-sync/usage.md): the final stream (`Step`, `Final`), byte-bounded queues, fees from one index to another, and the `Committer` every writer commits through.

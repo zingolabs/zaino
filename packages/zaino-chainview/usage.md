@@ -90,59 +90,34 @@ Each `MempoolEntry` carries a `Projection`, the serving layer's encoding of it,
 rendered once (`get_or_render`) and shared by every snapshot holding the entry; a
 fee arriving for an unpriced entry starts a fresh one.
 
-## The tip: verified, then held
+## The tip: trusted, anchored, held
 
-`HeaderSync::run(cancel)` feeds the header chain, which it owns outright (no
-lock). On each view change it first vouches every answering validator's claim and
-`getblockhash` answer that the chain holds, then fetches one batch (2,000
-headers) from the first answering validator whose claim the chain lacks: from
-above our best up to its claim, never above `final + depth + 2,000`
-(`HeaderChain::ceiling`: the tree stays bounded whatever finality does). Each
-batch is verified in two stages, both off the runtime: stage A, each header alone
-(version, nBits, solution, Equihash, hash ≤ target) on one blocking task per
-core, then the run's links; stage B, in order (attach, difficulty, time, work,
-best, bounds), then the run's last header vouched and finality, on the blocking
-pool with the chain moved there and back. The header chain's most-work block is
-`best`.
+`HeaderSync::run(cancel)` owns the header chain (no lock, no pool) and feeds it
+from the trusted validators. Their headers are trusted (zebra validated them): a
+header enters on its parent link and nBits work alone.
+
+- **Anchor:** with no chain, or a validator's claim − depth past our ceiling
+  (`final + depth + 2,000`), the chain anchors at that claim − depth: one header,
+  no history below it.
+- **Extend:** otherwise one batch (≤ 2,000 headers) from above our best toward
+  the claim, inserted in order, its last header vouched, then finality.
+- **Final** = `min(highest vouched, best − depth)`; at or below it = final by
+  definition. 60 s owed with the final tip unmoved raises `finality_paused`.
+- A stall (fetch failed, retreated, malformed) backs off that validator alone for
+  5 s. A chain leaving ours below the final tip: that claim is not fetched again
+  until it moves (`Diverged`).
 
 `HeaderSync::subscribe()` (take it before `run`) is a
-`watch<Option<Arc<VerifiedChain>>>`, republished whenever the best or the final tip
-moves (`zaino-header-chain`'s usage: `hash_at`, `header_at`, `locator`). `run` returns `Err(HeaderStoreFailed)` when a final header cannot be
-committed: zainod's supervisor ends the process on it.
+`watch<Option<Arc<VerifiedChain>>>`, republished whenever the best or final tip
+moves.
 
 Each snapshot carries `best()` and `held_by()`:
 
-- `best()` = the header chain's best, never a validator's claim. A validator
-  reporting a higher tip moves nothing until its headers arrive and verify.
-- `held_by()` = the `Live` validators whose last poll **holds** `best` now
-  (`verified-chain.md` §7): its claim = `best`, or its `getblockhash` at the best
-  height the poll started under = `best`. A `CatchingUp` validator (mempool off:
-  its tip may be stale) never holds; a failed poll (`Degraded`) or `Down` holds
-  nothing until it answers again. A race (it moved between the items of one
-  batch) costs one wrong poll; the next one re-asks.
-- `held_by()` empty → `mempool()` and `validator_info()` are `None`; the global
-  snapshot answers `Unavailable::NotHeld` (or `NoChain` with nothing verified).
-  Both fail closed (`UNAVAILABLE`): a verified header says the work is real, not
-  that the block is valid, and only a validator holding it vouches for the body.
-
-Finality is a different question: was a block ever on a trusted validator's
-best chain (**vouched**, permanent: zebra commits only valid blocks)? Each
-trusted run vouches its last header (every header of it read by height off that
-validator's best chain), as do claims and `getblockhash` answers on our chain,
-and final = `min(highest vouched, best − depth)` after every run and vouch. A
-first sync from trusted validators therefore finalizes every batch to `best −
-depth`; polls never reset that evidence. Work never gates it: peers alone can
-never finalize. A block `depth` deep owed finality for 60 s with the final tip
-unmoved raises the `finality_paused` alarm; serving continues.
-
-Per validator: a stall (fetch failed, it retreated below its claim, an
-undecodable header or one that fails a rule, a header from the future) backs off
-that validator alone for 5 s while the next one is asked at once. An undecodable
-or rule-failing header is also reported to the balancer (benched: nothing but its
-poll reaches it for 60 s, doubling); a header from the future (past the clock +
-2 h) is never blamed, nor is an orphan run: retried from the final tip, and
-orphaned there too its chain leaves ours below the final tip, so that claim is
-not fetched again until it moves.
+- `best()` = the header chain's most-work tip, never a validator's bare claim.
+- `held_by()` = answering validators (catching up included) whose claim = `best`,
+  or is above it with their last `getblockhash` answer on our chain.
+- `mempool()` needs a `Live` holder (a catching-up validator lists nothing);
+  `validator_info()` any holder. Neither = `Unavailable::NotHeld` (fail closed).
 
 ## Read handle: `ChainViewSubscriber`
 

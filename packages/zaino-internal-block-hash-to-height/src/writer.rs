@@ -22,7 +22,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
         Self { store: Committer::new(store, batch_bytes) }
     }
 
-    /// For `Nfs::add`: committed view after every commit + serving
+    /// For `Nfs::add`: committed view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
         self.store.handle()
     }

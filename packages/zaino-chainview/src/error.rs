@@ -1,4 +1,4 @@
-//! Why the view could not be built, header sync stopped, or a broadcast failed
+//! Why the view could not be built or a broadcast failed
 
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
@@ -10,11 +10,6 @@ pub enum ConfigError {
     #[error("{count} endpoints configured, {max} is the ceiling", max = zaino_traffic::ValidatorId::MAX)]
     TooManyEndpoints { count: usize },
 }
-
-/// Final headers not durable: header sync ends, the process with it (never warn-and-continue)
-#[derive(Debug, thiserror::Error)]
-#[error("header store commit failed: {0}")]
-pub struct HeaderStoreFailed(#[from] zaino_persistence::StoreError);
 
 /// Submission no trusted validator accepted or listed (§6)
 ///

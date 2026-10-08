@@ -100,7 +100,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let mut headers = builder.header_chain(DEPTH);
     insert(&mut headers, &a).expect("A verifies");
     insert(&mut headers, &s[4..]).expect("S verifies");
-    headers.finalize(at(&a[2])).expect("in-memory store");
+    headers.finalize(at(&a[2]));
     let chain = Arc::new(headers.verified().expect("verified"));
 
     let engine = DiskEngine::new(SimFs::new());
@@ -183,7 +183,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         },
         "mempool": {
             "transactions": 2, "verified": 0, "ours_unverified": 1, "fully_spread": 0,
-            "trusted_readers": 0,
+            "trusted_readers": 1,
         },
         "forks": [
             { "from": block(&a[3]), "tip": block(&s[5]), "cumulative_work": work, "folded": null },
@@ -212,7 +212,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         "zaino_chainview_finality_paused 0".to_owned(),
         "zaino_chainview_mempool_transactions{state=\"verified\"} 0".to_owned(),
         "zaino_chainview_mempool_transactions{state=\"ours_unverified\"} 2".to_owned(),
-        format!("zaino_chainview_endpoint_state{{endpoint=\"{first}\",state=\"pending\"}} 1"),
+        format!("zaino_chainview_endpoint_state{{endpoint=\"{first}\",state=\"live\"}} 1"),
         format!("zaino_chainview_agreement{{endpoint=\"{first}\",agreement=\"unknown\"}} 1"),
         format!("zaino_chainview_push_stream{{endpoint=\"{first}\"}} 0"),
         format!("zaino_chainview_tip_height{{endpoint=\"{first}\"}} 5"),

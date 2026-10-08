@@ -24,6 +24,12 @@ pub trait ChainDataSource: Send + Sync + 'static {
         hash: BlockHash,
     ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 
+    /// `getblock "<height>" 0`: its best-chain block at `height`, decoded from consensus bytes
+    fn get_block_by_height(
+        &self,
+        height: Height,
+    ) -> impl Future<Output = Result<Block, QueryError<GetAtHeightError>>> + Send;
+
     /// `getblockheader <height> false` per height, batched: ancestry + raw headers, no bodies
     ///
     /// - one item per height, `heights` order

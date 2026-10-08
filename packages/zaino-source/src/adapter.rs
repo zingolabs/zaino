@@ -172,6 +172,14 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         self.raw_block(hash.to_string(), || GetBlockByHashError::NotFound(hash)).await
     }
 
+    async fn get_block_by_height(
+        &self,
+        height: Height,
+    ) -> Result<Block, QueryError<GetAtHeightError>> {
+        let id = u32::from(height).to_string();
+        self.raw_block(id, || GetAtHeightError::HeightNotFound(height)).await
+    }
+
     /// Raw form (verbose = two extra state reads per header on zebrad)
     async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
         let mut links = Vec::with_capacity(heights.len());

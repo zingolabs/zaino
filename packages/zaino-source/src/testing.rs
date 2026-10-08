@@ -21,7 +21,7 @@ use crate::{
     SendRawTransactionError, TransactionResponse,
 };
 
-/// How `get_block_by_hash` misanswers (each caught by the NFS body check):
+/// How `get_block_by_hash` / `get_block_by_height` misanswer (each caught by a body check):
 /// - `WrongBlock` = the asked block re-mined under another nonce
 /// - `Poisoned` = asked header + one extra transaction; `Mutated` = last tx repeated (CVE-2012-2459)
 /// - `WrongHeight` = the asked block labelled one height up
@@ -261,6 +261,14 @@ impl State {
         self.followed.best.get(u32::from(height) as usize)
     }
 
+    /// `block` as served: honest, or the lie it is told to tell
+    fn answer(&self, block: &Block) -> Block {
+        match self.lie {
+            Some(lie) => lie.told(block),
+            None => Block::clone(block),
+        }
+    }
+
     /// zebrad's verdict on `raw` over its best chain: listed at its fee, or refused
     fn admit(&mut self, raw: Vec<u8>) -> Result<TransactionId, SendRawTransactionError> {
         let malformed =
@@ -336,10 +344,18 @@ impl ChainDataSource for MockValidator {
         let state = self.state();
         let block = state.followed.best.iter().find(|block| block.header().hash == hash);
         let block = block.ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))?;
-        Ok(match state.lie {
-            Some(lie) => lie.told(block),
-            None => Block::clone(block),
-        })
+        Ok(state.answer(block))
+    }
+
+    async fn get_block_by_height(
+        &self,
+        height: Height,
+    ) -> Result<Block, QueryError<GetAtHeightError>> {
+        self.enter(Port::Block, |calls| calls.blocks += 1).await?;
+        let state = self.state();
+        let block = state.best_at(height);
+        let block = block.ok_or(QueryError::Domain(GetAtHeightError::HeightNotFound(height)))?;
+        Ok(state.answer(block))
     }
 
     async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {

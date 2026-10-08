@@ -151,7 +151,7 @@ pub(crate) async fn bootstrap(
     Ok(())
 }
 
-/// Archive per index (`kind.name()`); header_chain never from a snapshot
+/// Archive per index (`kind.name()`)
 const SNAPSHOTTED: [IndexKind; 5] = [
     IndexKind::CompactBlock,
     IndexKind::ValueBalance,

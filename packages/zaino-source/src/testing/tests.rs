@@ -7,7 +7,8 @@ use zaino_primitives::types::MerkleRoot;
 use super::fixtures;
 use super::*;
 
-/// - links, polls and blocks by hash: its best chain only, the chain's own header bytes and info
+/// - links, polls and blocks by hash or height: its best chain only, the chain's own header bytes
+///   and info
 /// - a reorg between its tip read and its `getblockhash` answers: one poll mixes both, the next
 ///   is whole
 /// - a `raw_tx` served by its bytes once mined; a `TxBuilder` tx's body = panic, never invented
@@ -31,6 +32,12 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
     let not_found =
         |answer| matches!(answer, Err(QueryError::Domain(GetBlockByHashError::NotFound(_))));
     assert!(not_found(unserved), "nothing above its tip");
+    let at_three = validator.get_block_by_height(h(3)).await.expect("on its best");
+    assert_eq!(at_three.header().hash, three.hash, "by height: its best-chain block");
+    let above_tip = validator.get_block_by_height(h(4)).await;
+    let height_not_found = matches!(above_tip,
+        Err(QueryError::Domain(GetAtHeightError::HeightNotFound(at))) if at == h(4));
+    assert!(height_not_found, "nothing above its tip by height");
 
     let fork = chain.fork(h(2)).outweigh().mine_empty(1).tip();
     validator.reorg_after_next_poll(&chain, fork);
@@ -68,7 +75,9 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
     for (lie, expected) in lies {
         validator.lie(lie);
         let served = validator.get_block_by_hash(three.hash).await.expect("answers");
-        assert_eq!(shape(&served), expected, "{lie:?}");
+        assert_eq!(shape(&served), expected, "{lie:?} by hash");
+        let served = validator.get_block_by_height(h(3)).await.expect("answers");
+        assert_eq!(shape(&served), expected, "{lie:?} by height");
     }
 
     validator.lie(None);

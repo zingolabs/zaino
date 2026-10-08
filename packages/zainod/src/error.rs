@@ -13,8 +13,6 @@ pub enum IndexerError {
     #[error(transparent)]
     ChainView(#[from] zaino_chainview::ConfigError),
     #[error(transparent)]
-    HeaderStore(#[from] zaino_chainview::HeaderStoreFailed),
-    #[error(transparent)]
     Nfs(#[from] zaino_nfs::NfsError),
     #[error(transparent)]
     Follow(#[from] zaino_sync::FollowError),
