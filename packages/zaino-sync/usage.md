@@ -64,8 +64,9 @@ What the rest of the daemon knows about one index: `view()` (committed), `tip()`
 
 - `new(store, batch)`; `handle()`; `compute(f)` (`f(&mut store)` on the CPU pool).
 - `next(&mut blocks)` → `Some(Run)` | `None` at `Shutdown` (everything committed). Commits first
-  when the buffer reaches `batch` or the stream stays quiet for 1 s. Panics on a gap above the
-  staged tip.
+  when the buffer (its heap: `Store::buffered_bytes`) reaches `batch`, or 1 s after the oldest
+  uncommitted run whether the stream is steady or quiet (crash rewind ≤ 1 s of blocks). Panics on
+  a gap above the staged tip.
 - `Run { blocks }`: `apply(store, fold)` folds each block `store` lacks; `apply_batch(store, fold)
   -> T` folds them as one batch (tree-state's hashing, value-balance's prevout probe).
 - `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip).
@@ -88,4 +89,4 @@ re-folded), compact-block pops one per step, so the two stay in step with either
 
 Send `Step`s into a real `IndexerDataSink<Block>` (and `FeeSink`), spawn `run`, wait on
 `handle().changed()`, read through a reader over the committed view, reopen the store for
-durability. With `#[tokio::test(start_paused = true)]` the 1 s idle commit costs nothing.
+durability. With `#[tokio::test(start_paused = true)]` the 1 s max-age commit costs nothing.

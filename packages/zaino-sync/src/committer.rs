@@ -1,23 +1,25 @@
 //! [`Committer`]: one index writer's store + its [`IndexHandle`] (`data-sink.md`)
 //!
-//! - Commit = batch full, or the stream quiet for [`IDLE`]
+//! - Commit = batch full, or the oldest uncommitted run [`MAX_AGE`] old (steady or quiet stream)
 //! - Store on a pool for each hop ([`Offloaded`]), never worked on the async loop
 
 use std::{num::NonZeroUsize, sync::Arc, time::Duration};
 
-use tokio::sync::watch;
+use tokio::{sync::watch, time::Instant};
 use zaino_persistence::{Changes, Store, View};
 use zaino_primitives::types::{Block, Height};
 
 use crate::{IndexHandle, Offloaded, Step, Subscription};
 
-/// Stream quiet this long = commit what is buffered (bulk arrivals never pause this long)
-const IDLE: Duration = Duration::from_secs(1);
+/// Oldest uncommitted run this old = commit (bounds crash rewind under steady load and quiet alike)
+const MAX_AGE: Duration = Duration::from_secs(1);
 
+/// `oldest` = when the first run since the last commit was handed out
 pub struct Committer<S: Store> {
     store: Offloaded<S>,
     committed: watch::Sender<S::View>,
     batch: NonZeroUsize,
+    oldest: Option<Instant>,
 }
 
 /// One run of final blocks for one index, in height order (held ones included: a restart resends)
@@ -64,7 +66,7 @@ impl<S: Store> Committer<S> {
     /// `batch` = buffered bytes per commit, and one run's stream bytes
     pub fn new(store: S, batch: NonZeroUsize) -> Self {
         let committed = watch::Sender::new(store.view());
-        Self { store: Offloaded::new(store), committed, batch }
+        Self { store: Offloaded::new(store), committed, batch, oldest: None }
     }
 
     /// For the NFS + snapshots: the committed view after every commit (tip = durable tip)
@@ -76,12 +78,14 @@ impl<S: Store> Committer<S> {
     ///
     /// - panics: a gap above the staged tip
     pub async fn next(&mut self, blocks: &mut Subscription<Block>) -> Option<Run> {
-        if self.store.get().buffered_bytes() >= self.batch.get() {
+        let age = self.oldest.map_or(Duration::ZERO, |oldest| oldest.elapsed());
+        if age >= MAX_AGE || self.store.get().buffered_bytes() >= self.batch.get() {
             self.commit().await;
         }
-        let step = match tokio::time::timeout(IDLE, blocks.next()).await {
+        let due = self.oldest.map_or(MAX_AGE, |oldest| MAX_AGE.saturating_sub(oldest.elapsed()));
+        let step = match tokio::time::timeout(due, blocks.next()).await {
             Ok(step) => step,
-            Err(_quiet) => {
+            Err(_due) => {
                 self.commit().await;
                 blocks.next().await
             }
@@ -95,6 +99,7 @@ impl<S: Store> Committer<S> {
         let next = staged.map_or(Height::GENESIS, |tip| tip.height.next());
         let name = self.store.get().schema().kind.name();
         assert!(height <= next, "{name}: final stream gap: {height} sent, {next} next");
+        self.oldest.get_or_insert_with(Instant::now);
         Some(run)
     }
 
@@ -110,6 +115,7 @@ impl<S: Store> Committer<S> {
     ///
     /// - failed commit = panic naming the index and its directory (store poisoned)
     async fn commit(&mut self) {
+        self.oldest = None;
         let store = self.store.get();
         if store.staged().tip() == store.view().tip() {
             return;
@@ -147,14 +153,15 @@ mod tests {
     /// Toy index (one 4-byte row per block, its height) behind a `Committer`, as a writer runs it,
     /// folding block by block (`Run::apply`) and as one batch (`Run::apply_batch`)
     ///
-    /// - Batch 8 bytes = two rows; paused clock: a commit's time shows its trigger (idle = +1 s)
-    /// - 0..=3 queued at once (batch, twice), 4 alone (idle); reopened: 3 + 4 resent (held:
-    ///   skipped), 5 new; a gap panics the writer
+    /// - Batch = three rows' buffered heap (probe); paused clock: a commit's time shows its trigger
+    /// - 0..=3 queued at once (batch, then max age for 3), 4 alone (+1 s), 5 then 6 0.6 s apart: one
+    ///   commit 1 s after 5 (a steady stream never defers it); reopened: 5 + 6 resent (held:
+    ///   skipped), 7 new; a gap panics the writer
     #[tokio::test(start_paused = true)]
-    async fn a_writer_folds_each_block_once_skips_held_and_commits_on_batch_or_idle() {
+    async fn a_writer_folds_each_block_once_skips_held_and_commits_on_batch_or_max_age() {
         for batched in [false, true] {
             let mut chain = MockChain::regtest();
-            let tip = chain.mine_empty(5);
+            let tip = chain.mine_empty(7);
             let blocks = chain.blocks(tip);
             let step = |at: u32| {
                 let block = Arc::clone(&blocks[at as usize]);
@@ -163,8 +170,14 @@ mod tests {
             let row = |block: &Block| u32::from(block.header().height).to_le_bytes();
             let engine = DiskEngine::new(SimFs::new());
             let open = || engine.open(Path::new("/toy"), &SCHEMA).expect("open");
+            let mut probe =
+                DiskEngine::new(SimFs::new()).open(Path::new("/p"), &SCHEMA).expect("probe");
+            let mut changes = probe.changes(blocks[0].at());
+            changes.sequence(ROWS).append(&row(&blocks[0]));
+            probe.apply(changes);
+            let batch = NonZeroUsize::new(3 * probe.buffered_bytes()).expect("nonzero");
             let start = |store: DiskStore| {
-                let mut committer = Committer::new(store, NonZeroUsize::new(8).expect("nonzero"));
+                let mut committer = Committer::new(store, batch);
                 let handle = committer.handle();
                 let mut sink = IndexerDataSink::new("final");
                 let mut blocks = sink.subscribe("toy", NonZeroUsize::MAX);
@@ -195,18 +208,23 @@ mod tests {
             for height in 0..=3 {
                 sink.send(step(height)).await;
             }
-            let (now, idle) = (Duration::ZERO, Duration::from_secs(1));
-            assert_eq!(commit(&mut handle, at).await, (Some(1), now), "{batched}: batch");
-            assert_eq!(commit(&mut handle, at).await, (Some(3), now), "{batched}: batch again");
+            let (now, max_age) = (Duration::ZERO, Duration::from_secs(1));
+            assert_eq!(commit(&mut handle, at).await, (Some(2), now), "{batched}: batch");
+            assert_eq!(commit(&mut handle, at).await, (Some(3), max_age), "{batched}: rest");
             sink.send(step(4)).await;
             let at = Instant::now();
-            assert_eq!(commit(&mut handle, at).await, (Some(4), idle), "{batched}: idle");
+            assert_eq!(commit(&mut handle, at).await, (Some(4), max_age), "{batched}: alone");
+            let at = Instant::now();
+            sink.send(step(5)).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            sink.send(step(6)).await;
+            assert_eq!(commit(&mut handle, at).await, (Some(6), max_age), "{batched}: steady");
             sink.shutdown();
             writer.await.expect("writer stops at Shutdown");
 
             let (sink, handle, writer) = start(open());
-            assert_eq!(handle.tip().map(|tip| u32::from(tip.height)), Some(4), "reopened");
-            for height in [3, 4, 5] {
+            assert_eq!(handle.tip().map(|tip| u32::from(tip.height)), Some(6), "reopened");
+            for height in [5, 6, 7] {
                 sink.send(step(height)).await;
             }
             sink.shutdown();
@@ -216,7 +234,7 @@ mod tests {
             let rows = rows.records(0..rows.count());
             let rows: Vec<u32> =
                 rows.iter().map(|row| u32::from_le_bytes(row[..].try_into().expect("4"))).collect();
-            assert_eq!(rows, [0, 1, 2, 3, 4, 5], "{batched}: each row once");
+            assert_eq!(rows, [0, 1, 2, 3, 4, 5, 6, 7], "{batched}: each row once");
 
             let (sink, _handle, writer) = start(
                 DiskEngine::new(SimFs::new()).open(Path::new("/toy"), &SCHEMA).expect("open"),

@@ -11,9 +11,17 @@ coinbase height, merkle root, CVE-2012-2459; a misanswer `report`ed and re-asked
 durable tip off the final chain stops it (`FollowError::Diverged`). `IndexerDataSink<T>` is a \
 byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carries \
 value-balance's fees to compact-block. `Committer` is the apply / commit loop every writer runs \
-(commits when the batch fills or after 1 s idle; `Run::{apply, apply_batch}` fold each block a \
+(commits when the batch fills or 1 s after its oldest uncommitted run; `Run::{apply, apply_batch}` fold each block a \
 store lacks); `IndexHandle` is what the rest of the daemon knows about one index (`view`, `tip`, \
 `changed`). `SyncProgress` = the last height sent \
 (`zaino_fetch_height`); `zaino_fetch_*_total` and `zaino_sink_queue_bytes` metrics; `compute` \
 for CPU work on the rayon pool.
+"""
+
+[[changes]]
+crate = "zaino-sync"
+kind = "fix"
+description = """
+`Committer` commits 1 s after its oldest uncommitted run, steady stream or quiet (was: 1 s of \
+quiet, re-armed per block, so a steady bulk stream only committed on a full batch).
 """
