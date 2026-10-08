@@ -767,9 +767,8 @@ mod tests {
     /// Fresh regtest node, compact_block (+ value_balance) and block_hash on, block_hash holding
     /// data: a value_balance archive failing its sha256 stops startup and wipes its staging;
     /// republished, a restart installs both empty indexes byte for byte, block_hash's archive
-    /// never fetched, nothing staged, the bootstrap status cleared
+    /// never fetched, nothing staged, the bootstrap status cleared (aria2c from the dev shell)
     #[tokio::test]
-    #[ignore = "needs aria2c on PATH: cargo test -p zainod --features snapshot -- --ignored"]
     async fn bootstrap_refuses_a_bad_archive_then_installs_every_empty_index() {
         let dir = tempfile::tempdir().expect("tempdir");
         let indexes = dir.path().join("indexes");
