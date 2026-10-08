@@ -390,7 +390,7 @@ impl SimFs {
         Arc::new(Self::default())
     }
 
-    /// Records a [`CrashPoint`] around every persistence point (for [`SimFs::crash_states`])
+    /// Records a `CrashPoint` around every persistence point (for [`SimFs::crash_states`])
     pub fn recording() -> Arc<Self> {
         let fs = Self::default();
         fs.lock_inner().recorded = Some(Vec::new());
@@ -405,7 +405,7 @@ impl SimFs {
         self.inner.lock().expect("sim fs mutex poisoned")
     }
 
-    /// Stamped onto every later [`CrashPoint`] (tests: commits acknowledged so far)
+    /// Stamped onto every later `CrashPoint` (tests: commits acknowledged so far)
     pub fn set_tag(&self, tag: u64) {
         self.lock_inner().tag = tag;
     }
