@@ -59,6 +59,10 @@ watermark is committed, `NotYet` when stamped but no watermark yet, `Absent`
 otherwise — including for capabilities with no local index at all, which the
 composer holding a passthrough provider widens.
 
+`local::Treestate` (`tree_state` + `headers`) and `local::SubtreeRoots` (the
+three `subtrees_*` indexes) are the treestate-serving capabilities, so a set
+that builds them backs `TreestateRead` locally.
+
 ## Treestate domain primitives
 
 `indexes::tree_state` holds the commitment-tree (treestate) domain layer and the
@@ -88,6 +92,11 @@ composer holding a passthrough provider widens.
   append-cumulative bridge's ordered-monoid scan over the three pools.
   `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
   chain order — projected from `CurrentZainoContext`.
+- `serve::pool_treestate` (and `TreeStateValue::pool_treestates`) render a
+  stored frontier as the domain `PoolTreestate` — the root, the legacy
+  `finalState` bytes, and the note-presence activation proxy (an empty tree is
+  reported absent). Both the finalised store and the non-finalised window call
+  it, so a treestate served either side of the seam renders identically.
 
 ## Subtree-roots indexes
 

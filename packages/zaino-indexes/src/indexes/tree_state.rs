@@ -13,6 +13,9 @@
 //! - [`sync`] — the sync-engine wiring: [`TreeStateIndex`] as the
 //!   `SelfCumulative<OrderedMonoid>` × Append index that drives the segment
 //!   algebra over the three pools during a build.
+//! - [`serve`] — the serve-time projection of a stored frontier onto the domain
+//!   [`PoolTreestate`](zaino_primitives::types::PoolTreestate), shared by the
+//!   finalised store and the non-finalised window so the two agree at the seam.
 //!
 //! [`PersistentTreeStateValue`]: codec::PersistentTreeStateValue
 //! [`legacy_tree_bytes`]: codec::legacy_tree_bytes
@@ -21,9 +24,11 @@
 pub mod codec;
 pub mod pools;
 pub mod segment;
+pub mod serve;
 pub mod sync;
 
 pub use codec::{legacy_tree_bytes, legacy_tree_from_bytes, TreeStateIndex, TreeStateValue};
 pub use pools::{ironwood_leaf, orchard_leaf, sapling_leaf};
 pub use segment::TreeSegment;
+pub use serve::pool_treestate;
 pub use sync::{TreeStateCtx, TreeStateEntry};
