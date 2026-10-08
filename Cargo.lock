@@ -5302,6 +5302,7 @@ dependencies = [
  "zcash_encoding 0.4.0",
  "zcash_primitives",
  "zcash_protocol",
+ "zcash_transparent",
 ]
 
 [[package]]

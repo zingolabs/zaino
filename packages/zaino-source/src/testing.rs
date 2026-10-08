@@ -11,7 +11,7 @@ use std::time::Duration;
 use zaino_primitives::testing::{encode_header, fee_left, header_hash, MockChain};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, BlockchainInfo, EndOfService, Height, NodeRelease,
-    OutPoint, PeerInfo, Transaction, TransactionId, TransactionLocation, Zatoshis,
+    OutPoint, PeerInfo, Script, Transaction, TransactionId, TransactionLocation, Zatoshis,
 };
 
 use crate::{
@@ -434,19 +434,49 @@ impl ChainDataSource for MockValidator {
 
 /// Real, empty v4 transaction (no inputs, outputs or bundles), distinct per `lock_time`
 pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
+    v4(lock_time, expiry, None)
+}
+
+/// Real v4 transaction spending `spends`, paying `pays` in vout order; no shielded bundles
+///
+/// - empty script sigs (nothing here verifies a signature); distinct per `spends`
+pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TransactionId, Vec<u8>) {
+    use zcash_transparent::address::Script as RawScript;
+    use zcash_transparent::bundle::{Authorized, Bundle, OutPoint as RawOutPoint, TxIn, TxOut};
+    let vin = spends.iter().map(|prevout| {
+        let from = RawOutPoint::new(<[u8; 32]>::from(prevout.txid), prevout.vout);
+        TxIn::from_parts(from, RawScript::default(), u32::MAX)
+    });
+    let vout = pays.iter().map(|(script, zats)| {
+        let mut prefixed = Vec::new();
+        zcash_encoding::CompactSize::write(&mut prefixed, script.as_bytes().len()).expect("Vec");
+        prefixed.extend_from_slice(script.as_bytes());
+        let script = RawScript::read(&prefixed[..]).expect("a length-prefixed script");
+        let value = zcash_protocol::value::Zatoshis::from_u64(*zats).expect("within the supply");
+        TxOut::new(value, script)
+    });
+    let bundle = Bundle { vin: vin.collect(), vout: vout.collect(), authorization: Authorized };
+    v4(0, 0, Some(bundle))
+}
+
+fn v4(
+    lock_time: u32,
+    expiry: u32,
+    transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
+) -> (TransactionId, Vec<u8>) {
     use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
     let tx = TransactionData::<Authorized>::from_parts(
         TxVersion::V4,
         zcash_protocol::consensus::BranchId::Canopy,
         lock_time,
         expiry.into(),
-        None,
+        transparent,
         None,
         None,
         None,
     )
     .freeze()
-    .expect("an empty v4 transaction freezes");
+    .expect("a v4 transaction without shielded bundles freezes");
     let mut raw = Vec::new();
     tx.write(&mut raw).expect("writes to a Vec");
     (TransactionId::from(*tx.txid().as_ref()), raw)

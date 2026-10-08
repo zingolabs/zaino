@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use zaino_primitives::sha256d;
-use zaino_primitives::testing::h;
+use zaino_primitives::testing::{h, outpoint, p2pkh};
 use zaino_primitives::types::MerkleRoot;
 
 use super::fixtures;
@@ -92,25 +92,26 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
 ///   failures; every call counted
 #[tokio::test(start_paused = true)]
 async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
+    let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
-    let tip = chain.mine_empty(1);
+    let tip = chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&alice, 5_000)));
     let validator = MockValidator::following(&chain, tip);
     let (listed, listed_raw) = raw_transaction(1, 0);
     assert_eq!(validator.mempool_insert(listed_raw.clone(), 2_000), listed);
-    let (sent, sent_raw) = raw_transaction(2, 0);
+    let (sent, sent_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
     assert_eq!(validator.send_raw_transaction(sent_raw.clone()).await.expect("relayed"), sent);
     let fee = |zats: u64| Zatoshis::new(zats).expect("in supply");
     let len = |raw: &[u8]| u32::try_from(raw.len()).expect("a small transaction");
     let mut both = vec![
         MempoolListed { txid: listed, fee: fee(2_000), encoded_len: len(&listed_raw) },
-        MempoolListed { txid: sent, fee: fee(0), encoded_len: len(&sent_raw) },
+        MempoolListed { txid: sent, fee: fee(1_000), encoded_len: len(&sent_raw) },
     ];
     both.sort_by_key(|entry| entry.txid);
     let polled = validator.get_poll_reading(true, &[]).await.expect("reachable");
-    assert_eq!(polled.listing, Ok(both));
+    assert_eq!(polled.listing, Ok(both), "sent: 5 000 in − 4 000 out");
     let metadata = polled.metadata.expect("asked");
     assert_eq!(metadata.peers.expect("answered"), []);
-    let entry = MempoolListed { txid: sent, fee: fee(0), encoded_len: len(&sent_raw) };
+    let entry = MempoolListed { txid: sent, fee: fee(1_000), encoded_len: len(&sent_raw) };
     let bytes = validator.get_raw_mempool_transactions(&[entry]).await.expect("reachable");
     assert_eq!(bytes, [Ok(sent_raw.clone())]);
 
