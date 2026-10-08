@@ -48,10 +48,11 @@ use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _,
 };
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
     BlockHash, BlockRef, ChainStateEpoch, Height, RelativeChainWork, TreeRoots,
 };
-use zaino_status::{NamedAtomicStatus, Status, StatusType};
+use zaino_status::{NamedAtomicStatus, StatusType};
 
 use crate::{
     error::{ChainHeadAdvanceError, ChainHeadInitError},
@@ -268,8 +269,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     }
 
     /// The runtime's current status.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
+    pub fn status(&self) -> ComponentStatus {
+        component_status(&self.status)
     }
 
     /// Stops the writer task.
@@ -323,6 +324,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 Ok(()) => {
                     consecutive_failures = 0;
                     backoff = self.config.initial_backoff();
+                    record_sync_failures(0, Duration::ZERO);
                     // `Ready` is already published from inside `tick`, before
                     // the advanced snapshot becomes observable to readers.
                     if self.wait_for_work(&mut wake).await.is_break() {
@@ -331,6 +333,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 }
                 Err(error) => {
                     consecutive_failures += 1;
+                    record_sync_failures(consecutive_failures, backoff);
                     if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
                             %error,
@@ -388,6 +391,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     #[instrument(name = "ChainHeadService::tick", skip(self))]
     async fn tick(&self) -> Result<(), ChainHeadAdvanceError> {
         let tip = self.chain_tip().await?;
+        metrics::gauge!(crate::metric_names::CHAIN_TIP_HEIGHT)
+            .set(f64::from(u32::from(tip.height)));
         let previous = self.current.load_full();
 
         // Nothing to do when the source's tip is the one we hold. A block hash
@@ -714,24 +719,13 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         &self,
         height: Height,
     ) -> Result<Option<zaino_primitives::types::Block>, ChainHeadAdvanceError> {
-        match self.source.get_block(height).await {
-            Ok(block) => Ok(Some(block)),
-            // Absent, not failed: the extension loop reads past the tip by
-            // design, which is how it learns where the tip is. Matched by name
-            // rather than a wildcard so a future second domain variant breaks
-            // the build here — the one site that must reclassify it — instead
-            // of being silently read as end-of-chain.
-            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockError::HeightNotFound(
-                missing,
-            ))) => {
-                debug!(height = %missing, "block_at_height: source reports no block; treating as absent");
-                Ok(None)
-            }
-            // Transport failure carries its cause through unchanged.
-            Err(zaino_source::QueryError::Fetch(fetch)) => {
-                Err(ChainHeadAdvanceError::SourceUnavailable(fetch))
-            }
-        }
+        present_or_absent(
+            self.source.get_block(height).await,
+            "block_at_height",
+            |domain| match domain {
+                zaino_source::GetBlockError::HeightNotFound(_) => true,
+            },
+        )
     }
 
     /// A block by hash, side-chain blocks included.
@@ -739,29 +733,69 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         &self,
         hash: BlockHash,
     ) -> Result<Option<zaino_primitives::types::Block>, ChainHeadAdvanceError> {
-        match self.source.get_block_by_hash(hash).await {
-            Ok(block) => Ok(Some(block)),
-            // Absent, not failed. Matched by name, not a wildcard, so a future
-            // second domain variant is caught by the compiler here rather than
-            // silently reclassified as absent.
-            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockByHashError::NotFound(
-                missing,
-            ))) => {
-                debug!(hash = %missing, "block_at_hash: source reports no block; treating as absent");
-                Ok(None)
-            }
-            // Transport failure carries its cause through unchanged.
-            Err(zaino_source::QueryError::Fetch(fetch)) => {
-                Err(ChainHeadAdvanceError::SourceUnavailable(fetch))
-            }
-        }
+        present_or_absent(
+            self.source.get_block_by_hash(hash).await,
+            "block_at_hash",
+            |domain| match domain {
+                zaino_source::GetBlockByHashError::NotFound(_) => true,
+            },
+        )
     }
 }
 
-impl<S: ChainHeadBlockSource> Status for ChainHeadService<S> {
-    fn status(&self) -> StatusType {
-        self.status.load()
+/// A block read as the chain head sees it: present, absent, or failed.
+///
+/// `is_absent` classifies the domain error, and is an exhaustive match at each
+/// call site, so a future domain variant breaks the build there — the one place
+/// that must decide whether it means end-of-chain. Absence is not a failure: the
+/// extension loop reads past the tip by design, which is how it learns where the
+/// tip is. Any other domain answer, and every transport failure, goes through
+/// [`advance_error`].
+fn present_or_absent<T, E, N>(
+    read: Result<T, zaino_source::QueryError<E, N>>,
+    context: &str,
+    is_absent: impl FnOnce(&E) -> bool,
+) -> Result<Option<T>, ChainHeadAdvanceError>
+where
+    E: fmt::Debug + fmt::Display,
+    N: std::error::Error + Into<zaino_source::NonDomainError>,
+{
+    match read {
+        Ok(block) => Ok(Some(block)),
+        Err(zaino_source::QueryError::Domain(domain)) if is_absent(&domain) => {
+            debug!(context, %domain, "source reports no block; treating as absent");
+            Ok(None)
+        }
+        Err(error) => Err(advance_error(error, context)),
     }
+}
+
+impl<S: ChainHeadBlockSource> StatusSource for ChainHeadService<S> {
+    fn status(&self) -> ComponentStatus {
+        component_status(&self.status)
+    }
+}
+
+/// A status cell's fused value, as the two axes a component reports.
+///
+/// Transitional, and the only place the two vocabularies meet here. The
+/// runtime tracks the fused [`StatusType`] throughout — `next_status` still
+/// folds a tick outcome into one value — and this re-splits it at the reporting
+/// boundary. It goes when the runtime holds a phase and a condition separately.
+pub(crate) fn component_status(status: &NamedAtomicStatus) -> ComponentStatus {
+    let (lifecycle, health) = match status.load() {
+        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
+        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
+        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
+        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
+        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
+        StatusType::Busy | StatusType::RecoverableError => {
+            (Lifecycle::Syncing, Health::Recoverable)
+        }
+        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
+    };
+
+    ComponentStatus::new(ComponentName(status.name()), lifecycle, health)
 }
 
 impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
@@ -807,17 +841,23 @@ fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
 ///
 /// A transport failure is threaded through unchanged as the `#[source]` of
 /// [`SourceUnavailable`](ChainHeadAdvanceError::SourceUnavailable), so
-/// `Error::source()` yields the underlying [`FetchError`](zaino_source::FetchError)
+/// `Error::source()` yields the underlying [`NonDomainError`](zaino_source::NonDomainError)
 /// and its machine-readable failure mode. A domain rejection wraps no external
 /// error, so it stays message-only under
 /// [`InconsistentSource`](ChainHeadAdvanceError::InconsistentSource), tagged
 /// with `context` to name the query that was refused.
-fn advance_error<E: fmt::Debug + fmt::Display>(
-    error: zaino_source::QueryError<E>,
+fn advance_error<E, N>(
+    error: zaino_source::QueryError<E, N>,
     context: &str,
-) -> ChainHeadAdvanceError {
+) -> ChainHeadAdvanceError
+where
+    E: fmt::Debug + fmt::Display,
+    N: std::error::Error + Into<zaino_source::NonDomainError>,
+{
     match error {
-        zaino_source::QueryError::Fetch(fetch) => ChainHeadAdvanceError::SourceUnavailable(fetch),
+        zaino_source::QueryError::NonDomain(non_domain) => {
+            ChainHeadAdvanceError::SourceUnavailable(non_domain.into())
+        }
         zaino_source::QueryError::Domain(domain) => {
             ChainHeadAdvanceError::InconsistentSource(format!("{context}: {domain}"))
         }
@@ -1016,6 +1056,14 @@ pub(crate) fn classify_tip_change(
         None if old.height < retained_floor => TipChange::Advance,
         None => TipChange::Reorg(None),
     }
+}
+
+/// Sets the sync failure gauges; zero failures means healthy.
+fn record_sync_failures(consecutive_failures: u32, backoff: Duration) {
+    use crate::metric_names::{SYNC_BACKOFF_SECONDS, SYNC_CONSECUTIVE_FAILURES};
+
+    metrics::gauge!(SYNC_CONSECUTIVE_FAILURES).set(f64::from(consecutive_failures));
+    metrics::gauge!(SYNC_BACKOFF_SECONDS).set(backoff.as_secs_f64());
 }
 
 /// Reports a tip change that rewrote part of the chain.

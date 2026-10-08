@@ -34,7 +34,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::error::{FailureMode, QueryError, SourceError, UnavailableError};
+use crate::error::{FailureMode, NonDomainError, QueryError, SourceError, UnavailableError};
 
 /// Seals the canonical (resilient) ports so only [`ValidatorClient`] can implement
 /// them.
@@ -156,11 +156,16 @@ impl<V> ValidatorClient<V> {
     }
 
     /// Core retry loop. Every generated port method delegates here.
-    pub(crate) async fn with_retry<T, E, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
+    ///
+    /// Generic over the adapter's own non-domain error `N`: this is the one place
+    /// it is erased to the seam [`NonDomainError`] (via `N: Into<NonDomainError>`),
+    /// so the consumer-facing [`SourceError`] never carries the adapter type.
+    pub(crate) async fn with_retry<T, E, N, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
     where
         E: core::fmt::Debug + core::fmt::Display,
+        N: std::error::Error + Into<NonDomainError>,
         F: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, QueryError<E>>>,
+        Fut: Future<Output = Result<T, QueryError<E, N>>>,
     {
         let mut attempt = 0u32;
 
@@ -172,7 +177,9 @@ impl<V> ValidatorClient<V> {
 
                 Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
 
-                Err(QueryError::Fetch(e)) => {
+                Err(QueryError::NonDomain(n)) => {
+                    // Erase the adapter's type to the seam here, once.
+                    let e: NonDomainError = n.into();
                     if !is_retryable(&e.mode) || attempt >= self.policy.max_attempts {
                         if is_retryable(&e.mode) {
                             return Err(SourceError::Unavailable(UnavailableError {
@@ -180,7 +187,7 @@ impl<V> ValidatorClient<V> {
                                 last_error: e,
                             }));
                         }
-                        return Err(SourceError::Fetch(e));
+                        return Err(SourceError::NonDomain(e));
                     }
 
                     tokio::time::sleep(self.policy.delay_for(attempt)).await;
@@ -338,23 +345,25 @@ mod tests {
         }
 
         fn test_block(h: u32, hash_byte: u8) -> Block {
-            Block {
-                header: BlockHeader {
-                    hash: hash(hash_byte),
-                    version: 4,
-                    prev_hash: BlockHash::ZERO,
-                    height: height(h),
-                    time: 0,
-                    merkle_root: [0; 32].into(),
-                    block_commitments: [0; 32].into(),
-                    bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
-                        .expect("valid nBits"),
-                    nonce: [0; 32],
-                    solution: EquihashSolution::Regtest([0; 36]),
-                },
-                transactions: vec![],
-                chain_metadata: ChainMetadata::ZERO,
-            }
+            let header = BlockHeader {
+                hash: hash(hash_byte),
+                version: 4,
+                prev_hash: BlockHash::ZERO,
+                height: height(h),
+                time: 0,
+                merkle_root: [0; 32].into(),
+                block_commitments: [0; 32].into(),
+                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
+                    .expect("valid nBits"),
+                nonce: [0; 32],
+                solution: EquihashSolution::Regtest([0; 36]),
+            };
+            Block::try_new(
+                header,
+                vec![crate::mock::coinbase(hash(hash_byte))],
+                ChainMetadata::ZERO,
+            )
+            .expect("a test block carries its coinbase")
         }
 
         fn fast_policy(max_attempts: u32) -> RetryPolicy {
@@ -403,7 +412,7 @@ mod tests {
 
             let err = source.get_block(height(0)).await.unwrap_err();
             assert!(
-                matches!(err, SourceError::Fetch(ref e) if e.mode == FailureMode::Auth),
+                matches!(err, SourceError::NonDomain(ref e) if e.mode == FailureMode::Auth),
                 "expected Fetch(Auth), got: {err:?}"
             );
         }

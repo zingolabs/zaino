@@ -8,7 +8,8 @@
 use super::error_map::chain_store_error;
 use super::from_domain::stored_script_tag;
 use super::to_domain::{block_tx_position, domain_txid, stored_tx_out};
-use zaino_chain_store::{ChainStoreError, ChainStoreSource, StoredAddress};
+use zaino_chain_store::{ChainStoreError, ChainStoreSource};
+use zaino_primitives::types::TransparentAddressKey;
 use zaino_primitives::types::{Outpoint as DomainOutpoint, TransactionId};
 
 use crate::error::StoreError;
@@ -120,7 +121,7 @@ impl<T: ChainStoreSource> zaino_chain_store::TransparentHistoryIndex for DbReade
 
 /// Whether a stored output is keyed under `address`.
 #[cfg(feature = "transparent_address_history_experimental")]
-fn pays(output: &TxOutCompact, address: &StoredAddress) -> bool {
+fn pays(output: &TxOutCompact, address: &TransparentAddressKey) -> bool {
     *output.script_hash() == address.hash
         && output.script_type() == stored_script_tag(address.script_type)
 }

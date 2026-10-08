@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.8.0"
+version = "0.10.0"
 
 [features]
 default = []
@@ -96,6 +96,8 @@ zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
+zaino-component.workspace = true
+zaino-chain = { workspace = true }
 
 [dev-dependencies]
 zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }

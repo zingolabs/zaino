@@ -13,6 +13,22 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.2] - 2026-09-26
+### Added
+- Poll-loop metrics `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`, `zaino.mempool.unadmitted`, `zaino.mempool.poll_seconds`.
+### Changed
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+
+## [0.2.1] - 2026-09-11
+
+### Added
+### Changed
+- Requires zaino-mempool, zaino-primitives and zaino-source 0.2.1. No code
+  change: the dependency requirements are part of the packaged manifest.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-08-28
 
 ### Added

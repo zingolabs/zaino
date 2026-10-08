@@ -9,6 +9,40 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.10.0] - 2026-09-26
+### Added
+- Add a stream of indexed-tip changes, driven by the existing watch notifications instead of polling.
+### Changed
+- Sync-loop metrics: added `zaino.sync.consecutive_failures` and `zaino.sync.backoff_seconds`.
+  _Migration:_ Removed metrics: `zaino.sync.lag_blocks` (derive `zaino.chain.tip_height - zaino.sync.finalized_height`), `iterations_total`, `iteration_duration_seconds`, `errors_total`, `has_reached_tip`, `reached_tip_at`. Feature `prometheus` removed.
+- dependency `zaino-chain-head` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-head-service` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-store-zainodb` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-consensus` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+- dependency `zaino-rpc` 0.2.1→0.3.0 crossed the requirement `^0.2.1`
+### Fixed
+- An address's net value no longer rejects busy address history as corrupt. Gross receipts and spends may exceed the supply; only an impossible net value is refused.
+- `getrawtransaction` in verbose mode reports `time` and `blocktime` from the containing block's header.
+### Internal
+- Confirmation counts use the exact confirmation state types.
+- Transparent addresses are constructed through the validating constructor.
+- Chain-head blocks converted for serving now carry no chain work, instead of reinterpreting the window's anchor-relative total as an absolute one.
+- - The chain-index proptests run against a persistent finalised state and wait for it to finish building; they no longer exercise ephemeral mode.
+- Generated chains are relinked (merkle root and parent hash) so the finalised state's write-path checks accept them, which also re-enables make_chain.
+- Test-only: the chain-head test builds block work through SingleBlockWork::new, and the orphaned golden module that no mod declaration named is deleted.
+
+## [0.9.0] - 2026-09-11
+
+### Added
+### Changed
+- The `prometheus` feature also enables `zaino-chain-store-zainodb`'s, whose
+  write-path metric names this crate re-exports.
 - The finalised state is no longer part of this crate. It is now the
   `zaino-chain-store` / `zaino-chain-store-zainodb` subsystem: ports in the
   domain crate, the LMDB implementation in the adapter. See ADR-0012.
@@ -61,7 +95,23 @@ and this library adheres to Rust's notion of
     in a database module.
 ### Deprecated
 ### Removed
+- The `zaino.mempool.transactions` and `zaino.mempool.tip_changes_total`
+  metric names, which no crate emits.
 ### Fixed
+- `get_block` and `get_block_nullifiers` serve the default pool set, as
+  `get_block_range` does for a request without `poolTypes`. They served
+  every pool, so a transparent-only transaction appeared in the
+  single-block form and not in the range form.
+- An error relayed from the backing validator carries the validator's own
+  message. Only the message crosses the gRPC boundary, so a rejected
+  transaction was indistinguishable from an unreachable node.
+- Chain-store errors are classified by name. An inverted range and an
+  index this deployment does not build are no longer reported as server
+  faults, and `get_tx_out_set_info` keeps a retryable `NotReady`
+  retryable instead of re-wrapping it as an internal error.
+- A failed finalised compact-block read is logged before the fallback to
+  the validator, so a damaged database is distinguishable from one that is
+  merely behind.
 
 ## [0.8.0] - 2026-08-28
 

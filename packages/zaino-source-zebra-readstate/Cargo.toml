@@ -1,6 +1,6 @@
 [package]
 name = "zaino-source-zebra-readstate"
-version = "0.2.0"
+version = "0.2.2"
 edition.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -23,6 +23,7 @@ tracing = { workspace = true, optional = true }
 zebra-rpc.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 
 [features]
 tracing = ["dep:tracing"]

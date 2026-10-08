@@ -2,3 +2,4 @@
 //! private fields. The contract tests themselves live in `graph::tests`.
 
 mod invariants;
+mod txout;

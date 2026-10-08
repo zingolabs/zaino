@@ -1,0 +1,97 @@
+[package]
+name = "zaino-chain"
+description = "ChainView: the ports for Zaino's unified chain read surface, and the composer that implements them."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+version = "0.1.0"
+
+[features]
+default = []
+
+# The fake store / head / source triple the composer's own suite runs against.
+#
+# A feature rather than a `#[cfg(test)]` module because consumers need it too:
+# a crate testing its own use of ChainView wants a chain view it can steer,
+# and building a second set of fakes is how two test suites come to disagree
+# about what the ports mean.
+testing = []
+
+# Declares the transparent-address-history capability: the `AddressRead` port
+# and its merge. Forwards to the same feature on both halves, which is what
+# the capability is — a merge of the store's finalised effects with the chain
+# head's recent ones, and neither alone is an address's history.
+#
+# Nothing implements the chain head's half yet, so `serving_address_history`
+# has a bound no type satisfies: the builder method is there, and unreachable
+# until one does. See the crate docs.
+transparent_address_history_experimental = [
+    "zaino-chain-store/transparent_address_history_experimental",
+    "zaino-chain-head/transparent_address_history_experimental",
+]
+
+[dependencies]
+# The domain vocabulary. This crate names no wire, node, or backend type.
+zaino-primitives = { workspace = true }
+
+# The two tiers ChainView composes. Depended on as domain crates — their ports
+# and their vocabulary — never as their implementations: no `*-service` and no
+# `*-zainodb` appears here, which is what lets the composer be generic over
+# both.
+zaino-chain-head = { workspace = true }
+zaino-chain-store = { workspace = true }
+
+# The validator ports the passthrough reads go through. As with the two tiers,
+# a capability alias over `zaino-source` rather than a port of our own.
+zaino-source = { workspace = true }
+
+# Runtime status, so a consumer asks how a chain view is faring through the
+# same vocabulary every other subsystem reports in: a lifecycle phase and a
+# health condition, read through `StatusSource`.
+zaino-component = { workspace = true }
+
+# Streams — the ranged block reads return one.
+futures = { workspace = true }
+
+# Runtime. `sync` for the tip subscription and the freeze stream; `rt` because
+# the sync loop is a spawned task.
+tokio = { workspace = true, features = ["rt", "sync"] }
+
+# Cancellation, so the sync loop shuts down through the same token every other
+# spawned subsystem in the workspace takes.
+tokio-util = { workspace = true }
+
+# Utility
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The compile-time check that a real validator satisfies `ChainViewSource`.
+zaino-source-zebra = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+# This crate, with its fakes switched on, so the integration tests under
+# `tests/` can reach them. A self dev-dependency is the standard way to enable a
+# feature for a crate's own integration tests without shipping it by default:
+# `tests/` link the library as an external crate, so they see only the features
+# the build enabled, and the alternative is making `testing` a default feature
+# and shipping the fakes to every consumer.
+zaino-chain = { path = ".", features = ["testing"] }
+
+# The checked-in regtest chain, and the conversion that turns it into domain
+# types. Dev-only, deliberately: `zebra-chain` must not reach this crate's
+# shipped `testing` feature, which is part of its public dependency contract.
+# `zaino-state` takes the same feature the same way rather than keeping a
+# second copy of the vectors.
+zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
+zaino-convert-zebra = { workspace = true }
+futures = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

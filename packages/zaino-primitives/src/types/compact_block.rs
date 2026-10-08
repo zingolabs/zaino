@@ -72,7 +72,7 @@ impl From<&super::Block> for PreIndexCompactBlock {
             time: block.header.time,
             bits: block.header.bits,
             transactions: block
-                .transactions
+                .transactions()
                 .iter()
                 .map(PreIndexCompactTx::from)
                 .collect(),

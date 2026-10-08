@@ -172,18 +172,21 @@ jobs:
             exit 1
           fi
 
-      # 2. Apply versions + changelogs, consume changesets. All working-tree edits.
+      # 2. Apply changelogs + versions, consume changesets. All working-tree edits.
+      # `changelog` runs BEFORE `bump`: like step 1, it derives versions from the
+      # current Cargo.toml, so after the bump it would label every section one
+      # version too high (zingolabs/release_manager#2).
       # `bump` also refreshes Cargo.lock so the `--locked` steps below pass.
       # `consume` MARKS each changeset with `consumed_in = "cycle-N"` (it does not
       # delete): derivation filters consumed changesets out, so the next cycle sees
       # an empty set while `.changesets/` keeps the provenance ledger. The stamp is
       # delivered to `dev` by the stable->dev backport, same as the bump/changelog
       # edits. See docs/release/changeset-format.md § Lifecycle.
-      - name: Apply bump, changelog, consume changesets
+      - name: Apply changelog, bump, consume changesets
         run: |
           set -euo pipefail
+          relman changelog         # write CHANGELOGs (before bump; see above)
           relman bump              # edit manifests + root pins + Cargo.lock
-          relman changelog         # write CHANGELOGs
           # `consume` stores its --cycle verbatim as the on-disk audit stamp, so
           # we pass the fully-rendered period id `cycle-N` (matching the git tag)
           # for a clean cross-reference — unlike `tags`/`pr-body`, which take the

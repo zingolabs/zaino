@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::rpc::PeerInfo;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetPeerInfo`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -26,9 +26,9 @@ pub enum GetPeerInfoError {
 ///
 /// Maps to `getpeerinfo` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetPeerInfo: Send + Sync {
+pub trait OneShotGetPeerInfo: ValidatorSource + Send + Sync {
     /// List peer connections.
     fn get_peer_info(
         &self,
-    ) -> impl Future<Output = Result<Vec<PeerInfo>, QueryError<GetPeerInfoError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<PeerInfo>, QueryError<GetPeerInfoError, Self::NonDomain>>> + Send;
 }

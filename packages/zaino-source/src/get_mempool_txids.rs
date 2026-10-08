@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::TransactionId;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetMempoolTxids`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -28,9 +28,11 @@ pub enum GetMempoolTxidsError {
 ///
 /// Maps to `getrawmempool` over JSON-RPC.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetMempoolTxids: Send + Sync {
+pub trait OneShotGetMempoolTxids: ValidatorSource + Send + Sync {
     /// Fetch mempool txids.
     fn get_mempool_txids(
         &self,
-    ) -> impl Future<Output = Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>>> + Send;
+    ) -> impl Future<
+        Output = Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError, Self::NonDomain>>,
+    > + Send;
 }
