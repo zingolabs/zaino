@@ -16,6 +16,7 @@
 pub mod concat_fold_index;
 pub mod concat_index;
 pub mod count_index;
+pub mod cross_double_index;
 pub mod cumulative_series_index;
 pub mod cumulative_sum_index;
 pub mod running_sum_index;
@@ -178,6 +179,14 @@ impl ProvideContext<concat_index::Context> for TestBlockContext {
 impl ProvideContext<concat_fold_index::Context> for TestBlockContext {
     fn context(&self) -> concat_fold_index::Context {
         concat_fold_index::Context {
+            height: BlockHeight::new(self.height),
+        }
+    }
+}
+
+impl ProvideContext<cross_double_index::Context> for TestBlockContext {
+    fn context(&self) -> cross_double_index::Context {
+        cross_double_index::Context {
             height: BlockHeight::new(self.height),
         }
     }

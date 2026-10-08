@@ -32,6 +32,7 @@ use crate::index_pipelines::IndexPipelines;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
+use crate::traits::{DepsReader, PendingOverlay};
 use zaino_primitives::types::Height;
 
 /// Configuration for the sync engine.
@@ -407,12 +408,37 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         Ok(extract_jobs)
     }
 
-    /// Run extractions in parallel via rayon's work-stealing pool.
+    /// Run a dispatch's extractions, routing by scope.
+    ///
+    /// Cross-index jobs need a [`DepsReader`] over their dependencies' output, so
+    /// they take a separate, dependency-reading path
+    /// ([`run_cross_extractions`](Self::run_cross_extractions)). Everything else
+    /// (BlockLocal, SelfCumulative) extracts from the block context alone and
+    /// fans out over rayon ([`run_local_extractions`](Self::run_local_extractions)).
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
+    fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
+        let (cross_jobs, local_jobs): (Vec<&ExtractJob>, Vec<&ExtractJob>) =
+            jobs.iter().partition(|job| self.is_cross(job.index));
+
+        self.run_local_extractions(&local_jobs)?;
+        self.run_cross_extractions(&cross_jobs)
+    }
+
+    /// Whether `index`'s declared scope is [`CrossIndex`].
+    ///
+    /// [`CrossIndex`]: crate::descriptor::InputScope::CrossIndex
+    fn is_cross(&self, index: IndexId) -> bool {
+        self.pipelines.get(&index).is_some_and(|pipeline| {
+            pipeline.descriptor().scope == crate::descriptor::InputScope::CrossIndex
+        })
+    }
+
+    /// Run non-cross extractions in parallel via rayon's work-stealing pool.
     ///
     /// Prepares (pipeline, context) pairs on the calling thread, then
     /// fans out via `par_iter`. Borrows from `self` — no Arc cloning.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
-    fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
+    fn run_local_extractions(&self, jobs: &[&ExtractJob]) -> Result<(), SyncError> {
         let work: Vec<_> = jobs
             .iter()
             .map(|job| {
@@ -450,6 +476,58 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         })?;
 
         Ok(())
+    }
+
+    /// Run cross-index extractions over a [`DepsReader`] built once for this
+    /// dispatch.
+    ///
+    /// The overlay is built from the ops already persisted into not-yet-committed
+    /// batches (a dependency's batch-β output lives there until the shared atomic
+    /// commit), and one backend reader is pinned for the whole set — the reader
+    /// port is not `Sync`, so the batch's cross reads run over this one handle
+    /// rather than fanning out. That is cheap: the scheduler already removed the
+    /// expensive serialisation (the full-batch gate), and each read here is a
+    /// point lookup. Each job gets a `DepsReader` scoped to its own declared
+    /// dependencies.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
+    fn run_cross_extractions(&self, jobs: &[&ExtractJob]) -> Result<(), SyncError> {
+        if jobs.is_empty() {
+            return Ok(());
+        }
+
+        let overlay = self.build_pending_overlay();
+        let reader = self.backend.reader()?;
+
+        for job in jobs {
+            let ctx = self
+                .buffer
+                .get(job.global_offset)
+                .expect("block available — scheduler verified watermark");
+            let pipeline = self
+                .pipelines
+                .get(&job.index)
+                .expect("scheduler only emits registered indexes");
+            let deps = DepsReader::new(&reader, &overlay, pipeline.descriptor().dependencies);
+            pipeline.extract_one_cross(job.global_offset, &ctx, &deps)?;
+        }
+
+        Ok(())
+    }
+
+    /// Build the [`PendingOverlay`] from the ops stashed for not-yet-committed
+    /// batches.
+    ///
+    /// Applied in ascending batch order so a later batch's write of a key shadows
+    /// an earlier one (latest-wins); within a batch, persist order already places
+    /// the last writer last.
+    fn build_pending_overlay(&self) -> PendingOverlay {
+        let mut overlay = PendingOverlay::default();
+        let mut batches: Vec<BatchIndex> = self.pending_ops.keys().copied().collect();
+        batches.sort_by_key(BatchIndex::value);
+        for batch in batches {
+            overlay.apply(&self.pending_ops[&batch]);
+        }
+        overlay
     }
 
     /// Report completed extractions to the scheduler.

@@ -43,13 +43,13 @@ use std::sync::Mutex;
 
 use crate::backend::{BackendReader, Namespace, WriteOp};
 use crate::descriptor::{
-    Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative, Sequential,
+    Append, BlockLocal, CrossIndex, Descriptor, Fold, Monoidal, SelfCumulative, Sequential,
 };
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BlockHeight, BlockOffset};
 use crate::traits::{
-    CumulativeAppend, ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold,
-    MergeMonoidal, ProvideContext, Schema,
+    CumulativeAppend, DepsReader, ExtractCross, ExtractCumulative, ExtractLocal, IndexDef,
+    MergeAppend, MergeFold, MergeMonoidal, ProvideContext, Schema,
 };
 
 // ===========================================================================
@@ -80,6 +80,8 @@ impl sealed::Sealed for (BlockLocal, Fold) {}
 impl sealed::Sealed for (SelfCumulative<Sequential>, Append) {}
 impl sealed::Sealed for (SelfCumulative<Sequential>, Monoidal) {}
 impl sealed::Sealed for (SelfCumulative<Sequential>, Fold) {}
+
+impl sealed::Sealed for (CrossIndex, Append) {}
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Append)
 where
@@ -159,6 +161,20 @@ where
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
         Box::new(CumulativeBridge::<I, FoldStrategy>::new())
+    }
+}
+
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (CrossIndex, Append)
+where
+    I: ExtractCross
+        + MergeAppend
+        + Schema<Vec<<I as IndexDef>::Delta>>
+        + IndexDef<Scope = CrossIndex, Composition = Append>
+        + zaino_persistence_codec::EntryCodec,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CrossBridge::<I>::new())
     }
 }
 
@@ -615,6 +631,104 @@ where
             .expect("delta mutex poisoned")
             .drain(..)
             .collect();
+        *self.merged.lock().expect("merged mutex poisoned") = Some(deltas);
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        persist_merged::<I, Vec<I::Delta>>(&self.merged)
+    }
+}
+
+// ===========================================================================
+// CrossBridge — the (CrossIndex, Append) bridge
+// ===========================================================================
+
+/// Stateful bridge for `(CrossIndex, Append)` indexes.
+///
+/// A cross index's extraction reads other indexes' output through a
+/// [`DepsReader`], so it runs in a later DAG phase than its dependencies — the
+/// scheduler releases its batch β only once every dependency has persisted β
+/// into the engine's pending atomic commit (the `Pipelined` firing rule). Once
+/// that gate opens the batch is **block-parallel**: each block's delta is an
+/// independent read of the dependencies' already-fixed batch output, with no
+/// inter-block carry. The engine therefore extracts the batch much like a
+/// [`LocalBridge`], differing only in that it threads a `DepsReader` to
+/// [`extract_one_cross`](IndexPipeline::extract_one_cross).
+///
+/// Composition is [`Append`]: each block emits a disjoint entry. Deltas are
+/// tagged with their [`BlockOffset`] and reordered to chain order before persist,
+/// matching `LocalBridge` — Append does not depend on order, but the uniform
+/// reorder keeps the merged entry sequence deterministic.
+pub(crate) struct CrossBridge<I: IndexDef> {
+    descriptor: Descriptor,
+    deltas: Mutex<Vec<(BlockOffset, I::Delta)>>,
+    merged: Mutex<Option<Vec<I::Delta>>>,
+    _phantom: PhantomData<I>,
+}
+
+impl<I> CrossBridge<I>
+where
+    I: IndexDef + zaino_persistence_codec::EntryCodec,
+{
+    fn new() -> Self {
+        Self {
+            descriptor: I::descriptor(<I as zaino_persistence_codec::EntryCodec>::KEY_ORDER),
+            deltas: Mutex::new(Vec::new()),
+            merged: Mutex::new(None),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<Ctx, I> IndexPipeline<Ctx> for CrossBridge<I>
+where
+    I: ExtractCross
+        + MergeAppend
+        + Schema<Vec<<I as IndexDef>::Delta>>
+        + zaino_persistence_codec::EntryCodec,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
+    // A cross index extracts through `extract_one_cross` — it needs a
+    // `DepsReader`. The engine routes cross jobs there, so this is never called;
+    // reaching it is a scope-routing bug.
+    fn extract_one(&self, _offset: BlockOffset, _ctx: &Ctx) -> Result<(), PipelineError> {
+        Err(PipelineError::ScopeRouting {
+            index: I::NAME.as_str(),
+        })
+    }
+
+    fn extract_one_cross(
+        &self,
+        offset: BlockOffset,
+        ctx: &Ctx,
+        deps: &DepsReader<'_>,
+    ) -> Result<(), PipelineError> {
+        let delta = I::extract(&ctx.context(), deps).map_err(PipelineError::extract)?;
+        self.deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .push((offset, delta));
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let mut tagged: Vec<(BlockOffset, I::Delta)> = self
+            .deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect();
+
+        // Offsets are unique within a batch, so the sort is total; reorder to
+        // chain order before persist so the entry sequence is deterministic.
+        tagged.sort_unstable_by_key(|(offset, _)| *offset);
+        let deltas: Vec<I::Delta> = tagged.into_iter().map(|(_, delta)| delta).collect();
+
         *self.merged.lock().expect("merged mutex poisoned") = Some(deltas);
         Ok(())
     }

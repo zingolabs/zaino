@@ -206,12 +206,25 @@ impl Scheduler {
             }
 
             // How many blocks to emit depends on the index's scope:
-            // - BlockLocal: all available (fully parallel, no inter-block deps)
-            // - SelfCumulative/CrossIndex: one at a time (sequential)
+            // - BlockLocal: all available (fully parallel, no inter-block deps).
+            // - CrossIndex: all available once the dependency gate is open. Each
+            //   block reads the dependencies' already-fixed batch output
+            //   independently, so the batch is block-parallel — the gate (a
+            //   full-batch wait on the dependency), not a per-block carry, is what
+            //   serialised it. The `firing_rules_satisfied` check above *is* that
+            //   gate; past it, emit the whole batch like BlockLocal.
+            // - SelfCumulative: one at a time — each block's extraction needs the
+            //   previous block's carry.
             let is_parallel = self
                 .dag
                 .node(id)
-                .map(|n| n.descriptor.scope == crate::descriptor::InputScope::BlockLocal)
+                .map(|n| {
+                    matches!(
+                        n.descriptor.scope,
+                        crate::descriptor::InputScope::BlockLocal
+                            | crate::descriptor::InputScope::CrossIndex
+                    )
+                })
                 .unwrap_or(false);
 
             let limit = if is_parallel {

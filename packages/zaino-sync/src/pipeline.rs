@@ -76,6 +76,17 @@ pub enum PipelineError {
         /// The index that had no merged state staged.
         index: &'static str,
     },
+    /// An extraction task reached the wrong bridge for its scope. The engine
+    /// routes non-cross indexes through [`extract_one`](IndexPipeline::extract_one)
+    /// and cross indexes through
+    /// [`extract_one_cross`](IndexPipeline::extract_one_cross); either default
+    /// firing means the engine dispatched against the index's declared scope, an
+    /// engine bug rather than a data condition.
+    #[error("extraction routed to the wrong bridge for index {index}")]
+    ScopeRouting {
+        /// The index whose extraction was mis-routed.
+        index: &'static str,
+    },
 }
 
 impl PipelineError {
@@ -109,6 +120,32 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
     /// cumulative ones) ignore it. The scheduler tracks completion counts and
     /// transitions to merge when the batch is full.
     fn extract_one(&self, offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError>;
+
+    /// Extract a delta for one block of a [`CrossIndex`] index, reading its
+    /// declared dependencies' output through `deps`.
+    ///
+    /// The engine calls this — not [`extract_one`](Self::extract_one) — only for
+    /// cross-scope indexes, and only once the dependency gate has opened for the
+    /// batch (every dependency has persisted this batch into the pending atomic
+    /// commit, so `deps` resolves their batch output through its overlay). Like
+    /// `extract_one` it may be called for several blocks of the batch, so an
+    /// order-sensitive bridge tags each delta with `offset`.
+    ///
+    /// The default rejects the call: a non-cross bridge never receives it, so
+    /// reaching the default is an engine scope-routing bug.
+    ///
+    /// [`CrossIndex`]: crate::descriptor::CrossIndex
+    fn extract_one_cross(
+        &self,
+        offset: BlockOffset,
+        ctx: &Ctx,
+        deps: &crate::traits::DepsReader<'_>,
+    ) -> Result<(), PipelineError> {
+        let _ = (offset, ctx, deps);
+        Err(PipelineError::ScopeRouting {
+            index: self.descriptor().name.as_str(),
+        })
+    }
 
     /// Merge all accumulated deltas for the current batch.
     ///
@@ -153,7 +190,7 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
     fn process_batch(
         &self,
         blocks: &[Ctx],
-        _deps: Option<&crate::traits::DepsReader>,
+        _deps: Option<&crate::traits::DepsReader<'_>>,
     ) -> Result<Vec<WriteOp>, PipelineError> {
         for (index, ctx) in blocks.iter().enumerate() {
             // This convenience path applies blocks in slice order, which already

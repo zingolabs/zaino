@@ -6,6 +6,9 @@
 //! access a `DepsReader` from a `BlockLocal` index or declare a monoidal
 //! `combine` on an `Append` index.
 
+use std::collections::HashMap;
+
+use crate::backend::{BackendReader, Namespace, ReadError, WriteOp};
 use crate::descriptor::{
     Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, IsSelfCumulative, Monoidal,
     Scope, SourceAccess,
@@ -49,11 +52,143 @@ impl<T: Clone> ProvideContext<T> for T {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder types — will be fleshed out in their own modules
+// DepsReader — a cross-index's read handle over its dependencies' output
 // ---------------------------------------------------------------------------
 
-/// Read handle over committed index state, restricted to earlier phases.
-pub struct DepsReader;
+/// A dependency's output that the current batch has persisted into the engine's
+/// pending atomic commit but that is not yet durable in the backend.
+///
+/// The engine commits one atomic transaction per batch across every index plus
+/// the watermark, so a [`CrossIndex`] index that
+/// extracts batch β must read its dependencies' batch-β output *before* that
+/// shared transaction commits — at that point the output exists only as pending
+/// write ops. This overlay captures those ops, keyed by `(namespace, key)` with
+/// latest-wins, so [`DepsReader`] resolves them on top of the committed backend
+/// state. A [`WriteOp::Delete`] records a tombstone (`None`) that hides a
+/// committed value.
+///
+/// Built once per batch by the engine (not once per lookup) from its
+/// `pending_ops`, so a cross index's point reads stay cheap.
+#[derive(Default)]
+pub(crate) struct PendingOverlay {
+    entries: HashMap<(Namespace, Vec<u8>), Option<Vec<u8>>>,
+}
+
+impl PendingOverlay {
+    /// Fold one batch's write ops into the overlay. The engine calls this in
+    /// ascending batch order and, within a batch, in persist order, so the last
+    /// writer of a key wins.
+    pub(crate) fn apply(&mut self, ops: &[WriteOp]) {
+        for op in ops {
+            match op {
+                WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => {
+                    self.entries
+                        .insert((*namespace, key.clone()), Some(value.clone()));
+                }
+                WriteOp::Delete { namespace, key } => {
+                    self.entries.insert((*namespace, key.clone()), None);
+                }
+            }
+        }
+    }
+
+    /// The overlay's verdict on one key: `Some(Some(bytes))` for a pending put,
+    /// `Some(None)` for a pending delete (tombstone), and `None` when the overlay
+    /// says nothing — then the committed backend decides.
+    fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Option<&[u8]>> {
+        self.entries
+            .get(&(namespace, key.to_vec()))
+            .map(|slot| slot.as_deref())
+    }
+}
+
+/// Read handle over the committed output of an index's declared dependencies,
+/// overlaid with output they have persisted into the current uncommitted batch.
+///
+/// Built fresh per batch by the engine, over one backend reader pinned for the
+/// whole batch. [`get`](Self::get) refuses any index outside the dependency set,
+/// so a cross index can only read what it declared.
+pub struct DepsReader<'a> {
+    reader: &'a dyn BackendReader,
+    overlay: &'a PendingOverlay,
+    allowed: &'a [IndexId],
+}
+
+impl<'a> DepsReader<'a> {
+    /// Build a reader over `reader`'s committed state plus `overlay`'s pending
+    /// ops, restricted to the `allowed` dependency set.
+    pub(crate) fn new(
+        reader: &'a dyn BackendReader,
+        overlay: &'a PendingOverlay,
+        allowed: &'a [IndexId],
+    ) -> Self {
+        Self {
+            reader,
+            overlay,
+            allowed,
+        }
+    }
+
+    /// Typed point read of a dependency's entry for an already-processed block:
+    /// the dependency's committed value, or the value it persisted into the
+    /// current uncommitted batch (which shadows the committed one; a pending
+    /// delete reads as absent). Refuses an index outside the declared dependency
+    /// set with [`DepsReadError::Undeclared`].
+    ///
+    /// Typed end to end: the key is encoded and the value decoded through `D`'s
+    /// [`EntryCodec`](zaino_persistence_codec::EntryCodec), never by hand.
+    pub fn get<D: IndexDef + zaino_persistence_codec::EntryCodec>(
+        &self,
+        key: &D::Key,
+    ) -> Result<Option<D::Value>, DepsReadError> {
+        if !self.allowed.contains(&D::NAME) {
+            return Err(DepsReadError::Undeclared {
+                dependency: D::NAME,
+            });
+        }
+
+        let namespace: Namespace = D::NAME.into();
+        let key_bytes = zaino_persistence_codec::encode_key::<D>(key);
+
+        let raw: Option<Vec<u8>> = match self.overlay.lookup(namespace, &key_bytes) {
+            Some(Some(bytes)) => Some(bytes.to_vec()),
+            // A pending delete hides any committed value for this key.
+            Some(None) => None,
+            // The overlay is silent: the committed backend decides.
+            None => self
+                .reader
+                .get(namespace, &key_bytes)
+                .map_err(DepsReadError::Read)?,
+        };
+
+        raw.map(|bytes| zaino_persistence_codec::decode_value::<D>(&bytes))
+            .transpose()
+            .map_err(DepsReadError::Decode)
+    }
+}
+
+/// Why a [`DepsReader`] read failed.
+#[derive(Debug, thiserror::Error)]
+pub enum DepsReadError {
+    /// The index read is not in the reader's declared dependency set. A cross
+    /// index may only read dependencies it declared, so this is a definition bug
+    /// at the reading index, not a runtime data condition.
+    #[error("read of undeclared dependency `{dependency}`")]
+    Undeclared {
+        /// The index whose output was read without being declared a dependency.
+        dependency: IndexId,
+    },
+    /// The committed backend read failed.
+    #[error("backend read of a dependency failed")]
+    Read(#[source] ReadError),
+    /// A dependency's persisted bytes did not decode to its value type.
+    #[error("decoding a dependency value failed")]
+    Decode(#[source] zaino_persistence_codec::DecodeError),
+}
 
 /// Handle for non-local source access (the escape hatch).
 pub struct SourceHandle;
@@ -187,7 +322,8 @@ pub trait ExtractCross: IndexDef<Scope = CrossIndex> {
 
     /// Produce this block's delta given the block context and committed
     /// state from dependency indexes.
-    fn extract(ctx: &Self::BlockContext, deps: &DepsReader) -> Result<Self::Delta, Self::Error>;
+    fn extract(ctx: &Self::BlockContext, deps: &DepsReader<'_>)
+        -> Result<Self::Delta, Self::Error>;
 }
 
 // ===========================================================================
