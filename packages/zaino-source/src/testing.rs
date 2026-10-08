@@ -298,28 +298,30 @@ fn fee_over(best: &[Arc<Block>], tx: &Transaction) -> Result<Zatoshis, SendRawTr
     fee.ok_or_else(|| invalid(format!("{} overspends", tx.txid)))
 }
 
-/// `lie` applied to the honest `block`
-fn misanswer(block: &Block, lie: Lie) -> Block {
-    let (header, txs) = (block.header().clone(), block.transactions());
-    match lie {
-        Lie::WrongBlock => {
-            let mut other = header;
-            other.nonce[31] ^= 0xff;
-            other.hash = header_hash(&other);
-            Block::new(other, txs.to_vec())
-        }
-        Lie::Poisoned => {
-            let mut extra = txs[0].clone();
-            let mut txid = <[u8; 32]>::from(extra.txid);
-            txid[31] ^= 0xff;
-            extra.txid = TransactionId::from(txid);
-            Block::new(header, [txs, &[extra]].concat())
-        }
-        Lie::Mutated => Block::new(header, [txs, &txs[txs.len() - 1..]].concat()),
-        Lie::WrongHeight => {
-            let mut labelled = header;
-            labelled.height = labelled.height.next();
-            Block::new(labelled, txs.to_vec())
+impl Lie {
+    /// This lie told about `honest` (pure: sans-IO models share the shapes)
+    pub fn told(self, honest: &Block) -> Block {
+        let (header, txs) = (honest.header().clone(), honest.transactions());
+        match self {
+            Lie::WrongBlock => {
+                let mut other = header;
+                other.nonce[31] ^= 0xff;
+                other.hash = header_hash(&other);
+                Block::new(other, txs.to_vec())
+            }
+            Lie::Poisoned => {
+                let mut extra = txs[0].clone();
+                let mut txid = <[u8; 32]>::from(extra.txid);
+                txid[31] ^= 0xff;
+                extra.txid = TransactionId::from(txid);
+                Block::new(header, [txs, &[extra]].concat())
+            }
+            Lie::Mutated => Block::new(header, [txs, &txs[txs.len() - 1..]].concat()),
+            Lie::WrongHeight => {
+                let mut labelled = header;
+                labelled.height = labelled.height.next();
+                Block::new(labelled, txs.to_vec())
+            }
         }
     }
 }
@@ -335,7 +337,7 @@ impl ChainDataSource for MockValidator {
         let block = state.followed.best.iter().find(|block| block.header().hash == hash);
         let block = block.ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))?;
         Ok(match state.lie {
-            Some(lie) => misanswer(block, lie),
+            Some(lie) => lie.told(block),
             None => Block::clone(block),
         })
     }

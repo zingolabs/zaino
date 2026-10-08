@@ -130,6 +130,7 @@ validator.latency(&[Port::Block], Duration::from_secs(2)); // before each answer
 validator.fail_next(2, FailureMode::Timeout);         // any port
 validator.reachable(&[Port::Send], false);           // refused in transport there; Port::ALL = gone
 validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
+let served = Lie::Mutated.told(&honest);             // the same shape, no validator (sans-IO models)
 validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
 assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1 });
 let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
