@@ -74,9 +74,14 @@ fn direct_regtest(topology: DirectRegtestTopology) -> DaemonConfig {
             ..ServeConfig::default()
         },
         indexer: IndexerConfig {
-            // A regtest chain is a handful of blocks; index right to the tip
-            // (no reorg margin) so the mined blocks are actually served.
-            finalised_depth: 0,
+            // A regtest chain is a handful of blocks, all within the default reorg
+            // window. A zero reorg depth puts the seam horizon at the tip, so the
+            // finalised store builds all the way up and FS-backed reads (address,
+            // treestate) are actually exercised on the one topology the
+            // integration tests run against — rather than everything being served
+            // from the chain head's window. The seam derives both tiers' boundary
+            // from this one value.
+            reorg_depth: 0,
             ..IndexerConfig::default()
         },
     }

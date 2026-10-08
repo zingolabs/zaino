@@ -1,0 +1,31 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a10cdd-80f3-7671-ab16-05c0e780b392"
+# Changeset for this PR. One file per PR; describe each change to a governed
+# (published) crate, at a semantic level. CI aggregates every changeset since
+# the last release into per-crate version bumps and changelog lines.
+#
+# Uncomment and fill in one [[changes]] block per governed public change.
+# Multiple crates (and multiple changes to one crate) each get their own block.
+#
+# [[changes]]
+# crate       = "zaino-state"   # a governed crate declared in relman.toml
+# kind        = "feature"       # breaking | feature | fix | internal
+# description = "One operator-facing changelog line, plain language."
+#
+# Optional fields:
+# section   = "Added"          # override the default Keep-a-Changelog section
+# migration = "Upgrade notes." # expected on `kind = "breaking"`
+# issues    = ["#987"]         # extra issue refs (the PR is linked automatically)
+#
+# One [[changes]] entry per governed public change — even for the same crate at
+# the same kind. Internal-only changes may be collapsed into one
+# `kind = "internal"` entry.
+#
+# If this PR touches governed-crate source but is genuinely release-irrelevant
+# (comment- or test-only), replace this file with the no-op form instead:
+#   relman changeset new --empty "<reason>"
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "internal"
+description = "The legacy chain index now gives its own two tiers a `zaino_finality::Seam`: the chain head holds the horizon half and the finalised-store watermark bridge drives the durable half, so confirm-before-trim runs through the seam and a durable commit inside the reorg window is logged loudly as a `SeamFault` rather than silently trusted."

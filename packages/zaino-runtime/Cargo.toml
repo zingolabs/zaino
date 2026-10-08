@@ -38,6 +38,7 @@ zaino-source = { workspace = true }
 zaino-store = { path = "../zaino-store" }
 zaino-store-service = { version = "0.1.0", path = "../zaino-store-service" }
 zaino-primitives = { path = "../zaino-primitives" }
+zaino-finality.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -52,3 +53,4 @@ zaino-primitives = { path = "../zaino-primitives" }
 zaino-logging = { path = "../zaino-logging" }
 zcash_protocol.workspace = true
 zaino-source-zebra = { path = "../zaino-source-zebra" }
+tempfile = "3"

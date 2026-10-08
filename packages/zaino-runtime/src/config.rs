@@ -75,13 +75,41 @@ pub struct IndexerConfig {
     pub batch_size: u32,
     /// Contexts buffered between the provisioner and the engine.
     pub channel_capacity: usize,
-    /// Depth below the tip treated as still volatile; only `tip − depth` and
-    /// below is indexed.
-    pub finalised_depth: u32,
     /// Fetches kept in flight by the provisioner. Concurrent fetch keeps the
     /// parallel engine fed rather than paced by a one-at-a-time loop. A
     /// `concurrency = 0` in the config is rejected at parse time (non-zero type).
     pub concurrency: FetchConcurrency,
+    /// The consensus reorg depth, in blocks: the number below the chain tip that
+    /// is still reorg-able and so must stay in the volatile tier. It is the one
+    /// value the [`Seam`](zaino_finality::Seam) is built from, and *both* tiers
+    /// derive their boundary from it *through* the seam — the chain head
+    /// publishes the horizon `tip - reorg_depth`, and the finalised store commits
+    /// no further than that. There is no second constant for the durable tier to
+    /// drift against; a single value, read once, at the one construction site.
+    ///
+    /// Defaults to [`MAX_BLOCK_REORG_HEIGHT`], the consensus bound. A deployment
+    /// may lower it — regtest sets it to `0`, so the horizon is the tip and the
+    /// finalised store builds all the way up, which is what keeps FS-backed reads
+    /// exercised on short test chains.
+    ///
+    /// The seam guarantees *coherence*, not safety at any depth. One owner, both
+    /// tiers derived from this single value, and — because the volatile tier's
+    /// trim floor is `min(reorg_safety_floor, w - margin)`, so `floor <= w` holds
+    /// structurally — no serving gap between the tiers for any value this knob
+    /// takes. What the seam does **not** do is make the value itself safe: this
+    /// is a finalisation-depth knob, and lowering it below the consensus reorg
+    /// bound lets the append-only store durably commit heights that are still
+    /// reorg-able. Those heights stay retained by the volatile tier (whose own
+    /// retention keeps the full consensus window regardless of this value), so it
+    /// is not happening behind that tier's back and no read is starved — but the
+    /// store has no rewind path, so a reorg deeper than `reorg_depth` leaves it
+    /// holding a block from an abandoned branch. That is the ordinary
+    /// finalisation-depth risk the old `finalised_depth` already carried, not a
+    /// new hazard and not the per-tier drift the seam removed; the default is the
+    /// consensus bound for that reason, and lowering it trades durability safety
+    /// for index latency. Keep it a knob; do not "simplify" it back to a
+    /// hardcoded constant.
+    pub reorg_depth: u32,
 }
 
 impl Default for IndexerConfig {
@@ -90,8 +118,8 @@ impl Default for IndexerConfig {
             fetch: FetchStrategy::default(),
             batch_size: 1000,
             channel_capacity: 256,
-            finalised_depth: MAX_BLOCK_REORG_HEIGHT,
             concurrency: FetchConcurrency::new(NonZeroUsize::new(16).expect("16 is non-zero")),
+            reorg_depth: MAX_BLOCK_REORG_HEIGHT,
         }
     }
 }

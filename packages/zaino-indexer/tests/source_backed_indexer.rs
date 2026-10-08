@@ -3,14 +3,16 @@
 //! End to end over a real source seam: a `MockChain` (implementing dev's
 //! `zaino-source` capability traits) feeds a `SourceProvisioner`, which streams
 //! into a real `SyncEngine` via `sync_channel`, driven by a `SourceSyncDriver`
-//! and supervised as an `RunComponent`. Swap `MockChain` for a zebra adapter
-//! and the same driver indexes a real chain — the provisioner is generic over
-//! the source.
+//! and supervised as a `RunComponent`. Swap `MockChain` for a zebra adapter and
+//! the same driver indexes a real chain — the provisioner is generic over the
+//! source.
 
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, Managed, StatusSource, StatusWatch};
-use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver};
+use zaino_indexer::{
+    FetchConcurrency, FullBlocks, SourceProvisioner, SourceSyncDriver, SyncTarget,
+};
 use zaino_primitives::types::{Block, Height};
 use zaino_runtime::RunComponent;
 use zaino_source::mock::{test_block, MockChain};
@@ -59,7 +61,8 @@ async fn the_runtime_indexes_from_a_source() {
         engine,
         provisioner,
         Height::try_from(0).expect("valid height"),
-        0, // finalised_depth: non-reorging mock, index right to the tip
+        // Standalone over a non-reorging mock: index right to the tip.
+        SyncTarget::Depth { depth: 0 },
         16,
         backend,
     );

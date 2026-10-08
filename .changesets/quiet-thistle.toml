@@ -1,0 +1,8 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0fd3e-c1f3-7713-b042-acde44ccc897"
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "breaking"
+description = "The chain head publishes its reorg horizon and reads the durable watermark through the finality seam. `ChainHeadService::anchor` (and the test-only `spawn_without_writer`) take a `zaino_finality::ReorgHorizon` in place of a `watch::Receiver<Option<Height>>`, and the local `RETENTION_MARGIN` constant is gone — the seam owns the retention overlap."
+migration = "Construct a `zaino_finality::Seam` with the consensus reorg depth and `zaino_finality::DEFAULT_RETENTION_MARGIN`, split it, and pass the `ReorgHorizon` half to `anchor`; hand the `DurableWatermark` half to the durable tier so the two share one ratchet. The retention overlap is no longer configured on the chain head."

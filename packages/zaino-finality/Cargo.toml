@@ -1,0 +1,18 @@
+[package]
+name = "zaino-finality"
+description = "The single-owner contract for Zaino's finalised/non-finalised seam."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+zaino-primitives = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

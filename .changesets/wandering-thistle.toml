@@ -1,0 +1,8 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a0fdaa-083d-7531-b9b5-92457f4cd0b2"
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = "The `indexer.finalised_depth` operator config key is removed. The finalised/non-finalised boundary is now the finality seam's single reorg-depth value, exposed as `indexer.reorg_depth` (default: the consensus reorg bound), from which both tiers derive their boundary."
+migration = "Remove `indexer.finalised_depth` from your config; a config that still sets it is rejected. To have the finalised store build closer to the tip (e.g. regtest), set `indexer.reorg_depth` instead — `0` puts the horizon at the tip, reproducing the old `finalised_depth = 0` behaviour."

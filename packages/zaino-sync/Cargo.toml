@@ -31,6 +31,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true, optional = true }
 zaino-persistence-codec = { version = "0.1.0", path = "../zaino-persistence-codec" }
+zaino-finality.workspace = true
 
 [dev-dependencies]
 # Available under `cfg(test)` even without the `testing` feature, so a plain

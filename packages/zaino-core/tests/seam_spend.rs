@@ -24,7 +24,7 @@ use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
 use zaino_core::Engine;
 use zaino_core::routing::{Local, Passthrough, Routing, Withheld};
 use zaino_core::testing::{StubNonFinalised, stub_compact_block};
-use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTarget, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{CurrentZaino, context_from_block};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -128,10 +128,10 @@ async fn indexed_store() -> StoreReader<InMemoryBackend, CurrentZaino> {
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            finalised_depth: 0,
             channel_capacity: 16,
             concurrency: FetchConcurrency::SERIAL,
         },
+        SyncTarget::Depth { depth: 0 },
     )
     .expect("the driver builds");
 

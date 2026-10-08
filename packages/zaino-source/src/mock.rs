@@ -6,16 +6,19 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Treestate};
+use zaino_primitives::types::{
+    Block, BlockHash, Height, PreIndexCompactBlock, TransactionId, TreeRoots, Treestate,
+};
 
 use crate::error::{FailureMode, NonDomainError};
 use crate::{
     DecodedTransaction, GetAddressBalanceError, GetAddressDeltasError, GetAddressTxidsError,
     GetAddressUtxosError, GetBlockByHashError, GetBlockError, GetBlockHeaderError,
-    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetDifficultyError,
-    GetMiningInfoError, GetNetworkInfoError, GetNetworkSolPsError, GetNodeInfoError,
-    GetPeerInfoError, GetSubtreeRootsError, GetTransactionError, GetTransactionVerboseError,
-    GetTreestateError, GetTxOutError, QueryError, SendRawTransactionError, TransactionResponse,
+    GetBlockVerboseError, GetBlockchainInfoError, GetChainTipError, GetCommitmentTreeRootsError,
+    GetDifficultyError, GetMiningInfoError, GetNetworkInfoError, GetNetworkSolPsError,
+    GetNodeInfoError, GetPeerInfoError, GetSubtreeRootsError, GetTransactionError,
+    GetTransactionVerboseError, GetTreestateError, GetTxOutError, QueryError,
+    SendRawTransactionError, TransactionResponse,
 };
 use zaino_primitives::types::rpc::{
     BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
@@ -490,6 +493,51 @@ impl crate::OneShotGetTreestate for MockChain {
 // subscription", so a consumer bound on `SubscribeChainTip` still accepts it
 // (and simply does not tip-follow).
 impl crate::SubscribeChainTip for MockChain {}
+
+// A static mock pushes no block-arrival wakes either; the default `None` says
+// "no push path", so a consumer bound on `SubscribeBlocks` (the chain head)
+// paces itself on its poll interval.
+impl crate::SubscribeBlocks for MockChain {}
+
+impl crate::OneShotGetPreIndexCompactBlock for MockChain {
+    async fn get_pre_index_compact_block(
+        &self,
+        height: Height,
+    ) -> Result<PreIndexCompactBlock, QueryError<GetBlockError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.blocks
+            .get(&u32::from(height))
+            .map(PreIndexCompactBlock::from)
+            .ok_or(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+    }
+}
+
+impl crate::OneShotGetCommitmentTreeRoots for MockChain {
+    async fn get_commitment_tree_roots(
+        &self,
+        block: BlockHash,
+    ) -> Result<TreeRoots, QueryError<GetCommitmentTreeRootsError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        // The mock carries no per-pool commitment state; a known block answers
+        // all-`None` roots (enough for the chain head's window, which reads these
+        // only to carry metadata), an unknown one is a domain not-found.
+        if self.by_hash.contains_key(&<[u8; 32]>::from(block)) {
+            Ok(TreeRoots {
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            })
+        } else {
+            Err(QueryError::Domain(
+                GetCommitmentTreeRootsError::BlockNotFound(block),
+            ))
+        }
+    }
+}
 
 impl crate::OneShotSendRawTransaction for MockChain {
     async fn send_raw_transaction(

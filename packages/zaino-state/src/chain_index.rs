@@ -43,6 +43,7 @@ use zaino_chain_head::{
 };
 use zaino_chain_head_service::{ChainHeadService, MapBackedSnapshot};
 use zaino_consensus::validate_raw_transaction_hex;
+use zaino_finality::{Seam, DEFAULT_RETENTION_MARGIN};
 use zaino_mempool::ports::TipAwareMempool as _;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
@@ -130,40 +131,74 @@ pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
-/// Bridges the finalised store's watermark to the confirmed-height signal the
-/// chain head trims against.
+/// Drives the finality seam's durable watermark from the finalised store's
+/// committed watermark, so the chain head never trims a height the store cannot
+/// yet serve.
 ///
-/// The chain head must not trim a height the finalised store cannot yet serve,
-/// so it reads the store's durably-committed tip height. A `Passthrough`
-/// watermark means the store is answering from the validator while it builds
-/// and holds nothing of its own, so it confirms nothing — `None` — and the
-/// chain head retains everything until the store commits durable data.
+/// This is the legacy index's own side of the finality seam. The chain head
+/// holds the horizon half and publishes `r = tip - depth`; this task holds the
+/// durable half and advances `w` to whatever the finalised store has durably
+/// committed. The seam itself enforces `w <= r`, so a store that outruns the
+/// horizon is reported rather than silently trusted.
+///
+/// A `Passthrough` watermark means the store is answering from the validator
+/// while it builds and holds nothing of its own, so it confirms nothing and the
+/// task does not advance — the chain head retains everything until the store
+/// commits durable data.
+///
+/// Each advance is authorised by the chain head's published horizon. Until the
+/// chain head has published one there is nothing to authorise against, so the
+/// task waits for the first horizon rather than advancing unauthorised.
+///
+/// A [`SeamFault`](zaino_finality::SeamFault) here is real information, not
+/// noise: the finalised store builds on its own schedule and can genuinely be
+/// ahead of the horizon, and `WatermarkPastHorizon` then means it is committing
+/// inside the reorg window — into an append-only store with no rewind path. It
+/// is logged loudly and the advance is dropped (the seam leaves `w` unchanged),
+/// never clamped or swallowed.
 ///
 /// The task ends when its cancellation token fires or the store drops its
 /// watermark sender.
 fn spawn_confirmed_watermark_bridge(
     mut store_watermark: tokio::sync::watch::Receiver<zaino_chain_store::StoreWatermark>,
+    mut watermark: zaino_finality::DurableWatermark,
     cancel: CancellationToken,
-) -> tokio::sync::watch::Receiver<Option<zaino_primitives::types::Height>> {
-    let (confirmed, receiver) =
-        tokio::sync::watch::channel(confirmed_height(&store_watermark.borrow()));
+) {
     tokio::spawn(async move {
         loop {
+            // Bound to a `let` so the non-`Send` watch guard is dropped before
+            // the `.await` below rather than held across it.
+            let confirmed = confirmed_height(&store_watermark.borrow_and_update());
+            if let Some(height) = confirmed {
+                // Authorise against the chain head's published horizon, waiting
+                // for the first one if none has been published yet.
+                let authorised_by = match watermark.released() {
+                    Some(released) => released,
+                    None => tokio::select! {
+                        _ = cancel.cancelled() => break,
+                        released = watermark.await_released() => released,
+                    },
+                };
+                if let Err(fault) = watermark.advance(&authorised_by, height) {
+                    tracing::error!(
+                        %fault,
+                        "legacy finalised store breached the finality seam invariant; \
+                         the durable tier may be committing reorg-able blocks into an \
+                         append-only store that cannot rewind them"
+                    );
+                }
+            }
+
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 changed = store_watermark.changed() => {
                     if changed.is_err() {
                         break;
                     }
-                    let height = confirmed_height(&store_watermark.borrow());
-                    if confirmed.send(height).is_err() {
-                        break;
-                    }
                 }
             }
         }
     });
-    receiver
 }
 
 /// The height the finalised store has durably confirmed, or `None` when it
@@ -867,13 +902,22 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
         // at the source is what keeps the two from drifting — the alternative,
         // relaying the epoch through some second handle, would let the coherence
         // layer freeze against a tip nobody was being served.
-        // The chain head trims against the finalised store's confirmed
-        // watermark, so a block is never dropped from the non-finalised window
-        // before the finalised side can serve it. The store publishes a
-        // `StoreWatermark`; the chain head wants only the durably-confirmed
-        // height, so the two are bridged here.
-        let confirmed_watermark = spawn_confirmed_watermark_bridge(
+        // This legacy index is itself a two-tier system — a `zaino-chain-store`
+        // finalised store beneath a chain head — so it owns a finality seam of
+        // its own, built here and split immediately. The chain head holds the
+        // horizon half and publishes `r = tip - depth`; the watermark-bridge
+        // task below holds the durable half and drives it from the finalised
+        // store's committed watermark, so a block is never trimmed from the
+        // non-finalised window before the finalised side can serve it. The seam
+        // enforces `w <= r` in one place, replacing the ad-hoc confirmed-height
+        // channel this used to thread. `OPERATIONAL_NFS_DEPTH` is the same depth
+        // the chain head anchors at, so the horizon it publishes and the window
+        // it retains agree.
+        let (horizon, watermark) =
+            Seam::new(OPERATIONAL_NFS_DEPTH, DEFAULT_RETENTION_MARGIN).split();
+        spawn_confirmed_watermark_bridge(
             zaino_chain_store::ChainStoreService::subscribe_watermark(finalized_db.as_ref()),
+            watermark,
             cancel_token.child_token(),
         );
 
@@ -889,7 +933,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource>
                 std::num::NonZeroU32::new(OPERATIONAL_NFS_DEPTH)
                     .expect("the operational chain-head depth derives from a non-zero reorg bound"),
             ),
-            confirmed_watermark,
+            horizon,
         )
         .await
         .map_err(crate::InitError::ChainHeadInitialisationError)?;

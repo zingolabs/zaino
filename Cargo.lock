@@ -5945,6 +5945,8 @@ dependencies = [
  "zaino-address",
  "zaino-chain-head",
  "zaino-component",
+ "zaino-consensus",
+ "zaino-finality",
  "zaino-indexes",
  "zaino-primitives",
  "zaino-service",
@@ -6065,6 +6067,7 @@ dependencies = [
  "zaino-component",
  "zaino-consensus",
  "zaino-core",
+ "zaino-finality",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-logging",
@@ -6085,6 +6088,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-finality"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-indexer"
 version = "0.1.0"
 dependencies = [
@@ -6095,6 +6107,7 @@ dependencies = [
  "tracing",
  "zaino-async",
  "zaino-component",
+ "zaino-finality",
  "zaino-persistence-codec",
  "zaino-primitives",
  "zaino-runtime",
@@ -6275,6 +6288,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -6285,6 +6299,7 @@ dependencies = [
  "zaino-component",
  "zaino-consensus",
  "zaino-core",
+ "zaino-finality",
  "zaino-indexer",
  "zaino-indexes",
  "zaino-lightserve",
@@ -6455,6 +6470,7 @@ dependencies = [
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
+ "zaino-finality",
  "zaino-mempool",
  "zaino-mempool-service",
  "zaino-primitives",
@@ -6526,6 +6542,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zaino-finality",
  "zaino-persistence",
  "zaino-persistence-codec",
  "zaino-primitives",

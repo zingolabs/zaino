@@ -45,10 +45,12 @@ metrics = { workspace = true, optional = true }
 zaino-service = { version = "0.1.0", path = "../zaino-service" }
 zaino-address = { version = "0.1.0", path = "../zaino-address" }
 zaino-indexes.workspace = true
+zaino-finality.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "test-util"] }
+zaino-consensus.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

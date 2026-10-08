@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use tokio::sync::watch;
+use zaino_finality::{DurableWatermark, Released, SeamFault};
 
 use crate::backend::{Backend, BackendWriter, WriteOp};
 use crate::block_buffer::BlockBuffer;
@@ -69,6 +69,12 @@ pub enum SyncError {
     /// Failed to flush the backend.
     #[error(transparent)]
     BackendFlush(#[from] crate::backend::FlushError),
+    /// The seam refused the committed watermark — the batch is durable, but the
+    /// watermark it would publish is not one the horizon authorised (e.g. it
+    /// would lead the horizon, or regress). The underlying [`SeamFault`] names
+    /// which invariant was violated.
+    #[error("the seam refused the committed watermark")]
+    Seam(#[source] SeamFault),
 }
 
 /// The sync engine.
@@ -99,10 +105,17 @@ pub struct SyncEngine<Ctx, B: Backend> {
     /// when all indexes have persisted for that batch.
     pending_ops: HashMap<BatchIndex, Vec<WriteOp>>,
     evicted_through: Option<BatchIndex>,
-    /// Publishes the highest durably committed height after each atomic batch
-    /// write — the finalised store's confirmed watermark, which the
-    /// non-finalised chain-head consumes to gate trimming (confirm-before-trim).
-    confirmed_watermark: watch::Sender<Option<Height>>,
+    /// The seam's durable half, when composed. The engine advances it after each
+    /// atomic batch write — so the watermark never leads its data — and the
+    /// non-finalised chain-head reads the same quantity across the seam to gate
+    /// trimming (confirm-before-trim). `None` standalone (benchmarks, isolated
+    /// finalised stores), where there is no volatile tier to coordinate with.
+    watermark: Option<DurableWatermark>,
+    /// The horizon the range in flight is being built under, set by the driver
+    /// via [`set_authorisation`](Self::set_authorisation) before each range and
+    /// used when advancing the watermark. The authorisation travels with the
+    /// work, so the seam refuses a watermark past the horizon that authorised it.
+    authorisation: Option<Released>,
     /// Batch/phase timing accumulator. Present only under `sync-profile`;
     /// the whole profiling path compiles out otherwise.
     #[cfg(feature = "sync-profile")]
@@ -142,10 +155,6 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         let batch_size = config.batch_size;
         let scheduler = Scheduler::new(dag, batch_size);
 
-        // Seed the confirmed-watermark signal with whatever is already durable,
-        // so a resuming engine republishes its persisted watermark.
-        let (confirmed_watermark, _) = watch::channel(persisted_watermark);
-
         Ok(Self {
             scheduler,
             pipelines,
@@ -155,10 +164,34 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             batch_last_height: HashMap::new(),
             pending_ops: HashMap::new(),
             evicted_through: None,
-            confirmed_watermark,
+            watermark: None,
+            authorisation: None,
             #[cfg(feature = "sync-profile")]
             profile: crate::profile::SyncProfile::new(config.start_height.value()),
         })
+    }
+
+    /// Give the engine the seam's durable half, so it publishes the watermark
+    /// across the seam after each atomic batch commit.
+    ///
+    /// Additive over [`from_pipelines`](Self::from_pipelines): standalone callers
+    /// (benchmarks, isolated finalised stores) build without a watermark and this
+    /// stays `None`; the composed runtime hands the half here. The driver sets the
+    /// authorising horizon separately via
+    /// [`set_authorisation`](Self::set_authorisation) before each range.
+    #[must_use]
+    pub fn with_watermark(mut self, watermark: Option<DurableWatermark>) -> Self {
+        self.watermark = watermark;
+        self
+    }
+
+    /// Set the horizon the range about to be synced is authorised by.
+    ///
+    /// The driver calls this before handing a range over, so each batch the engine
+    /// commits publishes its watermark under the horizon that authorised the work.
+    /// Ignored when the engine holds no watermark (standalone).
+    pub fn set_authorisation(&mut self, authorised_by: Option<Released>) {
+        self.authorisation = authorised_by;
     }
 
     /// The committed-height watermark from a prior sync run, if any.
@@ -171,17 +204,6 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             zaino_persistence_codec::watermark::read(&backend.reader()?)?
                 .map(|height| BlockHeight::new(u64::from(height))),
         )
-    }
-
-    /// Subscribe to the finalised store's confirmed watermark — the highest
-    /// durably committed height, published `Some(w)` after each atomic batch
-    /// write (so it never leads its data) and `None` on a fresh backend.
-    ///
-    /// The non-finalised chain-head consumes this to gate trimming
-    /// (confirm-before-trim): it never drops a block the finalised store has not
-    /// yet confirmed, so the seam between them cannot open a gap.
-    pub fn subscribe_confirmed_watermark(&self) -> watch::Receiver<Option<Height>> {
-        self.confirmed_watermark.subscribe()
     }
 
     /// Sync a pre-loaded range of blocks.
@@ -685,8 +707,16 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             let commit = commit_timer.stop();
 
             // The batch — including the watermark stamp — is now durable, so the
-            // confirmed watermark can be published: it never leads its data.
-            self.confirmed_watermark.send_replace(Some(watermark));
+            // watermark can be published across the seam: it never leads its data.
+            // The authorisation is the horizon the driver built this range under,
+            // so the seam refuses a watermark past it.
+            if let (Some(watermark_half), Some(authorised_by)) =
+                (self.watermark.as_mut(), self.authorisation.as_ref())
+            {
+                watermark_half
+                    .advance(authorised_by, watermark)
+                    .map_err(SyncError::Seam)?;
+            }
 
             #[cfg(feature = "sync-profile")]
             self.profile

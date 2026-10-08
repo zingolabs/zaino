@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use zaino_component::{ComponentName, Lifecycle, ReachabilityProbe};
-use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTuning};
+use zaino_indexer::{FetchConcurrency, SourceSyncDriver, SyncTarget, SyncTuning};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::{context_from_block, CurrentZaino};
 use zaino_persistence::in_memory::InMemoryBackend;
@@ -53,10 +53,10 @@ async fn store_serves_a_persisted_header() {
         |block| context_from_block(&block),
         SyncTuning {
             batch_size: 8,
-            finalised_depth: 0,
             channel_capacity: 16,
             concurrency: FetchConcurrency::SERIAL,
         },
+        SyncTarget::Depth { depth: 0 },
     )
     .expect("driver builds");
     let indexer = RunComponent::new(ComponentName("indexer"), driver);

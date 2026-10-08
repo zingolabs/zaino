@@ -52,6 +52,7 @@ use zaino_chain_head::{
     ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
 };
 use zaino_component::{Lifecycle, RunLoop, RunReporter};
+use zaino_finality::ReorgHorizon;
 use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
@@ -64,16 +65,6 @@ use crate::{
 
 /// The name this component reports status under.
 const COMPONENT: &str = "ChainHead";
-
-/// Confirmation overlap kept below the finalised store's confirmed watermark.
-///
-/// The trim floor stops this far below the confirmed watermark rather than
-/// exactly at it, so the non-finalised and finalised windows overlap by a few
-/// blocks. The overlap is what closes the seam: even if the two sides observe
-/// the boundary height a tick apart, no height is ever below the non-finalised
-/// floor and above the finalised watermark at the same time, so none falls in a
-/// gap served by neither.
-const RETENTION_MARGIN: u32 = 10;
 
 /// The bounded non-finalised head of the chain, kept current with a validator.
 ///
@@ -90,11 +81,15 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// readers, who will hold a stale copy.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
     updates: watch::Sender<ChainStateEpoch>,
-    /// The finalised store's confirmed watermark: the highest height it has
-    /// durably committed, or `None` when it holds nothing (an empty or young
-    /// chain). Read at trim time so the non-finalised floor never rises above
-    /// what the finalised side can already serve.
-    confirmed_watermark: watch::Receiver<Option<Height>>,
+    /// The seam's volatile half: publishes this tier's reorg horizon and reads
+    /// the durable tier's watermark. Read at trim time so the floor never rises
+    /// above what the durable tier can already serve.
+    ///
+    /// Behind a [`Mutex`](std::sync::Mutex) only to reach the single-writer
+    /// `&mut self` of [`ReorgHorizon::advance`] through the `Arc<Self>` the run
+    /// loop drives: the writer is the sole caller, so the lock never contends
+    /// and is never held across an `.await`.
+    horizon: std::sync::Mutex<ReorgHorizon>,
     status: NamedAtomicStatus,
     config: ChainHeadConfig,
 }
@@ -131,9 +126,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub async fn anchor(
         source: Arc<S>,
         config: ChainHeadConfig,
-        confirmed_watermark: watch::Receiver<Option<Height>>,
+        horizon: ReorgHorizon,
     ) -> Result<(ChainHeadSubscriber, Self), ChainHeadInitError> {
-        let writer = Self::anchored(source, config, confirmed_watermark).await?;
+        let writer = Self::anchored(source, config, horizon).await?;
         let subscriber = writer.subscriber();
         Ok((subscriber, writer))
     }
@@ -152,11 +147,9 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     pub async fn spawn_without_writer(
         source: Arc<S>,
         config: ChainHeadConfig,
-        confirmed_watermark: watch::Receiver<Option<Height>>,
+        horizon: ReorgHorizon,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        Ok(Arc::new(
-            Self::anchored(source, config, confirmed_watermark).await?,
-        ))
+        Ok(Arc::new(Self::anchored(source, config, horizon).await?))
     }
 
     /// Advances the graph by one iteration and publishes the result.
@@ -174,7 +167,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     async fn anchored(
         source: Arc<S>,
         config: ChainHeadConfig,
-        confirmed_watermark: watch::Receiver<Option<Height>>,
+        horizon: ReorgHorizon,
     ) -> Result<Self, ChainHeadInitError> {
         let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
@@ -200,7 +193,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             source,
             current: Arc::new(ArcSwap::from_pointee(snapshot)),
             updates,
-            confirmed_watermark,
+            horizon: std::sync::Mutex::new(horizon),
             status,
             config,
         })
@@ -371,22 +364,58 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         //
         // - the reorg-safety floor keeps the whole consensus reorg window, so a
         //   reorg can always be walked back to its fork point regardless of what
-        //   the finalised store has confirmed.
-        // - the confirmation floor keeps everything the finalised store has not
-        //   yet durably confirmed, less the retention overlap. With no
-        //   confirmed watermark the finalised side holds nothing, so this floor
-        //   is genesis and nothing below the reorg window is dropped.
+        //   the durable tier has confirmed;
+        // - the seam's retention floor keeps everything the durable tier has not
+        //   yet committed, less the overlap. `None` while that tier holds
+        //   nothing, when nothing below the reorg window is dropped on its
+        //   account.
         //
-        // The confirmation floor is the seam invariant: this floor never rises
-        // above the finalised store's confirmed watermark minus the retention
-        // overlap, so no height is ever below the non-finalised floor and above
-        // the finalised watermark at once — the seam between the two never gaps.
+        // The retention floor is the seam invariant: it never rises above the
+        // durable tier's watermark minus the overlap, so no height is ever below
+        // this floor and above the watermark at once — the seam never gaps.
         let reorg_safety_floor = height_below(graph.best_tip().height, self.config.max_depth());
-        let confirmation_floor = match *self.confirmed_watermark.borrow() {
-            Some(watermark) => height_below(watermark, RETENTION_MARGIN),
+        let floor = match self
+            .horizon
+            .lock()
+            .expect("chain-head horizon mutex poisoned")
+            .retention_floor()
+        {
+            Some(retention_floor) => reorg_safety_floor.min(retention_floor),
             None => Height::GENESIS,
         };
-        graph.remove_finalised_blocks(reorg_safety_floor.min(confirmation_floor));
+        graph.remove_finalised_blocks(floor);
+
+        // Publish this tier's horizon: the seam derives `r` from the tip, so
+        // this supplies the verified tip and the canonical hash `d` below it.
+        let tip = graph.best_tip().height;
+        let reorg_depth = self
+            .horizon
+            .lock()
+            .expect("chain-head horizon mutex poisoned")
+            .reorg_depth();
+        let horizon_height = height_below(tip, reorg_depth);
+        // `best_block_by_height` is the graph's canonical-chain lookup (there is
+        // no `block_hash`); the graph's gapless-canonical invariant means this is
+        // `Some` for every height from its floor to its tip.
+        if let Some(hash) = graph
+            .best_block_by_height(horizon_height)
+            .map(|block| block.hash())
+        {
+            match self
+                .horizon
+                .lock()
+                .expect("chain-head horizon mutex poisoned")
+                .advance(tip, hash)
+            {
+                Ok(_released) => {}
+                Err(fault) => {
+                    // A seam fault is a breach of an invariant this tier owns,
+                    // not a transient condition: report it rather than retrying
+                    // a publish that will be rejected identically.
+                    warn!(%fault, "the chain head's horizon publish breached the seam invariant");
+                }
+            }
+        }
 
         // Best chain is the most-work branch retained, which a reorg may have
         // left as something other than the block we just extended to.
