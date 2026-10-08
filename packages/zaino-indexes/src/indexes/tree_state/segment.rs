@@ -8,7 +8,8 @@
 //! `[index · 2^level, (index + 1) · 2^level)`. A segment built from a carry
 //! [`Frontier`] additionally retains that frontier's **peaks** — the roots of the
 //! perfect subtrees that tile `[0, carry_size)` — so a later combine can stitch a
-//! batch onto the carried state.
+//! batch onto the carried state, plus the frontier's **tip leaf and ommers** so a
+//! projection exactly at the carry boundary reconstructs the carried frontier.
 //!
 //! # Why an ordered monoid
 //!
@@ -161,11 +162,22 @@ impl<H: Hashable + Clone + Send + Sync> TreeSegment<H> {
 
     /// Render a carried [`Frontier`] as a segment covering `[0, carry_size)`.
     ///
-    /// The frontier stores its right spine (leaf + ommers); this folds that spine
-    /// into the carry's **peaks** — the roots of the perfect subtrees that tile
-    /// `[0, carry_size)`, at the set-bit levels of `carry_size` — which are the
-    /// left children a subsequent [`combine`](Self::combine) stitches the batch
-    /// onto. The empty frontier yields the identity segment.
+    /// Retains two overlapping node sets, both read from the frontier's right
+    /// spine (leaf + ommers):
+    ///
+    /// - the carry's **peaks** — the roots of the perfect subtrees that tile
+    ///   `[0, carry_size)`, at the set-bit levels of `carry_size` — which are the
+    ///   left children a subsequent [`combine`](Self::combine) stitches the batch
+    ///   onto, and the left ommers a within-batch [`frontier_at`](Self::frontier_at)
+    ///   reads;
+    /// - the frontier's own **tip leaf and ommers**, at the `(level, index)`
+    ///   witness addresses [`frontier_at`](Self::frontier_at) looks them up, so a
+    ///   projection *exactly at the carry boundary* (a block that appends nothing
+    ///   to this pool) reconstructs the carried frontier. Peaks alone cannot: a
+    ///   [`NonEmptyFrontier`] needs its tip leaf, which is hashed away inside a
+    ///   peak whenever `carry_size` is even (no level-0 peak).
+    ///
+    /// The empty frontier yields the identity segment.
     pub fn carry_segment(frontier: &Frontier<H, DEPTH>) -> Self {
         match frontier.value() {
             None => Self::empty(),
@@ -176,12 +188,28 @@ impl<H: Hashable + Clone + Send + Sync> TreeSegment<H> {
                 // `(level, index)`.
                 peaks.sort_by_key(|peak| std::cmp::Reverse(peak.0));
                 let mut nodes: BTreeMap<(u8, u64), H> = BTreeMap::new();
-                let mut position = 0u64;
+                let mut tiled = 0u64;
                 for (level, node) in peaks {
-                    nodes.insert((level, position >> u32::from(level)), node);
-                    position += 1u64 << u32::from(level);
+                    nodes.insert((level, tiled >> u32::from(level)), node);
+                    tiled += 1u64 << u32::from(level);
                 }
-                debug_assert_eq!(position, size, "peaks must tile [0, carry_size)");
+                debug_assert_eq!(tiled, size, "peaks must tile [0, carry_size)");
+                // The tip leaf and the ommers along its path, at the addresses
+                // `frontier_at` reconstructs from — the exact inverse of that
+                // method, so `frontier_at(carry_size)` returns this frontier.
+                let tip = nonempty.position();
+                nodes.insert((0, u64::from(tip)), nonempty.leaf().clone());
+                let mut ommers = nonempty.ommers().iter();
+                for (address, source) in tip.witness_addrs(tip.root_level()) {
+                    if let Source::Past(_) = source {
+                        if let Some(ommer) = ommers.next() {
+                            nodes.insert(
+                                (u8::from(address.level()), address.index()),
+                                ommer.clone(),
+                            );
+                        }
+                    }
+                }
                 Self {
                     start: 0,
                     len: size,
@@ -467,6 +495,36 @@ mod tests {
         let right = TreeSegment::combine(a.clone(), TreeSegment::empty());
         assert_eq!(left.nodes, a.nodes);
         assert_eq!(right.nodes, a.nodes);
+    }
+
+    // A projection exactly at the carry boundary — a batch whose first blocks
+    // append nothing to this pool — must reconstruct the carried frontier from
+    // `carry_segment ⊕ batch`. This exercises every carry size (odd carries have a
+    // level-0 peak; even ones do not, so the tip leaf is only recoverable from the
+    // retained ommers), which the batch-interior-only tests above never reach.
+    #[test]
+    fn frontier_at_the_carry_boundary_equals_the_carry() {
+        for carry_count in 1u64..40 {
+            let prior: Vec<SaplingNode> = (0..carry_count).map(sapling_leaf_of).collect();
+            let carry = sequential_frontier(&prior);
+            let carry_segment = TreeSegment::carry_segment(&carry);
+
+            // A batch that starts at the carry boundary; its own leaves come later.
+            let batch = TreeSegment::lift(
+                &[sapling_leaf_of(0xF000), sapling_leaf_of(0xF001)],
+                carry_count,
+            );
+            let full = TreeSegment::combine(carry_segment, batch);
+
+            let got = full
+                .frontier_at(carry_count)
+                .expect("the carried frontier is reconstructable at the boundary");
+            assert_eq!(
+                &got,
+                carry.value().expect("non-empty carry"),
+                "projection at the carry boundary (carry_count={carry_count}) must equal the carry"
+            );
+        }
     }
 
     // Review focus #5: a spam-era batch (500k leaves) completes and stays within
