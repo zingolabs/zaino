@@ -29,7 +29,6 @@ use zaino_source::ChainDataSource;
 use crate::admission::{Admission, Class, Permits};
 use crate::client::TrustedProxies;
 use crate::connections::{ConnectionCaps, Reserved};
-use crate::limits::ReadLanes;
 use crate::observe::Measured;
 use crate::report::{self, Held, INTERVAL};
 use crate::service::{Dispatch, Routes};
@@ -79,7 +78,7 @@ pub enum GrpcServeError {
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
     pub fn new(routes: Routes<S, V>, bind: SocketAddr, limits: GrpcLimits) -> Self {
-        let dispatch = Dispatch::new(routes, ReadLanes::new(&limits));
+        let dispatch = Dispatch::new(routes, &limits);
         Self { dispatch, bind, limits, proxies: TrustedProxies::default(), tls: None }
     }
 

@@ -287,8 +287,10 @@ pub(crate) struct GrpcConfig {
     /// Transparent-address history scans in flight (few: each walks a whole history, bounded by
     /// `serve.max_address_rows`)
     pub(crate) max_scan_reads: NonZeroUsize,
-    /// Seconds a stream may hold unread data before its connection closes (else a never-reading
-    /// client keeps its permits forever)
+    /// Seconds a stream may make no progress, never a cap on its length: unread data that long
+    /// closes its connection (else a never-reading client keeps its permits forever); nothing to
+    /// send that long ends it `UNAVAILABLE` (`GetMempoolStream` exempt). The client's own
+    /// `grpc-timeout` is honoured as its deadline.
     pub(crate) stall_timeout_secs: NonZeroU64,
     /// Proxy CIDRs opening every connection with a PROXY header (v1/v2) naming the client
     ///

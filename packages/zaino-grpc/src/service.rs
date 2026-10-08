@@ -14,6 +14,7 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use http::{Request, Response};
@@ -25,9 +26,11 @@ use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
+use crate::deadline::Bounds;
 use crate::limits::ReadLanes;
 use crate::routes::{blocks, chain, transparent_address, tree_state};
 use crate::wire::{self, frame, path, status_response, unary_response};
+use crate::GrpcLimits;
 
 /// What one `GrpcService` answers from
 ///
@@ -46,10 +49,12 @@ pub struct Routes<S: ChainDataSource, V> {
 /// Routes + what every request shares, one `Arc` (a request clones one pointer)
 ///
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
+/// - `idle` = `GrpcLimits::stall_timeout` (nothing to send that long = cut, `deadline.rs`)
 struct Wired<S: ChainDataSource, V> {
     routes: Routes<S, V>,
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
+    idle: Duration,
 }
 
 /// Every `CompactTxStreamer` method, dispatched by path (the tower service each connection runs)
@@ -62,8 +67,9 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
 }
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Dispatch<S, V> {
-    pub(crate) fn new(routes: Routes<S, V>, reads: ReadLanes) -> Self {
-        Self(Arc::new(Wired { routes, reads, tree_states: Arc::default() }))
+    pub(crate) fn new(routes: Routes<S, V>, limits: &GrpcLimits) -> Self {
+        let (reads, idle) = (ReadLanes::new(limits), limits.stall_timeout);
+        Self(Arc::new(Wired { routes, reads, tree_states: Arc::default(), idle }))
     }
 }
 
@@ -175,10 +181,11 @@ where
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let wired = Arc::clone(&self.0);
-        Box::pin(async move {
-            let path = request.uri().path().to_owned();
-            Ok(wired.answer(&path, request.into_body()).await)
-        })
+        let path = request.uri().path().to_owned();
+        // a mempool subscription stays silent until the next block: never idles out
+        let idle = (path != path::GET_MEMPOOL_STREAM).then_some(wired.idle);
+        let bounds = Bounds::of(request.headers(), idle);
+        Box::pin(async move { Ok(bounds.apply(wired.answer(&path, request.into_body())).await) })
     }
 }
 

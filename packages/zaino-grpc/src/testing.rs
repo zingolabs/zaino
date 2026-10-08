@@ -19,7 +19,6 @@ use zaino_snapshot::{Publisher, Snapshots};
 use zaino_source::mock::MockChain;
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
-use crate::limits::ReadLanes;
 use crate::service::{Dispatch, Routes};
 
 /// Network every test index is built on (the transparent tests' addresses are mainnet ones)
@@ -162,7 +161,7 @@ pub(super) fn routes() -> Routes<MockChain, DiskView> {
 }
 
 pub(super) fn dispatch(routes: Routes<MockChain, DiskView>) -> Dispatch<MockChain, DiskView> {
-    Dispatch::new(routes, ReadLanes::new(&crate::GrpcLimits::default()))
+    Dispatch::new(routes, &crate::GrpcLimits::default())
 }
 
 pub(super) fn request(path: &str) -> Request<Full<bytes::Bytes>> {

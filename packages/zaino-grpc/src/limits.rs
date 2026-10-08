@@ -13,8 +13,9 @@ use crate::emit;
 
 /// What one zainod serves at once
 ///
-/// - `stall_timeout`: unpulled data this long → connection closed (else a never-reading peer
-///   keeps its permits)
+/// - `stall_timeout`: a stream's no-progress bound, never a total cap: unpulled data this long →
+///   connection closed (else a never-reading peer keeps its permits); nothing to send this long
+///   while the client waits → stream ended `UNAVAILABLE` (`GetMempoolStream` exempt)
 /// - `drain_timeout`: open connections' grace after `run`'s cancel + GOAWAY (zero = at once)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrpcLimits {

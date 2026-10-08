@@ -10,6 +10,7 @@ mod admission;
 mod client;
 mod coalesce;
 mod connections;
+mod deadline;
 mod emit;
 mod limits;
 mod memo;

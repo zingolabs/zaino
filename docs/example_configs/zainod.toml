@@ -87,7 +87,9 @@ max_subscriptions = 4096
 max_point_reads = 64
 max_range_reads = 32
 max_scan_reads = 4
-# a stream holding data its client does not read for this long closes its connection
+# a stream's no-progress bound (never a cap on its length; the client's grpc-timeout is its deadline):
+# - data its client does not read for this long closes its connection
+# - nothing to send for this long ends it UNAVAILABLE (GetMempoolStream exempt)
 stall_timeout_secs = 300
 # proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
 trusted_proxies = []

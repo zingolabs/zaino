@@ -210,6 +210,24 @@ rather than queue. A connection over a cap is closed at accept and a stream over
 is answered `UNAVAILABLE` with a retry hint. The read lanes are the exception: an
 index read waits for a permit in its own lane.
 
+### Stream time limits
+
+No stream has a cap on its total length. A full sync streams for as long as it keeps
+receiving, which on mainnet is far longer than any fixed limit would allow.
+
+- **The client's deadline.** A request carrying `grpc-timeout` (tonic's
+  `Request::set_timeout`, grpc-go's context deadline) is cut when that deadline passes:
+  a call still pending answers `DEADLINE_EXCEEDED`, and a stream ends with
+  `DEADLINE_EXCEEDED` in its trailers. A request without one has no deadline.
+- **No progress, either side, for `stall_timeout_secs` (default 300).** A stream whose
+  client has stopped reading holds data it cannot send; once any stream on a
+  connection has done so for that long, the whole connection is closed (hyper stops
+  polling a stream blocked on flow control, so the stream alone cannot be ended). A
+  stream that has had nothing to send for that long while its client waits, for
+  example behind a validator that does not answer, ends with `UNAVAILABLE` in its
+  trailers, and the client may retry. `GetMempoolStream` is exempt from the second
+  case because it is silent until the next block by design.
+
 ### Behind a proxy
 
 Behind a proxy every connection comes from the proxy's address, so

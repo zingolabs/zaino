@@ -111,3 +111,15 @@ instead of one frame per record. `GetAddressUtxosStream`, `GetMempoolTx` and \
 that reads late answered `GOAWAY too_many_data_frames` (lightwalletd #593). A record already \
 16 KiB or larger is sent as is; nothing waits for more data.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+The client's `grpc-timeout` is honoured as its deadline: a call still pending answers \
+`DEADLINE_EXCEEDED`, a stream ends with it in the trailers. Streams have no total-duration \
+cap. `GrpcLimits::stall_timeout` now bounds no progress on either side: unread data closes the \
+connection as before, and a handler or stream with nothing to send for that long ends \
+`UNAVAILABLE` (`GetMempoolStream` exempt). Streamed answers are capped by progress only.
+"""

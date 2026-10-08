@@ -115,7 +115,7 @@ Every cap refuses; none queues except the read lanes:
 | `max_point_reads` | 64 | one block / tree state / root list off the files | bounded wait |
 | `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
 | `max_scan_reads` | 4 | one address-history scan | bounded wait |
-| `stall_timeout` | 300 s | per connection | connection closed |
+| `stall_timeout` | 300 s | per stream: unread data / nothing to send | connection closed / stream `UNAVAILABLE` |
 | `drain_timeout` | 0 s | `run`, after `cancel` | still-open connections dropped |
 
 - A stream permit is owned by the response body, so it returns when the stream
@@ -136,11 +136,30 @@ Every cap refuses; none queues except the read lanes:
   within 30 s is `DEADLINE_EXCEEDED`.
 - `GetLightdInfo` never waits on a validator: its validator half is the chain
   view's last poll tick (≈1 s old at most while polling succeeds).
+- **No total cap.** A stream lives as long as it makes progress. Its bounds are
+  the client's `grpc-timeout` and `stall_timeout` without progress on either
+  side, below.
+- **Deadline.** `grpc-timeout` (at most 8 digits plus `H`, `M`, `S`, `m`, `u` or
+  `n`; a malformed value is ignored, as tonic ignores it) is read at arrival. Past
+  it, a handler still pending answers `DEADLINE_EXCEEDED`, and a stream ends
+  with `DEADLINE_EXCEEDED` trailers. The stream's body is dropped with it, so its
+  reads and permits go too.
 - **Stalls.** A body that handed hyper a frame and is not polled again, because
   flow control stalled on a client that stopped reading, owes that frame. Once
   any stream on a connection has owed for `stall_timeout`, the connection is
   closed and `zaino_grpc_stalled_connections_total` counts it. An idle stream
   (a quiet mempool subscription, a read waiting for its lane) never owes.
+- **Idle.** A handler or stream body with nothing to send for `stall_timeout`
+  while hyper waits on it ends with `UNAVAILABLE` (`nothing to send for …`). The
+  clock restarts at every frame. `GetMempoolStream` never idles out, because it
+  is silent until the next block by design.
+- **Frames.** Records that are ready back to back (`GetAddressUtxosStream`,
+  `GetMempoolTx`, `GetBlockRange`'s in-memory blocks) are joined into DATA
+  chunks of up to 16 KiB. A record of 16 KiB or more passes through uncopied,
+  and nothing waits for more data. Sending one small frame per record makes an
+  h2 0.4.16+ client that reads late answer `GOAWAY too_many_data_frames`
+  (lightwalletd #593). `GetMempoolStream` keeps one frame per arrival, shared by
+  every subscriber.
 
 ### Read lanes
 
