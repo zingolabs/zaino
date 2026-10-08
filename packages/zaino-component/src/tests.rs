@@ -11,9 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::{
-    ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource, Task, TaskName,
-};
+use zaino_async::{Task, TaskName};
+
+use crate::{ComponentName, ComponentStatus, Health, Lifecycle, Managed, StatusSource};
 
 const NAME: ComponentName = ComponentName("flaky");
 

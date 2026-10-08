@@ -50,13 +50,15 @@ impl StatusSource for Validator {
 
 ## Two altitudes: tasks and components
 
-A [`Task`] is the low primitive — one supervised async task, with a name,
-cooperative cancellation, a hard abort, and panic capture on join. A component
-is the subsystem above it, owning one or more tasks. A task failing is the event
-that flips its component's health.
+`zaino_async::Task` is the low primitive — one named async task with cooperative
+cancellation, a hard abort, and panic capture on join. It lives one layer below,
+in [`zaino-async`], because it is domain-free concurrency plumbing that
+non-component code (e.g. the source provisioner's fetch pump) also spawns. A
+component is the subsystem *above* it, owning one or more tasks; a task failing
+is the event that flips its component's health.
 
 ```rust
-use zaino_component::{Task, TaskName};
+use zaino_async::{Task, TaskName};
 
 # async fn example() {
 let task = Task::spawn(TaskName("prune"), |cancel| async move {
@@ -69,9 +71,11 @@ let _ = task.join().await;
 
 ## Names are typed
 
-[`ComponentName`] and [`TaskName`] are distinct newtypes. A component and the
-tasks it runs are different subjects, so passing one where the other belongs is
-a compile error rather than a mislabelled log line.
+[`ComponentName`] and `zaino_async::TaskName` are distinct newtypes. A component
+and the tasks it runs are different subjects, so passing one where the other
+belongs is a compile error rather than a mislabelled log line.
+
+[`zaino-async`]: https://docs.rs/zaino-async
 
 ## Related
 
