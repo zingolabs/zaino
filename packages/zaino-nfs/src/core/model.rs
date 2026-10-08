@@ -8,9 +8,8 @@
 //! - Fetches answered late (random delay), out of order, or after their abandon (a stale body)
 //! - Folds answered after a random delay, in random order
 //! - Each writer commits the final prefix after its own random delay (the final path)
-//! - Serving = `IndexHandle::serving`'s rule (index 1 requires index 0 when `paired`)
 //! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too,
-//!   `wipe` = one index's directory deleted: it syncs, then serves again)
+//!   `wipe` = one index's directory deleted: it holds the served tip back until it catches up)
 //! - Oracle ([`Toy`]) = fold from genesis along each block's own path
 
 use std::collections::{HashMap, HashSet};
@@ -30,7 +29,7 @@ use crate::graph::on_best;
 use crate::snapshot::Branch;
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-/// Serving window (the driver's `2 · depth`)
+/// Fold window (the driver's `2 · depth`)
 const WINDOW: u32 = 6;
 const INDEXES: usize = 3;
 /// Most virtual seconds the balancer takes to serve a body (hedges, retries, a bench)
@@ -80,20 +79,18 @@ proptest! {
 
     /// - `check()` after every step
     /// - One `Fetch` per want until its body or its `Abandon`
-    /// - Folds: serving indexes durable below the block, each on its oracle parent (a node's, or
-    ///   durable exactly below it)
-    /// - Published tip on the best; each index it serves = the oracle (node) or durable at or
-    ///   past it
-    /// - Settled: every index serving, durable through the final tip, served at best
+    /// - Folds: exactly the indexes durable below the block, each on its oracle parent (a node's,
+    ///   or durable exactly below it); none while the root trails best past the window
+    /// - Published tip on the best; every index = the oracle (node) or durable at or past it
+    /// - Settled: every index durable through the final tip, served at best
     #[test]
-    fn the_served_tip_follows_the_verified_best_through_reorgs_restarts_and_serving_changes(
+    fn the_served_tip_follows_the_verified_best_through_reorgs_restarts_and_bulk_sync(
         moves in moves(),
         delays in prop::collection::vec(0u64..=20, 1..=INDEXES),
-        paired in any::<bool>(),
         lookahead in 1usize..=4,
         seed in any::<u64>(),
     ) {
-        run(&moves, &delays, paired, lookahead, seed);
+        run(&moves, &delays, lookahead, seed);
     }
 }
 
@@ -138,19 +135,18 @@ enum Due {
 
 /// - `fetching` = blocks with a `Fetch` out, neither answered nor abandoned
 /// - `decoy` = a block off every chain (G7: `at` of it = `None`)
-/// - `published` = last published tip; `told` = the states last given to the core
+/// - `published` = last published tip; `told` = the durable tips last given to the core
 struct Sim {
     builder: MockChain,
     headers: HeaderChain,
     decoy: BlockHash,
     lookahead: usize,
-    paired: bool,
     core: NfsCore<Toys>,
     given: Option<Arc<VerifiedChain>>,
     pending: Vec<(Instant, Due)>,
     fetching: HashSet<BlockHash>,
     writers: Vec<Writer>,
-    told: Vec<(Option<BlockRef>, bool)>,
+    told: Vec<Option<BlockRef>>,
     published: Option<BlockRef>,
     tips: Vec<BlockHash>,
     oracle: HashMap<BlockHash, Toy>,
@@ -189,19 +185,16 @@ impl Sim {
         (0..=best).map(|h| chain.hash_at(height(h)).expect("best path")).collect()
     }
 
-    /// `IndexHandle::serving`: durable within `WINDOW` of best (index 1: index 0 too, if paired)
-    fn serving(&self, index: usize, best: Height) -> bool {
-        let close = |writer: &Writer| {
-            let next = writer.durable.map_or(0, |tip| u32::from(tip.height) + 1);
-            (u32::from(best) + 1).saturating_sub(next) <= WINDOW
-        };
-        close(&self.writers[index]) && (index != 1 || !self.paired || close(&self.writers[0]))
+    fn durable(&self) -> Vec<Option<BlockRef>> {
+        self.writers.iter().map(|writer| writer.durable).collect()
     }
 
-    fn states(&self) -> Vec<(Option<BlockRef>, bool)> {
-        let best = self.given.as_ref().map(|chain| chain.best().height);
-        let serving = |index| best.is_some_and(|best| self.serving(index, best));
-        (0..self.writers.len()).map(|index| (self.writers[index].durable, serving(index))).collect()
+    /// The core's rule, naively: the lowest durable tip within `WINDOW` of best
+    fn active(&self) -> bool {
+        let Some(chain) = &self.given else { return false };
+        let lowest = self.told.iter().map(|tip| tip.map_or(0, |tip| u32::from(tip.height) + 1));
+        let next = lowest.min().unwrap_or(0);
+        (u32::from(chain.best().height) + 1).saturating_sub(next) <= WINDOW
     }
 
     fn durable_floor(&self) -> u32 {
@@ -263,12 +256,19 @@ impl Sim {
         let chain = Arc::new(self.headers.verified().expect("genesis verified"));
         self.given = Some(Arc::clone(&chain));
         self.step(Input::Chain(chain), context);
-        self.step(Input::Indexes(self.states()), context);
+    }
+
+    /// A fresh core, as the driver boots one: the chain, then every durable tip
+    fn boot(&mut self, context: &str) {
+        self.core = NfsCore::new(self.lookahead, self.writers.len(), WINDOW);
+        self.told = vec![None; self.writers.len()];
+        self.publish(context);
+        self.step(Input::Durable(self.durable()), context);
     }
 
     fn step(&mut self, input: Input<Toys>, context: &str) {
-        if let Input::Indexes(states) = &input {
-            self.told = states.clone();
+        if let Input::Durable(tips) = &input {
+            self.told = tips.clone();
         }
         let outputs = self.core.step(input);
         self.core.check();
@@ -308,8 +308,9 @@ impl Sim {
         }
     }
 
-    /// Each covered index: serving, durable below `at`, on the oracle's parent (the parent node's,
-    /// or durable exactly below `at`)
+    /// - Inside the window only
+    /// - Covers exactly the indexes durable below `at`
+    /// - Each on the oracle's parent (the parent node's, or durable exactly below `at`)
     fn fold(
         &mut self,
         at: BlockRef,
@@ -318,13 +319,17 @@ impl Sim {
         covers: Indexes,
         context: &str,
     ) {
+        assert!(self.active(), "{context}: N5 Fold {at:?} outside the window");
         let expected =
             (at.height != Height::GENESIS).then(|| self.oracle(block.header().prev_hash));
         let mut toys: Toys = vec![None; self.writers.len()];
-        for index in covers.iter() {
-            let (durable, serving) = self.told[index];
+        for index in 0..self.writers.len() {
+            let durable = self.told[index];
             let below = durable.map(|tip| tip.height) < Some(at.height);
-            assert!(serving && below, "{context}: N2 Fold {at:?} index {index} {durable:?}");
+            assert_eq!(covers.contains(index), below, "{context}: N2 Fold {at:?} index {index}");
+            if !below {
+                continue;
+            }
             let parent = match parent.as_ref().and_then(|parent| parent[index]) {
                 Some(parent) => Some(parent),
                 None => {
@@ -340,15 +345,15 @@ impl Sim {
         self.pending.push((due, Due::Folded { at, covers, toys }));
     }
 
-    /// - N4: on its chain's best; each index it serves = the oracle (node) or durable at or past it
+    /// - N4: on its chain's best; every index = the oracle (node) or durable at or past it
     /// - G7: `at` of every node, the root and the decoy = the naive answer
     fn served(&mut self, tip: SnapshotTip<Toys>, context: &str) {
         let at = tip.tip;
         assert!(on_best(&tip.chain, at), "{context}: N4 served {at:?} off its best");
         let toys = tip.graph.at(&tip.chain, tip.root, &at.hash).and_then(|base| base.folded);
         let expected = Some(self.oracle(at.hash));
-        for index in tip.serving.iter() {
-            let durable = self.writers[index].durable.map(|tip| tip.height) >= Some(at.height);
+        for index in 0..self.writers.len() {
+            let durable = self.told[index].map(|tip| tip.height) >= Some(at.height);
             let folded = toys.as_ref().and_then(|toys| toys[index]);
             assert!(
                 durable || folded == expected,
@@ -383,22 +388,18 @@ impl Sim {
         Some((path[path.len() - 1], branch, true))
     }
 
-    /// After every step: every node = the oracle for each index it folds (and none other)
+    /// After every step: every node's folds = the oracle; no node outside the window
     fn verify(&mut self, context: &str) {
         let chain = Arc::clone(self.given.as_ref().expect("a chain before any step"));
         let served = self.published;
         assert!(served.is_none_or(|tip| on_best(&chain, tip)), "{context}: N4 served off best");
-        let nodes: Vec<(BlockRef, Indexes, Toys)> = self
-            .core
-            .graph
-            .nodes()
-            .map(|node| (node.at, node.covers, (*node.folded).clone()))
-            .collect();
-        for (at, covers, toys) in nodes {
-            let toy = self.oracle(at.hash);
-            let expected: Toys =
-                (0..toys.len()).map(|index| covers.contains(index).then_some(toy)).collect();
-            assert_eq!(toys, expected, "{context}: N6 node {at:?} folding {covers:?}");
+        let nodes: Vec<(BlockRef, Toys)> =
+            self.core.graph.nodes().map(|node| (node.at, (*node.folded).clone())).collect();
+        assert!(nodes.is_empty() || self.active(), "{context}: N5 nodes outside the window");
+        for (at, toys) in nodes {
+            let toy = Some(self.oracle(at.hash));
+            let wrong = toys.iter().flatten().any(|folded| Some(*folded) != toy);
+            assert!(!wrong, "{context}: N6 node {at:?} folded {toys:?}, oracle {toy:?}");
         }
     }
 
@@ -444,7 +445,7 @@ impl Sim {
                     if final_tip.map(|tip| tip.height) > writer.durable.map(|tip| tip.height) {
                         writer.durable = final_tip;
                     }
-                    Input::Indexes(self.states())
+                    Input::Durable(self.durable())
                 }
             };
             self.step(input, context);
@@ -473,15 +474,13 @@ impl Sim {
         for writer in &mut self.writers {
             writer.committing = false;
         }
-        self.core = NfsCore::new(self.lookahead, self.writers.len());
         self.pending.clear();
         self.fetching.clear();
         self.published = None;
-        self.told.clear();
-        self.publish(context);
+        self.boot(context);
     }
 
-    /// Liveness: every index serving, durable through the final tip, served at best
+    /// Liveness: every index durable through the final tip, served at best
     fn settle(&mut self) {
         // final past every durable tip (a reset header store may sit below them)
         self.change(&Change::Extend(DEPTH.get()));
@@ -491,8 +490,7 @@ impl Sim {
         let best = chain.best();
         for second in 0..SETTLE {
             let durable = self.writers.iter().all(|writer| writer.durable == chain.final_tip());
-            let serving = (0..self.writers.len()).all(|index| self.serving(index, best.height));
-            if durable && serving && self.published == Some(best) {
+            if durable && self.published == Some(best) {
                 return;
             }
             self.advance(&format!("settle {second}s"));
@@ -510,7 +508,7 @@ fn height(h: u32) -> Height {
     Height::try_from(h).expect("small chain")
 }
 
-fn run(moves: &[Move], delays: &[u64], paired: bool, lookahead: usize, seed: u64) {
+fn run(moves: &[Move], delays: &[u64], lookahead: usize, seed: u64) {
     let mut builder = MockChain::regtest().varied_work();
     let genesis = builder.genesis();
     let decoy = builder.branch(genesis).mine_empty(1).tip().hash;
@@ -522,8 +520,7 @@ fn run(moves: &[Move], delays: &[u64], paired: bool, lookahead: usize, seed: u64
         headers,
         decoy,
         lookahead,
-        paired,
-        core: NfsCore::new(lookahead, writers.len()),
+        core: NfsCore::new(lookahead, writers.len(), WINDOW),
         given: None,
         pending: Vec::new(),
         fetching: HashSet::new(),
@@ -535,7 +532,7 @@ fn run(moves: &[Move], delays: &[u64], paired: bool, lookahead: usize, seed: u64
         now: Instant::now(),
         rng: seed | 1,
     };
-    sim.publish("start");
+    sim.boot("start");
     for (at, step) in moves.iter().enumerate() {
         let context = format!("move {at} {step:?}");
         match step {

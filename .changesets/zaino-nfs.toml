@@ -5,14 +5,14 @@ crate = "zaino-nfs"
 kind = "feature"
 description = """
 First release. The tip overlay: `Nfs::new(chain, balancer, params, depth, lookahead)` follows \
-the header chain's `VerifiedChain` and folds, in RAM, every best-chain block above the durable \
-tips of the indexes it serves (`add(kind, IndexHandle)`; an index serves while its durable tip \
-is within `2 · depth` of best, else it is `syncing`), each through every serving index in \
-dependency order. It never writes and never sends to the writers (final blocks reach them \
-through `zaino_sync::FinalFollower`). `indexed()` publishes one `Indexed` per served-tip or \
-durable-tip move: `served()` (the deepest folded best block, so a reorg moves it at once), \
-`at(hash)` for any folded block (side branches included) or the root, `Views` with a typed \
-reader per serving index, `durable()`. `run(cancel)` stops on `NfsError::{Fold, ChainGone, \
+the header chain's `VerifiedChain` and, while the lowest durable tip of its indexes \
+(`add(kind, IndexHandle)`) is within `2 · depth` of best, folds every best-chain block above it \
+in RAM, each through every index durable below it, in dependency order. It never writes and \
+never sends to the writers (final blocks reach them through `zaino_sync::FinalFollower`). \
+`indexed()` publishes one `Indexed` per served-tip or durable-tip move: `served()` (the deepest \
+folded best block, else the lowest durable tip; a reorg moves it at once), `at(hash)` for any \
+folded block (side branches included) or the root, `Views` with a typed reader per enabled \
+index (`None` = disabled), `durable()`. `run(cancel)` stops on `NfsError::{Fold, ChainGone, \
 IndexGone}`. Metrics and logs for the served tip and reorgs (`describe_metrics`). Feature \
 `testing`: `Indexed::fixed`, `ChainParams::of`.
 """

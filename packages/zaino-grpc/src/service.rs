@@ -6,7 +6,6 @@
 //!   its life: every index answers at heights `<=` its served tip (`GetLatestBlock` = that tip)
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a disabled `[index.*]` = its methods `UNIMPLEMENTED`, naming the index
-//! - an enabled index still catching up alone (`Views::syncing`) = `UNAVAILABLE`, naming it
 //! - an unknown path = `UNIMPLEMENTED`
 
 use std::{
@@ -21,7 +20,6 @@ use std::{
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
-use zaino_nfs::Views;
 use zaino_persistence::{IndexKind, MapRead, SequenceRead};
 use zaino_snapshot::{Snapshots, Unavailable};
 use zaino_source::ChainDataSource;
@@ -96,7 +94,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
                     Err(why) => return unavailable(why),
                 };
                 let Some(blocks) = at.views().compact_block() else {
-                    return absent(path, at.views(), IndexKind::CompactBlock);
+                    return absent(path, IndexKind::CompactBlock);
                 };
                 blocks::dispatch(at, blocks, path, body, reads()).await
             }
@@ -106,7 +104,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
                     return unavailable(Unavailable::NothingServed);
                 };
                 let Some(trees) = indexed.served().views().tree_state() else {
-                    return absent(path, indexed.served().views(), IndexKind::TreeState);
+                    return absent(path, IndexKind::TreeState);
                 };
                 let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&self.tree_states));
                 let answering = tree_state::Answering { indexed, trees, reads: reads(), memos };
@@ -123,7 +121,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
                     Err(why) => return unavailable(why),
                 };
                 let Some(reader) = at.views().transparent_address() else {
-                    return absent(path, at.views(), IndexKind::TransparentAddress);
+                    return absent(path, IndexKind::TransparentAddress);
                 };
                 let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
                 let index = transparent_address::Addresses { reader, network: at.params().network };
@@ -157,16 +155,13 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
     }
 }
 
-/// A method whose index is not served: disabled by the operator, or syncing (retry)
-fn absent<V>(path: &str, views: &Views<V>, kind: IndexKind) -> Response<Body> {
+/// A method whose index the operator disabled
+fn absent(path: &str, kind: IndexKind) -> Response<Body> {
     let method = path.rsplit('/').next().unwrap_or(path);
     let index = kind.name();
-    status_response(match views.syncing(kind) {
-        true => Status::unavailable(format!("{method} needs the {index} index, which is syncing")),
-        false => {
-            Status::unimplemented(format!("{method} needs the {index} index, which is not enabled"))
-        }
-    })
+    status_response(Status::unimplemented(format!(
+        "{method} needs the {index} index, which is not enabled"
+    )))
 }
 
 /// Never fails: every refusal is a gRPC status in the response

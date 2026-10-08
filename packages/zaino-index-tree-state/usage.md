@@ -28,7 +28,7 @@ tokio::spawn(writer.run(blocks));
   per run, the blocks not held are folded as one [`fold_run`](#fold) onto
   `staged()` on the CPU pool into one delta per block (`Run::apply_batch` opens
   them). Commits: batch full or 1 s idle. `handle()` = the `IndexHandle` the
-  NFS reads (committed view, serving).
+  NFS reads (committed view, durable tip).
 - Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
   one record per committed height. `run` panics on a failed commit or an
   unfoldable block (`tree_state index: <FoldError>`,

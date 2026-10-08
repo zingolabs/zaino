@@ -24,11 +24,10 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 ```
 
 - `Nfs::new`: the `VerifiedChain` watch, the traffic balancer (`zaino_sync::fetch` per wanted
-  block, `Urgency::Tip`), the chain params, `depth` (serving window = `2 · depth`), `lookahead`
-  (bodies fetched or folding ahead of the next fold).
+  block, `Urgency::Tip`), the chain params, `depth` (the NFS folds while the lowest durable tip
+  is within `2 · depth` of best), `lookahead` (bodies fetched or folding ahead of the next fold).
 - `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's committed view is
-  what snapshots and folds read; `handle.serving(best, 2 · depth)` decides whether the NFS folds
-  and serves it.
+  what snapshots and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
   `IndexGone(index)` = an input dropped.
 
@@ -40,16 +39,15 @@ Routes never hold an `Indexed`: they load one `zaino_snapshot::Snapshot` per req
 ```rust,ignore
 let at = snap.served()?;                                // zaino-snapshot: one load, pinned
 let tip = at.tip();                                     // GetLatestBlock: every read answers <= it
-let blocks = at.views().compact_block().ok_or_else(disabled)?;
-let syncing = at.views().syncing(IndexKind::TreeState); // enabled, not serving yet: retry
+let blocks = at.views().compact_block().ok_or_else(disabled)?; // None = disabled, never syncing
 let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 ```
 
-- One `Indexed` = one served tip across every serving index: each view = the committed view +
+- One `Indexed` = one served tip across every enabled index: each view = the committed view +
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
-  serving durable tip); a reorg moves it to the fork point at once. Nothing durable and nothing
-  serving = no publish (`None`).
+  durable tip); a reorg moves it to the fork point at once. Nothing durable = no publish
+  (`None`).
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
   or unknown. `At::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.

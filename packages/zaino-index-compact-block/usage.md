@@ -68,8 +68,8 @@ use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES};
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
 let store = DiskEngine::new(fs).open(&path, &schema)?;
-let writer = CompactBlockIndexWriter::new(store, batch_bytes, value_balance.handle());
-let handle = writer.handle();               // serves only while value-balance does
+let writer = CompactBlockIndexWriter::new(store, batch_bytes);
+let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
 tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink subscription

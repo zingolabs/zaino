@@ -62,7 +62,7 @@ fn ceiling(index: usize) -> u64 {
 }
 
 /// Who a status code blames: `Client` = request / client gone (4xx-like), `Refused` = not now
-/// (capacity, syncing, validator down), `Failed` = this server (5xx-like)
+/// (capacity, nothing served yet, validator down), `Failed` = this server (5xx-like)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
     Ok,

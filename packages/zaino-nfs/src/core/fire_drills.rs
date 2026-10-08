@@ -57,7 +57,7 @@ impl World {
     fn node(&self, hash: BlockHash) -> Node<Height> {
         let at = self.at(hash);
         let parent = self.builder.block(hash).header().prev_hash;
-        Node { at, parent, block: self.block(hash), folded: Arc::new(at.height), covers: both() }
+        Node { at, parent, block: self.block(hash), folded: Arc::new(at.height) }
     }
 
     /// Header chain over `blocks` (genesis first), finalized through `final_height`
@@ -71,9 +71,9 @@ impl World {
         Arc::new(headers.verified().expect("verified"))
     }
 
-    /// Both indexes serving at `durable`
-    fn serving(&self, durable: [BlockHash; 2]) -> Input<Height> {
-        Input::Indexes(durable.iter().map(|hash| (Some(self.at(*hash)), true)).collect())
+    /// Both indexes durable at `durable`
+    fn durable(&self, durable: [BlockHash; 2]) -> Input<Height> {
+        Input::Durable(durable.iter().map(|hash| Some(self.at(*hash))).collect())
     }
 
     /// `input`, then every fetch and fold answered honestly (payload = height) unless held
@@ -93,20 +93,20 @@ impl World {
         }
     }
 
-    /// - Both serving from A1; best S6, then A9 (final 4); durable A3 / A2 (root A2)
+    /// - Window 10; durable A1 / A1; best S6, then A9 (final 4); durable A3 / A2 (root A2)
     /// - nodes A3..=A6 + side S5, S6 (fork A4 = final); A7 folding, A8 ready, A9 asked
     fn valid(&self) -> NfsCore<Height> {
         let a = &self.a;
         let all = Hold { fetch: None, fold: None };
-        let mut core = NfsCore::new(4, 2);
+        let mut core = NfsCore::new(4, 2, 10);
         self.drive(&mut core, Input::Chain(self.verified(&a[..=4], 1)), all);
-        self.drive(&mut core, self.serving([a[1], a[1]]), all);
+        self.drive(&mut core, self.durable([a[1], a[1]]), all);
         let on_s = [&a[..=4], &self.s[..2]].concat();
         self.drive(&mut core, Input::Chain(self.verified(&on_s, 1)), all);
         let back_on_a = self.verified(&[&on_s[..], &a[5..]].concat(), 4);
         let hold = Hold { fetch: Some(a[9]), fold: Some(a[7]) };
         self.drive(&mut core, Input::Chain(back_on_a), hold);
-        self.drive(&mut core, self.serving([a[3], a[2]]), all);
+        self.drive(&mut core, self.durable([a[3], a[2]]), all);
         core
     }
 }
@@ -158,13 +158,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
             "G8: every node on the best chain or a side branch it holds",
             Box::new(|c| c.graph.insert(world.node(s[2]))),
         ),
-        (
-            "N2: a node folds serving indexes only",
-            Box::new(|c| {
-                let covers = both().union(Indexes::one(5));
-                c.graph.insert(Node { covers, ..world.node(a[5]) });
-            }),
-        ),
+        ("N5: nothing folded outside the window", Box::new(|c| c.window = 2)),
         (
             "N4: served tip = the deepest folded best block",
             Box::new(|c| c.shown.as_mut().expect("published").tip = world.at(a[5])),
@@ -189,10 +183,6 @@ fn every_invariant_check_fires_on_its_planted_bug() {
             "fold: nothing folds twice",
             Box::new(|c| drop(c.folding.insert(a[6], (world.block(a[6]), both())))),
         ),
-        (
-            "N2: a fold covers serving indexes only",
-            Box::new(|c| drop(c.folding.insert(a[8], (world.block(a[8]), Indexes::one(5))))),
-        ),
     ];
     for (expected, plant) in drills {
         let mut core = world.valid();
@@ -204,10 +194,10 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     // preconditions: caller / driver bug → named panic
     let step = |input: Input<Height>| fired(|| drop(world.valid().step(input)));
     let preconditions = [
-        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(0, 1)))),
-        ("1 to 32 indexes", fired(|| drop(NfsCore::<Height>::new(1, 0)))),
-        ("one state per enabled index", step(Input::Indexes(vec![]))),
-        ("N3: index 0's durable tip never moves back", step(world.serving([a[2], a[2]]))),
+        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(0, 1, 10)))),
+        ("1 to 32 indexes", fired(|| drop(NfsCore::<Height>::new(1, 0, 10)))),
+        ("one durable tip per enabled index", step(Input::Durable(vec![]))),
+        ("N3: index 0's durable tip never moves back", step(world.durable([a[2], a[2]]))),
     ];
     for (expected, message) in preconditions {
         let message = message.unwrap_or_default();
@@ -223,16 +213,17 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     }
     core.check();
 
-    // serving set changed: graph dropped, best nodes' bodies back to ready, served tip held
+    // root A2 past the window of best A9 (bulk sync): every node, body, fold and want dropped,
+    // the root published (committed views alone)
     let mut core = world.valid();
-    let one = Input::Indexes(vec![(Some(world.at(a[3])), true), (Some(world.at(a[2])), false)]);
-    let outputs = core.step(one);
-    let refolding = matches!(&outputs[..], [Output::Fold { at, covers, .. }, ..]
-        if *at == world.at(a[4]) && *covers == Indexes::one(0));
-    assert!(refolding, "A4 refolded for index 0 alone: {outputs:?}");
-    let ready: Vec<Height> = core.ready.keys().copied().collect();
-    let held = (core.held, core.shown.as_ref().map(|shown| shown.tip));
-    assert_eq!(ready, [h(5), h(6), h(8)], "best nodes above the new root, back to ready");
-    assert_eq!(held, (Some(world.at(a[6])), Some(world.at(a[6]))), "A6 held, not republished");
+    core.window = 6;
+    let outputs = core.step(world.durable([a[3], a[2]]));
+    let abandoned = outputs.iter().any(|out| matches!(out, Output::Abandon(at) if at.hash == a[9]));
+    let root = outputs.iter().any(|out| {
+        matches!(out, Output::Publish(Some(tip)) if tip.tip == world.at(a[2]) && tip.graph.is_empty())
+    });
+    assert!(abandoned && root, "A9 abandoned, root A2 published: {outputs:?}");
+    let idle = core.graph.is_empty() && core.ready.is_empty() && core.folding.is_empty();
+    assert!(idle && core.wanted.is_empty(), "nothing held outside the window");
     core.check();
 }

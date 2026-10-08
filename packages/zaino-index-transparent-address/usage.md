@@ -36,7 +36,7 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
   `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
   blocks not held are folded onto `staged()` on the CPU pool, each into the
   delta `Run::apply` opened for it. `handle()` = the `IndexHandle` the NFS
-  reads (committed view, serving).
+  reads (committed view, durable tip).
 - Fallible only at boot (the engine's `open` → `StoreError`); `run` panics on a
   failed commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.transparent_address.enabled`; disabled =

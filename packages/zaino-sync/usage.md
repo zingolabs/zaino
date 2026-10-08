@@ -47,8 +47,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 ## `IndexHandle`
 
 What the rest of the daemon knows about one index: `view()` (committed), `tip()` (durable),
-`changed()` (after each commit; `false` = writer gone), `serving(best, window)` (durable within
-`window` of best, and every index it `requiring`s too).
+`changed()` (after each commit; `false` = writer gone).
 
 ## `IndexerDataSink<T>`
 

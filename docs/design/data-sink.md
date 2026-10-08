@@ -65,7 +65,7 @@ Shutdown on cancel
 ```rust
 // one per index crate (CompactBlockIndexWriter, TreeStateIndexWriter, …)
 impl<S: Store> XIndexWriter<S> {
-    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self;   // compact-block: + value-balance's handle
+    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self;
     pub fn handle(&self) -> IndexHandle<S::View>;              // cheap clone, given to the NFS
     pub async fn run(self, blocks: Subscription<Block>);       // compact-block: + its fees
 }
@@ -75,18 +75,14 @@ impl<V: View> IndexHandle<V> {
     pub fn view(&self) -> V;                               // committed view
     pub fn tip(&self) -> Option<BlockRef>;                 // durable tip
     pub async fn changed(&mut self) -> bool;               // after each commit; false = writer gone
-    pub fn serving(&self, best: Height, window: u32) -> bool; // durable within `window` of best
-    pub fn requiring(self, other: Self) -> Self;           // serves only while `other` does
 }
 ```
 
 - The loop: `Committer::next(&mut blocks)` returns a run of steps. The writer folds the run onto
   `store.staged()` and applies it. Tree-state and value-balance fold a run as one batch
   (`fold_run`).
-- **Commit** when the batch is full or the stream goes idle. Each commit publishes the new
-  committed view, which is what the NFS and snapshots read.
-- **`serving`** belongs to the index. Compact-block's handle requires value-balance's, its fee
-  source.
+- **Commit** when the batch is full (buffer heap) or 1 s after the oldest uncommitted run. Each
+  commit publishes the new committed view, which is what the NFS and snapshots read.
 
 ## Fees
 

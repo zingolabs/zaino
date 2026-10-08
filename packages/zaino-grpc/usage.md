@@ -226,7 +226,7 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   conns** = permits and connections held at the summary, of their caps.
 - Status codes by who they blame: `Internal`, `Unknown`, `DataLoss` = **failed**
   (this server); `Unavailable`, `ResourceExhausted` = **refused** (at capacity,
-  index syncing, validator unreachable; `at_capacity` = the admission share);
+  nothing served yet, validator unreachable; `at_capacity` = the admission share);
   everything else = the client's (bad argument, not found, cancelled), counted
   per method at DEBUG only.
 - The summary is WARN once the window holds a failure, a refusal, a request

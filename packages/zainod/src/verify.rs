@@ -177,8 +177,7 @@ mod tests {
         let tree_state_store = open(&ts, IndexKind::TreeState);
         let transparent_address_store = open(&ta, IndexKind::TransparentAddress);
         let value_balance = ValueBalanceIndexWriter::new(value_balance_store, batch);
-        let compact_block =
-            CompactBlockIndexWriter::new(compact_block_store, batch, value_balance.handle());
+        let compact_block = CompactBlockIndexWriter::new(compact_block_store, batch);
         let block_hash = BlockHashIndexWriter::new(block_hash_store, batch);
         let tree_state = TreeStateIndexWriter::new(tree_state_store, batch);
         let transparent_address =

@@ -140,11 +140,10 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     folded
 }
 
-/// - N4: tip on its chain's best = the lowest view served (a root snapshot: its lowest serving)
+/// - N4: tip on its chain's best = the lowest view (a root snapshot: the lowest durable tip)
 /// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
-///   block's path vs the chain's; each index served reads through the block, or (durable at or
-///   past it) its durable tip alone (R12); either = the oracle there
-/// - an index not served = enabled and `syncing`
+///   block's path vs the chain's; every enabled index readable, through the block or (durable at
+///   or past it) its durable tip alone (R12); either = the oracle there
 fn verify(
     snapshot: &Indexed<DiskView>,
     blocks: &MockChain,
@@ -183,11 +182,8 @@ fn verify(
         for (kind, durable) in &durable {
             let name = kind.name();
             let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
-            let Some(view) = at.views().view(*kind) else {
-                let syncing = at.views().syncing(*kind);
-                assert!(syncing, "{context}: {name} at {block:?}: enabled, not served = syncing");
-                continue;
-            };
+            let view = at.views().view(*kind);
+            let view = view.unwrap_or_else(|| panic!("{context}: {name} unreadable at {block:?}"));
             assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
             let expected =
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.blocks(through)));
@@ -233,7 +229,6 @@ impl Pipeline {
             .then(|| fee_sink.subscribe(IndexKind::CompactBlock.name(), queue));
         let mut fee_sink = Some(fee_sink);
         let (mut writers, mut handles) = (tokio::task::JoinSet::new(), Vec::new());
-        let mut value_balance = None;
         for &kind in kinds {
             let store = engine.open(Path::new(kind.name()), &schema(kind)).expect("store");
             let mut add = |handle: IndexHandle<DiskView>| {
@@ -245,13 +240,11 @@ impl Pipeline {
             match kind {
                 IndexKind::ValueBalance => {
                     let writer = ValueBalanceIndexWriter::new(store, batch);
-                    value_balance = Some(writer.handle());
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks, fee_sink.take().expect("one value-balance")));
                 }
                 IndexKind::CompactBlock => {
-                    let fee_source = value_balance.clone().expect("value-balance added first");
-                    let writer = CompactBlockIndexWriter::new(store, batch, fee_source);
+                    let writer = CompactBlockIndexWriter::new(store, batch);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks, fees.take().expect("one compact-block")));
                 }
@@ -461,12 +454,11 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
 
 /// - Run 0: four indexes synced through A8 (final 5)
 /// - Run 1: tree-state enabled on a fresh store; A 9..=16 one at a time (final = best − 3)
-/// - Served tip never moves back (a refold holds it)
-/// - Tree-state: absent (`syncing`) until within the serving window, then served in every later
-///   snapshot; every snapshot = folding from genesis (`verify`)
-/// - Settled: every index durable through final, served at best, tree-state included
+/// - Served tip = the lowest durable tip until the window holds it, never back; tree-state
+///   readable in every snapshot; every snapshot = folding from genesis (`verify`)
+/// - Settled: every index durable through final, served at best
 #[tokio::test(start_paused = true)]
-async fn an_index_enabled_late_is_syncing_until_it_serves_then_stays_served() {
+async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let miner = p2pkh([0xad; 20]);
     let mut blocks = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
     let genesis = blocks.genesis();
@@ -512,7 +504,7 @@ async fn an_index_enabled_late_is_syncing_until_it_serves_then_stays_served() {
 
     let five = [&four[..3], &[IndexKind::TreeState], &four[3..]].concat();
     let mut pipeline = Pipeline::start(&engine, &five, &verified_rx, &balancer, params);
-    let (mut served, mut joined) = (Height::GENESIS, false);
+    let mut served = Height::GENESIS;
     for at in 9..=16 {
         let context = format!("run 1 A{at}");
         let (best, final_height) = add(&trunk[at..=at]);
@@ -520,14 +512,11 @@ async fn an_index_enabled_late_is_syncing_until_it_serves_then_stays_served() {
             let tip = snapshot.served().tip().height;
             assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
             served = tip;
-            let present = snapshot.served().views().tree_state().is_some();
-            assert!(present || !joined, "{context}: tree-state gone after serving");
-            assert!(present || snapshot.served().views().syncing(IndexKind::TreeState));
-            joined |= present;
+            let readable = snapshot.served().views().tree_state().is_some();
+            assert!(readable, "{context}: tree-state readable at {tip:?}");
         };
         pipeline.settle(best, final_height, each, &mut check, &context).await;
     }
-    assert!(joined, "tree-state served once caught up");
     pipeline.stop().await;
     stop_balancing.cancel();
 }

@@ -45,7 +45,7 @@ pub enum NfsError {
 ///
 /// - Inputs: the verified chain, checked bodies, fold results, each index's commits
 /// - Outputs: fetches (tasks), folds (compute pool), [`Indexed`] publishes
-/// - `window` = `2 · depth`: an index serves while its durable tip is that close to best
+/// - `window` = `2 · depth`: the NFS folds while the lowest durable tip is that close to best
 pub struct Nfs<S, V> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: TrafficBalancer<S>,
@@ -81,7 +81,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         }
     }
 
-    /// `kind` enabled: served at the tip while `index.serving(..)` (panics: `kind` twice)
+    /// `kind` enabled: its committed view read and extended at the tip (panics: `kind` twice)
     pub fn add(&mut self, kind: IndexKind, index: IndexHandle<V>) {
         self.indexes.insert(kind, index);
     }
@@ -104,12 +104,13 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         for (position, handle) in positions.into_iter().enumerate() {
             commits.spawn(next_commit(position, handle));
         }
-        let mut core = NfsCore::new(self.lookahead.get(), self.indexes.iter().count());
+        let count = self.indexes.iter().count();
+        let mut core = NfsCore::new(self.lookahead.get(), count, self.window);
         let mut work = JoinSet::new();
         let mut fetches = Fetches::default();
         let chain = self.chain.borrow_and_update().clone();
         let mut inputs: Vec<Input<Folded>> = chain.map(Input::Chain).into_iter().collect();
-        inputs.push(Input::Indexes(self.refresh()));
+        inputs.push(Input::Durable(self.refresh()));
         loop {
             for input in inputs.drain(..) {
                 for output in core.step(input) {
@@ -124,7 +125,6 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                     changed.map_err(|_| NfsError::ChainGone)?;
                     let chain = self.chain.borrow_and_update().clone();
                     inputs.extend(chain.map(Input::Chain));
-                    inputs.push(Input::Indexes(self.refresh()));
                 }
                 Some(done) = work.join_next() => inputs.push(joined(done)?),
                 body = fetches.next() => inputs.push(Input::Body(body)),
@@ -135,28 +135,25 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                         return Err(NfsError::IndexGone(kind.name()));
                     }
                     commits.spawn(next_commit(position, handle));
-                    inputs.push(Input::Indexes(self.refresh()));
+                    inputs.push(Input::Durable(self.refresh()));
                 }
             }
         }
     }
 
-    /// Each index's committed view reloaded into `committed`; its (durable tip, serving) against
-    /// the latest chain's best (no chain: none serves)
+    /// Each index's committed view reloaded into `committed`; their durable tips
     ///
     /// - `committed` changes only here: every fold and snapshot pairs layers with exactly the
     ///   durable tips the core was last told
-    fn refresh(&mut self) -> Vec<(Option<BlockRef>, bool)> {
-        let best = self.chain.borrow().as_ref().map(|chain| chain.best().height);
-        let (mut committed, mut states) = (PerIndex::default(), Vec::new());
+    fn refresh(&mut self) -> Vec<Option<BlockRef>> {
+        let (mut committed, mut tips) = (PerIndex::default(), Vec::new());
         for (kind, handle) in self.indexes.iter() {
             let view = handle.view();
-            let serving = best.is_some_and(|best| handle.serving(best, self.window));
-            states.push((view.tip(), serving));
+            tips.push(view.tip());
             committed.insert(kind, view);
         }
         self.committed = committed;
-        states
+        tips
     }
 
     /// Kinds at `covers`' positions (add order)
@@ -181,15 +178,9 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             Output::Abandon(at) => fetches.abandon(at.hash),
             Output::Fold { at, parent, block, covers } => {
                 let covered = self.kinds(covers);
-                let mut read = covered.clone();
-                let fees = covered.contains(&IndexKind::CompactBlock)
-                    && !covered.contains(&IndexKind::ValueBalance);
-                if fees {
-                    read.push(IndexKind::ValueBalance);
-                }
                 let empty = PerIndex::default();
                 let layers = parent.as_deref().map_or(&empty, |folded| &folded.layers);
-                let parent = Views::at(&self.committed, layers, &read, at.height.checked_sub(1));
+                let parent = Views::at(&self.committed, layers, at.height.checked_sub(1));
                 work.spawn(async move {
                     let folded = compute(move || fold_block(&parent, &block, &covered)).await?;
                     Ok(Input::Folded { at, covers, folded: Arc::new(folded) })
@@ -198,10 +189,10 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             Output::Publish(None) => {
                 self.published.send_replace(None);
             }
-            Output::Publish(Some(SnapshotTip { chain, tip, root, graph, serving })) => {
+            Output::Publish(Some(SnapshotTip { chain, tip, root, graph })) => {
                 self.log_served(&chain, tip);
-                let (views, serving) = (self.committed.clone(), self.kinds(serving));
-                let indexed = Indexed::new(chain, tip, root, self.params, views, serving, graph);
+                let views = self.committed.clone();
+                let indexed = Indexed::new(chain, tip, root, self.params, views, graph);
                 self.published.send_replace(Some(Arc::new(indexed)));
             }
         }

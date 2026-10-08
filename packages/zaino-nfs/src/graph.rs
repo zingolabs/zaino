@@ -1,4 +1,4 @@
-//! Folded blocks above the root: one [`Node`] per block, keyed by hash (`nfs.md` §6)
+//! Folded blocks above the root: one [`Node`] per block, keyed by hash (`nfs.md`)
 //!
 //! - Best nodes = one contiguous run from the root (folded parent first)
 //! - Side nodes = earlier best runs, kept while the header chain holds them (`holds`: side
@@ -8,19 +8,16 @@ use std::sync::Arc;
 
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
-
-use crate::core::Indexes;
-use crate::snapshot::Branch;
 use zaino_sync::merkle_root;
 
-/// `covers` = the indexes `folded` holds (serving + durable below it, when it folded)
+use crate::snapshot::Branch;
+
 #[derive(Debug)]
 pub(crate) struct Node<F> {
     pub(crate) at: BlockRef,
     pub(crate) parent: BlockHash,
     pub(crate) block: Arc<Block>,
     pub(crate) folded: Arc<F>,
-    pub(crate) covers: Indexes,
 }
 
 /// O(1) clone: one per published snapshot
@@ -61,6 +58,7 @@ impl<F> Graph<F> {
         self.nodes.is_empty()
     }
 
+    #[cfg(test)]
     pub(crate) fn nodes(&self) -> impl Iterator<Item = &Arc<Node<F>>> {
         self.nodes.values()
     }
@@ -135,7 +133,7 @@ impl<F> Graph<F> {
     }
 
     /// N1, N2, G8; panics naming the invariant broken
-    pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>, serving: Indexes) {
+    pub(crate) fn check(&self, chain: &VerifiedChain, root: Option<BlockRef>) {
         for node in self.nodes.values() {
             let header = node.block.header();
             let at = BlockRef { hash: header.hash, height: header.height };
@@ -149,7 +147,6 @@ impl<F> Graph<F> {
             assert!(held, "N2: every node folds on a held parent");
             let held = chain.holds(node.at);
             assert!(held, "G8: every node on the best chain or a side branch it holds");
-            assert!(serving.covers(node.covers), "N2: a node folds serving indexes only");
         }
     }
 }

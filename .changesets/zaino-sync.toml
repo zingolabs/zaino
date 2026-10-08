@@ -13,7 +13,7 @@ byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carr
 value-balance's fees to compact-block. `Committer` is the apply / commit loop every writer runs \
 (commits when the batch fills or after 1 s idle; `Run::{apply, apply_batch}` fold each block a \
 store lacks); `IndexHandle` is what the rest of the daemon knows about one index (`view`, `tip`, \
-`changed`, `serving(best, window)`, `requiring`). `SyncProgress` = the last height sent \
+`changed`). `SyncProgress` = the last height sent \
 (`zaino_fetch_height`); `zaino_fetch_*_total` and `zaino_sink_queue_bytes` metrics; `compute` \
 for CPU work on the rayon pool.
 """

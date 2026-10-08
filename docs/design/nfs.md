@@ -13,7 +13,7 @@ folded a second time.
  checked bodies ─────┤                    │
  fold results ───────┼─▶ NfsCore::step ───┼─▶ Fold ────▶ fold_block on rayon ─▶ Node in graph
  IndexHandle commits ┘   (pure: no I/O)   │
-   (durable, serving)                     └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-snapshot
+   (durable tips)                         └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-snapshot
 ```
 
 ## Public API
@@ -31,7 +31,7 @@ pub enum NfsError { Fold(FoldError), ChainGone, IndexGone(&'static str) }
 
 impl<V: View> Indexed<V> {
     pub fn chain(&self) -> &Arc<VerifiedChain>;
-    pub fn served(&self) -> &At<V>;                      // deepest folded best node, else durable
+    pub fn served(&self) -> &At<V>;                      // deepest folded best node, else the root
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>>; // any folded node, side branches included
     pub fn durable(&self) -> impl Iterator<Item = (IndexKind, Option<BlockRef>)>;
 }
@@ -40,34 +40,30 @@ impl<V> At<V> {
     pub fn branch(&self) -> Branch;                      // Best | Side { from }
     pub fn views(&self) -> &Views<V>;                    // per index: committed view + node layer
 }
-impl<V> Views<V> {
-    pub fn compact_block(&self) -> Option<CompactBlockReader<LayeredView<V>>>; // None: disabled,
-    pub fn tree_state(&self) -> Option<TreeStateReader<LayeredView<V>>>;       // or not serving
+impl<V> Views<V> {                                       // None = the index is disabled
+    pub fn compact_block(&self) -> Option<CompactBlockReader<LayeredView<V>>>;
+    pub fn tree_state(&self) -> Option<TreeStateReader<LayeredView<V>>>;
     pub fn block_hash(&self) -> Option<BlockHashReader<LayeredView<V>>>;
     pub fn transparent_address(&self) -> Option<TransparentAddressReader<LayeredView<V>>>;
-    pub fn syncing(&self, kind: IndexKind) -> bool;      // enabled, not serving (UNAVAILABLE)
 }
 ```
 
 ## Rules
 
-1. **Serving comes from each index.** On every chain change and every commit, the driver asks
-   each `IndexHandle::serving(best, 2 · depth)`. A non-serving index is `syncing`: not folded,
-   not served. During a first sync nothing serves, so the NFS fetches and folds nothing.
-2. **What gets folded.** Every best-chain block above the lowest durable tip among serving
-   indexes. A node at height `h` folds each serving index durable below `h`, in `fold_block`
-   order (value-balance first: its fees feed compact-block; value-balance durable at `h` = fees
-   from its committed view).
-3. **Prune.** A best-chain node goes once every serving index has committed its height. A side
-   node goes when the header chain drops its fork.
-4. **Serving set changed → refold.** Every best node's block goes back to `ready`, the graph is
-   dropped and refolded (about 1 ms per node). The served tip is held until the refold reaches
-   it again.
-5. **Served tip** = the deepest folded best-chain node, else the committed views alone; nothing
-   durable and nothing serving = withdrawn (`None`). Every route answers at heights `≤` it, so
-   `GetLatestBlock`, `GetBlockRange` and `GetTreeState` agree.
-6. **One state.** The driver reloads every committed view only when it tells the core the index
-   states, so folds and snapshots pair layers with exactly the durable tips the core knows.
+1. **Root** = the lowest durable tip of every index.
+2. **Window.** The NFS folds only while the root is within `2 · depth` of best. Farther behind
+   (a first sync, an index enabled late) it folds and holds nothing: the final path does the
+   work and snapshots serve the committed data at the root.
+3. **What gets folded.** Every best-chain block above the root. A node at height `h` folds each
+   index durable below `h`, in `fold_block` order (value-balance first: its fees feed
+   compact-block; value-balance durable at `h` = fees from its committed view).
+4. **Prune.** A best-chain node goes once every index has committed its height. A side node goes
+   when the header chain drops its fork.
+5. **Served tip** = the deepest folded best-chain node, else the root; nothing durable =
+   withdrawn (`None`). Every enabled index is readable at it, so `GetLatestBlock`,
+   `GetBlockRange` and `GetTreeState` agree. There is no per-index serving state.
+6. **One state.** The driver reloads every committed view only when it tells the core the
+   durable tips, so folds and snapshots pair layers with exactly the tips the core knows.
 
 ## Core
 
@@ -76,7 +72,7 @@ pub(crate) enum Input<F> {
     Chain(Arc<VerifiedChain>),
     Body(Checked),                                   // stale = ignored
     Folded { at: BlockRef, covers: Indexes, folded: Arc<F> }, // another covers (stale) = ignored
-    Indexes(Vec<(Option<BlockRef>, bool)>),          // every index: (durable tip, serving)
+    Durable(Vec<Option<BlockRef>>),                  // every index's durable tip
 }
 
 pub(crate) enum Output<F> {
@@ -94,10 +90,10 @@ async loop.
 ## A block's life
 
 ```text
-header verified ─▶ on best, above the root ─▶ Fetch ─▶ Checked ─▶ Fold (parent node, or the
-   committed views) ─▶ Node ─▶ Publish
-   ─▶ … final ─▶ (final path: follower → writers fold + commit) ─▶ every serving index's
-       durable tip ≥ h ─▶ node pruned
+header verified ─▶ on best, above the root, inside the window ─▶ Fetch ─▶ Checked ─▶ Fold
+   (parent node, or the committed views) ─▶ Node ─▶ Publish
+   ─▶ … final ─▶ (final path: follower → writers fold + commit) ─▶ every durable tip ≥ h
+   ─▶ node pruned
 ```
 
 A reorg (best moves to a branch forking at F):
@@ -114,9 +110,10 @@ after:  … F ─ b1 ─ b2        (b1, b2 fetched + folded from F)
 | ID  | Invariant                                                                            |
 | --- | ------------------------------------------------------------------------------------ |
 | N1  | every node's block = its own header + merkle root, on the best chain or a held side  |
-| N2  | nodes above the root, on a held parent, folding serving indexes only                 |
+| N2  | nodes above the root, on a held parent                                               |
 | N3  | durable tips never move back                                                         |
-| N4  | served tip = deepest folded best node, else the root (unless held by a refold)       |
+| N4  | served tip = deepest folded best node, else the root                                 |
+| N5  | nothing folded, held or fetched outside the window                                   |
 | N6  | every index read through a snapshot = that index folded from genesis along best      |
 
 ## Tests
@@ -124,12 +121,13 @@ after:  … F ─ b1 ─ b2        (b1, b2 fetched + folded from F)
 - **Core model** (`core/model.rs`): random chain evolutions (extend, reorg, retreat, revive,
   finalize), late and stale bodies and folds, writers committing the final prefix after random
   delays, restarts with a wiped index. The oracle folds from genesis along each block's path;
-  every fold, node and publish must match it. `check()` after every step.
+  every fold covers exactly the indexes durable below it; every node and publish matches the
+  oracle. `check()` after every step.
 - **Fire drills** (`core/fire_drills.rs`): one planted bug per `check()` assertion and
-  precondition; stale folds ignored; a serving change refolds and holds the served tip.
+  precondition; stale folds ignored; leaving the window drops everything and publishes the root.
 - **End to end** (`tests.rs`): `FinalFollower` + the five real writers + the NFS over `SimFs`,
-  mock validators (one lying): reorgs, finality, a restart, an index enabled late (`syncing`
-  until it serves, served tip never back), a writer gone.
+  mock validators (one lying): reorgs, finality, a restart, an index enabled late (holds the
+  served tip back, every index readable throughout), a writer gone.
 
 The persistence types the overlay builds on (`Layer`, `LayeredView`, `Store::staged`) are in
 [persistence-engine.md §5](persistence-engine.md#5-layers-and-writers). How requests read

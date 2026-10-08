@@ -24,7 +24,7 @@ tokio::spawn(writer.run(blocks));
 - `run` follows the final stream (`"block_hash"`, from `FinalFollower`) through
   `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
   each block not held = `fold` into the delta `Run::apply` opened for it.
-  `handle()` = the `IndexHandle` the NFS reads (committed view, serving).
+  `handle()` = the `IndexHandle` the NFS reads (committed view, durable tip).
 
 ## Folding and reading
 

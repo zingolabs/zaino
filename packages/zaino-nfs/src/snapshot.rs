@@ -73,15 +73,13 @@ impl<V> At<V> {
 
 /// One publish: the served tip + every folded node, judged under `chain`
 ///
-/// - `served` = deepest folded best block, else `root` (lowest durable tip of the serving indexes)
+/// - `served` = deepest folded best block, else `root` (lowest durable tip of every index)
 /// - `durable` = each enabled index's committed view as of this publish (republished per commit)
-/// - `serving` = indexes served (the rest: absent, [`Views::syncing`])
 pub struct Indexed<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
     served: At<V>,
     durable: PerIndex<V>,
-    serving: Vec<IndexKind>,
     graph: Graph<Folded>,
 }
 
@@ -93,25 +91,23 @@ impl<V: View> Indexed<V> {
         root: Option<BlockRef>,
         params: ChainParams,
         durable: PerIndex<V>,
-        serving: Vec<IndexKind>,
         graph: Graph<Folded>,
     ) -> Self {
         let base = graph.at(&chain, root, &tip.hash).expect("served tip = a node or the root");
-        let served = at(params, &durable, &serving, base);
-        Self { chain, root, served, durable, serving, graph }
+        let served = at(params, &durable, base);
+        Self { chain, root, served, durable, graph }
     }
 
-    /// Index state as of `hash`: a folded node (best or side) or the root, no I/O
+    /// Every enabled index as of `hash`: a folded node (best or side) or the root, no I/O
     ///
     /// - `None` = final below the root, never folded, or unknown
     /// - an index durable at or past the block: its committed view alone (reads at heights `<=`)
-    /// - an index not serving: absent, [`Views::syncing`]
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;
-        Some(at(self.served.params, &self.durable, &self.serving, base))
+        Some(at(self.served.params, &self.durable, base))
     }
 
-    /// Each enabled index's durable tip (syncing ones included), subscribe order
+    /// Each enabled index's durable tip, add order
     pub fn durable(&self) -> impl Iterator<Item = (IndexKind, Option<BlockRef>)> + '_ {
         self.durable.iter().map(|(kind, view)| (kind, view.tip()))
     }
@@ -138,22 +134,14 @@ impl<V> Indexed<V> {
     }
 }
 
-fn at<V: View>(
-    params: ChainParams,
-    durable: &PerIndex<V>,
-    serving: &[IndexKind],
-    base: Base<Folded>,
-) -> At<V> {
+fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -> At<V> {
     let empty = PerIndex::default();
     let layers = base.folded.as_deref().map_or(&empty, |folded| &folded.layers);
-    let views = Views::at(durable, layers, serving, Some(base.at.height));
+    let views = Views::at(durable, layers, Some(base.at.height));
     At { block: base.at, branch: base.branch, params, views }
 }
 
-/// Every enabled index's committed view + a layer above it for each one served
-///
-/// - [`At`]'s state, and a fold's parent
-/// - an index without a layer: not serving (syncing on the final path), read as absent
+/// Every enabled index's committed view + a layer above it: [`At`]'s state, and a fold's parent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -171,19 +159,17 @@ impl<V: View> Views<V> {
         Self { durable: durable.clone(), layers: rebased }
     }
 
-    /// As of the block at `height` (`None` = below genesis): each `serving` index's layer of
-    /// `layers`, empty when durable at or past `height` (a layer rebases only onto its own blocks)
+    /// As of the block at `height` (`None` = below genesis), per enabled index: an empty layer
+    /// when durable at or past `height` (its committed view), else its layer of `layers`
     ///
-    /// - panics: a serving index durable below `height` with no layer in `layers`
+    /// - panics: an index durable below `height` unfolded there
     pub(crate) fn at(
         durable: &PerIndex<V>,
         layers: &PerIndex<Layer>,
-        serving: &[IndexKind],
         height: Option<Height>,
     ) -> Self {
         let mut chosen = PerIndex::default();
-        for &kind in serving {
-            let view = durable.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()));
+        for (kind, view) in durable.iter() {
             let layer = match view.tip().map(|tip| tip.height) >= height {
                 true => Layer::empty(view.schema()),
                 false => layers.get(kind).cloned().unwrap_or_else(|| {
@@ -195,21 +181,14 @@ impl<V: View> Views<V> {
         Self::new(durable, &chosen)
     }
 
-    /// Panics: `kind` not served
+    /// Panics: `kind` disabled
     pub(crate) fn layer(&self, kind: IndexKind) -> &Layer {
-        self.layers.get(kind).unwrap_or_else(|| panic!("{}: not served", kind.name()))
+        self.layers.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()))
     }
 
     pub(crate) fn view(&self, kind: IndexKind) -> Option<LayeredView<V>> {
         let layer = self.layers.get(kind)?.clone();
         Some(LayeredView::new(self.durable.get(kind)?.clone(), layer))
-    }
-}
-
-impl<V> Views<V> {
-    /// `kind` enabled, not served yet: catching up alone (its routes: `UNAVAILABLE`)
-    pub fn syncing(&self, kind: IndexKind) -> bool {
-        self.durable.get(kind).is_some() && self.layers.get(kind).is_none()
     }
 }
 
@@ -246,19 +225,18 @@ pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;
 /// No driver publishes into it (consumers' tests)
 #[cfg(any(test, feature = "testing"))]
 impl<V: View> Indexed<V> {
-    /// At `tip` on `chain`, `tip` = the root: each enabled index serving, = its committed view
+    /// At `tip` on `chain`, `tip` = the root: each enabled index = its committed view
     pub fn fixed(
         chain: Arc<VerifiedChain>,
         tip: BlockRef,
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
     ) -> Self {
-        let (mut views, mut serving) = (PerIndex::default(), Vec::new());
+        let mut views = PerIndex::default();
         for (kind, view) in durable {
-            serving.push(kind);
             views.insert(kind, view);
         }
-        Self::new(chain, tip, Some(tip), params, views, serving, Graph::new())
+        Self::new(chain, tip, Some(tip), params, views, Graph::new())
     }
 }
 

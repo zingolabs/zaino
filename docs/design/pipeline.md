@@ -68,7 +68,7 @@ FinalFollower::new(chain, balancer, lookahead);
 FinalFollower::subscribe(&mut self, kind, durable: Option<BlockRef>, queue) -> Subscription<Block>;
 FinalFollower::run(self, cancel) -> Result<(), FollowError>;
 fetch(balancer, at, record, Urgency) -> Checked;   // until hash, height, merkle root = the header's
-IndexHandle::{view() -> V, tip(), changed(), serving(best, window) -> bool, requiring(other)};
+IndexHandle::{view() -> V, tip(), changed()};       // one index's committed view
 
 // each index crate: one fold, one writer (data-sink.md)
 fold(parent: &XReader<V>, block, [inputs,] out: &mut Changes);      // shared by writer + NFS
@@ -90,8 +90,9 @@ Snapshot::{served() -> Result<&At<V>, Unavailable>, mempool(), lightd()};
 1. **One fold per index, two callers.** The writer and the NFS run the same `fold`. A tip block is
    folded twice, once in RAM and once by its writer when it turns final. That costs about 1 ms
    per block, and it keeps the stream a plain `Block`.
-2. **Each index owns its state.** Callers ask `IndexHandle::serving(best, window)`; nobody else
-   tracks groups or join states. Compact-block's handle requires value-balance's (its fee source).
+2. **No serving state.** gRPC binds at boot and every endpoint answers at one snapshot tip: the
+   lowest durable tip during bulk sync, best once the NFS folds (lowest durable tip within
+   `2 · depth` of best). Every enabled index is readable at that tip; absent = disabled.
 3. **The writers never see a reorg.** Reorgs live in the NFS graph alone.
 4. **A request reads one `Snapshot`**, so every RPC in it agrees on one tip.
 

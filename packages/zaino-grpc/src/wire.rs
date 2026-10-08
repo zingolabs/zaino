@@ -83,11 +83,9 @@ pub(super) fn locate<V: zaino_persistence::MapRead>(
     let hash: [u8; 32] =
         raw.try_into().map_err(|_| Status::invalid_argument("block hash must be 32 bytes"))?;
     let locator = at.views().block_hash().ok_or_else(|| {
-        let by = format!("{method} by hash resolves through the block-hash index");
-        match at.views().syncing(zaino_persistence::IndexKind::BlockHash) {
-            true => Status::unavailable(format!("{by}, which is syncing")),
-            false => Status::unimplemented(format!("{by}, which is off")),
-        }
+        Status::unimplemented(format!(
+            "{method} by hash resolves through the block-hash index, which is off"
+        ))
     })?;
     let height = locator.height_of(&hash.into()).filter(|&height| height <= at.tip().height);
     let missing = || Status::not_found("block hash is not in the index");

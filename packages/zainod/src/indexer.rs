@@ -191,13 +191,11 @@ async fn pipeline<S: ChainDataSource>(
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
         let schema = stores::schema(IndexKind::ValueBalance, network);
         let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
-        let value_balance = writer.handle();
-        let blocks = indexes.add(IndexKind::ValueBalance, value_balance.clone(), &vb, &span);
+        let blocks = indexes.add(IndexKind::ValueBalance, writer.handle(), &vb, &span);
         let run = writer.run(blocks, fee_sink);
         spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
         let schema = stores::schema(IndexKind::CompactBlock, network);
-        let new = |store, batch| CompactBlockIndexWriter::new(store, batch, value_balance);
-        let (span, writer) = open(&engine, &cb, schema, new)?;
+        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
         let blocks = indexes.add(IndexKind::CompactBlock, writer.handle(), &cb, &span);
         let run = writer.run(blocks, fees);
         spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);

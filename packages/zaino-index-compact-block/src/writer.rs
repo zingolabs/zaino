@@ -15,22 +15,21 @@ const NAME: &str = IndexKind::CompactBlock.name();
 
 pub struct CompactBlockIndexWriter<S: Store> {
     store: Committer<S>,
-    value_balance: IndexHandle<S::View>,
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
-    /// bulk commit (one fsync); `value_balance` = its fee source's handle
-    pub fn new(store: S, batch_bytes: NonZeroUsize, value_balance: IndexHandle<S::View>) -> Self {
+    /// bulk commit (one fsync)
+    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
         let view = store.view();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
         assert_eq!(view.sequence(BLOCKS).count(), held, "{NAME}: one record per committed height");
-        Self { store: Committer::new(store, batch_bytes), value_balance }
+        Self { store: Committer::new(store, batch_bytes) }
     }
 
-    /// For `Nfs::add`: committed view after every commit; serves only with value-balance
+    /// For `Nfs::add`: committed view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
-        self.store.handle().requiring(self.value_balance.clone())
+        self.store.handle()
     }
 
     /// Follows `blocks` and `fees` (value-balance's) through their `Shutdown` (a failure panics)
@@ -212,10 +211,8 @@ mod tests {
     }
 
     impl Running {
-        /// Fee source's handle = a stand-in store's (only `handle()`'s serving reads it)
         fn start(store: DiskStore, batch: NonZeroUsize) -> Self {
-            let value_balance = Committer::new(open(&SimFs::new()), QUEUE).handle();
-            let writer = CompactBlockIndexWriter::new(store, batch, value_balance);
+            let writer = CompactBlockIndexWriter::new(store, batch);
             let handle = writer.handle();
             let (mut blocks, mut fees) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
             let (block_sub, fee_sub) = (blocks.subscribe(NAME, QUEUE), fees.subscribe(NAME, QUEUE));
