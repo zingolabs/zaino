@@ -3,10 +3,11 @@
 //! The key is the subtree index — a `u32` big-endian, so byte order is numeric
 //! order and the `WalkOrdered` namespace walks subtrees in ascending index. The
 //! value is a completed subtree's [`SubtreeRoot`]: the 32-byte root in internal
-//! (unreversed) order, plus the height whose block completed it (the
-//! `end_height` `z_getsubtreesbyindex` reports). The [`EntryCodec`] is generic
-//! over the [`Pool`], since every pool's subtree namespace shares this format
-//! and differs only in identity.
+//! (unreversed) order, the hash of the block that completed the subtree (also
+//! internal order), plus the height of that completing block (the `end_height`
+//! `z_getsubtreesbyindex` reports). The [`EntryCodec`] is generic over the
+//! [`Pool`], since every pool's subtree namespace shares this format and differs
+//! only in identity.
 
 use zaino_persistence_codec::layout::{BeU32, BeU64, Cursor, LayoutAtom, Writer};
 use zaino_persistence_codec::{DecodeError, EntryCodec, KeyOrder, PersistentRecord, RecordLayout};
@@ -15,28 +16,36 @@ use zaino_sync::primitives::BlockHeight;
 use super::pool::Pool;
 use super::SubtreesIndex;
 
-/// A completed subtree's root and the height that completed it.
+/// A completed subtree's root, the block that completed it, and that block's
+/// height.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubtreeRoot {
     /// The level-[`SUBTREE_LEVEL`](super::pool::SUBTREE_LEVEL) node, in internal
     /// (unreversed) byte order — the orientation every pool stores and serves.
     pub root: [u8; 32],
+    /// The hash of the block that completed this subtree, in internal
+    /// (unreversed) byte order — the serve path reverses it to the display order
+    /// the lightwalletd wire carries.
+    pub completing_block_hash: [u8; 32],
     /// The height of the block that completed this subtree (`z_getsubtreesbyindex`
     /// `end_height`).
     pub completing_height: BlockHeight,
 }
 
-/// On-disk record for a [`SubtreeRoot`]: the 32 root bytes verbatim, then the
-/// completing height as a big-endian `u64`.
+/// On-disk record for a [`SubtreeRoot`]: the 32 root bytes verbatim, then the 32
+/// completing-block-hash bytes verbatim, then the completing height as a
+/// big-endian `u64`.
 pub struct PersistentSubtreeRoot {
     root: [u8; 32],
+    completing_block_hash: [u8; 32],
     completing_height: u64,
 }
 
 impl RecordLayout for PersistentSubtreeRoot {
     fn encode(&self) -> Vec<u8> {
-        let mut writer = Writer::with_capacity(40);
+        let mut writer = Writer::with_capacity(72);
         writer.bytes32(&self.root);
+        writer.bytes32(&self.completing_block_hash);
         BeU64(self.completing_height).encode(&mut writer);
         writer.into_bytes()
     }
@@ -44,10 +53,12 @@ impl RecordLayout for PersistentSubtreeRoot {
     fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut cursor = Cursor::new(bytes);
         let root = cursor.bytes32()?;
+        let completing_block_hash = cursor.bytes32()?;
         let completing_height = BeU64::decode(&mut cursor)?.0;
         cursor.finish()?;
         Ok(Self {
             root,
+            completing_block_hash,
             completing_height,
         })
     }
@@ -59,6 +70,7 @@ impl PersistentRecord for PersistentSubtreeRoot {
     fn from_domain(domain: &SubtreeRoot) -> Self {
         Self {
             root: domain.root,
+            completing_block_hash: domain.completing_block_hash,
             completing_height: domain.completing_height.into(),
         }
     }
@@ -66,6 +78,7 @@ impl PersistentRecord for PersistentSubtreeRoot {
     fn into_domain(self) -> Result<SubtreeRoot, DecodeError> {
         Ok(SubtreeRoot {
             root: self.root,
+            completing_block_hash: self.completing_block_hash,
             completing_height: BlockHeight::from(self.completing_height),
         })
     }
@@ -118,6 +131,7 @@ impl<P: Pool> EntryCodec for SubtreesIndex<P> {
                 0,
                 SubtreeRoot {
                     root: [0u8; 32],
+                    completing_block_hash: [0u8; 32],
                     completing_height: BlockHeight::new(0),
                 },
             ),
@@ -125,6 +139,7 @@ impl<P: Pool> EntryCodec for SubtreesIndex<P> {
                 0x0102_0304,
                 SubtreeRoot {
                     root: [0xAB; 32],
+                    completing_block_hash: [0xCD; 32],
                     completing_height: BlockHeight::new(558_822),
                 },
             ),
@@ -164,17 +179,46 @@ mod tests {
     fn value_round_trips() {
         let value = SubtreeRoot {
             root: [0x5a; 32],
+            completing_block_hash: [0x3c; 32],
             completing_height: BlockHeight::new(780_364),
         };
         let bytes = encode_value::<Idx>(&value);
-        assert_eq!(bytes.len(), 40, "32 root bytes + 8 height bytes");
+        assert_eq!(
+            bytes.len(),
+            72,
+            "32 root bytes + 32 completing-block-hash bytes + 8 height bytes"
+        );
         assert_eq!(decode_value::<Idx>(&bytes).expect("decode"), value);
+    }
+
+    #[test]
+    fn the_root_and_the_completing_block_hash_keep_their_own_positions() {
+        // The two 32-byte fields are distinct and adjacent on disk; an encode that
+        // swapped or aliased them would survive a round-trip of equal bytes, so
+        // the sample makes them differ.
+        let value = SubtreeRoot {
+            root: [0x11; 32],
+            completing_block_hash: [0x22; 32],
+            completing_height: BlockHeight::new(1),
+        };
+        let bytes = encode_value::<Idx>(&value);
+        assert_eq!(
+            &bytes[..32],
+            &[0x11u8; 32],
+            "root occupies the first 32 bytes"
+        );
+        assert_eq!(
+            &bytes[32..64],
+            &[0x22u8; 32],
+            "the completing block hash occupies the next 32 bytes"
+        );
     }
 
     #[test]
     fn a_truncated_value_is_rejected() {
         let value = SubtreeRoot {
             root: [1u8; 32],
+            completing_block_hash: [2u8; 32],
             completing_height: BlockHeight::new(1),
         };
         let bytes = encode_value::<Idx>(&value);

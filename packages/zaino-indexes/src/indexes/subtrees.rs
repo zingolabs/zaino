@@ -29,7 +29,7 @@ use std::marker::PhantomData;
 
 use incrementalmerkletree::frontier::{Frontier, NonEmptyFrontier};
 use incrementalmerkletree::{Hashable, Level};
-use zaino_primitives::types::NoteCommitment;
+use zaino_primitives::types::{BlockHash, NoteCommitment};
 use zaino_sync::descriptor::{Append, CrossIndex};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{DepsReadError, DepsReader, ExtractCross, IndexDef, MergeAppend, Schema};
@@ -147,7 +147,7 @@ impl<P: Pool> ExtractCross for SubtreesIndex<P> {
             P::frontier(&prior).clone()
         };
 
-        subtree_entries::<P>(&before, commitments, ctx.height)
+        subtree_entries::<P>(&before, commitments, ctx.height, ctx.hash)
     }
 }
 
@@ -162,6 +162,7 @@ fn subtree_entries<P: Pool>(
     before: &Frontier<P::Leaf, DEPTH>,
     commitments: &[NoteCommitment],
     completing_height: BlockHeight,
+    completing_block_hash: BlockHash,
 ) -> Result<Vec<SubtreeEntry>, SubtreesError> {
     let level = P::SUBTREE_LEVEL;
     let span = 1u64
@@ -189,6 +190,7 @@ fn subtree_entries<P: Pool>(
                 index,
                 root: SubtreeRoot {
                     root: P::root_bytes(&node),
+                    completing_block_hash: completing_block_hash.into(),
                     completing_height,
                 },
             })
@@ -476,8 +478,13 @@ mod tests {
         // span 4; 3 commitments from empty cross no boundary.
         let non_completing: Vec<NoteCommitment> = (0..3).map(commitment).collect();
         LEAF_DECODE_CALLS.store(0, Ordering::Relaxed);
-        let entries = subtree_entries::<TestPool>(&before, &non_completing, BlockHeight::new(7))
-            .expect("extraction succeeds");
+        let entries = subtree_entries::<TestPool>(
+            &before,
+            &non_completing,
+            BlockHeight::new(7),
+            BlockHash::from([0x77; 32]),
+        )
+        .expect("extraction succeeds");
         assert!(entries.is_empty(), "no subtree completes");
         assert_eq!(
             LEAF_DECODE_CALLS.load(Ordering::Relaxed),
@@ -488,8 +495,13 @@ mod tests {
         // A completing block (4 commitments → subtree 0) does decode, proving the
         // tally is live and the short-circuit is what suppressed it above.
         let completing: Vec<NoteCommitment> = (0..4).map(commitment).collect();
-        let entries = subtree_entries::<TestPool>(&before, &completing, BlockHeight::new(7))
-            .expect("extraction succeeds");
+        let entries = subtree_entries::<TestPool>(
+            &before,
+            &completing,
+            BlockHeight::new(7),
+            BlockHash::from([0x77; 32]),
+        )
+        .expect("extraction succeeds");
         assert_eq!(entries.len(), 1, "subtree 0 completes");
         assert_eq!(
             LEAF_DECODE_CALLS.load(Ordering::Relaxed),

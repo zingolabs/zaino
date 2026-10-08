@@ -107,9 +107,13 @@ fn block(height: u64, count: u64, next: &mut u64) -> CurrentZainoContext {
         })
         .collect();
 
+    // A distinct per-height hash so the stored completing block hash is provably
+    // the block that crossed the subtree boundary, not a shared placeholder.
+    let hash = BlockHash::from([u8::try_from(height).expect("test height < 256"); 32]);
+
     CurrentZainoContext {
         height: BlockHeight::new(height),
-        hash: BlockHash::ZERO,
+        hash,
         prev_hash: BlockHash::ZERO,
         time: 0,
         bits,
@@ -174,6 +178,7 @@ fn engine_builds_subtree_roots_from_tree_state() {
             0u32,
             SubtreeRoot {
                 root: perfect_root(&all[0..4]).to_bytes(),
+                completing_block_hash: [1u8; 32],
                 completing_height: BlockHeight::new(1),
             },
         ),
@@ -181,6 +186,7 @@ fn engine_builds_subtree_roots_from_tree_state() {
             1,
             SubtreeRoot {
                 root: perfect_root(&all[4..8]).to_bytes(),
+                completing_block_hash: [1u8; 32],
                 completing_height: BlockHeight::new(1),
             },
         ),
@@ -188,6 +194,7 @@ fn engine_builds_subtree_roots_from_tree_state() {
             2,
             SubtreeRoot {
                 root: perfect_root(&all[8..12]).to_bytes(),
+                completing_block_hash: [2u8; 32],
                 completing_height: BlockHeight::new(2),
             },
         ),

@@ -29,7 +29,7 @@ use incrementalmerkletree::frontier::Frontier;
 use incrementalmerkletree::Hashable;
 use orchard::tree::MerkleHashOrchard;
 use sapling_crypto::Node as SaplingNode;
-use zaino_primitives::types::NoteCommitment;
+use zaino_primitives::types::{BlockHash, NoteCommitment};
 use zaino_sync::descriptor::{Append, OrderedMonoid, SelfCumulative};
 use zaino_sync::primitives::{BlockHeight, IndexId};
 use zaino_sync::traits::{
@@ -73,12 +73,16 @@ pub enum TreeStateError {
     },
 }
 
-/// Per-index block context: the block's height and its note commitments per
-/// pool, in chain/transaction order.
+/// Per-index block context: the block's height, its hash, and its note
+/// commitments per pool, in chain/transaction order.
 #[derive(Debug, Clone)]
 pub struct TreeStateCtx {
     /// Block height — the entry key.
     pub height: BlockHeight,
+    /// Hash of this block, in internal (unreversed) byte order. The subtree-roots
+    /// index records it as the completing block hash of every subtree this block
+    /// completes.
+    pub hash: BlockHash,
     /// Sapling note commitments (`cmu`) this block adds, in chain order.
     pub sapling_cmus: Vec<NoteCommitment>,
     /// Orchard note commitments (`cmx`) this block adds, in chain order.

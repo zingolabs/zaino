@@ -404,6 +404,7 @@ impl ProvideContext<TreeStateCtx> for CurrentZainoContext {
             .collect();
         TreeStateCtx {
             height: self.height,
+            hash: self.hash,
             sapling_cmus,
             orchard_cmxs,
             ironwood_cmxs,

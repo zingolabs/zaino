@@ -26,7 +26,7 @@ use orchard::tree::MerkleHashOrchard;
 use sapling_crypto::Node as SaplingNode;
 use zaino_persistence_codec::DecodeError;
 use zaino_primitives::types::{
-    Height, PoolActivations, PoolTreestate, ShieldedPool, TreeRoot, Treestate,
+    BlockHash, Height, PoolActivations, PoolTreestate, ShieldedPool, TreeRoot, Treestate,
 };
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ExtractCumulative;
@@ -148,6 +148,9 @@ pub struct WindowSubtree {
     pub root: [u8; 32],
     /// The window block that completed it.
     pub completing_height: BlockHeight,
+    /// The hash of the window block that completed it, in internal (unreversed)
+    /// byte order.
+    pub completing_block_hash: BlockHash,
 }
 
 /// The subtree roots `pool` completes across `blocks`, folding each onto the
@@ -186,6 +189,7 @@ fn pool_window_roots<P: Pool>(
                     .expect("a subtree index fits u32 within the pool depth"),
                 root: P::root_bytes(&node),
                 completing_height: ctx.height,
+                completing_block_hash: ctx.hash,
             });
         }
         carry = TreeStateIndex::extract(ctx, &carry)?.value;
