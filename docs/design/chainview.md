@@ -303,11 +303,11 @@ long Zaino owns a wallet's transaction.
 Every request Zaino sends a trusted validator goes through one traffic balancer
 ([traffic-balancer.md](./traffic-balancer.md), `zaino-traffic`): the chain view's polls,
 header runs, mempool bytes and submissions, the NFS's blocks and gRPC's lookups. It owns the
-connection budget (request classes with reserved and ceiling-capped permits, so a bulk-sync burst
-or a wallet storm never delays a poll), the request rate, every cadence, retry, hedge and bench;
-each validator's `zaino_source::RpcClient` makes one attempt per call. A zebrad JSON-RPC server
-admits 100 connections in total: keep `zaino nodes × max_connections` (default 32, at least 6)
-under it.
+connection budget (control, interactive and bulk lanes, each with a reserved permit, so a
+bulk-sync burst or a wallet storm never takes the poll's lane), every cadence, failover, hedge
+and bench; each validator's `zaino_source::RpcClient` makes one attempt per call. A zebrad
+JSON-RPC server admits 100 connections in total: keep `zaino nodes × max_connections` (default
+32, at least 4) under it.
 
 - **Bytes are charged per body chunk as it is read** (the `governor` crate): an exhausted budget
   stops reading, and TCP backpressure slows the validator's send. Requests are charged per call
@@ -356,9 +356,8 @@ every peer.
 ## 9. Routing
 
 One balancer routes every request: [traffic-balancer.md](./traffic-balancer.md) §3 (members,
-classes, tiers, hedge / retry / blame) replaces this section's earlier table. Within the best
-tier with room, the cheaper of two picked at random, load = peak-EWMA latency × requests in
-flight (power-of-two-choices, as in Finagle, linkerd and zebra-network's own peer set); trusted
+lanes, tiers, hedge / failover / blame) replaces this section's earlier table. Within the best
+tier with room, the member with the fewest requests in flight (ties: configured order); trusted
 `priority` tiers first, then peers. Submission's entry choice stays §6's (`entries()` →
 `submit(member, raw)`).
 

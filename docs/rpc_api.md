@@ -31,7 +31,7 @@ consensus objects are forwarded to the validator.
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)* | as `GetTaddressTransactions` |
 
 "The validator" here is the traffic balancer (`zaino-traffic`) over every
-`[[trusted_validators]]` entry: lowest `priority` tier first, the cheaper of two
+`[[trusted_validators]]` entry: lowest `priority` tier first, the least loaded
 within it, a slow answer hedged and an absent one asked of the next until one
 answers (a lagging validator may lack a just-mined transaction); `NOT_FOUND` only
 when every one asked said absent. The mempool methods read
