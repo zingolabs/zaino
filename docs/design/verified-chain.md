@@ -24,8 +24,8 @@ windows, and ran header rules as pre-NU7 constants; phases 0–4 removed each of
 | #   | Decision                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **No new zebra patches.** Attribution and everything sync-critical is done at Zaino's own boundary. The zebra fork is only rebased onto upstream's primary branch (for NU7 and protocol 170,180).                                                                                                                                                                                                                                                                   |
-| 2   | **Minimum chain work gates peer-only bests, never finality.** Finality needs a trusted holder (peers alone never finalize), so a work floor adds nothing there; dropped from finality 2026-10-06 (an unbounded in-memory first sync was its only effect). A per-network floor (zcashd's `nMinimumChainWork`) returns with peers (phase 5) as `credible`: below it a best no trusted validator holds is not followed or served. Not a checkpoint: it trusts no hash. |
-| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the NFS follows proof of work; only finality waits for a holder.                                                                                                                                                                                                                                                                                                        |
+| 2   | **Minimum chain work gates peer-only bests, never finality.** Finality needs a trusted vouch (peers alone never finalize), so a work floor adds nothing there; dropped from finality 2026-10-06 (an unbounded in-memory first sync was its only effect). A per-network floor (zcashd's `nMinimumChainWork`) returns with peers (phase 5) as `credible`: below it a best no trusted validator holds is not followed or served. Not a checkpoint: it trusts no hash. |
+| 3   | **Follow the verified best before any trusted validator holds it.** Blocks are verified, so the NFS follows proof of work; only finality waits for a vouch.                                                                                                                                                                                                                                                                                                         |
 | 4   | **`[p2p]` on by default.**                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 5   | **Block commitments are checked incrementally**, off the hot path, as their own follower (§8).                                                                                                                                                                                                                                                                                                                                                                      |
 
@@ -42,8 +42,8 @@ windows, and ran header rules as pre-NU7 constants; phases 0–4 removed each of
   │                       hash ≤ target · run linkage         │
   │   stage B, in order:  attach · nBits · median time ·      │
   │                       work · best · prune                 │
-  │   finality:           boundary final ⇔ held by a trusted  │
-  │                       validator                           │
+  │   finality:           final = min(highest vouched,        │
+  │                       best − depth)                       │
   └───────────────────────────┬──────────────────────────────┘
                               │ watch<Arc<VerifiedChain>>
           ┌───────────────────┼───────────────────────┬─────────────────┐
@@ -81,8 +81,9 @@ It lives in `zaino-header-chain`; `zaino-sync` depends on that crate for it and 
 chainview.
 
 **Vocabulary** (one meaning each, everywhere): **best** = the verified most-work tip;
-**final tip** = the last final block; **holder** = a trusted validator whose best chain contains a
-block; **claim** = a validator's own reported tip; **source** = anything that answers requests
+**final tip** = the last final block; **vouched** = a block some trusted validator once had on its
+best chain, or an ancestor of one (permanent); **holder** = a trusted validator whose best chain
+contains a block now; **claim** = a validator's own reported tip; **source** = anything that answers requests
 (validator or peer); **announcer** = a peer that sent an `inv`; **entry** = where a submission is
 pushed.
 
@@ -104,7 +105,8 @@ pushed.
 
 ### HeaderSync
 
-One task owns the `HeaderChain`. Inputs arrive on one channel; nothing else touches the chain.
+One task owns the `HeaderChain`; nothing else touches the chain. It wakes on each view publish
+(every poll fold) and on the earliest per-validator back-off.
 
 - **Stage A (stateless, parallel on the blocking pool):** decode, version, solution encoding,
   Equihash, hash ≤ target, and linkage *within* the run. A run that fails is cut at the failure;
@@ -112,16 +114,26 @@ One task owns the `HeaderChain`. Inputs arrive on one channel; nothing else touc
 - **Stage B (contextual, in order, on the owner):** attach to a known parent (tree node or final
   tip), `nBits`, median time, max time, work, best, prune. Cheap: no hashing.
 - **Requests.** Validators: `getblockheader <h> false` batches (2,000) — the bulk path for a first
-  sync. Peers: `getheaders(locator, stop)` (160 a message) over the WorkPool — the tip path,
-  triggered by a block `inv` or a timer. A run whose first header has an unknown parent is an
-  orphan: refused, and the next request uses the locator, which reaches back to the fork.
+  sync. One run at a time, from the first answering validator whose claim the chain lacks, from
+  above our best up to its claim. A validator's stall (fetch failed, retreated, invalid header,
+  header from the future) backs off that validator alone (5 s); the next one is asked at once. An
+  orphan run is retried from the final tip; orphaned there too = its chain leaves ours below the
+  final tip, and that claim is not fetched again until it moves. A run landing on a side branch
+  is continued from its top. Peers: `getheaders(locator, stop)` (160 a message) over the
+  WorkPool — the tip path, triggered by a block `inv` or a timer; an orphan uses the locator,
+  which reaches back to the fork.
+- **Backpressure.** No request above `final + depth + 2,000` (`HeaderChain::ceiling`): the best
+  branch above the final tip stays within `depth` plus one batch whatever finality does (H9).
 - **Bounds.** A node that does not descend from the final tip is gone (it can never become best).
   Above it, at most `4·depth` nodes and at most 32 side-branch tips; past either bound the
   lowest-work leaf is evicted. The best branch is never evicted.
-- **Finality.** The boundary (`best − depth`) becomes final only when some trusted validator holds
-  that block (§7); work never gates it (decision 2). Held during a first sync, the tree stays at
-  `depth` plus one fetch batch. When no trusted validator holds it, finality pauses and the
-  `finality_paused` alarm rises. A header-store commit error ends the process.
+- **Finality.** `final = min(highest vouched on the best branch, best − depth)`, computed by the
+  chain after every run and every vouch (§7); work never gates it (decision 2). Every header of
+  a trusted run was read by height off that validator's best chain, so the run's last header
+  vouches the run: with trusted headers alone, final = `best − depth` after every batch. Peer
+  headers (phase 5) arrive unvouched and wait for a trusted validator's claim or answer. A block
+  `depth` deep owed finality for 60 s raises the `finality_paused` alarm. A header-store commit
+  error ends the process.
 - **Output.** A new `VerifiedChain` whenever best or final moves, and nothing else.
 
 ### Locator
@@ -181,33 +193,46 @@ good at and asks peers its questions over connections it owns.
 - **Status and metrics:** WorkPool members (address, age, requests, failures, score), announcers,
   bans; headers and blocks answered per source.
 
-## 7. Trusted validators: holding is a question, not a walk
+## 7. Trusted validators: vouched once, held now
 
-A trusted validator **holds** block `(h, hash)` iff its best chain has `hash` at `h`:
-`getblockhash h` = `hash`. One batched poll answers everything Zaino asks of a validator:
+Two different questions, answered in two places:
+
+- **Vouched** (finality; permanent, in the header chain): did some trusted validator *ever* have
+  block B on its best chain? Zebra commits only verified blocks and validity never expires, so
+  one such moment vouches for B and every ancestor (a hash commits to its ancestry) for good.
+- **Held** (serving; current state, in the view): does a trusted validator hold our best block
+  *now*? Mempool, `GetLightdInfo` and readiness need it.
+
+One batched poll answers everything Zaino asks of a validator:
 
 ```text
-  poll = [ getblockchaininfo, getrawmempool true,
-           getblockhash <best.height>, getblockhash <boundary.height> ]
+  poll = [ getblockchaininfo, getrawmempool true, getblockhash <best.height> ]
 ```
 
-- **Holders of the best tip** = validators answering `best.hash` at `best.height`.
-- **Finality** reads holders of the boundary block, and nothing else (no work floor: decision 2).
-- **Agreement** (per validator, for status and alarms) from its claim `(ch, chash)` and the two
-  answers: `Agreed` (claim = best), `Ahead` (holds best, claims higher), `Behind`
-  (`hash_at(ch) = chash`, below best), `Diverged` (none of these; zebra #11133: a validator can sit
-  on a losing branch indefinitely, so this is an alarm, never an error).
-- A race (the validator moved between items of one batch) yields one wrong poll; every poll
-  re-asks, and finality only ever needs one true answer at one moment.
-- **Downward closed.** An answer on the verified chain at `h` holds every verified block ≤ `h` (a
-  hash commits to its ancestry), so a validator's standing is one height, its *reach*: the claim
-  counts as an answer, and so does the last header of each run header sync reads off its best
-  chain (`getblockheader` by height = the same question). That run answer is what lets bulk sync
-  finalize batch by batch between polls.
-- Each poll replaces the last one's answers; a failed poll forgets them (no answer = holds
-  nothing). An item failing alone (above its tip: zebrad `-32602`) is no answer at that height.
+`best` = the view's best as the poll *starts* (`TrafficBalancer::poll_best`); a new best never
+wakes a poll, so an answer at a moved best is one stale fact, re-asked the next poll.
 
-This replaces `EndpointChain`, `Walk`, link batches, mid-walk races and `vouched`.
+- **Vouching** (`HeaderChain::vouch`): the last header of each trusted run (every header of it
+  read by height off that validator's best chain; stage A's run linkage refuses a run mixed
+  across a mid-fetch reorg), and each answering validator's claim and `getblockhash` answer that
+  lie on our verified chain. Monotone, never forgotten: a later poll, a failed one or a reorg
+  never un-vouches. On a reorg the highest vouched block on the best branch falls to the fork
+  point; the ancestors stay vouched. Finality = `min(highest vouched, best − depth)` (H6).
+- **Holders of the best tip** = `Live` validators whose last poll holds it: claim = best, or
+  `getblockhash` at its height = best. `CatchingUp` (mempool off: its tip may be stale) never
+  holds; a failed poll (`Degraded`, `Down`) holds nothing until it answers again. An item failing
+  alone (above its tip: zebrad `-32602`) is no answer.
+- **Agreement** (per validator, for status) from its claim `(ch, chash)` and its answer:
+  `Agreed` (claim = best), `Ahead` (claims higher, its answer on the verified chain), `Behind`
+  (`hash_at(ch) = chash`, below best), `Diverged` (none of these; zebra #11133: a validator can
+  sit on a losing branch indefinitely, so this is an alarm, never an error), `Unknown` (its last
+  poll failed).
+- The poll's reading (claim, answer) is folded before its mempool bytes are fetched: holder
+  facts never wait behind bytes.
+
+This replaces `EndpointChain`, `Walk`, link batches, mid-walk races, and the `Holders` core with
+its per-poll stamps (a header run's evidence counted only under the poll it was read under, so
+each poll discarded it and a first sync stalled at the boundary).
 
 ## 8. Block commitments, incrementally (decision 5)
 
@@ -251,8 +276,7 @@ Every component is two halves:
 
 | Core (synchronous, deterministic, no I/O)                                           | Driver (async: channels, timers, requests)                    |
 | ----------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| `HeaderChain`: insert run, finalize, prune, best, locator                           | `HeaderSync`: requests, stage A on the blocking pool, publish |
-| `Holders`: poll answers + `VerifiedChain` → holders, agreement, finality permission | the validator poller                                          |
+| `HeaderChain`: insert run, vouch, finalize, prune, best, locator                    | `HeaderSync`: requests, stage A on the blocking pool, publish |
 | `NfsCore`: `VerifiedChain` + bodies + folds + durable tips → sends, folds, fetches  | `Nfs`: fetch, check, fold, send, publish                      |
 | `WorkPoolCore`: members, scores, bans, refill and rotation choices                  | WorkPool: connect, request, time out                          |
 | mempool fold, `Overheard`, submission `Job` (exist today)                           | `ChainView`, `PeerWatch`, `Submission`                        |
@@ -277,9 +301,10 @@ it is an `Err` that names the source.
 | H3  | only valid headers enter: each mutation of a valid header is refused by its own rule                 |
 | H4  | the tree stays within its bounds; pruning never removes a node on the best branch                    |
 | H5  | `hash_at` = the best path; a published `VerifiedChain` never changes                                 |
-| H6  | the boundary becomes final only when held by a trusted validator (and is never held back by work)    |
+| H6  | a block becomes final only if a trusted validator vouched for it or a descendant; final = min(highest vouched, best − depth) after each run (never held back by work) |
 | H7  | a header from the future is deferred, then accepted once the clock passes it                         |
 | H8  | an invalid header is blamed on its sender and never enters the tree                                  |
+| H9  | the best branch above the final tip stays within `depth` + one batch (no fetch above `ceiling`)      |
 
 **NFS and the final stream** (built as `NfsCore` N1–N6, [nfs.md](./nfs.md) §9)
 
@@ -296,8 +321,8 @@ it is an `Err` that names the source.
 
 |     | Invariant                                                                                                                                                         |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| V1  | holders(block) = the validators whose best chain contains it (oracle)                                                                                             |
-| V2  | agreement = the oracle's classification                                                                                                                           |
+| V1  | holders(best) ⊆ the `Live` validators whose last-polled chain contains it, ⊇ those claiming it or answering it                                                     |
+| V2  | agreement = the §7 classification of its last answered poll                                                                                                       |
 | V3  | every served mempool transaction is listed by a live trusted validator or is ours; the stream sends each once per epoch; the epoch moves iff the best block moves |
 | V4  | spread counts = the oracle's; first-seen never moves later                                                                                                        |
 | V5  | a submission answers exactly once; peers first, one netgroup each; the verdict only from a trusted validator                                                      |
@@ -319,7 +344,8 @@ it is an `Err` that names the source.
    most work ≠ highest. `HeaderViews` verify it, `MockValidator`s serve it (one per simulated
    node, each following its own tip), `MockPeers` script the p2p side.
 1. **Core models (proptest, against naive oracles).** One per core: the header chain against a
-   naive tree (H1–H8), `Holders` against a set computation (V1, V2), `NfsCore` against a
+   naive tree (H1–H9: vouches, trusted runs that must leave final = min(vouched, best − depth),
+   the fetch ceiling), the chain view over simulated validators (V1), `NfsCore` against a
    fold-from-genesis oracle (P1–P3), `WorkPoolCore` against a naive scoreboard
    (N1, N2), plus the existing mempool, `Overheard` and `Job` models. Swarm-style generation:
    whole input kinds switched off per case.
@@ -334,7 +360,7 @@ it is an `Err` that names the source.
      stall a validator on a fork, take a source down, restart zainod (drop non-durable state),
      announce, submit, list or evict a transaction, advance the clock.
    - **Checked after every event:** H, P, V and N invariants that hold at all times; **at
-     quiescence:** liveness (P4, the final tip reaches `best − depth` once held, every honest
+     quiescence:** liveness (P4, the final tip reaches `best − depth` once vouched, every honest
      block reachable is delivered).
 1. **Fire drills.** For every invariant check, a planted bug that makes it fire (a check never
    seen firing is not known to work).
@@ -359,8 +385,9 @@ it is an `Err` that names the source.
 1. **Header chain**: **done**. Single owner, stages A/B, bounds, locator, `VerifiedChain`,
    finality alarm, store error fatal; the header-chain model. (Minimum work moved to phase 5:
    decision 2.)
-1. **Holders by question** (§7) and the chain view on the `VerifiedChain`: **done**. `Holders`
-   core and model; walk machinery removed.
+1. **Holders by question** (§7) and the chain view on the `VerifiedChain`: **done**; walk
+   machinery removed. Finality since moved to vouching in the header chain (the `Holders` core
+   deleted).
 1. **Fetch on the verified chain**: **done** as `zaino-nfs` ([nfs.md](./nfs.md)): checked fetch,
    one finality.
 1. **Peers**: `WorkPool` (core, model, driver), `ChainTip`, block `inv`, headers, blocks and

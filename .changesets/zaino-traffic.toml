@@ -15,7 +15,8 @@ peak-EWMA cost within a tier; per-class reserved and ceiling-capped permits per 
 the member's p95); retries and hedges under one budget; `report(ticket, why)` benches exactly the \
 sender (60 s doubling to 1 h, `zaino_traffic_misanswers_total`); dropping an ask abandons it. \
 Every trusted member polled (1 s, 15 s streaming, 200 ms floor, 0.5 → 30 s ladder; `Down` after \
-10 failures) with `ask_each_poll` heights and `pushed` wake-ups; `observe(member)` = its latest \
+10 failures), `getblockhash` at the `poll_best` height read as each poll starts, `pushed` \
+wake-ups; `observe(member)` = its latest \
 `Observation`, `members()` = the `MemberTable`, `entries()` = submission entries.
 """
 
@@ -36,4 +37,16 @@ section = "fixed"
 description = """
 A failed poll no longer consumes the minute's metadata read: the member's next answered poll \
 carries `getpeerinfo` / `getinfo` / `getdeprecationinfo`.
+"""
+
+[[changes]]
+crate = "zaino-traffic"
+kind = "breaking"
+section = "changed"
+description = """
+`ask_each_poll(heights)` is replaced by `poll_best(f)`: each poll asks `getblockhash` at `f()`, \
+read as the poll starts, and a new best wakes no poll. `Observation.asked` is `Option<Height>`.
+"""
+migration = """
+Pass a closure returning the current best height to `poll_best` once (`ChainView::new` does).
 """

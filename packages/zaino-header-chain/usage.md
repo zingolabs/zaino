@@ -23,12 +23,12 @@ for header in &run {
         Inserted::Side | Inserted::Known => {}
     }
 }
-if let Some(boundary) = chain.finalizable() {        // `depth` below the best
-    if held_by_a_trusted_validator(boundary) {
-        chain.finalize(boundary)?;                   // a store error: end the process
-    }
+chain.vouch(last_of_the_run);                        // a trusted validator's best chain had it
+if let Some(boundary) = chain.finalizable() {        // min(highest vouched, best − depth)
+    chain.finalize(boundary)?;                       // a store error: end the process
 }
 let published = chain.verified();                    // Option<VerifiedChain>
+let ceiling = chain.ceiling(batch);                  // fetch no higher (bounds the tree)
 ```
 
 ## Rules
@@ -74,19 +74,25 @@ work off, as zebrad.
 - Every valid branch above the final tip is kept, within bounds (H4): at most
   `4 · depth` side-branch nodes and 32 side-branch tips; past either, the
   lowest-work side leaf is evicted (the last received on a tie). The best branch is
-  never evicted: it spans `depth` plus one fetch batch while a trusted validator
-  holds the boundary, and grows only while none does.
+  never evicted; a driver fetching nothing above `ceiling(batch)` (`depth` + `batch`
+  above the final tip) keeps it within `depth + batch` whatever finality does (H9).
 - The best tip is the leaf with the most cumulative work; a tie keeps the first
   received (H1). `Inserted::Best { reorg }` says whether it extends the old one.
 - An orphan (unknown parent) is refused, never pooled: the next request uses the
   locator, which reaches back to the fork.
-- Finality is the caller's gate (H6): `finalizable()` names the best-chain block
-  `depth` below the best tip; the caller finalizes it only when a trusted
-  validator holds it (work never gates it: peers alone never finalize).
-  `finalize(block)` commits every best-chain header up to it (the store first,
-  memory after) and prunes every branch not descending from it. Finalizing a
-  block off the best branch, or shallower than `depth`, is a caller bug: it
-  panics naming H2.
+- Finality (H6): `vouch(block)` records that a trusted validator once had `block`
+  on its best chain (the last header of a run it served by height, its claim, its
+  `getblockhash` answer): `block` and every ancestor are vouched, for good (a
+  block not held above the final tip = no-op; peer headers arrive unvouched). On a
+  reorg the highest vouched block on the best branch falls to the fork point; the
+  ancestors stay vouched. `finalizable()` names the best-chain block at
+  `min(highest vouched, best − depth)` above the final tip (work never gates it:
+  peers alone never finalize); `finalize(block)` commits every best-chain header up
+  to it in one commit (the store first, memory after) and prunes every branch not
+  descending from it. Call both after every run and every vouch: final then =
+  `min(vouched, best − depth)`. Finalizing a block off the best branch, shallower
+  than `depth` (H2) or above the highest vouched (H6) is a caller bug: it panics
+  naming the invariant.
 - The tree is memory: a reopen resumes at the final tip, and branches above it
   come back as their headers do. The last 113 final headers stay in memory as
   context; a header whose parent is final but older than that is `Orphan`.
@@ -114,7 +120,8 @@ published chain's forks never change either.
 
 `HeaderChain::check()` asserts H1 (best = max-work leaf, first received), H2 (every
 node descends from the final tip; final tip = the store's), H4 (bounds), H5
-(`best_path` = a held chain from the final tip) and the tree's own bookkeeping
+(`best_path` = a held chain from the final tip), H6 (vouched closed under parents)
+and the tree's own bookkeeping
 (cumulative work, child counts, leaf set), naming the invariant in its panic. It
 is O(nodes): tests run it after every mutation, the driver after every run in
 debug builds. Every mutating method opens with `assert!`s naming the invariant
@@ -142,9 +149,11 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
   nBits after NU7, the 450 / 451 s gap, linkage).
 - Model (`random_header_trees_answer_like_the_naive_model`): random trees under
   any-nBits rules (work varies, most work ≠ highest) with orphan runs, side-branch
-  sprays past the bounds, future headers then clock advances, finalizations and
-  reopens, against a naive tree; `check()` after every insert; `forks` / `branch` /
-  `holds` against each side leaf's mined ancestry.
+  sprays past the bounds, future headers then clock advances, vouches, trusted runs
+  (their last header vouched, then final = min(vouched, best − depth) at once),
+  finalizations and reopens, nothing offered above the ceiling, against a naive
+  tree; `check()` after every insert; the unfinal best branch within `depth + run`
+  (H9); `forks` / `branch` / `holds` against each side leaf's mined ancestry.
 - Fire drills: each check in `check()` and each precondition, seen firing on a
   planted bug.
 - Builder agreement (`testing::the_builders_best_tip_is_the_real_header_chains_best`):
@@ -162,7 +171,7 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
 
   let params = chain.header_params();                  // its rules, over a store of your own
   let mut headers = chain.header_chain(depth);         // genesis inserted
-  insert(&mut headers, &chain.blocks(tip))?;           // a path, as header sync would
+  insert(&mut headers, &chain.blocks(tip))?;           // a trusted run: its last vouched
   let verified = chain.verified(tip);                  // nothing final
   let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
   ```

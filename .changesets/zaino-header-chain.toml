@@ -26,3 +26,26 @@ one table); `HeaderStore::open` is unchanged.
 migration = """
 Verify a header store with `Schema::new(IndexKind::HeaderChain, FORMAT, network, TABLES)`.
 """
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "breaking"
+section = "changed"
+description = """
+Finality is vouched: `HeaderChain::vouch(block)` records that a trusted validator once had \
+`block` on its best chain (it and every ancestor, for good), and `finalizable()` names the \
+best-chain block at min(highest vouched, best − depth); `finalize` asserts H6 (only a vouched \
+block or an ancestor of one becomes final). `ceiling(run)` = the highest height a fetch may \
+reach (`depth` + `run` above the final tip). `testing::insert` vouches its last header.
+"""
+migration = """
+Call `vouch` with the last header of each trusted run (and each trusted claim on the chain), \
+then `finalizable()` / `finalize(boundary)` with no holder gate.
+"""
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "internal"
+description = """
+`VerifiedChain::hash_at` / `header_at` below the final tip read one store record, no range read.
+"""

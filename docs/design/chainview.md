@@ -28,7 +28,7 @@ validators it trusts for exactly that, and nothing more.
 | Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                |
 | `peers/trusted` on the extension service (§5)                                                  | planned                                |
 | Push streams (§7)                                                                              | built                                  |
-| Header chain: proof of work, most-work tip, holders, finality gate (§2–§4)                     | built; headers from trusted validators |
+| Header chain: proof of work, most-work tip, holders, vouched finality (§2–§4)                  | built; headers from trusted validators |
 | Submission: random entry, watched, resubmitted (§6)                                            | built, peer + trusted entries          |
 | `zaino-peers`: zebra-network, attributed `inv`, isolated push (§8)                             | built                                  |
 | Peers in the view: mempool sightings, submission entries (§5, §6), via zainod `[p2p]`         | built                                  |
@@ -171,17 +171,21 @@ chain it follows; under the header chain that comparison is against verified wor
                                              │◀────────── 1000 blocks ──────────▶│
                                      final boundary
                                              ▲
-                     a block crosses only if a trusted validator holds it
+        a block crosses only once a trusted validator vouched for it (or a descendant)
 ```
 
 A header proves work, not that its block's transactions are valid. Someone who spends a whole
 block's mining on an invalid block can make it the best tip briefly; honest validators reject it,
 the network outmines it, and Zaino reorgs away. To keep such a block out of the durable indexes,
-**a block is written as final only once a trusted validator holds it** on its own chain.
+**a block is written as final only once a trusted validator has had it (or a descendant) on its
+own best chain**: vouched, a permanent fact (zebra commits only valid blocks). Every trusted
+header run vouches itself, as do validators' claims and `getblockhash` answers on our chain, so
+final = `min(highest vouched, best − depth)`
+([verified-chain.md §7](./verified-chain.md#7-trusted-validators-vouched-once-held-now)).
 
-This costs no latency: the boundary is 1,000 blocks behind the tip, and a trusted validator has
-held a block for an hour or more by then. With every trusted validator down that long,
-finalization pauses and alarms; serving continues from the non-final window.
+This costs no latency: the boundary is 1,000 blocks behind the tip, and a trusted validator
+vouched for it long before. With every trusted validator gone while peers alone extend the
+chain, finality waits; after 60 s owed it alarms; serving continues from the non-final window.
 
 ## 5. The mempool view
 
@@ -335,8 +339,8 @@ under it.
 - **Batches.** JSON-RPC batch requests (zebrad hands an array straight to jsonrpsee, whose batch
   limit is unlimited) carry N calls in one round trip and one permit; a work-queue-full item is
   that item's own refusal, re-asked by the balancer. A poll is at most two round trips: `getblockchaininfo` +
-  `getrawmempool true` + `getblockhash` at the final boundary and the best (who holds them:
-  [verified-chain.md §7](./verified-chain.md#7-trusted-validators-holding-is-a-question-not-a-walk))
+  `getrawmempool true` + `getblockhash` at the view's best as the poll starts (does it hold it:
+  [verified-chain.md §7](./verified-chain.md#7-trusted-validators-vouched-once-held-now))
   (+ `getpeerinfo`, `getinfo`, `getdeprecationinfo` once a minute), then one
   `getrawtransaction` batch for new mempool
   transactions, bounded at 100 calls and 8 MiB so the hex reply stays under zebrad's 50 MiB
@@ -407,7 +411,8 @@ events (spread histograms, submission outcomes).
 - **Trusted validator diverged:** its chain does not hold the best tip and is not behind it. The
   node is broken, or the network is feeding a chain the validators reject.
 
-- **Finality paused:** no trusted validator holds the block at the final boundary.
+- **Finality paused** (`finality_paused`): a block `depth` deep has been owed finality for 60 s
+  with the final tip unmoved: no trusted validator vouched for it.
 
 - **Thin network:** few distinct peers, or trusted validators sharing no outbound peer.
 

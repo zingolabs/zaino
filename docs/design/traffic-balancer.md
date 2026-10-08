@@ -48,7 +48,7 @@ its sender (blame), and every hedge needs "anyone but him".
   mempool fold ── bytes(..) ─────┤   TrafficBalancer       ├── Trusted P1 (partner) RPC
   gRPC ── transaction(txid) ─────┼─▶ TrafficCore (pure) ───┤
   submission ── push(entry) ─────┤   members · classes ·   └── Peers P2 (WorkPool, attributed)
-  snapshot ── ask_each_poll(h) ──┤   hedge · retry · blame
+  view ── poll_best(f) ──────────┤   hedge · retry · blame
                                  │
   ◀── Answered<T>{value, from, ticket} ── report(ticket, why) ──▶ bench, score, alarm
   ◀── Observation per trusted member (watch: poll reading) ──────▶ global snapshot
@@ -142,23 +142,24 @@ One loop per trusted member, inside the balancer, replaces `EndpointPoller`, `Po
 `IndexerWatch`'s wiring and `upgrade_schedule`:
 
 ```text
-  wake: interval (1 s; 15 s with both push streams up) │ push event │ stream edge │ new questions
+  wake: interval (1 s; 15 s with both push streams up) │ push event │ stream edge
     ─▶ ≥ 200 ms since last ─▶ Poll permit ─▶ batch 1: getblockchaininfo + getrawmempool true
-                                                      + getblockhash per asked height (+ metadata /60 s)
+                                                      + getblockhash <poll_best()> (+ metadata /60 s)
                                            ─▶ batch 2: bytes of txids the consumer lacks (≤ 100 / 8 MiB)
                                            ─▶ Observation → watch (per member) ; health, latency
 ```
 
-- **Holder questions** ride batch 1: the snapshot sets them with `ask_each_poll([boundary, best])`
-  (`Holders::asked`); setting new heights wakes every poller. No separate holder class.
+- **Holder question** rides batch 1: `getblockhash` at `poll_best()` (the view's best height),
+  read as each poll starts. A new best wakes no poller (an answer at a moved best = one stale
+  fact, re-asked next poll). No separate holder class.
 - **Mempool delta**: batch 1 lists; the consumer's diff (its own last listing per member) names
   what it lacks; batch 2 fetches those, once across members (`Bytes`, affinity = this member).
   `MempoolChange` events carry the txid (zebra `indexer.proto`): a later step fetches on the event
   and skips batch 2; the listing stays the truth.
 - **Header sync** waits on observations instead of the view: a claim off the verified best →
-  `headers(Pinned(member), heights)`; each run's last header → `Holders::served` (unchanged).
-- Poll failure → `Observation { polled: Err }`: the snapshot forgets that member's facts
-  (holders' rule); health and ladder are the balancer's.
+  `headers(Pinned(member), heights)`; each run's last header vouched in the header chain.
+- Poll failure → `Observation { polled: Err }`: that member holds nothing until it answers
+  again; health and ladder are the balancer's.
 
 ## 5. API
 
@@ -206,7 +207,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     pub async fn submit(&self, member: ValidatorId, raw: Vec<u8>)
         -> Result<Answered<TransactionId>, Unanswered<SendRawTransactionError>>;
     pub fn entries(&self) -> Vec<ValidatorId>;   // trusted entries: live, not benched
-    pub fn ask_each_poll(&self, heights: Vec<Height>);
+    pub fn poll_best(&self, best: impl Fn() -> Option<Height> + Send + Sync + 'static);
     pub fn pushed(&self, member: ValidatorId, push: Push);   // IndexerWatch callbacks
     pub fn observe(&self, member: ValidatorId) -> watch::Receiver<Option<Arc<Observation>>>;
     pub fn members(&self) -> watch::Receiver<Arc<MemberTable>>;  // /statusz, metrics
@@ -248,8 +249,10 @@ Changed while migrating (phase 2):
   sightings), as the core reads it; formerly `Down` at once.
 - The view's NFS-facing contract kept, its transport switched: `ChainView::new(addresses,
   balancer, depth)`, `ObservationFold` (one task, a loop per member), `ValidatorId` replaces
-  `EndpointIndex`. Holders gained `PollStamp`: a header run counts only under the poll it was
-  read under.
+  `EndpointIndex`.
+- `ask_each_poll` (heights pushed by the view, waking every poller) replaced by `poll_best`
+  (read at poll start, wakes nothing): a wake per header batch re-polled every 200 ms during a
+  first sync.
 - Submission entries = `entries()` (live, not benched): no "every member down → try them all"
   fallback.
 - NFS: the core names each fetch and its end (`Output::{Fetch, Abandon}`); the driver drops the
@@ -278,7 +281,7 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
 | Owned by the balancer | Owned by the snapshot |
 | -------------------------------------------------------- | -------------------------------------------------------------- |
 | who is reachable, how fast, in flight, benched, health | tip, holders, agreement, mempool sightings, lightd info |
-| when to poll, what a poll costs, retries, hedges | what to ask (`ask_each_poll`), what bytes it lacks |
+| when to poll, what a poll costs, retries, hedges | what to ask (`poll_best`), what bytes it lacks |
 | `Observation` (raw reading, per member, latest-only) | folding observations; `/statusz` joins both tables |
 
 - One-way types: the snapshot imports `zaino_traffic::{Observation, MemberTable, ValidatorId}`
@@ -334,7 +337,7 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
    `check_block` failure.
 1. Classes replace lanes: one permit pool per member in the core; delete `Lane`, `on`, transport
    resends.
-1. Polling moves in: pollers, push streams, `ask_each_poll`, `bytes`; delete `EndpointPoller`,
+1. Polling moves in: pollers, push streams, `poll_best`, `bytes`; delete `EndpointPoller`,
    `PollWaker`, `upgrade_schedule`.
 1. `HeaderSync` and submission on `headers(..)` / `submit(..)`.
 1. Peers as members via `PeerTransport` over the WorkPool (verified-chain §6): headers, blocks,

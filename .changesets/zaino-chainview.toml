@@ -28,8 +28,8 @@ description = """
 Every request goes through a `zaino_traffic::TrafficBalancer`: `ChainView::new(addresses, \
 balancer, depth)` (one address per trusted member, for logs and status); \
 `observation_fold()` returns the `ObservationFold` to spawn, folding each member's poll \
-(`observe`) and fetching new mempool bytes with `bytes(..)`; the holders' heights go to \
-`ask_each_poll`; `header_sync(chain)` asks `headers(Pinned)` and `report`s a validator serving \
+(`observe`) and fetching new mempool bytes with `bytes(..)`; each poll asks `getblockhash` at \
+the view's best (`poll_best`); `header_sync(chain)` asks `headers(Pinned)` and `report`s a validator serving \
 an undecodable or rule-breaking header (benched); a submission's trusted entries are the \
 balancer's `entries()`, each push `submit(member, raw)`. `ValidatorMetadata.health` \
 (`zaino_traffic::Health`) replaces `state`; latency and failures move to the balancer's \
@@ -40,16 +40,6 @@ Build the balancer first, then `ChainView::new(addresses, balancer.clone(), dept
 `view.observation_fold().run(cancel)` where the pollers ran and wire push streams to \
 `balancer.pushed(member, Push::Changed | Push::Link(up))`. Read health from \
 `ValidatorMetadata.health`, latency and failures from `balancer.members()`.
-"""
-
-[[changes]]
-crate = "zaino-chainview"
-kind = "fix"
-section = "fixed"
-description = """
-A header run read off a validator before its newer poll no longer counts as that validator \
-holding the run's last block: a run counts only under the poll it was read under (a stale \
-holder could have let finality pass a block the validator no longer had).
 """
 
 [[changes]]
@@ -76,4 +66,30 @@ crate = "zaino-chainview"
 kind = "internal"
 description = """
 Submission prechecks (expired, wrong consensus branch) reject with zebrad's `-25`.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "fix"
+section = "fixed"
+description = """
+A first sync no longer stalls at the final boundary: finality is vouched in the header chain \
+(each trusted header run vouches its last header; claims and `getblockhash` answers on the \
+chain vouch too), so final = best − depth after every batch, whatever the polls do. Header \
+sync backs off a stalled validator alone (no shared 5 s sleep), skips a claim forked below the \
+final tip until it moves, and never fetches above `final + depth + 2,000`. A poll's claim and \
+`getblockhash` answer are folded before its mempool bytes are fetched.
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "breaking"
+section = "changed"
+description = """
+`held_by()` counts only `Live` validators (a `CatchingUp` one's tip may be stale): its last \
+poll's claim or `getblockhash` at the best. Each poll asks one `getblockhash`, at the view's \
+best as the poll starts (no final-boundary item). `Agreement::Ahead` = claims higher, its \
+answer on the verified chain. `Alarms::finality_paused` now = a block `depth` deep owed \
+finality for 60 s with the final tip unmoved (was: the boundary unheld at that instant). The \
+`Holders` core (and its per-poll stamps) is gone.
 """

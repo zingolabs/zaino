@@ -79,10 +79,12 @@ let checked = loop {
   than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
   failures) is probed at 30 s and nothing else is sent to it. Metadata (`getpeerinfo`, `getinfo`,
   `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
-- `ask_each_poll(heights)`: every poll asks `getblockhash` of these; setting them wakes every
-  poller. `observe(member)` is a `watch` of the latest `Observation { polled, asked, at,
-  streaming, health }` (latest only: a slow consumer never stalls a poll; `health` = the
-  member's right after that poll, so a consumer folds `Degraded` vs `Down` without the table).
+- `poll_best(f)`: every poll asks `getblockhash` at `f()` (the caller's best height, `None` =
+  not asked), read as the poll starts; it never wakes a poll (an answer at a moved best is one
+  stale fact, re-asked next poll). `observe(member)` is a `watch` of the latest
+  `Observation { polled, asked, at, streaming, health }` (`asked` = that `f()`; latest only: a
+  slow consumer never stalls a poll; `health` = the member's right after that poll, so a
+  consumer folds `Degraded` vs `Down` without the table).
   A consumer subscribing after the driver started marks the watch changed to read the poll
   already there.
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an

@@ -74,9 +74,10 @@ is set: its callbacks → `TrafficBalancer::pushed`) and the peer watch (when
 
 ```text
 HeaderSync             every validator's headers (headers(Pinned)) → HeaderChain → VerifiedChain
-ObservationFold        each member's poll (TrafficBalancer::observe): diff, report added / removed /
-      │                claim + getblockhash; the holders' heights → ask_each_poll
-ChainViewCore          folds both into one ChainViewSnapshot (Holders: who holds what), via ArcSwap
+ObservationFold        each member's poll (TrafficBalancer::observe): claim + getblockhash first,
+      │                then the listing diff (added / removed, bytes fetched between)
+ChainViewCore          folds both into one ChainViewSnapshot (who holds best, agreement), via ArcSwap;
+      │                each poll asks getblockhash at its best (TrafficBalancer::poll_best)
       │
 ChainViewSubscriber    readers pin one snapshot per request
 ```
@@ -92,16 +93,17 @@ fee arriving for an unpriced entry starts a fresh one.
 ## The tip: verified, then held
 
 `HeaderSync::run(cancel)` feeds the header chain, which it owns outright (no
-lock). On each view change, for each answering validator whose claim (its own
-tip) is not on our best chain, it fetches from above the highest verified block
-that validator holds (else above the final tip) up to its claim, in batches of
-2,000 headers. Each batch is verified in two
-stages, both off the runtime: stage A, each header alone (version, nBits, solution,
-Equihash, hash ≤ target) on one blocking task per core, then the run's links;
-stage B, in order (attach, difficulty, time, work, best, bounds) with finality,
-on the blocking pool with the chain moved there and back. The header chain's
-most-work block is `best`. Every move of the chain reaches the view before
-finality asks who holds the boundary, so both read one chain.
+lock). On each view change it first vouches every answering validator's claim and
+`getblockhash` answer that the chain holds, then fetches one batch (2,000
+headers) from the first answering validator whose claim the chain lacks: from
+above our best up to its claim, never above `final + depth + 2,000`
+(`HeaderChain::ceiling`: the tree stays bounded whatever finality does). Each
+batch is verified in two stages, both off the runtime: stage A, each header alone
+(version, nBits, solution, Equihash, hash ≤ target) on one blocking task per
+core, then the run's links; stage B, in order (attach, difficulty, time, work,
+best, bounds), then the run's last header vouched and finality, on the blocking
+pool with the chain moved there and back. The header chain's most-work block is
+`best`.
 
 `HeaderSync::subscribe()` (take it before `run`) is a
 `watch<Option<Arc<VerifiedChain>>>`, republished whenever the best or the final tip
@@ -112,41 +114,35 @@ Each snapshot carries `best()` and `held_by()`:
 
 - `best()` = the header chain's best, never a validator's claim. A validator
   reporting a higher tip moves nothing until its headers arrive and verify.
-- `held_by()` = the validators that **hold** `best`. Holding is a question, not
-  a walk (`verified-chain.md` §7): a validator holds `(h, hash)` iff its
-  `getblockhash h` = `hash`. Each poll asks it at the final boundary (`depth`
-  below the best) and at the best, beside its claim; header sync adds the last
-  header of each run it reads off that validator's best chain. One answer on the
-  verified chain at `h` means it holds every verified block up to `h` (a hash
-  commits to its ancestry). Each poll replaces the last one's answers, and a
-  failed poll (`Degraded`) or `Down` forgets them: a validator that reorged away
-  holds nothing from its next poll on, never a stale vote. A header run counts
-  only under the poll it was read under (one fetched before a newer poll is
-  dropped). A race (it moved between the items of one batch) costs one wrong
-  poll; the next one re-asks.
+- `held_by()` = the `Live` validators whose last poll **holds** `best` now
+  (`verified-chain.md` §7): its claim = `best`, or its `getblockhash` at the best
+  height the poll started under = `best`. A `CatchingUp` validator (mempool off:
+  its tip may be stale) never holds; a failed poll (`Degraded`) or `Down` holds
+  nothing until it answers again. A race (it moved between the items of one
+  batch) costs one wrong poll; the next one re-asks.
 - `held_by()` empty → `mempool()` and `validator_info()` are `None`; the global
   snapshot answers `Unavailable::NotHeld` (or `NoChain` with nothing verified).
   Both fail closed (`UNAVAILABLE`): a verified header says the work is real, not
   that the block is valid, and only a validator holding it vouches for the body.
 
-Finality moves only past a block `depth` deep and held by a trusted validator
-(the same question), so a reorg the trusted set could still follow never crosses
-the final boundary. Work never gates it: peers alone can never finalize, and a
-trusted holder already vouches for the chain. While a boundary waits for a
-holder, finality pauses and the `finality_paused` alarm rises; serving continues.
-A validator serving an undecodable header or one that fails a rule is reported
-to the balancer (benched: nothing but its poll reaches it for 60 s, doubling)
-and skipped that round; a header from the future (past the clock + 2 h) is
-deferred, retried next round and never blamed, as is an orphan run; one that
-retreats below its claim is read again from its next claim.
+Finality is a different question: was a block ever on a trusted validator's
+best chain (**vouched**, permanent: zebra commits only valid blocks)? Each
+trusted run vouches its last header (every header of it read by height off that
+validator's best chain), as do claims and `getblockhash` answers on our chain,
+and final = `min(highest vouched, best − depth)` after every run and vouch. A
+first sync from trusted validators therefore finalizes every batch to `best −
+depth`; polls never reset that evidence. Work never gates it: peers alone can
+never finalize. A block `depth` deep owed finality for 60 s with the final tip
+unmoved raises the `finality_paused` alarm; serving continues.
 
-The `Holders` core behind it is pure (answers and the `VerifiedChain` in, holders
-and agreement out); its `check()` asserts V1 (each validator's reach = the
-highest verified height its answers hold) and V2 (agreement = its claim's
-classification), after every fold in debug builds. Tests: a model against a
-naive oracle over whole validator chains (agree, disagree, failed items, timeouts,
-mid-poll reorgs, validators behind and ahead, runs served by header sync, read
-before a later poll or fork) and a fire drill per check and precondition.
+Per validator: a stall (fetch failed, it retreated below its claim, an
+undecodable header or one that fails a rule, a header from the future) backs off
+that validator alone for 5 s while the next one is asked at once. An undecodable
+or rule-failing header is also reported to the balancer (benched: nothing but its
+poll reaches it for 60 s, doubling); a header from the future (past the clock +
+2 h) is never blamed, nor is an orphan run: retried from the final tip, and
+orphaned there too its chain leaves ours below the final tip, so that claim is
+not fetched again until it moves.
 
 ## Read handle: `ChainViewSubscriber`
 
@@ -168,11 +164,11 @@ last poll, `Agreement` with the verified best block, last-observed time, peers,
 release, push-stream state, `blocks_to_end_of_service()`). Latency and failure
 counts are the balancer's (`TrafficBalancer::members()`).
 
-`Agreement` comes from its claim and its answers, as of its last answered poll:
-`Agreed` (its claim is the best block), `Ahead` (it holds the best block and
-claims higher), `Behind` (its claim is on the verified chain, below the best
-block), `Diverged` (none of these: a losing branch, an alarm and never an error),
-or `Unknown` (nothing verified yet, or no answer since its last failure).
+`Agreement` comes from its claim and its `getblockhash` answer, as of its last
+answered poll: `Agreed` (its claim is the best block), `Ahead` (it claims higher
+and its answer is on the verified chain), `Behind` (its claim is on the verified
+chain, below the best block), `Diverged` (none of these: a losing branch, an alarm
+and never an error), or `Unknown` (nothing verified yet, or its last poll failed).
 
 Tests standing in for header sync (feature `testing`) hand the view a chain with
 `ChainView::set_verified(Some(chain.verified(tip)))` (`zaino-header-chain`'s
@@ -275,17 +271,18 @@ The balancer's (`zaino-traffic`'s usage, "Polling and observations"): poll 1 s
 consecutive failures. A push event (`TrafficBalancer::pushed`) polls within
 200 ms; `ValidatorMetadata::streaming` reports the stream.
 
-A poll is at most two round trips: the poll batch (claim, listing and the two
-`getblockhash` answers), then one `bytes(..)` for what the view lacks. It reads
-no headers. A `getblockhash` above the validator's tip, or one failed item, is no
-answer for that height; the rest of the poll stands. A failed peer or release
+A poll is at most two round trips: the poll batch (claim, listing and the
+`getblockhash` answer at the view's best), then one `bytes(..)` for what the view
+lacks. The claim and answer are folded before the bytes are fetched. It reads no
+headers. A `getblockhash` above the validator's tip, or a failed item, is no
+answer; the rest of the poll stands. A failed peer or release
 read keeps the last answer and never fails the poll; unanswered bytes are
 re-listed and re-fetched next poll.
 
 `ObservationFold::run(cancel)` logs once (INFO) on a validator's first listing.
 A validator whose mempool is off below the network tip (zebrad's "mempool is not
-active") or absent is `CatchingUp`: its answers still count as holding (so block
-sync follows a catching-up validator), its sightings are retracted, and the fold
+active") or absent is `CatchingUp`: it holds no tip (its tip may be stale), its
+claim still feeds header sync and vouching, its sightings are retracted, and the fold
 warns every 60 s with its tip height and hash until the mempool answers, then logs
 "Validator caught up". A failed poll leaves it `Degraded`: its last claim stays
 on show, it holds nothing until it answers again, its sightings stay. `Down`
@@ -302,8 +299,8 @@ and asks `bytes(..)` and `submit(..)`; header sync asks `headers(Pinned)`.
 Retries, hedges and blame (`report`) are the balancer's.
 
 - an endpoint's claim is the poll's `getblockchaininfo` tip, read in the same
-  batch as the listing and the `getblockhash` answers at the heights the view
-  hands `ask_each_poll` (the final boundary and the best); `headers(Pinned)`
+  batch as the listing and the `getblockhash` answer at the view's best height
+  (`poll_best`, wired by `ChainView::new`, read as the poll starts); `headers(Pinned)`
   (`getblockheader <h> false`) supplies the raw header bytes of header sync's
   batches, each decoded and hashed once on arrival, never by the source. zebrad
   answers even on an empty state (genesis, mempool inactive = `CatchingUp`), so
@@ -356,5 +353,5 @@ one WARN when one rises, one INFO when it clears:
 - partition: two live endpoints share no outbound peer
 - eclipse: live endpoints reach 1 to 2 distinct outbound peers in total (none at
   all, as on regtest, raises nothing)
-- finality paused: a boundary block is `depth` deep but no trusted validator
-  holds it (`Alarms::finality_paused`)
+- finality paused: a block `depth` deep has been owed finality for 60 s with the
+  final tip unmoved, no trusted validator vouching for it (`Alarms::finality_paused`)
