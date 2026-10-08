@@ -51,3 +51,23 @@ committed view (`View::schema`), and every fold fills the delta its parent layer
 migration = """
 Build a store's schema from the index crate: `Schema::new(kind, FORMAT, network, TABLES)`.
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "breaking"
+section = "changed"
+description = """
+The NFS publishes into the global snapshot instead of serving readers itself. `Snapshot` is \
+renamed `Indexed` (read its served tip through `served()`, an `At`); `NfsHandle`, \
+`Nfs::handle()` and the `tip()` / `params()` / `views()` shorthands are gone: readers load a \
+`zaino_snapshot::Snapshot` and ask it `served()`. `subscribe_handed()` is replaced by \
+`progress()` (`NfsProgress`: `handed()`, `blocks()`, atomics read at report time). \
+`Nfs::new` drops its unread `depth`. The `zaino_best_tip` and `zaino_fetch_height` gauges and \
+the `Syncing blocks` / `Block fetch stalled` lines moved out (`zaino-snapshot` sets the gauges \
+at scrape; zainod's progress task logs the lines): this crate emits events only.
+"""
+migration = """
+`Nfs::new(chain, balancer, params, lookahead)`; feed `nfs.indexed()` to \
+`zaino_snapshot::Publisher::new` and read `snapshots.load().served()?`; `nfs.progress()` for \
+the handed height; tests: `Indexed::fixed` (+ `zaino_snapshot::Snapshots::fixed`).
+"""

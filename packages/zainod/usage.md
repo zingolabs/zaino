@@ -16,34 +16,41 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 | `/readyz`  | `{"ready", "reasons"}`                 | any reason below (`503`)       |
 | `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
+`/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
+(`zaino-snapshot`): none of them can mix two moments.
+
 `/readyz` reasons: `draining` (a shutdown signal arrived; listed first, see
-[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, `headers_syncing` (no
-verified header chain tip yet), `tip_not_held` (no trusted validator holds the verified tip),
-`syncing` (the served snapshot tip is not at the verified best: on once it is, off once it leaves
-the best chain or trails it by more than `finalised_depth`; requests are never refused for it).
+[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, then the snapshot's
+own, in order: `headers_syncing` (no verified header chain tip yet), `tip_not_held` (no trusted
+validator holds the verified tip), `syncing` (the served tip is not at the verified best: on
+once it is, off once it leaves the best chain or trails it by more than `finalised_depth`;
+requests are never refused for it).
 
-`/statusz` = version, network, uptime, readiness, the verified tip (`height`, `hash`, `held_by`
-of `configured` trusted validators; `null` = unserved), `best_height` (the header chain's
-most-work verified height: header sync progress, above `tip` until a validator holds it),
-`fetch_height` (the last block handed to the indexes: sync progress between their commits),
-`served_height` (the snapshot every request answers at, `GetLatestBlock`), `synced` (the
-`syncing` judgement above, as a bool), each configured validator (state = its health as of its
-last poll, agreement, tip height, stale blocks, latency + consecutive failures = the traffic
-balancer's, `streaming` (push streams up), `release`: build, user agent, protocol and `end_of_service` as `{"status": "at", height,
-estimated_unix, blocks_left}` / `{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad
-< 6.3), and the p2p peers its `getpeerinfo` reports), the chainview alarms (`stale`, `ending` =
-releases halting within a week, `partitioned`, `eclipsed`), the mempool's spread (`transactions`,
-`verified`, `ours_unverified`, `fully_spread`, `trusted_readers`), and every index (`name`,
-`enabled`, `durable` = its committed height, `size_bytes`, `tables` = bytes per subdirectory;
-disabled indexes listed with nulls). Bulk sync moves `durable` per batch; at the tip, each final
-block moves it by one. Index sizes come from the last status-line walk, so they are absent until
-the first one (2 minutes while syncing). `grpc.sent_bytes` = response body bytes served, all
-methods. Traffic data: keep the listener private.
+`/statusz` = zainod's process fields beside the snapshot's report (`zaino_snapshot::Report`,
+flattened; shape in [`docs/running.md`](../../docs/running.md#status)): `version`, `network`,
+`uptime_s`, `ready`, `reasons` (as `/readyz`), `grpc.sent_bytes` (response body bytes served,
+all methods), `disk` (per enabled index: `size_bytes` + `tables` = bytes per subdirectory, from
+the progress task's last walk, so absent until the first, 30 s after boot, then every 2
+minutes), then `seq`, `tips` (`best`, `final`, `served` as `{height, hash}`, `held_by` of
+`configured`, `synced`), `unready`, `handed` (the last block handed to the indexes: sync progress
+between their commits), `indexes` (every index the NFS can fold: `name`, `enabled`, `durable` =
+its committed height; empty before the NFS's first publish), `validators` (each configured one:
+`address`, `state` / `latency_ms` / `failures` = the traffic balancer's, `agreement`, `height`,
+`stale_blocks`, `observed_s_ago`, `streaming` (push streams up), `release`: build, user agent,
+protocol and `end_of_service` as `{"status": "at", height, estimated_unix, blocks_left}` /
+`{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad < 6.3), and the p2p `peers` its
+`getpeerinfo` reports), `alarms` (`partitioned`, `eclipsed`, `finality_paused`, `stale`, `ending`
+= releases halting within a week), `mempool` (`transactions`, `verified`, `ours_unverified`,
+`fully_spread`, `trusted_readers`), `forks` (each side branch: `from`, `tip`, `cumulative_work`
+as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip, each final block
+moves it by one. Traffic data: keep the listener private.
 
-Index metrics: `zaino_index_finalized_height{index}` = each enabled index's committed height;
-`zaino_index_synced{index}` = the `synced` judgement, one series per enabled index. Each index
-logs `Syncing` (`durable`, `size`) every 30 s while not synced and `Serving` once it is; the NFS's
-own metrics and lines are in [`zaino-nfs`](../zaino-nfs/usage.md#observability).
+`/metrics` sets every state gauge from the snapshot first (`zaino_best_tip`,
+`zaino_fetch_height`, `zaino_index_finalized_height{index}`, `zaino_index_synced{index}`, the
+`zaino_chainview_*` gauges: [`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then
+renders; events (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they
+happen ([`zaino-nfs`](../zaino-nfs/usage.md#observability)). One progress task logs the sync
+summary and each index's `Syncing` line every 30 s.
 
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.
@@ -268,11 +275,12 @@ What an operator sees at `info`:
 | `ChainView` | `Transaction not accepted` | warn | A submission ended with no acceptance (`txid`, `attempts`, the rejection or failure). |
 | `ChainView` | `Validator catching up` | warn | Every 60 s while a validator's mempool is off below the network tip (`endpoint`, its `height`, `behind` its own network estimate, `hash`). |
 | `ChainView` | `Validator caught up` | info | The mempool answers again. |
-| `ChainView` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `estimated`). |
-| `ChainView` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
-| `ChainView` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
+| `Snapshot` | `Validator tip stale against its own clock (stalled or eclipsed)` / `Validator tip fresh again` | warn / info | A live validator's tip falls ≥ 24 blocks behind its own `estimatedheight`, then recovers (`endpoint`, `tip`, `behind`). |
+| `Snapshot` | `Two live validators share no outbound peer (possible partition)` / `…share outbound peers again` | warn / info | Edge of the partition check over `getpeerinfo`. |
+| `Snapshot` | `Live validators reach few distinct outbound peers (possible eclipse)` / `…enough distinct outbound peers again` | warn / info | Edge of the eclipse check (1 to 2 distinct outbound peers across live validators; none at all raises nothing). |
+| `Snapshot` | `Finality paused: no trusted validator holds the boundary` / `Finality resumed` | warn / info | A boundary block is `finalised_depth` deep but no trusted validator holds it, then one does (`best`). |
 | `ChainView` | `Validator peer list read failed, last kept` / `Validator release read failed, last kept` | warn | A `getpeerinfo` or `getinfo` / `getdeprecationinfo` failure (telemetry only: the poll carries on). |
-| `ChainView` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
+| `Snapshot` | `Validator release reaches end of service soon (it halts there): upgrade it` / `Validator release upgraded` | warn / info | A validator's release halts within a week of its tip (`endpoint`, `build`, `left` blocks), then a newer release clears it. |
 | `ChainView` | `Push stream up` / `Push stream ended, polling meanwhile` | info / warn | A validator's indexer push streams (`indexer`) open, or end (lag, restart, network); it reconnects on a 500 ms → 30 s ladder and polls every second meanwhile. |
 | `ChainView` | `Push stream unavailable, polling` | info | Once, when the configured `indexer_address` refuses (retries then stay at debug). |
 | `Grpc` / `Metrics` | `Listening` | info | At startup (`endpoint`; gRPC adds `network`). |
@@ -280,13 +288,12 @@ What an operator sees at `info`:
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s while the blocks handed to the indexes trail the verified best (`height` handed, `target` = the best, `bps`, `eta`). |
+| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the blocks handed to the indexes trail the verified best (`height` handed, `target` = the best, `bps`, `eta`). |
 | `ZainoNFS` | `Block fetch stalled` | warn | A whole 30 s interval behind the best handed over no block. |
-| `ZainoNFS` | `Chain tip advanced` | info | Each published snapshot at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
+| `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
-| `ZainoNFS` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while not synced: `durable` (committed), `size` (bytes on disk, 3 significant figures, decimal units). |
-| index | `Serving` | info | Once synced (`durable`, `size`). |
+| `Snapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
+| index | `Syncing` | info | Every 30 s while not synced (the progress task): `durable` (committed, from the snapshot), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 

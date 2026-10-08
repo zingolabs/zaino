@@ -21,3 +21,16 @@ kind = "internal"
 description = """
 Tests fold the block-hash index through the new fold shape (store-opened deltas).
 """
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "feature"
+section = "added"
+description = """
+The snapshot is the one reporting source: `Report::of(snap, &NfsProgress, &MemberTable)` joins \
+each validator's facts with the traffic balancer's row (`state`, `latency_ms`, `failures`) and \
+reports `finality_paused`; `emit_gauges(snap, &NfsProgress)` also sets every \
+`zaino_chainview_*` state gauge at scrape; the publisher logs each chain view alarm's rise and \
+clear (stale tip, end of service, partition, eclipse, finality paused). `Unready::label` = the \
+`/readyz` text. Feature `testing`: `Snapshots::fixed(indexed, view)`.
+"""

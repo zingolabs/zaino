@@ -264,25 +264,25 @@ zaino-nfs/src/
   graph.rs      Node<F>; imbl::HashMap<BlockHash, Arc<Node<F>>>, side-node pruning
   fold.rs       Folded, FoldError, fold_block: the fold order, the one place indexes meet
   fetch.rs      check_block, fetch (block(hash, urgency) until checked; misanswer → report)
-  emit.rs       metrics (zaino_best_tip, zaino_reorgs_total, zaino_fetch_*)
-  report.rs     `Syncing blocks` progress every 30 s
-  snapshot.rs   Snapshot<V>, Views<V>, ChainParams, NfsHandle<V>, PerIndex<T>
+  emit.rs       event counters (zaino_reorgs_total, zaino_fetch_*_total)
+  progress.rs   NfsProgress: blocks handed (atomics, sampled at report time)
+  snapshot.rs   Indexed<V>, At<V>, Branch, Views<V>, ChainParams, Published<V>
   core/model.rs, core/fire_drills.rs, tests.rs (driver end to end)
 ```
 
 ### Driver
 
 ```rust
-pub struct Nfs<S, V> { /* chain watch, balancer, params, sink, committed watches, root layers, publisher */ }
+pub struct Nfs<S, V> { /* chain watch, balancer, params, sink, committed watches, root layers, publish watch */ }
 
 impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     pub fn new(chain: watch::Receiver<Option<Arc<VerifiedChain>>>, balancer: TrafficBalancer<S>,
-               params: ChainParams, lookahead: NonZeroUsize, depth: ReorgDepth) -> Self;
+               params: ChainParams, lookahead: NonZeroUsize) -> Self;
     // panics: kind twice, CompactBlock before ValueBalance
     pub fn subscribe(&mut self, kind: IndexKind, committed: watch::Receiver<V>, queue: NonZeroUsize)
         -> Subscription<zaino_sync::Final>;
-    pub fn handle(&self) -> NfsHandle<V>;
-    pub fn subscribe_handed(&self) -> watch::Receiver<Option<Height>>;  // last block handed over
+    pub fn indexed(&self) -> Published<V>;     // watch<Option<Arc<Indexed<V>>>>: the global snapshot's input
+    pub fn progress(&self) -> NfsProgress;     // handed() + blocks(), read at report time
     pub async fn run(self, cancel: CancellationToken) -> Result<(), NfsError>;
 }
 
@@ -296,19 +296,20 @@ pub enum NfsError { Diverged { index: &'static str, height, expected, got }, Fol
   `report`ed and re-asked: [traffic-balancer.md](./traffic-balancer.md) owns who, hedges,
   retries and benches); `Abandon` → that task aborted (its sends dropped); `Fold` →
   `zaino_sync::compute` (never on the async loop); `Send` → `Step::Apply { height, data: Final {
-  block, folds } }`, awaited (backpressure); `Publish` → a `Snapshot` swapped into the handle.
+  block, folds } }`, awaited (backpressure); `Publish` → an `Indexed` sent on the publish watch
+  (the served tip moved, or a durable tip did).
 - `committed` (per index) = the store's committed view after each commit: its tip = the core's
   `Durable` input, the view itself = what root folds and snapshots read. One map holds both, so a
   fold or snapshot pairs layers with exactly the durable state the core knows.
-- Observability (`describe_metrics()`; names = ztest's `zainod` families):
+- Observability: events here (`describe_metrics()`; names = ztest's `zainod` families); state
+  (`zaino_best_tip`, `zaino_fetch_height`, per-index durable + synced) is `zaino-snapshot`'s, set
+  at scrape from one snapshot + `NfsProgress` ([global-snapshot.md](global-snapshot.md) §5)
 
-| Signal                                                          | Source                                                                          |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `zaino_best_tip`                                                | each verified chain's best height                                               |
-| `zaino_reorgs_total` + WARN `Chain reorg detected`              | a published tip that left the best chain (from, to)                             |
-| `zaino_fetch_height`, `zaino_fetch_*_total`, `subscribe_handed` | each block handed to the indexes: folded, or sent unfolded (rewinds on a reorg) |
-| INFO `Chain tip advanced`                                       | each published tip that is the verified best                                    |
-| INFO `Syncing blocks` / WARN `Block fetch stalled`              | every 30 s while the handed height trails the best                              |
+| Signal                                             | Source                                                                          |
+| -------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `zaino_reorgs_total` + WARN `Chain reorg detected` | a published tip that left the best chain (from, to)                             |
+| `zaino_fetch_*_total`, `NfsProgress`               | each block handed to the indexes: folded, or sent unfolded (rewinds on a reorg) |
+| INFO `Chain tip advanced`                          | each published tip that is the verified best                                    |
 
 ### Fold
 
@@ -388,13 +389,23 @@ after:  root … F ─ b1 ─ b2        (b1, b2 fetched + folded on demand, from
         a1–a3 stay until pruned with the header chain's side branches; switching back = free
 ```
 
-### Snapshot
+### Indexed
 
 ```rust
-pub struct Snapshot<V> { chain: Arc<VerifiedChain>, tip: BlockRef, params: ChainParams, views: Views<V> }
-impl<V> Snapshot<V> {
-    pub fn chain(&self) -> &Arc<VerifiedChain>;
-    pub fn tip(&self) -> BlockRef;                         // folded on the verified best, else the root
+pub struct Indexed<V> { chain, root: Option<BlockRef>, served: At<V>, durable: PerIndex<V>, graph }
+impl<V> Indexed<V> {
+    pub fn chain(&self) -> &Arc<VerifiedChain>;            // `served` judged under it
+    pub fn served(&self) -> &At<V>;                        // folded on the verified best, else the root
+    pub fn folded(&self, hash: &BlockHash) -> bool;
+}
+impl<V: View> Indexed<V> {
+    pub fn at(&self, hash: &BlockHash) -> Option<At<V>>;   // any folded node (side included) or the root
+    pub fn durable(&self) -> impl Iterator<Item = (IndexKind, Option<BlockRef>)>;
+}
+pub struct At<V> { block: BlockRef, branch: Branch, params: ChainParams, views: Views<V> }
+impl<V> At<V> {
+    pub fn tip(&self) -> BlockRef;
+    pub fn branch(&self) -> Branch;                        // Best | Side { from }
     pub fn params(&self) -> ChainParams;                   // { network, activations: PoolActivations }
     pub fn views(&self) -> &Views<V>;
 }
@@ -411,57 +422,55 @@ impl<V: MapRead> Views<V> {
     pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<LayeredView<V>>>;  // folds only
 }
 
-pub struct NfsHandle<V> { current: Arc<ArcSwapOption<Snapshot<V>>>, changed: watch::Receiver<()> }
-impl<V> NfsHandle<V> {
-    pub fn snapshot(&self) -> Option<Arc<Snapshot<V>>>;   // one atomic load
-    pub async fn changed(&mut self) -> Result<(), RecvError>;  // next publish; Err = driver stopped
-}
-// feature `testing` (consumers' route tests, no driver):
-impl<V: View> NfsHandle<V> {
-    pub fn unpublished() -> Self;                                            // nothing served yet
+pub type Published<V> = watch::Receiver<Option<Arc<Indexed<V>>>>;   // read by zaino-snapshot alone
+// feature `testing` (consumers' tests, no driver):
+impl<V: View> Indexed<V> {
     pub fn fixed(chain, tip: BlockRef, params, durable: impl IntoIterator<Item = (IndexKind, V)>) -> Self;
 }
 ```
 
-- Every request or stream pins one snapshot for its life (nodes through `Arc`, disk through the
-  pinned view): a commit or reorg mid-stream cannot move what it reads.
-- `GetLatestBlock` = `snap.tip()`; every RPC answers at heights `≤ snap.tip()`: they agree by
+- Readers never hold an `Indexed` directly: the global snapshot (`zaino-snapshot`) pairs it with
+  the chain view's latest and every request pins one of those for its life (nodes through `Arc`,
+  disk through the pinned view): a commit or reorg mid-stream cannot move what it reads.
+- `GetLatestBlock` = `served().tip()`; every RPC answers at heights `≤` it: they agree by
   construction (R12 closed, W2 "already servable" holds by definition).
 - **Rebase on build** (decision 4): nodes are immutable; building a `Views` (each snapshot, each
   fold parent) rebases the node's layers onto the committed views it pairs with. Cost per build =
   the blocks committed since that node folded (≤ the root's lag), never the whole layer.
-- Bulk sync: no nodes; snapshot = committed views alone at the root (the lowest durable tip). An
-  index ahead of the root reads past `tip()` there (its committed view alone): routes serve at
-  `tip()`. At a folded tip every view's tip = `tip()`.
+- Bulk sync: no nodes; `served` = committed views alone at the root (the lowest durable tip). An
+  index ahead of the root reads past its tip there (its committed view alone): routes serve at
+  the tip. At a folded tip every view's tip = the served tip.
 - An index enabled later: the root is the lowest durable tip of every enabled index, so its tip
   holds the served tip back until it catches up (open: let it bulk-sync alone, `None` meanwhile).
 
 ## 7. gRPC and zainod
 
 ```rust
-// zaino-grpc: routes hold the handle, not per-index views
+// zaino-grpc: routes hold the global snapshot's handle, not the NFS's
 pub struct Routes<S, V> {
-    pub chain: Arc<ChainView<S>>, pub validators: TrafficBalancer<S>, pub network: NetworkType,
-    pub nfs: NfsHandle<V>, pub max_address_rows: NonZeroUsize,
+    pub snapshots: Snapshots<V>, pub submit: Arc<ChainView<S>>, pub validators: TrafficBalancer<S>,
+    pub network: NetworkType, pub max_address_rows: NonZeroUsize,
 }
 
-// per index request (Wired::answer): one snapshot, pinned for the request or stream
-let snap = self.snapshot()?;                                  // None = UNAVAILABLE (booting)
-let Some(blocks) = snap.views().compact_block() else { return not_enabled(..) }; // UNIMPLEMENTED
-blocks::dispatch(&snap, blocks, path, body, reads).await      // RangeCursor::new(blocks, start, end, snap.tip().height, pools)
+// per request (Wired::answer): one load, pinned for the request or stream (G1)
+let snap = routes.snapshots.load();
+let at = snap.served()?;                                      // Unavailable = UNAVAILABLE + its message
+let Some(blocks) = at.views().compact_block() else { return not_enabled(..) }; // UNIMPLEMENTED
+blocks::dispatch(at, blocks, path, body, reads).await         // RangeCursor::new(blocks, start, end, at.tip().height, pools)
 ```
 
-- Every index method answers at heights `≤ snap.tip()`: `GetLatestBlock` = the tip itself;
+- Every index method answers at heights `≤ at.tip()`: `GetLatestBlock` = the tip itself;
   `GetBlock` / `GetTreeState` past it = `NOT_FOUND`; ranges clamp to it; a by-hash locate past it =
   `NOT_FOUND`; `GetSubtreeRoots` = roots completing at or below it; the transparent reader is
-  `.as_of(snap.tip().height).with_max_rows(max_address_rows)`.
-- Tree-state memos (layer heights, the tip, each pool's roots) are keyed per snapshot.
-- `GetLightdInfo.blockHeight` = the snapshot tip (0 before the first). Compact-block is optional
-  like every index.
+  `.as_of(at.tip().height).with_max_rows(max_address_rows)`.
+- Tree-state memos (layer heights, the tip, each pool's roots) are keyed per `Indexed` publish
+  (`snap.indexed()` identity; the global snapshot moves per chain-view fold).
+- `GetLightdInfo` = `snap.lightd()`: a holder's `getblockchaininfo` + the served height, one load
+  (`UNAVAILABLE` before the first publish). Compact-block is optional like every index.
 
 ```rust
 // zainod indexer::pipeline (boot = chain view + this + chain-view tasks + supervise)
-let nfs = Nfs::new(inputs.chain, inputs.sync, params, config.sync.concurrency, depth);
+let nfs = Nfs::new(inputs.chain, inputs.sync, params, config.sync.concurrency);
 let mut indexes = Subscribed { nfs, opened: Vec::new() };
 let mut tasks = JoinSet::new();                          // after the NFS: dropped first on an early Err
 
@@ -479,17 +488,20 @@ if let Some((cb, vb)) = config.compact_block()? {
     spawn_index(&mut tasks, IndexKind::CompactBlock, span, writer.run(blocks, fees));
 }
 // block_hash, tree_state, transparent_address: same three lines, no fees
-let snapshots = indexes.nfs.handle();
-let server = GrpcService::new(Routes { nfs: snapshots.clone(), .. }, address, limits).bind().await?;
+let publisher = Publisher::new(indexes.nfs.indexed(), inputs.view.subscriber(), depth);
+let snapshots = publisher.handle();
+let server = GrpcService::new(Routes { snapshots: snapshots.clone(), .. }, address, limits).bind().await?;
 let Subscribed { nfs, opened } = indexes;                // nothing fallible past here
 spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
+spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
 spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
-spawn(&mut tasks, "serving", .., serving::run(snapshots, verified, depth, synced, ..));
-// per opened index: metrics, index report, /statusz source
+spawn(&mut tasks, "progress", .., progress::run(snapshots, nfs_progress, opened, disk, ..));
+// /statusz, /readyz, /metrics: status::Sources { snapshots, progress, members, disk }
 ```
 
-- `serving::run` = `zaino_index_synced` + `/readyz`: on once the served tip **is** the verified
-  best, off once it leaves the best chain or trails it by more than `depth`.
+- `Tips::synced` (the publisher's `compose`) = `zaino_index_synced` + `/readyz`: on once the
+  served tip **is** the verified best, off once it leaves the best chain or trails it by more
+  than `depth`.
 
 ## 8. Deleted
 

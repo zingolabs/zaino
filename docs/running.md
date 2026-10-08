@@ -110,12 +110,57 @@ are shorter than its `MANIFEST` seals (committed bytes were lost), or when its l
 page fails its checksum.
 
 Once booted, each stage (the index writers, the NFS that fetches and folds blocks, the
-chainview pollers and the gRPC server) runs as its own task. SIGINT or SIGTERM cancels
-them all and waits for each index to commit what it holds before exiting 0. If the NFS or
-the gRPC server stops on its own, it stops the rest the same way and zainod exits 1.
-While syncing, every request answers at the served tip (`/statusz` `served_height`), and
-`/readyz` reports `syncing` until that tip is the verified best. A
+snapshot publisher, the chainview pollers and the gRPC server) runs as its own task. SIGINT
+or SIGTERM cancels them all and waits for each index to commit what it holds before exiting
+0. If the NFS, the publisher or the gRPC server stops on its own, it stops the rest the same
+way and zainod exits 1. While syncing, every request answers at the served tip (`/statusz`
+`tips.served`), and `/readyz` reports `syncing` until that tip is the verified best. A
 trusted validator going away never stops zainod: its poller retries until it answers.
+
+## Status
+
+Every request, probe and scrape reads one published snapshot of what zainod serves
+([design/global-snapshot.md](./design/global-snapshot.md)): the verified chain, the served
+tip, the indexes, the mempool and the validators, as of one moment. `/statusz` (admin
+listener) shows it:
+
+```json
+{
+  "version": "0.10.1", "network": "main", "uptime_s": 5321,
+  "ready": false, "reasons": ["syncing"],
+  "grpc": { "sent_bytes": 1048576 },
+  "disk": { "compact_block": { "size_bytes": 4100000000, "tables": { "<subdirectory>": 4099000000 } } },
+  "seq": 18234,
+  "tips": {
+    "best": { "height": 3506659, "hash": "0000…" }, "final": { "height": 3506559, "hash": "0000…" },
+    "served": { "height": 3503023, "hash": "0000…" }, "held_by": 2, "configured": 2, "synced": false
+  },
+  "unready": ["syncing"],
+  "handed": 3503030,
+  "indexes": [{ "name": "compact_block", "enabled": true, "durable": 3502900 }],
+  "validators": [{
+    "address": "127.0.0.1:8232", "state": "live", "agreement": "agreed", "height": 3506659,
+    "stale_blocks": 0, "latency_ms": 4, "failures": 0, "observed_s_ago": 1, "streaming": true,
+    "release": null, "peers": []
+  }],
+  "alarms": { "partitioned": false, "eclipsed": false, "finality_paused": false, "stale": [], "ending": [] },
+  "mempool": { "transactions": 12, "verified": 12, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
+  "forks": []
+}
+```
+
+- `tips.best` = the header chain's most-work verified block; `served` = the block every
+  request answers at (`GetLatestBlock`); `held_by` of `configured` = trusted validators
+  holding `best` (0 = mempool and `GetLightdInfo` refused); `synced` = `served` reached
+  `best` (the `syncing` reason)
+- `handed` = the last block handed to the indexes (moves between their commits);
+  `indexes[].durable` = each index's committed height
+- `validators[]`: `state`, `latency_ms`, `failures` = the traffic balancer's; the rest = the
+  validator's last poll (`release.end_of_service` = `{"status": "at", height,
+  estimated_unix, blocks_left}`, `not_enforced` or `unknown`)
+- `forks[]` = side branches of the verified chain (`cumulative_work` a decimal string)
+- Before boot: `{"ready": false, "reasons": ["starting"]}`, or a `snapshot_<phase>` reason
+  and a `snapshot` progress object while an index snapshot bootstraps
 
 Behind a load balancer that routes by polling `/readyz`, turn on `[grpc.shutdown]`.
 From the signal on, `/readyz` fails with `draining` while zainod keeps serving for

@@ -36,3 +36,23 @@ kind = "internal"
 description = """
 Route tests build their indexes through the new fold shape (store-opened deltas, linked chains).
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "changed"
+description = """
+Every request reads one global snapshot: `Routes { snapshots, submit, validators, network, \
+max_address_rows }` (`snapshots` = `zaino_snapshot::Snapshots`, one `load()` per request or \
+stream; `submit` = the chain view, `SendTransaction` only). `GetLatestBlock`, `GetBlockRange`, \
+`GetTreeState`, `GetLightdInfo` and the mempool methods answer from the same snapshot. \
+`GetMempoolStream` now ends when the **served** tip moves (after the NFS folds the new block), \
+so the `GetLatestBlock` that follows serves it; before, it ended on the best block, possibly \
+before the block was servable. `GetLightdInfo`'s height and branch come from one load (they \
+can no longer disagree) and it answers `UNAVAILABLE` until something is served (was \
+`blockHeight: 0`). Tree-state memos are keyed per NFS publish.
+"""
+migration = """
+`Routes { snapshots: publisher.handle(), submit: Arc::clone(&view), validators, network, \
+max_address_rows }`; spawn the `zaino_snapshot::Publisher`.
+"""

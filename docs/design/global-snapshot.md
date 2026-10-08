@@ -1,6 +1,6 @@
 # One global snapshot: what Zaino serves, in one value
 
-Status: **phase 1 built** (additive, §9; 2026-10-07). Builds on [nfs.md](nfs.md) (served tip, views),
+Status: **implemented** (phases 1 + 2, §9; 2026-10-07). §1 = the shape before. Builds on [nfs.md](nfs.md) (served tip, views),
 [chainview.md](chainview.md) (mempool, validators), [verified-chain.md](verified-chain.md) (best,
 final, side branches). Runs beside [traffic-balancer.md](traffic-balancer.md) (§7: the seam).
 
@@ -222,25 +222,26 @@ let snap = self.routes.snapshots.load();
 pub struct Report {
     seq: u64,
     tips: TipsReport,                   // best, final, served, held_by/configured, synced
-    unready: Vec<Unready>,
-    handed: Option<u32>,
+    unready: Vec<&'static str>,         // Unready::label, in order
+    handed: Option<u32>,                // NfsProgress::handed
     indexes: Vec<IndexReport>,          // name, enabled, durable (empty before the NFS publishes)
-    validators: Vec<ValidatorReport>,   // view facts ⨝ MemberTable (traffic-balancer §6)
-    alarms: AlarmsReport,
+    validators: Vec<ValidatorReport>,   // view facts ⨝ MemberTable (state, latency_ms, failures)
+    alarms: AlarmsReport,               // partitioned, eclipsed, finality_paused, stale, ending
     mempool: MempoolCounts,
     forks: Vec<ForkReport>,             // from, tip, work (decimal string), folded
 }
-// built (phase 1): `handed` = NfsProgress's one field; `members` joins with TB
-impl Report { pub fn of<V: View>(snap: &Snapshot<V>, handed: Option<Height>) -> Self; }
-pub fn emit_gauges<V: View>(snap: &Snapshot<V>, handed: Option<Height>);
-pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>);  // synced (alarms, finality: step 5)
+impl Report {
+    pub fn of<V: View>(snap: &Snapshot<V>, progress: &NfsProgress, members: &MemberTable) -> Self;
+}
+pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &NfsProgress);  // + zaino_chainview_*
+pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>);     // synced, alarms, finality
 ```
 
 | Surface | Reads | When |
 | ------------- | ------------------------------------------------------------------------------------- | ---------- |
 | `/readyz` | `snap.unready()` + draining + heartbeat (`starting` / `snapshot_*` before boot) | per probe |
-| `/statusz` | `Report::of` + zainod `Process { version, uptime, disk, grpc_sent }` (`serde(flatten)`) | per request |
-| `/metrics` | `emit_gauges(snap)` then `render()` (admin thread, `spawn_blocking`) | per scrape |
+| `/statusz` | `Report::of` (`serde(flatten)`) + zainod's `version`, `network`, `uptime_s`, `ready`, `reasons`, `grpc.sent_bytes`, `disk` | per request |
+| `/metrics` | `emit_gauges(snap, progress)` then `render()` (admin thread, `spawn_blocking`) | per scrape |
 | edge logs | publisher `transitions(prev, next)` | per publish |
 | progress logs | one zainod task: `Syncing` (handed, best, bps, eta, per-index durable); disk walk 120 s | 30 s |
 
@@ -343,18 +344,39 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
 - `zaino-snapshot`: `Snapshot`, `Tips`, `Unavailable`, `Unready`, `ForkView`, the served-keyed
   feed, `Publisher` / `Snapshots` (`compose`, `check`), `Report`, `emit_gauges`, `transitions`
 
-**Phase 2 (call sites; deletions)**
+**Phase 2 (call sites; deletions; built 2026-10-07)**
 
 - nfs: `Snapshot` → `Indexed`; `NfsHandle`, `handle()` and the `tip` / `params` / `views`
-  shorthands gone; `NfsProgress` replaces `subscribe_handed` + `report.rs`; `emit::best` and the
-  `zaino_fetch_height` set gone; `Nfs::new`'s unread `depth` dropped
-- chain view: the §5 deletions (`tip.rs`, `feed.rs`, epoch cell, `tail()`, `telemetry::emit`);
-  `compose` reads `held_by` from a holders accessor in place of `tip()`
-- snapshot: `Snapshots::fixed` (testing); `Report::of` joins `MemberTable`; `emit_gauges` reads
-  `NfsProgress`; alarm / finality edges in `transitions`; `zaino_chainview_*` gauges at scrape
-- grpc: `Routes.snapshots` + `submit`; one `load()` per request; `served()?` / `mempool()?` /
-  `mempool_stream()?` / `lightd()?`; tree-state memos keyed on `indexed()`
-- zainod: wire `Publisher`; delete `serving.rs`, `index_report.rs`, `track_index` + `publish_*`,
-  `status.rs` `Sources`; `/statusz` / `/readyz` / `/metrics` from one load; `snapshot.rs` →
-  `bootstrap.rs`
-- docs: nfs.md §6–§7, chainview.md §5/§11/§12
+  shorthands gone; `NfsProgress` (atomics: `handed`, `blocks`) replaces `subscribe_handed` +
+  `report.rs`; `emit::best` and the `zaino_fetch_height` set gone; `Nfs::new`'s unread `depth`
+  dropped
+- chain view: the §5 deletions (`tip.rs`, `feed.rs`, epoch cell, tails watch, `tail()`,
+  `subscribe_tip`, `tip()` / `unserved()`, `telemetry::emit`); `held_by()` (set per fold) feeds
+  `compose`; `mempool()` / `validator_info()` → `Option` (the `Unavailable` reason is the
+  snapshot's); publishes stored under the fold lock (consecutive publishes = fold order, what
+  `arrivals` diffs)
+- snapshot: `Snapshots::fixed` (testing; never republished); `Report::of` joins `MemberTable`
+  and reads `NfsProgress`; `emit_gauges` reads `NfsProgress` + sets `zaino_chainview_*`; alarm +
+  finality edges in `transitions` (`finality_paused` surfaced on `/statusz`)
+- grpc: `Routes { snapshots, submit, validators, network, max_address_rows }`; one `load()` per
+  request; `served()?` / `mempool()?` / `mempool_stream()?` / `lightd()?`; tree-state memos keyed
+  on the `indexed()` publish; agreement test on `Snapshots::fixed`
+- zainod: `Publisher` wired + supervised (`snapshot` task); `serving.rs`, `index_report.rs`,
+  `track_index` + `publish_*`, `INDEX_*` describes, `status.rs` `Sources` / `IndexSource` /
+  per-field mapping and the `synced` watch gone; one `progress` task (sync + per-index lines,
+  disk walk); `/statusz` = `Report::of` + process fields, `/readyz` = draining + heartbeat +
+  `unready()`, `/metrics` = `emit_gauges` then render; `snapshot.rs` → `bootstrap.rs`
+- tests: golden `Report` + gauges (snapshot); `every_rpc_agrees_on_one_snapshot` (grpc); the
+  pipeline reorg test opens a `GetMempoolStream` at A8, sees it end on the reorg, then a
+  `GetLatestBlock` never A8, then a scrape holding every ztest family the process emits
+- docs: nfs.md §6–§7, chainview.md §5/§11/§12, usage guides, running.md
+
+**Deviations from §2–§5 as written**
+
+- `Routes` keeps two write-side handles: `submit` (`ChainView::submit`: the submission job marks
+  `ours` and watches the spread) and `validators` (`GetTransaction`, address tx bytes)
+- `GetLightdInfo` before the NFS's first publish = `UNAVAILABLE` (`NothingServed`), no longer
+  `blockHeight: 0` beside a validator's branch (no stand-in; zainod is not ready then anyway)
+- the tree-state route reads `snap.indexed()` (memo identity) and serves its `served()`; the
+  other index routes take `snap.served()?`
+- `/statusz` puts `disk` (the progress task's last walk, per index) beside `Report`, not inside it

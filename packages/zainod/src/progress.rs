@@ -118,21 +118,19 @@ fn per_second(count: u64, over: Duration) -> u64 {
     }
 }
 
-/// Every index directory, off the runtime
+/// Every index directory, off the runtime (an unreadable one logged here, under its component)
 async fn walk(indexes: &[Index]) -> Result<Disk, IndexerError> {
-    let dirs: Vec<(&'static str, PathBuf)> =
-        indexes.iter().map(|index| (index.kind.name(), index.dir.clone())).collect();
-    let walked = tokio::task::spawn_blocking(move || {
-        let mut disk = Disk::new();
-        for (name, dir) in dirs {
-            match usage(&dir) {
-                Ok(usage) => drop(disk.insert(name, usage)),
-                Err(error) => warn!(index = name, %error, "Index size unreadable"),
-            }
+    let dirs: Vec<PathBuf> = indexes.iter().map(|index| index.dir.clone()).collect();
+    let walked =
+        tokio::task::spawn_blocking(move || dirs.iter().map(|dir| usage(dir)).collect::<Vec<_>>());
+    let mut disk = Disk::new();
+    for (index, walked) in indexes.iter().zip(walked.await?) {
+        match walked {
+            Ok(usage) => drop(disk.insert(index.kind.name(), usage)),
+            Err(error) => index.span.in_scope(|| warn!(%error, "Index size unreadable")),
         }
-        disk
-    });
-    Ok(walked.await?)
+    }
+    Ok(disk)
 }
 
 /// One pass over `dir`: its own files count towards the total only; a file removed mid-walk

@@ -17,8 +17,8 @@ validators it trusts for exactly that, and nothing more.
 | Part                                                                                           | State                                  |
 | ---------------------------------------------------------------------------------------------- | -------------------------------------- |
 | Mempool view, telemetry (§5, §11)                                                              | built                                  |
-| `GetMempoolStream` on a write-once log (§5)                                                    | built                                  |
-| `GetLightdInfo` from the view (§12)                                                            | built                                  |
+| `GetMempoolStream` on a write-once log, keyed by the served tip (§5; `zaino-snapshot`)         | built                                  |
+| `GetLightdInfo` from one global snapshot (§12)                                                 | built                                  |
 | `[[trusted_validators]]`, any-trusted admission, non-fatal validator failure (§5, §7, §10)     | built                                  |
 | Trusted-validator links: lanes, budgets, batched mempool bytes (§7)                            | built                                  |
 | `GetMempoolTx` projection rendered once per transaction (§5)                                   | built                                  |
@@ -225,15 +225,17 @@ Every transaction the view knows is a **sighting**:
 The protocol defines it this way ("a stream of current Mempool transactions … close the returned
 stream when a new block is mined", `service.proto`), and lightwalletd does the same. Sending the
 current transactions first is what lets a wallet that resubscribes after each block see a
-transaction that arrived while it was reconnecting. The stream closes when the best tip **block**
-changes, never when the mempool empties: an empty mempool with no new block is a live, silent
-stream.
+transaction that arrived while it was reconnecting. The stream closes when the **served** tip
+moves (after the NFS folds the new block, [global-snapshot.md](global-snapshot.md) §4), never
+when the mempool empties: an empty mempool with no new block is a live, silent stream. A stream's
+end therefore means the next `GetLatestBlock` already serves the new tip.
 
-**Written once, read by cursors.** Each tip block gets one append-only log: the mempool at the
-block, then every transaction that becomes servable, each encoded once and shared by refcount.
-A subscriber is a pointer to that log and a cursor into it, so per-transaction work never scales
-with subscribers and per-subscriber state never grows with arrivals. The mechanism is documented
-where it lives, `zaino-chainview/src/feed.rs`.
+**Written once, read by cursors.** Each served tip gets one append-only log: the mempool when it
+opened, then every transaction that becomes servable (the view's `arrivals` between two of its
+publishes), each encoded once and shared by refcount. A subscriber is a pointer to that log and a
+cursor into it, so per-transaction work never scales with subscribers and per-subscriber state
+never grows with arrivals. The log is the global snapshot's (`zaino-snapshot/src/feed.rs`): the
+view keeps no feed and never learns the served tip.
 
 Measured (2026-10-06, one core for the server, real HTTP/2 over loopback, 2,000–5,000
 subscribers, 2 KB transactions): each arrival costs the server ~2–3 µs per subscriber (1.9 µs in
@@ -393,9 +395,11 @@ flight (power-of-two-choices, as in Finagle, linkerd and zebra-network's own pee
 
 ## 11. Telemetry
 
-Observation only: none of it changes a tip, a sighting's servability, or what is served. Each
-condition logs once when it rises and once when it clears, with raw inputs as
-`zaino.chainview.*` gauges.
+Observation only: none of it changes a tip, a sighting's servability, or what is served. The view
+raises each condition per fold (`Alarms`); the global snapshot's publisher logs it once when it
+rises and once when it clears, and its raw inputs are `zaino.chainview.*` gauges set from the
+snapshot at scrape ([global-snapshot.md](global-snapshot.md) §5). The view itself emits only
+events (spread histograms, submission outcomes).
 
 - **Stale tip:** the best tip's time trails the clock by ≥ 24 blocks' worth (the chance of a
   natural 30-minute gap is ≈ e^-24): stalled, or eclipsed.
@@ -411,17 +415,19 @@ condition logs once when it rises and once when it clears, with raw inputs as
   (`getdeprecationinfo`, zebrad ≥ 6.3; mainnet only).
 
 Per trusted validator: state, agreement with the best tip (`Agreed`, `Ahead`, `Behind`,
-`Diverged`), latency, failures, release (build, user agent, protocol) and end-of-service height,
-all on `/statusz`. Per transaction: `peers: x/y, trusted: x/y` as it moves, with histograms of
+`Diverged`), latency, failures (state, latency and failures: the traffic balancer's `MemberTable`,
+joined at report time), release (build, user agent, protocol) and end-of-service height, all on
+`/statusz` (`zaino_snapshot::Report`), with every alarm including `finality_paused`. Per transaction: `peers: x/y, trusted: x/y` as it moves, with histograms of
 first-seen → first trusted listing, first → every trusted listing, and residence until a block
 (or eviction) removes it.
 
 ## 12. `GetLightdInfo`
 
 The most frequent wallet call (50× any other on the mainnet fleet) never waits on a validator. It
-renders from one pinned view plus the served snapshot's tip (`blockHeight`): the network estimate,
-upgrade schedule and branch come from the last `getblockchaininfo` of a trusted validator holding
-the best tip, read by its poller. Below that, `UNAVAILABLE`.
+renders from one global snapshot load (`Snapshot::lightd`): `blockHeight` = its served tip, and
+the network estimate, upgrade schedule and branch = the last `getblockchaininfo` of a trusted
+validator holding the best block, read by its poll. One load, so height and branch never come
+from two moments. No holder, or nothing served yet: `UNAVAILABLE`.
 
 ## Configuration
 

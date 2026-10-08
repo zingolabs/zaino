@@ -43,10 +43,17 @@ snapshots.changed().await?;                            // next publish
 | `forks()`               | each side branch of `chain()` (`ForkView { fork, folded }`, `folded` = its deepest folded block) |
 | `mempool()`             | the servable mempool; `NoChain` / `NotHeld` while no trusted validator holds best |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
-| `lightd()`              | the first holder's `BlockchainInfo` + the served height                       |
+| `lightd()`              | the first holder's `BlockchainInfo` + the served height (`NoChain` / `NotHeld` / `NothingServed`) |
 | `view()`                | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `unready()`             | `HeadersSyncing`, `TipNotHeld`, `Syncing`, in that order (`/readyz` reasons)  |
+| `unready()`             | `HeadersSyncing`, `TipNotHeld`, `Syncing`, in that order (`label()` = `/readyz` text) |
+
+- `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
+  `no trusted validator holds the verified tip {h} (of {n} configured)`, `the indexes are syncing:
+  nothing served yet`.
+- Feature `testing`: `Snapshots::fixed(indexed, view)` = one snapshot for good, no publisher
+  (`changed()` errs, a tail ends after its opening): route tests over `Indexed::fixed` +
+  `ChainViewSnapshot::fixed`.
 
 - `synced` opens once the served tip **is** the best block (hash, not height) and stays open
   while the served tip is on the best chain and at most `depth` below it.
@@ -70,19 +77,28 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
 ## Reporting
 
 ```rust,ignore
-let body = Report::of(&snapshots.load(), handed);      // `/statusz`: serde, zainod adds process fields
+let members = balancer.members().borrow().clone();     // the traffic balancer's MemberTable
+let body = Report::of(&snapshots.load(), &nfs_progress, &members); // `/statusz` (serde)
 describe_metrics();                                     // once, at boot
-emit_gauges(&snapshots.load(), handed);                 // per scrape, then render
+emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then render
 ```
 
 - `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`), unready reasons,
-  `handed`, every index the NFS folds (`enabled`, `durable`), each validator's facts (agreement,
-  own height, staleness, push streams, release, peers), alarms, mempool counts, forks (work as a
-  decimal string).
-- Gauges (names = ztest's `zainod` families): `zaino_best_tip`, `zaino_fetch_height` (`handed`),
-  `zaino_index_finalized_height{index}`, `zaino_index_synced{index}`.
-- Edge logs per publish: INFO `Serving the verified tip` / `Behind the verified tip, syncing`
-  when `synced` flips.
+  `handed` (`NfsProgress::handed`), every index the NFS folds (`enabled`, `durable`), each
+  validator's facts (agreement, own height, staleness, push streams, release, peers) joined with
+  its `MemberTable` row (`state`, `latency_ms` once measured, `failures`), alarms (incl.
+  `finality_paused`), mempool counts, forks (work as a decimal string). zainod flattens it beside
+  its process fields.
+- Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
+  `zaino_fetch_height` (`handed`), `zaino_index_finalized_height{index}`,
+  `zaino_index_synced{index}`, and the chain view's `zaino_chainview_*` state:
+  `endpoint_state{endpoint,state}`, `agreement{endpoint,agreement}`, `tip_height{endpoint}`,
+  `stale_blocks{endpoint}`, `peers{endpoint,direction}`, `push_stream{endpoint}`,
+  `release{endpoint,build,user_agent}`, `end_of_service_height{endpoint}`, `tip_holders`,
+  `best_height`, `finality_paused`, `shared_outbound_min`, `mempool_transactions{state}`.
+- Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
+  tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
+  (stale validator tip, end of service, partition, eclipse, finality paused).
 
 ## Invariants and tests
 
@@ -94,7 +110,8 @@ moved, old sealed, stored open), G6 (`mempool()` gate = `held_by`).
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails
   opened at random, against naive tips and per-epoch transaction sets.
 - `tests.rs`: the run loop over real watches (seq 0, coalescing, cancel, a gone NFS); the
-  `/statusz` golden and its rendered gauges; one fire drill per `check` assertion.
+  `/statusz` golden (a `MemberTable` joined) and its rendered gauges; one fire drill per `check`
+  assertion. `report.rs`: the end-of-service serialization contract.
 
 ```bash
 # heavy run: at least 3 minutes after any change to this crate
