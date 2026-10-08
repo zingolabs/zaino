@@ -2023,7 +2023,7 @@ mod tests {
     /// and each subtree's root (natural order) with its completing height.
     #[tokio::test]
     async fn z_getsubtreesbyindex_renders_the_oracle_shape() {
-        use zaino_primitives::types::{SubtreeRoot, TreeRoot};
+        use zaino_primitives::types::{BlockHash, SubtreeRoot, TreeRoot};
         let roots = vec![
             SubtreeRoot {
                 root: TreeRoot::from(
@@ -2032,6 +2032,7 @@ mod tests {
                     )
                     .expect("32 bytes"),
                 ),
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(558_822).expect("valid height"),
             },
             SubtreeRoot {
@@ -2041,6 +2042,7 @@ mod tests {
                     )
                     .expect("32 bytes"),
                 ),
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(670_209).expect("valid height"),
             },
         ];

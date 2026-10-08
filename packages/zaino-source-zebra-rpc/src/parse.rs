@@ -33,9 +33,9 @@ use zaino_primitives::types::{
     },
     AbsoluteChainWork, AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes,
     BlockVerbose, BlockchainInfo, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
-    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
-    TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
-    TreeSize, TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
+    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, TransactionId,
+    TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
+    TreeSizeOutOfRange, Treestate, Utxo, ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -961,15 +961,21 @@ pub(crate) fn parse_raw_transaction(value: &serde_json::Value) -> Result<Vec<u8>
     hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
 }
 
-/// Parse a `z_getsubtreesbyindex` response.
+/// Parse a `z_getsubtreesbyindex` response into each subtree's root and
+/// completing height.
+///
+/// The response carries no completing block hash — it is not part of
+/// `z_getsubtreesbyindex` — so the domain [`SubtreeRoot`] cannot be built here.
+/// The adapter resolves the hash by height (one `getblockhash` per subtree) and
+/// assembles the domain value.
 pub(crate) fn parse_subtree_roots(
     value: &serde_json::Value,
-) -> Result<Vec<SubtreeRoot>, ParseError> {
+) -> Result<Vec<(TreeRoot, Height)>, ParseError> {
     parse_optional_list(value, "subtrees", |s| {
-        Ok(SubtreeRoot {
-            root: as_tree_root(field(s, "root")?)?,
-            end_height: as_height(field(s, "end_height")?)?,
-        })
+        Ok((
+            as_tree_root(field(s, "root")?)?,
+            as_height(field(s, "end_height")?)?,
+        ))
     })
 }
 

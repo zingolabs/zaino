@@ -382,6 +382,25 @@ impl ZebraReadStateAdapter {
         };
         Ok(*header)
     }
+
+    /// The best-chain block hash at `height`, in internal (unreversed) byte
+    /// order. Used to label a completed subtree with the hash of the block that
+    /// completed it, which the subtree read itself does not carry.
+    async fn block_hash_at(
+        &self,
+        height: zebra_chain::block::Height,
+    ) -> Result<BlockHash, ReadStateError> {
+        match self.read(ReadRequest::BestChainBlockHash(height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => Ok(BlockHash::from(hash.0)),
+            // A subtree's completing height is a finalised best-chain height, so
+            // the best chain must have a hash there; its absence is a broken
+            // contract with the read state, not a client-visible condition.
+            ReadResponse::BlockHash(None) => Err(ReadStateError::off_contract(
+                "best chain has no block at a subtree's completing height",
+            )),
+            _ => Err(unexpected_response("BlockHash")),
+        }
+    }
 }
 
 impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
@@ -507,34 +526,34 @@ impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
 
         // Each pool answers with its own response variant, so the match is on
         // the pair. Sapling roots serialise via `to_bytes`; Orchard and
-        // Ironwood share a representation and use `to_repr`.
+        // Ironwood share a representation and use `to_repr`. The subtree carries
+        // only its root and completing height, so the completing block hash is
+        // resolved separately, by height, below.
         // An out-of-range end height is propagated rather than defaulted:
         // substituting a placeholder would put a subtree at the wrong point in
         // the chain, which is worse than failing the query.
-        let roots: Result<Vec<_>, ReadStateError> = match (pool, response) {
+        let partial: Vec<(TreeRoot, zebra_chain::block::Height)> = match (pool, response) {
             (ShieldedPool::Sapling, ReadResponse::SaplingSubtrees(subtrees)) => subtrees
                 .values()
-                .map(|subtree| {
-                    Ok(SubtreeRoot {
-                        root: TreeRoot::new(subtree.root.to_bytes()),
-                        end_height: subtree_end_height(subtree.end_height)?,
-                    })
-                })
+                .map(|subtree| (TreeRoot::new(subtree.root.to_bytes()), subtree.end_height))
                 .collect(),
             (ShieldedPool::Orchard, ReadResponse::OrchardSubtrees(subtrees))
             | (ShieldedPool::Ironwood, ReadResponse::IronwoodSubtrees(subtrees)) => subtrees
                 .values()
-                .map(|subtree| {
-                    Ok(SubtreeRoot {
-                        root: TreeRoot::new(subtree.root.to_repr()),
-                        end_height: subtree_end_height(subtree.end_height)?,
-                    })
-                })
+                .map(|subtree| (TreeRoot::new(subtree.root.to_repr()), subtree.end_height))
                 .collect(),
             _ => return Err(unexpected_response("Subtrees").into()),
         };
 
-        Ok(roots?)
+        let mut roots = Vec::with_capacity(partial.len());
+        for (root, zebra_end_height) in partial {
+            roots.push(SubtreeRoot {
+                root,
+                completing_block_hash: self.block_hash_at(zebra_end_height).await?,
+                end_height: subtree_end_height(zebra_end_height)?,
+            });
+        }
+        Ok(roots)
     }
 }
 

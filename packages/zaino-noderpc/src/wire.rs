@@ -2827,7 +2827,7 @@ mod tests {
     #[test]
     fn subtree_roots_render_in_internal_order_from_fixture() {
         use super::subtree_roots_to_wire;
-        use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, TreeRoot};
+        use zaino_primitives::types::{BlockHash, Height, ShieldedPool, SubtreeRoot, TreeRoot};
 
         let fixture: Value = serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
         for (pool, pool_name) in [
@@ -2841,6 +2841,9 @@ mod tests {
                 .iter()
                 .map(|subtree| SubtreeRoot {
                     root: TreeRoot::from(bytes32(subtree["root"].as_str().expect("root hex"))),
+                    // `z_getsubtreesbyindex` carries no completing block hash;
+                    // present only to build the domain value.
+                    completing_block_hash: BlockHash::from([0u8; 32]),
                     end_height: Height::try_from(
                         u32::try_from(subtree["end_height"].as_u64().expect("end_height"))
                             .expect("height fits u32"),

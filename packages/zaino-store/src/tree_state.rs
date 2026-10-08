@@ -30,7 +30,7 @@ use zaino_indexes::indexes::tree_state::{self, TreeStateIndex};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{decode_value, encode_key, EntryCodec};
 use zaino_primitives::types::{
-    Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
+    BlockHash, Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
 };
 use zaino_service::error::TreestateReadError;
 use zaino_service::{Capability, PoolActivationSource, TreestateRead};
@@ -200,6 +200,7 @@ where
             Ok(entry) => {
                 roots.push(SubtreeRoot {
                     root: TreeRoot::from(entry.root),
+                    completing_block_hash: BlockHash::from(entry.completing_block_hash),
                     end_height: match height_of(entry.completing_height) {
                         Ok(height) => height,
                         Err(error) => {
@@ -293,6 +294,7 @@ mod tests {
     fn ctx(h: u32, sapling: u64) -> TreeStateCtx {
         TreeStateCtx {
             height: BlockHeight::new(u64::from(h)),
+            hash: BlockHash::from([u8::try_from(h).expect("test height < 256"); 32]),
             sapling_cmus: (0..sapling)
                 .map(|i| commitment(u64::from(h) * 100 + i))
                 .collect(),
@@ -346,13 +348,17 @@ mod tests {
             values.push(entry.value);
         }
 
-        // Three Sapling subtree roots at ascending indices.
+        // Three Sapling subtree roots at ascending indices. The root and the
+        // completing block hash carry distinct byte patterns so a test can tell
+        // the two 32-byte fields apart on the way back out.
         for index in 0u32..3 {
+            let tag = u8::try_from(index).expect("test index fits u8");
             ops.push(put::<SaplingSubtreesIndex>(
                 <SaplingSubtreesIndex as IndexDef>::NAME.into(),
                 &index,
                 &SubtreeRecord {
-                    root: [index as u8 + 1; 32],
+                    root: [tag + 1; 32],
+                    completing_block_hash: [tag + 0x80; 32],
                     completing_height: BlockHeight::new(u64::from(index) + 1),
                 },
             ));
@@ -461,7 +467,9 @@ mod tests {
         assert_eq!(all.len(), 3);
         assert_eq!(<[u8; 32]>::from(all[0].root)[0], 1);
         assert_eq!(all[0].end_height, height(1));
+        assert_eq!(all[0].completing_block_hash, BlockHash::from([0x80; 32]));
         assert_eq!(<[u8; 32]>::from(all[2].root)[0], 3);
+        assert_eq!(all[2].completing_block_hash, BlockHash::from([0x82; 32]));
 
         // Paged: start at index 1, take one.
         let page = snap

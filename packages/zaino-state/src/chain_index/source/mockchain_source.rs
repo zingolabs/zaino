@@ -919,6 +919,8 @@ impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
         ) -> Result<domain::SubtreeRoot, PortError<zaino_source::GetSubtreeRootsError>> {
             Ok(domain::SubtreeRoot {
                 root: domain::TreeRoot::from(root),
+                // Deprecated mock: the completing block hash is not modelled here.
+                completing_block_hash: domain::BlockHash::ZERO,
                 end_height: domain::Height::try_from(height.0)
                     .map_err(|e| port_fault(e.to_string()))?,
             })

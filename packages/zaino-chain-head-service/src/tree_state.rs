@@ -166,6 +166,7 @@ fn domain_subtree_root(completion: WindowSubtree) -> Result<SubtreeRoot, Treesta
         })?;
     Ok(SubtreeRoot {
         root: TreeRoot::from(completion.root),
+        completing_block_hash: completion.completing_block_hash,
         end_height,
     })
 }

@@ -57,7 +57,7 @@ pub fn from_domain(roots: SubtreeRoots) -> GetSubtreesByIndexResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{Height, SubtreeRoot, TreeRoot};
+    use zaino_primitives::types::{BlockHash, Height, SubtreeRoot, TreeRoot};
 
     /// Asymmetric under reversal, so an accidental byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -103,6 +103,9 @@ mod tests {
             start_index: 3,
             subtrees: vec![SubtreeRoot {
                 root: TreeRoot::from(ASYMMETRIC),
+                // `z_getsubtreesbyindex` does not render a completing block hash,
+                // so this rides nowhere; present only to build the domain value.
+                completing_block_hash: BlockHash::from([0u8; 32]),
                 end_height: Height::try_from(2_000u32).unwrap(),
             }],
         }))

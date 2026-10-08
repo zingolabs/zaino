@@ -290,6 +290,7 @@ mod tests {
     fn subtree_root_maps_to_wire() {
         let root = SubtreeRoot {
             root: TreeRoot::from([0x11u8; 32]),
+            completing_block_hash: BlockHash::from([0x22u8; 32]),
             end_height: Height::try_from(1_000_000).expect("valid height"),
         };
 
@@ -483,6 +484,7 @@ mod tests {
                 let end_height = subtree["end_height"].as_u64().expect("end_height");
                 let domain = SubtreeRoot {
                     root: TreeRoot::from(bytes32(root_hex)),
+                    completing_block_hash: BlockHash::from([0u8; 32]),
                     end_height: Height::try_from(
                         u32::try_from(end_height).expect("height fits u32"),
                     )
