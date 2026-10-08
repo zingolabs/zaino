@@ -90,10 +90,9 @@ so it visits only the segments holding that address. Segments carry no height me
 range only narrows where the seek lands inside each visited segment. What remains is the live
 segment count, which bounds the filter checks per query, and that is why we merge.
 
-Commits are frequent. An index commits when its batch reaches `batch_mib` (64 MiB by default)
-during bulk sync, after every folded run at the tip (the NFS folded it already, usually one final
-block), and whenever the final stream is quiet for a second (`IDLE` in zaino-sync's
-`committer.rs`), so an unmerged set would gain a segment per mainnet block at the tip. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
+Commits are frequent. An index commits when its buffer's heap reaches the index's own
+`WRITE_BUFFER` (16–128 MiB), and at most a second after its oldest uncommitted block (`MAX_AGE` in
+zaino-sync's `committer.rs`), so an unmerged set would gain a segment per mainnet block at the tip. Segments are therefore size-tiered: a segment's tier is `⌊log₈ rows⌋`, and once a tier holds
 eight segments a background thread, one per tier, merges them into one segment of the tier above.
 The index's next manifest commit swaps the merged segment in, and the inputs are unlinked only once
 that manifest is durable. A commit never waits on a merge unless the merging tier falls two full

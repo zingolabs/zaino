@@ -190,32 +190,38 @@ async fn pipeline<S: ChainDataSource>(
         let mut fee_sink = FeeSink::new("fees");
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
         let schema = stores::schema(IndexKind::ValueBalance, network);
-        let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new)?;
+        let buffer = zaino_internal_value_balance::WRITE_BUFFER;
+        let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new, buffer)?;
         let blocks = indexes.add(IndexKind::ValueBalance, writer.handle(), &vb, &span);
         let run = writer.run(blocks, fee_sink);
         spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
         let schema = stores::schema(IndexKind::CompactBlock, network);
-        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new)?;
+        let buffer = zaino_index_compact_block::WRITE_BUFFER;
+        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new, buffer)?;
         let blocks = indexes.add(IndexKind::CompactBlock, writer.handle(), &cb, &span);
         let run = writer.run(blocks, fees);
         spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
         let schema = stores::schema(IndexKind::BlockHash, network);
-        let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new)?;
+        let buffer = zaino_internal_block_hash_to_height::WRITE_BUFFER;
+        let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new, buffer)?;
         let blocks = indexes.add(IndexKind::BlockHash, writer.handle(), &bh, &span);
         spawn_infallible(&mut tasks, IndexKind::BlockHash.name(), span, writer.run(blocks));
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
         let schema = stores::schema(IndexKind::TreeState, network);
-        let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new)?;
+        let buffer = zaino_index_tree_state::WRITE_BUFFER;
+        let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new, buffer)?;
         let blocks = indexes.add(IndexKind::TreeState, writer.handle(), &ts, &span);
         spawn_infallible(&mut tasks, IndexKind::TreeState.name(), span, writer.run(blocks));
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
         let kind = IndexKind::TransparentAddress;
         let schema = stores::schema(kind, network);
-        let (span, writer) = open(&engine, &ta, schema, TransparentAddressIndexWriter::new)?;
+        let buffer = zaino_index_transparent_address::WRITE_BUFFER;
+        let (span, writer) =
+            open(&engine, &ta, schema, TransparentAddressIndexWriter::new, buffer)?;
         let blocks = indexes.add(kind, writer.handle(), &ta, &span);
         spawn_infallible(&mut tasks, kind.name(), span, writer.run(blocks));
     }
@@ -294,18 +300,19 @@ impl<S: ChainDataSource> Indexes<S> {
     }
 }
 
-/// `config.path` opened as `schema`'s store and handed to `writer` with the batch size, under
-/// the index's component span (logged); the span then carries the index's task
+/// `config.path` opened as `schema`'s store and handed to `writer` with the index's own write
+/// buffer, under the index's component span (logged); the span then carries the index's task
 fn open<W>(
     engine: &DiskEngine,
     config: &IndexConfig,
     schema: Schema,
     writer: impl FnOnce(DiskStore, NonZeroUsize) -> W,
+    buffer: NonZeroUsize,
 ) -> Result<(Span, W), IndexerError> {
     let span = crate::logging::index_component(schema.kind.name());
     let opened = span.in_scope(|| {
         debug!("Opening from {}", crate::logging::shown_path(&config.path));
-        engine.open(&config.path, &schema).map(|store| writer(store, config.batch_bytes))
+        engine.open(&config.path, &schema).map(|store| writer(store, buffer))
     })?;
     Ok((span, opened))
 }

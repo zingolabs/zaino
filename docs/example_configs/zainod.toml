@@ -109,9 +109,6 @@ timeout_secs = 10
 finalised_depth = 1000
 # Block fetches (and folds) in flight ahead of the next one needed, over every trusted validator
 concurrency = 32
-# MiB of index changes per commit in bulk sync (bigger = fewer fsyncs, more memory held, more to
-# redo after a crash); at the tip each final block commits as it arrives
-batch_mib = 64
 # MiB of final blocks one index may lag the fetch before it throttles the pipeline
 queue_mib = 256
 

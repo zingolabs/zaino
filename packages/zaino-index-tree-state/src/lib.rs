@@ -66,6 +66,10 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
 
+/// Buffered heap before a bulk commit (≈270 B/block + ≈160 B/commitment; max age commits first)
+pub const WRITE_BUFFER: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
+
 const HEIGHTS: SequenceTable =
     SequenceTable::new(0, "heights", Width::fixed(heights::RECORD as u32));
 

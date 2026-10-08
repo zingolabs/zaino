@@ -46,8 +46,8 @@ Unknown keys fail the load. Sections:
 - `[submission]`: `propagation_threshold_secs`, `max_attempts`
 - `[p2p]`: Zaino's own peers (off by default): `enabled`, `peer_target`,
   `initial_peers`, `cache_dir`
-- `[sync]`: `finalised_depth`, `concurrency`, and the `batch_mib` / `queue_mib`
-  budgets every index shares
+- `[sync]`: `finalised_depth`, `concurrency`, and the `queue_mib` budget every
+  index shares (each index's write buffer is its own, not configured)
 - one `[index.<name>]` table per index (`compact_block`, `block_hash`,
   `tree_state`, `transparent_address`, each with `enabled` and `path`;
   `header_chain` with `path` only)

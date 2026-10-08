@@ -28,3 +28,10 @@ migration = """
 Open the delta with `store.changes(block.at())` (or a layer's), open the store with \
 `Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES)`, drop the reader's network.
 """
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "feature"
+description = """
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+"""

@@ -24,3 +24,10 @@ migration = """
 Fold onto a `BlockHashReader` of the parent into `store.changes(block.at())` (or a layer's); \
 open the store with `Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)`.
 """
+
+[[changes]]
+crate = "zaino-internal-block-hash-to-height"
+kind = "feature"
+description = """
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+"""

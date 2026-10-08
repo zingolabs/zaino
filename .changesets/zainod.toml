@@ -274,3 +274,14 @@ Status readers: `tip.height` → `tips.best.height` (held: `tips.held_by > 0`), 
 `tips.best.height`, `fetch_height` → `handed`, `served_height` → `tips.served.height`, \
 `synced` → `tips.synced`, `indexes[].size_bytes` / `tables` → `disk.<index>`.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+description = """
+`[sync] batch_mib` is removed: each index commits from its own fixed write buffer \
+(`WRITE_BUFFER`, the buffer's real heap) and at most a second after its oldest uncommitted block.
+"""
+migration = """
+Delete `batch_mib` from `[sync]` (an unknown key fails the load).
+"""

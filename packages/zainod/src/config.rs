@@ -123,11 +123,11 @@ impl From<&TrustedValidatorConfig> for zaino_source::Timeouts {
     }
 }
 
-/// One enabled index, resolved: its directory + the shared `[sync]` budgets (boot's input)
+/// One enabled index, resolved: its directory + the shared `[sync]` queue budget (boot's input;
+/// its write buffer = the index crate's `WRITE_BUFFER`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct IndexConfig {
     pub(crate) path: PathBuf,
-    pub(crate) batch_bytes: NonZeroUsize,
     pub(crate) queue_bytes: NonZeroUsize,
 }
 
@@ -378,7 +378,7 @@ impl From<&GrpcConfig> for GrpcLimits {
 
 /// `[sync]`: the one block-fetch pipeline + the budgets every index shares
 ///
-/// - `batch_mib` / `queue_mib` in bytes, not blocks (same size from 1 KB to 2 MB blocks)
+/// - `queue_mib` in bytes, not blocks (same size from 1 KB to 2 MB blocks)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SyncConfig {
@@ -387,9 +387,6 @@ pub(crate) struct SyncConfig {
     pub(crate) finalised_depth: NonZeroU32,
     /// Block fetches (and folds) in flight ahead of the next block needed
     pub(crate) concurrency: NonZeroUsize,
-    /// MiB of index changes per commit in bulk sync (bigger = fewer fsyncs, more memory held,
-    /// more to redo after a crash; at the tip each final block commits)
-    batch_mib: NonZeroU32,
     /// MiB of final blocks one index may trail the fetch before it throttles the pipeline
     queue_mib: NonZeroU32,
 }
@@ -400,7 +397,6 @@ impl Default for SyncConfig {
             finalised_depth: NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT)
                 .expect("the consensus reorg bound is non-zero"),
             concurrency: NonZeroUsize::new(32).expect("32 is non-zero"),
-            batch_mib: NonZeroU32::new(64).expect("64 is non-zero"),
             queue_mib: NonZeroU32::new(256).expect("256 is non-zero"),
         }
     }
@@ -573,11 +569,7 @@ impl DaemonConfig {
             IndexKind::TransparentAddress => table(&index.transparent_address),
             IndexKind::HeaderChain => (true, index.header_chain.path.clone()),
         };
-        enabled.then(|| IndexConfig {
-            path,
-            batch_bytes: mib(self.sync.batch_mib),
-            queue_bytes: mib(self.sync.queue_mib),
-        })
+        enabled.then(|| IndexConfig { path, queue_bytes: mib(self.sync.queue_mib) })
     }
 
     /// `(compact_block, value_balance)` when compact_block is enabled (its fees need the other)
@@ -745,7 +737,6 @@ jsonrpc_address = "127.0.0.1:18232"
 
 [sync]
 finalised_depth = 100
-batch_mib = 32
 
 [index.compact_block]
 path = "/srv/zaino/compact_block"
@@ -767,16 +758,11 @@ enabled = false
         assert!(config.validate().is_ok());
 
         let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
-        let sync = SyncConfig {
-            finalised_depth: n(100),
-            batch_mib: n(32),
-            queue_mib: n(128),
-            ..SyncConfig::default()
-        };
+        let sync =
+            SyncConfig { finalised_depth: n(100), queue_mib: n(128), ..SyncConfig::default() };
         assert_eq!(config.sync, sync);
         let at = |path: PathBuf| {
-            let bytes = |mib: usize| NonZeroUsize::new(mib << 20).expect("non-zero");
-            Some(IndexConfig { path, batch_bytes: bytes(32), queue_bytes: bytes(128) })
+            Some(IndexConfig { path, queue_bytes: NonZeroUsize::new(128 << 20).expect("non-zero") })
         };
         let kinds = [
             IndexKind::CompactBlock,
@@ -812,12 +798,14 @@ enabled = false
         let err = root.validate().expect_err("no sibling for value_balance").to_string();
         assert!(err.contains("index.compact_block.path = /"), "{err}");
 
+        let in_sync = toml.replace("[sync]\n", "[sync]\nbatch_mib = 64\n");
         for (stale, key) in [
-            ("[index.value_balance]\npath = \"/srv/zaino/vb\"\n", "value_balance"),
-            ("[fetch]\nconcurrency = 8\n", "fetch"),
-            ("[index.block_hash]\nqueue_mib = 256\n", "queue_mib"),
+            (format!("{toml}\n[index.value_balance]\npath = \"/srv/zaino/vb\"\n"), "value_balance"),
+            (format!("{toml}\n[fetch]\nconcurrency = 8\n"), "fetch"),
+            (format!("{toml}\n[index.block_hash]\nqueue_mib = 256\n"), "queue_mib"),
+            (in_sync, "batch_mib"),
         ] {
-            let path = write(&dir, &format!("{key}.toml"), &format!("{toml}\n{stale}"));
+            let path = write(&dir, &format!("{key}.toml"), &stale);
             let err = load_config(&path).expect_err(key).to_string();
             assert!(err.contains(&format!("unknown field `{key}`")), "{key}: {err}");
         }
@@ -839,7 +827,7 @@ enabled = false
                 section.lines().skip(1).filter_map(|l| l.split(" = ").next()).collect();
             assert_eq!(found, keys, "[{table}]");
         };
-        printed("sync", &["finalised_depth", "concurrency", "batch_mib", "queue_mib"]);
+        printed("sync", &["finalised_depth", "concurrency", "queue_mib"]);
         for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }

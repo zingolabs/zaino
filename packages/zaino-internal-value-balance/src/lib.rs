@@ -37,6 +37,10 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&[], &[OUTPUTS]);
 
+/// Buffered heap before a bulk commit (≈245 B/output → ≈270k outputs; max age commits first)
+pub const WRITE_BUFFER: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
+
 const VALUE: usize = 8;
 const OUTPUTS: MapTable =
     MapTable::new(0, "outputs", Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32), 0);

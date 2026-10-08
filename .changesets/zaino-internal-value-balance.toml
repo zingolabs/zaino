@@ -31,3 +31,10 @@ Open the delta with `store.changes(block.at())` (or a layer's) and keep the retu
 a block the parent already holds with `fees`; open the store with \
 `Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES)`.
 """
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "feature"
+description = """
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+"""
