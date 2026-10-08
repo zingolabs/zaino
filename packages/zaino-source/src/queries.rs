@@ -145,10 +145,28 @@ pub enum GetTransactionError {
     NotFound(TransactionId),
 }
 
+/// A verdict on the transaction, as the validator's JSON-RPC error spelled it (`code` = its own)
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SendRawTransactionError {
     #[error("malformed transaction: {0}")]
     Malformed(String),
-    #[error("rejected by validator: {0}")]
-    Rejected(String),
+    #[error("rejected by validator ({code}): {message}")]
+    Rejected { code: i32, message: String },
+}
+
+impl SendRawTransactionError {
+    /// JSON-RPC code of the verdict (`Malformed` = `-22`, `RPC_DESERIALIZATION_ERROR`)
+    pub fn code(&self) -> i32 {
+        match self {
+            Self::Malformed(_) => -22,
+            Self::Rejected { code, .. } => *code,
+        }
+    }
+
+    /// The validator's reason, verbatim
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Malformed(message) | Self::Rejected { message, .. } => message,
+        }
+    }
 }

@@ -70,3 +70,10 @@ migration = """
 Read the mempool, `GetLightdInfo` facts and the stream through `zaino_snapshot::Snapshot` \
 (`mempool()?`, `lightd()?`, `mempool_stream()?`); `best()` + `held_by()` replace `tip()`.
 """
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "internal"
+description = """
+Submission prechecks (expired, wrong consensus branch) reject with zebrad's `-25`.
+"""

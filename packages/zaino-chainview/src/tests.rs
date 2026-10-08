@@ -479,9 +479,8 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
         validator.serve(&chain, agreed);
     }
     validators[1].edit(|fake| {
-        fake.relay = Some(Err(SendRawTransactionError::Rejected(
-            "tx unpaid action limit exceeded".to_string(),
-        )))
+        let message = "tx unpaid action limit exceeded".to_string();
+        fake.relay = Some(Err(SendRawTransactionError::Rejected { code: -26, message }))
     });
     validators[2].edit(|fake| fake.relay_unreachable = true);
 
@@ -495,10 +494,11 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
 
     let (expired_txid, expired) = transaction(1, 50);
     let refused = view.submit(expired).await;
-    let Err(SubmitError::Rejected(SendRawTransactionError::Rejected(why))) = refused else {
+    let Err(SubmitError::Rejected(SendRawTransactionError::Rejected { code, message })) = refused
+    else {
         panic!("expiry 50 at tip 50 = invalid in block 51: {refused:?}");
     };
-    assert!(why.contains("expiry height 50"), "{why}");
+    assert!(code == -25 && message.contains("expiry height 50"), "{code}: {message}");
     assert_eq!(pushes(), [0, 0, 0], "precheck refuses before any push");
     assert!(reader.current().spread(&expired_txid).is_none());
 
@@ -547,13 +547,15 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     // unanimous domain rejection = the real one, after every validator tried once
     for validator in &validators {
         validator.edit(|fake| {
-            fake.relay = Some(Err(SendRawTransactionError::Rejected("too low fee".to_string())));
+            let message = "too low fee".to_string();
+            fake.relay = Some(Err(SendRawTransactionError::Rejected { code: -26, message }));
             fake.relay_unreachable = false;
             fake.pushes = 0;
         });
     }
     let rejected = view.submit(transaction(8, 0).1).await;
-    assert!(matches!(rejected, Err(SubmitError::Rejected(SendRawTransactionError::Rejected(_)))));
+    let too_low = SendRawTransactionError::Rejected { code: -26, message: "too low fee".into() };
+    assert!(matches!(rejected, Err(SubmitError::Rejected(r)) if r == too_low), "the validator's");
     assert_eq!(pushes(), [1, 1, 1]);
 
     // none reachable != a rejection (nothing learnt about the transaction)

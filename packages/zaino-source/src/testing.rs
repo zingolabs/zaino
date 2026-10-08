@@ -226,7 +226,9 @@ impl State {
 }
 
 /// Inputs from the best chain's unspent outputs; `Rejected` = an unknown input or an overspend
+/// (zebrad's `-25`: consensus-invalid)
 fn fee_over(best: &[Arc<Block>], tx: &Transaction) -> Result<Zatoshis, SendRawTransactionError> {
+    let invalid = |message: String| SendRawTransactionError::Rejected { code: -25, message };
     let mut unspent: HashMap<OutPoint, Zatoshis> = HashMap::new();
     for mined in best.iter().flat_map(|block| block.transactions()) {
         for prevout in &mined.transparent.inputs {
@@ -238,15 +240,14 @@ fn fee_over(best: &[Arc<Block>], tx: &Transaction) -> Result<Zatoshis, SendRawTr
     }
     let mut spent = 0;
     for prevout in &tx.transparent.inputs {
-        let value = unspent.get(prevout).ok_or_else(|| {
-            let missing = format!("missing input {}:{}", prevout.txid, prevout.vout);
-            SendRawTransactionError::Rejected(missing)
-        })?;
+        let value = unspent
+            .get(prevout)
+            .ok_or_else(|| invalid(format!("missing input {}:{}", prevout.txid, prevout.vout)))?;
         spent += value.as_i64();
     }
     let fee = fee_left(tx, spent);
     let fee = u64::try_from(fee).ok().and_then(|fee| Zatoshis::new(fee).ok());
-    fee.ok_or_else(|| SendRawTransactionError::Rejected(format!("{} overspends", tx.txid)))
+    fee.ok_or_else(|| invalid(format!("{} overspends", tx.txid)))
 }
 
 /// `lie` applied to the honest `block`

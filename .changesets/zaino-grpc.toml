@@ -56,3 +56,14 @@ migration = """
 `Routes { snapshots: publisher.handle(), submit: Arc::clone(&view), validators, network, \
 max_address_rows }`; spawn the `zaino_snapshot::Publisher`.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+`SendTransaction` rejections answer like lightwalletd: gRPC `OK` with the validator's own \
+JSON-RPC code and message (`-22` for unparseable bytes), not `-1` and a reworded reason. \
+zebrad's "transaction already exists in mempool" and "already queued for download" (code `-1`) \
+now reach the wallet as rejections instead of `UNAVAILABLE`.
+"""

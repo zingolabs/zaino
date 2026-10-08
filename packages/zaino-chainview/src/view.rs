@@ -143,18 +143,21 @@ impl<S: ChainDataSource> ChainView<S> {
 ///
 /// - expired: ZIP-203, invalid in any block above its expiry height (next block = tip + 1)
 /// - wrong branch: v5+ embeds the branch it was signed for; the next block's must match
+///
+/// - code `-25` = zebrad's own for both (consensus-invalid)
 fn precheck(view: &ChainViewSnapshot, prepared: &Prepared) -> Result<(), SendRawTransactionError> {
+    let invalid = |message: String| SendRawTransactionError::Rejected { code: -25, message };
     let Some(info) = view.validator_info() else { return Ok(()) };
     let next = info.blocks.next();
     if let Some(expiry) = prepared.expiry_height.filter(|&expiry| next > expiry) {
-        return Err(SendRawTransactionError::Rejected(format!(
+        return Err(invalid(format!(
             "tx-expiring-soon: expiry height {} is below the next block {}",
             u32::from(expiry),
             u32::from(next)
         )));
     }
     if let Some(branch) = prepared.branch.filter(|&branch| branch != info.consensus.next_block) {
-        return Err(SendRawTransactionError::Rejected(format!(
+        return Err(invalid(format!(
             "built for consensus branch {branch}, the next block's is {}",
             info.consensus.next_block
         )));

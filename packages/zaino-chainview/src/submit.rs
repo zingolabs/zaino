@@ -436,7 +436,8 @@ mod tests {
                             (_, Node::Unreachable) => Pushed::Unreachable(NonDomainError::new(
                                 zaino_source::FailureMode::Connection, "down")),
                             (Entry::Trusted(_), Node::Rejects) => {
-                                Pushed::Rejected(SendRawTransactionError::Rejected("policy".into()))
+                                let policy = "policy".into();
+                                Pushed::Rejected(SendRawTransactionError::Rejected { code: -26, message: policy })
                             }
                             (Entry::Trusted(_), _) => Pushed::Accepted,
                             (Entry::Peer(_), _) => Pushed::Delivered,

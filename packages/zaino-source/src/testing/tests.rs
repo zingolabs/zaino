@@ -106,10 +106,12 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let refused = validator.send_raw_transaction(foreign.expect("a transparent spend")).await;
     let rejected = |answer: Result<TransactionId, QueryError<SendRawTransactionError>>,
                     why: &str| {
-        matches!(answer, Err(QueryError::Domain(SendRawTransactionError::Rejected(reason))) if reason.starts_with(why))
+        matches!(answer, Err(QueryError::Domain(SendRawTransactionError::Rejected { message, .. })) if message.starts_with(why))
     };
     assert!(rejected(refused, "missing input"), "prevout not on its best chain");
-    validator.relay(Err(SendRawTransactionError::Rejected("fee too low".to_owned())));
+    let fee_too_low =
+        SendRawTransactionError::Rejected { code: -25, message: "fee too low".into() };
+    validator.relay(Err(fee_too_low));
     assert!(rejected(validator.send_raw_transaction(raw_transaction(3, 0).1).await, "fee too low"));
     validator.relay(Ok(()));
     let garbage = validator.send_raw_transaction(vec![9; 8]).await;

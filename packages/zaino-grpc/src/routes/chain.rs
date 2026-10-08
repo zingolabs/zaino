@@ -78,13 +78,14 @@ where
 ///
 /// - accepted: `sendrawtransaction`'s raw JSON result = quoted display-order txid (lightwalletd
 ///   relays it untouched)
-/// - rejected: gRPC OK, `-1` + the reason
+/// - rejected: gRPC OK, the validator's code + message verbatim (zingolib substring-matches it)
 fn send_reply(outcome: Result<TransactionId, SubmitError>) -> Result<proto::SendResponse, Status> {
     match outcome {
         Ok(txid) => Ok(proto::SendResponse { error_code: 0, error_message: format!("\"{txid}\"") }),
-        Err(SubmitError::Rejected(rejection)) => {
-            Ok(proto::SendResponse { error_code: -1, error_message: rejection.to_string() })
-        }
+        Err(SubmitError::Rejected(rejection)) => Ok(proto::SendResponse {
+            error_code: rejection.code(),
+            error_message: rejection.message().to_owned(),
+        }),
         Err(unreachable @ SubmitError::Unreachable { .. }) => {
             Err(Status::unavailable(unreachable.to_string()))
         }
@@ -293,10 +294,13 @@ mod tests {
     }
 
     /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
-    /// - Rejected = code -1 + reason
+    /// - Rejected = gRPC OK + the validator's code + message verbatim (zingolib's
+    ///   `classify_rejection` texts intact; Android reconciles only on an OK reply)
     /// - Unreachable = `UNAVAILABLE` (never a reply a wallet reads as the network's answer)
     #[test]
     fn a_submission_answers_like_lightwalletd() {
+        use zaino_source::SendRawTransactionError::{Malformed, Rejected};
+
         let mut internal = [0u8; 32];
         internal[0] = 0x01;
         internal[31] = 0xff;
@@ -304,11 +308,20 @@ mod tests {
         let quoted_display = format!("\"ff{}01\"", "00".repeat(30));
         assert_eq!((accepted.error_code, accepted.error_message), (0, quoted_display));
 
-        let reason =
-            zaino_source::SendRawTransactionError::Rejected("bad-txns-inputs-spent".into());
-        let rejected = send_reply(Err(SubmitError::Rejected(reason))).expect("a reply");
-        let expected = "rejected by validator: bad-txns-inputs-spent";
-        assert_eq!((rejected.error_code, rejected.error_message.as_str()), (-1, expected));
+        let verdicts = [
+            (-1, "transaction already exists in mempool"),
+            (-27, "transaction already in block chain"),
+            (-1, "transaction dropped because it is already queued for download"),
+            (-25, "bad-txns-inputs-spent"),
+        ];
+        for (code, message) in verdicts {
+            let rejection = Rejected { code, message: message.to_owned() };
+            let reply = send_reply(Err(SubmitError::Rejected(rejection))).expect("a reply");
+            assert_eq!((reply.error_code, reply.error_message.as_str()), (code, message));
+        }
+        let malformed = SubmitError::Rejected(Malformed("tx unparseable".into()));
+        let reply = send_reply(Err(malformed)).expect("a reply");
+        assert_eq!((reply.error_code, reply.error_message.as_str()), (-22, "tx unparseable"));
 
         let down = zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "gone");
         let unreachable = send_reply(Err(SubmitError::Unreachable { attempted: 2, cause: down }));

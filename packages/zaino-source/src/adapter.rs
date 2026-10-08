@@ -111,15 +111,29 @@ where
     }
 }
 
-/// `-22` unparseable, `-25` to `-27` (both inclusive) declined: answers about the transaction,
-/// reason kept
+/// zebrad's `-1` verdicts on the transaction itself (zebrad/src/components/mempool/error.rs)
+///
+/// - the rest of its `-1`s ("queue is full", "mempool is disabled") = node state: next validator
+const MEMPOOL_VERDICTS: [&str; 4] = [
+    "transaction already exists in mempool",
+    "already queued for download",
+    "will be rejected from the mempool",
+    "transaction is non-standard",
+];
+
+/// `-22` unparseable, `-25` to `-27` (both inclusive) declined, a `-1` in [`MEMPOOL_VERDICTS`]:
+/// answers about the transaction, code + reason kept verbatim
 fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionError> {
-    match error.mode {
-        FailureMode::RpcError(-22) => {
-            Some(SendRawTransactionError::Malformed(error.message.clone()))
-        }
-        FailureMode::RpcError(-27..=-25) => {
-            Some(SendRawTransactionError::Rejected(error.message.clone()))
+    let FailureMode::RpcError(code) = error.mode else { return None };
+    let rejected = |code: i64| {
+        let code = i32::try_from(code).ok()?;
+        Some(SendRawTransactionError::Rejected { code, message: error.message.clone() })
+    };
+    match code {
+        -22 => Some(SendRawTransactionError::Malformed(error.message.clone())),
+        -27..=-25 => rejected(code),
+        -1 if MEMPOOL_VERDICTS.iter().any(|verdict| error.message.contains(verdict)) => {
+            rejected(code)
         }
         _ => None,
     }
@@ -378,18 +392,36 @@ mod tests {
         );
     }
 
-    /// - Rejections carry the reason (the only useful part)
-    /// - Warming-up node = transaction never considered
+    /// - Rejections carry the validator's code + reason verbatim (wallets match the text)
+    /// - zebrad's `-1` = a verdict only when it names the transaction; node state / warming up =
+    ///   never considered (next validator)
     #[test]
-    fn submission_rejections_carry_their_reason() {
+    fn submission_rejections_carry_the_validators_code_and_reason() {
         use SendRawTransactionError::{Malformed, Rejected};
-        let malformed = submission_rejection(&rpc(-22, "tx unparseable").into());
-        assert!(matches!(malformed, Some(Malformed(reason)) if reason == "tx unparseable"));
-        for code in [-25, -26, -27] {
-            let rejection = submission_rejection(&rpc(code, "rejected").into());
-            assert!(matches!(rejection, Some(Rejected(_))), "code {code}");
+        let rejected = |code: i32, message: &str| Some(Rejected { code, message: message.into() });
+        let in_mempool = "transaction already exists in mempool";
+        let queued = "transaction dropped because it is already queued for download";
+        let cached = "any transaction with the same effects will be rejected from the mempool \
+                      until the next chain tip block: spent nullifier";
+        let cases = [
+            (-22, "tx unparseable", Some(Malformed("tx unparseable".into()))),
+            (-25, "bad-txns-inputs-spent", rejected(-25, "bad-txns-inputs-spent")),
+            (-26, "tx-overwinter-expired", rejected(-26, "tx-overwinter-expired")),
+            (
+                -27,
+                "transaction already in block chain",
+                rejected(-27, "transaction already in block chain"),
+            ),
+            (-1, in_mempool, rejected(-1, in_mempool)),
+            (-1, queued, rejected(-1, queued)),
+            (-1, cached, rejected(-1, cached)),
+            (-1, "transaction dropped because the queue is full", None),
+            (-1, "mempool is disabled since synchronization is behind the chain tip", None),
+            (-28, "warming up", None),
+        ];
+        for (code, message, expected) in cases {
+            assert_eq!(submission_rejection(&rpc(code, message).into()), expected, "{code}");
         }
-        assert!(submission_rejection(&rpc(-28, "warming up").into()).is_none());
     }
 
     /// - `-32601` = no mempool on this node (stop asking)
