@@ -14,6 +14,7 @@ zaino-component = { path = "../zaino-component" }
 tonic.workspace = true
 futures.workspace = true
 tokio = { workspace = true }
+zcash_protocol.workspace = true
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }

@@ -37,7 +37,7 @@ async fn boot_zaino(engine: MockIndexerService) -> (ValidatorComponent, Orchestr
     let light_serve = RunComponent::new(
         ComponentName("light-serve"),
         GrpcServer::new(
-            LightServe::new(engine.clone()),
+            LightServe::new(engine.clone(), Network::MainNetwork),
             "127.0.0.1:0".parse().expect("valid addr"),
         ),
     );

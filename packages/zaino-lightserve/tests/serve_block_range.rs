@@ -37,6 +37,7 @@ use zaino_source::{RetryPolicy, ValidatorClient};
 use zaino_store::StoreReader;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::primitives::BlockHeight;
+use zcash_protocol::consensus::Network;
 
 /// One transaction committing `saplings` sapling outputs and `orchards` orchard
 /// actions. Contents are filler — only the counts drive the tree sizes.
@@ -147,7 +148,10 @@ async fn serve(
         StubNonFinalised::empty(),
         ValidatorClient::new(MockChain::new(), RetryPolicy::default()),
     );
-    let server = Arc::new(GrpcServer::new(LightServe::new(engine), addr));
+    let server = Arc::new(GrpcServer::new(
+        LightServe::new(engine, Network::MainNetwork),
+        addr,
+    ));
     let cancel = CancellationToken::new();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
     // `RunReporter` calls its closure for every report, so the one-shot sender is

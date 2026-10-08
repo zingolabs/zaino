@@ -225,11 +225,17 @@ where
     };
     let grpc = config.serve.grpc_listen_address;
     let jsonrpc = config.serve.jsonrpc_listen_address;
+    // Each serving adapter renders chain-name fields that are a function of the
+    // network, not of any block read, so it carries the network it serves:
+    // lightwalletd's `TreeState.network` / `GetLightdInfo.chainName` on the gRPC
+    // adapter, and `validateaddress` / `z_validateaddress` (pure functions of an
+    // address and a network) on the node-rpc one.
+    let network = to_zcash_network(config.network);
     let orchestra = match config.deployment {
         DeploymentKind::LightWalletPassthrough => {
             let orchestra =
                 boot_indexed::<LightWalletPassthrough, _, C>(client, &runtime, |engine| {
-                    GrpcServer::new(LightServe::new(engine), grpc)
+                    GrpcServer::new(LightServe::new(engine, network), grpc)
                 })
                 .await?;
             info!(grpc = %grpc, "Zaino runtime booted");
@@ -237,16 +243,13 @@ where
         }
         DeploymentKind::LightWalletLocal => {
             let orchestra = boot_indexed::<LightWalletLocal, _, C>(client, &runtime, |engine| {
-                GrpcServer::new(LightServe::new(engine), grpc)
+                GrpcServer::new(LightServe::new(engine, network), grpc)
             })
             .await?;
             info!(grpc = %grpc, "Zaino runtime booted");
             orchestra
         }
         DeploymentKind::NodeRpcLocal => {
-            // `validateaddress` / `z_validateaddress` are pure functions of an
-            // address and a network, so the serving adapter carries the network.
-            let network = to_zcash_network(config.network);
             let orchestra = boot_indexed::<NodeRpcLocal, _, C>(client, &runtime, |engine| {
                 JsonRpcServer::new(NodeRpc::new(engine, network), jsonrpc)
             })

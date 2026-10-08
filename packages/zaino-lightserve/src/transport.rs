@@ -66,11 +66,15 @@ impl<S: LightWalletService + Clone + 'static> RunLoop for GrpcServer<S> {
 mod tests {
     use super::*;
     use zaino_service::testing::{MockChain, MockIndexerService};
+    use zcash_protocol::consensus::Network;
 
     /// A real tonic server binds and shuts down cleanly when the token fires.
     #[tokio::test]
     async fn binds_and_shuts_down_on_cancel() {
-        let handler = LightServe::new(MockIndexerService::new(MockChain::default()));
+        let handler = LightServe::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
         let server = Arc::new(GrpcServer::new(
             handler,
             "127.0.0.1:0".parse().expect("valid addr"),

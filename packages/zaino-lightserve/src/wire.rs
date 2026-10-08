@@ -12,6 +12,7 @@ use zaino_primitives::types::{
 };
 use zaino_proto::proto::compact_formats as cf;
 use zaino_proto::proto::service as proto;
+use zcash_protocol::consensus::Network;
 
 pub(crate) trait ToWire {
     type Wire;
@@ -65,36 +66,47 @@ impl ToWire for ChainMetadata {
     }
 }
 
-impl ToWire for Treestate {
-    type Wire = proto::TreeState;
+/// The lightwalletd/BIP70 network name, matching zebra's `bip70_network_name`
+/// (the same value lightwalletd's `GetLightdInfo.chainName` carries): mainnet is
+/// "main", every test network — public testnet and regtest alike — is "test".
+/// `zcash_protocol`'s `Network` collapses regtest into `TestNetwork` upstream, so
+/// regtest reaches here as "test", which is exactly what zebra renders.
+pub(crate) fn bip70_network_name(network: Network) -> &'static str {
+    match network {
+        Network::MainNetwork => "main",
+        Network::TestNetwork => "test",
+    }
+}
 
-    fn to_wire(self) -> proto::TreeState {
-        proto::TreeState {
-            // The handler is not parameterised by the network (see
-            // `get_lightd_info`), so `network` rides out empty best-effort — a
-            // wallet reads the height and the serialized trees, not this field.
-            network: String::new(),
-            height: u64::from(self.height),
-            // Display (big-endian) order, as `z_gettreestate` reports the hash.
-            hash: self.block_hash.to_string(),
-            // `BlockTime` is a Unix-epoch `u32`; the wire field is the same.
-            time: self.time,
-            // Each pool's serialized tree rides out as lowercase hex; an inactive
-            // pool at this block is signalled by an empty string, never a
-            // serialized empty tree (which would claim the pool is active).
-            sapling_tree: self
-                .sapling
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-            orchard_tree: self
-                .orchard
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-            ironwood_tree: self
-                .ironwood
-                .map(|pool| hex_bytes(&pool.final_state))
-                .unwrap_or_default(),
-        }
+/// A treestate as the wire `TreeState`, rendered for the network the adapter
+/// serves. Not a `ToWire` impl: the conversion needs the served network (the
+/// domain `Treestate` does not carry it), which the trait's parameterless
+/// `to_wire` cannot supply.
+pub(crate) fn treestate_to_wire(treestate: Treestate, network: Network) -> proto::TreeState {
+    proto::TreeState {
+        // The BIP70 network name, as zebra and lightwalletd render it; the
+        // handler is parameterised by the network it serves.
+        network: bip70_network_name(network).to_string(),
+        height: u64::from(treestate.height),
+        // Display (big-endian) order, as `z_gettreestate` reports the hash.
+        hash: treestate.block_hash.to_string(),
+        // `BlockTime` is a Unix-epoch `u32`; the wire field is the same.
+        time: treestate.time,
+        // Each pool's serialized tree rides out as lowercase hex; an inactive
+        // pool at this block is signalled by an empty string, never a
+        // serialized empty tree (which would claim the pool is active).
+        sapling_tree: treestate
+            .sapling
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
+        orchard_tree: treestate
+            .orchard
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
+        ironwood_tree: treestate
+            .ironwood
+            .map(|pool| hex_bytes(&pool.final_state))
+            .unwrap_or_default(),
     }
 }
 
@@ -250,8 +262,9 @@ pub(crate) fn to_hex(bytes: [u8; 32]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hex_bytes, ToWire};
+    use super::{bip70_network_name, hex_bytes, treestate_to_wire, ToWire};
     use zaino_primitives::types::{BlockHash, Height, SubtreeRoot, Treestate};
+    use zcash_protocol::consensus::Network;
     // `PoolTreestate`/`TreeRoot` are domain component types the `zaino-primitives`
     // facade does not re-export; the production conversions never name them, only
     // these tests construct them, so they come straight from primitives here.
@@ -259,8 +272,8 @@ mod tests {
 
     /// A treestate maps field-for-field to the wire shape: height/time straight
     /// through, the hash in display (big-endian) order, an active pool's tree as
-    /// lowercase hex, and an inactive pool as the empty string (never a
-    /// serialized empty tree).
+    /// lowercase hex, an inactive pool as the empty string (never a serialized
+    /// empty tree), and the network rendered as the served chain's BIP70 name.
     #[test]
     fn treestate_maps_to_wire() {
         let treestate = Treestate {
@@ -275,7 +288,7 @@ mod tests {
             ironwood: None,
         };
 
-        let wire = treestate.to_wire();
+        let wire = treestate_to_wire(treestate, Network::MainNetwork);
         assert_eq!(wire.height, 2_800_000u64);
         assert_eq!(wire.time, 1_700_000_000u32);
         // Display order: the all-0xAB hash renders the same forwards, but the
@@ -284,7 +297,31 @@ mod tests {
         assert_eq!(wire.sapling_tree, "deadbeef");
         assert_eq!(wire.orchard_tree, "");
         assert_eq!(wire.ironwood_tree, "");
-        assert_eq!(wire.network, "");
+        assert_eq!(wire.network, "main");
+    }
+
+    /// The network field tracks the served chain's BIP70 name: "main" on
+    /// mainnet, "test" on every test network (public testnet and regtest, which
+    /// `zcash_protocol`'s `Network` collapses into `TestNetwork`). This is the
+    /// field an in-cluster byte-compare against zebra flagged as the sole
+    /// difference, so it is pinned per network.
+    #[test]
+    fn treestate_network_tracks_served_chain() {
+        let at = |network| {
+            let treestate = Treestate {
+                block_hash: BlockHash::from([0x00u8; 32]),
+                height: Height::try_from(1).expect("valid height"),
+                time: 0,
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            };
+            treestate_to_wire(treestate, network).network
+        };
+        assert_eq!(at(Network::MainNetwork), "main");
+        assert_eq!(at(Network::TestNetwork), "test");
+        assert_eq!(bip70_network_name(Network::MainNetwork), "main");
+        assert_eq!(bip70_network_name(Network::TestNetwork), "test");
     }
 
     /// A subtree root maps its root bytes (internal order), its completing
@@ -456,9 +493,12 @@ mod tests {
                 ironwood: None,
             };
 
-            let wire = treestate.to_wire();
+            // The fixtures are captured from zebra mainnet, so the served
+            // network renders "main".
+            let wire = treestate_to_wire(treestate, Network::MainNetwork);
             assert_eq!(wire.height, height_num, "height at {height_key}");
             assert_eq!(u64::from(wire.time), time_num, "time at {height_key}");
+            assert_eq!(wire.network, "main", "network at {height_key}");
             assert_eq!(
                 wire.hash, hash_display,
                 "display-order hash at {height_key}"

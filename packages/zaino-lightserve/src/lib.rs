@@ -38,7 +38,11 @@ use zaino_service::{
     RawTransactionRead, ReadBudget, TreestateRead,
 };
 
-use crate::wire::{compact_tx_to_wire, to_hex, zat_to_i64, ToWire};
+use zcash_protocol::consensus::Network;
+
+use crate::wire::{
+    bip70_network_name, compact_tx_to_wire, to_hex, treestate_to_wire, zat_to_i64, ToWire,
+};
 
 /// Whether a mempool txid should be excluded, given the request's suffix list.
 /// A suffix matches when it is a (non-empty) suffix of the txid's 32 bytes — the
@@ -53,14 +57,21 @@ fn txid_matches_a_suffix(txid: TransactionId, suffixes: &[Vec<u8>]) -> bool {
 }
 
 /// Lightwalletd-compatible handler over a [`LightWalletService`] engine.
+///
+/// Carries the network it serves: the lightwalletd `TreeState.network` and
+/// `GetLightdInfo.chainName` fields are a function of the chain, not of any
+/// block read, so the network is a serving parameter the adapter renders — it
+/// is not a capability the engine answers.
 #[derive(Clone)]
 pub struct LightServe<S: LightWalletService> {
     engine: S,
+    network: Network,
 }
 
 impl<S: LightWalletService> LightServe<S> {
-    pub fn new(engine: S) -> Self {
-        Self { engine }
+    /// Build the handler over `engine`, serving `network`'s chain names.
+    pub fn new(engine: S, network: Network) -> Self {
+        Self { engine, network }
     }
 
     /// `GetLatestBlock`: the tip of the pinned best chain, as a wire `BlockRef`.
@@ -72,13 +83,13 @@ impl<S: LightWalletService> LightServe<S> {
 
     /// `GetLightdInfo`: serving metadata + the current tip height.
     ///
-    /// Minimal but valid: `version`/`vendor`/`taddr_support` are static, and
-    /// `block_height`/`estimated_height` are read from the pinned tip (0 before
-    /// any block is served). The network-derived fields (`chain_name`,
-    /// `sapling_activation_height`, `consensus_branch_id`) are left best-effort
-    /// empty here — the handler is not parameterised by the network, and the
-    /// clients that gate readiness on this call read only the height. Threading
-    /// the network through to fill them is a later refinement.
+    /// Minimal but valid: `version`/`vendor`/`taddr_support` are static,
+    /// `chain_name` is the served network's BIP70 name (as zebra renders it),
+    /// and `block_height`/`estimated_height` are read from the pinned tip (0
+    /// before any block is served). The remaining network-derived fields
+    /// (`sapling_activation_height`, `consensus_branch_id`) are chain-schedule
+    /// facts the adapter does not yet carry and ride out best-effort empty; the
+    /// clients that gate readiness on this call read only the height.
     pub async fn get_lightd_info(&self) -> Result<proto::LightdInfo, ServeError> {
         let snapshot = self.engine.snapshot().await?;
         let block_height = snapshot
@@ -89,6 +100,7 @@ impl<S: LightWalletService> LightServe<S> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             vendor: "zaino".to_string(),
             taddr_support: true,
+            chain_name: bip70_network_name(self.network).to_string(),
             block_height,
             estimated_height: block_height,
             ..Default::default()
@@ -131,7 +143,10 @@ impl<S: LightWalletService> LightServe<S> {
     /// validator — and the domain answer is converted domain -> wire here.
     pub async fn get_tree_state(&self, height: Height) -> Result<proto::TreeState, ServeError> {
         let snapshot = self.engine.snapshot().await?;
-        Ok(snapshot.treestate(height).await?.to_wire())
+        Ok(treestate_to_wire(
+            snapshot.treestate(height).await?,
+            self.network,
+        ))
     }
 
     /// `GetLatestTreeState`: the tree state at the pinned tip. `NoBlocks` before
@@ -139,7 +154,10 @@ impl<S: LightWalletService> LightServe<S> {
     pub async fn get_latest_tree_state(&self) -> Result<proto::TreeState, ServeError> {
         let snapshot = self.engine.snapshot().await?;
         let tip = snapshot.pinned_tip().ok_or(ServeError::NoBlocks)?;
-        Ok(snapshot.treestate(tip.height).await?.to_wire())
+        Ok(treestate_to_wire(
+            snapshot.treestate(tip.height).await?,
+            self.network,
+        ))
     }
 
     /// `GetSubtreeRoots`: note-commitment subtree roots for `pool`, a run of at
@@ -352,12 +370,20 @@ mod tests {
     use zaino_primitives::types::{BlockHash, BlockRef, Height};
     use zaino_proto::proto::service as proto;
     use zaino_service::testing::{MockChain, MockIndexerService};
+    use zcash_protocol::consensus::Network;
 
     fn engine_with_tip(tip: Option<BlockRef>) -> MockIndexerService {
         MockIndexerService::new(MockChain {
             tip,
             ..Default::default()
         })
+    }
+
+    /// A mainnet handler over `engine`. The network governs only the
+    /// chain-name/`network` wire fields; tests that pin those assert the name
+    /// directly, and the rest serve mainnet for a concrete handler.
+    fn serve(engine: MockIndexerService) -> LightServe<MockIndexerService> {
+        LightServe::new(engine, Network::MainNetwork)
     }
 
     /// The handler binds only `LightWalletService`, pins a snapshot, and converts
@@ -368,7 +394,7 @@ mod tests {
             height: Height::try_from(808).expect("valid height"),
             hash: BlockHash::from([0xABu8; 32]),
         };
-        let serve = LightServe::new(engine_with_tip(Some(tip)));
+        let serve = serve(engine_with_tip(Some(tip)));
 
         let wire = serve.get_latest_block().await.expect("latest block");
         assert_eq!(wire.height, 808u64);
@@ -378,7 +404,7 @@ mod tests {
     /// An empty chain is `NoBlocks` (a serviceability fact), not a transport error.
     #[tokio::test]
     async fn latest_block_no_tip_is_no_blocks() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         assert!(matches!(
             serve.get_latest_block().await,
             Err(ServeError::NoBlocks)
@@ -393,19 +419,21 @@ mod tests {
             height: Height::try_from(42).expect("valid height"),
             hash: BlockHash::from([0x11u8; 32]),
         };
-        let serve = LightServe::new(engine_with_tip(Some(tip)));
+        let serve = serve(engine_with_tip(Some(tip)));
         let info = serve.get_lightd_info().await.expect("lightd info");
         assert_eq!(info.block_height, 42u64);
         assert_eq!(info.estimated_height, 42u64);
         assert!(info.taddr_support);
         assert!(!info.version.is_empty());
+        // The served network's BIP70 name, as zebra/lightwalletd render it.
+        assert_eq!(info.chain_name, "main");
     }
 
     /// Before any block is served, `GetLightdInfo` still succeeds with height 0
     /// (a valid answer, not `NoBlocks`) — the call itself is the liveness gate.
     #[tokio::test]
     async fn lightd_info_before_any_block_is_height_zero() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let info = serve.get_lightd_info().await.expect("lightd info");
         assert_eq!(info.block_height, 0u64);
     }
@@ -417,7 +445,7 @@ mod tests {
     #[tokio::test]
     async fn tree_state_delegates_to_the_snapshot_read() {
         use zaino_primitives::types::Height;
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let height = Height::try_from(2_800_000).expect("valid height");
         assert!(matches!(
             serve.get_tree_state(height).await,
@@ -429,7 +457,7 @@ mod tests {
     /// is `NoBlocks`, not a transport error.
     #[tokio::test]
     async fn latest_tree_state_no_tip_is_no_blocks() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         assert!(matches!(
             serve.get_latest_tree_state().await,
             Err(ServeError::NoBlocks)
@@ -442,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn subtree_roots_delegates_and_converts() {
         use zaino_primitives::types::ShieldedPool;
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let roots = serve
             .get_subtree_roots(ShieldedPool::Sapling, 0, None)
             .await
@@ -456,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn get_transaction_delegates_to_the_snapshot_read() {
         use zaino_primitives::types::TransactionId;
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let tx = serve
             .get_transaction(TransactionId::from([0x33u8; 32]))
             .await
@@ -482,7 +510,7 @@ mod tests {
                 },
             )
         }
-        let serve = LightServe::new(MockIndexerService::new(MockChain {
+        let serve = serve(MockIndexerService::new(MockChain {
             tip: Some(BlockRef {
                 height: Height::try_from(500).expect("valid height"),
                 hash: BlockHash::from([0x44u8; 32]),
@@ -504,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn taddress_balance_no_tip_is_no_blocks() {
         use zaino_primitives::types::TransparentAddress;
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         assert!(matches!(
             serve
                 .get_taddress_balance(vec![TransparentAddress::new("t1probe".to_string())])
@@ -518,7 +546,7 @@ mod tests {
     /// empty-list-is-zero rule and the handler maps it to `NoBlocks`.
     #[tokio::test]
     async fn taddress_balance_errors_when_nothing_is_serviceable() {
-        let serve = LightServe::new(MockIndexerService::new(MockChain::default()));
+        let serve = serve(MockIndexerService::new(MockChain::default()));
         assert!(matches!(
             serve.get_taddress_balance(Vec::new()).await,
             Err(ServeError::NoBlocks)
@@ -530,7 +558,7 @@ mod tests {
     #[tokio::test]
     async fn address_utxos_delegates_and_converts() {
         use zaino_primitives::types::{Height, TransparentAddress};
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let utxos = serve
             .get_address_utxos(
                 vec![TransparentAddress::new("t1probe".to_string())],
@@ -547,7 +575,7 @@ mod tests {
     #[tokio::test]
     async fn taddress_txids_delegates_and_converts() {
         use zaino_primitives::types::{Height, HeightRange, TransparentAddress};
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let range = HeightRange {
             start: Height::GENESIS,
             end: Height::try_from(100).expect("valid height"),
@@ -564,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn block_nullifiers_delegates_to_the_snapshot_read() {
         use zaino_primitives::types::{BlockSelector, Height};
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let block = serve
             .get_block_nullifiers(BlockSelector::Height(
                 Height::try_from(10).expect("valid height"),
@@ -579,7 +607,7 @@ mod tests {
     /// a served answer, not `unimplemented`.
     #[tokio::test]
     async fn mempool_stream_delegates_and_serves() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let txs = serve.get_mempool_stream().await.expect("served");
         assert!(txs.is_empty());
     }
@@ -589,7 +617,7 @@ mod tests {
     /// answer, not `unimplemented`. The exclude set is accepted.
     #[tokio::test]
     async fn mempool_tx_delegates_and_serves() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let txs = serve
             .get_mempool_tx(vec![vec![0xAAu8; 4]])
             .await
@@ -616,7 +644,7 @@ mod tests {
     /// A successful broadcast returns `error_code == 0` with the txid in hex.
     #[tokio::test]
     async fn send_transaction_success_is_a_response() {
-        let serve = LightServe::new(engine_with_tip(None));
+        let serve = serve(engine_with_tip(None));
         let resp = serve
             .send_transaction(proto::RawTransaction {
                 data: vec![1, 2, 3].into(),
