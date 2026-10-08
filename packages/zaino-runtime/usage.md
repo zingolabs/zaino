@@ -32,12 +32,13 @@ choices, not the use case's. The light-wallet demand has two deployments:
   `LightWalletPassthroughRouting` (address history relayed to the validator), with
   the `LightWalletPassthroughSource` bundle. It discloses the wallet's queried
   addresses to the validator but builds no transparent index.
-- `LightWalletLocal` — the `TransparentHistory` index set (compact blocks plus the
-  address-history, transparent-spends and txid-location indexes) and
-  `LightWalletLocalRouting` (address history served locally), with the shared
-  `LightWalletSource` bundle. It serves the wallet's transparent address reads from
-  its own indexes, so it discloses no queried addresses and demands no address
-  source port.
+- `LightWalletLocal` — the `LightWalletLocal` index set (`TransparentHistory` plus
+  the `tree_state` and per-pool `subtrees_*` indexes) and `LightWalletLocalRouting`
+  (address history *and* treestate served locally), with the shared
+  `LightWalletSource` bundle. It serves the wallet's transparent address reads and
+  its treestate from its own indexes, so it discloses no queried addresses, removes
+  the per-scan-batch treestate round trip to the validator, and demands no address
+  or treestate source port.
 
 The node-RPC / block-explorer demand has one deployment, `NodeRpcLocal`: the
 `TransparentHistory` index set, address history and spend lookup both served

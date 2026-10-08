@@ -3,7 +3,7 @@
 //! relayed to the validator.
 
 use zaino_core::routing::LightWalletLocalRouting;
-use zaino_indexes::sets::transparent_history::TransparentHistory;
+use zaino_indexes::sets::light_wallet_local::LightWalletLocal as LightWalletLocalIndexes;
 use zaino_service::use_cases::LightWallet;
 
 use crate::config::IndexedDeploymentConfig;
@@ -11,18 +11,22 @@ use crate::deployment::Deployment;
 use crate::plan::RuntimePlan;
 use crate::signals::ReadinessCriteria;
 
-/// The light-wallet use case served with compact blocks and transparent address
-/// history composed locally from Zaino's own indexes, and everything else the
-/// wallet parses itself — treestate, raw transactions — relayed to the
-/// validator; node reads withheld.
+/// The light-wallet use case served with compact blocks, transparent address
+/// history and commitment treestate composed locally from Zaino's own indexes,
+/// and everything else the wallet parses itself — raw transactions — relayed to
+/// the validator; node reads withheld.
 ///
 /// Address history is local because serving it from a transparent index keeps the
 /// wallet's queried addresses off the validator, the privacy cost relaying them
-/// imposes. The finalised store answers the whole address read over the
-/// [`TransparentHistory`] index set, the non-finalised window reports its own
-/// receives and spends, and the composer threads them across the seam. Because
-/// the deployment does not relay address queries, it requires no address source
-/// port — the shared [`LightWalletSource`](super::LightWalletSource) floor alone.
+/// imposes. Treestate is local for the companion reason: a wallet asks for a
+/// treestate on every scan batch, and serving it from Zaino's own
+/// commitment-tree index removes that per-batch validator round trip and keeps it
+/// on the same branch as the compact blocks beside it. The finalised store
+/// answers both reads over the [`LightWalletLocalIndexes`] set up to its
+/// watermark, the non-finalised window answers above it, and the composer threads
+/// them across the seam. Because the deployment relays neither address nor
+/// treestate queries, it requires no address or treestate source port — the
+/// shared [`LightWalletSource`](super::LightWalletSource) floor alone.
 ///
 /// Growing the index set is a boot-visible change: a data directory already
 /// synced under the compact-block set is refused by the index-coverage guard and
@@ -33,7 +37,7 @@ pub struct LightWalletLocal;
 impl Deployment for LightWalletLocal {
     type UseCase = LightWallet;
     type Routing = LightWalletLocalRouting;
-    type Indexes = TransparentHistory;
+    type Indexes = LightWalletLocalIndexes;
 }
 
 impl RuntimePlan for LightWalletLocal {
@@ -47,8 +51,8 @@ impl RuntimePlan for LightWalletLocal {
 /// The milestone, as a compile-time proof: any validator client meeting the
 /// shared [`LightWalletSource`](super::LightWalletSource) floor, composed with
 /// the **real** finalised store and chain-head tiers under [`LightWalletLocal`],
-/// serves the light-wallet use case — with address history composed locally over
-/// the [`TransparentHistory`] index set, not relayed.
+/// serves the light-wallet use case — with address history and treestate
+/// composed locally over the [`LightWalletLocalIndexes`] set, not relayed.
 ///
 /// Generic in the source, so the runtime's non-test code names no concrete
 /// validator; the test below instantiates it with the production composite client

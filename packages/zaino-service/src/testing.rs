@@ -46,7 +46,7 @@ use crate::{
     IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
     MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, RawTransactionRead,
     ReadBudget, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TransactionViewRead, TreestateRead, TxOutRead,
+    TransactionRead, TransactionViewRead, TreestateRead, TreestateWindowRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -478,6 +478,31 @@ impl TreestateRead for MockSnapshot {
         _limit: Option<u16>,
     ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
         Ok(self.chain.subtree_roots.clone())
+    }
+}
+
+impl TreestateWindowRead for MockSnapshot {
+    async fn window_treestate(
+        &self,
+        _seed: Option<&Treestate>,
+        _at: Height,
+    ) -> Result<Option<Treestate>, TreestateReadError> {
+        // The window half of the mock: a scripted treestate is returned for any
+        // in-window height, mirroring the finalised half, so a mock tier can
+        // stand in for the non-finalised side of a `Local` treestate placement.
+        Ok(self.chain.treestate.clone())
+    }
+
+    async fn window_subtree_roots(
+        &self,
+        _seed: Option<&Treestate>,
+        _pool: ShieldedPool,
+        _start_index: u16,
+        _limit: Option<u16>,
+    ) -> Result<Vec<SubtreeRoot>, TreestateReadError> {
+        // The window completes no subtrees the finalised half did not; the mock
+        // reports none of its own.
+        Ok(Vec::new())
     }
 }
 

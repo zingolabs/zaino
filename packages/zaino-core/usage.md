@@ -29,7 +29,7 @@ address history is answered:
 pub struct LightWalletLocalRouting;
 impl Routing for LightWalletLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
-    type Treestate = Passthrough;     // relayed to the validator
+    type Treestate = Local;           // served from Zaino's own tree_state + subtrees
     type Spend = Withheld;            // a node read; not offered
     type TransactionLocation = Withheld;
 }

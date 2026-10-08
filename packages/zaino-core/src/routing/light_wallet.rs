@@ -30,9 +30,9 @@ impl Routing for LightWalletPassthroughRouting {
     type TransactionLocation = Withheld;
 }
 
-/// The lightwalletd-shaped routing with transparent address history served
-/// **locally** from Zaino's own indexes, treestate relayed live to the
-/// validator, and the node/explorer-only reads withheld.
+/// The lightwalletd-shaped routing with transparent address history and
+/// treestate served **locally** from Zaino's own indexes, and the
+/// node/explorer-only reads withheld.
 ///
 /// Address history is [`Local`]: the light wallet's `GetTaddressBalance`,
 /// `GetAddressUtxos` and `GetTaddressTxids` are answered from the finalised
@@ -42,6 +42,14 @@ impl Routing for LightWalletPassthroughRouting {
 /// Serving it locally means the wallet's queried addresses are never disclosed to
 /// the validator, the privacy cost a local transparent index exists to remove.
 ///
+/// Treestate is [`Local`]: the deployment builds the `tree_state` and per-pool
+/// `subtrees_*` indexes, so `GetTreeState` / `GetLatestTreeState` and
+/// `GetSubtreeRoots` are answered from Zaino's own commitment-tree frontiers —
+/// the finalised store up to the watermark, the window folding forward above it —
+/// rather than a validator round trip on every scan batch. This is the whole
+/// point of the local light-wallet deployment: the treestate a wallet witnesses
+/// against is served from the same branch as the compact blocks beside it.
+///
 /// Spend status stays [`Withheld`]: the light-wallet read-set never reads an
 /// outpoint's spend state through the engine `Spend` placement — the window's
 /// spend data reaches the address read through [`AddressReceiveRead`], not that
@@ -49,16 +57,13 @@ impl Routing for LightWalletPassthroughRouting {
 /// served method consumes being `Absent`, not a false `Live`. Transaction
 /// location is withheld for the same reason: no engine read dispatches on it.
 ///
-/// Treestate stays [`Passthrough`]: the wallet witnesses against it, but no local
-/// treestate index is built on any tier, so it is relayed to the validator.
-///
 /// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LightWalletLocalRouting;
 
 impl Routing for LightWalletLocalRouting {
     type Address = Local;
-    type Treestate = Passthrough;
+    type Treestate = Local;
     type Spend = Withheld;
     type TransactionLocation = Withheld;
 }
@@ -78,15 +83,18 @@ mod tests {
             // status and transaction location are withheld, not passed through.
             let placement = LightWalletLocalRouting::placement(capability);
             match capability {
-                Capability::Blocks | Capability::AddressHistory => {
+                // Address history, treestate and subtree roots are all composed
+                // from Zaino's own indexes under this routing.
+                Capability::Blocks
+                | Capability::AddressHistory
+                | Capability::Treestate
+                | Capability::SubtreeRoots => {
                     assert_eq!(placement, PlacementKind::Local)
                 }
                 Capability::SpendStatus | Capability::TransactionLocation => {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
-                Capability::Treestate
-                | Capability::SubtreeRoots
-                | Capability::RawTransaction
+                Capability::RawTransaction
                 | Capability::Mempool
                 | Capability::Broadcast
                 | Capability::NodeStatus
