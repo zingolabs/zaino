@@ -142,6 +142,7 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
 /// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
 ///   block's path vs the chain's; every enabled index readable, through the block or (durable at
 ///   or past it) its durable tip alone (R12); either = the oracle there
+/// - R12: `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
     snapshot: &Indexed<DiskView>,
     blocks: &MockChain,
@@ -184,6 +185,12 @@ fn verify(
             let view = at.views().view(*kind);
             let view = view.unwrap_or_else(|| panic!("{context}: {name} unreadable at {block:?}"));
             assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
+            let reach = match branch {
+                Branch::Best => through.height,
+                Branch::Side { .. } => block.height,
+            };
+            let answers = at.answers_through(*kind);
+            assert_eq!(answers, reach, "{context}: R12 {name} answers through, at {block:?}");
             let expected =
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.blocks(through)));
             let (_, expected) =

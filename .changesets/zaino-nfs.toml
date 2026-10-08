@@ -16,3 +16,12 @@ index (`None` = disabled), `durable()`. `run(cancel)` stops on `NfsError::{Fold,
 IndexGone}`. Metrics and logs for the served tip and reorgs (`describe_metrics`). Feature \
 `testing`: `Indexed::fixed`, `ChainParams::of`.
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "feature"
+section = "changed"
+description = """
+`At::answers_through(kind)`: the highest height an index answers through a snapshot block, its \
+durable tip when past a best-branch block (final data), else the block.
+"""

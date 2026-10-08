@@ -50,9 +50,12 @@ index, only the by-hash form of `GetBlock` and `GetTreeState`). Nothing falls
 back to the validator.
 
 Every index method reads one snapshot of every index, pinned for the request or
-stream, and answers at heights at or below its tip: `GetLatestBlock` is that
-tip, and `GetBlockRange`, `GetTreeState` and the address methods never answer
-past it, so they agree with each other within a request.
+stream. A method naming no height answers at the snapshot's tip, which every
+enabled index holds: `GetLatestBlock`, `GetLatestTreeState`, `GetSubtreeRoots`,
+`GetLightdInfo.blockHeight`, and the address methods (a `GetTaddressTxids` range
+included). A block or tree-state method naming a height
+(`GetBlock`, `GetBlockRange`, `GetTreeState`) answers up to its own index's
+tip, which during sync may be above the snapshot's.
 
 `GetLightdInfo` takes `chainName` from config (lightwalletd's `main`, `test` or
 `regtest`) and `saplingActivationHeight`, `consensusBranchId`, `upgradeName`
@@ -81,10 +84,10 @@ fails with a status when no validator accepted and at least one could not be
 reached. An accepted transaction answers `errorCode` 0 and the quoted
 display-order txid.
 
-`GetBlockRange` reaching past the served tip streams every block up to the tip,
-then ends with `OUT_OF_RANGE` in its trailers, never an early `OK` (the iOS
-downloader waits forever after one). A range whose first height is past the tip
-is `OUT_OF_RANGE` before any block.
+`GetBlockRange` reaching past the compact-block index's tip streams every block
+up to it, then ends with `OUT_OF_RANGE` in its trailers, never an early `OK`
+(the iOS downloader waits forever after one). A range whose first height is
+past it is `OUT_OF_RANGE` before any block.
 
 `GetTreeState` answers exactly the height asked for, with the block hash in
 display order. Each tree is `""` below its pool's activation and the serialized
@@ -111,8 +114,8 @@ deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
 | validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`) | `UNAVAILABLE` | back off and retry |
 | stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`) | `UNAVAILABLE` | retry |
 | index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED` | never retry |
-| height, hash or txid not in the chain, or above the served tip | `NOT_FOUND` | ask for something else |
-| `GetBlockRange` reaching past the served tip (after the blocks up to it) | `OUT_OF_RANGE` | ask again once the tip moves |
+| height, hash or txid not in the chain, or above the answering index's tip | `NOT_FOUND` | ask for something else |
+| `GetBlockRange` reaching past the compact-block index's tip (after the blocks up to it) | `OUT_OF_RANGE` | ask again once the tip moves |
 | the request's own `grpc-timeout` passed | `DEADLINE_EXCEEDED` | allow longer or ask for less |
 | bad or oversized range, unparseable or foreign-network address | `INVALID_ARGUMENT` | fix the request |
 | request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`) | `RESOURCE_EXHAUSTED` | send less per call |
@@ -120,11 +123,10 @@ deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
 | request body not complete within 30 s | `DEADLINE_EXCEEDED` | resend |
 | stored record will not walk | `INTERNAL` | the server is broken |
 
-While Zaino syncs, the served tip trails the chain: every index answers at it,
-as lightwalletd answers at what it has ingested, and `GetLatestBlock` /
-`GetLightdInfo.blockHeight` report it, so a wallet gating on them never asks
-past what is served. A range ending past the served tip streams up to it, then
-ends `OUT_OF_RANGE`. Before
+While Zaino syncs, the snapshot's tip trails the chain: it is the lowest tip
+across the enabled indexes, and `GetLatestBlock` / `GetLightdInfo.blockHeight`
+report it, so a wallet gating on them never asks past what every index holds.
+Before
 the first snapshot (indexes opening at boot) every index method is
 `UNAVAILABLE`.
 

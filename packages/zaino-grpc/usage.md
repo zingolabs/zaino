@@ -38,12 +38,13 @@ tokio::spawn(bound.run(cancel.child_token()));
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
 - **One snapshot per request** (`snapshots.load()`, pinned for the request or
-  the whole stream, G1): every index method answers at heights `≤` the served
-  tip, so `GetLatestBlock`, `GetBlockRange`, `GetTreeState` and
-  `GetLightdInfo.blockHeight` agree by construction (R12). A point read past
-  the tip = `NOT_FOUND`; a range streams to the tip, then `OUT_OF_RANGE`;
-  subtree roots completing above it are left out; the transparent reader is
-  `.as_of(tip)`.
+  the whole stream, G1). No height named = the served tip, which every enabled
+  index holds (R12): `GetLatestBlock`, `GetLatestTreeState`,
+  `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
+  transparent reader `.as_of(tip)`. A height named (`GetBlock`, `GetBlockRange`,
+  `GetTreeState`, by height or hash) = up to `At::answers_through(kind)`, the
+  index's own durable tip when past the served one. A point read past it =
+  `NOT_FOUND`; a range streams to it, then `OUT_OF_RANGE`.
 - Wire contract (`docs/design/integration-test-plan.md` W1–W15): `SendTransaction`
   rejections = gRPC `OK` + the validator's code and message; `GetTreeState` = the
   exact height, `""` below a pool's activation, `000000` for an empty active

@@ -45,6 +45,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 
 - One `Indexed` = one served tip across every enabled index: each view = the committed view +
   the tip node's layer, so a commit or reorg mid-request moves nothing it reads.
+- `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
+  best-branch block (final data), else the block.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
   durable tip); a reorg moves it to the fork point at once. Nothing durable = no publish
   (`None`).

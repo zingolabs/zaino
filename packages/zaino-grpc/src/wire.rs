@@ -71,12 +71,14 @@ pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
     })
 }
 
-/// `BlockID.hash` → `(height, hash)` via `at`'s block-hash index, at or below its tip
+/// `BlockID.hash` → `(height, hash)` via `at`'s block-hash index, at or below `through` (the
+/// answering index's [`zaino_nfs::At::answers_through`])
 ///
 /// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
 ///   a time; a test may pair views of different chains)
 pub(super) fn locate<V: zaino_persistence::MapRead>(
     at: &zaino_nfs::At<V>,
+    through: Height,
     raw: &[u8],
     method: &str,
 ) -> Result<(Height, [u8; 32]), Status> {
@@ -87,7 +89,7 @@ pub(super) fn locate<V: zaino_persistence::MapRead>(
             "{method} by hash resolves through the block-hash index, which is off"
         ))
     })?;
-    let height = locator.height_of(&hash.into()).filter(|&height| height <= at.tip().height);
+    let height = locator.height_of(&hash.into()).filter(|&height| height <= through);
     let missing = || Status::not_found("block hash is not in the index");
     Ok((height.ok_or_else(missing)?, hash))
 }

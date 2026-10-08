@@ -3,7 +3,7 @@
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
 //! - one global [`Snapshot`](zaino_snapshot::Snapshot) per request or stream (G1), pinned for
-//!   its life: every index answers at heights `<=` its served tip (`GetLatestBlock` = that tip)
+//!   its life: no height named = its served tip; a height named = `At::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a disabled `[index.*]` = its methods `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
@@ -256,17 +256,16 @@ mod tests {
         }
     }
 
-    /// G1, R12: one global snapshot, every RPC at one tip
+    /// G1, R12: no height named = the snapshot's tip; a height named = that index's own durable
     /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip);
     ///   validator 0 holds 2, one tx of ours relayed
-    /// - `GetLatestBlock` = 2, `GetBlockRange` 0..=9 = 0..=2 then `OUT_OF_RANGE`,
-    ///   `GetLatestTreeState` = 2's,
-    ///   `GetLightdInfo.blockHeight` = 2 + the holder's branch
-    /// - `GetTreeState` 3 = a miss (never past the served tip); block hash = its tree state's
+    /// - `GetLatestBlock`, `GetLatestTreeState`, `GetLightdInfo.blockHeight` = 2
+    /// - `GetBlockRange` 0..=9 = 0..=3 then `OUT_OF_RANGE`; `GetTreeState` / `GetBlock` 3 answered
+    ///   (block hash = its tree state's), 4 = a miss
     /// - mempool: `GetMempoolTx` gated open, `GetMempoolStream` opens on our relay, then ends (a
     ///   fixed snapshot never moves on)
     #[tokio::test]
-    async fn every_rpc_agrees_on_one_snapshot() {
+    async fn latest_rpcs_share_the_snapshot_tip_and_each_index_answers_its_own_durable() {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_chainview::EndpointSet;
@@ -307,7 +306,7 @@ mod tests {
         let range = proto::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
         let (_, streamed, trailers) = call(path::GET_BLOCK_RANGE, range.encode_to_vec()).await;
         let past = HeaderValue::from_static("11");
-        assert_eq!(trailers.get("grpc-status"), Some(&past), "to the tip, then OUT_OF_RANGE");
+        assert_eq!(trailers.get("grpc-status"), Some(&past), "to the index tip, then OUT_OF_RANGE");
         let mut rest = &streamed[..];
         let mut served = Vec::new();
         while !rest.is_empty() {
@@ -316,20 +315,32 @@ mod tests {
             served.push((block.height, block.hash));
             rest = tail;
         }
-        let expected: Vec<_> = (0..=2u32)
+        let expected: Vec<_> = (0..=3u32)
             .map(|at| (u64::from(at), <[u8; 32]>::from(chain.at(h(at)).hash).to_vec()))
             .collect();
-        assert_eq!(served, expected, "clamped at the snapshot tip, not the index's");
+        assert_eq!(served, expected, "through the compact-block index's durable, not the snapshot");
 
         let (_, state, _) = call(path::GET_LATEST_TREE_STATE, Vec::new()).await;
         let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
         let mut display = tip_hash;
         display.reverse();
         assert_eq!((state.height, state.hash), (2, hex::encode(display)), "same tip, same block");
-        let (code, _, _) = call(path::GET_TREE_STATE, at(3).encode_to_vec()).await;
-        assert_eq!(code, Some(tonic::Code::NotFound), "3 held, past the served tip");
-        let (code, _, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
-        assert_eq!(code, Some(tonic::Code::NotFound), "GetBlock agrees");
+        let three = chain.at(h(3)).hash;
+        let mut three_display = <[u8; 32]>::from(three).to_vec();
+        three_display.reverse();
+        let (code, state, _) = call(path::GET_TREE_STATE, at(3).encode_to_vec()).await;
+        let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
+        let answered = (code, state.height, state.hash);
+        let ok = Some(tonic::Code::Ok);
+        assert_eq!(answered, (ok, 3, hex::encode(three_display)), "3 durable, past the tip");
+        let (code, block, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
+        let block = cf::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
+        let three = <[u8; 32]>::from(three).to_vec();
+        assert_eq!((code, block.height, block.hash), (ok, 3, three), "GetBlock agrees");
+        for path in [path::GET_TREE_STATE, path::GET_BLOCK] {
+            let (code, _, _) = call(path, at(4).encode_to_vec()).await;
+            assert_eq!(code, Some(tonic::Code::NotFound), "{path}: 4 past every index");
+        }
 
         let (_, info, _) = call(path::GET_LIGHTD_INFO, Vec::new()).await;
         let info = proto::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");

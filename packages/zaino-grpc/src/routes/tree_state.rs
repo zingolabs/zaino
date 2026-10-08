@@ -1,5 +1,5 @@
-//! Tree-state methods: `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` (framed once per
-//! NFS publish), all at heights `<=` the served tip
+//! Tree-state methods (framed once per NFS publish): `GetTreeState` at heights `<=`
+//! [`At::answers_through`]; `GetLatestTreeState`, `GetSubtreeRoots` as of the snapshot's tip
 
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
-use zaino_persistence::{LayeredView, MapRead, SequenceRead};
+use zaino_persistence::{IndexKind, LayeredView, MapRead, SequenceRead};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
@@ -57,6 +57,10 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         self.indexed.served()
     }
 
+    fn through(&self) -> Height {
+        self.served().answers_through(IndexKind::TreeState)
+    }
+
     /// Framed on first ask per NFS publish, on the point lane (single flight); then inline
     async fn once<K, T>(
         &self,
@@ -77,8 +81,7 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         self.reads.read(Lane::Point, compute).await
     }
 
-    /// Tree state at exactly `at` framed for the wire; past the tip = a miss (never ahead of the
-    /// snapshot)
+    /// Tree state at exactly `at` framed for the wire; past the index's own tip = a miss
     ///
     /// - below Sapling = every pool `""`, not lightwalletd's error (Android asks `batchStart - 1`,
     ///   so Sapling activation − 1 too: ZA#1422)
@@ -87,9 +90,9 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         at: Height,
     ) -> impl FnOnce(&TreeStateReader<LayeredView<V>>) -> Result<Bytes, Status> + Send + 'static
     {
-        let (tip, params) = (self.served().tip().height, self.served().params());
+        let (through, params) = (self.through(), self.served().params());
         move |trees| {
-            if at > tip {
+            if at > through {
                 return Err(to_status(ServeError::NotFound { height: at }));
             }
             let state = trees.treestate(at).map_err(to_status)?;
@@ -187,7 +190,8 @@ where
         return answering.reads.read(Lane::Point, move || state(&trees)).await?;
     }
 
-    let (height, hash) = wire::locate(answering.served(), &id.hash, "GetTreeState")?;
+    let (height, hash) =
+        wire::locate(answering.served(), answering.through(), &id.hash, "GetTreeState")?;
     let (trees, state) = (answering.trees.clone(), answering.state_at(height));
     let framed = answering.reads.read(Lane::Point, move || {
         let held = trees.treestate(height).map(|state| state.block_hash);

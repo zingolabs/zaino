@@ -102,7 +102,8 @@ Snapshot::{served() -> Result<&At<V>, Unavailable>, mempool(), lightd()};
    lowest durable tip during bulk sync, best once the NFS folds (lowest durable tip within
    `2 · depth` of best). Every enabled index is readable at that tip; absent = disabled.
 3. **The writers never see a reorg.** Reorgs live in the NFS graph alone.
-4. **A request reads one `Snapshot`**, so every RPC in it agrees on one tip.
+4. **A request reads one `Snapshot`.** No height named = its tip; a height named = up to that
+   index's own durable tip (`At::answers_through`).
 
 Details: [data-sink.md](data-sink.md) (final path), [nfs.md](nfs.md) (tip path),
 [global-snapshot.md](global-snapshot.md) (snapshot), [traffic-balancer.md](traffic-balancer.md)

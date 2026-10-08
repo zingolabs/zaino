@@ -1,5 +1,5 @@
-//! Compact-block methods: `GetLatestBlock`, `GetBlock`, `GetBlockRange` (stored records, sent as
-//! the body), all at heights `<=` the snapshot's tip
+//! Compact-block methods: `GetLatestBlock` (the snapshot's tip), `GetBlock`, `GetBlockRange`
+//! (stored records, sent as the body, at heights `<=` [`At::answers_through`])
 
 use bytes::Bytes;
 use http::Response;
@@ -7,7 +7,7 @@ use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
-use zaino_persistence::{LayeredView, MapRead, SequenceRead};
+use zaino_persistence::{IndexKind, LayeredView, MapRead, SequenceRead};
 use zaino_primitives::types::Height;
 
 use crate::limits::Lane;
@@ -40,15 +40,15 @@ where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let tip = at.tip().height;
+    let through = at.answers_through(IndexKind::CompactBlock);
     let answer = match path {
         path::GET_LATEST_BLOCK => Ok(unary_response(latest(at))),
         path::GET_BLOCK => block(at, blocks, body, &reads).await.map(unary_response),
         path::GET_BLOCK_RANGE => {
-            let range = range(blocks, tip, body).await;
+            let range = range(blocks, through, body).await;
             range.map(|walk| range_response(walk, reads, Ok))
         }
-        path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(blocks, tip, body)
+        path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(blocks, through, body)
             .await
             .map(|walk| range_response(walk, reads, deprecated_nullifiers::reproject)),
         _ => Err(Status::unimplemented("not a compact-block method")),
@@ -62,7 +62,7 @@ where
 
 /// One range's cursor + the status its stream ends in once the cursor is spent
 ///
-/// - `ends` = `OUT_OF_RANGE` when the range reaches past the snapshot's tip (lightwalletd: lazily
+/// - `ends` = `OUT_OF_RANGE` when the range reaches past the compact-block tip (lightwalletd: lazily
 ///   to the tip, then the error; an early `OK` end hangs the iOS downloader for good)
 struct Walk<V> {
     cursor: RangeCursor<V>,
@@ -136,14 +136,15 @@ where
 
     // Hash wins when given (names one block across a reorg; a height doesn't)
     if !id.hash.is_empty() {
-        let (height, hash) = wire::locate(at, &id.hash, "GetBlock")?;
+        let through = at.answers_through(IndexKind::CompactBlock);
+        let (height, hash) = wire::locate(at, through, &id.hash, "GetBlock")?;
         let read = move || blocks.block_at(height, &hash).map_err(to_status);
         return reads.read(Lane::Point, read).await?;
     }
 
     let height = wire::height(id.height, "height")?;
     let missing = move || to_status(ServeError::NotFound { height });
-    if height > at.tip().height {
+    if height > at.answers_through(IndexKind::CompactBlock) {
         return Err(missing());
     }
     // the snapshot's layer (pepper-sync's reorg check at the tip): RAM, answered inline
@@ -154,7 +155,7 @@ where
 }
 
 /// `GetBlockRange` (wallet-sync path: must stay cheap)
-async fn range<V, B>(blocks: Blocks<V>, tip: Height, body: B) -> Result<Walk<V>, Status>
+async fn range<V, B>(blocks: Blocks<V>, through: Height, body: B) -> Result<Walk<V>, Status>
 where
     V: SequenceRead,
     B: http_body::Body,
@@ -162,14 +163,14 @@ where
 {
     let request: proto::BlockRange = wire::decode_request(body).await?;
 
-    open_range(blocks, tip, &request, wire::pools(&request.pool_types)?)
+    open_range(blocks, through, &request, wire::pools(&request.pool_types)?)
 }
 
-/// - walk order up to the first height past `tip`: a first height past it = refused before any
-///   block (lightwalletd: the first `getblock` fails)
+/// - walk order up to the first height past `through`: a first height past it = refused before
+///   any block (lightwalletd: the first `getblock` fails)
 fn open_range<V: SequenceRead>(
     blocks: Blocks<V>,
-    tip: Height,
+    through: Height,
     request: &proto::BlockRange,
     pools: Pools,
 ) -> Result<Walk<V>, Status> {
@@ -186,13 +187,14 @@ fn open_range<V: SequenceRead>(
     // start > end = descending (the cursor walks it top down)
     let (start, end) = (wire::height(start, "range start")?, wire::height(end, "range end")?);
 
-    let past =
-        |height| Status::out_of_range(format!("block {height} is above the served tip {tip}"));
-    if start > tip {
+    let past = |height| {
+        Status::out_of_range(format!("block {height} is above the compact-block tip {through}"))
+    };
+    if start > through {
         return Err(past(start));
     }
-    let ends = if end > tip { past(tip.next()) } else { Status::ok("") };
-    let cursor = RangeCursor::new(blocks, start, end, tip, pools).map_err(to_status)?;
+    let ends = if end > through { past(through.next()) } else { Status::ok("") };
+    let cursor = RangeCursor::new(blocks, start, end, through, pools).map_err(to_status)?;
 
     Ok(Walk { cursor, ends })
 }
@@ -219,7 +221,7 @@ mod deprecated_nullifiers {
     /// alone = empty = shielded default, not "no pools")
     pub(super) async fn range<V, B>(
         blocks: Blocks<V>,
-        tip: Height,
+        through: Height,
         body: B,
     ) -> Result<Walk<V>, Status>
     where
@@ -230,7 +232,7 @@ mod deprecated_nullifiers {
         let mut request: proto::BlockRange = wire::decode_request(body).await?;
         request.pool_types.retain(|pool| *pool != proto::PoolType::Transparent as i32);
 
-        open_range(blocks, tip, &request, pools(&request.pool_types)?)
+        open_range(blocks, through, &request, pools(&request.pool_types)?)
     }
 
     /// Framed records → framed nullifier-only records, one frame per block
@@ -361,7 +363,7 @@ mod tests {
         let compact = indexed(IndexKind::CompactBlock, &chain, tip);
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
-        let past = |h: u32| format!("block%20{h}%20is%20above%20the%20served%20tip%205");
+        let past = |h: u32| format!("block%20{h}%20is%20above%20the%20compact-block%20tip%205");
         let cases = [
             (path::GET_BLOCK_RANGE, (1, 4), (vec![1, 2, 3, 4], "0", None)),
             (path::GET_BLOCK_RANGE, (5, 1), (vec![5, 4, 3, 2, 1], "0", None)),

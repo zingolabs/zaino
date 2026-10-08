@@ -52,8 +52,22 @@ pub struct At<V> {
     views: Views<V>,
 }
 
+impl<V: View> At<V> {
+    /// Highest height `kind` answers: its durable tip when past a best block (final), else the
+    /// block (side branch: durable data past it = best chain, not this branch)
+    pub fn answers_through(&self, kind: IndexKind) -> Height {
+        let durable = self.views.durable.get(kind).and_then(View::tip).map(|tip| tip.height);
+        match self.branch {
+            Branch::Best => {
+                durable.map_or(self.block.height, |durable| durable.max(self.block.height))
+            }
+            Branch::Side { .. } => self.block.height,
+        }
+    }
+}
+
 impl<V> At<V> {
-    /// `GetLatestBlock`: every read through it answers at heights `<=` it
+    /// `GetLatestBlock` + every read naming no height (one tip across indexes)
     pub fn tip(&self) -> BlockRef {
         self.block
     }

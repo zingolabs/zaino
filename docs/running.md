@@ -112,8 +112,9 @@ Once booted, each stage (the index writers, the NFS that fetches and folds block
 snapshot publisher, the chainview pollers and the gRPC server) runs as its own task. SIGINT
 or SIGTERM cancels them all and waits for each index to commit what it holds before exiting
 0. If the NFS, the publisher or the gRPC server stops on its own, it stops the rest the same
-way and zainod exits 1. While syncing, every request answers at the served tip (`/statusz`
-`tips.served`), and `/readyz` reports `syncing` until that tip is the verified best. A
+way and zainod exits 1. While syncing, `GetLatestBlock` reports the served tip (`/statusz`
+`tips.served`, the lowest index tip), a request naming a height answers up to its own index's
+tip, and `/readyz` reports `syncing` until the served tip is the verified best. A
 trusted validator going away never stops zainod: its poller retries until it answers.
 
 ## Status
