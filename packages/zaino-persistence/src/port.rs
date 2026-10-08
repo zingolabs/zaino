@@ -50,7 +50,7 @@ pub trait Store: Send + 'static {
     ///   a map key the buffer already holds or `changes` inserts twice
     fn apply(&mut self, changes: Changes);
 
-    /// Item bytes buffered (a writer's batch trigger)
+    /// Heap the buffer holds (≈ RAM, >= its item bytes; a writer's batch trigger)
     fn buffered_bytes(&self) -> usize;
 
     /// Every buffered change + the last applied tip, durable together (one fsync), then in `view`

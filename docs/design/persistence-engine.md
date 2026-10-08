@@ -57,7 +57,7 @@ pub trait Store: Send + 'static {
     fn path(&self) -> &Path;
     fn changes(&self, at: BlockRef) -> Changes;           // one block's empty delta (provided)
     fn apply(&mut self, changes: Changes);                // buffered: not durable, not in view()
-    fn buffered_bytes(&self) -> usize;
+    fn buffered_bytes(&self) -> usize;                    // ≈ buffer's heap (RAM, not disk)
     fn commit(&mut self) -> Result<(), StoreError>;      // every buffer, one atomic commit
     fn view(&self) -> Self::View;                         // committed only
     fn staged(&self) -> LayeredView<Self::View>;          // committed + buffered
@@ -226,8 +226,9 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
   block, its `Layer` = its parent's `.with` its `Changes`) and handed to the store as a writer
   hands them: grow a node, apply the oldest unapplied nodes, commit, reorg the unapplied ones,
   settle, reopen, power loss. After every step `view()` reads like the committed prefix,
-  `staged()` like committed + buffered, `buffered_bytes()` like the applied items, each node's
-  layer over `view()` like the contents through it, and `Layer::check` holds; a commit rebases
+  `staged()` like committed + buffered, `buffered_bytes()` at least the applied items (0 iff
+  none), each node's layer over `view()` like the contents through it, and `Layer::check`
+  holds; a commit rebases
   every node, a crash or reopen keeps exactly what was committed. Nodes a reorg dropped are
   replaced with different bytes at the same positions and keys, so a stale item cannot pass.
   Views pinned earlier are re-checked after later steps (structural sharing never leaks a later

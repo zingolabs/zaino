@@ -320,12 +320,15 @@ impl Oracle {
     }
 
     /// Store view = committed; staged = through the last applied; node layers over the view =
-    /// their contents (oldest + newest read in full); buffered bytes = applied item bytes
+    /// their contents (oldest + newest read in full); buffered bytes >= applied item bytes, 0 iff
+    /// nothing applied
     fn assert<S: Store<View: SequenceRead + MapRead>>(&self, store: &S, label: &str) {
         self.committed.assert_view(&store.view(), &format!("{label}: view"));
         self.buffered().assert_view(&store.staged(), &format!("{label}: staged"));
-        let bytes = self.buffered().bytes - self.committed.bytes;
-        assert_eq!(store.buffered_bytes(), bytes, "{label}: buffered bytes");
+        let (buffered, items) = (store.buffered_bytes(), self.buffered().bytes);
+        let items = items - self.committed.bytes;
+        assert!(buffered >= items, "{label}: buffered bytes {buffered} < items {items}");
+        assert_eq!(buffered == 0, self.applied == 0, "{label}: buffered bytes {buffered}");
         for node in &self.nodes {
             node.layer.check(label);
         }
@@ -415,7 +418,7 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
 
 /// History against the subject + `Oracle`, after every step:
 ///
-/// - `view()` = committed prefix; `staged()` = committed + buffered; buffered bytes = applied
+/// - `view()` = committed prefix; `staged()` = committed + buffered; buffered bytes >= applied
 /// - each node's layer over the view = its contents; pinned views = their models
 /// - crash or reopen = exactly the committed nodes; [`Subject::check`] + `Layer::check` hold
 pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
@@ -532,7 +535,7 @@ pub fn contract<S: Subject>(subject: S) {
     store.apply(model.advance(0, &[], 1));
     empty.assert_view(&store.view(), "applied, not committed: not in the view");
     model.assert_view(&store.staged(), "applied: staged");
-    assert_eq!(store.buffered_bytes(), model.bytes, "buffered bytes = applied items");
+    assert!(store.buffered_bytes() > model.bytes, "buffered bytes > applied items (+ overhead)");
     store.commit().expect("commit");
     model.assert_view(&store.view(), "committed");
     model.assert_view(&store.staged(), "committed: staged = view");

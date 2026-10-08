@@ -24,7 +24,7 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     dir::IndexDir,
     fs::Fs,
-    layer::{Layer, LayeredView},
+    layer::{self, Layer, LayeredView},
     lsm::{decode_list, encode_list, file_name, SegmentLog, SegmentMeta, Snapshot},
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     pages::{scrub, Sealed},
@@ -58,7 +58,7 @@ impl DiskEngine {
     }
 }
 
-/// Index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s item bytes
+/// Index directory's writer (holds its `LOCK`); `buffered` = `buffer`'s heap (≈)
 #[derive(Debug)]
 pub struct DiskStore {
     dir: IndexDir,
@@ -316,7 +316,7 @@ impl Store for DiskStore {
         let tip = changes.tip().height;
         assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
         self.buffer.push(&changes);
-        self.buffered += changes.bytes();
+        self.buffered += layer::heap(&changes);
     }
 
     fn buffered_bytes(&self) -> usize {

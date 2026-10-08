@@ -37,3 +37,19 @@ Declare the index's tables as `const` handles + `pub const TABLES: Tables`, open
 `Schema::new(kind, FORMAT, network, TABLES)`, open deltas with `store.changes(block.at())`, and \
 read with `view.sequence(T)` / `view.map(T)` instead of passing a `SequenceId` / `MapId`.
 """
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`Store::buffered_bytes` reports the heap the buffer holds, not its item bytes: per item its \
+`Bytes` handle, allocation and tree slot, per block its delta, derived from the buffer's types \
+and within ±30% of the measured heap for fixed, variable and map tables (`tests/buffer_heap.rs`, \
+counting allocator). Item bytes undercounted the buffer's RAM 2–10×, so a 64 MiB batch held up \
+to ~750 MB before its first commit.
+"""
+migration = """
+A batch budget compared against `buffered_bytes()` is now RAM: the same figure commits 2–10× \
+sooner. Size it as the buffer's heap, not bytes on disk.
+"""

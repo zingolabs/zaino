@@ -160,6 +160,38 @@ impl Layer {
     }
 }
 
+/// Allocator cost per allocation (glibc: 8 B header + 16 B granularity)
+const ALLOCATION: usize = 16;
+
+/// `Arc<Delta>` (+ 2 counts) + its `deltas` slot + its `appends` and `keys` allocations
+const BLOCK: usize = size_of::<Delta>() + 3 * size_of::<usize>() + 3 * ALLOCATION;
+
+/// `sequences` slot + the record's allocation
+const RECORD: usize = size_of::<Bytes>() + ALLOCATION;
+
+/// `OrdMap` entry (leaves ≈ 2/3 full) + key and value allocations + `Delta::keys` clone (`Bytes`
+/// + its promoted 3-word `Shared`)
+const ROW: usize = size_of::<(Bytes, Bytes)>() * 3 / 2
+    + 2 * ALLOCATION
+    + size_of::<Bytes>()
+    + 3 * size_of::<usize>()
+    + ALLOCATION;
+
+/// Heap `changes` adds to a layer it is pushed onto (≈, unshared; `tests/buffer_heap.rs`)
+pub(crate) fn heap(changes: &Changes) -> usize {
+    let schema = changes.schema();
+    let records: Vec<usize> =
+        schema.sequences().iter().map(|&table| changes.appends(table).count()).collect();
+    let rows: usize = schema.maps().iter().map(|&table| changes.inserts(table).count()).sum();
+    let grown = records.iter().filter(|&&count| count > 0).count();
+    changes.bytes()
+        + BLOCK
+        + grown * size_of::<(usize, usize)>()
+        + schema.maps().len() * size_of::<Vec<Bytes>>()
+        + records.iter().sum::<usize>() * RECORD
+        + rows * ROW
+}
+
 /// Records `deltas` appended, per sequence (`tables` = the schema's sequence count)
 fn appended<'a>(deltas: impl Iterator<Item = &'a Arc<Delta>>, tables: usize) -> Vec<usize> {
     let mut records = vec![0; tables];

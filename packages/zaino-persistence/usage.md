@@ -74,7 +74,14 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   `view()` and the disk do not until `commit`. It panics, buffering nothing,
   on changes built for another schema, a tip not above the last applied one,
   or a map key the buffer already holds (or one `Changes` inserts twice).
-  `buffered_bytes()` = the buffered items' bytes, a writer's batch trigger.
+  `buffered_bytes()` = the heap the buffer holds (a writer's batch trigger):
+  the items' bytes plus, per item, its `Bytes` handle, allocation and tree
+  slot, and per block its delta. Derived from the buffer's types, it tracks
+  the real heap within ±30% for every table shape
+  (`tests/buffer_heap.rs` measures it with a counting allocator). A
+  buffered row costs 2–10× its item bytes: 32 B records ≈ 80 B each in bulk,
+  a 44 B map row ≈ 245 B, a block's delta ≈ 200 B on its own. A budget is
+  RAM, not bytes on disk.
 - **`commit`:**
   - Every buffered change goes to disk in one commit at the last applied tip:
     appends are sealed (only tables that grew are fsynced) and each map's rows
