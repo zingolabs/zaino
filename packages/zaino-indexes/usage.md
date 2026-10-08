@@ -119,8 +119,10 @@ subtree of `2^16` consecutive note-commitment leaves, keyed by subtree index.
   (`subtrees_sapling`, `subtrees_orchard`, `subtrees_ironwood`) with no
   duplicated logic. The key is the subtree index (`u32` big-endian);
   `codec::SubtreeRoot` is the value — a 32-byte root in internal (unreversed)
-  order, the orientation every pool stores and serves, plus the completing
-  height (`z_getsubtreesbyindex`'s `end_height`).
+  order, the orientation every pool stores and serves; the hash of the block
+  that completed the subtree (also internal order, which the serve path reverses
+  to display order for the `GetSubtreeRoots` wire); plus the completing height
+  (`z_getsubtreesbyindex`'s `end_height`).
 - It is a `CrossIndex` × Append over two declared dependencies — `tree_state`
   and the pool's compact index — because a subtree root domain-depends on both
   the commitment tree just before the completing block and that block's own

@@ -102,12 +102,15 @@ impl ToWire for SubtreeRoot {
     type Wire = proto::SubtreeRoot;
 
     fn to_wire(self) -> proto::SubtreeRoot {
+        // The root is a commitment-tree value, not an identifier, so it rides out
+        // in internal (unreversed) order. The completing block hash is a block
+        // identifier, so — like every hash on this interface, and matching
+        // lightwalletd — it is reversed to display (big-endian) order.
+        let mut completing_block_hash = <[u8; 32]>::from(self.completing_block_hash);
+        completing_block_hash.reverse();
         proto::SubtreeRoot {
             root_hash: <[u8; 32]>::from(self.root).to_vec(),
-            // The domain subtree root carries only the root and the completing
-            // height (as `z_getsubtreesbyindex` reports), not the completing
-            // block hash, so that field rides out empty.
-            completing_block_hash: Vec::new(),
+            completing_block_hash: completing_block_hash.to_vec(),
             completing_block_height: u64::from(self.end_height),
         }
     }
@@ -284,20 +287,34 @@ mod tests {
         assert_eq!(wire.network, "");
     }
 
-    /// A subtree root maps its root bytes and completing height; the completing
-    /// block hash the domain does not carry rides out empty.
+    /// A subtree root maps its root bytes (internal order), its completing
+    /// height, and the completing block hash reversed to display order.
     #[test]
     fn subtree_root_maps_to_wire() {
+        // An asymmetric hash so a missing or doubled reversal is visible: internal
+        // order counts up, display order counts down.
+        let mut internal = [0u8; 32];
+        for (i, byte) in internal.iter_mut().enumerate() {
+            *byte = u8::try_from(i).expect("index < 32");
+        }
+        let mut display = internal;
+        display.reverse();
+
         let root = SubtreeRoot {
             root: TreeRoot::from([0x11u8; 32]),
-            completing_block_hash: BlockHash::from([0x22u8; 32]),
+            completing_block_hash: BlockHash::from(internal),
             end_height: Height::try_from(1_000_000).expect("valid height"),
         };
 
         let wire = root.to_wire();
+        // The root rides out in its natural (internal) order, not reversed.
         assert_eq!(wire.root_hash, vec![0x11u8; 32]);
         assert_eq!(wire.completing_block_height, 1_000_000u64);
-        assert!(wire.completing_block_hash.is_empty());
+        assert_eq!(
+            wire.completing_block_hash,
+            display.to_vec(),
+            "the completing block hash is reversed to display order"
+        );
     }
 
     #[test]
@@ -469,10 +486,20 @@ mod tests {
 
     /// Golden `GetSubtreeRoots` proto rendering: the root rides out as raw bytes
     /// in internal (unreversed) order for both pools, so `root_hash` is the
-    /// fixture root's bytes verbatim; the completing block hash the domain does
-    /// not carry stays empty.
+    /// fixture root's bytes verbatim, while the completing block hash is reversed
+    /// to display order. The fixture carries no completing block hash for these
+    /// heights, so the hash is a constructed asymmetric value and the orientation
+    /// is what the test pins.
     #[test]
     fn subtree_roots_render_internal_bytes_from_fixture() {
+        // Asymmetric under reversal, so a missing or doubled reversal shows up.
+        let mut internal_hash = [0u8; 32];
+        for (i, byte) in internal_hash.iter_mut().enumerate() {
+            *byte = u8::try_from(i).expect("index < 32");
+        }
+        let mut display_hash = internal_hash;
+        display_hash.reverse();
+
         let fixture: serde_json::Value =
             serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
         for pool_name in ["sapling", "orchard"] {
@@ -484,7 +511,7 @@ mod tests {
                 let end_height = subtree["end_height"].as_u64().expect("end_height");
                 let domain = SubtreeRoot {
                     root: TreeRoot::from(bytes32(root_hex)),
-                    completing_block_hash: BlockHash::from([0u8; 32]),
+                    completing_block_hash: BlockHash::from(internal_hash),
                     end_height: Height::try_from(
                         u32::try_from(end_height).expect("height fits u32"),
                     )
@@ -497,7 +524,11 @@ mod tests {
                     "{pool_name} root verbatim"
                 );
                 assert_eq!(wire.completing_block_height, end_height);
-                assert!(wire.completing_block_hash.is_empty());
+                assert_eq!(
+                    wire.completing_block_hash,
+                    display_hash.to_vec(),
+                    "{pool_name} completing block hash in display order"
+                );
             }
         }
     }
