@@ -1,0 +1,77 @@
+# syntax=docker/dockerfile:1
+#
+# Dogfood block-explorer image: builds either zaino-explorer-web or
+# zaino-explorer-tui from this workspace, selected by BIN_PACKAGE/BIN_NAME.
+# Kept separate from the production Dockerfile (zainod) on purpose — this
+# never touches that build.
+#
+# Build (web):
+#   --build-arg BIN_PACKAGE=zaino-explorer-web --build-arg BIN_NAME=web
+# Build (tui):
+#   --build-arg BIN_PACKAGE=zaino-explorer-tui --build-arg BIN_NAME=tui
+
+############################
+# Builder
+############################
+FROM docker.io/library/rust:1.96.0-bookworm AS builder
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+WORKDIR /app
+
+ARG BIN_PACKAGE=zaino-explorer-web
+ARG BIN_NAME=web
+
+# Same build deps as the production Dockerfile — several of this workspace's
+# crates pull in librocksdb-sys/protoc transitively regardless of which
+# binary is selected.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      pkg-config=1.8.1-1 \
+      clang=1:14.0-55.7~deb12u1 \
+      cmake=3.25.1-1 \
+      make=4.3-4.1 \
+      ca-certificates=20230311+deb12u1 \
+      protobuf-compiler=3.21.12-3+deb12u1 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN rustup component add clippy rustfmt
+
+COPY . .
+
+# Same cache-mount paths as the production build, so this benefits from the
+# same warm BuildKit PVC cache (cargo registry, git, target/) regular zainod
+# builds already populate — rocksdb in particular is expensive to compile
+# cold and this avoids paying that cost again.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo install --locked --path "packages/${BIN_PACKAGE}" --bin "${BIN_NAME}" --root /out
+
+############################
+# Runtime
+############################
+FROM docker.io/library/debian:bookworm-slim AS runtime
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+ARG BIN_NAME=web
+ARG UID=1000
+ARG GID=1000
+ARG USER=container_user
+ARG HOME=/home/container_user
+ENV BIN_NAME=${BIN_NAME}
+
+RUN apt-get -qq update && \
+    apt-get -qq install -y --no-install-recommends \
+      ca-certificates=20230311+deb12u1 \
+      libgcc-s1=12.2.0-14+deb12u1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN addgroup --gid "${GID}" "${USER}" && \
+    adduser  --uid "${UID}" --gid "${GID}" --home "${HOME}" \
+             --disabled-password --gecos "" "${USER}"
+
+ENV HOME=${HOME}
+WORKDIR ${HOME}
+
+COPY --from=builder /out/bin/${BIN_NAME} /usr/local/bin/${BIN_NAME}
+
+USER ${USER}
+ENTRYPOINT ["/bin/sh", "-c", "exec /usr/local/bin/\"$BIN_NAME\""]
