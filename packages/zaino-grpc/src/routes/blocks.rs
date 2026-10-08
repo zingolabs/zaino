@@ -2,9 +2,8 @@
 //! the body), all at heights `<=` the snapshot's tip
 
 use bytes::Bytes;
-use http::{HeaderValue, Response};
+use http::Response;
 use http_body::Frame;
-use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
@@ -107,12 +106,8 @@ fn range_response<V: SequenceRead>(
         Some((Ok::<_, Status>(Frame::trailers(last)), None))
     });
 
-    let mut response = Response::new(Body::new(StreamBody::new(frames)));
-    response
-        .headers_mut()
-        .insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
-
-    response
+    // layer steps = one record each, ready back to back: joined per DATA frame
+    wire::streaming(frames)
 }
 
 /// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)

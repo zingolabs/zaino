@@ -345,3 +345,102 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use zaino_persistence::IndexKind;
+    use zaino_primitives::testing::Chain;
+    use zaino_primitives::types::{
+        Script, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
+    };
+    use zaino_proto::proto::service as proto;
+    use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
+
+    use super::GrpcService;
+    use crate::service::Routes;
+    use crate::testing::{indexed, routes, snapshot};
+
+    /// R11, W4: a wallet on an h2 >= 0.4.16 client (charges every DATA frame < 256 B against a
+    /// connection budget until read: `GOAWAY too_many_data_frames`, lightwalletd #593), reading
+    /// only after the server filled its window, over the real transport:
+    /// - 10,000 UTXOs of one address (~100 B each) stream whole, height order
+    /// - 10,000 blocks (~90 B each, shielded-only) stream whole, then `OK`
+    #[tokio::test]
+    async fn a_slow_h2_reader_gets_ten_thousand_small_messages_without_a_goaway() {
+        const COUNT: u32 = 10_000;
+        // `t1Hsc…` = hash160 `00…00`
+        const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
+        let alice = [&[0x76, 0xa9, 0x14][..], &[0x00; 20], &[0x88, 0xac]].concat();
+        let pays_alice = |height: u32| Transaction {
+            txid: TransactionId::from({
+                let mut txid = [0x5a; 32];
+                txid[..4].copy_from_slice(&height.to_le_bytes());
+                txid
+            }),
+            transparent: TransparentData {
+                coinbase: true,
+                inputs: Vec::new(),
+                outputs: vec![TransparentOutput {
+                    value: Zatoshis::new(1_000).expect("in supply"),
+                    script: Script::new(alice.clone()),
+                }],
+            },
+            sprout: Default::default(),
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        };
+        let mut chain = Chain::with_genesis(vec![pays_alice(0)]);
+        let tip = (1..COUNT)
+            .fold(chain.genesis(), |tip, h| chain.mine_with(tip.hash, vec![pays_alice(h)]));
+        let blocks = chain.path(tip.hash);
+        let views = vec![
+            indexed(IndexKind::CompactBlock, &blocks),
+            indexed(IndexKind::TransparentAddress, &blocks),
+        ];
+        let routes = Routes { snapshots: snapshot(&blocks, views), ..routes() };
+
+        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+        let bind = probe.local_addr().expect("local addr");
+        drop(probe);
+        let server = GrpcService::new(routes, bind, crate::GrpcLimits::default());
+        let bound = server.bind().await.expect("the freed port binds");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        tokio::spawn(bound.run(cancel.clone()));
+        // h2's own default windows (tonic's are 5 MiB / 2 MiB): budget 32 KiB ≈ 200 unread frames
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{bind}"))
+            .expect("a URI")
+            .initial_connection_window_size(65_535)
+            .initial_stream_window_size(65_535)
+            .connect()
+            .await
+            .expect("connects");
+        let mut wallet = CompactTxStreamerClient::new(channel);
+
+        let request = proto::GetAddressUtxosArg {
+            addresses: vec![ALICE.to_owned()],
+            start_height: 0,
+            max_entries: 0,
+        };
+        let mut utxos = wallet.get_address_utxos_stream(request).await.expect("opens").into_inner();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut heights = Vec::new();
+        while let Some(utxo) = utxos.message().await.expect("no GOAWAY mid-stream") {
+            heights.push(utxo.height);
+        }
+        assert_eq!(heights, (0..u64::from(COUNT)).collect::<Vec<_>>(), "every UTXO, in order");
+
+        let at = |height| Some(proto::BlockId { height, hash: Vec::new() });
+        let range = proto::BlockRange { start: at(0), end: at(9_999), pool_types: Vec::new() };
+        let mut range = wallet.get_block_range(range).await.expect("opens").into_inner();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut heights = Vec::new();
+        while let Some(block) = range.message().await.expect("no GOAWAY mid-stream") {
+            heights.push(block.height);
+        }
+        assert_eq!(heights, (0..u64::from(COUNT)).collect::<Vec<_>>(), "every block, in order");
+        cancel.cancel();
+    }
+}

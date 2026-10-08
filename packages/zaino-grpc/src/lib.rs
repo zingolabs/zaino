@@ -8,6 +8,7 @@
 
 mod admission;
 mod client;
+mod coalesce;
 mod connections;
 mod emit;
 mod limits;

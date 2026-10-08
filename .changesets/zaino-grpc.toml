@@ -99,3 +99,15 @@ streams every block up to the tip, then ends `OUT_OF_RANGE` in the trailers, as 
 does; it used to end `OK` at the tip, which hangs the iOS downloader. A range whose first \
 height is past the tip is `OUT_OF_RANGE` before any block.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+Streamed answers join records that are ready back to back into full 16 KiB DATA frames \
+instead of one frame per record. `GetAddressUtxosStream`, `GetMempoolTx` and \
+`GetBlockRange`'s in-memory blocks used to send one small frame each, and an h2 0.4.16+ client \
+that reads late answered `GOAWAY too_many_data_frames` (lightwalletd #593). A record already \
+16 KiB or larger is sent as is; nothing waits for more data.
+"""

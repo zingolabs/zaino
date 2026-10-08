@@ -419,7 +419,8 @@ mod tests {
                 .expect("one framed message");
         assert_eq!(capped.address_utxos, list.address_utxos[..1]);
 
-        // GetAddressUtxosStream: same records, one framed reply per data frame
+        // GetAddressUtxosStream: same records, one framed reply each (ready replies joined into
+        // one data frame: R11)
         let response = router
             .call(framed_request(
                 path::GET_ADDRESS_UTXOS_STREAM,
@@ -437,10 +438,15 @@ mod tests {
         assert_eq!(status, None, "stream status rides in the trailers");
         let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let reply = |chunk: &bytes::Bytes| {
-            proto::GetAddressUtxosReply::decode(&chunk[FRAME_HEADER..]).expect("framed reply")
-        };
-        let streamed: Vec<_> = chunks.iter().map(reply).collect();
+        assert_eq!(chunks.len(), 1, "two ready replies, one data frame");
+        let joined = chunks.concat();
+        let mut rest = &joined[..];
+        let mut streamed = Vec::new();
+        while !rest.is_empty() {
+            let (message, tail) = zaino_proto::frame::split_frame(rest).expect("whole frame");
+            streamed.push(proto::GetAddressUtxosReply::decode(message).expect("framed reply"));
+            rest = tail;
+        }
         assert_eq!(streamed, list.address_utxos, "one reply per record, same as the list shape");
 
         // GetTaddressBalance, both addresses (alice repeated: counted once) + client-streaming

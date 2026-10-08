@@ -192,14 +192,23 @@ pub(super) fn trailers(status: &Status) -> HeaderMap {
 pub(super) fn streamed_response(records: Vec<bytes::Bytes>) -> Response<Body> {
     use futures::StreamExt as _;
     use http_body::Frame;
-    use http_body_util::StreamBody;
 
     let data = futures::stream::iter(records.into_iter().map(|record| Ok(Frame::data(record))));
     let trailing = futures::stream::once(async {
         Ok::<_, Status>(Frame::trailers(trailers(&Status::ok(""))))
     });
 
-    let mut response = Response::new(Body::new(StreamBody::new(data.chain(trailing))));
+    streaming(data.chain(trailing))
+}
+
+/// Server-streaming response, ready records joined into full DATA frames
+/// ([`Coalesced`](crate::coalesce::Coalesced): one frame per record floods h2 clients)
+pub(super) fn streaming<S>(frames: S) -> Response<Body>
+where
+    S: futures::Stream<Item = Result<http_body::Frame<bytes::Bytes>, Status>> + Send + 'static,
+{
+    let frames = Body::new(http_body_util::StreamBody::new(frames));
+    let mut response = Response::new(Body::new(crate::coalesce::Coalesced::new(frames)));
     response
         .headers_mut()
         .insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
