@@ -2,7 +2,7 @@
 
 /// A commitment tree root hash (32 bytes).
 ///
-/// Distinct from [`super::BlockHash`] and [`super::TransactionHash`] —
+/// Distinct from [`super::BlockHash`] and [`super::TransactionId`] —
 /// same size, different domain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TreeRoot([u8; 32]);

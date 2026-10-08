@@ -27,6 +27,7 @@ mod network_upgrade;
 mod note_commitment;
 mod nullifier;
 mod outpoint;
+mod pool_activations;
 mod raw_transaction;
 pub mod rpc;
 mod script;
@@ -79,6 +80,7 @@ pub use network_upgrade::{
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
+pub use pool_activations::{PoolActivations, NU5_BRANCH_ID, NU6_3_BRANCH_ID, SAPLING_BRANCH_ID};
 pub use raw_transaction::RawTransaction;
 pub use script::{classify_script, Script, ScriptType};
 pub use shielded_pool::ShieldedPool;
