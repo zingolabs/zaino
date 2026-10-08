@@ -78,3 +78,13 @@ shape the Android SDK does not survive with fast sync), and a `startIndex` or `m
 above 65,535 is an empty or whole `OK` stream (was `INVALID_ARGUMENT`). The answer is whole \
 or refused before its first byte.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "fix"
+section = "fixed"
+description = """
+`GetTreeState` below Sapling activation answers that exact height with every tree `""` (was \
+`INVALID_ARGUMENT`; the Android SDK asks for Sapling activation − 1). From a pool's \
+activation on its tree is the serialized tree, `000000` while empty.
+"""

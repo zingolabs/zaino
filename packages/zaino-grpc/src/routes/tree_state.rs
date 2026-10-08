@@ -77,7 +77,11 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         self.reads.read(Lane::Point, compute).await
     }
 
-    /// Tree state at `at` framed for the wire; past the tip = a miss (never ahead of the snapshot)
+    /// Tree state at exactly `at` framed for the wire; past the tip = a miss (never ahead of the
+    /// snapshot)
+    ///
+    /// - below Sapling = every pool `""`, not lightwalletd's error (Android asks `batchStart - 1`,
+    ///   so Sapling activation − 1 too: ZA#1422)
     fn state_at(
         &self,
         at: Height,
@@ -87,13 +91,6 @@ impl<V: SequenceRead + MapRead> Answering<V> {
         move |trees| {
             if at > tip {
                 return Err(to_status(ServeError::NotFound { height: at }));
-            }
-            let sapling = params.activations.sapling;
-            if at < sapling {
-                // lightwalletd: "z_gettreestate did not return treestate"
-                let why =
-                    format!("no tree state at height {at}, below Sapling activation {sapling}");
-                return Err(Status::invalid_argument(why));
             }
             let state = trees.treestate(at).map_err(to_status)?;
             Ok(reply(&state, params))
@@ -208,6 +205,7 @@ where
 
 /// Domain treestate → wire (trees hex, hash in display order)
 /// - Pool below its upgrade = `""` (zebra's `z_gettreestate` omits it; lightwalletd copies that)
+/// - from its upgrade on = its tree, `000000` while empty (pepper-sync rejects `""` there)
 fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     let tree =
         |pool, tree: &CommitmentTreeBytes| match params.activations.active(pool, state.height) {
@@ -403,8 +401,9 @@ mod tests {
         }
     }
 
-    /// lightwalletd over zebra's `z_gettreestate`: a pool below its upgrade = `""`, from it = its
-    /// tree (`000000` while empty); below Sapling = no tree state at all (`InvalidArgument`)
+    /// W6, R10: exactly the requested height, display-order hash, each pool `""` below its upgrade
+    /// and its tree from it on (`000000` while empty: pepper-sync rejects `""` there); below
+    /// Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
     #[tokio::test]
     async fn tree_state_fields_follow_the_validators_activation_schedule() {
         use tower::Service as _;
@@ -435,22 +434,35 @@ mod tests {
                     .map(|status| status.code())
                     .unwrap_or(tonic::Code::Ok);
                 let body = response.into_body().collect().await.expect("body").to_bytes();
-                let state = (code == tonic::Code::Ok).then(|| {
-                    proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
-                });
-                (code, state.map(|s| (s.sapling_tree.is_empty(), s.orchard_tree, s.ironwood_tree)))
+                assert_eq!(code, tonic::Code::Ok, "{path}");
+                let s = proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one message");
+                let sapling = match s.sapling_tree.as_str() {
+                    "" => "",
+                    "000000" => "000000",
+                    _ => "leaves",
+                };
+                (s.height, s.hash, sapling, s.orchard_tree, s.ironwood_tree)
             }
         };
         let at = |height| proto::BlockId { height, hash: Vec::new() }.encode_to_vec();
+        let display = |height: usize| {
+            let mut hash = <[u8; 32]>::from(blocks[height].header().hash);
+            hash.reverse();
+            hex::encode(hash)
+        };
 
-        let empty = || "000000".to_owned();
-        let ok =
-            |orchard: String, ironwood: String| (tonic::Code::Ok, Some((false, orchard, ironwood)));
-        assert_eq!(ask(path::GET_TREE_STATE, at(0)).await, (tonic::Code::InvalidArgument, None));
-        assert_eq!(ask(path::GET_TREE_STATE, at(1)).await, ok(String::new(), String::new()));
-        assert_eq!(ask(path::GET_TREE_STATE, at(2)).await, ok(empty(), String::new()));
-        assert_eq!(ask(path::GET_TREE_STATE, at(3)).await, ok(empty(), empty()));
-        assert_eq!(ask(path::GET_LATEST_TREE_STATE, Vec::new()).await, ok(empty(), empty()));
+        let (blank, empty) = (String::new, || "000000".to_owned());
+        let expected = [
+            (0, (0, display(0), "", blank(), blank())),
+            (1, (1, display(1), "leaves", blank(), blank())),
+            (2, (2, display(2), "leaves", empty(), blank())),
+            (3, (3, display(3), "leaves", empty(), empty())),
+        ];
+        for (height, state) in expected.clone() {
+            assert_eq!(ask(path::GET_TREE_STATE, at(height)).await, state, "at {height}");
+        }
+        let latest = ask(path::GET_LATEST_TREE_STATE, Vec::new()).await;
+        assert_eq!(latest, expected[3].1, "the tip's");
     }
 
     /// By height, at the tip, and by hash through the block-hash locator; every pool its own hex
