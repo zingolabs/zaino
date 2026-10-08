@@ -4,22 +4,20 @@
 use std::time::{Duration, Instant};
 
 use super::{Ask, AskId, Input, Output, Reply, Route, Ticket, TrafficCore};
-use crate::class::Class;
+use crate::class::{Class, Lane, Permits};
 use crate::fired;
-use crate::limits::{Permits, RetryBudget};
 use crate::member::{Bench, Limits, Member, MemberId, PeerId, Synced, ValidatorId};
-
-const T0: u64 = 0;
 
 fn trusted(index: usize) -> MemberId {
     MemberId::Trusted(ValidatorId::new(index).expect("small"))
 }
 
 /// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; peer 7 joined
-/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0; A2 headers on peer 7
+/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 permits); A2 headers
+///   on peer 7
 fn valid(t0: Instant) -> TrafficCore {
     let limits = Limits::new(Limits::MIN_CONNECTIONS, None).expect("MIN_CONNECTIONS");
-    let mut core = TrafficCore::new(&[(0, limits), (1, limits)], T0, t0);
+    let mut core = TrafficCore::new(&[(0, limits), (1, limits)], t0);
     core.step(Input::Tick, t0);
     let t = t0 + Duration::from_millis(50);
     for member in [0, 1].map(|index| ValidatorId::new(index).expect("small")) {
@@ -33,7 +31,7 @@ fn valid(t0: Instant) -> TrafficCore {
         (Class::BulkBlock, Route::Any),
     ];
     for (id, (class, route)) in asks.into_iter().enumerate() {
-        core.step(Input::Ask { ask: AskId(id as u64), class, route, cost: 1 }, t);
+        core.step(Input::Ask { ask: AskId(id as u64), class, route }, t);
     }
     core
 }
@@ -58,14 +56,14 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
     }
     let drills: Vec<(&str, Plant)> = vec![
         (
-            "T1: in flight within max_connections and ceilings, reserves never borrowed",
-            Box::new(move |c| member(c, 0).in_flight[Class::TipBlock.index()] += 1),
+            "T1: in flight within max_connections, reserves never borrowed",
+            Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] += 1),
         ),
         (
             "T4: in flight = open asks' sends + polls",
-            Box::new(move |c| member(c, 0).in_flight[Class::Lookup.index()] = 0),
+            Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] = 1),
         ),
-        ("T4: no send to a departed member", Box::new(move |c| drop(c.members.remove(&peer)))),
+        ("T4: no send to a departed member", Box::new(move |c| _ = c.members.remove(&peer))),
         (
             "T3: no send to a benched member",
             Box::new(move |c| {
@@ -82,7 +80,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             }),
         ),
         (
-            "T10: a due poll is sent",
+            "T10: a due poll is sent while its control lane has room",
             Box::new(move |c| {
                 let now = c.now;
                 member(c, 1).poller.as_mut().expect("trusted").last =
@@ -97,10 +95,6 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
         (
             "T6: a send goes to the best tier with room",
             Box::new(move |c| ask(c, 0).sends[0].top = 1),
-        ),
-        (
-            "T7: retries and hedges within the budget",
-            Box::new(|c| c.budget = RetryBudget::overdrawn(c.now)),
         ),
     ];
     for (expected, plant) in drills {
@@ -117,24 +111,23 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
     let ticket = Ticket { ask: AskId(0), member: trusted(1), class: Class::TipBlock };
     let v = |index| ValidatorId::new(index).expect("small");
     let preconditions = [
-        ("a trusted validator to ask", fired(|| drop(TrafficCore::new(&[], T0, t0)))),
+        ("a trusted validator to ask", fired(|| drop(TrafficCore::new(&[], t0)))),
         (
             "at most ValidatorId::MAX trusted validators",
-            fired(|| drop(TrafficCore::new(&[(0, limits); 65], T0, t0))),
+            fired(|| drop(TrafficCore::new(&[(0, limits); 65], t0))),
         ),
-        ("max_connections covers every reserve + one shared", fired(|| _ = Permits::trusted(5))),
         (
-            "a retry withdrawn from a budget that holds one",
-            fired(|| RetryBudget::overdrawn(t0).withdraw(t0)),
+            "max_connections covers every lane reserve + one shared",
+            fired(|| _ = Permits::trusted(3)),
         ),
         ("time never runs back", step(Input::Tick, t0)),
         (
             "a poll is the core's own, never asked",
-            step(Input::Ask { ask: AskId(9), class: Class::Poll, route: Route::Any, cost: 1 }, t),
+            step(Input::Ask { ask: AskId(9), class: Class::Poll, route: Route::Any }, t),
         ),
         (
             "a fresh ask id",
-            step(Input::Ask { ask: AskId(0), class: Class::Lookup, route: Route::Any, cost: 1 }, t),
+            step(Input::Ask { ask: AskId(0), class: Class::Lookup, route: Route::Any }, t),
         ),
         ("a reply for a send in flight", step(Input::Reply { ticket, reply: Reply::Value }, t)),
         ("abandon: an open ask", step(Input::Abandon(AskId(9)), t)),

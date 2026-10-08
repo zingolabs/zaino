@@ -1,8 +1,8 @@
 # `zaino-traffic` — usage
 
 One scheduler for every request Zaino sends to its trusted validators and to peers
-(`docs/design/traffic-balancer.md`): one member table, request classes with reserved and
-ceiling-capped permits, one hedge / retry / blame policy under one retry budget, and the poll
+(`docs/design/traffic-balancer.md`): one member table, three lanes per member (control,
+interactive, bulk) each with a reserved permit, one hedge / failover / blame policy, and the poll
 loop of every trusted validator.
 
 ## Wiring
@@ -15,7 +15,7 @@ let trusted = validators
     .map(|v| Trusted {
         source: Arc::new(ZebraRpcAdapter::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
-        limits: Limits::new(v.max_connections, v.max_requests_per_sec)?,  // None below 6
+        limits: Limits::new(v.max_connections, None)?,         // None below 4
     })
     .collect();
 let (balancer, driver) = TrafficBalancer::new(trusted, Some(peer_transport));
@@ -26,31 +26,37 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 - `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
   `None` = trusted only.
-- `Limits::MIN_CONNECTIONS` = 6: every class reserve (5) + one shared permit, so a class with no
-  reserve (headers, bytes) still runs.
+- `Limits::MIN_CONNECTIONS` = 4: one reserved per lane + one shared. The second argument of
+  `Limits::new` is ignored (the request-rate limit is gone; it is dropped once every caller
+  passes only `max_connections`).
+- Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
+  transport. There is no request-rate limit.
 - `TrafficBalancer` is `Clone` (one `Arc`); hand the same one to every consumer.
 
 ## Asking
 
 Every answer is `Answered { value, from, ticket }`: `from` names the member that sent it.
 
-| Method | Class | Reaches | Ends |
+| Method | Class (lane) | Reaches | Ends |
 | --- | --- | --- | --- |
-| `block(hash, Urgency::Tip / Bulk)` | `TipBlock` / `BulkBlock` | trusted by tier, then peers | never unanswered: every member tried → next round after 1 s |
-| `headers(HeaderAsk::Pinned { member, heights })` | `Headers` | that trusted member only | unanswered if it fails or is out |
-| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` | any peer | unanswered when every peer is tried |
-| `bytes(listed, prefer)` | `Bytes` | best tier, `prefer` first within it | one batch from one member |
-| `transaction(txid)` | `Lookup` | trusted only, absent → next | unanswered once every one is tried |
-| `submit(member, raw)` | `Submit` | that trusted member only | one attempt |
+| `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then peers | never unanswered: every member tried → next round after 1 s |
+| `headers(HeaderAsk::Pinned { member, heights })` | `Headers` (control) | that trusted member only | unanswered if it fails or is out |
+| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | any peer | unanswered when every peer is tried |
+| `bytes(listed, prefer)` | `Bytes` (interactive) | best tier, `prefer` first within it | one batch from one member |
+| `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
+| `submit(member, raw)` | `Submit` (control) | that trusted member only | one attempt |
+
+- Within the best tier with room: the route's preferred member, else the least in flight (ties:
+  configured order). A freed permit goes to the control lane first, then interactive, then bulk.
 
 - `Unanswered { last }`: the first transport failure, else the last domain answer (absent,
   rejected); `None` = no eligible member to ask at all (benched, down, none of that kind).
 - Dropping the future abandons the ask: its sends are dropped and their permits return. There is
   no cancel API.
-- Hedges (`TipBlock` 2 s, `Lookup` 1 s, `BulkBlock` 15 s floor, else the member's p95 for that
-  class) go to another member; the first value wins and the rest are dropped.
-- Retries after a transport failure and hedges both draw on one budget (10 % of first attempts
-  + 1 per second, 10 at most). Do not resend in the transport.
+- Hedges (`TipBlock` 2 s, `Lookup` 1 s, `BulkBlock` 15 s after the latest send) go to another
+  member; the first value wins and the rest are dropped.
+- A failure moves on to the next member; a round asks each member once. Do not resend in the
+  transport.
 
 ## Blame: `report`
 
@@ -77,7 +83,9 @@ let checked = loop {
 
 - Each trusted member is polled every 1 s (every 15 s while its push stream is up), never closer
   than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
-  failures) is probed at 30 s and nothing else is sent to it. Metadata (`getpeerinfo`, `getinfo`,
+  failures) is probed at 30 s and nothing else is sent to it. A poll rides the control lane: it
+  waits for one completion when a `Headers` / `Submit` holds the control reserve and every shared
+  permit is taken. Metadata (`getpeerinfo`, `getinfo`,
   `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
 - `poll_best(f)`: every poll asks `getblockhash` at `f()` (the caller's best height, `None` =
   not asked), read as the poll starts; it never wakes a poll (an answer at a moved best is one
@@ -89,8 +97,8 @@ let checked = loop {
   already there.
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an
   event polls within 200 ms.
-- `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, latency
-  estimate, in flight; trusted first, configured order) for `/statusz` and metrics, refreshed by
+- `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, last reply's
+  latency, in flight; trusted first, configured order) for `/statusz` and metrics, refreshed by
   the driver. `entries()`: trusted members a submission may enter by (live, not benched).
 
 ## Health

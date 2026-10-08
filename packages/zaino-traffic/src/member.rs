@@ -1,11 +1,9 @@
-//! One member: identity, health, bench, latency, poll cadence (`traffic-balancer.md` §3, §4)
+//! One member: identity, health, bench, permits, poll cadence (`traffic-balancer.md` §3, §4)
 
-use std::collections::VecDeque;
 use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
-use crate::class::{Class, PerClass};
-use crate::limits::{Gcra, Permits, MIN_CONNECTIONS};
+use crate::class::{Lane, PerLane, Permits, LANES, MIN_CONNECTIONS};
 
 /// Configured order, `< MAX`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,17 +36,17 @@ pub enum MemberId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     max_connections: u32,
-    max_requests_per_sec: Option<NonZeroU32>,
 }
 
 impl Limits {
-    /// Σ class reserves + one shared
+    /// One reserved per lane (control, interactive, bulk) + one shared
     pub const MIN_CONNECTIONS: u32 = MIN_CONNECTIONS;
 
     /// `None` below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS)
-    pub fn new(max_connections: u32, max_requests_per_sec: Option<NonZeroU32>) -> Option<Self> {
-        (max_connections >= MIN_CONNECTIONS)
-            .then_some(Self { max_connections, max_requests_per_sec })
+    ///
+    /// - 2nd arg ignored (request-rate limit deleted; dropped once chainview's tests pass `(n)`)
+    pub fn new(max_connections: u32, _: Option<NonZeroU32>) -> Option<Self> {
+        (max_connections >= MIN_CONNECTIONS).then_some(Self { max_connections })
     }
 }
 
@@ -102,12 +100,9 @@ pub(crate) enum Synced {
 pub(crate) const DOWN_AFTER: u32 = 10;
 const BENCH: Duration = Duration::from_secs(60);
 const BENCH_MAX: Duration = Duration::from_secs(3600);
-/// Unmeasured trusted = optimistic (tried first); unmeasured peer = zebra `EWMA_DEFAULT_RTT`
-const TRUSTED_RTT: Duration = Duration::from_millis(30);
-const PEER_RTT: Duration = Duration::from_secs(21);
 const PEER_TIER: u16 = u8::MAX as u16 + 1;
 
-/// `last_sent` / `down_since` / `Bench::stamp` = core event order (T3)
+/// `last_sent` / `down_since` / `Bench::stamp` = core event order (T3); `latency` = last reply's
 #[derive(Debug, Clone)]
 pub(crate) struct Member {
     pub(crate) tier: u16,
@@ -115,11 +110,9 @@ pub(crate) struct Member {
     pub(crate) failures: u32,
     pub(crate) down_since: Option<u64>,
     pub(crate) bench: Option<Bench>,
-    pub(crate) latency: PeakEwma,
-    pub(crate) answers: PerClass<Answers>,
-    pub(crate) in_flight: PerClass<u32>,
+    pub(crate) latency: Duration,
+    pub(crate) in_flight: PerLane<u32>,
     pub(crate) permits: Permits,
-    pub(crate) rate: Option<Gcra>,
     pub(crate) last_sent: Option<u64>,
     pub(crate) poller: Option<Poller>,
 }
@@ -132,32 +125,28 @@ pub(crate) struct Bench {
 }
 
 impl Member {
-    pub(crate) fn trusted(priority: u8, limits: Limits, now: Instant) -> Self {
-        let permits = Permits::trusted(limits.max_connections);
-        let mut member = Self::new(u16::from(priority), TRUSTED_RTT, permits, now);
-        member.rate = limits.max_requests_per_sec.map(Gcra::new);
+    pub(crate) fn trusted(priority: u8, limits: Limits) -> Self {
+        let mut member = Self::new(u16::from(priority), Permits::trusted(limits.max_connections));
         member.poller = Some(Poller::default());
         member
     }
 
-    pub(crate) fn peer(now: Instant) -> Self {
-        let mut member = Self::new(PEER_TIER, PEER_RTT, Permits::peer(), now);
+    pub(crate) fn peer() -> Self {
+        let mut member = Self::new(PEER_TIER, Permits::peer());
         member.synced = Some(Synced::Live);
         member
     }
 
-    fn new(tier: u16, rtt: Duration, permits: Permits, now: Instant) -> Self {
+    fn new(tier: u16, permits: Permits) -> Self {
         Self {
             tier,
             synced: None,
             failures: 0,
             down_since: None,
             bench: None,
-            latency: PeakEwma::new(rtt, now),
-            answers: Default::default(),
-            in_flight: [0; crate::class::CLASSES],
+            latency: Duration::ZERO,
+            in_flight: [0; LANES],
             permits,
-            rate: None,
             last_sent: None,
             poller: None,
         }
@@ -197,80 +186,12 @@ impl Member {
         }
     }
 
-    /// Permit + rate headroom now
-    pub(crate) fn room(&self, class: Class, now: Instant) -> bool {
-        self.permits.admits(&self.in_flight, class)
-            && self.rate.as_ref().is_none_or(|rate| rate.headroom(now))
+    pub(crate) fn room(&self, lane: Lane) -> bool {
+        self.permits.admits(&self.in_flight, lane)
     }
 
-    /// P2C cost = estimate × (in flight + 1)
-    pub(crate) fn cost(&self, now: Instant) -> f64 {
-        let in_flight: u32 = self.in_flight.iter().sum();
-        self.latency.estimate(now) * f64::from(in_flight + 1)
-    }
-
-    /// `None` = class never hedged
-    pub(crate) fn hedge_after(&self, class: Class) -> Option<Duration> {
-        let floor = class.hedge_floor()?;
-        Some(self.answers[class.index()].p95().map_or(floor, |p95| p95.max(floor)))
-    }
-}
-
-/// Decay of the estimate toward faster samples, and toward 0 while idle
-const DECAY: Duration = Duration::from_secs(10);
-
-/// tower `load::PeakEwma`: a slower sample = the estimate at once, a faster one = EWMA toward it
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct PeakEwma {
-    nanos: f64,
-    at: Instant,
-}
-
-impl PeakEwma {
-    fn new(initial: Duration, now: Instant) -> Self {
-        Self { nanos: initial.as_nanos() as f64, at: now }
-    }
-
-    fn decay(&self, now: Instant) -> f64 {
-        (-now.saturating_duration_since(self.at).as_secs_f64() / DECAY.as_secs_f64()).exp()
-    }
-
-    pub(crate) fn estimate(&self, now: Instant) -> f64 {
-        self.nanos * self.decay(now)
-    }
-
-    pub(crate) fn observe(&mut self, sample: Duration, now: Instant) {
-        let sample = sample.as_nanos() as f64;
-        let decay = self.decay(now);
-        self.nanos = match sample > self.nanos {
-            true => sample,
-            false => self.nanos * decay + sample * (1.0 - decay),
-        };
-        self.at = self.at.max(now);
-    }
-}
-
-const HEDGE_SAMPLES: usize = 64;
-/// tower `hedge`'s `min_data_points`
-const MIN_HEDGE_SAMPLES: usize = 10;
-
-/// Last [`HEDGE_SAMPLES`] answer times of one class (hedge losers never sampled: censored)
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Answers(VecDeque<Duration>);
-
-impl Answers {
-    pub(crate) fn push(&mut self, sample: Duration) {
-        if self.0.len() == HEDGE_SAMPLES {
-            self.0.pop_front();
-        }
-        self.0.push_back(sample);
-    }
-
-    fn p95(&self) -> Option<Duration> {
-        let mut sorted: Vec<Duration> = self.0.iter().copied().collect();
-        sorted.sort_unstable();
-        let rank = (sorted.len() * 95).div_ceil(100);
-        (sorted.len() >= MIN_HEDGE_SAMPLES).then(|| sorted[rank - 1])
+    pub(crate) fn load(&self) -> u32 {
+        self.in_flight.iter().sum()
     }
 }
 

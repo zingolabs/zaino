@@ -5327,7 +5327,6 @@ dependencies = [
 name = "zaino-traffic"
 version = "0.1.0"
 dependencies = [
- "fastrand",
  "futures",
  "metrics",
  "proptest",

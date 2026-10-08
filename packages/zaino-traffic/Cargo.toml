@@ -12,7 +12,6 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-fastrand = "2"
 futures.workspace = true
 metrics.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }

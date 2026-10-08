@@ -1,59 +1,45 @@
-//! Request classes: priority, permits, hedge, round end (`traffic-balancer.md` §3)
+//! Request classes, the lane each rides, per-member permits (`traffic-balancer.md` §3)
 
 use std::time::Duration;
 
-/// Declaration order = priority (a freed permit goes to the first waiting class)
+/// Ask kind: hedge floor, member kinds, round retry, synced (lane = permits + priority only)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Class {
     Poll,
     Submit,
-    TipBlock,
     Headers,
+    TipBlock,
     Lookup,
     Bytes,
     BulkBlock,
 }
 
-pub(crate) const CLASSES: usize = 7;
+/// Declaration order = dispatch priority (a freed permit goes to the first waiting lane)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum Lane {
+    Control,
+    Interactive,
+    Bulk,
+}
 
-/// Per member, one counter per class
-pub(crate) type PerClass<T> = [T; CLASSES];
+pub(crate) const LANES: usize = 3;
+
+/// Per member, one counter per lane
+pub(crate) type PerLane<T> = [T; LANES];
+
+/// One reserved per lane + one shared
+pub(crate) const MIN_CONNECTIONS: u32 = LANES as u32 + 1;
 
 impl Class {
-    pub(crate) const ALL: PerClass<Class> = [
-        Self::Poll,
-        Self::Submit,
-        Self::TipBlock,
-        Self::Headers,
-        Self::Lookup,
-        Self::Bytes,
-        Self::BulkBlock,
-    ];
-
-    pub(crate) fn index(self) -> usize {
-        self as usize
-    }
-
-    /// Permits no other class may take from a trusted member
-    pub(crate) const fn reserve(self) -> u32 {
+    pub(crate) fn lane(self) -> Lane {
         match self {
-            Self::Poll | Self::Submit | Self::TipBlock | Self::Lookup | Self::BulkBlock => 1,
-            Self::Headers | Self::Bytes => 0,
+            Self::Poll | Self::Submit | Self::Headers => Lane::Control,
+            Self::TipBlock | Self::Lookup | Self::Bytes => Lane::Interactive,
+            Self::BulkBlock => Lane::Bulk,
         }
     }
 
-    /// Ceiling per 32 connections (scaled to `max_connections`, capped at the rest)
-    pub(crate) fn ceiling_per_32(self) -> u32 {
-        match self {
-            Self::Poll => 1,
-            Self::Submit | Self::Bytes => 2,
-            Self::TipBlock | Self::Headers => 4,
-            Self::Lookup => 8,
-            Self::BulkBlock => 32,
-        }
-    }
-
-    /// `None` = never hedged; else hedge past max(this, the member's p95)
+    /// `None` = never hedged; else a second member once the latest send is this old
     pub(crate) fn hedge_floor(self) -> Option<Duration> {
         match self {
             Self::TipBlock => Some(Duration::from_secs(2)),
@@ -82,11 +68,79 @@ impl Class {
         match self {
             Self::Poll => "poll",
             Self::Submit => "submit",
-            Self::TipBlock => "tip_block",
             Self::Headers => "headers",
+            Self::TipBlock => "tip_block",
             Self::Lookup => "lookup",
             Self::Bytes => "bytes",
             Self::BulkBlock => "bulk_block",
         }
+    }
+}
+
+impl Lane {
+    pub(crate) fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// One member's connections: `reserve` per lane no other lane takes, the rest shared
+#[derive(Debug, Clone)]
+pub(crate) struct Permits {
+    max: u32,
+    reserve: u32,
+}
+
+impl Permits {
+    pub(crate) fn trusted(max: u32) -> Self {
+        assert!(max >= MIN_CONNECTIONS, "max_connections covers every lane reserve + one shared");
+        Self { max, reserve: 1 }
+    }
+
+    /// One request at a time (a zebra peer connection serves one)
+    pub(crate) fn peer() -> Self {
+        Self { max: 1, reserve: 0 }
+    }
+
+    pub(crate) fn admits(&self, in_flight: &PerLane<u32>, lane: Lane) -> bool {
+        in_flight[lane.index()] < self.reserve || self.claimed(in_flight) < self.max
+    }
+
+    /// T1: Σ in flight ≤ max, reserves never borrowed
+    pub(crate) fn holds(&self, in_flight: &PerLane<u32>) -> bool {
+        self.claimed(in_flight) <= self.max
+    }
+
+    /// Each lane's in flight, or its reserve if larger
+    fn claimed(&self, in_flight: &PerLane<u32>) -> u32 {
+        in_flight.iter().map(|n| (*n).max(self.reserve)).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// - MIN_CONNECTIONS = 4: a lane fills the shared permits, never another lane's reserve
+    /// - each lane still admits its reserved one with every shared permit taken
+    /// - peers: one in flight, any lane
+    #[test]
+    fn lanes_share_idle_permits_but_never_a_reserve() {
+        let permits = Permits::trusted(8);
+        assert_eq!(MIN_CONNECTIONS, 4);
+        let mut in_flight = [0; LANES];
+        while permits.admits(&in_flight, Lane::Bulk) {
+            in_flight[Lane::Bulk.index()] += 1;
+        }
+        assert_eq!(in_flight, [0, 0, 6], "bulk stops where the other reserves begin");
+        for lane in [Lane::Control, Lane::Interactive] {
+            assert!(permits.admits(&in_flight, lane), "{lane:?} reserve held");
+            in_flight[lane.index()] += 1;
+            assert!(!permits.admits(&in_flight, lane), "{lane:?}: one reserved, none shared");
+        }
+        assert!(permits.holds(&in_flight));
+        assert!(!permits.holds(&[7, 1, 0]), "control on the idle bulk reserve breaks T1");
+
+        let peer = Permits::peer();
+        assert!(peer.admits(&[0, 0, 0], Lane::Control) && !peer.admits(&[0, 1, 0], Lane::Bulk));
     }
 }

@@ -165,7 +165,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         peers: Option<Arc<dyn PeerTransport>>,
     ) -> (Self, TrafficDriver<S>) {
         let config: Vec<(u8, Limits)> = trusted.iter().map(|t| (t.priority, t.limits)).collect();
-        let core = TrafficCore::new(&config, fastrand::u64(..), Instant::now().into_std());
+        let core = TrafficCore::new(&config, Instant::now().into_std());
         let table = watch::Sender::new(Arc::new(core.table()));
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -222,7 +222,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             Urgency::Tip => Class::TipBlock,
             Urgency::Bulk => Class::BulkBlock,
         };
-        let answered = self.ask(class, route, 1, send).await;
+        let answered = self.ask(class, route, send).await;
         answered
             .unwrap_or_else(|_| unreachable!("block classes retry rounds, never end unanswered"))
     }
@@ -234,13 +234,12 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         let shared = Arc::clone(&self.shared);
         match ask {
             HeaderAsk::Pinned { member, heights } => {
-                let cost = count(heights.len());
                 let send = move |to| {
                     let (source, heights) = (shared.trusted_only(to), heights.clone());
                     let links = async move { source.get_block_links(&heights).await };
                     links.map_err(QueryError::NonDomain).boxed()
                 };
-                self.ask(Class::Headers, Route::Only(MemberId::Trusted(member)), cost, send).await
+                self.ask(Class::Headers, Route::Only(MemberId::Trusted(member)), send).await
             }
             HeaderAsk::Peers { locator, stop } => {
                 let send = move |to| {
@@ -253,7 +252,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                     let headers = shared.peers().headers(peer, locator.clone(), stop);
                     headers.map_ok(links).map_err(QueryError::NonDomain).boxed()
                 };
-                self.ask(Class::Headers, Route::Peers, 1, send).await
+                self.ask(Class::Headers, Route::Peers, send).await
             }
         }
     }
@@ -265,7 +264,6 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         prefer: Vec<MemberId>,
     ) -> Result<Answered<RawMempoolTransactions>, Unanswered<GetRawMempoolTransactionError>> {
         let shared = Arc::clone(&self.shared);
-        let cost = count(listed.len());
         let send = move |member| {
             let listed = listed.clone();
             let ids: Vec<TransactionId> = listed.iter().map(|entry| entry.txid).collect();
@@ -284,7 +282,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                 move |peers, peer| peers.transactions(peer, asked).map_ok(found).boxed(),
             )
         };
-        self.ask(Class::Bytes, Route::Prefer(prefer), cost, send).await
+        self.ask(Class::Bytes, Route::Prefer(prefer), send).await
     }
 
     /// Mined or in a mempool: absent → next trusted member
@@ -297,7 +295,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             let source = shared.trusted_only(member);
             async move { source.get_transaction(txid).await }.boxed()
         };
-        self.ask(Class::Lookup, Route::Any, 1, send).await
+        self.ask(Class::Lookup, Route::Any, send).await
     }
 
     /// `sendrawtransaction` on `member` alone (the caller's privacy choice); one attempt
@@ -311,7 +309,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             let (source, raw) = (shared.trusted_only(to), raw.clone());
             async move { source.send_raw_transaction(raw).await }.boxed()
         };
-        self.ask(Class::Submit, Route::Only(MemberId::Trusted(member)), 1, send).await
+        self.ask(Class::Submit, Route::Only(MemberId::Trusted(member)), send).await
     }
 
     /// Trusted members a submission may enter by: live, not benched
@@ -358,7 +356,6 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         &self,
         class: Class,
         route: Route,
-        cost: u32,
         send: impl Fn(MemberId) -> BoxFuture<'static, Result<T, QueryError<E>>>,
     ) -> Result<Answered<T>, Unanswered<E>>
     where
@@ -367,7 +364,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         let (mailbox, mut events) = mpsc::unbounded_channel();
         let mut open = Open {
             shared: &self.shared,
-            ask: self.shared.open(mailbox, class, route, cost),
+            ask: self.shared.open(mailbox, class, route),
             ended: false,
         };
         let mut sends = FuturesUnordered::new();
@@ -469,18 +466,12 @@ impl<S> Shared<S> {
         }
     }
 
-    fn open(
-        &self,
-        mailbox: mpsc::UnboundedSender<Event>,
-        class: Class,
-        route: Route,
-        cost: u32,
-    ) -> AskId {
+    fn open(&self, mailbox: mpsc::UnboundedSender<Event>, class: Class, route: Route) -> AskId {
         let mut state = self.lock();
         let ask = AskId(state.next_ask);
         state.next_ask += 1;
         state.mailboxes.insert(ask, mailbox);
-        self.step_locked(&mut state, Input::Ask { ask, class, route, cost });
+        self.step_locked(&mut state, Input::Ask { ask, class, route });
         drop(state);
         self.changed.notify_one();
         ask
@@ -583,8 +574,4 @@ impl<S: ChainDataSource> Shared<S> {
         let observation = Observation { member, at, asked, polled, streaming, health };
         self.observations[member.get()].send_replace(Some(Arc::new(observation)));
     }
-}
-
-fn count(len: usize) -> u32 {
-    u32::try_from(len).unwrap_or(u32::MAX)
 }

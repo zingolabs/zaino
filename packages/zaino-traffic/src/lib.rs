@@ -2,12 +2,11 @@
 //!
 //! - [`TrafficBalancer`]: asks by class, each answer naming its sender ([`Answered::ticket`])
 //! - [`TrafficDriver`]: one task (the core's clock, every trusted member's poll, peers joining)
-//! - Core: pure members + classes + one hedge / retry / blame policy, invariants T1–T10
+//! - Core: pure members + lanes + one hedge / failover / blame policy, invariants T1–T10
 
 mod balancer;
 mod class;
 mod core;
-mod limits;
 mod member;
 
 pub use balancer::{
