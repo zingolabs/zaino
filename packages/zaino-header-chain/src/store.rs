@@ -81,7 +81,8 @@ impl HeaderView {
     }
 
     pub(crate) fn record(&self, at: Height) -> Option<Record> {
-        self.records(at, at).first().copied()
+        let bytes = self.view.sequence(HEADERS).record(u64::from(u32::from(at)))?;
+        Some(decode(bytes[..].try_into().expect("RECORD bytes")))
     }
 }
 
