@@ -497,7 +497,7 @@ pub struct Routes<S, V> {
 // per request (Wired::answer): one load, pinned for the request or stream (G1)
 let snap = routes.snapshots.load();
 let at = snap.served()?;                                      // Unavailable = UNAVAILABLE + its message
-let Some(blocks) = at.views().compact_block() else { return not_enabled(..) }; // UNIMPLEMENTED
+let Some(blocks) = at.views().compact_block() else { return absent(..) }; // syncing: UNAVAILABLE, off: UNIMPLEMENTED
 blocks::dispatch(at, blocks, path, body, reads).await         // RangeCursor::new(blocks, start, end, at.tip().height, pools)
 ```
 
