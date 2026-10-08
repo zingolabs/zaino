@@ -642,8 +642,10 @@ impl<S: NodeRpcService> NodeRpc<S> {
         Ok(utxos.into_iter().map(utxo_to_wire).collect())
     }
 
-    /// `z_gettreestate`: the commitment treestate as of a block, relayed from the
-    /// validator (passthrough — Zaino indexes no commitment-tree frontier).
+    /// `z_gettreestate`: the commitment treestate as of a block. The adapter
+    /// serves whatever the engine's placement answers for this read — a local
+    /// treestate index where the deployment keeps one, a passthrough relay to
+    /// the validator otherwise — and renders the domain answer to wire.
     ///
     /// The id is a height (decimal string) or a block hash; a hash resolves to a
     /// height over the local header read, so a hash no retained chain holds is a
@@ -677,8 +679,9 @@ impl<S: NodeRpcService> NodeRpc<S> {
     }
 
     /// `z_getsubtreesbyindex`: a contiguous run of complete note-commitment
-    /// subtree roots for a pool, from `start_index`, relayed from the validator
-    /// (passthrough). A `start_index` past the end is an empty list, not an error.
+    /// subtree roots for a pool, from `start_index`. The adapter serves whatever
+    /// the engine's placement answers — a local index, or a passthrough relay to
+    /// the validator. A `start_index` past the end is an empty list, not an error.
     pub(crate) async fn get_subtrees_by_index(
         &self,
         pool: &str,
