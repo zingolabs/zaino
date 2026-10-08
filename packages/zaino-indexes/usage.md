@@ -54,3 +54,25 @@ from those lists: `ToHeight(w)` when every backing index is stamped and a
 watermark is committed, `NotYet` when stamped but no watermark yet, `Absent`
 otherwise — including for capabilities with no local index at all, which the
 composer holding a passthrough provider widens.
+
+## Treestate domain primitives
+
+`indexes::tree_state` holds the commitment-tree (treestate) domain layer the
+`tree_state` index builds on; the sync-engine wiring lands separately.
+
+- `segment::TreeSegment<H>` is the ordered-monoid algebra over a contiguous run
+  of note-commitment leaves, generic over a pool's Merkle hash `H`. `lift`
+  builds a run's complete nodes (hashing each once, parallel across a level),
+  `combine(a, b)` joins two adjacent runs with **at most one hash per level**
+  along the seam (associative, not commutative), and `frontier_at(size)` reads
+  any height's frontier as a pure lookup. `carry_segment` renders a stored
+  carry frontier as the segment a batch combines onto.
+- `pools::{sapling_leaf, orchard_leaf, ironwood_leaf}` convert a note
+  commitment's bytes (`cmu` / `cmx`) to the tree's leaf hash, returning `None`
+  for a non-canonical field encoding. Ironwood shares Orchard's Pallas leaf.
+- `codec::legacy_tree_bytes` / `legacy_tree_from_bytes` are zcashd's legacy
+  `CommitmentTree` encoding — the exact bytes `z_gettreestate`'s `finalState`
+  carries — and its inverse. `codec::TreeStateValue` is a height's per-pool
+  frontiers; `TreeStateIndex` is its `EntryCodec` (height key, `WalkOrdered`),
+  persisting each pool as a big-endian size plus the v1 non-empty-frontier
+  bytes.

@@ -6105,6 +6105,13 @@ dependencies = [
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
+ "hex",
+ "incrementalmerkletree",
+ "orchard",
+ "proptest",
+ "rayon",
+ "sapling-crypto",
+ "serde_json",
  "strum",
  "thiserror 2.0.18",
  "zaino-persistence",
@@ -6112,6 +6119,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-service",
  "zaino-sync",
+ "zcash_primitives",
 ]
 
 [[package]]

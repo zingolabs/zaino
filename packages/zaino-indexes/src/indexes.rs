@@ -12,6 +12,7 @@ pub mod orchard;
 pub mod sapling;
 pub mod transparent_data;
 pub mod transparent_spends;
+pub mod tree_state;
 pub mod txid_location;
 pub mod txids;
 
