@@ -32,5 +32,7 @@ orchard = { version = "0.15.3", default-features = false }
 proptest.workspace = true
 sapling-crypto.workspace = true
 serde_json.workspace = true
+tempfile = "3"
+zaino-backend-lmdb = { path = "../zaino-backend-lmdb" }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zcash_primitives.workspace = true

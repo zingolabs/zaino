@@ -23,9 +23,13 @@ index_set! {
 ```
 
 `sets::compact_blocks::CompactBlocks` is the compact-block set a lightwalletd
-deployment needs; `sets::current_zaino::CurrentZaino` is the full set. A store
-reader is parametrised by one of these (`StoreReader<B, M>`), and its serving
-reads exist only where `M` builds what they compose from.
+deployment needs; `sets::current_zaino::CurrentZaino` is the full set.
+`sets::transparent_history::TransparentHistory` adds the indexes a local address
+read composes from, and `sets::light_wallet_local::LightWalletLocal` adds the
+`tree_state` index on top of those, so a light-wallet deployment serves both
+address history and `GetTreeState` locally. A store reader is parametrised by one
+of these (`StoreReader<B, M>`), and its serving reads exist only where `M` builds
+what they compose from.
 
 ## Local capabilities are declared once
 
@@ -57,8 +61,8 @@ composer holding a passthrough provider widens.
 
 ## Treestate domain primitives
 
-`indexes::tree_state` holds the commitment-tree (treestate) domain layer the
-`tree_state` index builds on; the sync-engine wiring lands separately.
+`indexes::tree_state` holds the commitment-tree (treestate) domain layer and the
+`tree_state` index built on it.
 
 - `segment::TreeSegment<H>` is the ordered-monoid algebra over a contiguous run
   of note-commitment leaves, generic over a pool's Merkle hash `H`. `lift`
@@ -75,4 +79,12 @@ composer holding a passthrough provider widens.
   carries — and its inverse. `codec::TreeStateValue` is a height's per-pool
   frontiers; `TreeStateIndex` is its `EntryCodec` (height key, `WalkOrdered`),
   persisting each pool as a big-endian size plus the v1 non-empty-frontier
-  bytes.
+  bytes. An all-empty value (every pool size 0) is a height no pool is active at;
+  below a pool's activation height and active-but-empty are the same empty
+  frontier here, distinguished at serve time from the network's activation
+  heights.
+- `sync::TreeStateIndex` is the wired `SelfCumulative<OrderedMonoid>` × Append
+  index: height → `TreeStateValue`, built during a sync through the existing
+  append-cumulative bridge's ordered-monoid scan over the three pools.
+  `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
+  chain order — projected from `CurrentZainoContext`.

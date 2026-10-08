@@ -25,6 +25,7 @@ use crate::indexes::transparent_data::{
     TransparentDataCtx, TransparentDataIndex, TransparentTxCompact,
 };
 use crate::indexes::transparent_spends::{SpendCtx, TransparentSpendsIndex};
+use crate::indexes::tree_state::TreeStateCtx;
 use crate::indexes::txid_location::{TxidLocationCtx, TxidLocationIndex};
 use crate::indexes::txids::{TxidsCtx, TxidsIndex};
 
@@ -366,6 +367,36 @@ impl ProvideContext<IronwoodCtx> for CurrentZainoContext {
         IronwoodCtx {
             height: self.height,
             txs: self.ironwood_txs.clone(),
+        }
+    }
+}
+
+impl ProvideContext<TreeStateCtx> for CurrentZainoContext {
+    fn context(&self) -> TreeStateCtx {
+        // Every pool's note commitments, in chain/transaction order: a Sapling
+        // output carries its `cmu`, an Orchard/Ironwood action its `cmx`. The
+        // tree index appends these as leaves, so the order here *is* the leaf
+        // order (and the Merkle hash is order-sensitive).
+        let sapling_cmus = self
+            .sapling_txs
+            .iter()
+            .flat_map(|tx| tx.outputs.iter().map(|(cmu, _epk, _ct)| *cmu))
+            .collect();
+        let orchard_cmxs = self
+            .orchard_txs
+            .iter()
+            .flat_map(|tx| tx.actions.iter().map(|(_nf, cmx, _epk, _ct)| *cmx))
+            .collect();
+        let ironwood_cmxs = self
+            .ironwood_txs
+            .iter()
+            .flat_map(|tx| tx.actions.iter().map(|(_nf, cmx, _epk, _ct)| *cmx))
+            .collect();
+        TreeStateCtx {
+            height: self.height,
+            sapling_cmus,
+            orchard_cmxs,
+            ironwood_cmxs,
         }
     }
 }
