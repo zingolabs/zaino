@@ -166,7 +166,7 @@ mod tests {
             member.lie(lie);
             Arc::new(member)
         });
-        let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = members.iter().map(|member| Trusted {
             source: Arc::clone(member),
             priority: 0,
@@ -230,7 +230,7 @@ mod tests {
         let a7 = chain.mine_empty(7);
         let x1 = chain.fork(h(0)).mine_empty(1).tip();
         let b11 = chain.fork(h(4)).mine_empty(7).tip();
-        let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let validator = Arc::new(MockValidator::following(&chain, a7));
         let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
         let (balancer, balancing) = TrafficBalancer::new(trusted, None);

@@ -141,7 +141,7 @@ async fn run(n: usize, moves: Vec<Move>) {
         Node { validator, tip: shared }
     });
     let mut sim = Sim { nodes: nodes.collect(), chain };
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = sim.nodes.iter().map(|node| Trusted {
         source: Arc::clone(&node.validator),
         priority: 0,

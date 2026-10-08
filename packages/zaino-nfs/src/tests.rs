@@ -410,7 +410,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
         member.lie(lie);
         Arc::new(member)
     });
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted =
         members.iter().map(|member| Trusted { source: Arc::clone(member), priority: 0, limits });
     let (balancer, balancing) = TrafficBalancer::new(trusted.collect(), None);
@@ -465,7 +465,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     let mined: Vec<BlockHash> = trunk.iter().map(|block| block.header().hash).collect();
     let mut headers = blocks.header_chain(DEPTH);
     let member = Arc::new(MockValidator::following(&blocks, genesis));
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![Trusted { source: Arc::clone(&member), priority: 0, limits }];
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
@@ -527,7 +527,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let mut headers = blocks.header_chain(DEPTH);
     insert(&mut headers, &blocks.blocks(a5)).expect("valid headers");
     let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let source = Arc::new(MockValidator::following(&blocks, a5));
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);

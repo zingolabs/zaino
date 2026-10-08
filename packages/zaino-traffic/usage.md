@@ -26,9 +26,8 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 - `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
   `None` = trusted only.
-- `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved per lane + one shared. The second argument of
-  `Limits::new` is ignored (the request-rate limit is gone; it is dropped once every caller
-  passes only `max_connections`).
+- `Limits::new(max_connections)`; `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved
+  per lane + one shared.
 - Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
   transport. There is no request-rate limit.
 - `TrafficBalancer` is `Clone` (one `Arc`); hand the same one to every consumer.

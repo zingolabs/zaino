@@ -583,7 +583,7 @@ mod tests {
         let (verified, chain) = watch::channel(None);
         let validator = Arc::new(MockValidator::following(&blocks, a8));
         let activations = PoolActivations::from_validator(&blocks.blockchain_info(a8));
-        let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+        let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
             zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);

@@ -188,7 +188,7 @@ struct Asked {
 
 impl World {
     fn new(trusted: &[(Kind, u8)]) -> Self {
-        let limits = Limits::new(CONNECTIONS, None).expect("MIN_CONNECTIONS");
+        let limits = Limits::new(CONNECTIONS).expect("MIN_CONNECTIONS");
         let config: Vec<(u8, Limits)> = trusted.iter().map(|(_, p)| (*p, limits)).collect();
         let t0 = Instant::now();
         let ids = (0..trusted.len()).map(|i| MemberId::Trusted(ValidatorId::new(i).expect("≤ 4")));

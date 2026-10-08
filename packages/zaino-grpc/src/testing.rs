@@ -107,7 +107,7 @@ pub(super) fn routes_over(
     node: &Arc<MockValidator>,
 ) -> (Routes<MockValidator, DiskView>, TrafficDriver<MockValidator>, ObservationFold<MockValidator>)
 {
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let view =

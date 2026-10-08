@@ -1,6 +1,5 @@
 //! One member: identity, health, bench, permits, poll cadence (`traffic-balancer.md` §3, §4)
 
-use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
 use crate::class::{Lane, PerLane, Permits, LANES, MIN_CONNECTIONS};
@@ -43,9 +42,7 @@ impl Limits {
     pub const MIN_CONNECTIONS: u32 = MIN_CONNECTIONS;
 
     /// `None` below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS)
-    ///
-    /// - 2nd arg ignored (request-rate limit deleted; dropped once chainview's tests pass `(n)`)
-    pub fn new(max_connections: u32, _: Option<NonZeroU32>) -> Option<Self> {
+    pub fn new(max_connections: u32) -> Option<Self> {
         (max_connections >= MIN_CONNECTIONS).then_some(Self { max_connections })
     }
 }

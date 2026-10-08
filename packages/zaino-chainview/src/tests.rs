@@ -26,7 +26,7 @@ fn running(
     validators: &[Arc<MockValidator>],
     addresses: &[&str],
 ) -> (ChainView<MockValidator>, TrafficBalancer<MockValidator>, CancellationToken) {
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = validators.iter().map(|validator| Trusted {
         source: Arc::clone(validator),
         priority: 0,

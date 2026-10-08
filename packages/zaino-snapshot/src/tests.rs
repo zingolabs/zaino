@@ -49,7 +49,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let path = builder.blocks(a3);
     let params = ChainParams::of(&builder, a3);
     let source = Arc::new(MockValidator::following(&builder, a3));
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
     let address = vec!["10.0.0.1:8232".to_owned()];

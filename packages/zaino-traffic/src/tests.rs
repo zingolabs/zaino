@@ -40,7 +40,7 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     let (sent_id, sent) = raw_transaction(2, 0);
     let partner = MockValidator::following(&chain, tip);
     partner.mempool_insert(raw.clone(), 1_000);
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, driver) = TrafficBalancer::new(
         vec![
             Trusted {
@@ -103,7 +103,7 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
 async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let ours = MockValidator::following(&chain, tip);
     let asks = [Port::Links, Port::Block, Port::MempoolBytes, Port::Transaction, Port::Send];
     ours.latency(&asks, Duration::from_secs(20));
@@ -154,7 +154,7 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let validator = Arc::new(MockValidator::following(&chain, tip));
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, None);
     let cancel = CancellationToken::new();
@@ -266,7 +266,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     let headers = blocks.iter().map(|block| chain.header_bytes(block.header().hash)).collect();
     let membership = Mutex::new(Some(membership.boxed()));
     let pool = Pool { blocks: blocks.clone(), headers, membership };
-    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
     let (balancer, driver) = TrafficBalancer::new(trusted, Some(Arc::new(pool)));
     let cancel = CancellationToken::new();

@@ -72,10 +72,9 @@ Scheduling simplified: the request-rate GCRA, the retry budget, p95 hedge delays
 PeakEWMA / power-of-two-choices are deleted; seven per-class reserves and ceilings become three \
 lanes (control, interactive, bulk) with one reserved permit each, so header runs get the \
 control reserve instead of waiting behind bulk; the poll keeps a permit of its own outside the \
-lanes. `Limits::MIN_CONNECTIONS` is 5 (was 6); `Limits::new`'s second argument is ignored. \
+lanes. `Limits::MIN_CONNECTIONS` is 5 (was 6); `Limits::new` takes only `max_connections`. \
 `MemberRow.latency` is the last reply's round trip.
 """
 migration = """
-Pass `None` (or anything) as `Limits::new`'s second argument; it is removed once every caller \
-passes only `max_connections`.
+`Limits::new(n, rate)` → `Limits::new(n)`.
 """

@@ -16,7 +16,7 @@ fn trusted(index: usize) -> MemberId {
 /// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 lane permits); A2
 ///   headers on peer 7
 fn valid(t0: Instant) -> TrafficCore {
-    let limits = Limits::new(Limits::MIN_CONNECTIONS, None).expect("MIN_CONNECTIONS");
+    let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
     let mut core = TrafficCore::new(&[(0, limits), (1, limits)], t0);
     core.step(Input::Tick, t0);
     let t = t0 + Duration::from_millis(50);
@@ -107,7 +107,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
     // preconditions: caller / driver bug → named panic
     let t = t0 + Duration::from_millis(50);
     let step = |input: Input, now: Instant| fired(|| drop(valid(t0).step(input, now)));
-    let limits = Limits::new(Limits::MIN_CONNECTIONS, None).expect("MIN_CONNECTIONS");
+    let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
     let ticket = Ticket { ask: AskId(0), member: trusted(1), class: Class::TipBlock };
     let v = |index| ValidatorId::new(index).expect("small");
     let preconditions = [

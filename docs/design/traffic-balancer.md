@@ -173,7 +173,7 @@ pub struct TrafficDriver<S> { /* the core's clock, every poll, peer join/leave: 
 pub enum MemberId { Trusted(ValidatorId), Peer(PeerId) }
 pub struct ValidatorId(u8);          // < ValidatorId::MAX (64), configured order
 pub struct PeerId(pub u64);          // WorkPool connection, never reused
-pub struct Limits { .. }             // Limits::new(max_connections ≥ 5, _) (2nd arg ignored, §9)
+pub struct Limits { .. }             // Limits::new(max_connections ≥ 5)
 pub struct Trusted<S> { pub source: Arc<S>, pub priority: u8, pub limits: Limits }
 
 pub struct Answered<T> { pub value: T, pub from: MemberId, pub ticket: Ticket }
@@ -303,9 +303,6 @@ pub struct Observation {
 1. Peers as members via `PeerTransport` over the WorkPool: headers, blocks,
    bytes.
 1. Docs, changesets.
-
-Open: `Limits::new`'s second argument (the deleted request rate) is ignored; drop it once
-zaino-chainview's tests (`network_model.rs`, `tests.rs`) call `Limits::new(n)`.
 
 ## 10. Decisions
 

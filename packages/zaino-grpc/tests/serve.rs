@@ -18,7 +18,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let chain = MockChain::regtest();
     let validator = Arc::new(MockValidator::following(&chain, chain.genesis()));
-    let limits = zaino_traffic::Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
     let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));

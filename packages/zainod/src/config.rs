@@ -100,7 +100,7 @@ impl TrustedValidatorConfig {
     /// The balancer's budget; `None` = `max_connections` below
     /// [`Limits::MIN_CONNECTIONS`](zaino_traffic::Limits) (refused by [`DaemonConfig::validate`])
     pub(crate) fn limits(&self) -> Option<zaino_traffic::Limits> {
-        zaino_traffic::Limits::new(self.max_connections.get(), None)
+        zaino_traffic::Limits::new(self.max_connections.get())
     }
 
     /// The transport's: connection pool + response bytes paced as read
@@ -979,7 +979,7 @@ path = "/tmp/zaino-compact-block"
         };
         assert_eq!(config.trusted_validators, [entry("127.0.0.1:18232"), eu.clone()]);
         assert!(config.validate().is_ok());
-        assert_eq!(eu.limits(), zaino_traffic::Limits::new(8, None), "the balancer's");
+        assert_eq!(eu.limits(), zaino_traffic::Limits::new(8), "the balancer's");
         let link =
             zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
         assert_eq!(eu.link(), link, "the transport's");
