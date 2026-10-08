@@ -213,16 +213,27 @@ impl Scheduler {
             //   full-batch wait on the dependency), not a per-block carry, is what
             //   serialised it. The `firing_rules_satisfied` check above *is* that
             //   gate; past it, emit the whole batch like BlockLocal.
-            // - SelfCumulative: one at a time — each block's extraction needs the
-            //   previous block's carry.
+            // - SelfCumulative with a `Sequential` carry: one at a time — each
+            //   block's extraction needs the previous block's carry.
+            // - SelfCumulative with an `OrderedMonoid` carry: all available.
+            //   Extraction threads no carry — it only buffers each block's
+            //   `(offset, context)`, and the bridge does the measure prefix, lift,
+            //   ordered reduce and projection at merge time — so the batch is
+            //   block-parallel like BlockLocal. The next batch still waits for this
+            //   one to merge+commit (the pending-merge gate), so the single
+            //   per-index buffer never mixes batches.
             let is_parallel = self
                 .dag
                 .node(id)
                 .map(|n| {
+                    use crate::descriptor::{CarryType, InputScope};
                     matches!(
                         n.descriptor.scope,
-                        crate::descriptor::InputScope::BlockLocal
-                            | crate::descriptor::InputScope::CrossIndex
+                        InputScope::BlockLocal
+                            | InputScope::CrossIndex
+                            | InputScope::SelfCumulative {
+                                carry: CarryType::OrderedMonoid
+                            }
                     )
                 })
                 .unwrap_or(false);

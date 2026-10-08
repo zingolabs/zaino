@@ -8,8 +8,10 @@
 //! [`RunningSumIndex`](running_sum_index).
 //!
 //! SelfCumulative indexes: [`CumulativeSumIndex`](cumulative_sum_index) (×Monoidal,
-//! collapsed to a tip total) and [`CumulativeSeriesIndex`](cumulative_series_index)
-//! (×Append, a retained per-height series).
+//! collapsed to a tip total), [`CumulativeSeriesIndex`](cumulative_series_index)
+//! (×Append, a retained per-height series, sequential carry) and
+//! `ToyMerkleIndex` (×Append, an **ordered-monoid** carry that the bridge
+//! builds in parallel).
 //!
 //! [`ProvideContext`]: crate::traits::ProvideContext
 
@@ -20,6 +22,7 @@ pub mod cross_double_index;
 pub mod cumulative_series_index;
 pub mod cumulative_sum_index;
 pub mod running_sum_index;
+pub mod toy_merkle_index;
 pub mod value_index;
 
 use crate::primitives::BlockHeight;
@@ -180,6 +183,17 @@ impl ProvideContext<concat_fold_index::Context> for TestBlockContext {
     fn context(&self) -> concat_fold_index::Context {
         concat_fold_index::Context {
             height: BlockHeight::new(self.height),
+        }
+    }
+}
+
+impl ProvideContext<toy_merkle_index::Context> for TestBlockContext {
+    fn context(&self) -> toy_merkle_index::Context {
+        // The set-wide context carries only a `value`; interpret it as this
+        // block's leaf count and derive deterministic leaves from the height.
+        toy_merkle_index::Context {
+            height: BlockHeight::new(self.height),
+            leaves: toy_merkle_index::leaves_for(self.height, self.value),
         }
     }
 }

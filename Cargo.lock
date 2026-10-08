@@ -6505,6 +6505,8 @@ dependencies = [
 name = "zaino-sync"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
+ "proptest",
  "rayon",
  "strum",
  "thiserror 2.0.18",

@@ -36,6 +36,47 @@ only for a cumulative scope: `BlockLocal` and `CrossIndex` are not generic over
 a carry and cannot name one. The runtime mirror carries it as
 `InputScope::SelfCumulative { carry }`; see the `descriptor` module.
 
+### Ordered-monoid carry: parallel per-height build
+
+`(SelfCumulative, Append)` is served by one bridge regardless of carry algebra —
+same `key = height` append output, same `O(1)` carry resume (point-read the
+value at the watermark). The carry algebra chooses only the **execution
+strategy**, at the type level, with no runtime detection:
+
+- `Sequential` (the default): extraction folds the carry block by block in chain
+  order, via `ExtractCumulative::extract(ctx, prior)`. The scheduler emits the
+  batch one block at a time.
+- `OrderedMonoid`: the index also implements `OrderedMonoidCarry`, declaring its
+  carry an ordered monoid with a measure. The scheduler then emits the batch
+  block-parallel (extraction threads no carry — it only buffers each block's
+  `(offset, context)`), and the bridge builds the whole batch's per-height series
+  in parallel at merge time:
+
+  1. **measure** — prefix-sum each block's `measure_of` onto the carry's
+     `carry_measure` to get its absolute start position (a commutative sum);
+  2. **lift** — `lift(ctx, start)` builds each block's `Segment` independently,
+     in parallel (all the hashing happens here);
+  3. **reduce** — an order-preserving `reduce(identity, combine)` folds the batch
+     into one segment; `combine` is associative but **not** commutative, so the
+     reduce only ever combines adjacent operands in chain order;
+  4. **stitch** — one `combine(carry_segment, batch)` joins the batch onto the
+     carried state;
+  5. **project** — each height's value is a pure lookup, `project(full,
+     end_of_block)`, in parallel — no height re-hashes a node that straddles a
+     block boundary;
+  6. the carry advances to the last height's value (`PriorState = Value`).
+
+  This is the "monoid with a measure" (finger-tree) pattern. It turns a serial
+  per-height fold into parallel work and serves any chain-ordered state whose
+  carry is an ordered monoid: commitment-tree frontiers, cumulative chainwork,
+  value pools.
+
+  **Memory:** the combined segment retains every complete node of the batch (so
+  `project` is a lookup), bounded by the index's `Segment` representation — for a
+  binary commitment tree, `≈ 2 × leaves` nodes per batch (≈25 MB for a spam-era
+  500k-leaf batch). The next batch still waits for this one to merge and commit,
+  so the per-index buffer never mixes batches.
+
 ## CrossIndex reads: `DepsReader`
 
 A `CrossIndex` index needs another index's output for the blocks it processes.

@@ -467,6 +467,105 @@ pub trait CumulativeAppend:
 }
 
 // ===========================================================================
+// OrderedMonoidCarry — the (SelfCumulative<OrderedMonoid>, Append) overlay.
+// ===========================================================================
+
+/// Carry threading as an **ordered monoid with a measure**, for the
+/// `(SelfCumulative<OrderedMonoid>, Append)` cell (index-sync-model §6.3).
+///
+/// This is the opt-in that lets the append-cumulative bridge build a batch's
+/// whole per-height series *without a serial fold*: each block's contribution is
+/// lifted independently and in parallel, the batch is combined by an
+/// order-preserving tree-reduce, and every height's value is then a pure lookup
+/// into the combined summary. It is the parallel analogue of
+/// [`ExtractCumulative::extract`]'s one-block-at-a-time step, and it serves any
+/// chain-ordered state whose carry forms an ordered monoid: commitment-tree
+/// frontiers, cumulative chainwork, value pools.
+///
+/// The contract the bridge relies on (the type system cannot enforce the
+/// algebra, so each law is pinned by a property test against a sequential
+/// reference fold):
+///
+/// - [`Measure`](Self::Measure) is an **additive, commutative** position
+///   measure. [`measure_of`](Self::measure_of) reads a block's own measure and
+///   [`measure_add`](Self::measure_add) sums them; a prefix sum from
+///   [`carry_measure`](Self::carry_measure) gives each block its **start
+///   position**. (Commutativity is fine *here* — a prefix sum of counts — and is
+///   independent of the non-commutative [`combine`](Self::combine) below.)
+/// - [`Segment`](Self::Segment) is the summary of a contiguous run of blocks.
+///   [`lift`](Self::lift) builds one block's segment from `(ctx, start)` alone —
+///   pure given the start position, so the whole batch lifts in parallel.
+///   [`combine`](Self::combine) is **associative but NOT commutative** (`a`
+///   precedes `b`), with [`identity`](Self::identity) its unit, so the engine
+///   reduces operands only in chain order and never reorders them.
+/// - [`carry_segment`](Self::carry_segment) renders the carried state as a
+///   segment covering everything up to the batch, so `combine(carry_segment,
+///   batch)` is the full summary through the batch's end.
+/// - [`project`](Self::project) reads the per-height value whose end measure is
+///   `at` out of that full summary. It is a **pure lookup** — every node it
+///   needs was already hashed during `lift`/`combine`, so no height re-hashes
+///   the nodes that straddle block boundaries (the defect a per-height prefix
+///   scan would have).
+///
+/// Because a block's start position needs the measures of every earlier block
+/// in the batch, the bridge captures `(offset, owned BlockContext)` at
+/// extraction and does the measure prefix, lift, reduce and projection at
+/// `merge` time — extraction carries no running state and so may run
+/// block-parallel and out of order (the bridge sorts by offset first).
+///
+/// [`ExtractCumulative::extract`]: ExtractCumulative::extract
+pub trait OrderedMonoidCarry: CumulativeAppend {
+    /// Additive, commutative position measure (e.g. per-pool leaf counts). A
+    /// prefix sum of block measures gives each block its start position.
+    type Measure: Copy + Send + Sync;
+
+    /// This block's own measure, read from its context.
+    fn measure_of(ctx: &Self::BlockContext) -> Self::Measure;
+
+    /// Sum of two measures. Commutative and associative — it is a position
+    /// prefix sum, not the ordered [`combine`](Self::combine).
+    fn measure_add(a: Self::Measure, b: Self::Measure) -> Self::Measure;
+
+    /// The measure at the end of the state the carry represents (the batch's
+    /// first block starts here).
+    fn carry_measure(carry: &Self::PriorState) -> Self::Measure;
+
+    /// Summary of a contiguous run of blocks; an ordered monoid under
+    /// [`combine`](Self::combine).
+    ///
+    /// `Sync` as well as `Send`: the bridge projects every height's value from
+    /// one combined segment in parallel, reading `&segment` across rayon
+    /// threads.
+    type Segment: Send + Sync;
+
+    /// Build one block's segment from its context and absolute start position.
+    /// Pure given `(ctx, start)`, so the whole batch lifts in parallel. All
+    /// hashing happens here.
+    fn lift(ctx: &Self::BlockContext, start: Self::Measure) -> Result<Self::Segment, Self::Error>;
+
+    /// Render the carried state as a segment covering everything up to the batch.
+    fn carry_segment(carry: &Self::PriorState) -> Self::Segment;
+
+    /// The identity segment: `combine(identity(), x) == x == combine(x, identity())`.
+    fn identity() -> Self::Segment;
+
+    /// Associative combine, with `a` the chain-earlier operand. **Not** assumed
+    /// commutative: `combine(a, b)` may differ from `combine(b, a)`.
+    fn combine(a: Self::Segment, b: Self::Segment) -> Self::Segment;
+
+    /// The per-height value whose end measure is `at`, read from a segment that
+    /// covers everything up to `at` (the carry combined with the batch). A pure
+    /// lookup; no hashing required.
+    fn project(full: &Self::Segment, at: Self::Measure) -> Self::Value;
+
+    /// The entry key for a block, read from its context. The bridge pairs each
+    /// projected value with its block's key to form the per-height append
+    /// entries; the key is the block's own and cannot be recovered from a
+    /// position [`Measure`](Self::Measure), which indexes leaves, not heights.
+    fn key_of(ctx: &Self::BlockContext) -> Self::Key;
+}
+
+// ===========================================================================
 // Source-access overlay — orthogonal to both axes.
 // ===========================================================================
 

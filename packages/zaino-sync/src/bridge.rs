@@ -41,15 +41,18 @@
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
+use rayon::prelude::*;
+
 use crate::backend::{BackendReader, Namespace, WriteOp};
 use crate::descriptor::{
-    Append, BlockLocal, CrossIndex, Descriptor, Fold, Monoidal, SelfCumulative, Sequential,
+    Append, BlockLocal, CrossIndex, Descriptor, Fold, Monoidal, OrderedMonoid, SelfCumulative,
+    Sequential,
 };
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BlockHeight, BlockOffset};
 use crate::traits::{
     CumulativeAppend, DepsReader, ExtractCross, ExtractCumulative, ExtractLocal, IndexDef,
-    MergeAppend, MergeFold, MergeMonoidal, ProvideContext, Schema,
+    MergeAppend, MergeFold, MergeMonoidal, OrderedMonoidCarry, ProvideContext, Schema,
 };
 
 // ===========================================================================
@@ -78,6 +81,7 @@ impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
 
 impl sealed::Sealed for (SelfCumulative<Sequential>, Append) {}
+impl sealed::Sealed for (SelfCumulative<OrderedMonoid>, Append) {}
 impl sealed::Sealed for (SelfCumulative<Sequential>, Monoidal) {}
 impl sealed::Sealed for (SelfCumulative<Sequential>, Fold) {}
 
@@ -132,7 +136,22 @@ where
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
-        Box::new(CumulativeAppendBridge::<I>::new())
+        Box::new(CumulativeAppendBridge::<I, Sequential>::new())
+    }
+}
+
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative<OrderedMonoid>, Append)
+where
+    I: OrderedMonoidCarry
+        + Schema<Vec<<I as IndexDef>::Delta>>
+        + IndexDef<Scope = SelfCumulative<OrderedMonoid>, Composition = Append>
+        + zaino_persistence_codec::EntryCodec<Key = BlockHeight>,
+    I::PriorState: Clone,
+    I::BlockContext: Send + Sync,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CumulativeAppendBridge::<I, OrderedMonoid>::new())
     }
 }
 
@@ -542,6 +561,179 @@ where
 // CumulativeAppendBridge — the (SelfCumulative, Append) bridge
 // ===========================================================================
 
+/// The append-cumulative bridge's **execution strategy** — the only thing that
+/// differs between the two carry algebras of `(SelfCumulative, Append)`.
+///
+/// `(SelfCumulative<Sequential>, Append)` and
+/// `(SelfCumulative<OrderedMonoid>, Append)` share one bridge
+/// ([`CumulativeAppendBridge`]): same output, same `key = height` append
+/// persistence, same `O(1)` carry resume. They differ only in how a batch's
+/// per-height deltas are produced — a serial fold versus a parallel
+/// measure→lift→reduce→project scan. That difference is captured here and
+/// selected at the type level by the scope's carry-algebra marker, so the engine
+/// never detects it at runtime.
+///
+/// The strategy owns its per-batch [`Buffer`](Self::Buffer): the sequential
+/// strategy accumulates finished deltas (it folds during extraction), the
+/// ordered-monoid strategy buffers `(offset, owned context)` and does all the
+/// work in [`merge`](Self::merge).
+pub(crate) trait CumulativeExec<I: CumulativeAppend>: Send + Sync + 'static {
+    /// The strategy's per-batch working buffer.
+    type Buffer: Send + Sync;
+
+    /// A fresh, empty buffer.
+    fn new_buffer() -> Self::Buffer;
+
+    /// Record one block. `ctx` is the owned per-block context (the identity
+    /// projection clones once); `carry` is the running carry across batches.
+    fn extract(
+        buffer: &Mutex<Self::Buffer>,
+        carry: &Mutex<I::PriorState>,
+        offset: BlockOffset,
+        ctx: I::BlockContext,
+    ) -> Result<(), PipelineError>;
+
+    /// Turn the batch's buffer into the per-height deltas and advance the carry
+    /// to the last height's value.
+    fn merge(
+        buffer: &Mutex<Self::Buffer>,
+        carry: &Mutex<I::PriorState>,
+    ) -> Result<Vec<I::Delta>, PipelineError>;
+}
+
+/// Sequential strategy: today's path. Extraction folds the carry block by block
+/// in chain order (the scheduler emits one block at a time), buffering finished
+/// deltas; merge just hands them over.
+impl<I: CumulativeAppend> CumulativeExec<I> for Sequential {
+    type Buffer = Vec<I::Delta>;
+
+    fn new_buffer() -> Self::Buffer {
+        Vec::new()
+    }
+
+    fn extract(
+        buffer: &Mutex<Self::Buffer>,
+        carry: &Mutex<I::PriorState>,
+        _offset: BlockOffset,
+        ctx: I::BlockContext,
+    ) -> Result<(), PipelineError> {
+        let mut carry = carry.lock().expect("carry mutex poisoned");
+        let delta = I::extract(&ctx, &carry).map_err(PipelineError::extract)?;
+        *carry = I::carry(&delta);
+        drop(carry);
+        buffer.lock().expect("delta mutex poisoned").push(delta);
+        Ok(())
+    }
+
+    fn merge(
+        buffer: &Mutex<Self::Buffer>,
+        _carry: &Mutex<I::PriorState>,
+    ) -> Result<Vec<I::Delta>, PipelineError> {
+        Ok(buffer
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect())
+    }
+}
+
+/// Ordered-monoid strategy: build the whole batch in parallel. Extraction only
+/// buffers `(offset, owned context)` — it threads no carry, so blocks may arrive
+/// in any order and even concurrently. `merge` does the real work: sort to chain
+/// order, prefix-sum the measures from the carry to get each block's start
+/// position, `lift` every block in parallel, order-preserving tree-`reduce` the
+/// segments, stitch the carry on with one `combine`, then `project` each
+/// height's value in parallel.
+///
+/// **Per-batch memory:** the combined segment retains every complete node of the
+/// batch (that is what makes `project` a lookup), bounded by the index's
+/// [`Segment`](OrderedMonoidCarry::Segment); for the toy and the real tree index
+/// that is `≈ 2 × leaves` nodes (≈25 MB for a spam-era 500k-leaf batch).
+impl<I: OrderedMonoidCarry> CumulativeExec<I> for OrderedMonoid
+where
+    I: Schema<Vec<<I as IndexDef>::Delta>>,
+    I::BlockContext: Send + Sync,
+{
+    type Buffer = Vec<(BlockOffset, I::BlockContext)>;
+
+    fn new_buffer() -> Self::Buffer {
+        Vec::new()
+    }
+
+    fn extract(
+        buffer: &Mutex<Self::Buffer>,
+        _carry: &Mutex<I::PriorState>,
+        offset: BlockOffset,
+        ctx: I::BlockContext,
+    ) -> Result<(), PipelineError> {
+        buffer
+            .lock()
+            .expect("context buffer mutex poisoned")
+            .push((offset, ctx));
+        Ok(())
+    }
+
+    fn merge(
+        buffer: &Mutex<Self::Buffer>,
+        carry: &Mutex<I::PriorState>,
+    ) -> Result<Vec<I::Delta>, PipelineError> {
+        // Sort to chain order — extraction may have buffered out of order.
+        let mut blocks: Vec<(BlockOffset, I::BlockContext)> = buffer
+            .lock()
+            .expect("context buffer mutex poisoned")
+            .drain(..)
+            .collect();
+        blocks.sort_unstable_by_key(|(offset, _)| *offset);
+        if blocks.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut carry = carry.lock().expect("carry mutex poisoned");
+
+        // Measure prefix sum from the carry: each block's absolute start position
+        // and its end (the position whose frontier the block's height records).
+        let start0 = I::carry_measure(&carry);
+        let mut starts = Vec::with_capacity(blocks.len());
+        let mut ends = Vec::with_capacity(blocks.len());
+        let mut running = start0;
+        for (_, ctx) in &blocks {
+            starts.push(running);
+            running = I::measure_add(running, I::measure_of(ctx));
+            ends.push(running);
+        }
+
+        // Lift every block independently — all the hashing, in parallel.
+        let segments: Vec<I::Segment> = blocks
+            .par_iter()
+            .zip(starts.par_iter())
+            .map(|((_, ctx), &start)| I::lift(ctx, start))
+            .collect::<Result<Vec<_>, I::Error>>()
+            .map_err(PipelineError::extract)?;
+
+        // Order-preserving tree reduce: rayon's `reduce` over an indexed parallel
+        // iterator combines adjacent operands in order, which an associative
+        // `combine` needs (it is not commutative).
+        let batch = segments.into_par_iter().reduce(I::identity, I::combine);
+
+        // One seam stitch onto the carried frontier.
+        let full = I::combine(I::carry_segment(&carry), batch);
+
+        // Every height's value is a parallel lookup into the combined segment.
+        let entries: Vec<(I::Key, I::Value)> = blocks
+            .par_iter()
+            .zip(ends.par_iter())
+            .map(|((_, ctx), &end)| (I::key_of(ctx), I::project(&full, end)))
+            .collect();
+
+        // Advance the carry to the last height's frontier (PriorState = Value).
+        *carry = I::project(&full, *ends.last().expect("batch is non-empty"));
+
+        Ok(<I as Schema<Vec<<I as IndexDef>::Delta>>>::from_entries(
+            entries,
+        ))
+    }
+}
+
 /// Bridge for **append-cumulative** `(SelfCumulative, Append)` indexes:
 /// per-height series (commitment-tree sizes, cumulative chainwork) whose value
 /// at each height is computed from the previous height's.
@@ -550,40 +742,46 @@ where
 /// separate here (see the sync model, §3.2):
 ///
 /// - **Carry** — a running [`PriorState`](ExtractCumulative::PriorState)
-///   threaded across blocks during extraction. Reloaded on resume by point-
-///   reading the value at the watermark height (`O(1)`), not by replaying the
-///   series. For this class `PriorState = Value` ([`CumulativeAppend`]), so the
-///   looked-up value *is* the carry.
-/// - **Output** — an append buffer of per-height deltas, persisted as disjoint
-///   `key = height` entries. Each batch writes only its own heights; it never
-///   rewrites or rescans the whole series (the defect of collapsing the carry
-///   and the output into one blob).
-pub(crate) struct CumulativeAppendBridge<I: CumulativeAppend> {
+///   threaded across blocks. Reloaded on resume by point-reading the value at
+///   the watermark height (`O(1)`), not by replaying the series. For this class
+///   `PriorState = Value` ([`CumulativeAppend`]), so the looked-up value *is* the
+///   carry.
+/// - **Output** — per-height deltas, persisted as disjoint `key = height`
+///   entries. Each batch writes only its own heights; it never rewrites or
+///   rescans the whole series (the defect of collapsing the carry and the output
+///   into one blob).
+///
+/// `X` is the [`CumulativeExec`] strategy, selected by the scope's carry algebra:
+/// [`Sequential`] folds block by block, [`OrderedMonoid`] builds the batch in
+/// parallel. Everything else — resume, append persistence, descriptor — is
+/// shared.
+pub(crate) struct CumulativeAppendBridge<I: CumulativeAppend, X: CumulativeExec<I> = Sequential> {
     descriptor: Descriptor,
     carry: Mutex<I::PriorState>,
-    deltas: Mutex<Vec<I::Delta>>,
+    buffer: Mutex<X::Buffer>,
     merged: Mutex<Option<Vec<I::Delta>>>,
-    _phantom: PhantomData<I>,
+    _phantom: PhantomData<(I, X)>,
 }
 
-impl<I: CumulativeAppend> CumulativeAppendBridge<I> {
+impl<I: CumulativeAppend, X: CumulativeExec<I>> CumulativeAppendBridge<I, X> {
     fn new() -> Self {
         Self {
             descriptor: I::descriptor(<I as zaino_persistence_codec::EntryCodec>::KEY_ORDER),
             carry: Mutex::new(I::initial_carry()),
-            deltas: Mutex::new(Vec::new()),
+            buffer: Mutex::new(X::new_buffer()),
             merged: Mutex::new(None),
             _phantom: PhantomData,
         }
     }
 }
 
-impl<Ctx, I> IndexPipeline<Ctx> for CumulativeAppendBridge<I>
+impl<Ctx, I, X> IndexPipeline<Ctx> for CumulativeAppendBridge<I, X>
 where
     I: CumulativeAppend
         + Schema<Vec<<I as IndexDef>::Delta>>
         + zaino_persistence_codec::EntryCodec<Key = BlockHeight>,
     I::PriorState: Clone,
+    X: CumulativeExec<I>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn descriptor(&self) -> &Descriptor {
@@ -619,28 +817,15 @@ where
         Ok(())
     }
 
-    // Extraction is sequential in chain order (the scheduler emits one block at
-    // a time for a SelfCumulative index), so the offset carries no information
-    // this bridge needs — the carry already threads blocks in order.
-    fn extract_one(&self, _offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError> {
-        let mut carry = self.carry.lock().expect("carry mutex poisoned");
-        let delta = I::extract(&ctx.context(), &carry).map_err(PipelineError::extract)?;
-        *carry = I::carry(&delta);
-        drop(carry);
-        self.deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .push(delta);
-        Ok(())
+    // The offset matters only to the ordered-monoid strategy, which sorts its
+    // buffer by it; the sequential strategy folds in chain order and ignores it.
+    // The identity projection owns the context clone once, here.
+    fn extract_one(&self, offset: BlockOffset, ctx: &Ctx) -> Result<(), PipelineError> {
+        X::extract(&self.buffer, &self.carry, offset, ctx.context())
     }
 
     fn merge(&self) -> Result<(), PipelineError> {
-        let deltas: Vec<I::Delta> = self
-            .deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .drain(..)
-            .collect();
+        let deltas = X::merge(&self.buffer, &self.carry)?;
         *self.merged.lock().expect("merged mutex poisoned") = Some(deltas);
         Ok(())
     }
