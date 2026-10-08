@@ -77,6 +77,9 @@
             shellcheck
             rust-analyzer
 
+            # zainod `snapshot` bootstrap + its e2e test (`--all-features`)
+            aria2
+
             # Integration tests
             kind
             kubectl
