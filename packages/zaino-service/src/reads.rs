@@ -10,9 +10,9 @@ use zaino_primitives::types::rpc::BlockHeaderVerbose;
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange,
-    Outpoint, RawTransaction, ShieldedPool, SubtreeRoot, Transaction, TransactionDetail,
-    TransactionId, TransactionLocation, TransparentAddress, TransparentInput, TransparentOutput,
-    TransparentReceive, TransparentSpend, Treestate, Utxo,
+    Outpoint, PoolActivations, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
+    TransactionDetail, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
+    TransparentOutput, TransparentReceive, TransparentSpend, Treestate, Utxo,
 };
 
 use crate::error::{
@@ -337,6 +337,16 @@ pub trait TreestateRead: Send + Sync {
     ) -> impl Future<Output = Result<Vec<SubtreeRoot>, TreestateReadError>> + Send;
 }
 
+/// The per-pool activation schedule a tier was built against, so a treestate
+/// read can tell an active-but-empty pool (serve the empty tree) from one below
+/// its activation (absent). The finalised store holds it; the composer reads it
+/// from there to pass into the window's fold. Learned from the validator at boot,
+/// never compiled in.
+pub trait PoolActivationSource: Send + Sync {
+    /// The activation schedule this tier serves against.
+    fn pool_activations(&self) -> PoolActivations;
+}
+
 /// The non-finalised window's half of the treestate capability.
 ///
 /// A bounded window holds no commitment tree of its own, so it cannot answer a
@@ -359,6 +369,7 @@ pub trait TreestateWindowRead: Send + Sync {
     fn window_treestate(
         &self,
         seed: Option<&Treestate>,
+        activations: PoolActivations,
         at: Height,
     ) -> impl Future<Output = Result<Option<Treestate>, TreestateReadError>> + Send;
 
@@ -366,7 +377,8 @@ pub trait TreestateWindowRead: Send + Sync {
     /// global subtree index in `[start_index, start_index + limit)` (unbounded
     /// when `limit` is `None`), ascending. A window completion always has a higher
     /// index than every finalised one, so the composer concatenates these after
-    /// the finalised tier's same-range page.
+    /// the finalised tier's same-range page. Activation plays no part — a subtree
+    /// completes only once `2^16` notes exist, so the pool is certainly active.
     fn window_subtree_roots(
         &self,
         seed: Option<&Treestate>,

@@ -55,9 +55,9 @@ pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadC
 pub use reads::{
     AddressRead, AddressReceiveRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews,
     BlockVerboseRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
-    HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid, RawTransactionRead, ReadBudget,
-    ResolvedInput, SpendRead, TransactionRead, TransactionView, TransactionViewRead, TreestateRead,
-    TreestateWindowRead,
+    HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid, PoolActivationSource,
+    RawTransactionRead, ReadBudget, ResolvedInput, SpendRead, TransactionRead, TransactionView,
+    TransactionViewRead, TreestateRead, TreestateWindowRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use tx_out::TxOutRead;

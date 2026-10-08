@@ -23,7 +23,9 @@ use zaino_indexes::indexes::tree_state::serve::{
     fold_window, seed_value, window_subtree_roots, WindowSubtree,
 };
 use zaino_indexes::sets::current_zaino::tree_state_ctx;
-use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, TreeRoot, Treestate};
+use zaino_primitives::types::{
+    Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
+};
 use zaino_service::error::TreestateReadError;
 use zaino_service::TreestateWindowRead;
 
@@ -33,6 +35,7 @@ impl TreestateWindowRead for HeadSnapshot {
     async fn window_treestate(
         &self,
         seed: Option<&Treestate>,
+        activations: PoolActivations,
         at: Height,
     ) -> Result<Option<Treestate>, TreestateReadError> {
         let window = self.window();
@@ -71,7 +74,13 @@ impl TreestateWindowRead for HeadSnapshot {
                 .checked_add(1)
                 .ok_or_else(|| TreestateReadError::Fatal("window height overflow".to_owned()))?;
         }
-        if expected != u32::from(at) + 1 {
+        // The seam is reached exactly when the folded run ended one past `at`. A
+        // protocol height is below `u32::MAX`, so the `+1` cannot overflow; name
+        // that invariant rather than asserting a magnitude.
+        let one_past_at = u32::from(at)
+            .checked_add(1)
+            .expect("a protocol height is below u32::MAX, so one past it fits u32");
+        if expected != one_past_at {
             // `at` was not reached from the seam — a gap, or `at` below the floor.
             return Err(TreestateReadError::NotServiceable(
                 zaino_service::Capability::Treestate,
@@ -87,7 +96,7 @@ impl TreestateWindowRead for HeadSnapshot {
             .map_err(|e| TreestateReadError::Fatal(format!("decode seed frontier: {e}")))?;
         let folded = fold_window(&seed, &ctxs)
             .map_err(|e| TreestateReadError::Fatal(format!("fold window treestate: {e}")))?;
-        let (sapling, orchard, ironwood) = folded.pool_treestates();
+        let (sapling, orchard, ironwood) = folded.pool_treestates(&activations, at);
         Ok(Some(Treestate {
             block_hash,
             height: at,
@@ -132,9 +141,15 @@ impl TreestateWindowRead for HeadSnapshot {
 }
 
 /// The first height above the seed the window folds from: one past the watermark,
-/// or genesis when the store holds nothing.
+/// or genesis when the store holds nothing. A protocol height is below
+/// `u32::MAX`, so one past it cannot overflow — named rather than asserted as a
+/// magnitude, consistent with the fold loop's checked step.
 fn seam_next(seed: Option<&Treestate>) -> u32 {
-    seed.map_or(0, |seed| u32::from(seed.height) + 1)
+    seed.map_or(0, |seed| {
+        u32::from(seed.height)
+            .checked_add(1)
+            .expect("a protocol height is below u32::MAX, so one past it fits u32")
+    })
 }
 
 /// A window completion as a domain [`SubtreeRoot`], converting the completing
@@ -163,8 +178,8 @@ mod tests {
     use zaino_primitives::types::{
         Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata,
         CompactCiphertext, CompactDifficulty, EphemeralKey, EquihashSolution, Height, MerkleRoot,
-        NoteCommitment, OrchardData, SaplingData, SaplingOutput, Transaction, TransparentData,
-        TreeRoots, Treestate,
+        NoteCommitment, OrchardData, PoolActivations, SaplingData, SaplingOutput, Transaction,
+        TransparentData, TreeRoots, Treestate,
     };
     use zaino_service::TreestateWindowRead;
 
@@ -174,6 +189,15 @@ mod tests {
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("a valid test height")
+    }
+
+    /// Sapling active from genesis, so the window's test blocks report it.
+    fn active() -> PoolActivations {
+        PoolActivations {
+            sapling: Some(height(0)),
+            orchard: None,
+            ironwood: None,
+        }
     }
 
     /// A canonical Sapling note commitment from a seed in its low 8 bytes.
@@ -250,7 +274,7 @@ mod tests {
             .expect("1a extends the tip");
         let before = HeadSnapshot::over(Arc::new(graph.clone()));
         let branch_a = before
-            .window_treestate(None, height(1))
+            .window_treestate(None, active(), height(1))
             .await
             .expect("read succeeds")
             .expect("height 1 is in the window");
@@ -268,7 +292,7 @@ mod tests {
             .expect("1b extends genesis");
         let after = HeadSnapshot::over(Arc::new(graph));
         let branch_b = after
-            .window_treestate(None, height(1))
+            .window_treestate(None, active(), height(1))
             .await
             .expect("read succeeds")
             .expect("height 1 is in the window");
@@ -310,7 +334,7 @@ mod tests {
             &[tree_state_ctx(&b0.block), tree_state_ctx(&b1.block)],
         )
         .expect("fold to height 1");
-        let (sapling, orchard, ironwood) = value_at_1.pool_treestates();
+        let (sapling, orchard, ironwood) = value_at_1.pool_treestates(&active(), height(1));
         let seed = Treestate {
             block_hash: b1.reference.hash,
             height: height(1),
@@ -325,7 +349,7 @@ mod tests {
         let mut floor1 = MapBackedSnapshot::from_initial_block(b1.clone());
         floor1.extend(b2.clone()).expect("2 extends 1");
         let seeded = HeadSnapshot::over(Arc::new(floor1))
-            .window_treestate(Some(&seed), height(2))
+            .window_treestate(Some(&seed), active(), height(2))
             .await
             .expect("read succeeds")
             .expect("height 2 is in the window");
@@ -335,7 +359,7 @@ mod tests {
         floor0.extend(b1).expect("1 extends 0");
         floor0.extend(b2).expect("2 extends 1");
         let whole = HeadSnapshot::over(Arc::new(floor0))
-            .window_treestate(None, height(2))
+            .window_treestate(None, active(), height(2))
             .await
             .expect("read succeeds")
             .expect("height 2 is in the window");
@@ -352,7 +376,7 @@ mod tests {
         let graph = MapBackedSnapshot::from_initial_block(block(0, 0x00, 0xFF, vec![]));
         let head = HeadSnapshot::over(Arc::new(graph));
         assert_eq!(
-            head.window_treestate(None, height(9))
+            head.window_treestate(None, active(), height(9))
                 .await
                 .expect("read succeeds"),
             None,

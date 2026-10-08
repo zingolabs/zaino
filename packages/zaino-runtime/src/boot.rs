@@ -30,8 +30,10 @@ use zaino_indexes::sets::current_zaino::{
 };
 use zaino_persistence::{NamespaceSpec, OpenError};
 use zaino_persistence_codec::reserved_namespaces;
+use zaino_primitives::types::PoolActivations;
 use zaino_service::use_cases::{Serves, UseCase};
 use zaino_service::TakeSnapshot;
+use zaino_source::GetBlockchainInfo;
 use zaino_store::{IndexCoverageError, StoreReader, WatermarkRepairError};
 use zaino_store_service::StoreComponent;
 
@@ -80,6 +82,13 @@ pub enum DeployError {
     /// The validator was unreachable when the runtime gated on it at boot.
     #[error(transparent)]
     ValidatorUnreachable(#[from] ValidatorUnreachable),
+    /// The validator's upgrade schedule could not be read at boot. The store
+    /// needs it to serve treestate correctly (an active-but-empty pool must serve
+    /// the empty tree, not be reported absent), and it is read from the validator
+    /// rather than compiled in, so the runtime refuses to boot without it rather
+    /// than silently defaulting to a wrong schedule.
+    #[error("reading the validator's upgrade schedule at boot failed: {0}")]
+    ActivationSchedule(String),
     /// A runtime component failed to boot.
     #[error("component failed to boot")]
     Component(#[source] Box<dyn std::error::Error + Send + Sync>),
@@ -105,7 +114,7 @@ pub async fn boot_indexed<D, A, C>(
 ) -> Result<Orchestra, DeployError>
 where
     D: RuntimePlan<Config = IndexedDeploymentConfig>,
-    C: IndexedSource,
+    C: IndexedSource + GetBlockchainInfo,
     StoreReader<LmdbBackend, D::Indexes>: TakeSnapshot<Snapshot: ChainTier>,
     IndexedEngine<D, C>: Serves<D::UseCase>,
     RunComponent<A>: StatusSource + StatusWatch + Managed + Clone + Send + Sync + 'static,
@@ -114,11 +123,20 @@ where
 
     let backend = open_store::<D>(&config.store)?;
 
+    // The per-pool activation schedule, read once from the validator at boot. The
+    // store needs it to serve treestate correctly — an active-but-empty pool
+    // (from activation to its first note) serves the empty tree, not absence —
+    // and Zaino carries no compiled-in schedule, so a validator that cannot
+    // describe its chain fails the boot rather than defaulting to a wrong one.
+    let activations = read_pool_activations(source.as_ref()).await?;
+
     // The finalised store: the indexer writes it, the engine composes blocks on
     // read from it. One reader, shared (Arc-backed clone). Typed to the
     // deployment's index set: the reads it has are exactly the reads those
-    // indexes back.
-    let store_reader = StoreReader::<_, D::Indexes>::new(Arc::new(backend.clone()));
+    // indexes back. It carries the activation schedule so its treestate read
+    // renders each pool against the right boundary.
+    let store_reader =
+        StoreReader::<_, D::Indexes>::with_activations(Arc::new(backend.clone()), activations);
     repair_watermark::<D>(&store_reader)?;
     // Fail loud before the indexer stamps the new indexes on first write: an
     // index this deployment declares but the existing store never built would
@@ -163,6 +181,27 @@ where
             assemble::<D, A, C, _, _>(source, store_reader, driver, serve).await
         }
     }
+}
+
+/// Read the validator's reported upgrade schedule once and project it to the
+/// per-pool activation heights, keyed by consensus branch id.
+///
+/// A validator that cannot describe its chain fails the boot: Zaino carries no
+/// compiled-in schedule, and defaulting to a wrong one would make the treestate
+/// read report an active pool absent (or an inactive one present) — which
+/// pepper-sync rejects.
+async fn read_pool_activations<C: GetBlockchainInfo>(
+    source: &C,
+) -> Result<PoolActivations, DeployError> {
+    let info = source
+        .get_blockchain_info()
+        .await
+        .map_err(|e| DeployError::ActivationSchedule(e.to_string()))?;
+    Ok(PoolActivations::from_branch_activations(
+        info.upgrades
+            .iter()
+            .map(|upgrade| (u32::from(upgrade.branch_id), upgrade.activation_height)),
+    ))
 }
 
 /// Bring up everything around an indexer that is already built: the chain
@@ -302,5 +341,132 @@ struct AlreadyReachable;
 impl ReachabilityProbe for AlreadyReachable {
     async fn reachable(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use zaino_primitives::types::{
+        AbsoluteChainWork, BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds,
+        Height, NetworkUpgradeInfo, NetworkUpgradeStatus, ValuePoolBalance, Zatoshis,
+        NU5_BRANCH_ID, SAPLING_BRANCH_ID,
+    };
+    use zaino_source::{
+        GetBlockchainInfoError, NonDomainError, OneShotGetBlockchainInfo, QueryError, RetryPolicy,
+        ValidatorClient, ValidatorSource,
+    };
+
+    use super::{read_pool_activations, DeployError};
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid height")
+    }
+
+    /// A blockchain-info aggregate whose only test-relevant field is the upgrade
+    /// schedule; the rest are neutral, mirroring the service mock's synthesis.
+    fn info_with(upgrades: Vec<NetworkUpgradeInfo>) -> BlockchainInfo {
+        BlockchainInfo {
+            chain: "main".to_string(),
+            blocks: height(0),
+            headers: height(0),
+            estimated_height: height(0),
+            best_block_hash: BlockHash::ZERO,
+            difficulty: 0.0,
+            verification_progress: 1.0,
+            chain_work: Option::<AbsoluteChainWork>::None,
+            pruned: false,
+            size_on_disk: 0,
+            commitments: 0,
+            chain_supply: ValuePoolBalance {
+                id: "transparent".to_string(),
+                chain_value: Zatoshis::ZERO,
+                monitored: true,
+                value_delta: None,
+            },
+            value_pools: Vec::new(),
+            upgrades,
+            consensus: ConsensusBranchIds {
+                chain_tip: ConsensusBranchId::new(0),
+                next_block: ConsensusBranchId::new(0),
+            },
+        }
+    }
+
+    fn upgrade(branch_id: u32, activation: u32) -> NetworkUpgradeInfo {
+        NetworkUpgradeInfo {
+            branch_id: ConsensusBranchId::new(branch_id),
+            name: "upgrade".to_string(),
+            activation_height: height(activation),
+            status: NetworkUpgradeStatus::Active,
+        }
+    }
+
+    /// A validator source that counts schedule reads, answering a scripted
+    /// result. It implements the one-shot port (the resilient `GetBlockchainInfo`
+    /// the boot read bounds on is sealed to `ValidatorClient`, which wraps this).
+    struct Spy {
+        calls: Arc<AtomicUsize>,
+        answer: Result<BlockchainInfo, GetBlockchainInfoError>,
+    }
+
+    impl ValidatorSource for Spy {
+        type NonDomain = NonDomainError;
+    }
+
+    impl OneShotGetBlockchainInfo for Spy {
+        async fn get_blockchain_info(
+            &self,
+        ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.answer.clone().map_err(QueryError::Domain)
+        }
+    }
+
+    fn client(spy: Spy) -> ValidatorClient<Spy> {
+        ValidatorClient::new(spy, RetryPolicy::default())
+    }
+
+    /// Step 1(b): boot reads the validator's schedule exactly once and projects
+    /// it per pool by consensus branch id. A pool the schedule omits (Ironwood
+    /// here, as on a network without NU6.3) is unscheduled.
+    #[tokio::test]
+    async fn boot_reads_the_activation_schedule_once() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = client(Spy {
+            calls: Arc::clone(&calls),
+            answer: Ok(info_with(vec![
+                upgrade(SAPLING_BRANCH_ID, 419_200),
+                upgrade(NU5_BRANCH_ID, 1_687_104),
+            ])),
+        });
+
+        let activations = read_pool_activations(&client).await.expect("schedule read");
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "the schedule is read exactly once at boot"
+        );
+        assert_eq!(activations.sapling, Some(height(419_200)));
+        assert_eq!(activations.orchard, Some(height(1_687_104)));
+        assert_eq!(activations.ironwood, None);
+    }
+
+    /// A validator that cannot describe its chain fails the boot with a typed
+    /// error rather than silently defaulting to a wrong schedule.
+    #[tokio::test]
+    async fn boot_fails_when_the_schedule_is_unavailable() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = client(Spy {
+            calls,
+            answer: Err(GetBlockchainInfoError::NotReady),
+        });
+        assert!(matches!(
+            read_pool_activations(&client).await,
+            Err(DeployError::ActivationSchedule(_))
+        ));
     }
 }

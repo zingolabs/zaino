@@ -29,9 +29,11 @@ use zaino_indexes::indexes::subtrees::{
 use zaino_indexes::indexes::tree_state::{self, TreeStateIndex};
 use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{decode_value, encode_key, EntryCodec};
-use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, TreeRoot, Treestate};
+use zaino_primitives::types::{
+    Height, PoolActivations, ShieldedPool, SubtreeRoot, TreeRoot, Treestate,
+};
 use zaino_service::error::TreestateReadError;
-use zaino_service::{Capability, TreestateRead};
+use zaino_service::{Capability, PoolActivationSource, TreestateRead};
 use zaino_sync::traits::IndexDef;
 
 use crate::{read_index_value, serviceability_gate, StoreSnapshot};
@@ -77,7 +79,7 @@ where
                 ))
             })?;
 
-        let (sapling, orchard, ironwood) = value.pool_treestates();
+        let (sapling, orchard, ironwood) = value.pool_treestates(&self.activations, at);
         Ok(Treestate {
             block_hash: header.hash,
             height: at,
@@ -107,6 +109,18 @@ where
                 scan_subtrees::<IronwoodSubtreesIndex, B>(&reader, start_index, limit)
             }
         }
+    }
+}
+
+/// The store reports the schedule it was built with, so the composer can seed the
+/// window's fold with the same activation boundaries the finalised tier used.
+impl<B, M> PoolActivationSource for StoreSnapshot<B, M>
+where
+    B: Backend + 'static,
+    M: Send + Sync + 'static,
+{
+    fn pool_activations(&self) -> PoolActivations {
+        self.activations
     }
 }
 
@@ -244,7 +258,7 @@ mod tests {
     use zaino_persistence::{Backend, BackendWriter, NamespaceSpec, WriteOp};
     use zaino_persistence_codec::{put, reserved_namespaces, version_stamp, watermark};
     use zaino_primitives::types::{
-        BlockHash, CompactDifficulty, Height, NoteCommitment, ShieldedPool,
+        BlockHash, CompactDifficulty, Height, NoteCommitment, PoolActivations, ShieldedPool,
     };
     use zaino_service::error::TreestateReadError;
     use zaino_service::{Capability, TakeSnapshot, TreestateRead};
@@ -348,8 +362,18 @@ mod tests {
         (ops, values)
     }
 
+    /// Sapling scheduled from height 1 (so the fixture's heights are all active);
+    /// Orchard and Ironwood unscheduled, so they stay absent — the empty-pool case.
+    fn activations() -> PoolActivations {
+        PoolActivations {
+            sapling: Some(height(1)),
+            orchard: None,
+            ironwood: None,
+        }
+    }
+
     async fn snapshot(backend: Arc<LmdbBackend>) -> StoreSnapshot<LmdbBackend, LightWalletLocal> {
-        StoreReader::<_, LightWalletLocal>::new(backend)
+        StoreReader::<_, LightWalletLocal>::with_activations(backend, activations())
             .snapshot()
             .await
             .expect("snapshot")
@@ -388,8 +412,8 @@ mod tests {
 
         // Each height's Sapling tree is exactly the one the index stored there,
         // and they differ height to height (each block adds notes).
-        let expected2 = values[1].pool_treestates().0;
-        let expected3 = values[2].pool_treestates().0;
+        let expected2 = values[1].pool_treestates(&activations(), height(2)).0;
+        let expected3 = values[2].pool_treestates(&activations(), height(3)).0;
         assert_eq!(at2.sapling, expected2);
         assert_eq!(at3.sapling, expected3);
         assert_ne!(

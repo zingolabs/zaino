@@ -64,7 +64,9 @@ use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_persistence_codec::{
     decode_value, encode_key, freshness, watermark, EntryCodec, Freshness,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, BlockSelector, Height, HeightRange};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockSelector, Height, HeightRange, PoolActivations,
+};
 use zaino_primitives::types::{
     CompactBlock, OrchardAction, PreIndexCompactTx, SaplingOutput, TransparentInput,
     TransparentOutput,
@@ -84,16 +86,28 @@ use zaino_sync::primitives::BlockHeight;
 /// is the static promise the serving reads bound on.
 pub struct StoreReader<B, M> {
     backend: Arc<B>,
+    /// The per-pool activation schedule the treestate read renders against,
+    /// learned from the validator at boot. Pinned into every snapshot.
+    activations: PoolActivations,
     index_set: PhantomData<M>,
 }
 
 impl<B, M> StoreReader<B, M> {
-    /// A reader over `backend`, built to the index set `M`. The finalised
-    /// tip is read live from the backend's watermark at snapshot time, not
-    /// passed in.
+    /// A reader over `backend`, built to the index set `M`, with no activation
+    /// schedule — treestate reports every pool absent, which suits a reader that
+    /// serves no treestate. The finalised tip is read live from the backend's
+    /// watermark at snapshot time, not passed in.
     pub fn new(backend: Arc<B>) -> Self {
+        Self::with_activations(backend, PoolActivations::unknown())
+    }
+
+    /// A reader over `backend` carrying the validator-reported activation
+    /// schedule, so its treestate read tells an active-but-empty pool (serve the
+    /// empty tree) from one below its activation (absent).
+    pub fn with_activations(backend: Arc<B>, activations: PoolActivations) -> Self {
         Self {
             backend,
+            activations,
             index_set: PhantomData,
         }
     }
@@ -106,6 +120,7 @@ impl<B, M> Clone for StoreReader<B, M> {
     fn clone(&self) -> Self {
         Self {
             backend: Arc::clone(&self.backend),
+            activations: self.activations,
             index_set: PhantomData,
         }
     }
@@ -137,6 +152,7 @@ where
 
     fn snapshot(&self) -> impl Future<Output = Result<Self::Snapshot, Transient>> + Send {
         let backend = self.backend.clone();
+        let activations = self.activations;
         async move {
             // Consume the writer's watermark — the finalised tip this view can
             // answer up to — and pin it. Reads through the snapshot hit live
@@ -165,6 +181,7 @@ where
                 backend: backend.clone(),
                 watermark,
                 pinned_tip,
+                activations,
                 index_set: PhantomData,
             })
         }
@@ -179,6 +196,8 @@ pub struct StoreSnapshot<B, M> {
     watermark: Option<Height>,
     /// The block at the watermark, composed from the headers index at pin time.
     pinned_tip: Option<BlockRef>,
+    /// The per-pool activation schedule, pinned from the reader.
+    activations: PoolActivations,
     index_set: PhantomData<M>,
 }
 
@@ -189,6 +208,7 @@ impl<B, M> Clone for StoreSnapshot<B, M> {
             backend: self.backend.clone(),
             watermark: self.watermark,
             pinned_tip: self.pinned_tip,
+            activations: self.activations,
             index_set: PhantomData,
         }
     }

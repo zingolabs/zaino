@@ -8,27 +8,26 @@
 //! the seam agree node-for-node: identical frontiers render to identical
 //! [`PoolTreestate`]s.
 //!
-//! # Activation, as a note-presence proxy
+//! # Activation
 //!
-//! A pool is reported ([`Some`]) only when its tree holds at least one note at
-//! the height; an empty tree renders as [`None`] (the `""` a wallet reads as
-//! "pool not here"). Zcash reports a pool from its activation height on, even
-//! across the handful of early blocks before its first note — the exact
-//! boundary needs the validator's reported activation schedule
-//! ([`BlockchainInfo::upgrades`](zaino_primitives::types::BlockchainInfo)), which
-//! is not threaded into the local serve path. Note-presence is the proxy until
-//! it is: it agrees with the schedule everywhere a note exists — every height a
-//! wallet actually witnesses against — and differs only on pre-first-note blocks
-//! of an active pool, which carry no shielded data to witness. Wiring the
-//! reported schedule through to this projection is the remaining step for
-//! byte-exactness at those boundary heights.
+//! A pool is reported ([`Some`]) from its activation height on — including the
+//! blocks between activation and its first note, where the tree is active but
+//! empty and must serve the serialised empty tree, not absence. Below its
+//! activation (or on a network where the pool is unscheduled) it is [`None`] (the
+//! `""` a wallet reads as "pool not here"; pepper-sync rejects `""` for an active
+//! pool, so this boundary must be exact). A tree size alone cannot tell the two
+//! apart — both are size 0 — so the decision takes the per-pool activation
+//! height from [`PoolActivations`], which Zaino learns from the validator's
+//! reported upgrade schedule at boot rather than compiling one in.
 
 use incrementalmerkletree::frontier::Frontier;
 use incrementalmerkletree::Hashable;
 use orchard::tree::MerkleHashOrchard;
 use sapling_crypto::Node as SaplingNode;
 use zaino_persistence_codec::DecodeError;
-use zaino_primitives::types::{PoolTreestate, ShieldedPool, TreeRoot, Treestate};
+use zaino_primitives::types::{
+    Height, PoolActivations, PoolTreestate, ShieldedPool, TreeRoot, Treestate,
+};
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ExtractCumulative;
 use zcash_primitives::merkle_tree::HashSer;
@@ -52,16 +51,22 @@ fn node_bytes<H: HashSer>(node: &H) -> [u8; 32] {
         .expect("a pool node hash serializes to exactly 32 bytes")
 }
 
-/// Render one pool's frontier as a domain [`PoolTreestate`], or [`None`] when
-/// the tree is empty (the note-presence activation proxy; see the module docs).
+/// Render one pool's frontier as a domain [`PoolTreestate`], or [`None`] when the
+/// pool is not active at `at` (below its `activation` height, or unscheduled).
 ///
-/// The `final_root` is the frontier's root (padded with empty subtrees to the
-/// pool depth), in internal byte order; the `final_state` is zcashd's legacy
-/// `CommitmentTree` serialization, the exact bytes `z_gettreestate` carries.
+/// An active pool is reported even when its tree is empty: the empty frontier
+/// renders to the serialised empty tree and the empty-tree root, which is what
+/// `z_gettreestate` carries from a pool's activation height onward. The
+/// `final_root` is the frontier's root (padded with empty subtrees to the pool
+/// depth) in internal byte order; the `final_state` is zcashd's legacy
+/// `CommitmentTree` serialization.
 pub fn pool_treestate<H: HashSer + Hashable + Clone>(
     frontier: &Frontier<H, DEPTH>,
+    activation: Option<Height>,
+    at: Height,
 ) -> Option<PoolTreestate> {
-    if frontier.tree_size() == 0 {
+    // Absent (unscheduled) or below its activation height: the pool is not here.
+    if activation.is_none_or(|activation| at < activation) {
         return None;
     }
     Some(PoolTreestate {
@@ -71,19 +76,21 @@ pub fn pool_treestate<H: HashSer + Hashable + Clone>(
 }
 
 impl TreeStateValue {
-    /// The three pools' domain treestates, Sapling / Orchard / Ironwood, each
-    /// rendered through [`pool_treestate`].
+    /// The three pools' domain treestates at height `at`, Sapling / Orchard /
+    /// Ironwood, each rendered through [`pool_treestate`] against `activations`.
     pub fn pool_treestates(
         &self,
+        activations: &PoolActivations,
+        at: Height,
     ) -> (
         Option<PoolTreestate>,
         Option<PoolTreestate>,
         Option<PoolTreestate>,
     ) {
         (
-            pool_treestate(&self.sapling),
-            pool_treestate(&self.orchard),
-            pool_treestate(&self.ironwood),
+            pool_treestate(&self.sapling, activations.sapling, at),
+            pool_treestate(&self.orchard, activations.orchard, at),
+            pool_treestate(&self.ironwood, activations.ironwood, at),
         )
     }
 }
@@ -204,5 +211,116 @@ fn pool_marker<P: Pool>() -> super::sync::Pool {
         n if n == SaplingPool::NAME => super::sync::Pool::Sapling,
         n if n == OrchardPool::NAME => super::sync::Pool::Orchard,
         _ => super::sync::Pool::Ironwood,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::indexes::tree_state::pools::{orchard_leaf, sapling_leaf};
+    use incrementalmerkletree::frontier::Frontier;
+
+    fn h(height: u32) -> Height {
+        Height::try_from(height).expect("valid height")
+    }
+
+    /// A canonical leaf from a seed in the low 8 bytes.
+    fn sapling_note(seed: u64) -> SaplingNode {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        sapling_leaf(bytes).expect("canonical sapling cmu")
+    }
+    fn orchard_note(seed: u64) -> MerkleHashOrchard {
+        let mut bytes = [0u8; 32];
+        bytes[..8].copy_from_slice(&seed.to_le_bytes());
+        orchard_leaf(bytes).expect("canonical orchard cmx")
+    }
+
+    fn root_bytes(pool: &Option<PoolTreestate>) -> [u8; 32] {
+        <[u8; 32]>::from(
+            pool.as_ref()
+                .expect("active pool")
+                .final_root
+                .expect("root present"),
+        )
+    }
+
+    // Step 1(a): the activation boundary against zebra's z_gettreestate fixture
+    // (packages/zaino-indexes/tests/fixtures/treestate/zebra-mainnet.json).
+    //
+    // Sapling activates at mainnet height 419200, with an empty tree (its first
+    // note lands at 419201): below → absent, at activation → the serialised empty
+    // tree and the empty-tree root, first note → a non-empty tree, still present.
+    #[test]
+    fn sapling_activation_boundary_matches_zebra() {
+        let activation = Some(h(419_200));
+        let empty = Frontier::<SaplingNode, DEPTH>::empty();
+
+        // activation − 1: absent (the wire `""`).
+        assert_eq!(pool_treestate(&empty, activation, h(419_199)), None);
+
+        // activation: active but empty — finalState `000000`, the empty-tree root.
+        let at = pool_treestate(&empty, activation, h(419_200)).expect("active at activation");
+        assert_eq!(
+            at.final_state,
+            hex::decode("000000").expect("hex"),
+            "the empty Sapling tree serialises to zebra's `000000`",
+        );
+        // z_gettreestate's sapling finalRoot is display (reversed) order; the
+        // domain value is internal order, so it is the fixture reversed.
+        let mut fixture =
+            hex::decode("3e49b5f954aa9d3545bc6c37744661eea48d7c34e3000d82b7f0010c30f4c2fb")
+                .expect("hex");
+        fixture.reverse();
+        assert_eq!(
+            root_bytes(&Some(at)).to_vec(),
+            fixture,
+            "empty Sapling root"
+        );
+
+        // first note (419201): non-empty, still present.
+        let mut one = empty.clone();
+        assert!(one.append(sapling_note(1)));
+        let first = pool_treestate(&one, activation, h(419_201)).expect("active");
+        assert_ne!(
+            first.final_state,
+            hex::decode("000000").expect("hex"),
+            "a funded Sapling tree is not the empty encoding",
+        );
+    }
+
+    // Orchard activates at mainnet height 1687104 (NU5), also with an empty tree.
+    // Its z_gettreestate finalRoot is not byte-reversed, so the domain (internal)
+    // root equals the fixture directly.
+    #[test]
+    fn orchard_activation_boundary_matches_zebra() {
+        let activation = Some(h(1_687_104));
+        let empty = Frontier::<MerkleHashOrchard, DEPTH>::empty();
+
+        assert_eq!(pool_treestate(&empty, activation, h(1_687_103)), None);
+
+        let at = pool_treestate(&empty, activation, h(1_687_104)).expect("active at activation");
+        assert_eq!(at.final_state, hex::decode("000000").expect("hex"));
+        let fixture =
+            hex::decode("ae2935f1dfd8a24aed7c70df7de3a668eb7a49b1319880dde2bbd9031ae5d82f")
+                .expect("hex");
+        assert_eq!(
+            root_bytes(&Some(at)).to_vec(),
+            fixture,
+            "empty Orchard root"
+        );
+
+        let mut one = empty.clone();
+        assert!(one.append(orchard_note(1)));
+        let first = pool_treestate(&one, activation, h(1_687_105)).expect("active");
+        assert_ne!(first.final_state, hex::decode("000000").expect("hex"));
+    }
+
+    // An unscheduled pool (regtest without NU6.3, say) is never reported, even
+    // with notes present — there is no activation to be at or above.
+    #[test]
+    fn an_unscheduled_pool_is_absent() {
+        let empty = Frontier::<MerkleHashOrchard, DEPTH>::empty();
+        assert_eq!(pool_treestate(&empty, None, h(9_000_000)), None);
     }
 }

@@ -38,7 +38,11 @@ choices, not the use case's. The light-wallet demand has two deployments:
   `LightWalletSource` bundle. It serves the wallet's transparent address reads and
   its treestate from its own indexes, so it discloses no queried addresses, removes
   the per-scan-batch treestate round trip to the validator, and demands no address
-  or treestate source port.
+  or treestate source port. Boot reads the validator's upgrade schedule once and
+  pins the per-pool activation heights into the store, so treestate tells an
+  active-but-empty pool (serve the empty tree) from one below activation (absent);
+  a validator that cannot describe its chain fails the boot rather than defaulting
+  to a wrong schedule.
 
 The node-RPC / block-explorer demand has one deployment, `NodeRpcLocal`: the
 `TransparentHistory` index set, address history and spend lookup both served

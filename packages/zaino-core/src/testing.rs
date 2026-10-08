@@ -23,13 +23,13 @@ use zaino_primitives::types::{
     Outpoint, OutputIndex, PreIndexCompactTx, TransparentAddress, TransparentReceive,
     TransparentSpend,
 };
-use zaino_primitives::types::{ShieldedPool, SubtreeRoot, Treestate};
+use zaino_primitives::types::{PoolActivations, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::{
     AddressReadError, BlockReadError, ReadError, SpendReadError, Transient, TreestateReadError,
 };
 use zaino_service::{
     AddressReceiveRead, Capability, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary,
-    SpendRead, SpendStatus, TakeSnapshot, TreestateRead, TreestateWindowRead,
+    PoolActivationSource, SpendRead, SpendStatus, TakeSnapshot, TreestateRead, TreestateWindowRead,
 };
 
 /// A fixed non-finalised window backed by an in-memory map.
@@ -304,12 +304,22 @@ impl TreestateRead for StubNonFinalised {
     }
 }
 
+/// The stub reports no activation schedule, so a routing that reads it from the
+/// finalised tier compiles; the stub's treestate is scripted directly, so the
+/// schedule never gates it.
+impl PoolActivationSource for StubNonFinalised {
+    fn pool_activations(&self) -> PoolActivations {
+        PoolActivations::unknown()
+    }
+}
+
 /// The window-tier treestate read, so the stub can stand in as the `N` side. A
 /// height the window holds answers; above it is a domain miss.
 impl TreestateWindowRead for StubNonFinalised {
     async fn window_treestate(
         &self,
         _seed: Option<&Treestate>,
+        _activations: PoolActivations,
         at: Height,
     ) -> Result<Option<Treestate>, TreestateReadError> {
         Ok(self.scripted_treestate(at))

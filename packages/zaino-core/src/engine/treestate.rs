@@ -24,7 +24,7 @@ use crate::chain_view::ChainViewSnapshot;
 use crate::routing::{Local, Passthrough, Routing};
 use zaino_primitives::types::{Height, ShieldedPool, SubtreeRoot, Treestate};
 use zaino_service::error::TreestateReadError;
-use zaino_service::{Capability, TreestateRead, TreestateWindowRead};
+use zaino_service::{Capability, PoolActivationSource, TreestateRead, TreestateWindowRead};
 use zaino_source::{GetSubtreeRoots, GetTreestate};
 
 use super::EngineSnapshot;
@@ -116,7 +116,7 @@ where
 
 impl<F, N, Src> TreestatePlacement<F, N, Src> for Local
 where
-    F: ChainTier + TreestateRead,
+    F: ChainTier + TreestateRead + PoolActivationSource,
     N: ChainTier + TreestateWindowRead,
     Src: Send + Sync + 'static,
 {
@@ -130,14 +130,17 @@ where
         if local.watermark().is_some_and(|watermark| at <= watermark) {
             return local.finalised().treestate(at).await;
         }
-        // Above the watermark, the window folds from the finalised seed. A height
-        // above the served tip has no block: there is no treestate to return, and
-        // the read cannot express a domain miss, so it is NotServiceable rather
-        // than a fabricated empty tree.
+        // Above the watermark, the window folds from the finalised seed, deciding
+        // each pool's presence against the same activation schedule the store
+        // used so the two sides of the seam agree. A height above the served tip
+        // has no block: there is no treestate to return, and the read cannot
+        // express a domain miss, so it is NotServiceable rather than a fabricated
+        // empty tree.
         let seed = seed(local).await?;
+        let activations = local.finalised().pool_activations();
         local
             .non_finalised()
-            .window_treestate(seed.as_ref(), at)
+            .window_treestate(seed.as_ref(), activations, at)
             .await?
             .ok_or(TreestateReadError::NotServiceable(Capability::Treestate))
     }

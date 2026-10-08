@@ -106,11 +106,15 @@ height and renders it through
 non-finalised window uses, so the two sides of the seam agree node-for-node — and
 takes the block hash and time from the `headers` index. These indexes are
 `WalkOrdered`, so the store's coverage is exactly its watermark: a height above
-it is `NotServiceable(Treestate)`, never an empty tree. A pool with no notes at
-the height is reported absent (`None`), the note-presence activation proxy
-documented on `tree_state::serve`. `subtree_roots(pool, start, limit)` scans the
-selected pool's `subtrees_*` namespace in ascending subtree-index order,
-honouring the page bounds.
+it is `NotServiceable(Treestate)`, never an empty tree. Per-pool presence is
+decided against the `PoolActivations` schedule the reader was built with (read
+from the validator at boot): a pool is reported from its activation height on —
+empty tree included — and absent (`None`) below it or when unscheduled. Build the
+reader with `StoreReader::with_activations`; `StoreReader::new` carries no
+schedule, so its treestate reports every pool absent — fine for a reader that
+serves no treestate. `subtree_roots(pool, start, limit)` scans the selected
+pool's `subtrees_*` namespace in ascending subtree-index order, honouring the
+page bounds.
 
 ## Readiness during bulk catch-up
 

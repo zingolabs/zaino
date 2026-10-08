@@ -93,10 +93,12 @@ that builds them backs `TreestateRead` locally.
   `sync::TreeStateCtx` is its per-block input — each pool's note commitments in
   chain order — projected from `CurrentZainoContext`.
 - `serve::pool_treestate` (and `TreeStateValue::pool_treestates`) render a
-  stored frontier as the domain `PoolTreestate` — the root, the legacy
-  `finalState` bytes, and the note-presence activation proxy (an empty tree is
-  reported absent). Both the finalised store and the non-finalised window call
-  it, so a treestate served either side of the seam renders identically.
+  stored frontier as the domain `PoolTreestate` — the root and the legacy
+  `finalState` bytes — against a per-pool activation height (`PoolActivations`):
+  a pool is reported from its activation on, empty tree included, and absent
+  below it or when unscheduled. Both the finalised store and the non-finalised
+  window call it, so a treestate served either side of the seam renders
+  identically.
 - `serve::{seed_value, fold_window, window_subtree_roots}` back the window tier:
   `seed_value` rebuilds the finalised frontier from the seed treestate (the
   legacy bytes round-trip exactly), `fold_window` folds the window's blocks onto
