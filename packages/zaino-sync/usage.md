@@ -36,6 +36,39 @@ only for a cumulative scope: `BlockLocal` and `CrossIndex` are not generic over
 a carry and cannot name one. The runtime mirror carries it as
 `InputScope::SelfCumulative { carry }`; see the `descriptor` module.
 
+## CrossIndex reads: `DepsReader`
+
+A `CrossIndex` index needs another index's output for the blocks it processes.
+It declares those indexes in `DEPENDENCIES` and implements `ExtractCross`, whose
+`extract(ctx, deps: &DepsReader<'_>)` receives a read handle over its
+dependencies. `DepsReader::get::<D>(&key) -> Result<Option<D::Value>,
+DepsReadError>` is a typed point read through `D`'s codec; it refuses any index
+not in the declared set with `DepsReadError::Undeclared`, and surfaces backend
+and decode failures as `DepsReadError::Read` / `Decode` (each a typed `#[source]`
+cause). The pair `(CrossIndex, Append)` is served by `CrossBridge`, a
+block-parallel bridge like `LocalBridge`.
+
+What a dependency read sees, and when it runs:
+
+- **Committed state overlaid with the dependency's pending batch.** The engine
+  commits one atomic transaction per batch across every index plus the
+  watermark, so a dependency cannot have *backend-committed* the batch a cross
+  index is extracting — the two commit together. `DepsReader` therefore resolves
+  a read against the dependency's ops already persisted into the pending atomic
+  commit (an in-memory overlay, keyed by namespace and key, latest-wins, a
+  delete tombstoning a committed value) layered over the committed backend
+  reader. So a cross index reads its dependencies' *same-batch* output.
+- **Per-batch gating on the dependency's persist.** A cross index's batch is
+  released only once every dependency has persisted that batch (the DAG's
+  `Pipelined` firing rule) — the overlay's horizon. Past the gate the batch is
+  block-parallel: each block's read is independent, with no inter-block carry.
+- **Atomic commit.** The cross index's entries and its dependencies' entries for
+  the batch are written in the one atomic transaction.
+
+Note: the `Barrier` firing rule (for a dependency read forward/globally) is not
+yet implemented; the scheduler conservatively blocks such an edge. Cross indexes
+with a backward (`R≤`) read pattern use `Pipelined`, which is implemented.
+
 ## Sync profiling (`sync-profile` feature)
 
 Off by default and compiled out entirely when off (no `Instant::now`, no extra

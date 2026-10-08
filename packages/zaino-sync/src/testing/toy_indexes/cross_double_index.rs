@@ -65,6 +65,12 @@ pub enum Error {
         /// The height with no dependency entry.
         height: BlockHeight,
     },
+    /// Doubling the dependency's value overflowed `u32`.
+    #[error("doubling the value at height {height} overflowed")]
+    Overflow {
+        /// The height whose doubled value overflowed.
+        height: BlockHeight,
+    },
 }
 
 impl From<DepsReadError> for Error {
@@ -80,9 +86,13 @@ impl ExtractCross for CrossDoubleIndex {
         let value = deps
             .get::<ValueIndex>(&ctx.height)?
             .ok_or(Error::MissingDependency { height: ctx.height })?;
+        let doubled = value
+            .value()
+            .checked_mul(2)
+            .ok_or(Error::Overflow { height: ctx.height })?;
         Ok(Entry {
             height: ctx.height,
-            doubled: value.value() * 2,
+            doubled,
         })
     }
 }

@@ -333,6 +333,28 @@ where
 }
 
 // ===========================================================================
+// Shared merge step for block-parallel bridges
+// ===========================================================================
+
+/// Drain an offset-tagged delta buffer into chain order.
+///
+/// Parallel extraction buffers deltas in rayon completion order, but the merge
+/// contract is chain order. Offsets are unique within a batch, so the sort is
+/// total and `unstable` is safe. Shared by the block-parallel bridges
+/// ([`LocalBridge`] and [`CrossBridge`]), whose extraction both fan out across a
+/// batch's blocks; the cumulative bridges extract sequentially and have no such
+/// buffer to reorder.
+fn drain_reorder<D>(deltas: &Mutex<Vec<(BlockOffset, D)>>) -> Vec<D> {
+    let mut tagged: Vec<(BlockOffset, D)> = deltas
+        .lock()
+        .expect("delta mutex poisoned")
+        .drain(..)
+        .collect();
+    tagged.sort_unstable_by_key(|(offset, _)| *offset);
+    tagged.into_iter().map(|(_, delta)| delta).collect()
+}
+
+// ===========================================================================
 // LocalBridge — single struct for all BlockLocal compositions
 // ===========================================================================
 
@@ -391,19 +413,7 @@ where
     }
 
     fn merge(&self) -> Result<(), PipelineError> {
-        let mut tagged: Vec<(BlockOffset, I::Delta)> = self
-            .deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .drain(..)
-            .collect();
-
-        // Parallel extraction buffers deltas in completion order; the merge
-        // contract is chain order. Reorder by offset before folding. Offsets are
-        // unique within a batch, so the sort is total and `unstable` is safe.
-        tagged.sort_unstable_by_key(|(offset, _)| *offset);
-        let deltas: Vec<I::Delta> = tagged.into_iter().map(|(_, delta)| delta).collect();
-
+        let deltas = drain_reorder(&self.deltas);
         let state = S::merge_deltas(deltas);
         *self.merged.lock().expect("merged mutex poisoned") = Some(state);
         Ok(())
@@ -717,18 +727,10 @@ where
     }
 
     fn merge(&self) -> Result<(), PipelineError> {
-        let mut tagged: Vec<(BlockOffset, I::Delta)> = self
-            .deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .drain(..)
-            .collect();
-
-        // Offsets are unique within a batch, so the sort is total; reorder to
-        // chain order before persist so the entry sequence is deterministic.
-        tagged.sort_unstable_by_key(|(offset, _)| *offset);
-        let deltas: Vec<I::Delta> = tagged.into_iter().map(|(_, delta)| delta).collect();
-
+        // Append does not depend on order, but reorder to chain order anyway
+        // (shared with `LocalBridge`) so the persisted entry sequence is
+        // deterministic regardless of rayon completion order.
+        let deltas = drain_reorder(&self.deltas);
         *self.merged.lock().expect("merged mutex poisoned") = Some(deltas);
         Ok(())
     }
