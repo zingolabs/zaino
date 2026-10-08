@@ -36,9 +36,14 @@ checked against an independent oracle.
 | `committed_blocks_are_zebras` (both sync profiles, every 5 s) | On mainnet, `GetBlock` at the compact-block index's durable tip must match the compact block implied by zebrad's `getblock 2`, field for field, with every fee recomputed from its prevouts. It runs while the index builds, so it samples blocks across the whole chain, and across each kill in the crash profile. |
 | `index_files_verify_clean` (both sync profiles, at completion) | `zainod verify` runs in the pod and checks every committed byte of every index against its page checksums. |
 
-The simulated validators are `zaino_source::mock::MockChain`, which answers the
-way zebrad does: blocks by hash and headers by height come from the best chain only, and
-nothing is served above the tip. A test that relies on a lookup zebrad would
+Every in-repo test takes its blocks, headers, verified chains and validators from one builder,
+`zaino_primitives::testing::MockChain` ([design/mock-chain.md](design/mock-chain.md)): every
+block it hands out passes our own checks (real header bytes, linkage, merkle root, spends,
+fees, pool activations). The simulated validators are `zaino_source::testing::MockValidator`,
+each following one tip of a shared `MockChain` and answering the way zebrad does: blocks by
+hash and headers by height come from the best chain only, nothing is served above the tip,
+a sent transaction is listed at the fee its bytes leave, and a mined transaction is served
+only from the real bytes it was mined with. A test that relies on a lookup zebrad would
 refuse fails here rather than on a cluster.
 
 ### Model tests in bulk

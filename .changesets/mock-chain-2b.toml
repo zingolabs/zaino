@@ -1,0 +1,65 @@
+id = "01a11c40-2b00-7b2a-9c1d-6d6f636b3262"
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `MockValidator::latency(&[Port], d)` and `reachable(&[Port], bool)` scope \
+per `ChainDataSource` method (`Port`, `Port::ALL`); `mempool_remove(txid)`; `tamper(height, \
+edit)` serves a followed header edited and rehashed; `Lie::told(&Block)`, the misanswer \
+shapes as a pure function; `raw_transparent(spends, pays)`, a real v4 transparent spend; \
+`testing::fixtures::transactions(height)` (captured mainnet blocks).
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "breaking"
+section = "removed"
+description = """
+Feature `testing`: `mock::MockChain`, `mock::MEMPOOL_FEE` and `mock::fixture_transactions` are \
+removed.
+"""
+migration = """
+Serve a `zaino_primitives::testing::MockChain` tip with `testing::MockValidator::following`; \
+reorg with `follow`; read fixtures from `testing::fixtures::transactions`.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "breaking"
+section = "removed"
+description = """
+Feature `testing`: `testing::Chain` (`mine_with`, `mine_at`, `mine_bits`, `mine_heavier`, \
+`extend`, `path`) and `testing::linked` are removed; `encode_header` and `header_hash` stay.
+"""
+migration = """
+Build blocks with `testing::MockChain` (`mine`, `mine_empty`, `branch` / `fork`, `outweigh`, \
+`blocks`).
+"""
+
+[[changes]]
+crate = "zaino-header-chain"
+kind = "breaking"
+section = "removed"
+description = """
+Feature `testing`: `HeaderChain::{regtest_in_memory, insert_blocks}` and \
+`VerifiedChain::regtest` are removed; `Params::with_genesis` is crate-private. New: \
+`testing::HeaderViews::header_params()`.
+"""
+migration = """
+Use `testing::HeaderViews` on a `MockChain` (`header_chain`, `verified`, `verified_final`, \
+`header_params`) and `testing::insert`.
+"""
+
+[[changes]]
+crate = "zaino-index-compact-block"
+kind = "breaking"
+section = "removed"
+description = """
+The `testing` feature (`testing::{block, chain, committed}`) is removed.
+"""
+migration = """
+Mine blocks with `zaino_primitives::testing::MockChain` and fold them with `fold` + \
+`chain.fees(hash)`.
+"""

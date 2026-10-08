@@ -1,10 +1,11 @@
 # MockChain: one chain builder for every test
 
-Status: **phase 1 built** (2026-10-07: builder, views and their tests, additive; §5 decisions
-taken as recommended). Phase 2 = §3's migration. Every in-repo test gets blocks, headers, a
-verified chain and a validator from one builder, `zaino_primitives::testing::MockChain`, and the
-views its owning crates put on it. Every block it hands out passes our own checks; nothing else
-builds a block.
+Status: **phase 2 built** (2026-10-08: §3's migration done, every old helper deleted; phase 1
+2026-10-07: builder, views and their tests; §5 decisions taken as recommended). Every in-repo
+test gets blocks, headers, a verified chain and a validator from one builder,
+`zaino_primitives::testing::MockChain`, and the views its owning crates put on it. Every block
+it hands out passes our own checks; nothing else builds a block. §1 = the inventory before the
+migration (history); §3 "Changed while migrating" = what phase 2 added.
 
 ## 1. Inventory (today)
 
@@ -156,6 +157,7 @@ pub fn fee_left(tx: &Transaction, spent: i64) -> i64; // §3.4 conservation, sha
 ```rust
 // zaino_header_chain::testing
 pub trait HeaderViews {
+    fn header_params(&self) -> Params; // a test's own store
     fn header_chain(&self, depth: ReorgDepth) -> HeaderChain; // SimFs, genesis inserted
     fn verified(&self, tip: BlockRef) -> VerifiedChain; // nothing final
     fn verified_final(&self, tip: BlockRef, final_at: Height) -> VerifiedChain;
@@ -173,14 +175,19 @@ impl MockValidator {
     pub fn listing(&self, answer: Result<(), GetMempoolListingError>); // Inactive / Unavailable
     pub fn relay(&self, verdict: Result<(), SendRawTransactionError>);
     pub fn metadata(&self, peers: Option<Vec<PeerInfo>>, release: Option<NodeRelease>); // None = times out
-    pub fn latency(&self, per_call: Duration); // tokio::time (paused clock)
+    pub fn mempool_remove(&self, txid: TransactionId); // eviction
+    pub fn latency(&self, ports: &[Port], per_call: Duration); // tokio::time (paused clock)
     pub fn fail_next(&self, count: u32, mode: FailureMode);
-    pub fn reachable(&self, reachable: bool);
+    pub fn reachable(&self, ports: &[Port], reachable: bool); // Port::ALL = gone
+    pub fn tamper(&self, height: Height, edit: impl FnOnce(&mut BlockHeader)); // rehashed
     pub fn lie(&self, lie: Option<Lie>);
     pub fn calls(&self) -> Calls; // polls, links (heights), blocks, sends
 }
+pub enum Port { Poll, Links, Block, MempoolBytes, Transaction, Send }
 pub enum Lie { WrongBlock, Poisoned, Mutated, WrongHeight }
+impl Lie { pub fn told(self, honest: &Block) -> Block; } // pure: sans-IO models share it
 pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>);
+pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TransactionId, Vec<u8>);
 pub fn decoded(raw: Vec<u8>) -> (Transaction, Vec<u8>); // BlockBuilder::raw_tx(decoded(raw))
 // zaino_chainview::testing
 pub struct MockPeers { /* live, dead, pushes, announce */ }
@@ -196,10 +203,10 @@ impl ChainParams { pub fn of(chain: &MockChain, tip: BlockRef) -> Self; }
 - Answers as zebrad does: best chain only by height and hash, nothing above the tip, upgrades from
   `chain.blockchain_info(tip)`, a mined txid leaves the mempool
 - Accepted send = listed at the fee its bytes leave over its best chain (`fee_left`); an input not
-  unspent there = `Rejected("missing input …")`, as zebrad; no invented fee
+  unspent there = `Rejected { code: -25, message: "missing input …" }`, as zebrad; no invented fee
 - `HeaderViews` carry the chain's `network` label into `Params` (a mainnet-labelled mock chain
   opens mainnet-schema stores)
-- `fixtures` (captured mainnet blocks) = a pure move of `mock::fixture_*`: phase 2, with the mock
+- `fixtures` (captured mainnet blocks) = a pure move of `mock::fixture_*` (done, phase 2)
 - One per simulated node over one shared `MockChain`: the chainview network model and
   verified-chain.md §10's simulation = N `follow` calls
 
@@ -287,6 +294,32 @@ deleted in the step that removes its last caller):
 1. `zainod`: `indexer.rs`, `serving.rs`, `verify.rs`; then delete `Chain` and every helper left in
    the table; update `docs/testing.md`, `verified-chain.md` §10, each touched crate's `usage.md`
    (`zaino-persistence` untouched throughout; any change there = the heavy proptest loop)
+
+All done (steps 1–4 phase 2a, 5–8 phase 2b, plus `zaino-traffic` and `zaino-snapshot`, built
+after this plan). Deleted: `testing::{Chain, linked}` (with `mine_with`, `mine_at`, `mine_bits`,
+`mine_heavier`, `extend`, `path`), `HeaderChain::{regtest_in_memory, insert_blocks}`,
+`VerifiedChain::regtest`, `zaino_source::mock`, compact-block's `testing` module and feature,
+chainview's `FakeValidator`/`FakePeers`, traffic's `Delayed`, nfs's `Member`/`transactions`;
+`Params::with_genesis` now `pub(crate)`. `encode_header` / `header_hash` stay.
+
+Changed while migrating (phase 2b):
+
+- `MockValidator`: `Port` scopes `latency(&[Port], d)` and `reachable(&[Port], bool)`
+  (`Port::ALL` = every call): a validator that stalls asks but polls at once (traffic hedging),
+  one that refuses only sends (chainview submission); `mempool_remove(txid)` (eviction, churn);
+  `tamper(height, edit)` serves a followed header edited and rehashed: an invalid header the
+  builder refuses to mine, edited at the call site (header-sync refusal tests)
+- `Lie::told(&Block)`: the misanswer shapes as a pure function; the NFS core's fire drills
+  (sans-IO) share them with `MockValidator`
+- `raw_transparent(spends, pays)`: a real v4 transparent spend, so a mined or relayed
+  transaction a test reads back (`GetTaddressTransactions`, a relay's fee) has real bytes
+- `HeaderViews::header_params()`: the chain's rules over a store a test opens itself (a `SimFs`
+  it later fails)
+- Indexes in the gRPC tests fold the builder's fees (`chain.fees`); snapshot params everywhere
+  = `ChainParams::of(&chain, tip)` (no hand-written activations); gRPC chains are labelled
+  `.network(Main)` (the transparent index keys mainnet encodings)
+- Coinbase now in slot 0 of every block: compact-block / gRPC assertions moved from `vtx[0]` to
+  the spend's slot, and a shielded projection drops the (transparent-only) coinbase
 
 ## 4. Invariants (every block handed out) and the builder's own tests
 

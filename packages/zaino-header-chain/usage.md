@@ -167,14 +167,7 @@ a reopen never re-verifies and never starts from a checkpoint someone supplied.
   let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
   ```
 
-  Still here until every caller moves: `Params::with_genesis`,
-  `HeaderChain::regtest_in_memory(genesis, depth)` (regtest rules over a
-  `testing::Chain`'s genesis, any nBits so `mine_bits` branches vary in work
-  and the most work need not be the highest, a fresh `SimFs` store),
-  `insert_blocks(path)`
-  (its real headers through stage A and B, as header sync would) and
-  `VerifiedChain::regtest(path)` (both at once, nothing final), so a
-  `VerifiedChain` in a test is one verified, never a stand-in.
+  A `VerifiedChain` in a test is one verified, never a stand-in.
 
 Heavy run after any change here (the in-code 256 cases are the light run):
 

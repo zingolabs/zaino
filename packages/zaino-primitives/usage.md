@@ -163,28 +163,11 @@ let later = MockChain::regtest().upgrades(Upgrades::all_at(h(1)).onward(NetworkU
   `MockValidator` (`zaino-source`), `MockPeers` (`zaino-chainview`), `ChainParams::of`
   (`zaino-nfs`).
 
-`Chain` and `linked` below remain until every test moves to `MockChain`.
-
-```rust,ignore
-use zaino_primitives::testing::{encode_header, Chain};
-
-let mut chain = Chain::new();                        // regtest genesis, bare coinbase
-let tip = chain.extend(chain.genesis().hash, 10);    // ten bare blocks on genesis
-let fork = chain.mine(chain.path(tip.hash)[8].header().hash); // a branch at any height
-let paid = chain.mine_with(tip.hash, transactions);  // exactly these transactions
-let early = chain.mine_at(tip.hash, time);           // a chosen header time
-let heavy = chain.mine_heavier(parent, &replaced);   // one block outweighing `replaced` (< 256)
-let blocks: Vec<Block> = chain.path(tip.hash);        // genesis ..= tip, linked
-let raw = encode_header(blocks[3].header());         // the consensus header bytes
-```
-
-Every block is real: `hash` = SHA-256d of `encode_header` (`header_hash`), `prev_hash`
-links, `merkle_root` = the Bitcoin merkle tree over its txids (`MerkleRoot::of_txids`, an
-odd level's last duplicated; a repeated pair has no root, CVE-2012-2459), version 4, regtest nBits (`0x200f0f0f`), a zero 36-byte
-solution, each block 75 s after its parent. A mint counter sets each nonce and default
-coinbase txid, so siblings never collide and every run builds the same hashes.
-`Chain::with_genesis(transactions)` starts from a genesis holding chosen transactions;
-`mine_bits` mines under a chosen nBits; `linked(per_block)` builds one such branch whole, as
-the `Arc<Block>`s an index sink takes. `encode_header` is pinned against five mainnet headers
-(`zaino-source` decode tests) and read back field by field through `HeaderBytes::split`;
-`zaino-header-chain`'s model inserts builder headers through every regtest rule.
+`encode_header` (`chain.header_bytes(hash)` wraps it) and `header_hash` = the consensus header
+bytes and their SHA-256d: `merkle_root` = the Bitcoin merkle tree over the txids
+(`MerkleRoot::of_txids`, an odd level's last duplicated; a repeated pair has no root,
+CVE-2012-2459), version 4, a zero 36-byte solution. A mint counter sets each nonce and default
+txid, so siblings never collide and every run builds the same hashes. `encode_header` is pinned
+against five mainnet headers (`zaino-source` decode tests) and read back field by field through
+`HeaderBytes::split`; `zaino-header-chain`'s model inserts builder headers through every
+regtest rule.

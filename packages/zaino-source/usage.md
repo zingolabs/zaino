@@ -124,7 +124,8 @@ validator.estimate(h(500));                          // getblockchaininfo estima
 let txid = validator.mempool_insert(raw, 2_000);     // listed from the next poll at 2 000
 validator.mempool_remove(txid);                      // evicted: unlisted from the next poll
 validator.listing(Err(GetMempoolListingError::Inactive));
-validator.relay(Err(SendRawTransactionError::Rejected("fee".into()))); // sendrawtransaction verdict
+let fee = SendRawTransactionError::Rejected { code: -26, message: "fee".into() };
+validator.relay(Err(fee));                           // sendrawtransaction verdict
 validator.metadata(None, Some(release));             // peers read times out
 validator.latency(&[Port::Block], Duration::from_secs(2)); // before each answer there (tokio::time)
 validator.fail_next(2, FailureMode::Timeout);         // any port
@@ -142,44 +143,17 @@ chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: ge
   nothing above its tip; `getblockchaininfo` = `chain.blockchain_info(tip)` (the
   chain's upgrade schedule, statuses by its tip); a mined txid leaves the mempool.
 - An accepted send is listed at the fee its bytes leave over its best chain; an input
-  not unspent there = `Rejected("missing input …")`; undecodable = `Malformed`.
+  not unspent there = `Rejected { code: -25, message: "missing input …" }`; undecodable =
+  `Malformed`.
 - `get_transaction` of a mined `TxBuilder` transaction panics: it has no bytes, and
   the double never invents a body (mine real bytes with `raw_tx`).
 - Each `Lie` fails the NFS body check (`check_block`) by the rule that names it.
-
-The older `mock::MockChain` below stays until every caller moves to `MockValidator`.
-
-```rust,ignore
-use zaino_primitives::testing::Chain;
-use zaino_source::{FailureMode, mock::MockChain};
-
-let mut chain = Chain::new();
-let tip = chain.extend(chain.genesis().hash, 10);
-let mock = MockChain::serving(chain.path(tip.hash))
-    .fail_next(2, FailureMode::Timeout); // failure injection
-
-mock.extend_best(chain.path(fork.hash)); // each block becomes the tip: its height and up replaced
-mock.rewind_to(height);                  // invalidateblock: heights above leave the best chain
-mock.mempool_insert(txid, raw);          // listed from the next poll
-mock.set_reachable(false);               // every call fails in transport until set back
-```
-
-It serves only real chains: every block it is given must come from
-`zaino_primitives::testing::Chain` (its hash = SHA-256d of its encoded header, its parent
-the best block below it), and `get_block_links` hands out those header bytes, so a
-header chain can verify what it serves. It answers the way zebrad does: blocks by
-hash and header links by height come from the best chain only, and nothing is
-served above the tip. It is a whole `ChainDataSource`: its tip; its mempool, each entry listed at
-`MEMPOOL_FEE`, a sent transaction (txid from its bytes, `Malformed` if they do not
-decode) listed from the next poll, a mined txid dropped; `get_transaction` locating a
-txid in the mempool or on the best chain; no peers; a release with no halt. One mock
-backs the chain view, the gRPC routes and the NFS alike.
+- One double backs the traffic balancer, the chain view, the gRPC routes, the NFS and
+  zainod's pipeline alike; reorgs = `follow` another tip of the same `MockChain`.
 
 `testing::fixtures::transactions(height)`: each transaction of a captured mainnet block
 from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000) as its own
 consensus bytes, for tests that need real transactions (every pool, every version).
-`zaino-nfs`'s driver test and zainod's pipeline test drive the NFS through reorgs
-with `extend_best`.
 
 A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
 bare feature gate that nothing enables compiles nothing, and its tests silently

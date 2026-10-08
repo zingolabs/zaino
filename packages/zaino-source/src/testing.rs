@@ -1,4 +1,4 @@
-//! [`MockValidator`]: one simulated zebrad over a [`MockChain`]'s blocks, answering
+//! One simulated zebrad ([`MockValidator`]) over a [`MockChain`]'s blocks, answering
 //! [`ChainDataSource`] as zebrad does, plus what a test scripts (latency, failures, lies, verdicts)
 //!
 //! - best chain only, by height and hash; nothing above its tip; upgrades from the chain's schedule

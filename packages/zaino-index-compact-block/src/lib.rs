@@ -23,9 +23,6 @@ mod reader;
 mod serve;
 mod writer;
 
-#[cfg(any(test, feature = "testing"))]
-pub mod testing;
-
 pub use build::{compact_tx, encode_compact_block};
 pub use project::{project_tx_at, Pools};
 pub use reader::CompactBlockReader;

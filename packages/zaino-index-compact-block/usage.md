@@ -132,12 +132,5 @@ listed it at). The wire `fee` is a `uint32` without presence: `None` (a
 coinbase, an unpriced mempool transaction) and a fee of 2^32 zatoshis or more
 write 0, "not provided", rather than a saturated wrong value.
 
-## Features
-
-`testing` exposes `testing::block(height) -> (Block, BlockFees)`, a sample
-block carrying every pool and its fees (one tx, fee 5 000),
-`testing::chain(n)` (`block(0..n)`, a `VerifiedChain::regtest` path) and
-`testing::committed(store, n) -> S`: `block(0..n)` folded and committed to
-`store` in one commit (tree sizes after `h` = `(h + 1) × (1, 1, 2)`). Blocks
-come from one deterministic `zaino_primitives::testing::Chain`, so `block(h)`
-links onto `block(h - 1)` and its hash is real.
+No `testing` feature: consumers testing against a real index mine their blocks with
+`zaino_primitives::testing::MockChain` and fold them with `fold` + `chain.fees(hash)`.

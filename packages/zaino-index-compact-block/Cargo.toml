@@ -20,10 +20,6 @@ zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
 zcash_protocol.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
-[features]
-# Sample blocks for consumers that test against a real index.
-testing = ["zaino-primitives/testing"]
-
 [dev-dependencies]
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }

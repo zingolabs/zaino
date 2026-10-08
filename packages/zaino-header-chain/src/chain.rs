@@ -134,33 +134,6 @@ impl HeaderChain {
         self.nodes.len()
     }
 
-    /// Regtest rules over `genesis` (a `testing::Chain`'s), any nBits (`mine_bits`: work varies
-    /// per branch, so most work != highest), a fresh `SimFs` store, nothing final
-    #[cfg(feature = "testing")]
-    pub fn regtest_in_memory(genesis: BlockHash, depth: ReorgDepth) -> Self {
-        let params = Params::regtest(Height::GENESIS.next(), None).with_genesis(genesis).any_bits();
-        let fs = zaino_persistence::fs::SimFs::new();
-        let regtest = zcash_protocol::consensus::NetworkType::Regtest;
-        let store = HeaderStore::open(fs, std::path::Path::new("/headers"), regtest)
-            .expect("a fresh SimFs store opens");
-        Self::open(params, depth, store)
-    }
-
-    /// Every header of `blocks` in order, stage A then B (a `testing::Chain`'s real bytes); the
-    /// first refusal ends it
-    #[cfg(feature = "testing")]
-    pub fn insert_blocks(
-        &mut self,
-        blocks: &[zaino_primitives::types::Block],
-    ) -> Result<(), Rejected> {
-        for block in blocks {
-            let raw = zaino_primitives::testing::encode_header(block.header());
-            let header = crate::decode_header(&raw).expect("testing::Chain headers decode");
-            self.insert(&crate::check(&self.params, header)?, i64::MAX / 2)?;
-        }
-        Ok(())
-    }
-
     /// Stage B: attach, nBits, time rules, work, best, bounds; `now_unix` = the local clock
     pub fn insert(&mut self, checked: &Checked, now_unix: i64) -> Result<Inserted, Rejected> {
         assert_eq!(checked.network(), self.params.network, "H3: checked under this chain's rules");

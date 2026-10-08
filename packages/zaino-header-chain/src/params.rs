@@ -96,7 +96,7 @@ impl Params {
 
     /// Same rules over another genesis (tests building their own chains)
     #[cfg(any(test, feature = "testing"))]
-    pub fn with_genesis(self, genesis: BlockHash) -> Self {
+    pub(crate) fn with_genesis(self, genesis: BlockHash) -> Self {
         Self { genesis, ..self }
     }
 

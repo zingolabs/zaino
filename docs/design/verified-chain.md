@@ -312,10 +312,12 @@ it is an `Err` that names the source.
 
 ### Test layers
 
-1. **Real chains below the live suite.** One builder (`zaino_primitives::testing::Chain`, phase 1)
-   makes regtest blocks with real header bytes, merkle roots and linkage, branching anywhere, and
-   — under a test `Params` whose difficulty rule accepts any `nBits` — varying work, so most work
-   ≠ highest. `MockChain` serves it.
+1. **Real chains below the live suite.** One builder (`zaino_primitives::testing::MockChain`,
+   [mock-chain.md](./mock-chain.md)) makes regtest blocks with real header bytes, merkle roots,
+   linkage and checked spends, branching anywhere; a chain that declares `varied_work()` mines
+   `outweigh()` blocks (the least work that wins), and its header views accept any `nBits`, so
+   most work ≠ highest. `HeaderViews` verify it, `MockValidator`s serve it (one per simulated
+   node, each following its own tip), `MockPeers` script the p2p side.
 1. **Core models (proptest, against naive oracles).** One per core: the header chain against a
    naive tree (H1–H8), `Holders` against a set computation (V1, V2), `NfsCore` against a
    fold-from-genesis oracle (P1–P3), `WorkPoolCore` against a naive scoreboard
@@ -352,8 +354,8 @@ it is an `Err` that names the source.
 0. **NU7 on Testnet**: **done**. Header rules by height (NU7 spacing and averaging window);
    `nVersion` signed; minimal solution length; Testnet fixtures.
 1. **Test foundations**: **done**. The real-header chain builder
-   (`zaino_primitives::testing::Chain`), `MockChain` on it, headers decoded once
-   (`HeaderBytes`).
+   (now `zaino_primitives::testing::MockChain`), its validator double on it, headers decoded
+   once (`HeaderBytes`).
 1. **Header chain**: **done**. Single owner, stages A/B, bounds, locator, `VerifiedChain`,
    finality alarm, store error fatal; the header-chain model. (Minimum work moved to phase 5:
    decision 2.)

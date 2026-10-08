@@ -60,7 +60,6 @@ zaino-snapshot = { version = "0.1.0", path = "../zaino-snapshot" }
 rcgen = { workspace = true }
 tempfile = { workspace = true }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "test-util"] }
-zaino-index-compact-block = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }

@@ -134,14 +134,4 @@ impl VerifiedChain {
             }
         }
     }
-
-    /// `path` (a `testing::Chain`'s, genesis first) verified under regtest rules, nothing final
-    #[cfg(feature = "testing")]
-    pub fn regtest(path: &[zaino_primitives::types::Block]) -> Self {
-        let genesis = path.first().expect("a path holds genesis").header().hash;
-        let depth = zaino_primitives::types::ReorgDepth::CONSENSUS;
-        let mut chain = crate::HeaderChain::regtest_in_memory(genesis, depth);
-        chain.insert_blocks(path).expect("a testing::Chain path verifies");
-        chain.verified().expect("genesis verified")
-    }
 }

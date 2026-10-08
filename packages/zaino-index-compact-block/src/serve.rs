@@ -164,27 +164,53 @@ impl<V: SequenceRead> RangeCursor<V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        fold,
-        reader::WINDOW_RECORDS,
-        testing::{block, committed},
-        FORMAT, TABLES,
-    };
+    use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, Store,
     };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain, Upgrades};
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zcash_protocol::consensus::NetworkType;
 
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
+    /// Blocks 0..`count` (every upgrade from genesis), each: a coinbase paying 17 345, then one tx
+    /// spending it into every pool (transparent in + out, a sapling spend + output, one orchard,
+    /// two ironwood actions; fee 5 000); `chain(n)` = a prefix of `chain(n + k)`
+    fn chain(count: u32) -> MockChain {
+        let alice = p2pkh([0xaa; 20]);
+        let every_pool = |at: u32| {
+            let (seed, leaf) = (at.to_le_bytes(), at);
+            let id = move |kind: u8| {
+                let mut id = [kind; 32];
+                id[..4].copy_from_slice(&seed);
+                id
+            };
+            let alice = alice.clone();
+            move |b: BlockBuilder| {
+                b.coinbase(|c| c.txid(id(0xc0)).pay(&alice, 17_345)).tx(|t| {
+                    t.spend(outpoint(id(0xc0), 0))
+                        .pay(&alice, 12_345)
+                        .fee(5_000)
+                        .sapling_spend(id(0x33))
+                        .sapling_output(leaf)
+                        .orchard_action(id(0x77), leaf)
+                        .ironwood_action(id(0x88), 2 * leaf)
+                        .ironwood_action(id(0x99), 2 * leaf + 1)
+                })
+            }
+        };
+        let mut chain =
+            MockChain::regtest().upgrades(Upgrades::all_at(h(0))).genesis_with(every_pool(0));
+        for at in 1..count {
+            chain.mine(every_pool(at));
+        }
+        chain
     }
 
-    /// `testing::block(height)`'s hash
+    /// `chain(height + 1)`'s block at `height`
     fn hash_at(height: u32) -> [u8; HASH] {
-        block(height).0.header().hash.into()
+        chain(height + 1).at(h(height)).hash.into()
     }
 
     fn store() -> DiskStore {
@@ -192,22 +218,31 @@ mod tests {
         DiskEngine::new(SimFs::new()).open(std::path::Path::new("/cb"), &schema).expect("open")
     }
 
-    /// `testing::block(0..count)` committed, read as a snapshot reads it (nothing above)
-    fn reader(count: u32) -> CompactBlockReader<LayeredView<DiskView>> {
-        CompactBlockReader::new(committed(store(), count).staged())
-    }
-
-    /// `testing::block(0..=3)` committed, `4..=6` in the layer above them
-    fn four_committed_three_above() -> CompactBlockReader<LayeredView<DiskView>> {
-        let mut store = committed(store(), 4);
-        for height in 4..7u32 {
-            let (block, fees) = block(height);
+    /// `chain`'s blocks `heights` folded onto `store`
+    fn folded(mut store: DiskStore, chain: &MockChain, heights: std::ops::Range<u32>) -> DiskStore {
+        for block in &chain.blocks(chain.tip())[heights.start as usize..heights.end as usize] {
             let mut changes = store.changes(block.at());
             let parent = CompactBlockReader::new(store.staged());
-            fold(&parent, &block, &fees, &mut changes).expect("small tree sizes");
+            let fees = chain.fees(block.header().hash);
+            fold(&parent, block, &fees, &mut changes).expect("small tree sizes");
             store.apply(changes);
         }
+        store
+    }
+
+    /// `chain(count)` committed, read as a snapshot reads it (nothing above)
+    fn reader(count: u32) -> CompactBlockReader<LayeredView<DiskView>> {
+        let mut store = folded(store(), &chain(count), 0..count);
+        store.commit().expect("SimFs commit");
         CompactBlockReader::new(store.staged())
+    }
+
+    /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them
+    fn four_committed_three_above() -> CompactBlockReader<LayeredView<DiskView>> {
+        let chain = chain(7);
+        let mut store = folded(store(), &chain, 0..4);
+        store.commit().expect("SimFs commit");
+        CompactBlockReader::new(folded(store, &chain, 4..7).staged())
     }
 
     /// Every framed record a chunk carries, decoded
@@ -244,9 +279,10 @@ mod tests {
         let [decoded] = decode(&body).try_into().expect("one record");
         assert_eq!(decoded.height, 2);
 
-        // GetBlock unfiltered, unlike GetBlockRange
-        assert_eq!(decoded.vtx[0].vin.len(), 1, "transparent present");
-        assert_eq!(decoded.vtx[0].ironwood_actions.len(), 2, "ironwood present");
+        // GetBlock unfiltered, unlike GetBlockRange (slot 1 = the every-pool tx)
+        assert_eq!(decoded.vtx.len(), 2, "coinbase kept");
+        assert_eq!(decoded.vtx[1].vin.len(), 1, "transparent present");
+        assert_eq!(decoded.vtx[1].ironwood_actions.len(), 2, "ironwood present");
         assert_eq!(body[0], 0, "gRPC compression flag");
         assert_eq!(framed_len(&body), Some(body.len()), "frame length = the message it carries");
 
@@ -390,7 +426,8 @@ mod tests {
         let past_tip = range(6, 7, Pools::ALL).err();
         assert_eq!(past_tip, Some(ServeError::NotFound { height: h(6) }), "starts past the tip");
 
-        // shielded default: transparent pruned from every record, shielded pools intact
+        // shielded default: transparent pruned from every record (the coinbase, transparent only,
+        // with it), shielded pools intact
         let full = decode(&drain(range(0, 2, Pools::ALL).expect("all")).concat());
         let shielded = drain(range(0, 2, Pools::default()).expect("filtered"));
         assert_eq!(shielded.len(), 1, "projected span still one window");
@@ -398,6 +435,8 @@ mod tests {
         let stripped: Vec<cf::CompactBlock> = full
             .into_iter()
             .map(|mut block| {
+                assert!(block.vtx[0].vin.is_empty() && !block.vtx[0].vout.is_empty(), "coinbase");
+                block.vtx.remove(0);
                 for tx in &mut block.vtx {
                     (tx.vin, tx.vout) = (Vec::new(), Vec::new());
                 }
