@@ -385,7 +385,7 @@ mod tests {
             }
         }
         let bytes = hex.as_bytes();
-        assert!(bytes.len() % 2 == 0, "even-length hex");
+        assert!(bytes.len().is_multiple_of(2), "even-length hex");
         bytes
             .chunks_exact(2)
             .map(|pair| (nibble(pair[0]) << 4) | nibble(pair[1]))

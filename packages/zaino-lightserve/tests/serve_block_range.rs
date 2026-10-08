@@ -1,7 +1,7 @@
 //! End-to-end proof: a wallet-shaped `CompactTxStreamer` client streams real
 //! compact blocks — composed on read from the index — over a real tonic server.
 //!
-//! Builds the transparent-history index set in-process over an in-memory backend from
+//! Builds the light-wallet-local index set in-process over an in-memory backend from
 //! shielded mock blocks (so the served `ChainMetadata` tree sizes are the
 //! indexer's cumulative counts, not the source's), wraps it in the store's
 //! compose-on-read `StoreReader`, composes it with an empty head and an idle
@@ -23,7 +23,7 @@ use zaino_core::Engine;
 use zaino_indexer::{FetchConcurrency, FullBlocks, SourceProvisioner};
 use zaino_indexes::index_set::IndexSet;
 use zaino_indexes::sets::current_zaino::context_from_block;
-use zaino_indexes::sets::transparent_history::TransparentHistory;
+use zaino_indexes::sets::light_wallet_local::LightWalletLocal;
 use zaino_lightserve::{GrpcServer, LightServe};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_primitives::types::{
@@ -88,7 +88,7 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
     let source = Arc::new(ValidatorClient::new(chain, RetryPolicy::default()));
 
     let mut engine = SyncEngine::from_pipelines(
-        TransparentHistory::pipelines(),
+        LightWalletLocal::pipelines(),
         backend.clone(),
         EngineConfig {
             batch_size: 8,
@@ -116,11 +116,15 @@ async fn index_chain(backend: &InMemoryBackend, tip: u32) {
 }
 
 /// The engine the server serves: the indexed store as the finalised tier, an
-/// empty head, and an idle validator, under the light routing. The store alone
-/// is not the light profile — it has no treestate or raw-transaction read —
-/// so it is composed exactly as the daemon composes it.
+/// empty head, and an idle validator, under the light routing. The store carries
+/// the `LightWalletLocal` set, which `LightWalletLocalRouting` requires — its
+/// `Treestate = Local` placement reads the local `tree_state`/`subtrees_*`
+/// indexes off the finalised tier (a plain `TransparentHistory` store would not
+/// satisfy the bound). The validator stays idle: raw-transaction serving is still
+/// passthrough. Composed exactly as the daemon composes the light-wallet-local
+/// deployment.
 type ServedEngine = Engine<
-    StoreReader<InMemoryBackend, TransparentHistory>,
+    StoreReader<InMemoryBackend, LightWalletLocal>,
     StubNonFinalised,
     ValidatorClient<MockChain>,
     LightWalletLocalRouting,
@@ -130,7 +134,7 @@ type ServedEngine = Engine<
 /// address and a cancel handle. The server notifies readiness after it binds,
 /// so the caller can connect without racing the bind.
 async fn serve(
-    store: StoreReader<InMemoryBackend, TransparentHistory>,
+    store: StoreReader<InMemoryBackend, LightWalletLocal>,
 ) -> (SocketAddr, CancellationToken) {
     // Discover a free port, then let the server rebind it.
     let addr: SocketAddr = std::net::TcpListener::bind("127.0.0.1:0")
@@ -171,7 +175,7 @@ async fn serve(
 async fn a_client_streams_composed_compact_blocks_over_grpc() {
     let backend = InMemoryBackend::new();
     index_chain(&backend, 2).await;
-    let store = StoreReader::<_, TransparentHistory>::new(Arc::new(backend));
+    let store = StoreReader::<_, LightWalletLocal>::new(Arc::new(backend));
 
     let (addr, cancel) = serve(store).await;
     let mut client = CompactTxStreamerClient::connect(format!("http://{addr}"))
