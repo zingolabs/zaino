@@ -1,7 +1,8 @@
 //! compact_block writer: the final stream → one [`fold`] per block → its store
 //!
-//! - fees: one [`BlockFees`] off value-balance's sink per unfolded step, held heights included
-//!   (value-balance re-folds them: both streams stay in step with either index ahead)
+//! - fees: one [`BlockFees`] off value-balance's sink per step it folds itself (unfolded, or
+//!   folded without it), held heights included (value-balance re-folds them: both streams stay in
+//!   step with either index ahead)
 
 use std::{num::NonZeroUsize, sync::Arc};
 

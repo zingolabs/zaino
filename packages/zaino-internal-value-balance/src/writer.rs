@@ -1,8 +1,10 @@
-//! value_balance writer: the final stream → one [`fold_run`] per run of unfolded steps → its store
+//! value_balance writer: the final stream → one [`fold_run`] per stretch of steps it folds itself
+//! (unfolded, or folded without it) → its store
 //!
-//! - one [`BlockFees`] per unfolded step into the [`FeeSink`], held heights re-folded (insert
-//!   only: any later state resolves them the same; compact-block may be behind this index)
-//! - folded steps: nothing on the sink (the NFS folded compact-block with their fees)
+//! - one [`BlockFees`] per such step into the [`FeeSink`], held heights re-folded (insert only:
+//!   any later state resolves them the same; compact-block may be behind this index)
+//! - steps folded for it: nothing on the sink (the NFS folded compact-block with their fees)
+//! - same steps self-folded as compact-block (the two join the NFS together)
 
 use std::{
     collections::{HashMap, HashSet},
@@ -53,7 +55,7 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
                     let folded = fold_run(&ValueBalanceReader::new(store.staged()), blocks, out);
                     folded.unwrap_or_else(|error| panic!("{NAME} index: {error}"))
                 });
-                paid.extend(fresh);
+                paid.extend(fresh.into_iter().flatten());
                 paid
             });
             for block_fees in paid.await {

@@ -10,12 +10,13 @@ mod progress;
 mod snapshot;
 
 use std::collections::HashMap;
+use std::convert::Infallible;
 use std::future::Future;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -26,7 +27,7 @@ use zaino_source::ChainDataSource;
 use zaino_sync::{compute, Final, Human, IndexerDataSink, PerIndex, Step, Subscription};
 use zaino_traffic::TrafficBalancer;
 
-use crate::core::{Diverged, Input, NfsCore, Output, SnapshotTip};
+use crate::core::{Diverged, Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::fetch::{fetch, Checked};
 use crate::fold::{fold_block, Folded};
 
@@ -51,9 +52,9 @@ pub enum NfsError {
 }
 
 /// `NfsCore` run against the balancer, real folds, writers and readers
-/// - Inputs: the verified chain, checked bodies, fold results, each index's committed view
+/// - Inputs: the verified chain, checked bodies, fold results, each index's committed view, each
+///   final step delivered
 /// - Outputs: fetches (tasks), folds (compute pool), the final stream, [`Indexed`] publishes
-/// - `served` = last published tip (reorgs and new tips logged against it)
 pub struct Nfs<S, V> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: TrafficBalancer<S>,
@@ -64,6 +65,23 @@ pub struct Nfs<S, V> {
     root: PerIndex<Layer>,
     published: watch::Sender<Option<Arc<Indexed<V>>>>,
     progress: NfsProgress,
+}
+
+/// [`Nfs::run`]'s loop: everything but the sink, which delivers beside it (a full queue never
+/// holds the loop)
+///
+/// - `steps` = final steps to deliver, in order (the core bounds them: `lookahead`)
+/// - `served` = last published tip (reorgs and new tips logged against it)
+struct Driver<S, V> {
+    chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
+    balancer: TrafficBalancer<S>,
+    params: ChainParams,
+    lookahead: NonZeroUsize,
+    committed: PerIndex<watch::Receiver<V>>,
+    root: PerIndex<Layer>,
+    published: watch::Sender<Option<Arc<Indexed<V>>>>,
+    progress: NfsProgress,
+    steps: mpsc::UnboundedSender<Step<Final>>,
     served: Option<BlockRef>,
 }
 
@@ -86,7 +104,6 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             root: PerIndex::default(),
             published: watch::Sender::new(None),
             progress: NfsProgress::default(),
-            served: None,
         }
     }
 
@@ -121,14 +138,59 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
     }
 
     /// - Cancel → `Ok`
-    /// - Either way: the final stream ends with `Shutdown` (every writer commits, stops)
-    pub async fn run(mut self, cancel: CancellationToken) -> Result<(), NfsError> {
-        let followed = cancel.run_until_cancelled(self.follow()).await;
-        self.sink.shutdown();
+    /// - Either way: the final stream ends with `Shutdown` (every writer commits, stops; a step
+    ///   still undelivered delivers nowhere)
+    pub async fn run(self, cancel: CancellationToken) -> Result<(), NfsError> {
+        let Self { chain, balancer, params, lookahead, sink, committed, root, published, progress } =
+            self;
+        let (steps, queued) = mpsc::unbounded_channel();
+        let (delivered, deliveries) = mpsc::unbounded_channel();
+        let mut driver = Driver {
+            chain,
+            balancer,
+            params,
+            lookahead,
+            committed,
+            root,
+            published,
+            progress,
+            steps,
+            served: None,
+        };
+        let followed = cancel
+            .run_until_cancelled(async {
+                tokio::select! {
+                    followed = driver.follow(deliveries) => followed,
+                    never = deliver(&sink, queued, delivered) => match never {},
+                }
+            })
+            .await;
+        sink.shutdown();
         followed.unwrap_or(Ok(()))
     }
+}
 
-    async fn follow(&mut self) -> Result<(), NfsError> {
+/// `queued` into the stream in order, each delivery reported (a full queue waits here alone)
+async fn deliver(
+    sink: &IndexerDataSink<Final>,
+    mut queued: mpsc::UnboundedReceiver<Step<Final>>,
+    delivered: mpsc::UnboundedSender<()>,
+) -> Infallible {
+    while let Some(step) = queued.recv().await {
+        sink.send(step).await;
+        if delivered.send(()).is_err() {
+            break;
+        }
+    }
+    std::future::pending().await
+}
+
+impl<S: ChainDataSource, V: SequenceRead + MapRead> Driver<S, V> {
+    /// `deliveries` = one per final step delivered
+    async fn follow(
+        &mut self,
+        mut deliveries: mpsc::UnboundedReceiver<()>,
+    ) -> Result<(), NfsError> {
         let mut committed: PerIndex<V> = PerIndex::default();
         let mut commits = JoinSet::new();
         for (position, (kind, watch)) in self.committed.iter().enumerate() {
@@ -137,7 +199,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             commits.spawn(next_commit(position, watch));
         }
         let durable = committed.iter().map(|(_, view)| view.tip()).collect();
-        let mut core = NfsCore::new(self.lookahead.get(), durable);
+        let mut core = NfsCore::new(self.lookahead.get(), durable, self.groups());
         let mut work = JoinSet::new();
         let mut fetches = Fetches::default();
         let mut input = self.chain.borrow_and_update().clone().map(Input::Chain);
@@ -145,7 +207,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
             if let Some(input) = input.take() {
                 let outputs = core.step(input).map_err(|diverged| self.diverged(diverged))?;
                 for output in outputs {
-                    self.execute(output, &committed, &mut work, &mut fetches).await;
+                    self.execute(output, &committed, &mut work, &mut fetches);
                 }
                 if cfg!(debug_assertions) {
                     core.check();
@@ -158,6 +220,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                 }
                 Some(done) = work.join_next() => Some(joined(done)?),
                 body = fetches.next() => Some(Input::Body(body)),
+                Some(()) = deliveries.recv() => Some(Input::Delivered),
                 Some(commit) = commits.join_next() => {
                     let (index, mut watch, open) = joined(commit);
                     let (kind, view) = committed.at_mut(index);
@@ -173,8 +236,9 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         }
     }
 
-    /// `Send`s awaited in order (backpressure); the rest spawned or immediate
-    async fn execute(
+    /// `Send`s queued for [`deliver`] in order (backpressure: the core's `Delivered`); the rest
+    /// spawned or immediate
+    fn execute(
         &mut self,
         output: Output<Folded>,
         committed: &PerIndex<V>,
@@ -187,9 +251,10 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                 fetches.start(at.hash, fetch);
             }
             Output::Abandon(at) => fetches.abandon(at.hash),
-            Output::Fold { at, parent, block } => {
+            Output::Fold { at, parent, block, covers } => {
                 self.hand(&block);
-                let parent = self.views(committed, parent.as_deref());
+                let layers = parent.as_deref().map_or(&self.root, |folded| &folded.layers);
+                let parent = Views::new(committed, &self.covered(layers, covers));
                 work.spawn(async move {
                     let folded = compute(move || fold_block(&parent, &block)).await?;
                     Ok(Input::Folded { at, folded: Arc::new(folded) })
@@ -202,12 +267,13 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
                 let height = block.header().height;
                 let folds = folded.map(|folded| Arc::clone(&folded.folds));
                 let data = Arc::new(Final { block, folds });
-                self.sink.send(Step::Apply { height, data }).await;
+                let queued = self.steps.send(Step::Apply { height, data });
+                queued.expect("deliver runs as long as the driver");
             }
-            Output::Publish(SnapshotTip { chain, tip, root, graph }) => {
+            Output::Publish(SnapshotTip { chain, tip, root, graph, joined }) => {
                 self.log_served(&chain, tip);
-                let durable = committed.clone();
-                let indexed = Indexed::new(chain, tip, root, self.params, durable, graph);
+                let (durable, joined) = (committed.clone(), self.covered(&self.root, joined));
+                let indexed = Indexed::new(chain, tip, root, self.params, durable, joined, graph);
                 self.published.send_replace(Some(Arc::new(indexed)));
             }
         }
@@ -244,10 +310,38 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
         info!(height, %hash, %age, finalized, "Chain tip advanced");
     }
 
-    /// `folded` = `None`: the root (committed views alone)
-    fn views(&self, committed: &PerIndex<V>, folded: Option<&Folded>) -> Views<V> {
-        let layers = folded.map_or(&self.root, |folded| &folded.layers);
-        Views::new(committed, layers)
+    /// `layers` of the indexes at `covers`' positions (subscribe order)
+    ///
+    /// - panics: one of them unfolded in `layers` (a fold parent narrower than its fold)
+    fn covered(&self, layers: &PerIndex<Layer>, covers: Indexes) -> PerIndex<Layer> {
+        let mut chosen = PerIndex::default();
+        for (position, (kind, _)) in self.root.iter().enumerate() {
+            if !covers.contains(position) {
+                continue;
+            }
+            let layer = layers.get(kind).unwrap_or_else(|| panic!("{}: unfolded", kind.name()));
+            chosen.insert(kind, layer.clone());
+        }
+        chosen
+    }
+
+    /// Positions joining together: value-balance + compact-block (one fee per step each folds
+    /// itself, on both sides), every other index alone
+    fn groups(&self) -> Vec<Indexes> {
+        let mut groups: Vec<Indexes> = Vec::new();
+        let mut fees: Option<usize> = None;
+        for (position, (kind, _)) in self.committed.iter().enumerate() {
+            let one = Indexes::one(position);
+            match (kind, fees) {
+                (IndexKind::CompactBlock, Some(at)) => groups[at] = groups[at].union(one),
+                (IndexKind::ValueBalance, _) => {
+                    fees = Some(groups.len());
+                    groups.push(one);
+                }
+                _ => groups.push(one),
+            }
+        }
+        groups
     }
 
     fn diverged(&self, diverged: Diverged) -> NfsError {

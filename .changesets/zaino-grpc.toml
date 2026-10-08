@@ -123,3 +123,14 @@ cap. `GrpcLimits::stall_timeout` now bounds no progress on either side: unread d
 connection as before, and a handler or stream with nothing to send for that long ends \
 `UNAVAILABLE` (`GetMempoolStream` exempt).
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "feature"
+section = "changed"
+description = """
+A method whose index is enabled but still catching up alone (enabled after the others synced) \
+answers `UNAVAILABLE` "… needs the <index> index, which is syncing" (retry), not \
+`UNIMPLEMENTED`; a disabled index keeps `UNIMPLEMENTED`. By-hash lookups through a syncing \
+block-hash index likewise answer `UNAVAILABLE`.
+"""

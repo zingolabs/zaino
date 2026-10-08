@@ -69,7 +69,8 @@ Now there is one of each:
 | **Layer**        | one index's non-final data as of one block: `imbl` per table, = parent's + own `Changes` |
 | **LayeredView**  | a `Layer` over a store's committed `View`; implements `SequenceRead` + `MapRead`         |
 | **Node**         | one non-final block in the graph: its body, its `Folded`, its `Layers`                   |
-| **root**         | the common durable tip of every enabled store; nodes exist only above it                 |
+| **root**         | the lowest durable tip of the joined stores; nodes exist only above it                   |
+| **joined**       | an index folded and served; a **lagging** one (behind at boot) catches up on the stream  |
 | **Snapshot**     | one node's layers + every store's committed view, at one served tip                      |
 | **final stream** | `IndexerDataSink<Final>`: every block exactly once, in height order, final               |
 
@@ -296,8 +297,10 @@ pub enum NfsError { Diverged { index: &'static str, height, expected, got }, Fol
   `report`ed and re-asked: [traffic-balancer.md](./traffic-balancer.md) owns who, hedges,
   retries and benches); `Abandon` → that task aborted (its sends dropped); `Fold` →
   `zaino_sync::compute` (never on the async loop); `Send` → `Step::Apply { height, data: Final {
-  block, folds } }`, awaited (backpressure); `Publish` → an `Indexed` sent on the publish watch
-  (the served tip moved, or a durable tip did).
+  block, folds } }`, queued for a delivery future beside the loop, each delivery an
+  `Input::Delivered` (backpressure: at most `lookahead` undelivered; a full queue pauses the
+  stream, never the tip's folds and publishes); `Publish` → an `Indexed` sent on the publish
+  watch (the served tip moved, its node widened, an index joined, or a durable tip moved).
 - `committed` (per index) = the store's committed view after each commit: its tip = the core's
   `Durable` input, the view itself = what root folds and snapshots read. One map holds both, so a
   fold or snapshot pairs layers with exactly the durable state the core knows.
@@ -338,33 +341,72 @@ pub(crate) enum Input<F> {
     Body(Checked),                                          // check_block passed; stale = ignored
     Folded { at: BlockRef, folded: Arc<F> },
     Durable { index: usize, tip: Option<BlockRef> },       // index = position in `new`'s durable tips
+    Delivered,                                              // the oldest Send, in every queue
 }
 
 pub(crate) enum Output<F> {
     Fetch { at: BlockRef, record: Record, urgency: Urgency }, // one per want; Tip above the final tip
     Abandon(BlockRef),                                      // want gone: its fetch dropped
-    Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block> },  // None = committed stores at the root
+    Fold { at: BlockRef, parent: Option<Arc<F>>, block: Arc<Block>, covers: Indexes },
+                                                            // None = committed stores at the root;
+                                                            // covers = the joined indexes
     Send(Final<F>),                                         // to the final stream, in list order
-    Publish(SnapshotTip<F>),                                // driver builds the Snapshot from it
+    Publish(SnapshotTip<F>),                                // driver builds the Indexed from it
 }
 
 pub(crate) struct Final<F> { block: Arc<Block>, folded: Option<Arc<F>> }
-pub(crate) struct SnapshotTip<F> { chain: Arc<VerifiedChain>, tip: BlockRef, folded: Option<Arc<F>> }
+pub(crate) struct SnapshotTip<F> { chain, tip: BlockRef, root, graph: Graph<F>, joined: Indexes }
 
 impl<F> NfsCore<F> {                                        // crate-internal: the driver is its one user
-    fn new(lookahead: usize, depth: ReorgDepth, durable: Vec<Option<BlockRef>>) -> Self;
+    fn new(lookahead: usize, durable: Vec<Option<BlockRef>>, groups: Vec<Indexes>) -> Self;
     fn step(&mut self, input: Input<F>) -> Result<Vec<Output<F>>, Diverged>;
-    fn check(&self);                                        // N1–N5, named panics (N6: model + driver test)
+    fn check(&self);                                        // N1–N5, J1–J4, named panics (N6: model + driver test)
 }
 ```
 
 - `Err(Diverged)` = an index's durable block off the final chain (resync); a durable tip above
   the final tip (a lost header store) holds sends, folds and publishes until the chain covers it.
-- **Lockstep emerges**: a block folds on the root only above the final tip, and root ≤ sent ≤
-  final, so the first tip fold waits for every index to hold everything sent. A writer therefore
-  commits when its stream idles, not only at `batch` bytes.
-- Between the root and the last sent block the stream is all folded or all unfolded: once a node
-  exists, the next final height is folded too (never sent unfolded over a folded parent).
+- **Lockstep emerges**: a block folds on the root only above the final tip (or on a folded
+  stream, or held below: "Late indexes"), and root ≤ sent ≤ final once the stream reaches the
+  root, so the first tip fold waits for every joined index to hold everything sent. A writer
+  therefore commits when its stream idles, not only at `batch` bytes.
+- Never unfolded after folded: once a folded step is sent, every later final height waits for
+  its node (folded on the root if its parent's node is gone), so a writer never sees an
+  unfolded step after a folded one.
+
+### Late indexes
+
+Settled design for an index enabled after the others synced (the old open question: its tip
+held the served tip back for every index, hours for tree-state on mainnet).
+
+- **Joined vs lagging.** Boot: per group (value-balance + compact-block are one group: one fee
+  per step each folds itself, on both sides; every other index alone), its floor = its lowest
+  durable tip; joined = the groups whose floor is the highest; the rest lag. Root = the lowest
+  durable tip of the joined. A fresh directory, or one behind after a crash, lags.
+- **Lagging = out.** No folds cover it, no snapshot serves it (`Views::syncing(kind)`; gRPC:
+  `UNAVAILABLE` "…which is syncing", not `UNIMPLEMENTED`). It bulk-syncs alone from its own tip
+  on the one ordered stream (it skips nothing; the joined skip the heights they hold).
+- **Joined = served at the tip.** Folds cover exactly the joined indexes (`Fold.covers`). The
+  stream sits below the root while the lagging one catches up, so a full lagging queue must
+  never hold the loop: sends are delivered beside it, at most `lookahead` undelivered.
+- **Behind the final tip at boot** (blocks arrived while down): the joined are folded on the
+  root while the stream sits below it (`held_below`), if within one non-final window
+  (`best − final`) of the final tip; farther behind (bulk), they wait for the stream. Nodes:
+  at most two windows + one per block until the lagging one joins.
+- **A writer folds what lacks its kind.** A folded step whose `Folds` lack the writer's index
+  (folded while it lagged) is folded by that writer itself, like an unfolded one;
+  `zaino_sync::Run` keeps height order across the two.
+- **Join** = its group's durable tips all at the root (never above or below). From then on the
+  core folds the run above the root covering every joined index: a node folded before the join
+  is refolded from its own block (same hash, wider), the served tip never moves back, and each
+  widened served node republishes; the index's views appear once the served node covers it.
+
+| ID  | Invariant                                                                 | Where                          |
+| --- | ------------------------------------------------------------------------- | ------------------------------ |
+| J1  | joined = whole groups, never none                                         | `check`                        |
+| J2  | an index joins at the root only; a lagging group at the root joins at once | `join` precondition, `check`  |
+| J3  | a node, a fold, a snapshot covers joined indexes only                     | `check`, model, driver test    |
+| J4  | a node's indexes ⊆ its parent node's; a refold only widens                | `check`, `folded` precondition |
 - Side nodes: `VerifiedChain` exposes only the best path, so the NFS applies the header chain's own
   rules (H2, H4): a side node goes once its fork is below the final tip, and past `4 · depth` side
   nodes the lowest side leaf goes.
@@ -437,11 +479,11 @@ impl<V: View> Indexed<V> {
 - **Rebase on build** (decision 4): nodes are immutable; building a `Views` (each snapshot, each
   fold parent) rebases the node's layers onto the committed views it pairs with. Cost per build =
   the blocks committed since that node folded (≤ the root's lag), never the whole layer.
-- Bulk sync: no nodes; `served` = committed views alone at the root (the lowest durable tip). An
-  index ahead of the root reads past its tip there (its committed view alone): routes serve at
-  the tip. At a folded tip every view's tip = the served tip.
-- An index enabled later: the root is the lowest durable tip of every enabled index, so its tip
-  holds the served tip back until it catches up (open: let it bulk-sync alone, `None` meanwhile).
+- Bulk sync: no nodes; `served` = committed views alone at the root (the lowest joined durable
+  tip). An index ahead of the root reads past its tip there (its committed view alone): routes
+  serve at the tip. At a folded tip every served view's tip = the served tip.
+- An index enabled later: lagging, absent (`syncing`) until it joins at the root; it never holds
+  the served tip back ("Late indexes" above).
 
 ## 7. gRPC and zainod
 
@@ -524,9 +566,10 @@ spawn(&mut tasks, "progress", .., progress::run(snapshots, nfs_progress, opened,
 | --- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------ |
 | N1  | every node's block = `VerifiedChain::hash_at` + merkle root                                            | `check`, fetch acceptance                                                |
 | N2  | node above the root, folded on a held parent (node or root); layer = parent layer `.with(own Changes)` | `check`; `fold_block`, `LayeredView::new` + `rebase` panics, driver test |
-| N3  | a node leaves only after every enabled store's durable tip ≥ it                                        | `check`, `Durable` asserts, model                                        |
-| N4  | `snap.tip` = deepest folded best block (else the root)                                                 | `check`, model, driver test                                              |
-| N5  | final stream: every height once, ascending, never retracted                                            | `check`, model + driver writers                                          |
+| N3  | a node leaves only after every joined store's durable tip ≥ it; a root fold = every joined at the root | `check`, `Durable` asserts, `fold` precondition, model                   |
+| N4  | `snap.tip` = deepest folded best block (else the root); its indexes = that node's (root: the joined)   | `check`, model, driver test                                              |
+| N5  | final stream: every height once, ascending, never retracted, never unfolded after folded; ≤ `lookahead` undelivered | `check`, model + driver writers                             |
+| J1–J4 | joined / lagging indexes (§6 "Late indexes")                                                         | `check`, preconditions, model, driver test                               |
 | N6  | every index read through a snapshot = folding it from genesis along best                               | model, driver test (real folds)                                          |
 | P1  | `view()` = committed prefix; `staged()` = committed + buffered                                         | conformance                                                              |
 
@@ -534,14 +577,19 @@ spawn(&mut tasks, "progress", .., progress::run(snapshots, nfs_progress, opened,
 
 - `NfsCore` model: random `VerifiedChain` evolutions (extend, reorg at random depth, same-height
   replacement, retreat, finalize), bodies honest / wrong / poisoned / slow / missing, durable acks
-  delayed, restarts; stores on an in-memory engine. Oracle: fold every index from genesis along
-  best; every published snapshot answers like it at every height ≤ its tip.
+  and deliveries delayed, restarts, an index wiped at random (lagging, then joining; paired with
+  another or alone); stores on an in-memory engine. Oracle: fold every index from genesis along
+  best; every published snapshot answers like it at every height ≤ its tip, for each index it
+  serves; settled = every index joined and served at best.
 - Fire drills: one planted bug per `check()` assertion and precondition.
 - Driver (`zaino-nfs/src/tests.rs`): all five real folds over `SimFs` stores, mock validators, a
   test-only committer per index; bulk, reorgs (longer, same height, retreat), finality, a crash
   restart with indexes apart. Every snapshot seen = each index folded from genesis along best into
   fresh stores (table by table); every view at the snapshot tip (R12); final stream per index =
-  each final height once. `fold_block` golden in `fold.rs`.
+  each final height once. A late index: four synced, a block while down, tree-state enabled
+  fresh with its queue stalled: the four serve each new tip with tree-state at nothing durable,
+  it is absent until durable at their root, then joins and stays. `fold_block` golden in
+  `fold.rs`.
 - Per index: fold golden bytes + reader tests over `LayeredView` (in-memory engine); each writer:
   folded vs unfolded steps, held heights skipped on restart, crash states, a random-stream model.
 - `zaino-sync`: the `Committer` contract (batch, folded-run and idle commits; restart skip; gap and
@@ -573,3 +621,6 @@ spawn(&mut tasks, "progress", .., progress::run(snapshots, nfs_progress, opened,
 1. **The NFS owns fetching for every height** (absorbs the producer): one sender on the final
    stream, one fetch scheduler, no handoff between "bulk" and "tip" components.
 1. **`view()` = committed only** for serving; `staged()` only for bulk folds.
+1. **A late index lags alone, then joins** (2026-10-08, §6 "Late indexes"): root over the
+   joined indexes only, one ordered stream, refold on join (no second stream, no per-index
+   nodes).

@@ -71,3 +71,20 @@ migration = """
 `zaino_snapshot::Publisher::new` and read `snapshots.load().served()?`; `nfs.progress()` for \
 the handed height; tests: `Indexed::fixed` (+ `zaino_snapshot::Snapshots::fixed`).
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "fix"
+section = "fixed"
+description = """
+An index enabled after the others synced (a fresh directory, or one left behind by a crash) no \
+longer holds the served tip back for every index until it catches up (hours for tree-state on \
+mainnet). It lags: out of folds and snapshots (`Views::syncing(kind)` = enabled, not served \
+yet), fed by the final stream from its own durable tip, while the others keep folding and \
+serving the tip; once its durable tip reaches theirs it joins, the nodes above are refolded \
+with it, and its views appear. The root is now the lowest durable tip of the joined indexes \
+(value-balance and compact-block join together). Final steps are delivered beside the NFS \
+loop (at most `lookahead` undelivered), so a lagging index's full queue pauses only the \
+stream, never the tip. A final block is never sent unfolded after a folded one (a parent \
+pruned before its child folded could do it).
+"""

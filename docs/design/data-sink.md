@@ -22,10 +22,11 @@ retracted. Reorgs never reach it: they live in the NFS ([nfs.md](./nfs.md)).
 
 `data` on the final stream is a `Final { block, folds }`:
 
-| `folds`       | Where                                   | Writer                                        |
-| ------------- | --------------------------------------- | --------------------------------------------- |
-| `None`        | at or below the NFS root (bulk sync)    | folds the block itself onto `Store::staged()` |
-| `Some(folds)` | above the root (folded once by the NFS) | applies `folds.get(kind)` as sent             |
+| `folds`                 | Where                                   | Writer                                        |
+| ----------------------- | --------------------------------------- | --------------------------------------------- |
+| `None`                  | at or below the NFS root (bulk sync)    | folds the block itself onto `Store::staged()` |
+| `Some(folds)`, its kind | above the root (folded once by the NFS) | applies `folds.get(kind)` as sent             |
+| `Some(folds)`, no kind  | folded while the index lagged           | folds the block itself, like `None`           |
 
 - Once a step is folded, every later one is too, until a restart (the NFS never sends an unfolded
   block over a folded parent). A writer asserts it.
@@ -33,10 +34,13 @@ retracted. Reorgs never reach it: they live in the NFS ([nfs.md](./nfs.md)).
 
 ## Start point and restart
 
-The NFS starts the stream after the **lowest** durable tip of every enabled index (its root). An
-index ahead of it receives heights it already holds and skips them (`zaino_sync::held`): it still
-pops every step, so every queue drains in order. Nothing is sent until every durable tip is the
-verified chain's block at its height (`NfsError::Diverged` otherwise: resync).
+The NFS starts the stream after the **lowest** durable tip of every enabled index. An index ahead
+of it receives heights it already holds and skips them (`zaino_sync::held`): it still pops every
+step, so every queue drains in order. Nothing is sent until every durable tip is the verified
+chain's block at its height (`NfsError::Diverged` otherwise: resync). An index far behind (enabled
+late) lags: the stream feeds it from its own tip while the others keep serving the tip; its full
+queue pauses the stream alone (sends are delivered beside the NFS loop), never the tip
+([nfs.md](./nfs.md) §6 "Late indexes").
 
 ## Commit cadence: `Committer`
 

@@ -73,13 +73,15 @@ impl<V> At<V> {
 
 /// One publish: the served tip + every folded node, judged under `chain`
 ///
-/// - `served` = deepest folded best block, else `root` (lowest durable tip)
-/// - `durable` = each index's committed view as of this publish (republished per commit)
+/// - `served` = deepest folded best block, else `root` (lowest durable tip of the joined indexes)
+/// - `durable` = each enabled index's committed view as of this publish (republished per commit)
+/// - `joined` = empty layers of the indexes the root serves (a lagging index: none, `syncing`)
 pub struct Indexed<V> {
     chain: Arc<VerifiedChain>,
     root: Option<BlockRef>,
     served: At<V>,
     durable: PerIndex<V>,
+    joined: PerIndex<Layer>,
     graph: Graph<Folded>,
 }
 
@@ -91,23 +93,25 @@ impl<V: View> Indexed<V> {
         root: Option<BlockRef>,
         params: ChainParams,
         durable: PerIndex<V>,
+        joined: PerIndex<Layer>,
         graph: Graph<Folded>,
     ) -> Self {
         let base = graph.at(&chain, root, &tip.hash).expect("served tip = a node or the root");
-        let served = at(params, &durable, base);
-        Self { chain, root, served, durable, graph }
+        let served = at(params, &durable, &joined, base);
+        Self { chain, root, served, durable, joined, graph }
     }
 
     /// Index state as of `hash`: a folded node (best or side) or the root, no I/O
     ///
     /// - `None` = final below the root, never folded, or unknown
     /// - an index durable at or past the block: its committed view alone (reads at heights `<=`)
+    /// - an index the block's fold (or the root) lacks: absent, [`Views::syncing`]
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         let base = self.graph.at(&self.chain, self.root, hash)?;
-        Some(at(self.served.params, &self.durable, base))
+        Some(at(self.served.params, &self.durable, &self.joined, base))
     }
 
-    /// Each enabled index's durable tip, subscribe order
+    /// Each enabled index's durable tip (lagging ones included), subscribe order
     pub fn durable(&self) -> impl Iterator<Item = (IndexKind, Option<BlockRef>)> + '_ {
         self.durable.iter().map(|(kind, view)| (kind, view.tip()))
     }
@@ -127,17 +131,29 @@ impl<V> Indexed<V> {
     pub fn folded(&self, hash: &BlockHash) -> bool {
         self.graph.contains(hash)
     }
+
+    #[cfg(test)]
+    pub(crate) fn root(&self) -> Option<BlockRef> {
+        self.root
+    }
 }
 
-fn at<V: View>(params: ChainParams, durable: &PerIndex<V>, base: Base<Folded>) -> At<V> {
-    let layers = base.folded.as_deref().map(|folded| &folded.layers);
+/// `joined` = the root's layers (a node: its own)
+fn at<V: View>(
+    params: ChainParams,
+    durable: &PerIndex<V>,
+    joined: &PerIndex<Layer>,
+    base: Base<Folded>,
+) -> At<V> {
+    let layers = base.folded.as_deref().map_or(joined, |folded| &folded.layers);
     let views = Views::at(durable, layers, base.at.height);
     At { block: base.at, branch: base.branch, params, views }
 }
 
-/// Every enabled index as of one block: its committed view + its layer above it
+/// Every enabled index's committed view + a layer above it for each one served
 ///
 /// - [`At`]'s state, and a fold's parent
+/// - an index without a layer: lagging (it folds itself off the stream), read as absent
 #[derive(Clone)]
 pub struct Views<V> {
     durable: PerIndex<V>,
@@ -145,41 +161,43 @@ pub struct Views<V> {
 }
 
 impl<V: View> Views<V> {
-    /// Panics: an index without a layer, or a layer off `durable`'s chain (`Layer::rebase`)
+    /// Panics: a layer of no enabled index, or off its `durable`'s chain (`Layer::rebase`)
     pub(crate) fn new(durable: &PerIndex<V>, layers: &PerIndex<Layer>) -> Self {
         let mut rebased = PerIndex::default();
-        for (kind, view) in durable.iter() {
-            let layer = layers.get(kind).unwrap_or_else(|| panic!("{}: no layer", kind.name()));
+        for (kind, layer) in layers.iter() {
+            let view = durable.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()));
             rebased.insert(kind, layer.rebase(view));
         }
         Self { durable: durable.clone(), layers: rebased }
     }
 
-    /// As of the block at `height`: `layers` (`None` = the root), empty for an index durable at
-    /// or past it (a layer rebases only onto one of its own blocks)
-    fn at(durable: &PerIndex<V>, layers: Option<&PerIndex<Layer>>, height: Height) -> Self {
+    /// As of the block at `height`: each of `layers`, empty for an index durable at or past it
+    /// (a layer rebases only onto one of its own blocks)
+    fn at(durable: &PerIndex<V>, layers: &PerIndex<Layer>, height: Height) -> Self {
         let mut chosen = PerIndex::default();
-        for (kind, view) in durable.iter() {
+        for (kind, layer) in layers.iter() {
+            let view = durable.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()));
             let holds = view.tip().is_some_and(|tip| tip.height >= height);
-            let layer = match layers.filter(|_| !holds) {
-                Some(layers) => {
-                    layers.get(kind).unwrap_or_else(|| panic!("{}: no layer", kind.name())).clone()
-                }
-                None => Layer::empty(view.schema()),
-            };
-            chosen.insert(kind, layer);
+            chosen.insert(kind, if holds { Layer::empty(view.schema()) } else { layer.clone() });
         }
         Self::new(durable, &chosen)
     }
 
-    /// Panics: `kind` disabled
+    /// Panics: `kind` not served
     pub(crate) fn layer(&self, kind: IndexKind) -> &Layer {
-        self.layers.get(kind).unwrap_or_else(|| panic!("{}: disabled", kind.name()))
+        self.layers.get(kind).unwrap_or_else(|| panic!("{}: not served", kind.name()))
     }
 
     pub(crate) fn view(&self, kind: IndexKind) -> Option<LayeredView<V>> {
-        let durable = self.durable.get(kind)?.clone();
-        Some(LayeredView::new(durable, self.layer(kind).clone()))
+        let layer = self.layers.get(kind)?.clone();
+        Some(LayeredView::new(self.durable.get(kind)?.clone(), layer))
+    }
+}
+
+impl<V> Views<V> {
+    /// `kind` enabled, not served yet: catching up alone (its routes: `UNAVAILABLE`)
+    pub fn syncing(&self, kind: IndexKind) -> bool {
+        self.durable.get(kind).is_some() && self.layers.get(kind).is_none()
     }
 }
 
@@ -223,9 +241,12 @@ impl<V: View> Indexed<V> {
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
     ) -> Self {
-        let mut views = PerIndex::default();
-        durable.into_iter().for_each(|(kind, view)| views.insert(kind, view));
-        Self::new(chain, tip, Some(tip), params, views, Graph::new())
+        let (mut views, mut joined) = (PerIndex::default(), PerIndex::default());
+        for (kind, view) in durable {
+            joined.insert(kind, Layer::empty(view.schema()));
+            views.insert(kind, view);
+        }
+        Self::new(chain, tip, Some(tip), params, views, joined, Graph::new())
     }
 }
 

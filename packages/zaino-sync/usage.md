@@ -61,8 +61,8 @@ metrics (`zaino_best_tip`, `zaino_reorgs_total`, `zaino_fetch_*`) live in `zaino
 
 `Final { block: Arc<Block>, folds: Option<Arc<Folds>> }`: one final block, every height once,
 ascending. `folds = None` (at or below the NFS root, bulk sync) = the writer folds it; `Some` =
-the NFS folded it, `folds.get(kind)` = this index's `Changes`. Never unfolded after folded until a
-restart.
+the NFS folded it, `folds.get(kind)` = this index's `Changes`, or `None` (folded while this index
+lagged, not joined) = the writer folds it too. Never unfolded after folded until a restart.
 
 ## `Committer`
 
@@ -78,23 +78,26 @@ One writer's store + the committed-view `watch` the NFS reads.
 - `compute(f)`: `f(&mut store)` on the CPU pool (the store hops there and back)
 - a failed commit panics naming the index and its directory (`StoreError::commit_failed`)
 
-`Run { unfolded: Vec<(Height, Arc<Block>)>, folded: Vec<(Height, Arc<Folds>)> }`:
+`Run { pub unfolded: Vec<(Height, Arc<Block>)>, .. }`: per index, `unfolded` = the steps it folds
+itself (sent unfolded, or folded without its kind); the steps folded for it are kept as their
+`Changes`; the two interleave by height.
 
-- `run.apply(store, fold)`: each step `store` does not hold, in order; each unfolded one through
-  `fold(store, block, &mut out)` into `out = store.changes(block)` (parent = `store.staged()`,
-  earlier blocks applied), then the folded ones as sent
-- `run.apply_batch(store, fold) -> T`: the same, with the unfolded steps `store` lacks folded as
-  one batch, `fold(store, &blocks, &mut outs)` filling one opened delta per block (parent =
-  `store.staged()` before the batch; tree-state's hashing, value-balance's prevout probe); `T` =
-  `fold`'s answer (value-balance: the fees)
+- `run.apply(store, fold)`: each step `store` does not hold, in height order; each one it folds
+  through `fold(store, block, &mut out)` into `out = store.changes(block)` (parent =
+  `store.staged()`, earlier blocks applied), each folded one as sent
+- `run.apply_batch(store, fold) -> Vec<T>`: the same, with each stretch of steps `store` folds
+  and lacks folded as one batch, `fold(store, &blocks, &mut outs)` filling one opened delta per
+  block (parent = `store.staged()` before the batch; tree-state's hashing, value-balance's prevout
+  probe); one `T` per stretch, in order (value-balance: the fees)
 - `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip)
 
 ## Fees: `FeeSink`
 
 `FeeSink` = `IndexerDataSink<BlockFees>`, published by
-[`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md) (one per unfolded
-step, held heights re-folded) and read by compact-block (one per unfolded step, skipped ones
-included). Folded steps send nothing: the NFS folded compact-block with the fees.
+[`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md) (one per step it folds
+itself, held heights re-folded) and read by compact-block (one per step it folds itself, skipped
+ones included). Steps folded for them send nothing: the NFS folded compact-block with the fees.
+The two join the NFS together, so each folds itself exactly the same steps.
 
 ## Off the runtime
 

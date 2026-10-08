@@ -27,3 +27,18 @@ migration = """
 Fill the `&mut Changes` the closure receives instead of returning one; replace a run fold plus \
 `apply_folded` with `apply_batch`.
 """
+
+[[changes]]
+crate = "zaino-sync"
+kind = "breaking"
+section = "changed"
+description = """
+A folded final step whose `Folds` lack the writer's index (folded while that index lagged, \
+before it joined the NFS) is folded by the writer itself, in height order with the steps \
+folded for it: `Run::unfolded` = the steps the index folds itself, and `Run::apply_batch` \
+batches each stretch of them, returning one answer per stretch (`Vec<T>`). Before, such a \
+step panicked the writer ("not folded").
+"""
+migration = """
+`run.apply_batch(..)` now returns `Vec<T>`: flatten it (value-balance's fees) or ignore it.
+"""

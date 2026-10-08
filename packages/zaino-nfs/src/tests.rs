@@ -255,9 +255,11 @@ fn oracle(path: &[Block]) -> Vec<(IndexKind, Tables)> {
     folded
 }
 
-/// Test-only writer: each `Final` applied (folded, else its own fold) and committed after `lag`
+/// Test-only writer: each `Final` applied (folded for it, else its own fold) and committed after
+/// `lag`
 ///
 /// - A height already held skipped (restart: an index ahead of the root)
+/// - Folded without it (it lagged when the NFS folded): its own fold
 /// - Past `crash`: received, never committed (the crashed process's lost steps)
 /// - Returns every step received: `(block, folded)`
 async fn commit(
@@ -279,8 +281,8 @@ async fn commit(
         if held || crash.is_some_and(|crash| at.height > crash) {
             continue;
         }
-        let changes = match &data.folds {
-            Some(folds) => folds.get(kind).expect("folded for every enabled index").clone(),
+        let changes = match data.folds.as_deref().and_then(|folds| folds.get(kind)) {
+            Some(changes) => changes.clone(),
             None => {
                 let below = at.height.checked_sub(1);
                 let fees = value_balance.wait_for(|view| view.tip().map(|tip| tip.height) >= below);
@@ -297,10 +299,11 @@ async fn commit(
     }
 }
 
-/// - N4: tip on its chain's best = the lowest index view (a root snapshot: its lowest index)
+/// - N4: tip on its chain's best = the lowest view served (a root snapshot: its lowest joined)
 /// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
-///   block's path vs the chain's; each index reads through the block, or (durable at or past it)
-///   its durable tip alone (R12); either = the oracle there
+///   block's path vs the chain's; each index served reads through the block, or (durable at or
+///   past it) its durable tip alone (R12); either = the oracle there
+/// - J3: an index not served = enabled and `syncing` (lagging, or joined after the fold)
 fn verify(
     snapshot: &Indexed<DiskView>,
     blocks: &Chain,
@@ -312,15 +315,15 @@ fn verify(
     assert_eq!(chain.hash_at(tip.height), Some(tip.hash), "{context}: N4 tip {tip:?} off best");
     assert_eq!(snapshot.served().branch(), Branch::Best, "{context}: N4 served on the best");
     let durable: Vec<(IndexKind, Option<BlockRef>)> = snapshot.durable().collect();
-    let root = durable.iter().filter_map(|(_, tip)| *tip).min_by_key(|tip| tip.height);
-    let lowest =
-        INDEXES.iter().filter_map(|&(kind, ..)| snapshot.served().views().view(kind)?.tip());
+    let views = snapshot.served().views();
+    let lowest = durable.iter().filter_map(|(kind, _)| views.view(*kind)?.tip());
     let lowest = lowest.map(|at| at.height).min();
-    assert_eq!(lowest, Some(tip.height), "{context}: N4 the tip = the lowest index view");
+    assert_eq!(lowest, Some(tip.height), "{context}: N4 the tip = the lowest view served");
 
     for hash in mined {
         let Some(at) = snapshot.at(hash) else {
-            let held = snapshot.folded(hash) || root.is_some_and(|root| root.hash == *hash);
+            let held =
+                snapshot.folded(hash) || snapshot.root().is_some_and(|root| root.hash == *hash);
             assert!(!held, "{context}: G7 at({hash:?}) = None for a folded block or the root");
             continue;
         };
@@ -337,7 +340,14 @@ fn verify(
         for (kind, durable) in &durable {
             let name = kind.name();
             let through = durable.filter(|durable| durable.height >= block.height).unwrap_or(block);
-            let view = at.views().view(*kind).expect("every index enabled");
+            let Some(view) = at.views().view(*kind) else {
+                let syncing = at.views().syncing(*kind);
+                assert!(
+                    syncing,
+                    "{context}: J3 {name} at {block:?}: enabled, not served = syncing"
+                );
+                continue;
+            };
             assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
             let expected =
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.path(through.hash)));
@@ -540,6 +550,205 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
                 folded.contains(&false) && folded.contains(&true),
                 "run {run}: {name} bulk then tip {folded:?}"
             );
+            indexes.push((kind, store, committed));
+        }
+    }
+    stop_balancing.cancel();
+}
+
+/// - Run 0: four indexes synced through A8 (final 5)
+/// - Down: A9 arrives (final 6, past their root A5)
+/// - Run 1: tree-state enabled on a fresh store, its writer stalled (1-byte queue, nothing popped:
+///   the stream held at genesis, as a slow bulk sync holds it)
+/// - Run 1: A 10..=16 one at a time (final = best - 3), then tree-state released, all settled
+/// - The four: served at best after each block, tree-state still at nothing durable (they never
+///   wait for it)
+/// - Served tip never back
+/// - Tree-state: absent (`syncing`) from every snapshot until durable at the four's root (A5),
+///   then served in every later one
+/// - Every snapshot = folding from genesis (`verify`); each final stream = 0..=final once,
+///   never unfolded after folded
+/// - Settled: every index durable through final, served at best, tree-state included
+#[tokio::test(start_paused = true)]
+async fn an_index_enabled_late_syncs_alone_while_the_others_serve_the_tip_then_joins() {
+    let mut blocks = Chain::with_genesis(transactions(None, 0));
+    let genesis = blocks.genesis().hash;
+    let mut tip = genesis;
+    for tag in 1..=16 {
+        let funding = blocks.block(tip).transactions().first();
+        tip = blocks.mine_with(tip, transactions(funding, tag)).hash;
+    }
+    let a = blocks.path(tip);
+    let mined: Vec<BlockHash> = a.iter().map(|block| block.header().hash).collect();
+    let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
+    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
+    headers.insert_blocks(&a[..1]).expect("genesis");
+    let member = Arc::new(Member { chain: MockChain::serving([a[0].clone()]), lying: false });
+    let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = vec![Trusted { source: Arc::clone(&member), priority: 0, limits }];
+    let (balancer, balancing) = TrafficBalancer::new(trusted, None);
+    let stop_balancing = CancellationToken::new();
+    tokio::spawn(balancing.run(stop_balancing.clone()));
+    let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
+    let activations = PoolActivations {
+        sapling: Height::GENESIS,
+        orchard: Some(Height::GENESIS),
+        ironwood: None,
+    };
+    let params = ChainParams { network: NETWORK, activations };
+    let engine = DiskEngine::new(SimFs::new());
+    let open = |kind: IndexKind| {
+        let store = engine.open(Path::new(kind.name()), &schema(kind)).expect("fresh store");
+        let committed = watch::channel(store.view()).0;
+        (kind, store, committed)
+    };
+    let four = [
+        IndexKind::ValueBalance,
+        IndexKind::CompactBlock,
+        IndexKind::BlockHash,
+        IndexKind::TransparentAddress,
+    ];
+    let mut indexes: Vec<(IndexKind, DiskStore, watch::Sender<DiskView>)> =
+        four.into_iter().map(open).collect();
+    let mut oracles = HashMap::new();
+    let lookahead = NonZeroUsize::new(4).expect("nonzero");
+    let root = height(5);
+    let mut add = |added: &[Block]| {
+        headers.insert_blocks(added).expect("valid headers");
+        if let Some(boundary) = headers.finalizable() {
+            headers.finalize(boundary).expect("in-memory store");
+        }
+        member.chain.extend_best(added.to_vec());
+        verified.send_replace(headers.verified().map(Arc::new));
+        (headers.best().expect("verified").block, headers.final_tip().map(|tip| tip.height))
+    };
+    let (release, released) = watch::channel(false);
+
+    for run in 0..2 {
+        if run == 1 {
+            add(&a[9..=9]);
+            indexes.insert(3, open(IndexKind::TreeState));
+        }
+        let mut nfs = Nfs::new(verified_rx.clone(), balancer.clone(), params, lookahead);
+        let value_balance = indexes[0].2.subscribe();
+        let durable: Vec<watch::Receiver<DiskView>> =
+            indexes.iter().map(|(_, _, committed)| committed.subscribe()).collect();
+        let committers: Vec<_> = indexes
+            .drain(..)
+            .map(|(kind, mut store, committed)| {
+                let late = kind == IndexKind::TreeState;
+                let queue = match late {
+                    true => NonZeroUsize::MIN,
+                    false => NonZeroUsize::new(1 << 24).expect("nonzero"),
+                };
+                let blocks = nfs.subscribe(kind, committed.subscribe(), queue);
+                let value_balance = value_balance.clone();
+                let mut released = released.clone();
+                tokio::spawn(async move {
+                    if late {
+                        released.wait_for(|go| *go).await.expect("test alive");
+                    }
+                    let lag = Duration::from_secs(1);
+                    let received =
+                        commit(kind, &mut store, blocks, &committed, value_balance, lag, None);
+                    let received = received.await;
+                    (kind, store, committed, received)
+                })
+            })
+            .collect();
+        let mut indexed = nfs.indexed();
+        let cancel = CancellationToken::new();
+        let mut driver = tokio::spawn(nfs.run(cancel.clone()));
+        let tree_state = |snapshot: &Indexed<DiskView>| {
+            let durable = snapshot.durable().find(|(kind, _)| *kind == IndexKind::TreeState);
+            durable.map(|(_, tip)| (snapshot.served().views().tree_state().is_some(), tip))
+        };
+
+        // (blocks added, settle every index: tree-state released) per move
+        let moves: Vec<(&[Block], bool)> = match run {
+            0 => vec![(&a[1..=8], true)],
+            _ => [a[10..].chunks(1).map(|added| (added, false)).collect(), vec![(&[][..], true)]]
+                .concat(),
+        };
+        let (mut served, mut joined) = (Height::GENESIS, false);
+        for (at, &(added, settle)) in moves.iter().enumerate() {
+            let context = format!("run {run} move {at}");
+            let (best, final_height) = add(added);
+            release.send_replace(settle);
+            let mut seen: Option<Arc<Indexed<DiskView>>> = None;
+            let settled = async {
+                loop {
+                    let new = |latest: &Arc<_>| {
+                        !seen.as_ref().is_some_and(|seen| Arc::ptr_eq(seen, latest))
+                    };
+                    let latest = indexed.borrow_and_update().clone();
+                    if let Some(latest) = latest.filter(new) {
+                        verify(&latest, &blocks, &mined, &mut oracles, &context);
+                        let tip = latest.served().tip().height;
+                        assert!(tip >= served, "{context}: served {tip:?} back from {served:?}");
+                        served = tip;
+                        if let Some((present, durable)) = tree_state(&latest) {
+                            let caught_up = durable.is_some_and(|durable| durable.height >= root);
+                            assert!(
+                                !present || caught_up,
+                                "{context}: tree-state served at {durable:?}"
+                            );
+                            assert!(present || !joined, "{context}: tree-state gone after joining");
+                            joined |= present;
+                        }
+                        seen = Some(latest);
+                    }
+                    let at_best = seen.as_ref().is_some_and(|seen| seen.served().tip() == best);
+                    let durable = durable
+                        .iter()
+                        .all(|view| view.borrow().tip().map(|tip| tip.height) == final_height);
+                    let complete = seen
+                        .as_ref()
+                        .and_then(|seen| tree_state(seen))
+                        .is_none_or(|(present, _)| present);
+                    if at_best && (!settle || durable && complete) {
+                        return;
+                    }
+                    tokio::select! {
+                        Ok(()) = indexed.changed() => {}
+                        stopped = &mut driver => match stopped {
+                            Err(join) => std::panic::resume_unwind(join.into_panic()),
+                            Ok(result) => panic!("{context}: driver stopped: {result:?}"),
+                        },
+                        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                }
+            };
+            let day = Duration::from_secs(86_400);
+            let settled = tokio::time::timeout(day, settled).await.is_ok();
+            let tree_state = seen.as_deref().and_then(tree_state);
+            if !settled {
+                let durable: Vec<Option<BlockRef>> =
+                    durable.iter().map(|view| view.borrow().tip()).collect();
+                let served = seen.map(|seen| seen.served().tip());
+                panic!(
+                    "{context}: {best:?} not settled: served {served:?}, durable {durable:?}, \
+                     tree-state (served, durable) {tree_state:?}"
+                );
+            }
+            if run == 1 && !settle {
+                let lagging = tree_state == Some((false, None));
+                assert!(lagging, "{context}: {best:?} served, tree-state {tree_state:?}");
+            }
+        }
+
+        cancel.cancel();
+        driver.await.expect("driver task").expect("cancel = clean stop");
+        let chain = verified_rx.borrow().clone().expect("verified");
+        let final_height = chain.final_tip().map(|tip| tip.height).expect("final");
+        for committer in committers {
+            let (kind, store, committed, received) = committer.await.expect("committer task");
+            let name = kind.name();
+            let heights: Vec<Height> = received.iter().map(|(at, _)| at.height).collect();
+            let expected: Vec<Height> = Height::GENESIS.up_to(final_height).collect();
+            assert_eq!(heights, expected, "run {run}: N5 {name} each height once, through final");
+            let folded: Vec<bool> = received.iter().map(|(_, folded)| *folded).collect();
+            assert!(folded.is_sorted(), "run {run}: {name} unfolded after folded {folded:?}");
             indexes.push((kind, store, committed));
         }
     }
