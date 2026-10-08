@@ -586,7 +586,7 @@ mod tests {
         use zaino_proto::proto::service as proto;
 
         let block: Vec<(Transaction, Vec<u8>)> =
-            zaino_source::mock::fixture_transactions(2_000_000)
+            zaino_source::testing::fixtures::transactions(2_000_000)
                 .into_iter()
                 .map(|raw| (zaino_source::decode_transaction(&raw).expect("decodes"), raw))
                 .collect();

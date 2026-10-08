@@ -1,16 +1,17 @@
 use std::sync::Arc;
 
+use zaino_primitives::sha256d;
 use zaino_primitives::testing::h;
 use zaino_primitives::types::MerkleRoot;
 
+use super::fixtures;
 use super::*;
-use crate::mock::fixture_transactions;
 
 /// - links, polls and blocks by hash: its best chain only, the chain's own header bytes and info
 /// - a reorg between its tip read and its `getblockhash` answers: one poll mixes both, the next
 ///   is whole
 /// - a `raw_tx` served by its bytes once mined; a `TxBuilder` tx's body = panic, never invented
-/// - each `Lie` breaks exactly what it names
+/// - each `Lie` breaks exactly what it names; a tampered header served (and hashed) as edited
 #[tokio::test]
 async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted() {
     let mut chain = MockChain::regtest().varied_work();
@@ -69,13 +70,26 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
         let served = validator.get_block_by_hash(three.hash).await.expect("answers");
         assert_eq!(shape(&served), expected, "{lie:?}");
     }
+
+    validator.lie(None);
+    let early = chain.block(chain.genesis().hash).header().time;
+    validator.tamper(h(3), |header| header.time = early);
+    let tampered = validator.get_poll_reading(false, &[h(3)]).await.expect("reachable").held;
+    let tampered = *tampered[0].as_ref().expect("held");
+    let link = validator.get_block_links(&[h(3)]).await.expect("reachable").remove(0);
+    let served = BlockHash::from(sha256d(&link.expect("held").header));
+    assert_ne!(tampered, three.hash, "an edited header, rehashed");
+    assert_eq!(served, tampered, "its bytes, its hash, its block");
+    let block = validator.get_block_by_hash(tampered).await.expect("served by its new hash");
+    assert_eq!(block.header().time, early);
 }
 
 /// Paused clock, one validator at height 1:
-/// - mempool: inserted at its stated fee, a relayed tx at the fee its bytes leave, a mined tx gone
+/// - mempool: inserted at its stated fee, a relayed tx at the fee its bytes leave, a mined or
+///   evicted tx gone
 /// - verdicts: an unknown input refused, a scripted refusal, garbage = `Malformed`
-/// - listing refusal, metadata timeouts, the estimate; latency per call; injected failures;
-///   every call counted
+/// - listing refusal, metadata timeouts, the estimate; latency + reachability per port; injected
+///   failures; every call counted
 #[tokio::test(start_paused = true)]
 async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let mut chain = MockChain::regtest();
@@ -100,7 +114,7 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let bytes = validator.get_raw_mempool_transactions(&[entry]).await.expect("reachable");
     assert_eq!(bytes, [Ok(sent_raw.clone())]);
 
-    let foreign = fixture_transactions(2_000_000).into_iter().skip(1).find(|raw| {
+    let foreign = fixtures::transactions(2_000_000).into_iter().skip(1).find(|raw| {
         !crate::decode_transaction(raw).expect("fixture").transparent.inputs.is_empty()
     });
     let refused = validator.send_raw_transaction(foreign.expect("a transparent spend")).await;
@@ -134,21 +148,37 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let metadata = polled.metadata.expect("asked");
     assert_eq!(metadata.peers.expect_err("times out").mode, FailureMode::Timeout);
     assert_eq!(metadata.release.expect("answered"), release);
+    validator.mempool_remove(listed);
+    let polled = validator.get_poll_reading(false, &[]).await.expect("reachable");
+    assert_eq!(polled.listing, Ok(Vec::new()), "evicted = unlisted");
     validator.listing(Err(GetMempoolListingError::Inactive));
     let polled = validator.get_poll_reading(false, &[]).await.expect("reachable");
     assert_eq!(polled.listing, Err(GetMempoolListingError::Inactive));
 
-    validator.latency(Duration::from_secs(2));
+    validator.latency(&[Port::Links], Duration::from_secs(2));
     let started = tokio::time::Instant::now();
     validator.get_block_links(&[h(0)]).await.expect("reachable");
     assert_eq!(started.elapsed(), Duration::from_secs(2), "one call = one latency");
-    validator.latency(Duration::ZERO);
+    validator.get_poll_reading(false, &[]).await.expect("reachable");
+    assert_eq!(started.elapsed(), Duration::from_secs(2), "polls outside the scope: at once");
+    validator.latency(&Port::ALL, Duration::ZERO);
     validator.fail_next(1, FailureMode::Timeout);
     let failed = validator.get_block_links(&[h(0)]).await.expect_err("injected");
     assert_eq!(failed.mode, FailureMode::Timeout);
     assert!(validator.get_block_links(&[h(0), h(1)]).await.is_ok(), "one injected failure");
-    validator.reachable(false);
+    validator.reachable(&[Port::Send], false);
+    let refused = validator.send_raw_transaction(raw_transaction(4, 0).1).await;
+    let mode = |answer: Result<_, QueryError<SendRawTransactionError>>| match answer {
+        Err(QueryError::NonDomain(cause)) => Some(cause.mode),
+        _ => None,
+    };
+    assert_eq!(mode(refused), Some(FailureMode::Connection), "sends refused in transport");
+    assert!(validator.get_poll_reading(false, &[]).await.is_ok(), "polls outside the scope");
+    validator.reachable(&Port::ALL, false);
     let gone = validator.get_poll_reading(false, &[]).await.expect_err("unreachable");
     assert_eq!(gone.mode, FailureMode::Connection);
-    assert_eq!(validator.calls(), Calls { polls: 4, links: 4, blocks: 0, sends: 4 });
+    validator.reachable(&Port::ALL, true);
+    let back = validator.send_raw_transaction(raw_transaction(4, 0).1).await;
+    assert_eq!(back.expect("reachable again on every port"), raw_transaction(4, 0).0);
+    assert_eq!(validator.calls(), Calls { polls: 7, links: 4, blocks: 0, sends: 6 });
 }

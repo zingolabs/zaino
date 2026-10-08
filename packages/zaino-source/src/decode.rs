@@ -294,7 +294,7 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mock::fixture_block as fixture;
+    use crate::testing::fixtures::block as fixture;
     use zaino_primitives::types::{EquihashSolution, MerkleRoot};
     use zcash_primitives::block::BlockHeader as RawHeader;
 

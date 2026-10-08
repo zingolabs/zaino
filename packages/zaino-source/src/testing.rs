@@ -4,14 +4,14 @@
 //! - best chain only, by height and hash; nothing above its tip; upgrades from the chain's schedule
 //! - N nodes over one `MockChain` = N validators, each `follow`ing its own tip
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, fee_left, header_hash, MockChain};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockRef, BlockchainInfo, EndOfService, Height, NodeRelease, OutPoint,
-    PeerInfo, Transaction, TransactionId, TransactionLocation, Zatoshis,
+    Block, BlockHash, BlockHeader, BlockRef, BlockchainInfo, EndOfService, Height, NodeRelease,
+    OutPoint, PeerInfo, Transaction, TransactionId, TransactionLocation, Zatoshis,
 };
 
 use crate::{
@@ -31,6 +31,22 @@ pub enum Lie {
     Poisoned,
     Mutated,
     WrongHeight,
+}
+
+/// One [`ChainDataSource`] method: the scope of `reachable` / `latency`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Port {
+    Poll,
+    Links,
+    Block,
+    MempoolBytes,
+    Transaction,
+    Send,
+}
+
+impl Port {
+    pub const ALL: [Port; 6] =
+        [Port::Poll, Port::Links, Port::Block, Port::MempoolBytes, Port::Transaction, Port::Send];
 }
 
 /// Calls answered or refused, by port (`links` = heights asked)
@@ -55,10 +71,10 @@ struct State {
     relay: Result<(), SendRawTransactionError>,
     peers: Option<Vec<PeerInfo>>,
     release: Option<NodeRelease>,
-    latency: Duration,
+    latency: BTreeMap<Port, Duration>,
     failures: u32,
     failure_mode: FailureMode,
-    reachable: bool,
+    unreachable: BTreeSet<Port>,
     lie: Option<Lie>,
     calls: Calls,
 }
@@ -97,10 +113,10 @@ impl MockValidator {
             relay: Ok(()),
             peers: Some(Vec::new()),
             release: Some(release),
-            latency: Duration::ZERO,
+            latency: BTreeMap::new(),
             failures: 0,
             failure_mode: FailureMode::Connection,
-            reachable: true,
+            unreachable: BTreeSet::new(),
             lie: None,
             calls: Calls::default(),
         };
@@ -130,6 +146,24 @@ impl MockValidator {
         txid
     }
 
+    /// Evicted (expiry, churn): unlisted from the next poll
+    pub fn mempool_remove(&self, txid: TransactionId) {
+        self.state().mempool.remove(&txid);
+    }
+
+    /// Followed header at `height` edited, hash recomputed (a header the builder refuses to mine)
+    ///
+    /// - blocks above keep their `prev_hash`: served as is, unlinked
+    pub fn tamper(&self, height: Height, edit: impl FnOnce(&mut BlockHeader)) {
+        let mut state = self.state();
+        let at = state.followed.best.get_mut(u32::from(height) as usize);
+        let block = at.unwrap_or_else(|| panic!("tamper at {height}: above the followed tip"));
+        let mut header = block.header().clone();
+        edit(&mut header);
+        header.hash = header_hash(&header);
+        *block = Arc::new(Block::new(header, block.transactions().to_vec()));
+    }
+
     /// `getrawmempool` answer (default `Ok`: its mempool)
     pub fn listing(&self, answer: Result<(), GetMempoolListingError>) {
         self.state().listing = answer;
@@ -146,9 +180,12 @@ impl MockValidator {
         (state.peers, state.release) = (peers, release);
     }
 
-    /// Before every answer (`tokio::time`: a paused clock skips it)
-    pub fn latency(&self, per_call: Duration) {
-        self.state().latency = per_call;
+    /// Before every answer on `ports` (`tokio::time`: a paused clock skips it)
+    pub fn latency(&self, ports: &[Port], per_call: Duration) {
+        let mut state = self.state();
+        for port in ports {
+            state.latency.insert(*port, per_call);
+        }
     }
 
     /// Next `count` calls refused with `mode` (any port)
@@ -157,9 +194,15 @@ impl MockValidator {
         (state.failures, state.failure_mode) = (count, mode);
     }
 
-    /// `false` = every call refused in transport until set back
-    pub fn reachable(&self, reachable: bool) {
-        self.state().reachable = reachable;
+    /// `false` = every call on `ports` refused in transport until set back
+    pub fn reachable(&self, ports: &[Port], reachable: bool) {
+        let mut state = self.state();
+        for port in ports {
+            match reachable {
+                true => state.unreachable.remove(port),
+                false => state.unreachable.insert(*port),
+            };
+        }
     }
 
     pub fn lie(&self, lie: Option<Lie>) {
@@ -175,16 +218,20 @@ impl MockValidator {
     }
 
     /// Counted, delayed, then refused if injected
-    async fn enter(&self, count: impl FnOnce(&mut Calls)) -> Result<(), NonDomainError> {
+    async fn enter(
+        &self,
+        port: Port,
+        count: impl FnOnce(&mut Calls),
+    ) -> Result<(), NonDomainError> {
         let latency = {
             let mut state = self.state();
             count(&mut state.calls);
-            state.latency
+            state.latency.get(&port).copied()
         };
-        if !latency.is_zero() {
+        if let Some(latency) = latency.filter(|latency| !latency.is_zero()) {
             tokio::time::sleep(latency).await;
         }
-        self.state().injected()
+        self.state().injected(port)
     }
 }
 
@@ -197,9 +244,10 @@ impl State {
         self.followed = followed;
     }
 
-    fn injected(&mut self) -> Result<(), NonDomainError> {
-        if !self.reachable {
-            return Err(NonDomainError::new(FailureMode::Connection, "MockValidator unreachable"));
+    fn injected(&mut self, port: Port) -> Result<(), NonDomainError> {
+        if self.unreachable.contains(&port) {
+            let unreachable = format!("MockValidator unreachable on {port:?}");
+            return Err(NonDomainError::new(FailureMode::Connection, unreachable));
         }
         if self.failures == 0 {
             return Ok(());
@@ -282,7 +330,7 @@ impl ChainDataSource for MockValidator {
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        self.enter(|calls| calls.blocks += 1).await?;
+        self.enter(Port::Block, |calls| calls.blocks += 1).await?;
         let state = self.state();
         let block = state.followed.best.iter().find(|block| block.header().hash == hash);
         let block = block.ok_or(QueryError::Domain(GetBlockByHashError::NotFound(hash)))?;
@@ -293,7 +341,7 @@ impl ChainDataSource for MockValidator {
     }
 
     async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
-        self.enter(|calls| calls.links += heights.len()).await?;
+        self.enter(Port::Links, |calls| calls.links += heights.len()).await?;
         let state = self.state();
         let link = |height: &Height| {
             let block = state.best_at(*height).ok_or(GetAtHeightError::HeightNotFound(*height))?;
@@ -307,7 +355,7 @@ impl ChainDataSource for MockValidator {
         metadata: bool,
         holds: &[Height],
     ) -> Result<PollReading, NonDomainError> {
-        self.enter(|calls| calls.polls += 1).await?;
+        self.enter(Port::Poll, |calls| calls.polls += 1).await?;
         let mut state = self.state();
         let mut info = state.followed.info.clone();
         info.estimated_height = state.estimate.unwrap_or(info.blocks);
@@ -338,7 +386,7 @@ impl ChainDataSource for MockValidator {
         &self,
         listed: &[MempoolListed],
     ) -> Result<RawMempoolTransactions, NonDomainError> {
-        self.enter(|_| {}).await?;
+        self.enter(Port::MempoolBytes, |_| {}).await?;
         let state = self.state();
         let bytes = |entry: &MempoolListed| match state.mempool.get(&entry.txid) {
             Some((raw, _)) => Ok(raw.clone()),
@@ -352,7 +400,7 @@ impl ChainDataSource for MockValidator {
         &self,
         txid: TransactionId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        self.enter(|_| {}).await?;
+        self.enter(Port::Transaction, |_| {}).await?;
         let state = self.state();
         if let Some((raw, _)) = state.mempool.get(&txid) {
             let location = TransactionLocation::Mempool;
@@ -377,7 +425,7 @@ impl ChainDataSource for MockValidator {
         &self,
         transaction: Vec<u8>,
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
-        self.enter(|calls| calls.sends += 1).await?;
+        self.enter(Port::Send, |calls| calls.sends += 1).await?;
         let mut state = self.state();
         state.relay.clone().map_err(QueryError::Domain)?;
         state.admit(transaction).map_err(QueryError::Domain)
@@ -409,6 +457,8 @@ pub fn decoded(raw: Vec<u8>) -> (Transaction, Vec<u8>) {
     let tx = crate::decode_transaction(&raw).expect("decoded takes real transaction bytes");
     (tx, raw)
 }
+
+pub mod fixtures;
 
 #[cfg(test)]
 mod tests;

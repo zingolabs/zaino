@@ -10,7 +10,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{encode_header, Chain};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId, Zatoshis};
-use zaino_source::mock::{fixture_transactions, MockChain, MEMPOOL_FEE};
+use zaino_source::mock::{MockChain, MEMPOOL_FEE};
+use zaino_source::testing::fixtures::transactions as fixture_transactions;
 use zaino_source::{
     BlockLink, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
     GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,

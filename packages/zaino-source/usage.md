@@ -115,20 +115,22 @@ simulated zebrad over a `zaino_primitives::testing::MockChain`, a whole
 `ChainDataSource`. N nodes over one chain = N validators, each following its own tip.
 
 ```rust,ignore
-use zaino_source::testing::{decoded, raw_transaction, Lie, MockValidator};
+use zaino_source::testing::{decoded, raw_transaction, Lie, MockValidator, Port};
 
 let validator = MockValidator::following(&chain, chain.tip());
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
 validator.estimate(h(500));                          // getblockchaininfo estimatedheight
 let txid = validator.mempool_insert(raw, 2_000);     // listed from the next poll at 2 000
+validator.mempool_remove(txid);                      // evicted: unlisted from the next poll
 validator.listing(Err(GetMempoolListingError::Inactive));
 validator.relay(Err(SendRawTransactionError::Rejected("fee".into()))); // sendrawtransaction verdict
 validator.metadata(None, Some(release));             // peers read times out
-validator.latency(Duration::from_secs(2));           // before every answer (tokio::time)
-validator.fail_next(2, FailureMode::Timeout);
-validator.reachable(false);
+validator.latency(&[Port::Block], Duration::from_secs(2)); // before each answer there (tokio::time)
+validator.fail_next(2, FailureMode::Timeout);         // any port
+validator.reachable(&[Port::Send], false);           // refused in transport there; Port::ALL = gone
 validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
+validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
 assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1 });
 let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
 chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: get_transaction serves them
@@ -171,10 +173,9 @@ decode) listed from the next poll, a mined txid dropped; `get_transaction` locat
 txid in the mempool or on the best chain; no peers; a release with no halt. One mock
 backs the chain view, the gRPC routes and the NFS alike.
 
-`mock::fixture_block(height)` / `mock::fixture_transactions(height)`: a captured
-mainnet block from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000,
-2,500,000), whole or as each transaction's own consensus bytes, for tests that need
-real transactions (every pool, every version).
+`testing::fixtures::transactions(height)`: each transaction of a captured mainnet block
+from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000) as its own
+consensus bytes, for tests that need real transactions (every pool, every version).
 `zaino-nfs`'s driver test and zainod's pipeline test drive the NFS through reorgs
 with `extend_best`.
 

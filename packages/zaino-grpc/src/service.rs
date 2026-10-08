@@ -284,7 +284,7 @@ mod tests {
         let blocks = chain.path(tip.hash);
         let views =
             vec![indexed(IndexKind::CompactBlock, &blocks), indexed(IndexKind::TreeState, &blocks)];
-        let raw = zaino_source::mock::fixture_transactions(2_000_000).remove(0);
+        let raw = zaino_source::testing::fixtures::transactions(2_000_000).remove(0);
         let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
         let snapshots = snapshot_held(&blocks[..=2], views, EndpointSet::at([0]), &ours);
