@@ -4,11 +4,11 @@
 //! than the prose in the zcashd RPC docs: the address RPCs take a single object
 //! parameter, not a positional list.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The `{"addresses": [...]}` object the address RPCs take as their one
 /// positional parameter.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AddressesParam {
     /// The transparent addresses to query.
     pub addresses: Vec<String>,
@@ -16,7 +16,7 @@ pub struct AddressesParam {
 
 /// The `getaddressdeltas` object parameter, as `zcashex` sends it: one
 /// positional object, not a positional list.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AddressDeltasParam {
     /// The transparent addresses to query.
     pub addresses: Vec<String>,
@@ -33,7 +33,7 @@ pub struct AddressDeltasParam {
 
 /// The `getaddresstxids` object parameter, as `zcashex` sends it: one positional
 /// object carrying the addresses and an optional inclusive height window.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AddressTxidsParam {
     /// The transparent addresses to query.
     pub addresses: Vec<String>,
@@ -50,7 +50,7 @@ pub struct AddressTxidsParam {
 /// `zcashex` and zcashd send it — `{"txid": ..., "index": n}`, one positional
 /// object. `index` is the output (vout) index of the outpoint, matching zcashd's
 /// `CSpentIndexKey`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GetSpentInfoParam {
     /// The hex txid of the transaction that created the outpoint, display order.
     pub txid: String,
@@ -68,7 +68,7 @@ pub struct GetSpentInfoParam {
 /// chain by construction, so the option is already satisfied and the key is
 /// accepted and ignored (unknown keys are, by default, dropped). Only
 /// `logicalTimes` changes the response.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct GetBlockHashesOptions {
     /// zcashd's `logicalTimes`: when true, return `{blockhash, logicalts}`
     /// objects instead of bare hash strings. Defaults to false.

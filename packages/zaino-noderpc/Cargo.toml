@@ -10,7 +10,7 @@ zaino-service = { path = "../zaino-service" }
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 zaino-component = { path = "../zaino-component" }
-jsonrpsee = { workspace = true }
+jsonrpsee = { workspace = true, features = ["http-client"] }
 tokio = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 zaino-address = { path = "../zaino-address" }

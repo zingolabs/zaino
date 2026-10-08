@@ -34,8 +34,16 @@ use crate::wire::response::{
 use crate::NodeRpc;
 
 /// The node JSON-RPC surface this adapter serves.
-#[rpc(server)]
-pub(crate) trait NodeRpcApi {
+///
+/// `#[rpc(client, server)]` generates both [`NodeRpcApiServer`] (what
+/// [`NodeRpc`] implements) and `NodeRpcApiClient` (a typed async client,
+/// blanket-implemented for anything implementing jsonrpsee's `ClientT` — an
+/// `HttpClient`, in particular) from this one definition. A consumer never
+/// hand-rolls request/response types or JSON-RPC envelope handling: it
+/// depends on this crate, builds an `HttpClient`, and calls these methods
+/// directly.
+#[rpc(client, server)]
+pub trait NodeRpcApi {
     #[method(name = "getblockcount")]
     async fn block_count(&self) -> Result<u32, ErrorObjectOwned>;
 

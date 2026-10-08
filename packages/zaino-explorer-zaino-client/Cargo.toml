@@ -1,0 +1,15 @@
+[package]
+name = "zaino-explorer-zaino-client"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+description = "Dogfood block explorer: the one production ChainReader, over zaino-noderpc's generated jsonrpsee client against a live zainod."
+
+[dependencies]
+zaino-explorer-domain = { path = "../zaino-explorer-domain" }
+zaino-noderpc = { path = "../zaino-noderpc" }
+jsonrpsee = { workspace = true, features = ["http-client"] }

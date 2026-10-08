@@ -47,6 +47,15 @@ members = [
     # workspace member so it shares the production lockfile (reproducible cluster
     # builds) and is covered by workspace lints. See bench/sync-bench.
     "bench/sync-bench",
+    # Dogfood block explorer (TUI + web), split crate-per-concern for real DI:
+    # a domain crate (one driven port), one production adapter over
+    # zaino-noderpc's generated client, and the driving adapters (web now,
+    # tui later). All path-deps for now, in-workspace on purpose — moves to
+    # its own repo once the POC proves itself; see the design spec.
+    "packages/zaino-explorer-domain",
+    "packages/zaino-explorer-zaino-client",
+    "packages/zaino-explorer-web",
+    "packages/zaino-explorer-tui",
     # NOTE: live-tests/ is its own standalone workspace (see
     # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
     # (`ztest` from crates.io), which stands the system up as deployed images and
@@ -110,6 +119,10 @@ prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+axum = "0.7"
+maud = { version = "0.26", features = ["axum"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Hashmaps, channels, DBs
 indexmap = "2.2.6"

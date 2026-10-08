@@ -1,0 +1,18 @@
+[package]
+name = "zaino-explorer-tui"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+description = "Dogfood block explorer: TUI surface, generic over the domain's ChainReader port. Phase 1+, stub for now."
+
+[dependencies]
+zaino-explorer-domain = { path = "../zaino-explorer-domain" }
+zaino-explorer-zaino-client = { path = "../zaino-explorer-zaino-client" }
+jsonrpsee = { workspace = true, features = ["http-client"] }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tokio = { workspace = true }

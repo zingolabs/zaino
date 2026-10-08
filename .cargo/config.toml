@@ -1,3 +1,7 @@
 [env]
 # Workaround for GCC 15+: zebra's librocksdb-sys vendored C++ relies on transitive <cstdint>.
 CXXFLAGS = { value = "-include cstdint", force = false, relative = false }
+# Link the system rocksdb (pacman, 11.1.1) instead of compiling the vendored
+# C++ from source on every cold `target/` — see project_system_rocksdb.md.
+# Scoped to this worktree only, not propagated to the shared worktree parent.
+ROCKSDB_LIB_DIR = { value = "/usr/lib", force = false, relative = false }

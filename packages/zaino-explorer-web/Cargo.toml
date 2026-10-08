@@ -1,0 +1,31 @@
+[package]
+name = "zaino-explorer-web"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+description = "Dogfood block explorer: server-rendered web surface, generic over the domain's ChainReader port."
+
+[dependencies]
+zaino-explorer-domain = { path = "../zaino-explorer-domain" }
+axum = { workspace = true }
+maud = { workspace = true }
+tokio = { workspace = true }
+
+# The binary's composition root alone: it is the one place that knows the
+# concrete adapter. The library half of this crate (`src/lib.rs`) never
+# imports either of these — only `src/bin/web.rs` does.
+zaino-explorer-zaino-client = { path = "../zaino-explorer-zaino-client" }
+jsonrpsee = { workspace = true, features = ["http-client"] }
+
+[dev-dependencies]
+zaino-noderpc = { path = "../zaino-noderpc" }
+zaino-service = { path = "../zaino-service", features = ["testing"] }
+zaino-primitives = { path = "../zaino-primitives" }
+jsonrpsee = { workspace = true, features = ["server"] }
+zcash_protocol.workspace = true
+tower = { workspace = true }
+http-body-util = "0.1.5"

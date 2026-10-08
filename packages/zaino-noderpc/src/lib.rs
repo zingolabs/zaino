@@ -15,9 +15,10 @@
 mod error;
 mod rpc;
 mod transport;
-pub(crate) mod wire;
+pub mod wire;
 
 pub use error::RpcError;
+pub use rpc::{NodeRpcApiClient, NodeRpcApiServer};
 pub use transport::{JsonRpcServeError, JsonRpcServer};
 
 use zaino_primitives::types::{Height, ShieldedPool, TransactionLocation, TransparentAddress};

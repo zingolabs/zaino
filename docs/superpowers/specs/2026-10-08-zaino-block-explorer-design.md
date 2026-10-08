@@ -59,20 +59,37 @@ shouldn't repeat that pattern.
 
 ## Crate layout
 
-New workspace member `packages/zaino-block-explorer/`, with two binary
-targets sharing one dependency on `zaino-noderpc`'s generated client — no
-other zaino-internal crate dependency, no domain-type reconstruction, no
-caching or secondary index of its own. Every view is a live RPC call; that's
-the whole point, and the opposite of CipherScan's bolted-on Postgres layer.
+Four workspace members, split crate-per-concern for real dependency
+injection rather than modules in one crate — mirroring the ports-and-adapters
+shape the rest of zaino already uses:
 
-- `bin/tui.rs` — the primary surface. `ratatui` + `crossterm`.
-- `bin/web.rs` — a secondary surface, deferred to Phase 2+. Server-rendered
-  with `axum` + a plain templating crate (Askama or `maud`), using the exact
-  same native client unmodified — no WASM, no frontend build pipeline. This
-  is architecturally the closest match to NightHawk's own Elixir/Phoenix
-  server-rendered design. A WASM/SPA frontend (Yew/Leptos/Dioxus, which
+- `zaino-explorer-domain` — the domain: one driven port, `ChainReader`
+  (`chain_height() -> Result<u32, ChainReadError>` today, growing one method
+  per view). No transport dependency at all — not even on `zaino-noderpc`.
+- `zaino-explorer-zaino-client` — the one production implementor of
+  `ChainReader`, wrapping `zaino-noderpc`'s generated jsonrpsee client
+  against a live zainod. Plain and direct: no caching, no retry policy,
+  nothing beyond what the generated client gives for free — the opposite of
+  CipherScan's bolted-on Postgres layer.
+- `zaino-explorer-web` — a driving adapter. The library half (`build_app`,
+  routes) is generic over `ChainReader` and never imports the concrete
+  adapter; only `src/bin/web.rs`, the composition root, constructs
+  `ZainoClient` and injects it. Server-rendered with `axum` + `maud` — no
+  WASM, no frontend build pipeline. Architecturally the closest match to
+  NightHawk's own Elixir/Phoenix server-rendered design.
+- `zaino-explorer-tui` — the second driving adapter, Phase 1+ (stub for
+  now). Same domain port, same production adapter, `ratatui` + `crossterm`
+  instead of `axum` + `maud`. A WASM/SPA frontend (Yew/Leptos/Dioxus, which
   jsonrpsee also supports via its web-sys/fetch transport) is a real option
-  if a client-side app is ever wanted, but out of scope for this spike.
+  later, but out of scope here.
+
+**Repo location (explicit, revisited mid-build):** all four crates are
+path-dependencies inside zaino's own workspace *for now*, deliberately — a
+breaking change to `zaino-noderpc` (which is under active concurrent edit as
+part of #1550) shows up as an immediate compile failure here, not silent
+drift against a pinned git ref. Move to a separate repo once the web POC
+proves itself; at that point `zaino-noderpc` becomes a git dependency (a
+local `file://` ref initially, a crates.io dependency once it's published).
 
 Config: one RPC endpoint URL, CLI flag or env var, nothing fancier.
 

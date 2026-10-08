@@ -1,0 +1,13 @@
+[package]
+name = "zaino-explorer-domain"
+version = "0.1.0"
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+license = { workspace = true }
+publish = false
+description = "Dogfood block explorer: the domain's one driven port (ChainReader), with no transport dependency."
+
+[dependencies]
+thiserror = { workspace = true }

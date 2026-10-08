@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The `getmempoolinfo` response.
 ///
@@ -16,7 +16,7 @@ use serde::Serialize;
 /// serialized size but no memory-cost figure, so `usage` is not computable here
 /// and is deliberately absent rather than approximated by `bytes` (which would be
 /// a different quantity wearing the same name).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MempoolInfoResponse {
     /// Number of transactions in the mempool.
     pub size: u64,
@@ -29,7 +29,7 @@ pub struct MempoolInfoResponse {
 /// `fee` renders as zcashd's ZEC float, with the exact zatoshi integer beside it
 /// as `feeZat`. `time` is omitted when the source reports no entry time, never
 /// sent as null or zero.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MempoolEntryObject {
     /// Serialized byte length of the transaction.
     pub size: u64,
@@ -51,7 +51,7 @@ pub struct MempoolEntryObject {
 /// `CSpentIndexValue`: the spending transaction's id, the input (vin) index of
 /// it that consumed the outpoint, and the height it was mined at. `txid` renders
 /// in display (byte-reversed) order, as every 32-byte value on this wire does.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpentInfoResponse {
     /// The spending transaction's id, in display order.
     pub txid: String,
@@ -67,7 +67,7 @@ pub struct SpentInfoResponse {
 /// Two JSON shapes from one method, chosen by the `verbose` parameter. The
 /// verbose form is an object, not an array, because the explorer's warmer
 /// pattern-matches its entries as key/value pairs.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RawMempoolResponse {
     /// Non-verbose: the txids currently in the mempool, as hex.
@@ -77,7 +77,7 @@ pub enum RawMempoolResponse {
 }
 
 /// The `getaddressbalance` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddressBalanceResponse {
     /// Total currently held, in zatoshis.
     pub balance: u64,
@@ -86,7 +86,7 @@ pub struct AddressBalanceResponse {
 }
 
 /// One entry of the `getaddressdeltas` list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddressDeltaEntry {
     /// Signed change in zatoshis — negative for a spend.
     pub satoshis: i64,
@@ -104,7 +104,7 @@ pub struct AddressDeltaEntry {
 }
 
 /// The range a `chainInfo` request echoes alongside its deltas.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeltaRange {
     /// First height included.
     pub start: u32,
@@ -114,7 +114,7 @@ pub struct DeltaRange {
 
 /// The `getaddressdeltas` response. `range` appears only when the request asked
 /// for `chainInfo` and a query actually ran.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddressDeltasResponse {
     /// The deltas, in `(height, blockindex, index)` order.
     pub deltas: Vec<AddressDeltaEntry>,
@@ -128,7 +128,7 @@ pub struct AddressDeltasResponse {
 /// `txid` is display order; `script` is the locking script as hex; `satoshis`
 /// is the exact integer value. zcashd's key is `outputIndex` (camel-cased),
 /// distinct from the `vout`/`index` of other methods.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AddressUtxoEntry {
     /// The transparent address holding the output.
     pub address: String,
@@ -147,7 +147,7 @@ pub struct AddressUtxoEntry {
 
 /// The `validateaddress` response. zcashd reports an unusable address as
 /// `isvalid: false` with no other fields, rather than as an error.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidateAddressResponse {
     /// Whether the address is a transparent address on the queried network.
     pub isvalid: bool,
@@ -160,7 +160,7 @@ pub struct ValidateAddressResponse {
 }
 
 /// The `z_validateaddress` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZValidateAddressResponse {
     /// Whether the address is one Zaino classifies on the queried network.
     pub isvalid: bool,
@@ -193,7 +193,7 @@ pub struct ZValidateAddressResponse {
 
 /// The `z_listunifiedreceivers` response: one field per receiver kind the
 /// unified address bundles, absent when it carries none of that kind.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnifiedReceiversResponse {
     /// Orchard receiver.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -211,7 +211,7 @@ pub struct UnifiedReceiversResponse {
 
 /// One shielded pool's commitment-tree state in a `z_gettreestate` response,
 /// nested under the pool key as `{commitments: {...}}`, matching zcashd/zebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PoolTreestateResponse {
     /// The pool's commitment-tree root and serialized state.
     pub commitments: CommitmentsResponse,
@@ -224,7 +224,7 @@ pub struct PoolTreestateResponse {
 /// natural order. `finalRoot` is absent when the source does not report one —
 /// the RPC backend discards it (see [`crate::wire::treestate_to_wire`]), so it is
 /// `Option` rather than always present.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitmentsResponse {
     /// Root of the pool's note-commitment tree after this block, as hex (display
     /// order). Absent when the source does not report it.
@@ -240,7 +240,7 @@ pub struct CommitmentsResponse {
 /// A pool key (`sapling`, `orchard`, `ironwood`) is present only when the pool
 /// is active at this block — an inactive pool omits the key rather than
 /// rendering an empty tree, matching the source's `Option` per pool.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreestateResponse {
     /// Hash of the block these trees are the state after, as hex (display order).
     pub hash: String,
@@ -260,7 +260,7 @@ pub struct TreestateResponse {
 }
 
 /// One entry of a `z_getsubtreesbyindex` response's `subtrees` list.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtreeRootEntry {
     /// The subtree's root hash, as hex (natural order, as the source reports it).
     pub root: String,
@@ -270,7 +270,7 @@ pub struct SubtreeRootEntry {
 
 /// The `z_getsubtreesbyindex` response: the pool, the starting index of the run
 /// actually returned, and the contiguous subtree roots from there.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubtreeRootsResponse {
     /// The pool queried — `sapling` or `orchard`.
     pub pool: String,
@@ -289,7 +289,7 @@ pub struct SubtreeRootsResponse {
 /// not report them (genesis has no `previousblockhash`; the tip has no
 /// `nextblockhash`; pre-Sapling blocks have no `finalsaplingroot`; Zebra reports
 /// no `chainwork`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BlockHeaderResponse {
     /// Hash of this block, as hex.
     pub hash: String,
@@ -339,7 +339,7 @@ pub struct BlockHeaderResponse {
 /// carries the prevout reference (`txid`, `vout`) plus the spent output's value
 /// (both as a ZEC float and exact zatoshis) and the address it paid, resolved
 /// through [`crate::wire`]'s prevout lookup.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TransactionInput {
     /// The block's coinbase input — present once, on the coinbase transaction.
@@ -377,7 +377,7 @@ pub enum TransactionInput {
 
 /// A transparent input's signature script, as the explorer reads it: the
 /// disassembled `asm` and the raw `hex`, matching zcashd's `scriptSig`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptSig {
     /// The signature script disassembled to zcashd's `asm` string, with DER
     /// signatures' sighash types decoded.
@@ -391,7 +391,7 @@ pub struct ScriptSig {
 /// Each amount is emitted twice — `value` as the ZEC float the explorer sums and
 /// `valueZat` as the exact zatoshis beside it — mirroring the chain-info value
 /// pools.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransactionOutput {
     /// Output value, as a ZEC-denominated float.
     pub value: f64,
@@ -410,7 +410,7 @@ pub struct TransactionOutput {
 /// `addresses` and `type` are present together exactly when the script is a
 /// standard P2PKH/P2SH template, and absent together otherwise — a non-standard
 /// script is not an address.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptPubKey {
     /// The locking script disassembled to zcashd's `asm` string.
     pub asm: String,
@@ -433,7 +433,7 @@ pub struct ScriptPubKey {
 
 /// One Sprout JoinSplit's transparent value movement, each amount as both the
 /// ZEC float the explorer sums and the exact zatoshis beside it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JoinSplitObject {
     /// Value removed from the transparent pool, as a ZEC float.
     pub vpub_old: f64,
@@ -449,7 +449,7 @@ pub struct JoinSplitObject {
 
 /// One Sapling spend in `vShieldedSpend`. The explorer reads only the array's
 /// length, so a single field (the nullifier, in zcashd's spelling) carries it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedSpend {
     /// The spend's nullifier, as hex.
     pub nullifier: String,
@@ -457,7 +457,7 @@ pub struct ShieldedSpend {
 
 /// One Sapling output in `vShieldedOutput`. The explorer reads only the array's
 /// length; the fields are zcashd's spellings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShieldedOutput {
     /// Note commitment (`cmu`), as hex.
     pub cmu: String,
@@ -472,7 +472,7 @@ pub struct ShieldedOutput {
 /// Emitted on every version-5 transaction, including one with no actions — the
 /// explorer dereferences `orchard.valueBalance` strictly on v5, so an absent
 /// `orchard` crashes it (Review Focus 5).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OrchardObject {
     /// The Orchard actions. The explorer reads only the length.
     pub actions: Vec<OrchardActionObject>,
@@ -486,7 +486,7 @@ pub struct OrchardObject {
 
 /// One Orchard action. The explorer reads only `length(orchard.actions)`; the
 /// fields are zcashd's spellings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OrchardActionObject {
     /// Nullifier, as hex.
     pub nullifier: String,
@@ -505,7 +505,7 @@ pub struct OrchardActionObject {
 /// `valueBalanceZat`, `vShieldedSpend` and `vShieldedOutput` from version 4;
 /// `orchard` from version 5. Ironwood is deliberately not emitted — the explorer
 /// has no field for it (a recorded divergence).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransactionObject {
     /// Transaction id, as hex.
     pub txid: String,
@@ -560,7 +560,7 @@ pub struct TransactionObject {
 ///
 /// The location keys are flattened onto the transaction object, matching zcashd,
 /// and are all absent for a mempool transaction, which has no containing block.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RawTransactionResponse {
     /// The transaction, in the shared explorer shape.
     #[serde(flatten)]
@@ -587,7 +587,7 @@ pub struct RawTransactionResponse {
 
 /// One pool's cumulative note-commitment tree size, as the `trees` object nests
 /// it: a single-key `{size}` object per pool, matching zcashd/zebra.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreePoolSize {
     /// Cumulative note count in this pool's commitment tree after the block.
     pub size: u64,
@@ -595,7 +595,7 @@ pub struct TreePoolSize {
 
 /// The `trees` object of a verbose `getblock`: the cumulative note-commitment
 /// tree size of each shielded pool after this block.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreesResponse {
     /// Sapling pool tree size.
     pub sapling: TreePoolSize,
@@ -612,7 +612,7 @@ pub struct TreesResponse {
 ///
 /// `size` is the serialized block length, from the decoded-block read (which
 /// closes the earlier divergence where it could not be measured).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BlockResponse<T> {
     /// Hash of this block, as hex.
     pub hash: String,
@@ -681,7 +681,7 @@ pub struct BlockResponse<T> {
 /// verbosity 1 the decoded object. A single jsonrpsee method returns one type,
 /// and zcashd's `getrawtransaction` is polymorphic by verbosity, so the enum is
 /// that one type.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GetRawTransactionResponse {
     /// Verbosity 0: the raw consensus bytes as lowercase hex.
@@ -692,7 +692,7 @@ pub enum GetRawTransactionResponse {
 
 /// The `getblock` response across the served verbosities. Serialized untagged:
 /// verbosity 1 carries `tx` as id strings, verbosity 2 as decoded transactions.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GetBlockResponse {
     /// Verbosity 0: the raw consensus bytes as lowercase hex.
@@ -705,7 +705,7 @@ pub enum GetBlockResponse {
 
 /// One entry of the `getblockhashes` verbose response, emitted when the request
 /// sets `logicalTimes: true`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockHashLogical {
     /// The block hash, in RPC display order.
     pub blockhash: String,
@@ -718,7 +718,7 @@ pub struct BlockHashLogical {
 /// array of `{blockhash, logicalts}` objects when it is true. One jsonrpsee method
 /// returns one type, and zcashd's `getblockhashes` is polymorphic by that option,
 /// so the enum is that one type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum GetBlockHashesResponse {
     /// `logicalTimes` false or absent: the block hashes, in display order.
@@ -738,7 +738,7 @@ pub enum GetBlockHashesResponse {
 /// The same shape serves the unnamed chain-supply total and the named pools: a
 /// pool has an `id`, the total has none, so an empty id is omitted rather than
 /// rendered as `""`.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValuePoolResponse {
     /// Pool name — `transparent`, `sapling`, `orchard`, … Absent for the
     /// chain-supply total, which zcashd reports unnamed.
@@ -765,7 +765,7 @@ pub struct ValuePoolResponse {
 
 /// One network upgrade in a `getblockchaininfo` response, keyed in the enclosing
 /// map by its consensus branch id (zcashd's layout).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkUpgradeResponse {
     /// The validator's descriptive name for the upgrade, e.g. `Canopy`, `NU5`.
     pub name: String,
@@ -778,7 +778,7 @@ pub struct NetworkUpgradeResponse {
 
 /// The consensus branches in force around the tip, as `getblockchaininfo`
 /// reports them: 8-digit lowercase hex branch ids.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TipConsensusResponse {
     /// Branch in force at the current tip.
     pub chaintip: String,
@@ -791,7 +791,7 @@ pub struct TipConsensusResponse {
 /// `chainwork` is absent rather than zero when the validator does not track
 /// cumulative work (zebra hardcodes it): zero is not a possible amount of work,
 /// so the honest wire form is omission.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BlockchainInfoResponse {
     /// Network name as defined in BIP70 — `main`, `test`, `regtest`.
     pub chain: String,
@@ -836,7 +836,7 @@ pub struct BlockchainInfoResponse {
 ///
 /// `build` is load-bearing for the explorer, which pattern-matches it as a
 /// string on its homepage; it is always present and never optional.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NodeInfoResponse {
     /// Validator version, as its own numeric encoding.
     pub version: u64,
@@ -870,7 +870,7 @@ pub struct NodeInfoResponse {
 }
 
 /// The `getmininginfo` response, in zcashd's wire field names.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MiningInfoResponse {
     /// Height of the current best-chain tip.
     pub blocks: u32,
@@ -899,7 +899,7 @@ pub struct MiningInfoResponse {
 }
 
 /// One `networks` entry of a `getnetworkinfo` response, in zcashd's spellings.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkEntryResponse {
     /// The network's name — `ipv4`, `ipv6`, `onion`.
     pub name: String,
@@ -914,7 +914,7 @@ pub struct NetworkEntryResponse {
 }
 
 /// One `localaddresses` entry of a `getnetworkinfo` response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalAddressResponse {
     /// The advertised address.
     pub address: String,
@@ -930,7 +930,7 @@ pub struct LocalAddressResponse {
 /// helper. Unlike the value-pool family it carries no exact `*Zat` sibling —
 /// zcashd and zebra emit none, and the oracle confirms it, so adding one would
 /// diverge from the shape clients expect.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NetworkInfoResponse {
     /// Validator version, as its own numeric encoding.
     pub version: u64,
@@ -961,7 +961,7 @@ pub struct NetworkInfoResponse {
 /// `valueZat` beside it, and `scriptPubKey` reuses the transaction output's
 /// script shape. zcashd's `version` field is deliberately not rendered — the
 /// explorer does not read it.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TxOutResponse {
     /// Best-chain tip the validator answered against, as hex (display order).
     pub bestblock: String,
@@ -983,7 +983,7 @@ pub struct TxOutResponse {
 ///
 /// The explorer reads `addr` tolerantly and nothing else, but `inbound` is the
 /// only other fact the supported validators report, so both travel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerInfoEntry {
     /// Remote peer address as the validator reports it.
     pub addr: String,
@@ -1005,7 +1005,7 @@ pub struct PeerInfoEntry {
 /// `nextblockhash` at the tip. Every 32-byte value is display order; `nonce` is
 /// hex; `bits` is the 8-digit hex nBits; `chainwork` is 64-character big-endian
 /// hex.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GetBlockDeltasResponse {
     /// Hash of this block, as hex.
     pub hash: String,
@@ -1046,7 +1046,7 @@ pub struct GetBlockDeltasResponse {
 }
 
 /// One transaction's transparent value movements, in the `deltas` array.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TransactionDeltaEntry {
     /// Transaction id, as hex.
     pub txid: String,
@@ -1063,7 +1063,7 @@ pub struct TransactionDeltaEntry {
 /// `address` is present only when the spent output's script is a standard
 /// P2PKH/P2SH template, absent otherwise — the same rule zcashd applies, which
 /// emits the entry without an address for any other script.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputDeltaEntry {
     /// The transparent address the value left, when the spent output's script is
     /// a standard template; absent otherwise.
@@ -1082,7 +1082,7 @@ pub struct InputDeltaEntry {
 /// One transparent output of a transaction, as a positive value movement.
 ///
 /// `address` follows the same P2PKH/P2SH rule as [`InputDeltaEntry`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDeltaEntry {
     /// The transparent address the value arrived at, when the script is a standard
     /// template; absent otherwise.
