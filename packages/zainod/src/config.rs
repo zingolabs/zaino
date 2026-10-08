@@ -57,13 +57,11 @@ pub(crate) struct TrustedValidatorConfig {
     /// Seconds of silence before a request fails (silence, not total duration: a multi-MB block
     /// over a slow link takes as long as it takes)
     pub(crate) read_timeout_secs: NonZeroU64,
-    /// Requests in flight, >= 6: one reserved per request class (poll, submit, tip block, lookup,
-    /// bulk block) + one shared; the rest go to whichever class waits
+    /// Requests in flight, >= 4: one reserved per lane (control, interactive, bulk) + one shared;
+    /// the rest go to whichever lane waits
     ///
     /// - One connection each; zebrad admits 100 total (shared validator: `instances × this` < 100)
     pub(crate) max_connections: NonZeroU32,
-    /// Requests per second, a batch counting each call (unset = unlimited)
-    pub(crate) max_requests_per_sec: Option<NonZeroU32>,
     /// MiB per second read, paced as read (unset = unlimited; set for a remote/shared validator)
     pub(crate) max_mib_per_sec: Option<NonZeroU32>,
     /// zebrad indexer gRPC (`indexer_listen_addr`, `host:port`)
@@ -91,7 +89,6 @@ impl Default for TrustedValidatorConfig {
             read_timeout_secs: NonZeroU64::new(timeouts.read.as_secs())
                 .expect("the default read timeout is whole, non-zero seconds"),
             max_connections: limits.max_connections,
-            max_requests_per_sec: None,
             max_mib_per_sec: None,
             indexer_address: None,
             priority: 0,
@@ -103,7 +100,7 @@ impl TrustedValidatorConfig {
     /// The balancer's budget; `None` = `max_connections` below
     /// [`Limits::MIN_CONNECTIONS`](zaino_traffic::Limits) (refused by [`DaemonConfig::validate`])
     pub(crate) fn limits(&self) -> Option<zaino_traffic::Limits> {
-        zaino_traffic::Limits::new(self.max_connections.get(), self.max_requests_per_sec)
+        zaino_traffic::Limits::new(self.max_connections.get(), None)
     }
 
     /// The transport's: connection pool + response bytes paced as read
@@ -588,7 +585,7 @@ impl DaemonConfig {
             if validator.limits().is_none() {
                 return Err(IndexerError::ConfigError(format!(
                     "[[trusted_validators]] {}: max_connections = {} is below {} (one reserved \
-                     per request class + one shared)",
+                     per lane + one shared)",
                     validator.jsonrpc_address,
                     validator.max_connections,
                     zaino_traffic::Limits::MIN_CONNECTIONS
@@ -944,7 +941,7 @@ path = "/tmp/zaino-compact-block"
     }
 
     /// - Entries equal, auth + limits optional
-    /// - Refused: empty list, one validator twice, fewer connections than classes, every removed
+    /// - Refused: empty list, one validator twice, fewer connections than lanes + 1, every removed
     ///   key
     #[test]
     fn trusted_validators_parse_and_removed_keys_are_refused() {
@@ -958,7 +955,6 @@ jsonrpc_address = "zebra-eu:8232"
 user = "zaino"
 password = "secret"
 max_connections = 8
-max_requests_per_sec = 200
 max_mib_per_sec = 4
 indexer_address = "zebra-eu:8230"
 priority = 1
@@ -976,7 +972,6 @@ path = "/tmp/zaino-compact-block"
             user: Some("zaino".to_owned()),
             password: Some("secret".to_owned()),
             max_connections: n(8),
-            max_requests_per_sec: Some(n(200)),
             max_mib_per_sec: Some(n(4)),
             indexer_address: Some("zebra-eu:8230".to_owned()),
             priority: 1,
@@ -984,7 +979,7 @@ path = "/tmp/zaino-compact-block"
         };
         assert_eq!(config.trusted_validators, [entry("127.0.0.1:18232"), eu.clone()]);
         assert!(config.validate().is_ok());
-        assert_eq!(eu.limits(), zaino_traffic::Limits::new(8, Some(n(200))), "the balancer's");
+        assert_eq!(eu.limits(), zaino_traffic::Limits::new(8, None), "the balancer's");
         let link =
             zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
         assert_eq!(eu.link(), link, "the transport's");
@@ -995,9 +990,9 @@ path = "/tmp/zaino-compact-block"
         let twice = vec![entry("zebra-eu:8232"), entry("zebra-eu:8232")];
         let twice = DaemonConfig { trusted_validators: twice, ..config.clone() };
         assert!(refused(twice).contains("twice"));
-        let starved = vec![TrustedValidatorConfig { max_connections: n(5), ..eu }];
+        let starved = vec![TrustedValidatorConfig { max_connections: n(3), ..eu }];
         let starved = DaemonConfig { trusted_validators: starved, ..config };
-        assert!(refused(starved).contains("max_connections = 5 is below 6"));
+        assert!(refused(starved).contains("max_connections = 3 is below 4"));
 
         for (name, removed) in [
             ("source.toml", "[source]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
@@ -1005,6 +1000,7 @@ path = "/tmp/zaino-compact-block"
             ("primary.toml", "[fetch]\nprimary_validator = \"127.0.0.1:18232\"\n"),
             ("mode.toml", "[[trusted_validators]]\nmode = \"direct\"\n"),
             ("noderpc.toml", "[serve]\njsonrpc_listen_address = \"0.0.0.0:8232\"\n"),
+            ("rate.toml", "[[trusted_validators]]\nmax_requests_per_sec = 200\n"),
         ] {
             let stale = format!("{toml}\n{removed}");
             let err = load_config(&write(&dir, name, &stale)).expect_err(name);

@@ -117,8 +117,8 @@ crate = "zainod"
 kind = "feature"
 description = """
 `[[trusted_validators]]`: every entry equal, at least one. Each is a link budget zainod never \
-exceeds (`max_connections`, default 32, split into chain-view, wallet-lookup and block-sync \
-lanes; optional `max_requests_per_sec` and `max_mib_per_sec`), with `connect_timeout_secs` (2) \
+exceeds (`max_connections`, default 32, at least 4, split into control, interactive and bulk \
+lanes; optional `max_mib_per_sec`), with `connect_timeout_secs` (2) \
 and `read_timeout_secs` (30, silence rather than total duration). A validator down at boot or \
 later is retried every 30 s and never stops zainod. Optional `indexer_address` names zebrad's \
 indexer gRPC, whose tip and mempool push streams wake polling at once.
@@ -236,11 +236,13 @@ crate = "zainod"
 kind = "breaking"
 section = "changed"
 description = """
-`[[trusted_validators]] max_connections` must be at least 6 (one reserved per request class + \
-one shared), was 4; `max_requests_per_sec` counts each call of a batch.
+`[[trusted_validators]] max_requests_per_sec` is removed (a header batch was charged one token \
+per header, stalling every request class on that validator), and a config naming it is refused \
+as an unknown field. `max_connections` (at least 4: one reserved per lane + one shared) and \
+`max_mib_per_sec` bound a validator's load.
 """
 migration = """
-Raise any `max_connections` below 6.
+Remove the `max_requests_per_sec` key from every `[[trusted_validators]]` entry.
 """
 
 [[changes]]
