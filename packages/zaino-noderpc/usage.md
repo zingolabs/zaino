@@ -32,10 +32,13 @@ in internal order per the lightwalletd protocol.)
 `z_getsubtreesbyindex`, `validateaddress`, `z_validateaddress`,
 `z_listunifiedreceivers`.
 
-`z_gettreestate` and `z_getsubtreesbyindex` read through `TreestateRead`
-(passthrough — Zaino indexes no commitment-tree frontier). `z_gettreestate`
-takes a height (decimal string) or a block hash (resolved to a height over the
-local header read) and nests each active pool under its key as
+`z_gettreestate` and `z_getsubtreesbyindex` read through the engine's
+`TreestateRead` port — served **locally** under the node-rpc-local deployment
+from Zaino's own `tree_state` and per-pool `subtrees_*` indexes (the finalised
+store up to the watermark, the window folding forward above it), not relayed to
+the validator. `z_gettreestate` takes a height (decimal string) or a block hash
+(resolved to a height over the local header read) and nests each active pool under
+its key as
 `{commitments: {finalRoot, finalState}}`: the block hash renders in display
 order, `finalRoot` in each pool's own order (Sapling display/byte-reversed,
 Orchard and Ironwood internal — matched to zebra), `finalState` as hex in natural
