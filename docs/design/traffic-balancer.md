@@ -316,8 +316,8 @@ zainod `upgrade_schedule`, `laned`, poller/watch spawning.
   kinds off per case. `PROPTEST_CASES=1000` loop ≥ 3 min after any change (as persistence).
 - **Fire drills** (`core/fire_drills.rs`): one planted bug per `check()` assertion and
   precondition, pattern of `zaino-nfs/src/fetch.rs`'s `every_fetch_check_fires_on_its_planted_bug`.
-- **Driver** (`tests.rs`, paused single-thread runtime): `MockChain` members (`mock-chain.md`)
-  with failure injection; one scenario per story: a wallet storm never delays a poll (T1 + T10),
+- **Driver** (`tests.rs`, paused single-thread runtime): `MockValidator` members (`mock-chain.md`)
+  with per-port latency and failure injection; one scenario per story: a wallet storm never delays a poll (T1 + T10),
   a merkle-lying member is benched and its block served by another, a hedge beats a 20 s stall,
   a push stream wakes the poll within 200 ms.
 - **Consumers keep theirs**: NFS model loses source kinds (bodies arrive late, never, or not at

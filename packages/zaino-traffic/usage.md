@@ -23,7 +23,7 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 ```
 
 - `trusted[i]` is `ValidatorId(i)`: configured order, at most `ValidatorId::MAX` (64).
-- `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `MockChain` in tests.
+- `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
   `None` = trusted only.
 - `Limits::MIN_CONNECTIONS` = 6: every class reserve (5) + one shared permit, so a class with no
