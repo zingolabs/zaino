@@ -6289,6 +6289,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "strum 0.28.0",
+ "thiserror 2.0.20",
+ "tokio",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [
