@@ -181,10 +181,9 @@ pub(crate) fn utxo_to_wire(utxo: zaino_primitives::types::Utxo) -> AddressUtxoEn
 /// (domain -> wire).
 ///
 /// The block hash renders in display order; each active pool nests under its key
-/// as `{commitments: {finalRoot?, finalState}}`, and a pool with no tree at this
-/// height omits the key (a documented divergence from zebra, which reports
-/// `{commitments: {}}` for a scheduled pool below its activation — the domain
-/// cannot tell that apart from an unscheduled pool, so it reports neither).
+/// as `{commitments: {finalRoot?, finalState}}`. Sapling and Orchard with no tree
+/// at this height render `{commitments: {}}`, as zebra does; Ironwood with no
+/// tree omits its key.
 ///
 /// `finalRoot`'s byte orientation is per pool, verified against zebra by the
 /// `zaino-indexes` treestate golden: Sapling reports it in display (byte-reversed)
@@ -201,10 +200,12 @@ pub(crate) fn treestate_to_wire(
         time: treestate.time,
         sapling: treestate
             .sapling
-            .map(|pool| pool_treestate_to_wire(pool, to_display_hex)),
+            .map(|pool| pool_treestate_to_wire(pool, to_display_hex))
+            .unwrap_or_default(),
         orchard: treestate
             .orchard
-            .map(|pool| pool_treestate_to_wire(pool, to_hex)),
+            .map(|pool| pool_treestate_to_wire(pool, to_hex))
+            .unwrap_or_default(),
         ironwood: treestate
             .ironwood
             .map(|pool| pool_treestate_to_wire(pool, to_hex)),
@@ -222,7 +223,7 @@ fn pool_treestate_to_wire(
     PoolTreestateResponse {
         commitments: CommitmentsResponse {
             final_root: pool.final_root.map(|root| root_to_hex(root.into())),
-            final_state: bytes_to_hex(&pool.final_state),
+            final_state: Some(bytes_to_hex(&pool.final_state)),
         },
     }
 }
@@ -2766,13 +2767,11 @@ mod tests {
                         }
                     }
                     None => {
-                        // Below activation the domain has no tree, so Zaino omits
-                        // the pool key. Documented divergence from zebra, which
-                        // emits `{commitments: {}}`; the domain cannot tell a
-                        // scheduled-but-pre-activation pool from an unscheduled one.
-                        assert!(
-                            json.get(pool).is_none(),
-                            "{pool} omitted when inactive at {height_key}"
+                        // Below activation the domain has no tree; the pool
+                        // renders exactly what zebra reports, `{commitments: {}}`.
+                        assert_eq!(
+                            json[pool], result[pool],
+                            "{pool} rendered as zebra does when inactive at {height_key}"
                         );
                     }
                 }
@@ -2786,9 +2785,10 @@ mod tests {
 
     /// A pool whose source reports no root (the passthrough RPC backend discards
     /// it) renders `commitments` with `finalState` only — no `finalRoot` key, not
-    /// a null — and an inactive pool is omitted entirely.
+    /// a null. An inactive Orchard renders empty commitments, as zebra does; an
+    /// inactive Ironwood is omitted.
     #[test]
-    fn treestate_omits_final_root_when_absent_and_inactive_pool() {
+    fn treestate_omits_final_root_when_absent_and_renders_inactive_pools() {
         use super::treestate_to_wire;
         use zaino_primitives::types::{BlockHash, Height, PoolTreestate, Treestate};
 
@@ -2813,7 +2813,11 @@ mod tests {
             sapling.get("finalState").and_then(Value::as_str),
             Some("000000")
         );
-        assert!(json.get("orchard").is_none(), "inactive orchard is omitted");
+        assert_eq!(
+            json["orchard"],
+            serde_json::json!({ "commitments": {} }),
+            "inactive orchard renders empty commitments"
+        );
         assert!(
             json.get("ironwood").is_none(),
             "inactive ironwood is omitted"

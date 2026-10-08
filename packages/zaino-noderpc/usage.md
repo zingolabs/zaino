@@ -42,9 +42,9 @@ its key as
 `{commitments: {finalRoot, finalState}}`: the block hash renders in display
 order, `finalRoot` in each pool's own order (Sapling display/byte-reversed,
 Orchard and Ironwood internal — matched to zebra), `finalState` as hex in natural
-order, and a pool with no tree at this height omits its key (a divergence from
-zebra, which reports `{commitments: {}}` for a scheduled pool below activation —
-the domain cannot tell that apart from an unscheduled pool). `finalRoot` is absent
+order. Sapling and Orchard with no tree at this height render
+`{commitments: {}}`, as zebra does below a pool's activation; Ironwood with no
+tree omits its key. `finalRoot` is absent
 against the RPC backend, which discards it on parse; the local tree index reports
 it. `z_getsubtreesbyindex` takes `pool, startIndex, (limit?)` and returns
 `{pool, start_index, subtrees}` with each root in natural (internal) order; a

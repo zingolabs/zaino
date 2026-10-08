@@ -1989,9 +1989,10 @@ mod tests {
         }
     }
 
-    /// A pre-activation pool omits its key, rather than rendering an empty tree.
+    /// A pre-activation Orchard renders empty commitments, as zebra does; a
+    /// pre-activation Ironwood omits its key.
     #[tokio::test]
-    async fn z_gettreestate_omits_an_inactive_pool() {
+    async fn z_gettreestate_renders_an_inactive_pool_as_zebra_does() {
         use zaino_primitives::types::Treestate;
         let treestate = Treestate {
             block_hash: BlockHash::from([0x11u8; 32]),
@@ -2010,9 +2011,14 @@ mod tests {
             .expect("serialize");
         let obj = json.as_object().expect("a JSON object");
         assert!(obj.contains_key("sapling"));
+        assert_eq!(
+            obj.get("orchard"),
+            Some(&serde_json::json!({ "commitments": {} })),
+            "an inactive orchard renders empty commitments: {obj:?}"
+        );
         assert!(
-            !obj.contains_key("orchard") && !obj.contains_key("ironwood"),
-            "an inactive pool omits its key: {obj:?}"
+            !obj.contains_key("ironwood"),
+            "an inactive ironwood omits its key: {obj:?}"
         );
     }
 
