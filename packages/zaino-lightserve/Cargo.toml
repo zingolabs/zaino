@@ -27,3 +27,4 @@ zaino-source = { path = "../zaino-source", features = ["testing"] }
 zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-core = { path = "../zaino-core", features = ["testing"] }
+serde_json.workspace = true

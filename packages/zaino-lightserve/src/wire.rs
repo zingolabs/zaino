@@ -362,4 +362,141 @@ mod tests {
         assert_eq!(at(TransactionLocation::NonBestChain).height, u64::MAX);
         assert_eq!(at(TransactionLocation::Mempool).height, 0u64);
     }
+
+    /// The `z_gettreestate` fixtures captured from zebra 6.4.2 (mainnet). One
+    /// source of truth: the same file `zaino-indexes` tests read.
+    const TREESTATE_FIXTURE: &str =
+        include_str!("../../zaino-indexes/tests/fixtures/treestate/zebra-mainnet.json");
+
+    /// Decode a hex string into exactly 32 bytes.
+    fn bytes32(hex: &str) -> [u8; 32] {
+        decode_hex(hex).try_into().expect("a 32-byte value")
+    }
+
+    /// Decode a lowercase/uppercase hex string into bytes (test-local, so the
+    /// crate needs no hex dependency for this golden).
+    fn decode_hex(hex: &str) -> Vec<u8> {
+        fn nibble(c: u8) -> u8 {
+            match c {
+                b'0'..=b'9' => c - b'0',
+                b'a'..=b'f' => c - b'a' + 10,
+                b'A'..=b'F' => c - b'A' + 10,
+                _ => panic!("invalid hex digit {c:#x}"),
+            }
+        }
+        let bytes = hex.as_bytes();
+        assert!(bytes.len() % 2 == 0, "even-length hex");
+        bytes
+            .chunks_exact(2)
+            .map(|pair| (nibble(pair[0]) << 4) | nibble(pair[1]))
+            .collect()
+    }
+
+    /// Reverse 32 bytes (display order <-> internal order).
+    fn reversed(mut bytes: [u8; 32]) -> [u8; 32] {
+        bytes.reverse();
+        bytes
+    }
+
+    /// Golden `GetTreeState` proto rendering against the zebra mainnet fixtures.
+    ///
+    /// The lightwalletd `TreeState` carries each pool's serialized tree as the
+    /// legacy `finalState` hex (verbatim, natural order) and the block hash in
+    /// display order; it has no `finalRoot`, so no root orientation arises here. A
+    /// pool with no tree at this height rides out as the empty string, and
+    /// Ironwood is unscheduled on mainnet (empty).
+    #[test]
+    fn treestate_renders_zebra_fixture_state_and_hash() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        let entries = fixture["z_gettreestate"]
+            .as_object()
+            .expect("z_gettreestate object");
+
+        let pool_from_fixture = |commitments: &serde_json::Value| -> Option<PoolTreestate> {
+            let final_state = commitments["finalState"].as_str()?;
+            Some(PoolTreestate {
+                // The proto never reads the root; the index would supply one.
+                final_root: None,
+                final_state: decode_hex(final_state),
+            })
+        };
+
+        for (height_key, response) in entries {
+            let result = &response["result"];
+            let hash_display = result["hash"].as_str().expect("hash");
+            let height_num = result["height"].as_u64().expect("height");
+            let time_num = result["time"].as_u64().expect("time");
+
+            let treestate = Treestate {
+                block_hash: BlockHash::from(reversed(bytes32(hash_display))),
+                height: Height::try_from(u32::try_from(height_num).expect("height fits u32"))
+                    .expect("valid height"),
+                time: u32::try_from(time_num).expect("time fits u32"),
+                sapling: pool_from_fixture(&result["sapling"]["commitments"]),
+                orchard: pool_from_fixture(&result["orchard"]["commitments"]),
+                ironwood: None,
+            };
+
+            let wire = treestate.to_wire();
+            assert_eq!(wire.height, height_num, "height at {height_key}");
+            assert_eq!(u64::from(wire.time), time_num, "time at {height_key}");
+            assert_eq!(
+                wire.hash, hash_display,
+                "display-order hash at {height_key}"
+            );
+
+            let expected_tree = |pool: &str| -> String {
+                result[pool]["commitments"]["finalState"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned()
+            };
+            assert_eq!(
+                wire.sapling_tree,
+                expected_tree("sapling"),
+                "sapling tree at {height_key}"
+            );
+            assert_eq!(
+                wire.orchard_tree,
+                expected_tree("orchard"),
+                "orchard tree at {height_key}"
+            );
+            assert_eq!(wire.ironwood_tree, "", "ironwood empty at {height_key}");
+        }
+    }
+
+    /// Golden `GetSubtreeRoots` proto rendering: the root rides out as raw bytes
+    /// in internal (unreversed) order for both pools, so `root_hash` is the
+    /// fixture root's bytes verbatim; the completing block hash the domain does
+    /// not carry stays empty.
+    #[test]
+    fn subtree_roots_render_internal_bytes_from_fixture() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(TREESTATE_FIXTURE).expect("fixture parses");
+        for pool_name in ["sapling", "orchard"] {
+            let subtrees = fixture["z_getsubtreesbyindex"][pool_name]["result"]["subtrees"]
+                .as_array()
+                .expect("subtrees array");
+            for subtree in subtrees {
+                let root_hex = subtree["root"].as_str().expect("root hex");
+                let end_height = subtree["end_height"].as_u64().expect("end_height");
+                let domain = SubtreeRoot {
+                    root: TreeRoot::from(bytes32(root_hex)),
+                    end_height: Height::try_from(
+                        u32::try_from(end_height).expect("height fits u32"),
+                    )
+                    .expect("valid height"),
+                };
+                let wire = domain.to_wire();
+                assert_eq!(
+                    wire.root_hash,
+                    decode_hex(root_hex),
+                    "{pool_name} root verbatim"
+                );
+                assert_eq!(wire.completing_block_height, end_height);
+                assert!(wire.completing_block_hash.is_empty());
+            }
+        }
+    }
 }
