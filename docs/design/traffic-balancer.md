@@ -68,7 +68,7 @@ struct Member {
     benched: Option<Bench>,    // misanswer; until = now + 60 s × 2^(times−1), ≤ 1 h
     latency: Duration,         // last reply's round trip (/statusz only, never a pick input)
     in_flight: PerLane<u32>,
-    permits: Permits,          // max_connections, one reserved per lane
+    permits: Permits,          // max_connections − the poll's own, one reserved per lane
 }
 ```
 
@@ -81,21 +81,23 @@ struct Member {
 
 ### Lanes and classes
 
-Per member, three lanes, each with one reserved permit; the rest of `max_connections` is shared
-by whoever waits, lanes dispatched in order (a freed permit goes to the first waiting lane, FIFO
-within it). `MIN_CONNECTIONS` = 3 reserves + 1 shared = 4.
+Per member, one permit is the poll's alone: it rides no lane and never waits behind an ask (it
+drives tip following and finality vouching). Then three lanes, each with one reserved permit;
+the rest of `max_connections` is shared by whoever waits, lanes dispatched in order (a freed
+permit goes to the first waiting lane, FIFO within it). `MIN_CONNECTIONS` = poll + 3 reserves +
+1 shared = 5.
 
 | Lane | Classes | Why together |
 | --- | --- | --- |
-| `Control` | `Poll`, `Submit`, `Headers` | small, latency-critical, gate everything else (tip, finality, admission) |
+| `Control` | `Submit`, `Headers` | small, latency-critical, gate everything else (finality, admission) |
 | `Interactive` | `TipBlock`, `Lookup`, `Bytes` | a waiting wallet or the tip |
 | `Bulk` | `BulkBlock` | throughput; takes every idle shared permit, never a reserve |
 
-A lane is admission and priority only. What differs per class is a property of the class:
+A lane is admission and priority only. What differs per class is a property of the class (the
+poll, §4, is no class: the core's own, never asked):
 
 | Class | Asks | Members, order | Route | Hedge floor | On failure |
 | ----------- | ------------------------------------------- | --------------------------------- | --------------------- | ---------- | ------------------------------ |
-| `Poll` | poll batch | each trusted | each, own cadence | — | ladder 0.5 → 30 s |
 | `Submit` | `sendrawtransaction` | `Job`'s trusted entry | caller-chosen (privacy) | — | unanswered (`Job` decides) |
 | `Headers` | `getblockheader` runs, `FindHeaders` | trusted: pinned to the claim's member; peers: any | pinned / least loaded | — | pinned: unanswered; peers: next |
 | `TipBlock` | `getblock <hash> 0`, `BlocksByHash` | trusted by tier, then peers | least loaded within tier | 2 s | next member; all out → 1 s |
@@ -109,10 +111,10 @@ A lane is admission and priority only. What differs per class is a property of t
 - **Eligible** = kind allowed, not benched, not `Down`, not tried this round; catching up (by its
   last answered poll, not `Health`: failing + catching up reads `Degraded`) excluded from `Bytes`
   and `Lookup` (no mempool, lagging chain).
-- **Control progress** (T7): a due poll or `Headers` ask on a member waits for at most one
+- **Control progress** (T7): a `Headers` or `Submit` ask on a member waits for at most one
   completion that frees a control-reserve or shared permit there (its lane is dispatched first).
-  A poll can wait behind a `Headers` batch holding the control reserve while bulk holds every
-  shared permit: polls are bounded by the interval + one control holder, not the interval alone.
+- **Polls never wait** (T10): a due poll goes out at once on its own permit, whatever the lanes
+  hold.
 - Peers: one request in flight each (a zebra peer connection serves one).
 - Load on zebrad is bounded by `max_connections` (here) and `max_mib_per_sec` (byte pacing in
   the transport, `LinkLimits`). There is no request-rate limit.
@@ -146,7 +148,7 @@ One loop per trusted member, inside the balancer, replaces `EndpointPoller`, `Po
 
 ```text
   wake: interval (1 s; 15 s with both push streams up) │ push event │ stream edge
-    ─▶ ≥ 200 ms since last ─▶ control permit ─▶ batch: getblockchaininfo + getrawmempool true
+    ─▶ ≥ 200 ms since last ─▶ own permit ────▶ batch: getblockchaininfo + getrawmempool true
                                                        + getblockhash <poll_best()> (+ metadata /60 s)
                                              ─▶ Observation → watch (per member) ; health, latency
 ```
@@ -171,7 +173,7 @@ pub struct TrafficDriver<S> { /* the core's clock, every poll, peer join/leave: 
 pub enum MemberId { Trusted(ValidatorId), Peer(PeerId) }
 pub struct ValidatorId(u8);          // < ValidatorId::MAX (64), configured order
 pub struct PeerId(pub u64);          // WorkPool connection, never reused
-pub struct Limits { .. }             // Limits::new(max_connections ≥ 4, _) (2nd arg ignored, §9)
+pub struct Limits { .. }             // Limits::new(max_connections ≥ 5, _) (2nd arg ignored, §9)
 pub struct Trusted<S> { pub source: Arc<S>, pub priority: u8, pub limits: Limits }
 
 pub struct Answered<T> { pub value: T, pub from: MemberId, pub ticket: Ticket }
@@ -263,10 +265,10 @@ pub struct Observation {
 | T4 | every ask ends once: answered, unanswered or abandoned; a hedge loser is never delivered | `check`, model |
 | T5 | a round never asks one member twice; a re-ask after `report` excludes the reported member | `check`, model |
 | T6 | a send (first or hedge) goes to the best tier with room, then the preferred, then the least loaded | `check` (recorded tier), model (exact pick) |
-| T7 | no ready ask waits while an eligible member has room for its lane; a shared permit never goes to a lower lane while a higher lane's ask or a due poll waits for that member | model (own lanes + permits), `check` for polls |
+| T7 | no ready ask waits while an eligible member has room for its lane; a shared permit never goes to a lower lane while a higher lane's ask waits for that member | model (own lanes + permits) |
 | T8 | every misanswer is charged to the member that sent it, and only to it | `Ticket`, model |
 | T9 | an ask an honest member may serve is answered; with a faster honest member, within hedge floor + one round | model at quiescence, bound matrix |
-| T10 | a trusted member is polled ≤ once per 200 ms and ≥ once per interval + one control holder (ladder while failing) | `check`, model, driver test |
+| T10 | a trusted member is polled ≤ once per 200 ms and ≥ once per interval (ladder while failing), never delayed by an ask | `check`, model, full-lanes test, driver test |
 
 ## 8. Tests
 
@@ -279,8 +281,9 @@ pub struct Observation {
   permits and rounds: exact pick per send (T6), lane priority per send and work conservation
   after every step (T7); at quiescence T9, T10, every lying member benched. Swarm-style: whole
   member kinds off per case. A bound matrix (tier 0 silent / slow / lagging / down, tier 1
-  honest) pins each class's end time to its hedge floor + one round. `PROPTEST_CASES=1000` loop
-  ≥ 3 min after any change.
+  honest) pins each class's end time to its hedge floor + one round; with every lane permit held
+  by silent asks, a due poll still goes out at once (T10). `PROPTEST_CASES=1000` loop ≥ 3 min
+  after any change.
 - **Fire drills** (`core/fire_drills.rs`): one planted bug per `check()` assertion and
   precondition.
 - **Driver** (`tests.rs`, paused single-thread runtime): `MockValidator` members with per-port
@@ -319,8 +322,11 @@ zaino-chainview's tests (`network_model.rs`, `tests.rs`) call `Limits::new(n)`.
    (every class blocked seconds per batch) and polls unconditionally (pinned asks wedged below
    ~4 rps). Permits + byte pacing already bound zebrad; a round asks each member once, so retries
    are bounded by the member count.
-1. **Three lanes, one reserve each.** Seven classes with reserve + ceiling left `Headers` with no
-   reserve behind bulk; lanes give control traffic (poll, submit, headers) its own permit.
+1. **Three lanes, one reserve each, the poll outside them.** Seven classes with reserve +
+   ceiling left `Headers` with no reserve behind bulk; the control lane gives submit and headers
+   their own permit. The poll keeps a permit of its own: it drives tip following and finality
+   vouching, so sharing the control lane (a poll waiting behind a `Headers` batch, gaps of 43 s
+   in the model) is a regression.
 1. **Benching the last trusted member.** Bench anyway, alarm: a trusted member serving a block
    that fails its merkle root is broken or intercepted; finality pausing is the correct answer.
 1. **Observation delivery.** `watch` (latest), §6.

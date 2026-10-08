@@ -1,7 +1,8 @@
 //! [`TrafficCore`]: who is asked what, and when (`traffic-balancer.md` §3, §4, §7)
 //!
 //! - Pure: no I/O, time as input (sends, replies, polls = the driver's)
-//! - One dispatch per step: due polls, then open asks by lane (control → interactive → bulk), FIFO
+//! - One dispatch per step: due polls (own permit), then open asks by lane (control →
+//!   interactive → bulk), FIFO
 //! - Pick = eligible members with room → best tier (T6) → `Prefer`, else least in flight
 //! - One policy: domain reply or failure → next member; silent past the hedge floor → a second
 //!   member; every eligible member tried → retry the round (blocks) or unanswered
@@ -167,7 +168,6 @@ impl TrafficCore {
         let mut out = Vec::new();
         match input {
             Input::Ask { ask, class, route } => {
-                assert!(class != Class::Poll, "a poll is the core's own, never asked");
                 assert!(!self.asks.contains_key(&ask), "a fresh ask id");
                 let (sends, tried) = (Vec::new(), BTreeSet::new());
                 self.asks.insert(ask, Ask { class, route, sends, tried, retry_at: None });
@@ -248,7 +248,6 @@ impl TrafficCore {
         let poller = member.poller.as_mut().expect("trusted members poll");
         poller.finished(read.is_some());
         let started = poller.last.expect("a poll in flight started");
-        member.in_flight[Lane::Control.index()] -= 1;
         member.latency = self.now.saturating_duration_since(started);
         member.outcome(read.is_some(), stamp);
         member.synced = read.or(member.synced);
@@ -277,11 +276,10 @@ impl TrafficCore {
         }
     }
 
-    /// Every due poll with control room sent (else the member's next completion steps again)
+    /// Every due poll sent (its own permit, outside every lane)
     fn poll(&mut self, out: &mut Vec<Output>) {
         let now = self.now;
         for (id, member) in &mut self.members {
-            let room = member.room(Lane::Control);
             let (MemberId::Trusted(validator), Some(poller)) = (id, member.poller.as_mut()) else {
                 continue;
             };
@@ -293,11 +291,7 @@ impl TrafficCore {
                 earliest(&mut self.wake, due);
                 continue;
             }
-            if !room {
-                continue;
-            }
             let metadata = poller.start(now);
-            member.in_flight[Lane::Control.index()] += 1;
             let streaming = poller.streaming;
             out.push(Output::Poll(PollOrder { member: *validator, metadata, streaming }));
         }
@@ -413,9 +407,7 @@ impl TrafficCore {
                 counted[ask.class.lane().index()] +=
                     ask.sends.iter().filter(|s| s.member == *id).count() as u32;
             }
-            counted[Lane::Control.index()] +=
-                u32::from(member.poller.as_ref().is_some_and(|p| p.in_flight));
-            assert_eq!(member.in_flight, counted, "T4: in flight = open asks' sends + polls");
+            assert_eq!(member.in_flight, counted, "T4: in flight = open asks' sends");
             let benched = member.bench.filter(|_| member.benched(self.now));
             assert!(
                 benched.is_none_or(|bench| member.last_sent < Some(bench.stamp)),
@@ -432,10 +424,8 @@ impl TrafficCore {
                     "T10: polls of one member at least 200 ms apart"
                 );
                 assert!(
-                    poller.in_flight
-                        || poller.due(member.failures, self.now) > self.now
-                        || !member.room(Lane::Control),
-                    "T10: a due poll is sent while its control lane has room"
+                    poller.in_flight || poller.due(member.failures, self.now) > self.now,
+                    "T10: a due poll is sent"
                 );
             }
         }

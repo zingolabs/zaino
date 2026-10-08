@@ -10,9 +10,10 @@ First release. One scheduler for every request to trusted validators and peers \
 the `PeerTransport` port; `TrafficDriver::run(cancel)` its one task). Asks by class \
 (`block(hash, Tip | Bulk)`, `headers(Pinned | Peers)`, `bytes`, `transaction`, `submit`), each \
 `Answered { value, from, ticket }`; trusted members by `priority` tier, then peers, the least \
-loaded within a tier; three lanes per member (control: polls, submissions, headers; \
-interactive: tip blocks, lookups, mempool bytes; bulk: bulk blocks), each with one reserved \
-permit, control dispatched first (`Limits::MIN_CONNECTIONS` = 4); hedges at a fixed class floor \
+loaded within a tier; per member one permit for its poll (never delayed by an ask) and three \
+lanes (control: submissions, headers; interactive: tip blocks, lookups, mempool bytes; bulk: \
+bulk blocks), each with one reserved permit, control dispatched first \
+(`Limits::MIN_CONNECTIONS` = 5); hedges at a fixed class floor \
 (tip block 2 s, lookup 1 s, bulk block 15 s); a failure moves to the next member, each asked once \
 per round; `report(ticket, why)` benches exactly the \
 sender (60 s doubling to 1 h, `zaino_traffic_misanswers_total`); dropping an ask abandons it. \
@@ -70,9 +71,9 @@ description = """
 Scheduling simplified: the request-rate GCRA, the retry budget, p95 hedge delays and \
 PeakEWMA / power-of-two-choices are deleted; seven per-class reserves and ceilings become three \
 lanes (control, interactive, bulk) with one reserved permit each, so header runs get the \
-control reserve instead of waiting behind bulk. `Limits::MIN_CONNECTIONS` is 4 (was 6); \
-`Limits::new`'s second argument is ignored. Polls share the control lane and wait for at most \
-one completion when it is full. `MemberRow.latency` is the last reply's round trip.
+control reserve instead of waiting behind bulk; the poll keeps a permit of its own outside the \
+lanes. `Limits::MIN_CONNECTIONS` is 5 (was 6); `Limits::new`'s second argument is ignored. \
+`MemberRow.latency` is the last reply's round trip.
 """
 migration = """
 Pass `None` (or anything) as `Limits::new`'s second argument; it is removed once every caller \

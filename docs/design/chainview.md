@@ -303,11 +303,11 @@ long Zaino owns a wallet's transaction.
 Every request Zaino sends a trusted validator goes through one traffic balancer
 ([traffic-balancer.md](./traffic-balancer.md), `zaino-traffic`): the chain view's polls,
 header runs, mempool bytes and submissions, the NFS's blocks and gRPC's lookups. It owns the
-connection budget (control, interactive and bulk lanes, each with a reserved permit, so a
-bulk-sync burst or a wallet storm never takes the poll's lane), every cadence, failover, hedge
+connection budget (the poll's own permit + control, interactive and bulk lanes, each with a
+reserved permit, so nothing ever delays a poll), every cadence, failover, hedge
 and bench; each validator's `zaino_source::RpcClient` makes one attempt per call. A zebrad
 JSON-RPC server admits 100 connections in total: keep `zaino nodes × max_connections` (default
-32, at least 4) under it.
+32, at least 5) under it.
 
 - **Bytes are charged per body chunk as it is read** (the `governor` crate): an exhausted budget
   stops reading, and TCP backpressure slows the validator's send. Requests are charged per call

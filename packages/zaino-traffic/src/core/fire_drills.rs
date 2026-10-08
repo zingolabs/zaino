@@ -13,8 +13,8 @@ fn trusted(index: usize) -> MemberId {
 }
 
 /// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; peer 7 joined
-/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 permits); A2 headers
-///   on peer 7
+/// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 lane permits); A2
+///   headers on peer 7
 fn valid(t0: Instant) -> TrafficCore {
     let limits = Limits::new(Limits::MIN_CONNECTIONS, None).expect("MIN_CONNECTIONS");
     let mut core = TrafficCore::new(&[(0, limits), (1, limits)], t0);
@@ -60,7 +60,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] += 1),
         ),
         (
-            "T4: in flight = open asks' sends + polls",
+            "T4: in flight = open asks' sends",
             Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] = 1),
         ),
         ("T4: no send to a departed member", Box::new(move |c| _ = c.members.remove(&peer))),
@@ -80,7 +80,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             }),
         ),
         (
-            "T10: a due poll is sent while its control lane has room",
+            "T10: a due poll is sent",
             Box::new(move |c| {
                 let now = c.now;
                 member(c, 1).poller.as_mut().expect("trusted").last =
@@ -117,14 +117,10 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             fired(|| drop(TrafficCore::new(&[(0, limits); 65], t0))),
         ),
         (
-            "max_connections covers every lane reserve + one shared",
-            fired(|| _ = Permits::trusted(3)),
+            "max_connections covers the poll, every lane reserve + one shared",
+            fired(|| _ = Permits::trusted(4)),
         ),
         ("time never runs back", step(Input::Tick, t0)),
-        (
-            "a poll is the core's own, never asked",
-            step(Input::Ask { ask: AskId(9), class: Class::Poll, route: Route::Any }, t),
-        ),
         (
             "a fresh ask id",
             step(Input::Ask { ask: AskId(0), class: Class::Lookup, route: Route::Any }, t),

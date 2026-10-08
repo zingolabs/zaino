@@ -39,7 +39,7 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// One reserved per lane (control, interactive, bulk) + one shared
+    /// The poll's own + one reserved per lane (control, interactive, bulk) + one shared
     pub const MIN_CONNECTIONS: u32 = MIN_CONNECTIONS;
 
     /// `None` below [`MIN_CONNECTIONS`](Self::MIN_CONNECTIONS)
@@ -190,8 +190,10 @@ impl Member {
         self.permits.admits(&self.in_flight, lane)
     }
 
+    /// Lane sends + its poll
     pub(crate) fn load(&self) -> u32 {
-        self.in_flight.iter().sum()
+        let polling = self.poller.as_ref().is_some_and(|poller| poller.in_flight);
+        self.in_flight.iter().sum::<u32>() + u32::from(polling)
     }
 }
 

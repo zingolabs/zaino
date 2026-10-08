@@ -1,14 +1,14 @@
 //! [`TrafficCore`] against simulated members and a naive oracle (`traffic-balancer.md` §8)
 //!
-//! - Trusted 1..=4 (priorities 0..=2, 4 connections) + peers joining / leaving, one [`Kind`] each
+//! - Trusted 1..=4 (priorities 0..=2, 5 connections) + peers joining / leaving, one [`Kind`] each
 //! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent; polls catching
 //!   up), flapping (fails in odd 20 s phases, lagging's polls too), silent (transport timeout)
 //! - Swarm: whole kinds off per case (an off one plays honest)
 //! - Model = the caller: a lie answered → `report` (+ a block re-asked)
-//! - Own lanes, permits and rounds (not the core's): the oracle's ground truth
+//! - Own lanes, permits (poll's own outside them) and rounds: the oracle's ground truth
 //! - Per send: T2 kind + route, T3 bench + down, synced, T5 once per round, T6 pick, T7 priority
 //! - After every step: T7 no ready ask waits beside room; at quiescence (10 min): T9, liars
-//!   benched, T10 poll gaps ≤ the ladder's ceiling + one control holder's completion
+//!   benched, T10 poll gaps ≤ the ladder's ceiling
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
@@ -46,14 +46,15 @@ const SLOW: Duration = Duration::from_secs(10);
 const TIMEOUT: Duration = Duration::from_secs(25);
 const SETTLE: Duration = Duration::from_secs(600);
 const ROUND_RETRY: Duration = Duration::from_secs(1);
-const CONNECTIONS: u32 = 4;
+/// Poll's 1 + lanes' 4
+const CONNECTIONS: u32 = 5;
 const ASKED: [Class; 6] =
     [Class::Submit, Class::TipBlock, Class::Headers, Class::Lookup, Class::Bytes, Class::BulkBlock];
 
 /// Control, interactive, bulk (dispatch order)
 fn lane(class: Class) -> usize {
     match class {
-        Class::Poll | Class::Submit | Class::Headers => 0,
+        Class::Submit | Class::Headers => 0,
         Class::TipBlock | Class::Lookup | Class::Bytes => 1,
         Class::BulkBlock => 2,
     }
@@ -132,6 +133,27 @@ fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
     }
 }
 
+/// Every lane permit held by silent asks (headers + submit on control): T10, each due poll still
+/// sent at once (the failed poll's answer at 25 s, the next started in that same instant)
+#[test]
+fn a_due_poll_never_waits_behind_other_asks() {
+    let v0 = MemberId::Trusted(ValidatorId::new(0).expect("small"));
+    let mut world = World::new(&[(Kind::Silent, 0)]);
+    let t0 = world.now;
+    for (class, route) in [
+        (Class::Headers, Route::Only(v0)),
+        (Class::Submit, Route::Only(v0)),
+        (Class::TipBlock, Route::Any),
+        (Class::BulkBlock, Route::Any),
+    ] {
+        world.ask(class, route);
+    }
+    assert_eq!(world.flying[&v0], [2, 1, 1], "every lane permit of 5 − the poll's held");
+    world.advance(t0 + TIMEOUT);
+    let polls = &world.polls[&ValidatorId::new(0).expect("small")];
+    assert_eq!(polls[..2], [t0, t0 + TIMEOUT], "T10: the due poll sent beside full lanes");
+}
+
 struct World {
     core: TrafficCore,
     t0: Instant,
@@ -144,6 +166,7 @@ struct World {
     ends: BTreeMap<AskId, (Instant, Option<MemberId>)>,
     pending: Vec<(Instant, Input)>,
     flying: BTreeMap<MemberId, [u32; 3]>,
+    polling: BTreeSet<MemberId>,
     benched: BTreeMap<MemberId, (Instant, u32)>,
     failures: BTreeMap<MemberId, u32>,
     synced: BTreeMap<MemberId, Synced>,
@@ -181,6 +204,7 @@ impl World {
             ends: BTreeMap::new(),
             pending: Vec::new(),
             flying: BTreeMap::new(),
+            polling: BTreeSet::new(),
             benched: BTreeMap::new(),
             failures: BTreeMap::new(),
             synced: BTreeMap::new(),
@@ -311,7 +335,7 @@ impl World {
             }
             Input::Polled { member, read } => {
                 let member_id = MemberId::Trusted(*member);
-                self.fly(member_id, Class::Poll, false);
+                self.polling.remove(&member_id);
                 self.count(member_id, read.is_some());
                 if let Some(read) = read {
                     self.synced.insert(member_id, *read);
@@ -423,7 +447,7 @@ impl World {
             Output::Poll(PollOrder { member, .. }) => {
                 self.polls.entry(member).or_default().push(now);
                 let member_id = MemberId::Trusted(member);
-                self.fly(member_id, Class::Poll, true);
+                assert!(self.polling.insert(member_id), "T10: one poll per member in flight");
                 let (after, read) = match self.kinds[&member_id] {
                     Kind::Honest | Kind::Lying => (FAST, Some(Synced::Live)),
                     Kind::Slow => (SLOW, Some(Synced::Live)),
@@ -467,12 +491,14 @@ impl World {
         kind && asked.route.admits(member) && !benched && !down && !lagging && untried
     }
 
-    /// First in flight of a lane = its reserve, the rest from the shared connections
+    /// First in flight of a lane = its reserve, the rest from the shared connections (poll's
+    /// one never counted)
     fn room(&self, member: MemberId, lane: usize) -> bool {
         let flying = self.flying.get(&member).copied().unwrap_or([0; 3]);
         match member {
             MemberId::Trusted(_) => {
-                flying[lane] == 0 || flying.iter().map(|n| (*n).max(1)).sum::<u32>() < CONNECTIONS
+                let claimed = flying.iter().map(|n| (*n).max(1)).sum::<u32>();
+                flying[lane] == 0 || claimed < CONNECTIONS - 1
             }
             MemberId::Peer(_) => flying.iter().sum::<u32>() == 0,
         }
@@ -507,7 +533,10 @@ impl World {
             Route::Prefer(prefer) => prefer.iter().find(|m| best.contains(m)).copied(),
             _ => None,
         };
-        let load = |m: &MemberId| self.flying.get(m).map_or(0, |f| f.iter().sum::<u32>());
+        let load = |m: &MemberId| {
+            let lanes = self.flying.get(m).map_or(0, |f| f.iter().sum::<u32>());
+            lanes + u32::from(self.polling.contains(m))
+        };
         let least = best.iter().min_by_key(|m| load(m)).copied();
         assert_eq!(
             Some(member),
@@ -519,17 +548,10 @@ impl World {
         if reserved {
             return;
         }
-        let poll_waits = self.core.members[&member].poller.as_ref().is_some_and(|poller| {
-            !poller.in_flight
-                && poller.due(self.core.members[&member].failures, self.now) <= self.now
-        });
         let higher = self.asks.iter().find(|(_, other)| {
             lane(other.class) < own && self.ready(other) && self.eligible(other, member)
         });
-        assert!(
-            !poll_waits && higher.is_none(),
-            "T7: {ticket:?} took a shared permit ahead of a due poll ({poll_waits}) or {higher:?}"
-        );
+        assert!(higher.is_none(), "T7: {ticket:?} took a shared permit ahead of {higher:?}");
     }
 
     /// Block ask with nothing in flight and nobody eligible left: next round after 1 s
@@ -590,8 +612,7 @@ impl World {
             let settled = starts.iter().filter(|at| **at >= quiet);
             let gaps: Vec<Duration> =
                 settled.collect::<Vec<_>>().windows(2).map(|w| *w[1] - *w[0]).collect();
-            let bound = LADDER_CEILING + TIMEOUT;
-            assert!(gaps.iter().all(|gap| *gap <= bound), "T10: {member:?} gaps {gaps:?}");
+            assert!(gaps.iter().all(|gap| *gap <= LADDER_CEILING), "T10: {member:?} gaps {gaps:?}");
         }
     }
 }

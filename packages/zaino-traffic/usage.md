@@ -1,9 +1,9 @@
 # `zaino-traffic` — usage
 
 One scheduler for every request Zaino sends to its trusted validators and to peers
-(`docs/design/traffic-balancer.md`): one member table, three lanes per member (control,
-interactive, bulk) each with a reserved permit, one hedge / failover / blame policy, and the poll
-loop of every trusted validator.
+(`docs/design/traffic-balancer.md`): one member table, per member a permit for its poll and three
+lanes (control, interactive, bulk) each with a reserved permit, one hedge / failover / blame
+policy, and the poll loop of every trusted validator.
 
 ## Wiring
 
@@ -15,7 +15,7 @@ let trusted = validators
     .map(|v| Trusted {
         source: Arc::new(ZebraRpcAdapter::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
-        limits: Limits::new(v.max_connections, None)?,         // None below 4
+        limits: Limits::new(v.max_connections, None)?,         // None below 5
     })
     .collect();
 let (balancer, driver) = TrafficBalancer::new(trusted, Some(peer_transport));
@@ -26,7 +26,7 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 - `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
   `None` = trusted only.
-- `Limits::MIN_CONNECTIONS` = 4: one reserved per lane + one shared. The second argument of
+- `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved per lane + one shared. The second argument of
   `Limits::new` is ignored (the request-rate limit is gone; it is dropped once every caller
   passes only `max_connections`).
 - Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
@@ -83,9 +83,8 @@ let checked = loop {
 
 - Each trusted member is polled every 1 s (every 15 s while its push stream is up), never closer
   than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
-  failures) is probed at 30 s and nothing else is sent to it. A poll rides the control lane: it
-  waits for one completion when a `Headers` / `Submit` holds the control reserve and every shared
-  permit is taken. Metadata (`getpeerinfo`, `getinfo`,
+  failures) is probed at 30 s and nothing else is sent to it. The poll has a permit of its own,
+  outside every lane: no ask ever delays it. Metadata (`getpeerinfo`, `getinfo`,
   `getdeprecationinfo`) rides one poll a minute; a failed poll leaves it due.
 - `poll_best(f)`: every poll asks `getblockhash` at `f()` (the caller's best height, `None` =
   not asked), read as the poll starts; it never wakes a poll (an answer at a moved best is one

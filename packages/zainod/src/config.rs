@@ -57,8 +57,8 @@ pub(crate) struct TrustedValidatorConfig {
     /// Seconds of silence before a request fails (silence, not total duration: a multi-MB block
     /// over a slow link takes as long as it takes)
     pub(crate) read_timeout_secs: NonZeroU64,
-    /// Requests in flight, >= 4: one reserved per lane (control, interactive, bulk) + one shared;
-    /// the rest go to whichever lane waits
+    /// Requests in flight, >= 5: one for the poll, one reserved per lane (control, interactive,
+    /// bulk) + one shared; the rest go to whichever lane waits
     ///
     /// - One connection each; zebrad admits 100 total (shared validator: `instances × this` < 100)
     pub(crate) max_connections: NonZeroU32,
@@ -584,8 +584,8 @@ impl DaemonConfig {
         for validator in &self.trusted_validators {
             if validator.limits().is_none() {
                 return Err(IndexerError::ConfigError(format!(
-                    "[[trusted_validators]] {}: max_connections = {} is below {} (one reserved \
-                     per lane + one shared)",
+                    "[[trusted_validators]] {}: max_connections = {} is below {} (one for the \
+                     poll, one reserved per lane + one shared)",
                     validator.jsonrpc_address,
                     validator.max_connections,
                     zaino_traffic::Limits::MIN_CONNECTIONS
@@ -941,7 +941,7 @@ path = "/tmp/zaino-compact-block"
     }
 
     /// - Entries equal, auth + limits optional
-    /// - Refused: empty list, one validator twice, fewer connections than lanes + 1, every removed
+    /// - Refused: empty list, one validator twice, fewer connections than poll + lanes + 1, every removed
     ///   key
     #[test]
     fn trusted_validators_parse_and_removed_keys_are_refused() {
@@ -990,9 +990,9 @@ path = "/tmp/zaino-compact-block"
         let twice = vec![entry("zebra-eu:8232"), entry("zebra-eu:8232")];
         let twice = DaemonConfig { trusted_validators: twice, ..config.clone() };
         assert!(refused(twice).contains("twice"));
-        let starved = vec![TrustedValidatorConfig { max_connections: n(3), ..eu }];
+        let starved = vec![TrustedValidatorConfig { max_connections: n(4), ..eu }];
         let starved = DaemonConfig { trusted_validators: starved, ..config };
-        assert!(refused(starved).contains("max_connections = 3 is below 4"));
+        assert!(refused(starved).contains("max_connections = 4 is below 5"));
 
         for (name, removed) in [
             ("source.toml", "[source]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
