@@ -14,27 +14,19 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zaino_header_chain::HeaderChain;
+use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_index_compact_block::CompactBlockReader;
 use zaino_index_transparent_address::TransparentAddressReader;
-use zaino_index_tree_state::{PoolActivations, TreeStateReader};
+use zaino_index_tree_state::TreeStateReader;
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{
     fs::SimFs, Changes, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store, View,
     Width,
 };
-use zaino_primitives::testing::Chain;
-use zaino_primitives::types::{
-    Block, BlockHash, CompactCiphertext, OrchardAction, OrchardData, OutPoint, ReorgDepth,
-    SaplingData, SaplingOutput, Script, Transaction, TransactionId, TransparentData,
-    TransparentOutput, Zatoshis,
-};
-use zaino_source::mock::MockChain;
-use zaino_source::{
-    BlockLinks, GetBlockByHashError, GetTransactionError, MempoolListed, NonDomainError,
-    PollReading, QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
-};
+use zaino_primitives::testing::{h, p2pkh, MockChain};
+use zaino_primitives::types::{Block, BlockHash, OutPoint, ReorgDepth};
+use zaino_source::testing::{Lie, MockValidator};
 use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
 
@@ -52,114 +44,6 @@ const INDEXES: [(IndexKind, u64, u32); 5] = [
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
-
-/// `MockChain`, its block bodies with the coinbase twice when `lying` (merkle root moves)
-#[derive(Default)]
-struct Member {
-    chain: MockChain,
-    lying: bool,
-}
-
-impl ChainDataSource for Member {
-    async fn get_block_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        let block = self.chain.get_block_by_hash(hash).await?;
-        let txs = block.transactions();
-        Ok(match self.lying {
-            true => Block::new(block.header().clone(), [txs, &txs[..1]].concat()),
-            false => block,
-        })
-    }
-
-    async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {
-        self.chain.get_block_links(heights).await
-    }
-
-    async fn get_poll_reading(
-        &self,
-        metadata: bool,
-        holds: &[Height],
-    ) -> Result<PollReading, NonDomainError> {
-        self.chain.get_poll_reading(metadata, holds).await
-    }
-
-    async fn get_raw_mempool_transactions(
-        &self,
-        listed: &[MempoolListed],
-    ) -> Result<RawMempoolTransactions, NonDomainError> {
-        self.chain.get_raw_mempool_transactions(listed).await
-    }
-
-    async fn get_transaction(
-        &self,
-        txid: TransactionId,
-    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
-        self.chain.get_transaction(txid).await
-    }
-
-    async fn send_raw_transaction(
-        &self,
-        transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
-        self.chain.send_raw_transaction(transaction).await
-    }
-}
-
-/// Coinbase paying 10 000, + a spend of `funding`'s output 0 (fee 1 000) carrying one sapling
-/// output and one orchard action (none: genesis, or a funding coinbase paying nothing)
-fn transactions(funding: Option<&Transaction>, tag: u32) -> Vec<Transaction> {
-    let id = |kind: u8| {
-        let mut id = [kind; 32];
-        id[..4].copy_from_slice(&tag.to_le_bytes());
-        id
-    };
-    let pays = |value: u64| TransparentOutput {
-        value: Zatoshis::new(value).expect("in supply"),
-        script: Script::new([&[0x76, 0xa9, 0x14][..], &id(0xad)[..20], &[0x88, 0xac]].concat()),
-    };
-    let commitment = || {
-        let mut leaf = [0u8; 32];
-        leaf[..4].copy_from_slice(&tag.to_le_bytes());
-        leaf
-    };
-    let tx = |txid: [u8; 32], transparent: TransparentData| Transaction {
-        txid: TransactionId::from(txid),
-        transparent,
-        sprout: Default::default(),
-        sapling: Default::default(),
-        orchard: Default::default(),
-        ironwood: Default::default(),
-    };
-    let coinbase = TransparentData { coinbase: true, inputs: vec![], outputs: vec![pays(10_000)] };
-    let mut txs = vec![tx(id(0xc0), coinbase)];
-    let funded = funding.and_then(|funding| Some((funding, funding.transparent.outputs.first()?)));
-    if let Some((funding, output)) = funded {
-        let inputs = vec![OutPoint { txid: funding.txid, vout: 0 }];
-        let outputs = vec![pays(output.value.as_u64() - 1_000)];
-        let mut spend = tx(id(0x5e), TransparentData { coinbase: false, inputs, outputs });
-        spend.sapling = SaplingData {
-            outputs: vec![SaplingOutput {
-                cmu: commitment().into(),
-                ephemeral_key: [0x02; 32].into(),
-                enc_ciphertext: CompactCiphertext::from([0x03; CompactCiphertext::LENGTH]),
-            }],
-            ..Default::default()
-        };
-        spend.orchard = OrchardData {
-            actions: vec![OrchardAction {
-                nullifier: id(0x0f).into(),
-                cmx: commitment().into(),
-                ephemeral_key: [0x06; 32].into(),
-                enc_ciphertext: CompactCiphertext::from([0x07; CompactCiphertext::LENGTH]),
-            }],
-            ..Default::default()
-        };
-        txs.push(spend);
-    }
-    txs
-}
 
 /// `kind`'s store schema, as zainod opens it
 pub(crate) fn schema(kind: IndexKind) -> Schema {
@@ -234,7 +118,7 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
 }
 
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
-fn oracle(path: &[Block]) -> Vec<(IndexKind, Tables)> {
+fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let engine = DiskEngine::new(SimFs::new());
     let open = |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind));
     let mut stores: Vec<(IndexKind, DiskStore)> =
@@ -306,7 +190,7 @@ async fn commit(
 /// - J3: an index not served = enabled and `syncing` (lagging, or joined after the fold)
 fn verify(
     snapshot: &Indexed<DiskView>,
-    blocks: &Chain,
+    blocks: &MockChain,
     mined: &[BlockHash],
     oracles: &mut HashMap<BlockHash, Vec<(IndexKind, Tables)>>,
     context: &str,
@@ -328,7 +212,8 @@ fn verify(
             continue;
         };
         let block = at.tip();
-        let path: Vec<BlockHash> = blocks.path(*hash).iter().map(|b| b.header().hash).collect();
+        let path = blocks.blocks(blocks.block(*hash).at());
+        let path: Vec<BlockHash> = path.iter().map(|b| b.header().hash).collect();
         let shared = (0..path.len()).take_while(|&h| chain.hash_at(height(h)) == Some(path[h]));
         let branch = match shared.count() {
             all if all == path.len() => Branch::Best,
@@ -350,7 +235,7 @@ fn verify(
             };
             assert_eq!(view.tip(), Some(through), "{context}: G7 {name} at {block:?}");
             let expected =
-                oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.path(through.hash)));
+                oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.blocks(through)));
             let (_, expected) =
                 expected.iter().find(|(each, _)| each == kind).expect("every index");
             let got = tables(&view);
@@ -370,37 +255,55 @@ fn height(h: usize) -> Height {
 ///   (same height), D12 off B11 (retreat), E 13..=16 (final 13: folded sends), E 17..=20 (final
 ///   17: indexes crash at 14..=17)
 /// - Run 1: restart from those tips (apart), E 21..=24 (final 21)
-/// - Bodies through the balancer: an honest member + a liar (each lie reported, re-asked; never
-///   folded: the oracle would differ)
+/// - Each block: a coinbase paying 10 000, + a spend of its parent's coinbase (fee 1 000) with one
+///   sapling output and one orchard action
+/// - Bodies through the balancer: an honest member + a `Lie::Poisoned` liar (each lie reported,
+///   re-asked; never folded: the oracle would differ)
 #[tokio::test(start_paused = true)]
 async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart() {
-    let mut blocks = Chain::with_genesis(transactions(None, 0));
-    let genesis = blocks.genesis().hash;
-    let mut tag = 0;
-    let mut mine = |blocks: &mut Chain, parent: BlockHash, count: u32| -> Vec<Block> {
+    let miner = p2pkh([0xad; 20]);
+    let mut blocks =
+        MockChain::regtest().varied_work().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
+    let mut tag = 0u32;
+    // `count` blocks on `parent`, the first outweighing the best when `outweigh`
+    let mut mine = |blocks: &mut MockChain, parent: BlockRef, count: u32, outweigh: bool| {
+        let mut mined = Vec::new();
         let mut tip = parent;
-        for _ in 0..count {
+        for at in 0..count {
             tag += 1;
-            let funding = blocks.block(tip).transactions().first();
-            tip = blocks.mine_with(tip, transactions(funding, tag)).hash;
+            let funding = OutPoint { txid: blocks.block(tip.hash).transactions()[0].txid, vout: 0 };
+            let mut nullifier = [0x0f; 32];
+            nullifier[..4].copy_from_slice(&tag.to_le_bytes());
+            let branch = blocks.branch(tip);
+            let branch = if outweigh && at == 0 { branch.outweigh() } else { branch };
+            tip = branch
+                .mine(|b| {
+                    b.coinbase(|c| c.pay(&miner, 10_000)).tx(|t| {
+                        t.spend(funding)
+                            .pay(&miner, 9_000)
+                            .fee(1_000)
+                            .sapling_output(tag)
+                            .orchard_action(nullifier, tag)
+                    })
+                })
+                .tip();
+            mined.push(Arc::clone(blocks.block(tip.hash)));
         }
-        let path = blocks.path(tip);
-        path[path.len() - count as usize..].to_vec()
+        mined
     };
-    let hash = |block: &Block| block.header().hash;
-    let a = [blocks.path(genesis), mine(&mut blocks, genesis, 12)].concat();
-    let b10 = blocks.mine_heavier(hash(&a[9]), &a[10..].iter().map(hash).collect::<Vec<_>>());
-    let b10 = blocks.block(b10.expect("work in range").hash).clone();
-    let b = [vec![b10.clone()], mine(&mut blocks, hash(&b10), 3)].concat();
-    let c13 = blocks.mine_heavier(hash(&b[2]), &[hash(&b[3])]).expect("work in range").hash;
-    let d12 = blocks.mine_heavier(hash(&b[1]), &[hash(&b[2]), c13]).expect("work in range").hash;
-    let e = mine(&mut blocks, d12, 12);
-    let (c13, d12) = (blocks.block(c13).clone(), blocks.block(d12).clone());
+    let hash = |block: &Arc<Block>| block.header().hash;
+    let genesis = blocks.genesis();
+    let a = [blocks.blocks(genesis), mine(&mut blocks, genesis, 12, false)].concat();
+    let b = mine(&mut blocks, a[9].at(), 4, true);
+    let c13 = mine(&mut blocks, b[2].at(), 1, true).remove(0);
+    let d12 = mine(&mut blocks, b[1].at(), 1, true).remove(0);
+    let e = mine(&mut blocks, d12.at(), 12, false);
     let blocks = blocks;
     let tree = [&a[..], &b, &[c13.clone(), d12.clone()], &e];
     let mined: Vec<BlockHash> = tree.iter().flat_map(|run| run.iter().map(hash)).collect();
+    type Added<'a> = (&'a [Arc<Block>], bool);
     // (headers added, finalize)
-    let runs: [&[(&[Block], bool)]; 2] = [
+    let runs: [&[Added]; 2] = [
         &[
             (&a[1..], true),
             (&b, false),
@@ -413,10 +316,12 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     ];
 
     let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
-    headers.insert_blocks(&a[..1]).expect("genesis");
-    let members = [false, true]
-        .map(|lying| Arc::new(Member { chain: MockChain::serving([a[0].clone()]), lying }));
+    let mut headers = blocks.header_chain(depth);
+    let members = [None, Some(Lie::Poisoned)].map(|lie| {
+        let member = MockValidator::following(&blocks, genesis);
+        member.lie(lie);
+        Arc::new(member)
+    });
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted =
         members.iter().map(|member| Trusted { source: Arc::clone(member), priority: 0, limits });
@@ -424,12 +329,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
     let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
-    let activations = PoolActivations {
-        sapling: Height::GENESIS,
-        orchard: Some(Height::GENESIS),
-        ironwood: None,
-    };
-    let params = ChainParams { network: NETWORK, activations };
+    let params = ChainParams::of(&blocks, genesis);
     let engine = DiskEngine::new(SimFs::new());
     let mut indexes: Vec<(IndexKind, DiskStore, watch::Sender<DiskView>)> = INDEXES
         .iter()
@@ -480,12 +380,12 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
 
         for (at, &(added, finalize)) in moves.iter().enumerate() {
             let context = format!("run {run} move {at}");
-            headers.insert_blocks(added).expect("valid headers");
+            insert(&mut headers, added).expect("valid headers");
             if let Some(boundary) = headers.finalizable().filter(|_| finalize) {
                 headers.finalize(boundary).expect("in-memory store");
             }
-            for member in &members {
-                member.chain.extend_best(added.to_vec());
+            if let Some(tip) = added.last() {
+                members.iter().for_each(|member| member.follow(&blocks, tip.at()));
             }
             verified.send_replace(headers.verified().map(Arc::new));
             let best = headers.best().expect("verified").block;
@@ -571,31 +471,36 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
 /// - Settled: every index durable through final, served at best, tree-state included
 #[tokio::test(start_paused = true)]
 async fn an_index_enabled_late_syncs_alone_while_the_others_serve_the_tip_then_joins() {
-    let mut blocks = Chain::with_genesis(transactions(None, 0));
-    let genesis = blocks.genesis().hash;
-    let mut tip = genesis;
-    for tag in 1..=16 {
-        let funding = blocks.block(tip).transactions().first();
-        tip = blocks.mine_with(tip, transactions(funding, tag)).hash;
+    let miner = p2pkh([0xad; 20]);
+    let mut blocks = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&miner, 10_000)));
+    for tag in 1..=16u32 {
+        let funding = blocks.block(blocks.tip().hash).transactions()[0].txid;
+        let mut nullifier = [0x0f; 32];
+        nullifier[..4].copy_from_slice(&tag.to_le_bytes());
+        blocks.mine(|b| {
+            b.coinbase(|c| c.pay(&miner, 10_000)).tx(|t| {
+                t.spend(OutPoint { txid: funding, vout: 0 })
+                    .pay(&miner, 9_000)
+                    .fee(1_000)
+                    .sapling_output(tag)
+                    .orchard_action(nullifier, tag)
+            })
+        });
     }
-    let a = blocks.path(tip);
+    let blocks = blocks;
+    let (genesis, a16) = (blocks.genesis(), blocks.tip());
+    let a = blocks.blocks(a16);
     let mined: Vec<BlockHash> = a.iter().map(|block| block.header().hash).collect();
     let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
-    headers.insert_blocks(&a[..1]).expect("genesis");
-    let member = Arc::new(Member { chain: MockChain::serving([a[0].clone()]), lying: false });
+    let mut headers = blocks.header_chain(depth);
+    let member = Arc::new(MockValidator::following(&blocks, genesis));
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![Trusted { source: Arc::clone(&member), priority: 0, limits }];
     let (balancer, balancing) = TrafficBalancer::new(trusted, None);
     let stop_balancing = CancellationToken::new();
     tokio::spawn(balancing.run(stop_balancing.clone()));
     let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
-    let activations = PoolActivations {
-        sapling: Height::GENESIS,
-        orchard: Some(Height::GENESIS),
-        ironwood: None,
-    };
-    let params = ChainParams { network: NETWORK, activations };
+    let params = ChainParams::of(&blocks, a16);
     let engine = DiskEngine::new(SimFs::new());
     let open = |kind: IndexKind| {
         let store = engine.open(Path::new(kind.name()), &schema(kind)).expect("fresh store");
@@ -613,12 +518,14 @@ async fn an_index_enabled_late_syncs_alone_while_the_others_serve_the_tip_then_j
     let mut oracles = HashMap::new();
     let lookahead = NonZeroUsize::new(4).expect("nonzero");
     let root = height(5);
-    let mut add = |added: &[Block]| {
-        headers.insert_blocks(added).expect("valid headers");
+    let mut add = |added: &[Arc<Block>]| {
+        insert(&mut headers, added).expect("valid headers");
         if let Some(boundary) = headers.finalizable() {
             headers.finalize(boundary).expect("in-memory store");
         }
-        member.chain.extend_best(added.to_vec());
+        if let Some(tip) = added.last() {
+            member.follow(&blocks, tip.at());
+        }
         verified.send_replace(headers.verified().map(Arc::new));
         (headers.best().expect("verified").block, headers.final_tip().map(|tip| tip.height))
     };
@@ -665,7 +572,7 @@ async fn an_index_enabled_late_syncs_alone_while_the_others_serve_the_tip_then_j
         };
 
         // (blocks added, settle every index: tree-state released) per move
-        let moves: Vec<(&[Block], bool)> = match run {
+        let moves: Vec<(&[Arc<Block>], bool)> = match run {
             0 => vec![(&a[1..=8], true)],
             _ => [a[10..].chunks(1).map(|added| (added, false)).collect(), vec![(&[][..], true)]]
                 .concat(),
@@ -760,21 +667,19 @@ async fn an_index_enabled_late_syncs_alone_while_the_others_serve_the_tip_then_j
 /// the index, before any step; a writer dropping its committed view stops it as `WriterGone`
 #[tokio::test(start_paused = true)]
 async fn the_driver_refuses_a_misordered_subscribe_a_foreign_durable_block_and_a_lost_writer() {
-    let mut blocks = Chain::new();
-    let genesis = blocks.genesis().hash;
-    let a5 = blocks.extend(genesis, 5).hash;
-    let a = blocks.path(a5);
-    let x1 = blocks.mine(genesis).hash;
+    let mut blocks = MockChain::regtest();
+    let a5 = blocks.mine_empty(5);
+    let a = blocks.blocks(a5);
+    let x1 = blocks.fork(h(0)).mine_empty(1).tip().hash;
     let depth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-    let mut headers = HeaderChain::regtest_in_memory(genesis, depth);
-    headers.insert_blocks(&a).expect("valid headers");
+    let mut headers = blocks.header_chain(depth);
+    insert(&mut headers, &a).expect("valid headers");
     headers.finalize(headers.finalizable().expect("5 - 3")).expect("in-memory store");
     let (_verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
-    let activations = PoolActivations { sapling: Height::GENESIS, orchard: None, ironwood: None };
-    let params = ChainParams { network: NETWORK, activations };
+    let params = ChainParams::of(&blocks, a5);
     let (queue, lookahead) = (NonZeroUsize::MAX, NonZeroUsize::MIN);
     let limits = Limits::new(8, None).expect("8 ≥ MIN_CONNECTIONS");
-    let source = Arc::new(MockChain::serving(a.clone()));
+    let source = Arc::new(MockValidator::following(&blocks, a5));
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
     let nfs = || -> Nfs<_, DiskView> {

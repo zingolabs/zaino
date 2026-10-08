@@ -85,35 +85,26 @@ pub(crate) async fn fetch<S: ChainDataSource>(
 #[cfg(test)]
 mod tests {
     use zaino_header_chain::testing::HeaderViews;
-    use zaino_header_chain::VerifiedChain;
-    use zaino_primitives::testing::{h, Chain, MockChain};
+    use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::Transaction;
     use zaino_source::testing::{Lie, MockValidator};
     use zaino_source::ChainDataSource;
 
     use super::*;
 
-    /// Chain 0..=3 + a side 2': the asked block passes; a sibling, a block whose coinbase lies
-    /// about its height, a body with a txid added (root moves) and a body repeating its last pair
-    /// (root kept, CVE-2012-2459) are each refused by name
+    /// Chain 0..=3 (2 = coinbase + 2 txs) + a side 2': the asked block passes; a sibling, a block
+    /// whose header lies about its height, a body with a txid added (root moves) and a body
+    /// repeating its last pair (root kept, CVE-2012-2459) are each refused by name
     #[test]
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
-        let mut chain = Chain::new();
-        let one = chain.mine(chain.genesis().hash);
-        let paid: Vec<Transaction> = (0..3u8)
-            .map(|n| {
-                let mut tx = chain.block(chain.genesis().hash).transactions()[0].clone();
-                tx.txid = [n + 1; 32].into();
-                tx
-            })
-            .collect();
-        let two = chain.mine_with(one.hash, paid);
-        let tip = chain.mine(two.hash);
-        let side = chain.mine(one.hash);
-        let verified = VerifiedChain::regtest(&chain.path(tip.hash));
-        let h2 = Height::try_from(2u32).expect("h");
-        let record = verified.header_at(h2).expect("on the best chain");
-        let block = |hash: BlockHash| chain.block(hash).clone();
+        let mut chain = MockChain::regtest();
+        chain.mine_empty(1);
+        let two = chain.mine(|b| b.tx(|t| t.txid([1; 32])).tx(|t| t.txid([2; 32])));
+        let tip = chain.mine_empty(1);
+        let side = chain.fork(h(1)).mine_empty(1).tip();
+        let h2 = h(2);
+        let record = chain.verified(tip).header_at(h2).expect("on the best chain");
+        let block = |hash: BlockHash| Block::clone(chain.block(hash));
         let with_txs = |txs: Vec<Transaction>| Block::new(block(two.hash).header().clone(), txs);
         let mut header = block(two.hash).header().clone();
         header.height = Height::try_from(9u32).expect("h");

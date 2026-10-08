@@ -88,12 +88,8 @@ mod tests {
     use std::path::Path;
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
-    use zaino_primitives::testing::Chain;
-    use zaino_primitives::types::{
-        BlockFees, CompactCiphertext, Fee, Height, OrchardAction, OrchardData, OutPoint,
-        SaplingData, SaplingOutput, Script, Transaction, TransactionId, TransparentData,
-        TransparentOutput, TreeSize, TreeSizes, Zatoshis,
-    };
+    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::types::{BlockFees, Fee, Height, TreeSize, TreeSizes, Zatoshis};
 
     use super::*;
 
@@ -106,54 +102,20 @@ mod tests {
     /// - disabled indexes: no `Changes`, no layer, no reader
     #[test]
     fn value_balance_folds_first_and_disabled_indexes_fold_nothing() {
-        let p2pkh = Script::new([&[0x76, 0xa9, 0x14][..], &[0xaa; 20], &[0x88, 0xac]].concat());
-        let pays = |value: u64| TransparentOutput {
-            value: Zatoshis::new(value).expect("in supply"),
-            script: p2pkh.clone(),
-        };
-        let coinbase = |tag: u8, value: u64| Transaction {
-            txid: TransactionId::from([tag; 32]),
-            transparent: TransparentData {
-                coinbase: true,
-                inputs: vec![],
-                outputs: vec![pays(value)],
-            },
-            sprout: Default::default(),
-            sapling: Default::default(),
-            orchard: Default::default(),
-            ironwood: Default::default(),
-        };
-        let spend = Transaction {
-            txid: TransactionId::from([0x20; 32]),
-            transparent: TransparentData {
-                coinbase: false,
-                inputs: vec![OutPoint { txid: TransactionId::from([0x10; 32]), vout: 0 }],
-                outputs: vec![pays(49_000)],
-            },
-            sprout: Default::default(),
-            sapling: SaplingData {
-                outputs: vec![SaplingOutput {
-                    cmu: [0x01; 32].into(),
-                    ephemeral_key: [0x02; 32].into(),
-                    enc_ciphertext: CompactCiphertext::from([0x03; CompactCiphertext::LENGTH]),
-                }],
-                ..Default::default()
-            },
-            orchard: OrchardData {
-                actions: vec![OrchardAction {
-                    nullifier: [0x04; 32].into(),
-                    cmx: [0x01; 32].into(),
-                    ephemeral_key: [0x06; 32].into(),
-                    enc_ciphertext: CompactCiphertext::from([0x07; CompactCiphertext::LENGTH]),
-                }],
-                ..Default::default()
-            },
-            ironwood: Default::default(),
-        };
-        let mut chain = Chain::with_genesis(vec![coinbase(0x10, 50_000)]);
-        let one = chain.mine_with(chain.genesis().hash, vec![coinbase(0x11, 10_000), spend]);
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.pay(&alice, 10_000)).tx(|t| {
+                t.spend(outpoint([0x10; 32], 0))
+                    .pay(&alice, 49_000)
+                    .fee(1_000)
+                    .sapling_output(1)
+                    .orchard_action([0x04; 32], 1)
+            })
+        });
         let (genesis, block) = (chain.block(chain.genesis().hash), chain.block(one.hash));
-        let h1 = Height::try_from(1u32).expect("h");
+        let h1 = h(1);
         let fees = BlockFees {
             height: h1,
             hash: one.hash,

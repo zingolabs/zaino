@@ -5,9 +5,11 @@ use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use zaino_header_chain::{HeaderChain, VerifiedChain};
-use zaino_primitives::testing::Chain;
+use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::VerifiedChain;
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_source::testing::Lie;
 
 use super::{Diverged, Indexes, Input, NfsCore, Output, Sent};
 use crate::fetch::{check_block, Checked};
@@ -29,7 +31,7 @@ fn depth() -> ReorgDepth {
 
 /// Trunk A 0..=9, side S 5..=8 off A4, side Q 4..=7 off A3
 struct World {
-    builder: Chain,
+    builder: MockChain,
     a: Vec<BlockHash>,
     s: Vec<BlockHash>,
     q: Vec<BlockHash>,
@@ -37,32 +39,31 @@ struct World {
 
 impl World {
     fn new() -> Self {
-        let mut builder = Chain::new();
-        let hashes = |builder: &Chain, tip: BlockHash| -> Vec<BlockHash> {
-            builder.path(tip).iter().map(|block| block.header().hash).collect()
+        let mut builder = MockChain::regtest();
+        let hashes = |builder: &MockChain, tip: BlockRef| -> Vec<BlockHash> {
+            builder.blocks(tip).iter().map(|block| block.header().hash).collect()
         };
-        let a9 = builder.extend(builder.genesis().hash, 9).hash;
+        let a9 = builder.mine_empty(9);
         let a = hashes(&builder, a9);
-        let s8 = builder.extend(a[4], 4).hash;
-        let q7 = builder.extend(a[3], 4).hash;
+        let s8 = builder.fork(h(4)).mine_empty(4).tip();
+        let q7 = builder.fork(h(3)).mine_empty(4).tip();
         let (s, q) = (hashes(&builder, s8)[5..].to_vec(), hashes(&builder, q7)[4..].to_vec());
         Self { builder, a, s, q }
     }
 
     fn at(&self, hash: BlockHash) -> BlockRef {
-        BlockRef { hash, height: self.builder.block(hash).header().height }
+        self.builder.block(hash).at()
     }
 
     fn block(&self, hash: BlockHash) -> Arc<Block> {
-        Arc::new(self.builder.block(hash).clone())
+        Arc::clone(self.builder.block(hash))
     }
 
     /// Body of `hash` checked against its own branch's header
     fn checked(&self, hash: BlockHash) -> Checked {
         let at = self.at(hash);
-        let branch = VerifiedChain::regtest(&self.builder.path(hash));
-        let record = branch.header_at(at.height).expect("on its own branch");
-        check_block(self.builder.block(hash).clone(), at.height, &record).expect("its own body")
+        let record = self.builder.verified(at).header_at(at.height).expect("on its own branch");
+        check_block(Block::clone(&self.block(hash)), at.height, &record).expect("its own body")
     }
 
     fn node(&self, hash: BlockHash) -> Node<Height> {
@@ -74,10 +75,9 @@ impl World {
 
     /// Header chain over `blocks` (genesis first), finalized through `final_height`
     fn verified(&self, blocks: &[BlockHash], final_height: u32) -> Arc<VerifiedChain> {
-        let mut headers = HeaderChain::regtest_in_memory(self.a[0], depth());
-        let path: Vec<Block> =
-            blocks.iter().map(|hash| self.builder.block(*hash).clone()).collect();
-        headers.insert_blocks(&path).expect("valid");
+        let mut headers = self.builder.header_chain(depth());
+        let path: Vec<Arc<Block>> = blocks.iter().map(|hash| self.block(*hash)).collect();
+        insert(&mut headers, &path).expect("valid");
         let through = self.at(blocks[final_height as usize]);
         headers.finalize(through).expect("in-memory store");
         Arc::new(headers.verified().expect("verified"))
@@ -90,7 +90,7 @@ impl World {
         for output in outputs {
             let input = match output {
                 Output::Fetch { at, record, .. } if Some(at.hash) != hold.fetch => {
-                    let block = self.builder.block(at.hash).clone();
+                    let block = Block::clone(&self.block(at.hash));
                     Input::Body(check_block(block, at.height, &record).expect("honest"))
                 }
                 Output::Fold { at, .. } if Some(at.hash) != hold.fold => {
@@ -196,10 +196,7 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         (
             "N1: every node's body = its header's merkle root",
             Box::new(|c| {
-                let honest = world.block(a[5]);
-                let extra = world.block(a[6]).transactions()[0].clone();
-                let txs = [honest.transactions().to_vec(), vec![extra]].concat();
-                let block = Arc::new(Block::new(honest.header().clone(), txs));
+                let block = Arc::new(Lie::Poisoned.told(&world.block(a[5])));
                 c.graph.insert(Node { block, ..world.node(a[5]) });
             }),
         ),

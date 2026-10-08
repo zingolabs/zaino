@@ -20,8 +20,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
+use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{HeaderChain, Record, Rejected, VerifiedChain};
-use zaino_primitives::testing::Chain;
+use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_traffic::Urgency;
 
@@ -37,7 +38,8 @@ const SERVED_WITHIN: u64 = 20;
 /// Virtual seconds a case may take to settle once the moves end
 const SETTLE: u32 = 20_000;
 
-/// - `Reorg` = top `depth` replaced by `len` heavier blocks (`len` < `depth` = a retreat)
+/// - `Reorg` = top `depth` replaced by `len` blocks, the first outweighing them (`len` < `depth` =
+///   a retreat)
 /// - `Revive` = an earlier best tip (`pick` mod held) outweighs the best again (switch back)
 #[derive(Debug, Clone)]
 enum Change {
@@ -148,7 +150,7 @@ enum Due {
 /// - `stream_folded` = a folded step sent since the last restart
 /// - `published` = last published tip + the indexes it serves
 struct Sim {
-    builder: Chain,
+    builder: MockChain,
     headers: HeaderChain,
     decoy: BlockHash,
     lookahead: usize,
@@ -184,7 +186,7 @@ impl Sim {
         if let Some(toy) = self.oracle.get(&hash) {
             return *toy;
         }
-        let block = self.builder.block(hash).clone();
+        let block = Arc::clone(self.builder.block(hash));
         let header = block.header();
         let parent = (header.height != Height::GENESIS).then(|| self.oracle(header.prev_hash));
         let toy = fold(parent, &block);
@@ -208,33 +210,33 @@ impl Sim {
         let final_height = self.headers.final_tip().map_or(0, |tip| u32::from(tip.height));
         let floor = final_height.max(self.durable_floor());
         let (fork, tip) = match *change {
-            Change::Extend(count) => (best.height, self.builder.extend(best.hash, count).hash),
+            Change::Extend(count) => {
+                (best.height, self.builder.branch(best).mine_empty(count).tip())
+            }
             Change::Reorg { depth, len } => {
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
-                let path = self.best_path();
-                let (parent, replaced) = (path[at as usize], &path[at as usize + 1..]);
-                // nested reorgs past the u128 work range: skipped
-                let Some(heavy) = self.builder.mine_heavier(parent, replaced) else { return };
-                (height(at), self.builder.extend(heavy.hash, len - 1).hash)
+                let parent = self.builder.block(self.best_path()[at as usize]).at();
+                (height(at), self.builder.branch(parent).outweigh().mine_empty(len).tip())
             }
             Change::Revive { pick } => {
                 let Some(&old) = self.tips.get(usize::from(pick) % self.tips.len().max(1)) else {
                     return;
                 };
                 let path = self.best_path();
-                let branch = self.builder.path(old);
+                let branch = self.builder.blocks(self.builder.block(old).at());
                 let shared = branch.iter().zip(&path).take_while(|(b, p)| b.header().hash == **p);
                 let fork = shared.count() - 1;
                 if (fork as u32) < floor || fork + 1 == branch.len() {
                     return;
                 }
-                let Some(heavy) = self.builder.mine_heavier(old, &path[fork + 1..]) else { return };
-                let mined = &self.builder.path(heavy.hash)[fork + 1..];
+                let old = self.builder.block(old).at();
+                let heavy = self.builder.branch(old).outweigh().mine_empty(1).tip();
+                let mined = &self.builder.blocks(heavy)[fork + 1..];
                 // a long side branch re-entering past the header chain's side bound: evicted (H4)
-                if let Err(Rejected::Orphan) = self.headers.insert_blocks(mined) {
+                if let Err(Rejected::Orphan) = insert(&mut self.headers, mined) {
                     return;
                 }
-                (height(fork as u32), heavy.hash)
+                (height(fork as u32), heavy)
             }
             Change::Finalize => {
                 if let Some(boundary) = self.headers.finalizable() {
@@ -243,9 +245,9 @@ impl Sim {
                 return;
             }
         };
-        let mined = &self.builder.path(tip)[u32::from(fork) as usize + 1..];
-        self.headers.insert_blocks(mined).expect("valid headers");
-        let now = self.headers.best().expect("verified").block.hash;
+        let mined = &self.builder.blocks(tip)[u32::from(fork) as usize + 1..];
+        insert(&mut self.headers, mined).expect("valid headers");
+        let now = self.headers.best().expect("verified").block;
         assert_eq!(now, tip, "sim: the heavier branch is best");
         if fork < best.height {
             self.tips.push(best.hash);
@@ -291,7 +293,7 @@ impl Sim {
         assert_eq!(record.hash, at.hash, "{context}: Fetch {at:?} with another's header");
         let fresh = self.fetching.insert(at.hash);
         assert!(fresh, "{context}: Fetch {at:?} twice while in flight");
-        let honest = self.builder.block(at.hash).clone();
+        let honest = Block::clone(self.builder.block(at.hash));
         let checked = check_block(honest, at.height, &record).expect("the asked block passes");
         let due = self.later(SERVED_WITHIN);
         self.pending.push((due, Due::Body(checked)));
@@ -447,12 +449,8 @@ impl Sim {
             return Some((root, Branch::Best, None));
         }
         let covers = tip.graph.get(&hash)?.covers;
-        let path: Vec<BlockRef> = self
-            .builder
-            .path(hash)
-            .iter()
-            .map(|block| BlockRef { hash: block.header().hash, height: block.header().height })
-            .collect();
+        let blocks = self.builder.blocks(self.builder.block(hash).at());
+        let path: Vec<BlockRef> = blocks.iter().map(|block| block.at()).collect();
         let shared = path.iter().take_while(|at| on_best(&tip.chain, **at)).count();
         let branch = match path.get(shared) {
             None => Branch::Best,
@@ -529,10 +527,10 @@ impl Sim {
     /// - `wipe` (mod the index count) = that index's store too
     fn restart(&mut self, reset: bool, wipe: Option<u8>, context: &str) {
         if reset {
-            let genesis = self.builder.genesis().hash;
-            let tip = *self.best_path().last().expect("genesis");
-            self.headers = HeaderChain::regtest_in_memory(genesis, DEPTH);
-            self.headers.insert_blocks(&self.builder.path(tip)).expect("the best path verifies");
+            let tip = self.builder.block(*self.best_path().last().expect("genesis")).at();
+            self.headers = self.builder.header_chain(DEPTH);
+            let path = self.builder.blocks(tip);
+            insert(&mut self.headers, &path).expect("the best path verifies");
         }
         if let Some(wipe) = wipe {
             let count = self.writers.len();
@@ -584,11 +582,10 @@ fn height(h: u32) -> Height {
 }
 
 fn run(moves: &[Move], delays: &[u64], grouped: bool, lookahead: usize, seed: u64) {
-    let mut builder = Chain::new();
-    let genesis = builder.genesis().hash;
-    let decoy = builder.mine(genesis).hash;
-    let mut headers = HeaderChain::regtest_in_memory(genesis, DEPTH);
-    headers.insert_blocks(&builder.path(genesis)).expect("genesis");
+    let mut builder = MockChain::regtest().varied_work();
+    let genesis = builder.genesis();
+    let decoy = builder.branch(genesis).mine_empty(1).tip().hash;
+    let headers = builder.header_chain(DEPTH);
     let writers: Vec<Writer> =
         delays.iter().map(|&delay| Writer { applied: Vec::new(), durable: 0, delay }).collect();
     let pair = grouped && writers.len() >= 2;
