@@ -109,7 +109,7 @@ that capability and on the provider ports that placement needs:
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
 | raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
 | address history | `R::Address` | `Local`: finalised store `AddressRead`, head `AddressReceiveRead` (receives + the spends it saw), threaded across the seam; `Passthrough`: the four address source ports |
-| treestate, subtree roots | `R::Treestate` | `Passthrough` only today; a local tree index adds a `Local` impl beside it |
+| treestate, subtree roots | `R::Treestate` | `Local`: finalised store `TreestateRead` at or below the watermark, head `TreestateWindowRead` above it (folding from the finalised seed the store supplies); subtree roots are the store's page then the window's higher-indexed completions. `Passthrough`: the treestate + subtree-roots source ports |
 | spend status / location (`getspentinfo`) | `R::Spend` | `Local` only: both tiers `SpendRead`; the head is asked first (a spend there is the newer fact) and the store second, so a spend above the watermark of an output created below it is located |
 
 `BlockRead` (full `Block`, header, by-hash height, and the ascending

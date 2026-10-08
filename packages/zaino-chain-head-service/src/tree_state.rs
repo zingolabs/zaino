@@ -164,7 +164,7 @@ mod tests {
         Block, BlockCommitments, BlockHash, BlockHeader, BlockRef, ChainMetadata,
         CompactCiphertext, CompactDifficulty, EphemeralKey, EquihashSolution, Height, MerkleRoot,
         NoteCommitment, OrchardData, SaplingData, SaplingOutput, Transaction, TransparentData,
-        TreeRoots,
+        TreeRoots, Treestate,
     };
     use zaino_service::TreestateWindowRead;
 
@@ -284,6 +284,65 @@ mod tests {
         assert_ne!(
             a.final_state, b.final_state,
             "and a different serialized tree"
+        );
+    }
+
+    /// Step 1(c), the seam: a height just above the watermark, folded by the
+    /// window from the finalised seed, equals the same height folded over the
+    /// whole chain from genesis. Folding from the finalised prefix (what the
+    /// store hands over at the watermark) is indistinguishable from never having
+    /// split the chain — so the store at the watermark and the window just above
+    /// it agree.
+    #[tokio::test]
+    async fn window_agrees_with_the_finalised_seed_at_the_seam() {
+        use zaino_indexes::indexes::tree_state::serve::{fold_window, seed_value};
+        use zaino_indexes::sets::current_zaino::tree_state_ctx;
+
+        let b0 = block(0, 0x00, 0xFF, vec![sapling_tx(0xA0, &[10, 11])]);
+        let b1 = block(1, 0x01, 0x00, vec![sapling_tx(0xA1, &[12])]);
+        let b2 = block(2, 0x02, 0x01, vec![sapling_tx(0xA2, &[13, 14])]);
+
+        // The finalised value at the watermark (height 1), as the store would
+        // hold it: fold genesis..=1 through the index's own extraction.
+        let empty = seed_value(None).expect("empty seed");
+        let value_at_1 = fold_window(
+            &empty,
+            &[tree_state_ctx(&b0.block), tree_state_ctx(&b1.block)],
+        )
+        .expect("fold to height 1");
+        let (sapling, orchard, ironwood) = value_at_1.pool_treestates();
+        let seed = Treestate {
+            block_hash: b1.reference.hash,
+            height: height(1),
+            time: b1.block.header.time,
+            sapling,
+            orchard,
+            ironwood,
+        };
+
+        // Window A: floor at height 1 (the finalised prefix is elsewhere), folds
+        // height 2 from the seed.
+        let mut floor1 = MapBackedSnapshot::from_initial_block(b1.clone());
+        floor1.extend(b2.clone()).expect("2 extends 1");
+        let seeded = HeadSnapshot::over(Arc::new(floor1))
+            .window_treestate(Some(&seed), height(2))
+            .await
+            .expect("read succeeds")
+            .expect("height 2 is in the window");
+
+        // Window B: the whole chain from genesis, no seed, folds height 2.
+        let mut floor0 = MapBackedSnapshot::from_initial_block(b0.clone());
+        floor0.extend(b1).expect("1 extends 0");
+        floor0.extend(b2).expect("2 extends 1");
+        let whole = HeadSnapshot::over(Arc::new(floor0))
+            .window_treestate(None, height(2))
+            .await
+            .expect("read succeeds")
+            .expect("height 2 is in the window");
+
+        assert_eq!(
+            seeded, whole,
+            "folding from the finalised seed at the watermark equals folding the whole chain"
         );
     }
 
