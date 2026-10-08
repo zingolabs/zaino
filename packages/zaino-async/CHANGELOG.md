@@ -16,6 +16,10 @@ and this library adheres to Rust's notion of
 - `TaskError` — renders a `tokio` `JoinError` by the task's own `TaskName`
   rather than the opaque runtime task id, and preserves a panic's message, so a
   join failure names what died.
+- `run_blocking` — run a blocking closure on the runtime's blocking pool,
+  rendering a panic as a named `TaskError` just as `Task::join` does. For
+  synchronous work that cannot be made async (e.g. disk I/O) and so must not run
+  on an async worker thread.
 - `catch_panic` / `panic_message` — run a future and turn a panic into a value.
 - Re-exports `CancellationToken`, so a consumer naming it in a signature need not
   depend on `tokio-util` directly.
