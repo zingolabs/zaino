@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use futures::stream::{FuturesOrdered, StreamExt};
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::IndexKind;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
@@ -111,11 +111,15 @@ async fn follow<S: ChainDataSource>(
                 heights.push(wanted);
                 wanted = wanted.next();
             }
-            fetching.push_back(fetch_at(balancer.clone(), heights.into(), Urgency::Bulk));
+            // own task: fetches progress while `send` waits on a full queue (else every in-flight
+            // reply sits unread); abort on drop: no fetch outlives the follower
+            let fetch = fetch_at(balancer.clone(), heights.into(), Urgency::Bulk);
+            fetching.push_back(AbortOnDropHandle::new(tokio::spawn(fetch)));
         }
         tokio::select! {
             changed = chain.changed() => changed.map_err(|_| FollowError::ChainGone)?,
-            Some(bodies) = fetching.next(), if !fetching.is_empty() => {
+            Some(joined) = fetching.next(), if !fetching.is_empty() => {
+                let bodies = joined.unwrap_or_else(|join| std::panic::resume_unwind(join.into_panic()));
                 for body in bodies {
                     let block = Arc::clone(body.block());
                     link(&durable, last_sent, &block)?;
