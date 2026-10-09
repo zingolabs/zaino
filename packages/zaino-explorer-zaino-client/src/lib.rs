@@ -6,8 +6,8 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    AddressSummary, BlockSummary, ChainReadError, ChainReader, SpendInfo, TransactionDetail,
-    TransactionOutput,
+    AddressSummary, BlockSummary, ChainReadError, ChainReader, NodeStatus, SpendInfo,
+    TransactionDetail, TransactionOutput,
 };
 use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
 use zaino_noderpc::wire::response::{GetBlockResponse, GetRawTransactionResponse};
@@ -148,6 +148,11 @@ impl ChainReader for ZainoClient {
             })
             .await
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        // Balance and tx history are independent RPCs, and not every
+        // deployed zainod serves both (getaddresstxids is a newer addition
+        // than getaddressbalance) — a txids failure degrades to an empty
+        // list rather than hiding a balance the node can actually answer,
+        // the same policy spend_info already uses for its own fallback.
         let txids = self
             .0
             .address_txids(AddressTxidsParam {
@@ -156,12 +161,31 @@ impl ChainReader for ZainoClient {
                 end: None,
             })
             .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+            .unwrap_or_default();
         Ok(AddressSummary {
             address,
             balance_zat: balance.balance,
             received_zat: balance.received,
             txids,
+        })
+    }
+
+    async fn node_status(&self) -> Result<NodeStatus, ChainReadError> {
+        let info = self
+            .0
+            .info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        let mempool = self
+            .0
+            .mempool_info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(NodeStatus {
+            subversion: info.subversion,
+            connections: info.connections,
+            mempool_size: mempool.size,
+            mempool_bytes: mempool.bytes,
         })
     }
 }
@@ -477,6 +501,27 @@ mod tests {
         assert_eq!(summary.balance_zat, 5_000);
         assert_eq!(summary.received_zat, 10_000);
         assert_eq!(summary.txids, vec!["03".repeat(32)]);
+
+        let _ = handle.stop();
+    }
+
+    /// `node_status` against a real mock server: the mock has no validator
+    /// behind it, so `getinfo` honestly answers "not ready" — this proves
+    /// that failure surfaces as a typed `Err`, not a panic or a stale
+    /// default. (A happy-path test would need a richer mock than this
+    /// crate's `testing` module currently scripts for `NodeStatusRead`.)
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_status_surfaces_not_ready_as_an_error() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let result = reader.node_status().await;
+
+        assert!(result.is_err(), "an unready node should error, not panic");
 
         let _ = handle.stop();
     }

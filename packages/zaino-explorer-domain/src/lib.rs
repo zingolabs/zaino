@@ -41,6 +41,9 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         &self,
         address: String,
     ) -> impl Future<Output = Result<AddressSummary, ChainReadError>> + Send;
+
+    /// The validator's own status and the mempool's current size.
+    fn node_status(&self) -> impl Future<Output = Result<NodeStatus, ChainReadError>> + Send;
 }
 
 /// One block's summary, as shown in a block list — not the full block.
@@ -105,6 +108,19 @@ pub struct AddressSummary {
     pub received_zat: u128,
     /// Transaction ids this address appears in.
     pub txids: Vec<String>,
+}
+
+/// The validator's own status, plus the mempool's current size.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeStatus {
+    /// Network protocol user-agent string (e.g. `/Zebra:6.4.2/`).
+    pub subversion: String,
+    /// Total peer connections, inbound and outbound.
+    pub connections: u64,
+    /// Number of transactions currently in the mempool.
+    pub mempool_size: u64,
+    /// Total serialized size of the mempool's transactions, in bytes.
+    pub mempool_bytes: u64,
 }
 
 /// Why a [`ChainReader`] read failed.

@@ -44,6 +44,8 @@ pub struct AppState {
     spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
     /// The looked-up address — populated only on screen `Address`.
     address: Option<AddressSummary>,
+    /// The validator/mempool status, refreshed alongside the home screen.
+    node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
 
 impl AppState {
@@ -63,6 +65,10 @@ impl AppState {
             Ok(blocks) => self.blocks = blocks,
             Err(e) => self.error = Some(e.to_string()),
         }
+        // Node status is shown separately and doesn't fold into `error` —
+        // an unready node is routine (no validator behind a fresh deploy,
+        // say), not the same class of failure as a height/block RPC error.
+        self.node_status = reader.node_status().await.ok();
     }
 
     /// Enter txid-input mode, starting from an empty buffer.
@@ -176,15 +182,25 @@ fn render_home(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
     let [status_area, blocks_area] = Layout::new(
         Direction::Vertical,
-        [Constraint::Length(3), Constraint::Min(0)],
+        [Constraint::Length(4), Constraint::Min(0)],
     )
     .areas(area);
 
-    let status_text = match (state.height, &state.error) {
-        (Some(height), _) => format!("Chain height: {height}  (t: lookup tx, q: quit)"),
+    let mut status_text = match (state.height, &state.error) {
+        (Some(height), _) => {
+            format!("Chain height: {height}  (t: tx, a: address, q: quit)")
+        }
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
         (None, None) => "Loading...  (q to quit)".to_string(),
     };
+    status_text.push('\n');
+    status_text.push_str(&match &state.node_status {
+        Some(status) => format!(
+            "{} — {} peers — mempool: {} tx, {} bytes",
+            status.subversion, status.connections, status.mempool_size, status.mempool_bytes
+        ),
+        None => "Node status unavailable".to_string(),
+    });
     frame.render_widget(
         Paragraph::new(status_text).block(
             Block::new()
@@ -399,6 +415,40 @@ mod tests {
             content.contains("Recent blocks"),
             "buffer should contain the list panel's title: {content}"
         );
+    }
+
+    /// The home screen's status bar renders node/mempool status alongside
+    /// the height, independently — a `None` node status (not yet fetched,
+    /// or the node isn't ready) renders a plain placeholder, not a panic.
+    #[test]
+    fn renders_node_status_alongside_height() {
+        use zaino_explorer_domain::NodeStatus;
+
+        let state = AppState {
+            height: Some(300),
+            node_status: Some(NodeStatus {
+                subversion: "/Zebra:6.4.2/".to_string(),
+                connections: 12,
+                mempool_size: 3,
+                mempool_bytes: 1_024,
+            }),
+            ..Default::default()
+        };
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("300"), "{content}");
+        assert!(content.contains("/Zebra:6.4.2/"), "{content}");
+        assert!(content.contains("12"), "{content}");
+        assert!(content.contains("mempool: 3 tx"), "{content}");
     }
 
     /// Typing and editing a txid is pure state transition, no I/O: `t`

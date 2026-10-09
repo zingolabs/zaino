@@ -28,16 +28,25 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
 /// How many recent blocks the home page lists.
 const RECENT_BLOCKS: u32 = 10;
 
-/// `GET /`: the chain height and a recent-blocks list, both fetched live.
+/// `GET /`: the chain height, node/mempool status, and a recent-blocks
+/// list, all fetched live and rendered independently of each other.
 async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     let height = reader.chain_height().await;
     let blocks = reader.recent_blocks(RECENT_BLOCKS).await;
+    let status = reader.node_status().await;
 
     let body = html! {
         h1 { "zaino-block-explorer" }
         @match height {
             Ok(height) => p { "Chain height: " (height) },
             Err(e) => p { "RPC error: " (e.to_string()) },
+        }
+        @match status {
+            Ok(status) => p {
+                (status.subversion) " — " (status.connections) " peers — mempool: "
+                (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
+            },
+            Err(e) => p { "Node status unavailable: " (e.to_string()) },
         }
         @match blocks {
             Ok(blocks) => ul {
