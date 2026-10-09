@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
     AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, ChainReader,
-    MempoolEntry, TransactionDetail, Treestate,
+    MempoolEntry, TransactionDetail, Treestate, UnifiedReceivers,
 };
 
 /// How many recent blocks the TUI lists.
@@ -62,6 +62,9 @@ pub struct AppState {
     /// `Address`. Independent of `address` itself: worth showing even if
     /// the balance/txids read fails.
     address_validity: Option<Result<AddressValidity, String>>,
+    /// The looked-up address's bundled receivers — populated only when
+    /// `address_validity` says the address is unified.
+    receivers: Option<Result<UnifiedReceivers, String>>,
     /// The looked-up block — populated only on screen `Block`.
     block: Option<BlockDetail>,
     /// The looked-up block's value movements — populated only on screen
@@ -198,6 +201,21 @@ impl AppState {
                 .await
                 .map_err(|e| e.to_string()),
         );
+        // z_listunifiedreceivers rejects any non-unified address as a
+        // parameter error, so only call it once validity has actually
+        // said "unified".
+        let is_unified =
+            matches!(&self.address_validity, Some(Ok(v)) if v.kind.as_deref() == Some("unified"));
+        self.receivers = if is_unified {
+            Some(
+                reader
+                    .list_receivers(address.clone())
+                    .await
+                    .map_err(|e| e.to_string()),
+            )
+        } else {
+            None
+        };
         match reader.address(address.clone()).await {
             Ok(summary) => {
                 self.address = Some(summary);
@@ -413,12 +431,45 @@ fn format_address_validity(validity: &Option<Result<AddressValidity, String>>) -
     }
 }
 
+/// The receivers section, when a unified address's lookup populated it —
+/// `None` when the address isn't unified, distinct from a failed lookup.
+fn format_receivers(receivers: &Option<Result<UnifiedReceivers, String>>) -> Option<String> {
+    match receivers {
+        Some(Ok(r)) => {
+            let mut lines = vec!["Receivers:".to_string()];
+            if let Some(v) = &r.orchard {
+                lines.push(format!("  Orchard: {v}"));
+            }
+            if let Some(v) = &r.sapling {
+                lines.push(format!("  Sapling: {v}"));
+            }
+            if let Some(v) = &r.p2pkh {
+                lines.push(format!("  Transparent (P2PKH): {v}"));
+            }
+            if let Some(v) = &r.p2sh {
+                lines.push(format!("  Transparent (P2SH): {v}"));
+            }
+            Some(lines.join("\n"))
+        }
+        Some(Err(e)) => Some(format!("Receivers unavailable: {e}")),
+        None => None,
+    }
+}
+
 fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>, state: &AppState) {
     let text = match result {
-        Err(e) => format!(
-            "Address {address}\n\n{}\n\nRPC error: {e}\n\n(Esc: back)",
-            format_address_validity(&state.address_validity)
-        ),
+        Err(e) => {
+            let mut text = format!(
+                "Address {address}\n\n{}",
+                format_address_validity(&state.address_validity)
+            );
+            if let Some(receivers) = format_receivers(&state.receivers) {
+                text.push('\n');
+                text.push_str(&receivers);
+            }
+            text.push_str(&format!("\n\nRPC error: {e}\n\n(Esc: back)"));
+            text
+        }
         Ok(()) => {
             let Some(summary) = &state.address else {
                 return;
@@ -426,11 +477,14 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
             let mut lines = vec![
                 format!("Address {}", summary.address),
                 format_address_validity(&state.address_validity),
-                format!("Balance: {} zat", summary.balance_zat),
-                format!("Lifetime received: {} zat", summary.received_zat),
-                String::new(),
-                "Transactions:".to_string(),
             ];
+            if let Some(receivers) = format_receivers(&state.receivers) {
+                lines.push(receivers);
+            }
+            lines.push(format!("Balance: {} zat", summary.balance_zat));
+            lines.push(format!("Lifetime received: {} zat", summary.received_zat));
+            lines.push(String::new());
+            lines.push("Transactions:".to_string());
             for txid in &summary.txids {
                 lines.push(format!("  {txid}"));
             }
@@ -1016,6 +1070,52 @@ mod tests {
         assert!(content.contains("p2pkh"), "{content}");
     }
 
+    /// A looked-up unified address renders its bundled receivers.
+    #[test]
+    fn renders_address_receivers_for_a_unified_address() {
+        use super::Screen;
+        use zaino_explorer_domain::{AddressSummary, AddressValidity, UnifiedReceivers};
+
+        let state = AppState {
+            screen: Screen::Address("u1example".to_string(), Ok(())),
+            address: Some(AddressSummary {
+                address: "u1example".to_string(),
+                balance_zat: 0,
+                received_zat: 0,
+                txids: Vec::new(),
+                utxos: Vec::new(),
+                deltas: Vec::new(),
+            }),
+            address_validity: Some(Ok(AddressValidity {
+                valid: true,
+                address: Some("u1example".to_string()),
+                kind: Some("unified".to_string()),
+            })),
+            receivers: Some(Ok(UnifiedReceivers {
+                orchard: Some("orchardreceiver".to_string()),
+                sapling: None,
+                p2pkh: Some("t1examplereceiver".to_string()),
+                p2sh: None,
+            })),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Receivers"), "{content}");
+        assert!(content.contains("orchardreceiver"), "{content}");
+        assert!(content.contains("t1examplereceiver"), "{content}");
+    }
+
     /// Typing and editing a block height/hash is pure state transition,
     /// mirroring the txid/address input modes.
     #[test]
@@ -1527,6 +1627,59 @@ mod tests {
                 }
             }
             other => panic!("expected a successful zero-balance Address screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_address` against a real mock server for a real mainnet
+    /// unified address: proof the `is_unified` gate actually fires and
+    /// `list_receivers` reaches the real adapter, mirroring
+    /// `zaino-explorer-web`'s equivalent coverage.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_address_against_a_real_server_for_a_unified_address() {
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
+                  drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
+                  gwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw\
+                  6uh7hyvzjse8ksx";
+        let mut state = AppState::default();
+        state.start_address_input();
+        for c in ua.chars() {
+            state.push_char(c);
+        }
+        state.lookup_address(&reader).await;
+
+        match &state.address_validity {
+            Some(Ok(v)) => assert_eq!(v.kind.as_deref(), Some("unified")),
+            other => panic!("expected a populated validity result, got {other:?}"),
+        }
+        match &state.receivers {
+            Some(Ok(r)) => assert!(r.orchard.is_some()),
+            other => panic!("expected populated receivers, got {other:?}"),
         }
 
         let _ = handle.stop();
