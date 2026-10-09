@@ -8,7 +8,7 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
-    AddressSummary, BlockDetail, BlockSummary, ChainReader, TransactionDetail,
+    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReader, TransactionDetail,
 };
 
 /// How many recent blocks the TUI lists.
@@ -52,6 +52,11 @@ pub struct AppState {
     address: Option<AddressSummary>,
     /// The looked-up block — populated only on screen `Block`.
     block: Option<BlockDetail>,
+    /// The looked-up block's value movements — populated only on screen
+    /// `Block`, and only when `getblockdeltas` succeeds; `None` renders as
+    /// "unavailable" rather than hiding the rest of the block, since not
+    /// every deployed zainod serves it.
+    block_deltas: Option<BlockDeltas>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -189,11 +194,16 @@ impl AppState {
         let id = id.clone();
         match reader.block(id.clone()).await {
             Ok(detail) => {
+                // `getblockdeltas` takes only a hash, and not every
+                // deployed zainod serves it — a failure degrades to "no
+                // movements shown" rather than hiding the block itself.
+                self.block_deltas = reader.block_deltas(detail.hash.clone()).await.ok();
                 self.block = Some(detail);
                 self.screen = Screen::Block(id, Ok(()));
             }
             Err(e) => {
                 self.block = None;
+                self.block_deltas = None;
                 self.screen = Screen::Block(id, Err(e.to_string()));
             }
         }
@@ -370,6 +380,24 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
             ];
             for txid in &detail.tx_ids {
                 lines.push(format!("  {txid}"));
+            }
+            lines.push(String::new());
+            lines.push("Value movements:".to_string());
+            match &state.block_deltas {
+                Some(deltas) => {
+                    for delta in &deltas.deltas {
+                        lines.push(format!("  {}", delta.txid));
+                        for movement in delta.inputs.iter().chain(delta.outputs.iter()) {
+                            let address = movement
+                                .address
+                                .as_deref()
+                                .map(|a| format!(" — {a}"))
+                                .unwrap_or_default();
+                            lines.push(format!("    {} zat{address}", movement.value_zat));
+                        }
+                    }
+                }
+                None => lines.push("  unavailable".to_string()),
             }
             lines.push(String::new());
             lines.push("(Esc: back)".to_string());
@@ -762,6 +790,60 @@ mod tests {
         assert!(content.contains("300"), "{content}");
         assert!(content.contains(&"aa".repeat(32)), "{content}");
         assert!(content.contains(&"ab".repeat(32)), "{content}");
+        assert!(
+            content.contains("unavailable"),
+            "no block_deltas scripted should render as unavailable, not blank: {content}"
+        );
+    }
+
+    /// A looked-up block with scripted value movements renders each
+    /// transaction's signed inputs and outputs, with address.
+    #[test]
+    fn renders_block_with_value_movements() {
+        use super::Screen;
+        use zaino_explorer_domain::{BlockDeltas, BlockDetail, TransactionDelta, ValueMovement};
+
+        let state = AppState {
+            screen: Screen::Block("300".to_string(), Ok(())),
+            block: Some(BlockDetail {
+                height: 300,
+                hash: "aa".repeat(32),
+                time: 1_700_000_300,
+                tx_ids: vec!["ab".repeat(32)],
+            }),
+            block_deltas: Some(BlockDeltas {
+                hash: "aa".repeat(32),
+                height: 300,
+                deltas: vec![TransactionDelta {
+                    txid: "ab".repeat(32),
+                    inputs: vec![ValueMovement {
+                        address: Some("t1spender".to_string()),
+                        value_zat: -1_000,
+                    }],
+                    outputs: vec![ValueMovement {
+                        address: Some("t1receiver".to_string()),
+                        value_zat: 600,
+                    }],
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("-1000 zat"), "{content}");
+        assert!(content.contains("t1spender"), "{content}");
+        assert!(content.contains("600 zat"), "{content}");
+        assert!(content.contains("t1receiver"), "{content}");
     }
 
     /// A failed block lookup renders the error, not a panic.
@@ -1015,9 +1097,11 @@ mod tests {
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
         use zaino_primitives::types::{
             Block, BlockHash, BlockHeader, BlockRef, BlockTreeSizes, BlockVerbose, ChainMetadata,
-            CompactDifficulty, DecodedBlock, EquihashSolution, Height,
+            CompactDifficulty, DecodedBlock, EquihashSolution, Height, Script, SignedZatoshis,
+            TransactionId, Zatoshis,
         };
         use zaino_service::testing::{MockChain, MockIndexerService};
+        use zaino_service::{InputDelta, OutputDelta, TransactionDeltas};
         use zcash_protocol::consensus::Network;
 
         let header = BlockHeader {
@@ -1031,6 +1115,28 @@ mod tests {
             bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
             nonce: [0x55; 32],
             solution: EquihashSolution::Regtest([0; 36]),
+        };
+        let p2pkh = |b: u8| {
+            let mut bytes = vec![0x76, 0xa9, 0x14];
+            bytes.extend_from_slice(&[b; 20]);
+            bytes.extend_from_slice(&[0x88, 0xac]);
+            Script::new(bytes)
+        };
+        let spend = TransactionDeltas {
+            txid: TransactionId::from([0x7A; 32]),
+            index: 0,
+            inputs: vec![InputDelta {
+                script: p2pkh(0x02),
+                satoshis: SignedZatoshis::try_new(-1_000).expect("valid amount"),
+                index: 0,
+                prev_txid: TransactionId::from([0xAB; 32]),
+                prevout: 2,
+            }],
+            outputs: vec![OutputDelta {
+                script: p2pkh(0x03),
+                satoshis: Zatoshis::new(600).expect("valid amount"),
+                index: 0,
+            }],
         };
         let chain = MockChain {
             tip: Some(BlockRef {
@@ -1056,6 +1162,23 @@ mod tests {
             decoded_block: Some(DecodedBlock {
                 size: 1_000,
                 transactions: Vec::new(),
+            }),
+            block_deltas: Some(zaino_service::BlockDeltas {
+                hash: BlockHash::from([0x11; 32]),
+                confirmations: 1,
+                size: 500,
+                height: Height::try_from(300).expect("valid height"),
+                version: 4,
+                merkle_root: [0x22; 32].into(),
+                deltas: vec![spend],
+                time: 1_700_000_300,
+                median_time: 1_700_000_000,
+                nonce: [0x33; 32],
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+                difficulty: 1.0,
+                chainwork: None,
+                prev_hash: None,
+                next_hash: None,
             }),
             ..Default::default()
         };
@@ -1086,6 +1209,12 @@ mod tests {
                 let detail = state.block.as_ref().expect("block state populated");
                 assert_eq!(detail.height, 300);
                 assert_eq!(detail.hash, "11".repeat(32));
+                let deltas = state
+                    .block_deltas
+                    .as_ref()
+                    .expect("block_deltas state populated");
+                assert_eq!(deltas.deltas[0].inputs[0].value_zat, -1_000);
+                assert_eq!(deltas.deltas[0].outputs[0].value_zat, 600);
             }
             other => panic!("expected a successful Block screen, got {other:?}"),
         }
