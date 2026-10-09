@@ -8,8 +8,8 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
-    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReader, MempoolEntry,
-    TransactionDetail, Treestate,
+    AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, ChainReader,
+    MempoolEntry, TransactionDetail, Treestate,
 };
 
 /// How many recent blocks the TUI lists.
@@ -58,6 +58,10 @@ pub struct AppState {
     spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
     /// The looked-up address — populated only on screen `Address`.
     address: Option<AddressSummary>,
+    /// The looked-up address's validity — populated only on screen
+    /// `Address`. Independent of `address` itself: worth showing even if
+    /// the balance/txids read fails.
+    address_validity: Option<Result<AddressValidity, String>>,
     /// The looked-up block — populated only on screen `Block`.
     block: Option<BlockDetail>,
     /// The looked-up block's value movements — populated only on screen
@@ -186,6 +190,14 @@ impl AppState {
             return;
         };
         let address = address.clone();
+        // Independent of the balance/txids/utxos/deltas read below —
+        // worth showing even if that read fails.
+        self.address_validity = Some(
+            reader
+                .validate_address(address.clone())
+                .await
+                .map_err(|e| e.to_string()),
+        );
         match reader.address(address.clone()).await {
             Ok(summary) => {
                 self.address = Some(summary);
@@ -387,15 +399,33 @@ fn render_transaction(
     );
 }
 
+/// The validity line shown on the `Address` screen, independent of
+/// whether the balance/txids read below it succeeded.
+fn format_address_validity(validity: &Option<Result<AddressValidity, String>>) -> String {
+    match validity {
+        Some(Ok(v)) if v.valid => {
+            let kind = v.kind.as_deref().unwrap_or("unknown kind");
+            format!("Valid address — {kind}")
+        }
+        Some(Ok(_)) => "Not a recognized address on this network".to_string(),
+        Some(Err(e)) => format!("Validity unavailable: {e}"),
+        None => "Validity: not checked".to_string(),
+    }
+}
+
 fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>, state: &AppState) {
     let text = match result {
-        Err(e) => format!("Address {address}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Err(e) => format!(
+            "Address {address}\n\n{}\n\nRPC error: {e}\n\n(Esc: back)",
+            format_address_validity(&state.address_validity)
+        ),
         Ok(()) => {
             let Some(summary) = &state.address else {
                 return;
             };
             let mut lines = vec![
                 format!("Address {}", summary.address),
+                format_address_validity(&state.address_validity),
                 format!("Balance: {} zat", summary.balance_zat),
                 format!("Lifetime received: {} zat", summary.received_zat),
                 String::new(),
@@ -946,6 +976,46 @@ mod tests {
         assert!(content.contains("Value changes"), "{content}");
     }
 
+    /// A looked-up address's validity renders alongside its balance,
+    /// independent of whether the balance read itself succeeded.
+    #[test]
+    fn renders_address_validity() {
+        use super::Screen;
+        use zaino_explorer_domain::{AddressSummary, AddressValidity};
+
+        let state = AppState {
+            screen: Screen::Address("t1example".to_string(), Ok(())),
+            address: Some(AddressSummary {
+                address: "t1example".to_string(),
+                balance_zat: 0,
+                received_zat: 0,
+                txids: Vec::new(),
+                utxos: Vec::new(),
+                deltas: Vec::new(),
+            }),
+            address_validity: Some(Ok(AddressValidity {
+                valid: true,
+                address: Some("t1example".to_string()),
+                kind: Some("p2pkh".to_string()),
+            })),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Valid address"), "{content}");
+        assert!(content.contains("p2pkh"), "{content}");
+    }
+
     /// Typing and editing a block height/hash is pure state transition,
     /// mirroring the txid/address input modes.
     #[test]
@@ -1448,6 +1518,13 @@ mod tests {
                 assert_eq!(address, "t1unknown");
                 let summary = state.address.as_ref().expect("address state populated");
                 assert_eq!(summary.balance_zat, 0);
+                // "t1unknown" is not a well-formed address, so validity
+                // reads as invalid — proof the validity pipe reached the
+                // real adapter too, not just balance/txids.
+                match &state.address_validity {
+                    Some(Ok(v)) => assert!(!v.valid),
+                    other => panic!("expected a populated validity result, got {other:?}"),
+                }
             }
             other => panic!("expected a successful zero-balance Address screen, got {other:?}"),
         }
