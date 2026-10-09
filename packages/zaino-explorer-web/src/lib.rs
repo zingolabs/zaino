@@ -48,7 +48,8 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         }
         @match status {
             Ok(status) => p {
-                (status.subversion) " — " (status.connections) " peers — "
+                "Connected validator: " (status.subversion) " (build " (status.build) ") — "
+                (status.connections) " peers — "
                 a href="/mempool" { "mempool" } ": "
                 (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
                 " — " a href="/node" { "node info" }
