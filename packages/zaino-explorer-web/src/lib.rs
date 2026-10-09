@@ -349,18 +349,30 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     let body = match reader.node_diagnostics().await {
         Ok(diagnostics) => html! {
             h1 { "Node info" }
-            p { "Chain: " (diagnostics.chain) }
-            @if let Some(difficulty) = diagnostics.difficulty {
-                p { "Difficulty: " (difficulty) }
+            h2 { "Mining" }
+            @match &diagnostics.mining {
+                Some(mining) => div {
+                    p { "Chain: " (mining.chain) }
+                    @if let Some(difficulty) = mining.difficulty {
+                        p { "Difficulty: " (difficulty) }
+                    }
+                    @if let Some(sol_ps) = mining.network_sol_ps {
+                        p { "Network solution rate: " (sol_ps) " sol/s" }
+                    }
+                },
+                None => p { "Unavailable on this deployment" },
             }
-            @if let Some(sol_ps) = diagnostics.network_sol_ps {
-                p { "Network solution rate: " (sol_ps) " sol/s" }
-            }
-            p { "Protocol version: " (diagnostics.protocol_version) }
-            p { "Local services: " (diagnostics.local_services) }
-            p { "Relay fee: " (diagnostics.relay_fee) " ZEC" }
-            @if !diagnostics.warnings.is_empty() {
-                p { "Warnings: " (diagnostics.warnings) }
+            h2 { "Network" }
+            @match &diagnostics.network {
+                Some(network) => div {
+                    p { "Protocol version: " (network.protocol_version) }
+                    p { "Local services: " (network.local_services) }
+                    p { "Relay fee: " (network.relay_fee) " ZEC" }
+                    @if !network.warnings.is_empty() {
+                        p { "Warnings: " (network.warnings) }
+                    }
+                },
+                None => p { "Unavailable on this deployment" },
             }
             h2 { "Peers" }
             @if diagnostics.peers.is_empty() {
@@ -733,7 +745,7 @@ mod tests {
     /// mapping is covered in `zaino-explorer-zaino-client`'s own
     /// pure-function test; this test is about the route.
     #[tokio::test(flavor = "multi_thread")]
-    async fn node_route_renders_rpc_error_when_not_ready() {
+    async fn node_route_renders_unavailable_sections_when_not_ready() {
         let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
@@ -758,9 +770,14 @@ mod tests {
             .expect("read body")
             .to_bytes();
         let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        // Mining and network both fail independently on this mock
+        // (neither is scripted), so both sections report "unavailable"
+        // rather than the whole page erroring — this is the fix for the
+        // real bug the live deployment surfaced (getnetworkinfo's gap
+        // was hiding getmininginfo's and getpeerinfo's working data).
         assert!(
-            text.contains("RPC error"),
-            "an unready node should render as an RPC error, not a panic: {text}"
+            text.contains("Unavailable on this deployment"),
+            "an unready node's sections should degrade, not error the whole page: {text}"
         );
 
         let _ = handle.stop();
