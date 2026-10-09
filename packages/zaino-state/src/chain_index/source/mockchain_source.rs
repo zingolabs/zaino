@@ -145,6 +145,9 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Fails the four mempool ports alone, so the mempool read model goes
+    /// dark while block reads keep answering. Shared across clones.
+    force_mempool_requests_to_fail: Arc<std::sync::atomic::AtomicBool>,
     /// Announces "blocks received" — i.e. [`Self::mine_blocks`] advanced
     /// the active height — to every subscriber registered via
     /// [`BlockchainSource::subscribe_to_blocks_received`], so each can
@@ -227,6 +230,7 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            force_mempool_requests_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
             shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -242,6 +246,13 @@ impl MockchainSource {
     /// return `BlockchainSourceError::Unrecoverable`.
     pub(crate) fn set_failing(&self, fail: bool) {
         self.force_requests_against_source_to_fail
+            .store(fail, Ordering::SeqCst);
+    }
+
+    /// When set to true, the four mempool ports return a fault while every
+    /// block port keeps answering: the validator's mempool goes dark.
+    pub(crate) fn set_mempool_failing(&self, fail: bool) {
+        self.force_mempool_requests_to_fail
             .store(fail, Ordering::SeqCst);
     }
 
@@ -470,6 +481,15 @@ impl MockchainSource {
             .then(|| port_fault("forced source failure"))
     }
 
+    /// `Err` when a test has armed [`Self::set_mempool_failing`].
+    fn forced_mempool_failure<E: std::fmt::Debug + std::fmt::Display>(
+        &self,
+    ) -> Option<PortError<E>> {
+        self.force_mempool_requests_to_fail
+            .load(Ordering::SeqCst)
+            .then(|| port_fault("forced mempool failure"))
+    }
+
     /// The index of a block served at this height, or `None` past the active tip.
     fn served_index_at_height(&self, height: domain::Height) -> Option<usize> {
         self.valid_height(u32::from(height))
@@ -654,6 +674,10 @@ impl zaino_source::OneShotGetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {
+        if let Some(failure) = self.forced_mempool_failure() {
+            return Err(failure);
+        }
+
         Ok(self
             .mempool_transactions()
             .map(|transaction| domain::TransactionId::from(transaction.hash().0))
@@ -666,6 +690,10 @@ impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
     {
+        if let Some(failure) = self.forced_mempool_failure() {
+            return Err(failure);
+        }
+
         // Every mock mempool transaction entered at the current tip: the mock
         // has no arrival history, and the tip is the honest answer for a set
         // that is defined as "the block that would come next".
@@ -691,6 +719,10 @@ impl zaino_source::OneShotGetRawMempoolTransaction for MockchainSource {
         &self,
         txid: domain::TransactionId,
     ) -> Result<Vec<u8>, PortError<zaino_source::GetRawMempoolTransactionError>> {
+        if let Some(failure) = self.forced_mempool_failure() {
+            return Err(failure);
+        }
+
         let wanted = zebra_chain::transaction::Hash(<[u8; 32]>::from(txid));
 
         let transaction = self
@@ -710,6 +742,10 @@ impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {
+        if let Some(failure) = self.forced_mempool_failure() {
+            return Err(failure);
+        }
+
         // The mock serves its mempool and its tip from one place by
         // construction — `mempool_transactions` is defined relative to
         // `active_height` — so the single-source rule holds trivially here.
