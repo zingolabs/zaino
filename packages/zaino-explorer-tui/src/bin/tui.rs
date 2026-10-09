@@ -4,16 +4,19 @@
 //!
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
 //! web surface. `q` quits from anywhere. On the home screen: `t` starts a
-//! txid lookup, `a` starts an address lookup, and the chain height
-//! refreshes every 5s. While typing: characters append, Backspace edits,
-//! Enter looks it up, Esc cancels back home. On the transaction/address
-//! screen: Esc goes back home.
+//! txid lookup, `a` starts an address lookup, `b` starts a block
+//! height/hash lookup, and the chain height refreshes every 5s. While
+//! typing: characters append, Backspace edits, Enter looks it up, Esc
+//! cancels back home. On the transaction/address/block screen: Esc goes
+//! back home.
 
 use std::io;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use crossterm::ExecutableCommand;
 use jsonrpsee::http_client::HttpClientBuilder;
 use ratatui::backend::CrosstermBackend;
@@ -70,6 +73,7 @@ async fn run(
                     Screen::Home => match key.code {
                         KeyCode::Char('t') => state.start_txid_input(),
                         KeyCode::Char('a') => state.start_address_input(),
+                        KeyCode::Char('b') => state.start_block_input(),
                         _ => {}
                     },
                     Screen::EnterTxid(_) => match key.code {
@@ -86,7 +90,14 @@ async fn run(
                         KeyCode::Esc => state.go_home(),
                         _ => {}
                     },
-                    Screen::Transaction(_, _) | Screen::Address(_, _) => {
+                    Screen::EnterBlock(_) => match key.code {
+                        KeyCode::Char(c) => state.push_char(c),
+                        KeyCode::Backspace => state.backspace(),
+                        KeyCode::Enter => state.lookup_block(reader).await,
+                        KeyCode::Esc => state.go_home(),
+                        _ => {}
+                    },
+                    Screen::Transaction(_, _) | Screen::Address(_, _) | Screen::Block(_, _) => {
                         if key.code == KeyCode::Esc {
                             state.go_home();
                         }

@@ -7,15 +7,17 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
-use zaino_explorer_domain::{AddressSummary, BlockSummary, ChainReader, TransactionDetail};
+use zaino_explorer_domain::{
+    AddressSummary, BlockDetail, BlockSummary, ChainReader, TransactionDetail,
+};
 
 /// How many recent blocks the TUI lists.
 const RECENT_BLOCKS: u32 = 10;
 
 /// Which screen is showing. The home screen (height + recent blocks) is
 /// always refreshed on a timer; the others are driven by user input — `t`
-/// starts typing a txid, `a` starts typing an address, Enter looks it up,
-/// Esc returns home.
+/// starts typing a txid, `a` starts typing an address, `b` starts typing a
+/// block height or hash, Enter looks it up, Esc returns home.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Screen {
     #[default]
@@ -28,6 +30,10 @@ pub enum Screen {
     EnterAddress(String),
     /// Looked up: the address and what came back.
     Address(String, Result<(), String>),
+    /// Typing a block height or hash to look up.
+    EnterBlock(String),
+    /// Looked up: the height-or-hash and what came back.
+    Block(String, Result<(), String>),
 }
 
 /// The TUI's whole state: the last successful read, or the last error, for
@@ -44,6 +50,8 @@ pub struct AppState {
     spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
     /// The looked-up address — populated only on screen `Address`.
     address: Option<AddressSummary>,
+    /// The looked-up block — populated only on screen `Block`.
+    block: Option<BlockDetail>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -81,20 +89,30 @@ impl AppState {
         self.screen = Screen::EnterAddress(String::new());
     }
 
+    /// Enter block-input mode (height or hash), starting from an empty
+    /// buffer.
+    pub fn start_block_input(&mut self) {
+        self.screen = Screen::EnterBlock(String::new());
+    }
+
     /// Append a character to the current input buffer, if currently typing
-    /// a txid or an address.
+    /// a txid, an address, or a block height/hash.
     pub fn push_char(&mut self, c: char) {
         match &mut self.screen {
-            Screen::EnterTxid(buffer) | Screen::EnterAddress(buffer) => buffer.push(c),
+            Screen::EnterTxid(buffer)
+            | Screen::EnterAddress(buffer)
+            | Screen::EnterBlock(buffer) => buffer.push(c),
             _ => {}
         }
     }
 
     /// Remove the last character from the current input buffer, if
-    /// currently typing a txid or an address.
+    /// currently typing a txid, an address, or a block height/hash.
     pub fn backspace(&mut self) {
         match &mut self.screen {
-            Screen::EnterTxid(buffer) | Screen::EnterAddress(buffer) => {
+            Screen::EnterTxid(buffer)
+            | Screen::EnterAddress(buffer)
+            | Screen::EnterBlock(buffer) => {
                 buffer.pop();
             }
             _ => {}
@@ -161,6 +179,25 @@ impl AppState {
             }
         }
     }
+
+    /// Look up the block currently in the input buffer, by height or hash.
+    /// Does nothing if not currently in block-input mode.
+    pub async fn lookup_block<C: ChainReader>(&mut self, reader: &C) {
+        let Screen::EnterBlock(id) = &self.screen else {
+            return;
+        };
+        let id = id.clone();
+        match reader.block(id.clone()).await {
+            Ok(detail) => {
+                self.block = Some(detail);
+                self.screen = Screen::Block(id, Ok(()));
+            }
+            Err(e) => {
+                self.block = None;
+                self.screen = Screen::Block(id, Err(e.to_string()));
+            }
+        }
+    }
 }
 
 /// Render the current state into `frame`, whichever screen is active.
@@ -175,6 +212,12 @@ pub fn render(frame: &mut Frame, state: &AppState) {
             render_input(frame, buffer, "Enter address (Enter: look up, Esc: cancel)")
         }
         Screen::Address(address, result) => render_address(frame, address, result, state),
+        Screen::EnterBlock(buffer) => render_input(
+            frame,
+            buffer,
+            "Enter block height or hash (Enter: look up, Esc: cancel)",
+        ),
+        Screen::Block(id, result) => render_block(frame, id, result, state),
     }
 }
 
@@ -188,7 +231,7 @@ fn render_home(frame: &mut Frame, state: &AppState) {
 
     let mut status_text = match (state.height, &state.error) {
         (Some(height), _) => {
-            format!("Chain height: {height}  (t: tx, a: address, q: quit)")
+            format!("Chain height: {height}  (t: tx, a: address, b: block, q: quit)")
         }
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
         (None, None) => "Loading...  (q to quit)".to_string(),
@@ -307,6 +350,34 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
     };
     frame.render_widget(
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Address")),
+        frame.area(),
+    );
+}
+
+fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state: &AppState) {
+    let text = match result {
+        Err(e) => format!("Block {id}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(detail) = &state.block else {
+                return;
+            };
+            let mut lines = vec![
+                format!("Block {}", detail.height),
+                format!("Hash: {}", detail.hash),
+                format!("Time: {}", detail.time),
+                String::new(),
+                "Transactions:".to_string(),
+            ];
+            for txid in &detail.tx_ids {
+                lines.push(format!("  {txid}"));
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Block")),
         frame.area(),
     );
 }
@@ -638,6 +709,85 @@ mod tests {
         assert!(content.contains(&"ab".repeat(32)), "{content}");
     }
 
+    /// Typing and editing a block height/hash is pure state transition,
+    /// mirroring the txid/address input modes.
+    #[test]
+    fn block_input_mode_types_and_cancels() {
+        use super::Screen;
+
+        let mut state = AppState::default();
+        state.start_block_input();
+        assert_eq!(state.screen, Screen::EnterBlock(String::new()));
+
+        state.push_char('3');
+        state.push_char('0');
+        state.push_char('0');
+        assert_eq!(state.screen, Screen::EnterBlock("300".to_string()));
+
+        state.backspace();
+        assert_eq!(state.screen, Screen::EnterBlock("30".to_string()));
+
+        state.go_home();
+        assert_eq!(state.screen, Screen::Home);
+    }
+
+    /// A looked-up block renders its hash, time, and every txid.
+    #[test]
+    fn renders_block_with_hash_and_txids() {
+        use super::Screen;
+        use zaino_explorer_domain::BlockDetail;
+
+        let state = AppState {
+            screen: Screen::Block("300".to_string(), Ok(())),
+            block: Some(BlockDetail {
+                height: 300,
+                hash: "aa".repeat(32),
+                time: 1_700_000_300,
+                tx_ids: vec!["ab".repeat(32)],
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("300"), "{content}");
+        assert!(content.contains(&"aa".repeat(32)), "{content}");
+        assert!(content.contains(&"ab".repeat(32)), "{content}");
+    }
+
+    /// A failed block lookup renders the error, not a panic.
+    #[test]
+    fn renders_block_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Block("999999".to_string(), Err("not found".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("not found"), "{content}");
+    }
+
     /// A failed address lookup renders the error, not a panic.
     #[test]
     fn renders_address_lookup_error() {
@@ -720,7 +870,10 @@ mod tests {
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
 
-        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
         let addr = listener.local_addr().expect("local addr");
@@ -737,7 +890,10 @@ mod tests {
         let mut state = AppState::default();
         state.refresh(&reader).await;
 
-        assert!(state.error.is_some(), "an unscripted node should surface as an error, not silence");
+        assert!(
+            state.error.is_some(),
+            "an unscripted node should surface as an error, not silence"
+        );
 
         let _ = handle.stop();
     }
@@ -756,7 +912,10 @@ mod tests {
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
 
-        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
         let addr = listener.local_addr().expect("local addr");
@@ -807,7 +966,10 @@ mod tests {
         use zaino_service::testing::{MockChain, MockIndexerService};
         use zcash_protocol::consensus::Network;
 
-        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
         let addr = listener.local_addr().expect("local addr");
@@ -835,6 +997,97 @@ mod tests {
                 assert_eq!(summary.balance_zat, 0);
             }
             other => panic!("expected a successful zero-balance Address screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_block` against a real mock server: proof the pipe reaches
+    /// the real adapter and populates `BlockDetail`, including txids,
+    /// mirroring `zaino-explorer-web`'s equivalent coverage for the block
+    /// route.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_block_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_primitives::types::{
+            Block, BlockHash, BlockHeader, BlockRef, BlockTreeSizes, BlockVerbose, ChainMetadata,
+            CompactDifficulty, DecodedBlock, EquihashSolution, Height,
+        };
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let header = BlockHeader {
+            hash: BlockHash::from([0x11; 32]),
+            version: 4,
+            prev_hash: BlockHash::from([0x22; 32]),
+            height: Height::try_from(300).expect("valid height"),
+            time: 1_700_000_300,
+            merkle_root: [0x33; 32].into(),
+            block_commitments: [0x44; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            nonce: [0x55; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        let chain = MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x11; 32]),
+            }),
+            block: Some(Block {
+                header,
+                transactions: Vec::new(),
+                chain_metadata: ChainMetadata::ZERO,
+            }),
+            block_verbose: Some(BlockVerbose {
+                confirmations: 1,
+                difficulty: 1.0,
+                chainwork: None,
+                chain_supply: None,
+                value_pools: Vec::new(),
+                final_sapling_root: None,
+                final_orchard_root: None,
+                tree_sizes: BlockTreeSizes::default(),
+                next_block_hash: None,
+            }),
+            decoded_block: Some(DecodedBlock {
+                size: 1_000,
+                transactions: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.start_block_input();
+        for c in "300".chars() {
+            state.push_char(c);
+        }
+        state.lookup_block(&reader).await;
+
+        match &state.screen {
+            Screen::Block(id, Ok(())) => {
+                assert_eq!(id, "300");
+                let detail = state.block.as_ref().expect("block state populated");
+                assert_eq!(detail.height, 300);
+                assert_eq!(detail.hash, "11".repeat(32));
+            }
+            other => panic!("expected a successful Block screen, got {other:?}"),
         }
 
         let _ = handle.stop();
