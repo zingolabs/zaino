@@ -13,6 +13,23 @@ use std::future::Future;
 pub trait ChainReader: Clone + Send + Sync + 'static {
     /// The current chain height.
     fn chain_height(&self) -> impl Future<Output = Result<u32, ChainReadError>> + Send;
+
+    /// The `count` most recent blocks, newest first.
+    fn recent_blocks(
+        &self,
+        count: u32,
+    ) -> impl Future<Output = Result<Vec<BlockSummary>, ChainReadError>> + Send;
+}
+
+/// One block's summary, as shown in a block list — not the full block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockSummary {
+    /// The block's height.
+    pub height: u32,
+    /// The block's hash, in the wire's display (byte-reversed) hex form.
+    pub hash: String,
+    /// The block's timestamp (seconds since the Unix epoch).
+    pub time: u32,
 }
 
 /// Why a [`ChainReader`] read failed.
@@ -20,6 +37,6 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
 pub enum ChainReadError {
     /// The RPC call itself failed (network, decode, or an error the node
     /// returned) — the adapter's only failure mode today.
-    #[error("chain height read failed")]
+    #[error("chain read failed")]
     Rpc(#[source] Box<dyn std::error::Error + Send + Sync>),
 }

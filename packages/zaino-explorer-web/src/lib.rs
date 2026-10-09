@@ -21,17 +21,28 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
     Router::new().route("/", get(home::<C>)).with_state(reader)
 }
 
-/// `GET /`: the chain height, fetched live.
+/// How many recent blocks the home page lists.
+const RECENT_BLOCKS: u32 = 10;
+
+/// `GET /`: the chain height and a recent-blocks list, both fetched live.
 async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
-    let body = match reader.chain_height().await {
-        Ok(height) => html! {
-            h1 { "zaino-block-explorer" }
-            p { "Chain height: " (height) }
-        },
-        Err(e) => html! {
-            h1 { "zaino-block-explorer" }
-            p { "RPC error: " (e.to_string()) }
-        },
+    let height = reader.chain_height().await;
+    let blocks = reader.recent_blocks(RECENT_BLOCKS).await;
+
+    let body = html! {
+        h1 { "zaino-block-explorer" }
+        @match height {
+            Ok(height) => p { "Chain height: " (height) },
+            Err(e) => p { "RPC error: " (e.to_string()) },
+        }
+        @match blocks {
+            Ok(blocks) => ul {
+                @for block in &blocks {
+                    li { (block.height) " — " (block.hash) " — " (block.time) }
+                }
+            },
+            Err(e) => p { "RPC error: " (e.to_string()) },
+        }
     };
     Html(body.into_string())
 }
@@ -51,10 +62,41 @@ mod tests {
     /// chain tipped at height 291, and return its address and a handle the test
     /// stops when done.
     async fn spawn_mock_server() -> (std::net::SocketAddr, jsonrpsee::server::ServerHandle) {
+        use zaino_primitives::types::rpc::BlockHeaderVerbose;
+        use zaino_primitives::types::{BlockHash, CompactDifficulty, Height, MerkleRoot};
+        use zaino_service::BlockHashAt;
+
         let chain = MockChain {
             tip: Some(zaino_primitives::types::BlockRef {
-                height: zaino_primitives::types::Height::try_from(291).expect("valid height"),
-                hash: zaino_primitives::types::BlockHash::from([0xCDu8; 32]),
+                height: Height::try_from(291).expect("valid height"),
+                hash: BlockHash::from([0xCDu8; 32]),
+            }),
+            // One entry per height the home page's RECENT_BLOCKS window will
+            // request (282..=291) — not just the tip — or every height but
+            // the tip comes back as a scripting gap, not a real "not found".
+            block_hashes: (282..=291)
+                .map(|h| BlockHashAt {
+                    height: Height::try_from(h).expect("valid height"),
+                    hash: BlockHash::from([0xCDu8; 32]),
+                    time: 1_700_000_000,
+                })
+                .collect(),
+            block_header_verbose: Some(BlockHeaderVerbose {
+                hash: BlockHash::from([0xCDu8; 32]),
+                confirmations: 1,
+                height: Height::try_from(291).expect("valid height"),
+                version: 4,
+                merkle_root: MerkleRoot::from([0u8; 32]),
+                time: 1_700_000_000,
+                nonce: [0u8; 32],
+                solution: Vec::new(),
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+                difficulty: 1.0,
+                block_commitments: None,
+                final_sapling_root: None,
+                chainwork: None,
+                previous_block_hash: None,
+                next_block_hash: None,
             }),
             ..Default::default()
         };
@@ -107,6 +149,10 @@ mod tests {
         assert!(
             text.contains("291"),
             "home page should render the live chain height 291: {text}"
+        );
+        assert!(
+            text.contains(&"cd".repeat(32)),
+            "home page should render the recent block's hash: {text}"
         );
 
         let _ = handle.stop();

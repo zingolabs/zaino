@@ -6546,8 +6546,12 @@ name = "zaino-explorer-zaino-client"
 version = "0.1.0"
 dependencies = [
  "jsonrpsee",
+ "tokio",
  "zaino-explorer-domain",
  "zaino-noderpc",
+ "zaino-primitives",
+ "zaino-service",
+ "zcash_protocol",
 ]
 
 [[package]]
