@@ -58,7 +58,9 @@ pub struct AppState {
     /// The looked-up transaction and its outputs' spend status, keyed by
     /// output index — populated only on screen `Transaction`.
     transaction: Option<TransactionDetail>,
-    spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
+    /// Each output's status, one description per output index — see
+    /// [`describe_output_status`].
+    output_statuses: Vec<String>,
     /// The looked-up address — populated only on screen `Address`.
     address: Option<AddressSummary>,
     /// The looked-up address's validity — populated only on screen
@@ -171,22 +173,19 @@ impl AppState {
         let txid = txid.clone();
         match reader.transaction(txid.clone()).await {
             Ok(detail) => {
-                let mut spends = Vec::with_capacity(detail.outputs.len());
+                let mut statuses = Vec::with_capacity(detail.outputs.len());
                 for index in 0..detail.outputs.len() {
-                    spends.push(
-                        reader
-                            .spend_info(txid.clone(), index as u32)
-                            .await
-                            .map_err(|e| e.to_string()),
-                    );
+                    let index = u32::try_from(index)
+                        .expect("more than u32::MAX outputs in one transaction");
+                    statuses.push(describe_output_status(reader, &txid, index).await);
                 }
                 self.transaction = Some(detail);
-                self.spends = spends;
+                self.output_statuses = statuses;
                 self.screen = Screen::Transaction(txid, Ok(()));
             }
             Err(e) => {
                 self.transaction = None;
-                self.spends = Vec::new();
+                self.output_statuses = Vec::new();
                 self.screen = Screen::Transaction(txid, Err(e.to_string()));
             }
         }
@@ -310,6 +309,26 @@ impl AppState {
     }
 }
 
+/// Describes one output's status, combining two RPCs that each leave a
+/// gap the other closes: `spend_info` names the spender when it knows
+/// one, but answers "not found" for both a genuinely unspent output and
+/// an unknown one; `output_status` (`gettxout`) answers the unspent case
+/// with a value, but equally can't tell "spent" apart from "unknown".
+/// Together they disambiguate all three states.
+async fn describe_output_status<C: ChainReader>(reader: &C, txid: &str, index: u32) -> String {
+    if let Ok(spend) = reader.spend_info(txid.to_string(), index).await {
+        return format!("spent by {} in block {}", spend.spending_txid, spend.height);
+    }
+    match reader.output_status(txid.to_string(), index).await {
+        Ok(Some(status)) => format!(
+            "unspent — {} zat, {} confirmations",
+            status.value_zat, status.confirmations
+        ),
+        Ok(None) => "spent or unknown".to_string(),
+        Err(_) => "status unavailable".to_string(),
+    }
+}
+
 /// Render the current state into `frame`, whichever screen is active.
 pub fn render(frame: &mut Frame, state: &AppState) {
     match &state.screen {
@@ -415,20 +434,13 @@ fn render_transaction(
             }
             lines.push(String::new());
             lines.push("Outputs:".to_string());
-            for (output, spend) in tx.outputs.iter().zip(state.spends.iter()) {
+            for (output, status) in tx.outputs.iter().zip(state.output_statuses.iter()) {
                 let addresses = if output.addresses.is_empty() {
                     String::new()
                 } else {
                     format!(" — {}", output.addresses.join(", "))
                 };
-                let spend_text = match spend {
-                    Ok(s) => format!("spent by {} in block {}", s.spending_txid, s.height),
-                    Err(_) => "unspent (or unknown)".to_string(),
-                };
-                lines.push(format!(
-                    "  {} zat{addresses} — {spend_text}",
-                    output.value_zat
-                ));
+                lines.push(format!("  {} zat{addresses} — {status}", output.value_zat));
             }
             lines.push(String::new());
             lines.push("(Esc: back)".to_string());
@@ -918,12 +930,13 @@ mod tests {
         );
     }
 
-    /// A looked-up transaction renders its outputs, each with its spend
-    /// status — "spent by X in block Y" or "unspent (or unknown)".
+    /// A looked-up transaction renders its outputs, each with its
+    /// disambiguated status — "spent by X in block Y", "unspent — N zat,
+    /// M confirmations", or "spent or unknown".
     #[test]
-    fn renders_transaction_with_spend_status() {
+    fn renders_transaction_with_output_status() {
         use super::Screen;
-        use zaino_explorer_domain::{SpendInfo, TransactionOutput};
+        use zaino_explorer_domain::TransactionOutput;
 
         let txid = "ab".repeat(32);
         let state = AppState {
@@ -944,13 +957,9 @@ mod tests {
                     },
                 ],
             }),
-            spends: vec![
-                Ok(SpendInfo {
-                    spending_txid: "cd".repeat(32),
-                    spending_input_index: 0,
-                    height: 301,
-                }),
-                Err("not found".to_string()),
+            output_statuses: vec![
+                format!("spent by {} in block 301", "cd".repeat(32)),
+                "unspent — 2000 zat, 5 confirmations".to_string(),
             ],
             ..Default::default()
         };
@@ -972,7 +981,7 @@ mod tests {
             "{content}"
         );
         assert!(content.contains("t1unspent"), "{content}");
-        assert!(content.contains("unspent (or unknown)"), "{content}");
+        assert!(content.contains("unspent — 2000 zat"), "{content}");
     }
 
     /// A failed lookup renders the error, not a panic or a blank screen.
