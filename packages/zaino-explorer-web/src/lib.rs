@@ -235,6 +235,32 @@ async fn address<C: ChainReader>(
                     li { a href=(format!("/tx/{txid}")) { (txid) } }
                 }
             }
+            h2 { "Unspent outputs" }
+            @if summary.utxos.is_empty() {
+                p { "None (or unavailable on this deployment)" }
+            } @else {
+                ul {
+                    @for utxo in &summary.utxos {
+                        li {
+                            a href=(format!("/tx/{}", utxo.txid)) { (utxo.txid) }
+                            ":" (utxo.output_index) " — " (utxo.value_zat) " zat — height " (utxo.height)
+                        }
+                    }
+                }
+            }
+            h2 { "Value changes" }
+            @if summary.deltas.is_empty() {
+                p { "None (or unavailable on this deployment)" }
+            } @else {
+                ul {
+                    @for delta in &summary.deltas {
+                        li {
+                            a href=(format!("/tx/{}", delta.txid)) { (delta.txid) }
+                            " — " (delta.value_zat) " zat — height " (delta.height)
+                        }
+                    }
+                }
+            }
         },
         Err(e) => html! {
             h1 { "Address " (address) }
@@ -692,6 +718,70 @@ mod tests {
             text.contains("Balance: 0 zat"),
             "an address with no history should read as zero, not an error: {text}"
         );
+
+        let _ = handle.stop();
+    }
+
+    /// `/address/{address}` with scripted UTXOs and deltas renders both
+    /// sections, each entry linked to its transaction.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn address_route_renders_utxos_and_deltas() {
+        use zaino_primitives::types::{
+            AddressDelta, BlockHash, BlockRef, Height, Script, SignedZatoshis, TransactionId,
+            TransparentAddress, Utxo, Zatoshis,
+        };
+
+        let chain = MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x09; 32]),
+            }),
+            utxos: vec![Utxo {
+                address: TransparentAddress::new("t1exampleaddress".to_string()),
+                txid: TransactionId::from([0x04; 32]),
+                output_index: 0,
+                script: Script::new(vec![0x76, 0xa9]),
+                satoshis: Zatoshis::new(5_000).expect("valid amount"),
+                height: Height::try_from(300).expect("valid height"),
+            }],
+            deltas: vec![AddressDelta {
+                satoshis: SignedZatoshis::try_new(5_000).expect("valid amount"),
+                txid: TransactionId::from([0x04; 32]),
+                index: 0,
+                height: Height::try_from(300).expect("valid height"),
+                address: TransparentAddress::new("t1exampleaddress".to_string()),
+                block_index: None,
+            }],
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/address/t1exampleaddress")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("Unspent outputs"), "{text}");
+        assert!(text.contains("Value changes"), "{text}");
+        assert!(text.contains(&"04".repeat(32)), "{text}");
+        assert!(text.contains("5000 zat"), "{text}");
 
         let _ = handle.stop();
     }
