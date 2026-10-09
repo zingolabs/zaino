@@ -224,9 +224,26 @@ async fn address<C: ChainReader>(
     State(reader): State<C>,
     Path(address): Path<String>,
 ) -> Html<String> {
+    // Validity is independent of the balance/txids/utxos/deltas reads
+    // below — useful even for a shielded or unified address those reads
+    // can't answer, and worth showing even if they fail.
+    let validity = reader.validate_address(address.clone()).await;
+    let validity_line = html! {
+        @match &validity {
+            Ok(v) if v.valid => p {
+                "Valid address"
+                @if let Some(kind) = &v.kind {
+                    " — " (kind)
+                }
+            },
+            Ok(_) => p { "Not a recognized address on this network" },
+            Err(e) => p { "Validity unavailable: " (e.to_string()) },
+        }
+    };
     let body = match reader.address(address.clone()).await {
         Ok(summary) => html! {
             h1 { "Address " (summary.address) }
+            (validity_line)
             p { "Balance: " (summary.balance_zat) " zat" }
             p { "Lifetime received: " (summary.received_zat) " zat" }
             h2 { "Transactions" }
@@ -264,6 +281,7 @@ async fn address<C: ChainReader>(
         },
         Err(e) => html! {
             h1 { "Address " (address) }
+            (validity_line)
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -718,6 +736,42 @@ mod tests {
             text.contains("Balance: 0 zat"),
             "an address with no history should read as zero, not an error: {text}"
         );
+
+        let _ = handle.stop();
+    }
+
+    /// `/address/{address}` for a well-formed mainnet transparent address
+    /// renders its validity and kind, alongside the zero balance — the
+    /// two reads compose independently. Pure function of the address and
+    /// network, so no chain state needs scripting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn address_route_renders_validity() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/address/t1VTjv7XF3hYqxQkxKmHHErvus3bDrbbkGg")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("Valid address"), "{text}");
+        assert!(text.contains("p2pkh"), "{text}");
 
         let _ = handle.stop();
     }
