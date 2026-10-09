@@ -7,23 +7,43 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
-use zaino_explorer_domain::{BlockSummary, ChainReader};
+use zaino_explorer_domain::{BlockSummary, ChainReader, TransactionDetail};
 
 /// How many recent blocks the TUI lists.
 const RECENT_BLOCKS: u32 = 10;
 
+/// Which screen is showing. The home screen (height + recent blocks) is
+/// always refreshed on a timer; the other two are driven by user input —
+/// `t` starts typing a txid, Enter looks it up, Esc returns home.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Screen {
+    #[default]
+    Home,
+    /// Typing a txid to look up.
+    EnterTxid(String),
+    /// Looked up: the txid and what came back.
+    Transaction(String, Result<(), String>),
+}
+
 /// The TUI's whole state: the last successful read, or the last error, for
-/// each of the two things this screen shows.
+/// each of the things the current screen shows.
 #[derive(Default, Clone)]
 pub struct AppState {
     height: Option<u32>,
     blocks: Vec<BlockSummary>,
     error: Option<String>,
+    screen: Screen,
+    /// The looked-up transaction and its outputs' spend status, keyed by
+    /// output index — populated only on screen `Transaction`.
+    transaction: Option<TransactionDetail>,
+    spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
 }
 
 impl AppState {
-    /// Refresh state from a live read through `reader` — never a cached or
-    /// locally re-derived value.
+    /// Refresh the home screen's state from a live read through `reader` —
+    /// never a cached or locally re-derived value. Does nothing to the
+    /// transaction screen's state; that's refreshed by `lookup_transaction`
+    /// on demand, not on a timer.
     pub async fn refresh<C: ChainReader>(&mut self, reader: &C) {
         match reader.chain_height().await {
             Ok(height) => {
@@ -37,11 +57,80 @@ impl AppState {
             Err(e) => self.error = Some(e.to_string()),
         }
     }
+
+    /// Enter txid-input mode, starting from an empty buffer.
+    pub fn start_txid_input(&mut self) {
+        self.screen = Screen::EnterTxid(String::new());
+    }
+
+    /// Append a character to the txid buffer, if currently in input mode.
+    pub fn push_char(&mut self, c: char) {
+        if let Screen::EnterTxid(buffer) = &mut self.screen {
+            buffer.push(c);
+        }
+    }
+
+    /// Remove the last character from the txid buffer, if currently in
+    /// input mode.
+    pub fn backspace(&mut self) {
+        if let Screen::EnterTxid(buffer) = &mut self.screen {
+            buffer.pop();
+        }
+    }
+
+    /// Return to the home screen from any other screen.
+    pub fn go_home(&mut self) {
+        self.screen = Screen::Home;
+    }
+
+    /// Which screen is currently active — the composition root's event loop
+    /// reads this to decide how to interpret a key press.
+    pub fn screen(&self) -> &Screen {
+        &self.screen
+    }
+
+    /// Look up the txid currently in the input buffer: the transaction
+    /// itself, then each output's spend status. Does nothing if not
+    /// currently in input mode.
+    pub async fn lookup_transaction<C: ChainReader>(&mut self, reader: &C) {
+        let Screen::EnterTxid(txid) = &self.screen else {
+            return;
+        };
+        let txid = txid.clone();
+        match reader.transaction(txid.clone()).await {
+            Ok(detail) => {
+                let mut spends = Vec::with_capacity(detail.outputs.len());
+                for index in 0..detail.outputs.len() {
+                    spends.push(
+                        reader
+                            .spend_info(txid.clone(), index as u32)
+                            .await
+                            .map_err(|e| e.to_string()),
+                    );
+                }
+                self.transaction = Some(detail);
+                self.spends = spends;
+                self.screen = Screen::Transaction(txid, Ok(()));
+            }
+            Err(e) => {
+                self.transaction = None;
+                self.spends = Vec::new();
+                self.screen = Screen::Transaction(txid, Err(e.to_string()));
+            }
+        }
+    }
 }
 
-/// Render the current state into `frame`: a status panel on top, a recent-
-/// blocks list below.
+/// Render the current state into `frame`, whichever screen is active.
 pub fn render(frame: &mut Frame, state: &AppState) {
+    match &state.screen {
+        Screen::Home => render_home(frame, state),
+        Screen::EnterTxid(buffer) => render_txid_input(frame, buffer),
+        Screen::Transaction(txid, result) => render_transaction(frame, txid, result, state),
+    }
+}
+
+fn render_home(frame: &mut Frame, state: &AppState) {
     let area = frame.area();
     let [status_area, blocks_area] = Layout::new(
         Direction::Vertical,
@@ -50,7 +139,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     .areas(area);
 
     let status_text = match (state.height, &state.error) {
-        (Some(height), _) => format!("Chain height: {height}  (q to quit)"),
+        (Some(height), _) => format!("Chain height: {height}  (t: lookup tx, q: quit)"),
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
         (None, None) => "Loading...  (q to quit)".to_string(),
     };
@@ -79,12 +168,73 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     );
 }
 
+fn render_txid_input(frame: &mut Frame, buffer: &str) {
+    frame.render_widget(
+        Paragraph::new(format!("{buffer}_")).block(
+            Block::new()
+                .borders(Borders::ALL)
+                .title("Enter txid (Enter: look up, Esc: cancel)"),
+        ),
+        frame.area(),
+    );
+}
+
+fn render_transaction(
+    frame: &mut Frame,
+    txid: &str,
+    result: &Result<(), String>,
+    state: &AppState,
+) {
+    let text = match result {
+        Err(e) => format!("Transaction {txid}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(tx) = &state.transaction else {
+                return;
+            };
+            let mut lines = vec![
+                format!("Transaction {}", tx.txid),
+                format!("Size: {} bytes", tx.size),
+            ];
+            if let Some(height) = tx.height {
+                lines.push(format!("Block height: {height}"));
+            }
+            if let Some(confirmations) = tx.confirmations {
+                lines.push(format!("Confirmations: {confirmations}"));
+            }
+            lines.push(String::new());
+            lines.push("Outputs:".to_string());
+            for (output, spend) in tx.outputs.iter().zip(state.spends.iter()) {
+                let addresses = if output.addresses.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {}", output.addresses.join(", "))
+                };
+                let spend_text = match spend {
+                    Ok(s) => format!("spent by {} in block {}", s.spending_txid, s.height),
+                    Err(_) => "unspent (or unknown)".to_string(),
+                };
+                lines.push(format!(
+                    "  {} zat{addresses} — {spend_text}",
+                    output.value_zat
+                ));
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Transaction")),
+        frame.area(),
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::{render, AppState};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
-    use zaino_explorer_domain::BlockSummary;
+    use zaino_explorer_domain::{BlockSummary, TransactionDetail};
 
     /// A height in state renders into the frame buffer verbatim.
     #[test]
@@ -93,6 +243,7 @@ mod tests {
             height: Some(291),
             blocks: Vec::new(),
             error: None,
+            ..Default::default()
         };
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("create terminal");
@@ -118,6 +269,7 @@ mod tests {
             height: None,
             blocks: Vec::new(),
             error: Some("connection refused".to_string()),
+            ..Default::default()
         };
         let backend = TestBackend::new(40, 10);
         let mut terminal = Terminal::new(backend).expect("create terminal");
@@ -156,6 +308,7 @@ mod tests {
                 },
             ],
             error: None,
+            ..Default::default()
         };
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("create terminal");
@@ -180,6 +333,137 @@ mod tests {
             content.contains("Recent blocks"),
             "buffer should contain the list panel's title: {content}"
         );
+    }
+
+    /// Typing and editing a txid is pure state transition, no I/O: `t`
+    /// starts input, characters append, backspace removes, Esc cancels back
+    /// to the home screen.
+    #[test]
+    fn txid_input_mode_types_edits_and_cancels() {
+        use super::Screen;
+
+        let mut state = AppState::default();
+        assert_eq!(state.screen, Screen::Home);
+
+        state.start_txid_input();
+        assert_eq!(state.screen, Screen::EnterTxid(String::new()));
+
+        state.push_char('a');
+        state.push_char('b');
+        assert_eq!(state.screen, Screen::EnterTxid("ab".to_string()));
+
+        state.backspace();
+        assert_eq!(state.screen, Screen::EnterTxid("a".to_string()));
+
+        state.go_home();
+        assert_eq!(state.screen, Screen::Home);
+    }
+
+    /// The txid-input screen renders the typed buffer so far.
+    #[test]
+    fn renders_txid_input_buffer() {
+        let mut state = AppState::default();
+        state.start_txid_input();
+        state.push_char('a');
+        state.push_char('b');
+        state.push_char('c');
+
+        let backend = TestBackend::new(60, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            content.contains("abc"),
+            "buffer should contain the typed txid so far: {content}"
+        );
+    }
+
+    /// A looked-up transaction renders its outputs, each with its spend
+    /// status — "spent by X in block Y" or "unspent (or unknown)".
+    #[test]
+    fn renders_transaction_with_spend_status() {
+        use super::Screen;
+        use zaino_explorer_domain::{SpendInfo, TransactionOutput};
+
+        let txid = "ab".repeat(32);
+        let state = AppState {
+            screen: Screen::Transaction(txid.clone(), Ok(())),
+            transaction: Some(TransactionDetail {
+                txid: txid.clone(),
+                size: 250,
+                height: Some(300),
+                confirmations: Some(5),
+                outputs: vec![
+                    TransactionOutput {
+                        value_zat: 1_000,
+                        addresses: vec!["t1spent".to_string()],
+                    },
+                    TransactionOutput {
+                        value_zat: 2_000,
+                        addresses: vec!["t1unspent".to_string()],
+                    },
+                ],
+            }),
+            spends: vec![
+                Ok(SpendInfo {
+                    spending_txid: "cd".repeat(32),
+                    spending_input_index: 0,
+                    height: 301,
+                }),
+                Err("not found".to_string()),
+            ],
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("t1spent"), "{content}");
+        assert!(
+            content.contains(&format!("spent by {}", "cd".repeat(32))),
+            "{content}"
+        );
+        assert!(content.contains("t1unspent"), "{content}");
+        assert!(content.contains("unspent (or unknown)"), "{content}");
+    }
+
+    /// A failed lookup renders the error, not a panic or a blank screen.
+    #[test]
+    fn renders_transaction_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Transaction("ab".repeat(32), Err("no such transaction".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("no such transaction"), "{content}");
     }
 
     /// `AppState::refresh` against a real adapter and a real server: proof
@@ -258,6 +542,55 @@ mod tests {
         state.refresh(&reader).await;
 
         assert!(state.error.is_some(), "an unscripted node should surface as an error, not silence");
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_transaction` against a real mock server: proof the whole
+    /// pipe (txid input -> transaction + per-output spend_info -> screen
+    /// state) works end-to-end with the one real `ChainReader`, mirroring
+    /// `zaino-explorer-web`'s equivalent coverage for the same capability.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_transaction_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.start_txid_input();
+        for c in "ab".repeat(32).chars() {
+            state.push_char(c);
+        }
+        state.lookup_transaction(&reader).await;
+
+        // Nothing is scripted on this mock, so the lookup is expected to
+        // fail — this proves the pipe reaches the real adapter and reports
+        // the failure on the Transaction screen, not that the mock has a
+        // transaction fixture (zaino-noderpc's own fixtures for that are
+        // substantial; the happy-path mapping is already covered by
+        // zaino-explorer-zaino-client's pure-function tests).
+        match &state.screen {
+            Screen::Transaction(txid, Err(_)) => assert_eq!(txid, &"ab".repeat(32)),
+            other => panic!("expected a failed Transaction screen, got {other:?}"),
+        }
 
         let _ = handle.stop();
     }

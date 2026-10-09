@@ -3,7 +3,10 @@
 //! half (`zaino_explorer_tui::{AppState, render}`) knows about.
 //!
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
-//! web surface. `q` or `Esc` quits; the chain height refreshes every 5s.
+//! web surface. `q` quits from anywhere. On the home screen: `t` starts a
+//! txid lookup, and the chain height refreshes every 5s. While typing a
+//! txid: characters append, Backspace edits, Enter looks it up, Esc
+//! cancels back home. On the transaction screen: Esc goes back home.
 
 use std::io;
 use std::time::Duration;
@@ -14,7 +17,7 @@ use crossterm::ExecutableCommand;
 use jsonrpsee::http_client::HttpClientBuilder;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use zaino_explorer_tui::{render, AppState};
+use zaino_explorer_tui::{render, AppState, Screen};
 use zaino_explorer_zaino_client::ZainoClient;
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -59,13 +62,32 @@ async fn run(
 
         if event::poll(Duration::from_millis(200))? {
             if let Event::Key(key) = event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
+                if key.code == KeyCode::Char('q') {
                     return Ok(());
+                }
+                match state.screen() {
+                    Screen::Home => {
+                        if key.code == KeyCode::Char('t') {
+                            state.start_txid_input();
+                        }
+                    }
+                    Screen::EnterTxid(_) => match key.code {
+                        KeyCode::Char(c) => state.push_char(c),
+                        KeyCode::Backspace => state.backspace(),
+                        KeyCode::Enter => state.lookup_transaction(reader).await,
+                        KeyCode::Esc => state.go_home(),
+                        _ => {}
+                    },
+                    Screen::Transaction(_, _) => {
+                        if key.code == KeyCode::Esc {
+                            state.go_home();
+                        }
+                    }
                 }
             }
         }
 
-        if last_refresh.elapsed() >= REFRESH_INTERVAL {
+        if matches!(state.screen(), Screen::Home) && last_refresh.elapsed() >= REFRESH_INTERVAL {
             state.refresh(reader).await;
             last_refresh = tokio::time::Instant::now();
         }
