@@ -6,11 +6,13 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReadError, ChainReader,
-    MempoolEntry, NodeStatus, PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail,
-    TransactionOutput, Treestate, ValueMovement,
+    AddressDelta, AddressSummary, AddressUtxo, BlockDeltas, BlockDetail, BlockSummary,
+    ChainReadError, ChainReader, MempoolEntry, NodeStatus, PoolTreestate, SpendInfo,
+    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, ValueMovement,
 };
-use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
+use zaino_noderpc::wire::params::{
+    AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
+};
 use zaino_noderpc::wire::response::{
     GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse, PoolTreestateResponse,
     RawMempoolResponse, TreestateResponse,
@@ -196,6 +198,33 @@ fn raw_mempool_from_response(
     }
 }
 
+/// Map a `getaddressutxos` entry to an [`AddressUtxo`]. A pure function so
+/// the mapping is unit-testable without a server. Infallible: a
+/// field-for-field copy.
+fn address_utxo_from_entry(entry: zaino_noderpc::wire::response::AddressUtxoEntry) -> AddressUtxo {
+    AddressUtxo {
+        txid: entry.txid,
+        output_index: entry.output_index,
+        script: entry.script,
+        value_zat: entry.satoshis,
+        height: entry.height,
+    }
+}
+
+/// Map a `getaddressdeltas` entry to an [`AddressDelta`]. A pure function
+/// so the mapping is unit-testable without a server. Infallible: a
+/// field-for-field copy.
+fn address_delta_from_entry(
+    entry: zaino_noderpc::wire::response::AddressDeltaEntry,
+) -> AddressDelta {
+    AddressDelta {
+        txid: entry.txid,
+        index: entry.index,
+        height: entry.height,
+        value_zat: entry.satoshis,
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -319,11 +348,42 @@ impl ChainReader for ZainoClient {
             })
             .await
             .unwrap_or_default();
+        // Same degrade-to-empty policy as txids: getaddressutxos and
+        // getaddressdeltas are both indexer-only additions, not every
+        // deployed zainod serves either, and a balance the node can
+        // answer shouldn't be hidden by a failure in a sibling read.
+        let utxos = self
+            .0
+            .address_utxos(AddressesParam {
+                addresses: vec![address.clone()],
+            })
+            .await
+            .map(|entries| entries.into_iter().map(address_utxo_from_entry).collect())
+            .unwrap_or_default();
+        let deltas = self
+            .0
+            .address_deltas(AddressDeltasParam {
+                addresses: vec![address.clone()],
+                start: None,
+                end: None,
+                chain_info: false,
+            })
+            .await
+            .map(|response| {
+                response
+                    .deltas
+                    .into_iter()
+                    .map(address_delta_from_entry)
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(AddressSummary {
             address,
             balance_zat: balance.balance,
             received_zat: balance.received,
             txids,
+            utxos,
+            deltas,
         })
     }
 
@@ -619,6 +679,53 @@ mod tests {
             .expect_err("plain txid list should error");
         let source = std::error::Error::source(&err).expect("Rpc variant carries a source");
         assert!(source.to_string().contains("unexpected"));
+    }
+
+    /// A `getaddressutxos` entry maps field-for-field into an
+    /// [`zaino_explorer_domain::AddressUtxo`] — no server needed.
+    #[test]
+    fn address_utxo_entry_maps_to_address_utxo() {
+        use zaino_noderpc::wire::response::AddressUtxoEntry;
+
+        let entry = AddressUtxoEntry {
+            address: "t1exampleaddress".to_string(),
+            txid: "ab".repeat(32),
+            output_index: 1,
+            script: "deadbeef".to_string(),
+            satoshis: 5_000,
+            height: 300,
+        };
+
+        let utxo = super::address_utxo_from_entry(entry);
+
+        assert_eq!(utxo.txid, "ab".repeat(32));
+        assert_eq!(utxo.output_index, 1);
+        assert_eq!(utxo.script, "deadbeef");
+        assert_eq!(utxo.value_zat, 5_000);
+        assert_eq!(utxo.height, 300);
+    }
+
+    /// A `getaddressdeltas` entry maps field-for-field into an
+    /// [`zaino_explorer_domain::AddressDelta`] — no server needed.
+    #[test]
+    fn address_delta_entry_maps_to_address_delta() {
+        use zaino_noderpc::wire::response::AddressDeltaEntry;
+
+        let entry = AddressDeltaEntry {
+            satoshis: -1_000,
+            txid: "ab".repeat(32),
+            index: 0,
+            block_index: Some(2),
+            height: 300,
+            address: "t1exampleaddress".to_string(),
+        };
+
+        let delta = super::address_delta_from_entry(entry);
+
+        assert_eq!(delta.txid, "ab".repeat(32));
+        assert_eq!(delta.index, 0);
+        assert_eq!(delta.height, 300);
+        assert_eq!(delta.value_zat, -1_000);
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -1010,8 +1117,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn address_against_a_real_server() {
         use zaino_primitives::types::{
-            AddressBalance, BlockHash, BlockRef, Height as PrimHeight, TransactionId, Zatoshis,
-            ZatoshisFlowSum,
+            AddressBalance, AddressDelta, BlockHash, BlockRef, Height as PrimHeight, Script,
+            SignedZatoshis, TransactionId, TransparentAddress, Utxo, Zatoshis, ZatoshisFlowSum,
         };
 
         let chain = MockChain {
@@ -1030,6 +1137,22 @@ mod tests {
                 },
             )],
             txids: vec![TransactionId::from([0x03; 32])],
+            utxos: vec![Utxo {
+                address: TransparentAddress::new("t1exampleaddress".to_string()),
+                txid: TransactionId::from([0x04; 32]),
+                output_index: 0,
+                script: Script::new(vec![0x76, 0xa9]),
+                satoshis: Zatoshis::new(5_000).expect("valid amount"),
+                height: PrimHeight::try_from(300).expect("valid height"),
+            }],
+            deltas: vec![AddressDelta {
+                satoshis: SignedZatoshis::try_new(5_000).expect("valid amount"),
+                txid: TransactionId::from([0x04; 32]),
+                index: 0,
+                height: PrimHeight::try_from(300).expect("valid height"),
+                address: TransparentAddress::new("t1exampleaddress".to_string()),
+                block_index: None,
+            }],
             ..Default::default()
         };
         let (addr, handle) = spawn_mock_server(chain);
@@ -1047,6 +1170,10 @@ mod tests {
         assert_eq!(summary.balance_zat, 5_000);
         assert_eq!(summary.received_zat, 10_000);
         assert_eq!(summary.txids, vec!["03".repeat(32)]);
+        assert_eq!(summary.utxos.len(), 1);
+        assert_eq!(summary.utxos[0].value_zat, 5_000);
+        assert_eq!(summary.deltas.len(), 1);
+        assert_eq!(summary.deltas[0].value_zat, 5_000);
 
         let _ = handle.stop();
     }

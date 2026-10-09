@@ -214,6 +214,44 @@ pub struct AddressSummary {
     pub received_zat: u128,
     /// Transaction ids this address appears in.
     pub txids: Vec<String>,
+    /// The address's currently unspent transparent outputs. Empty when
+    /// `getaddressutxos` fails (not every deployed zainod serves it) —
+    /// degrades the same way `txids` does, rather than hiding balance and
+    /// received.
+    pub utxos: Vec<AddressUtxo>,
+    /// Every transparent value change at this address, in `(height,
+    /// blockindex, index)` order. Empty when `getaddressdeltas` fails, for
+    /// the same reason.
+    pub deltas: Vec<AddressDelta>,
+}
+
+/// One unspent transparent output held by an address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressUtxo {
+    /// The transaction containing the output.
+    pub txid: String,
+    /// The output's index within that transaction.
+    pub output_index: u32,
+    /// The output's locking script, as hex.
+    pub script: String,
+    /// The output's value, in zatoshis.
+    pub value_zat: u64,
+    /// Block height at which the output was created.
+    pub height: u32,
+}
+
+/// One transparent value change at an address — negative for a spend,
+/// positive for a receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressDelta {
+    /// The transaction that caused the change.
+    pub txid: String,
+    /// Input or output index within the transaction.
+    pub index: u32,
+    /// Block height of the change.
+    pub height: u32,
+    /// The signed value, in zatoshis.
+    pub value_zat: i64,
 }
 
 /// The validator's own status, plus the mempool's current size.
