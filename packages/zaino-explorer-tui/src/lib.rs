@@ -405,6 +405,30 @@ fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>,
                 lines.push(format!("  {txid}"));
             }
             lines.push(String::new());
+            lines.push("Unspent outputs:".to_string());
+            if summary.utxos.is_empty() {
+                lines.push("  none (or unavailable on this deployment)".to_string());
+            } else {
+                for utxo in &summary.utxos {
+                    lines.push(format!(
+                        "  {}:{}  {} zat  height {}",
+                        utxo.txid, utxo.output_index, utxo.value_zat, utxo.height
+                    ));
+                }
+            }
+            lines.push(String::new());
+            lines.push("Value changes:".to_string());
+            if summary.deltas.is_empty() {
+                lines.push("  none (or unavailable on this deployment)".to_string());
+            } else {
+                for delta in &summary.deltas {
+                    lines.push(format!(
+                        "  {}  {} zat  height {}",
+                        delta.txid, delta.value_zat, delta.height
+                    ));
+                }
+            }
+            lines.push(String::new());
             lines.push("(Esc: back)".to_string());
             lines.join("\n")
         }
@@ -848,6 +872,8 @@ mod tests {
                 balance_zat: 5_000,
                 received_zat: 10_000,
                 txids: vec!["ab".repeat(32)],
+                utxos: Vec::new(),
+                deltas: Vec::new(),
             }),
             ..Default::default()
         };
@@ -867,6 +893,57 @@ mod tests {
         assert!(content.contains("5000"), "{content}");
         assert!(content.contains("10000"), "{content}");
         assert!(content.contains(&"ab".repeat(32)), "{content}");
+        assert!(
+            content.contains("none (or unavailable on this deployment)"),
+            "empty utxos/deltas should render as none, not blank: {content}"
+        );
+    }
+
+    /// A looked-up address with scripted UTXOs and value changes renders
+    /// both sections.
+    #[test]
+    fn renders_address_with_utxos_and_deltas() {
+        use super::Screen;
+        use zaino_explorer_domain::{AddressDelta, AddressSummary, AddressUtxo};
+
+        let state = AppState {
+            screen: Screen::Address("t1example".to_string(), Ok(())),
+            address: Some(AddressSummary {
+                address: "t1example".to_string(),
+                balance_zat: 5_000,
+                received_zat: 10_000,
+                txids: vec!["ab".repeat(32)],
+                utxos: vec![AddressUtxo {
+                    txid: "cd".repeat(32),
+                    output_index: 0,
+                    script: "deadbeef".to_string(),
+                    value_zat: 5_000,
+                    height: 300,
+                }],
+                deltas: vec![AddressDelta {
+                    txid: "cd".repeat(32),
+                    index: 0,
+                    height: 300,
+                    value_zat: 5_000,
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(100, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains(&"cd".repeat(32)), "{content}");
+        assert!(content.contains("Unspent outputs"), "{content}");
+        assert!(content.contains("Value changes"), "{content}");
     }
 
     /// Typing and editing a block height/hash is pure state transition,
