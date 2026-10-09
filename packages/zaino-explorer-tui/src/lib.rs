@@ -671,21 +671,31 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
             let Some(diagnostics) = &state.node_diagnostics else {
                 return;
             };
-            let mut lines = vec![format!("Chain: {}", diagnostics.chain)];
-            if let Some(difficulty) = diagnostics.difficulty {
-                lines.push(format!("Difficulty: {difficulty}"));
+            let mut lines = vec!["Mining:".to_string()];
+            match &diagnostics.mining {
+                Some(mining) => {
+                    lines.push(format!("  Chain: {}", mining.chain));
+                    if let Some(difficulty) = mining.difficulty {
+                        lines.push(format!("  Difficulty: {difficulty}"));
+                    }
+                    if let Some(sol_ps) = mining.network_sol_ps {
+                        lines.push(format!("  Network solution rate: {sol_ps} sol/s"));
+                    }
+                }
+                None => lines.push("  unavailable on this deployment".to_string()),
             }
-            if let Some(sol_ps) = diagnostics.network_sol_ps {
-                lines.push(format!("Network solution rate: {sol_ps} sol/s"));
-            }
-            lines.push(format!(
-                "Protocol version: {}",
-                diagnostics.protocol_version
-            ));
-            lines.push(format!("Local services: {}", diagnostics.local_services));
-            lines.push(format!("Relay fee: {} ZEC", diagnostics.relay_fee));
-            if !diagnostics.warnings.is_empty() {
-                lines.push(format!("Warnings: {}", diagnostics.warnings));
+            lines.push(String::new());
+            lines.push("Network:".to_string());
+            match &diagnostics.network {
+                Some(network) => {
+                    lines.push(format!("  Protocol version: {}", network.protocol_version));
+                    lines.push(format!("  Local services: {}", network.local_services));
+                    lines.push(format!("  Relay fee: {} ZEC", network.relay_fee));
+                    if !network.warnings.is_empty() {
+                        lines.push(format!("  Warnings: {}", network.warnings));
+                    }
+                }
+                None => lines.push("  unavailable on this deployment".to_string()),
             }
             lines.push(String::new());
             lines.push("Peers:".to_string());
@@ -1449,18 +1459,22 @@ mod tests {
     #[test]
     fn renders_node_info_with_peers() {
         use super::Screen;
-        use zaino_explorer_domain::{NodeDiagnostics, PeerInfo};
+        use zaino_explorer_domain::{MiningInfo, NetworkInfo, NodeDiagnostics, PeerInfo};
 
         let state = AppState {
             screen: Screen::NodeInfo(Ok(())),
             node_diagnostics: Some(NodeDiagnostics {
-                chain: "main".to_string(),
-                difficulty: Some(42.5),
-                network_sol_ps: Some(1_000_000),
-                protocol_version: 170_100,
-                local_services: "0000000000000000".to_string(),
-                relay_fee: 0.000_001,
-                warnings: String::new(),
+                mining: Some(MiningInfo {
+                    chain: "main".to_string(),
+                    difficulty: Some(42.5),
+                    network_sol_ps: Some(1_000_000),
+                }),
+                network: Some(NetworkInfo {
+                    protocol_version: 170_100,
+                    local_services: "0000000000000000".to_string(),
+                    relay_fee: 0.000_001,
+                    warnings: String::new(),
+                }),
                 peers: vec![PeerInfo {
                     addr: "1.2.3.4:8233".to_string(),
                     inbound: true,
@@ -2035,9 +2049,10 @@ mod tests {
     }
 
     /// `lookup_node_diagnostics` against a real mock server: `getmininginfo`
-    /// cannot be scripted on this mock (always `NotReady`), so this proves
-    /// the pipe reaches the real adapter and the failure surfaces as a
-    /// typed error on the `NodeInfo` screen, not a panic — mirroring
+    /// and `getnetworkinfo` can't be scripted on this mock (both always
+    /// `NotReady`), so this proves the pipe reaches the real adapter and
+    /// each degrades independently to a successful `NodeInfo` screen with
+    /// absent sections, rather than failing the whole screen — mirroring
     /// `zaino-explorer-web`'s equivalent coverage for the `/node` route.
     #[tokio::test(flavor = "multi_thread")]
     async fn lookup_node_diagnostics_against_a_real_server() {
@@ -2070,8 +2085,15 @@ mod tests {
         state.lookup_node_diagnostics(&reader).await;
 
         match &state.screen {
-            Screen::NodeInfo(Err(_)) => {}
-            other => panic!("expected a failed NodeInfo screen, got {other:?}"),
+            Screen::NodeInfo(Ok(())) => {
+                let diagnostics = state
+                    .node_diagnostics
+                    .as_ref()
+                    .expect("node_diagnostics state populated");
+                assert!(diagnostics.mining.is_none());
+                assert!(diagnostics.network.is_none());
+            }
+            other => panic!("expected a successful NodeInfo screen, got {other:?}"),
         }
 
         let _ = handle.stop();
