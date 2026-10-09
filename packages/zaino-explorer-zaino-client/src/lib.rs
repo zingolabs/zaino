@@ -490,6 +490,7 @@ impl ChainReader for ZainoClient {
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
         Ok(NodeStatus {
             subversion: info.subversion,
+            build: info.build,
             connections: info.connections,
             mempool_size: mempool.size,
             mempool_bytes: mempool.bytes,

@@ -353,8 +353,12 @@ pub struct AddressDelta {
 /// The validator's own status, plus the mempool's current size.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeStatus {
-    /// Network protocol user-agent string (e.g. `/Zebra:6.4.2/`).
+    /// Network protocol user-agent string (e.g. `/Zebra:6.4.2/`). This is
+    /// the backing validator's identity, not zaino's own — zaino has no
+    /// RPC that reports its own build.
     pub subversion: String,
+    /// The validator's build identifier (e.g. `v6.4.2`).
+    pub build: String,
     /// Total peer connections, inbound and outbound.
     pub connections: u64,
     /// Number of transactions currently in the mempool.
