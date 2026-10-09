@@ -179,44 +179,62 @@ async fn transaction<C: ChainReader>(
     Path(txid): Path<String>,
 ) -> Html<String> {
     let body = match reader.transaction(txid.clone()).await {
-        Ok(tx) => html! {
-            h1 { "Transaction " (tx.txid) }
-            p { "Size: " (tx.size) " bytes" }
-            @if let Some(height) = tx.height {
-                p { "Block height: " (height) }
+        Ok(tx) => {
+            let mut statuses = Vec::with_capacity(tx.outputs.len());
+            for index in 0..tx.outputs.len() {
+                let index =
+                    u32::try_from(index).expect("more than u32::MAX outputs in one transaction");
+                statuses.push(describe_output_status(&reader, &tx.txid, index).await);
             }
-            @if let Some(confirmations) = tx.confirmations {
-                p { "Confirmations: " (confirmations) }
-            }
-            h2 { "Outputs" }
-            ul {
-                @for (index, output) in tx.outputs.iter().enumerate() {
-                    li {
-                        (output.value_zat) " zat"
-                        @if !output.addresses.is_empty() {
-                            " — " (output.addresses.join(", "))
-                        }
-                        " — "
-                        // getspentinfo answers "not found" for both a genuinely
-                        // unspent output and an unknown one — the RPC does not
-                        // distinguish them, so neither does this page. A real
-                        // error (network, decode) renders the same way; telling
-                        // those apart would need a typed error-kind this
-                        // adapter's ChainReadError doesn't carry yet.
-                        @match reader.spend_info(tx.txid.clone(), index as u32).await {
-                            Ok(spend) => (format!("spent by {} in block {}", spend.spending_txid, spend.height)),
-                            Err(_) => ("unspent (or unknown)".to_string()),
+            html! {
+                h1 { "Transaction " (tx.txid) }
+                p { "Size: " (tx.size) " bytes" }
+                @if let Some(height) = tx.height {
+                    p { "Block height: " (height) }
+                }
+                @if let Some(confirmations) = tx.confirmations {
+                    p { "Confirmations: " (confirmations) }
+                }
+                h2 { "Outputs" }
+                ul {
+                    @for (output, status) in tx.outputs.iter().zip(statuses.iter()) {
+                        li {
+                            (output.value_zat) " zat"
+                            @if !output.addresses.is_empty() {
+                                " — " (output.addresses.join(", "))
+                            }
+                            " — " (status)
                         }
                     }
                 }
             }
-        },
+        }
         Err(e) => html! {
             h1 { "Transaction " (txid) }
             p { "RPC error: " (e.to_string()) }
         },
     };
     Html(body.into_string())
+}
+
+/// Describes one output's status, combining two RPCs that each leave a
+/// gap the other closes: `spend_info` names the spender when it knows
+/// one, but answers "not found" for both a genuinely unspent output and
+/// an unknown one; `output_status` (`gettxout`) answers the unspent case
+/// with a value, but equally can't tell "spent" apart from "unknown".
+/// Together they disambiguate all three states.
+async fn describe_output_status<C: ChainReader>(reader: &C, txid: &str, index: u32) -> String {
+    if let Ok(spend) = reader.spend_info(txid.to_string(), index).await {
+        return format!("spent by {} in block {}", spend.spending_txid, spend.height);
+    }
+    match reader.output_status(txid.to_string(), index).await {
+        Ok(Some(status)) => format!(
+            "unspent — {} zat, {} confirmations",
+            status.value_zat, status.confirmations
+        ),
+        Ok(None) => "spent or unknown".to_string(),
+        Err(_) => "status unavailable".to_string(),
+    }
 }
 
 /// `GET /address/{address}`: one transparent address's balance and
