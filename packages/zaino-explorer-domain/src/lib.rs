@@ -116,6 +116,19 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         &self,
     ) -> impl Future<Output = Result<BlockchainInfo, ChainReadError>> + Send;
 
+    /// Confirms the validator is responsive (`ping`).
+    fn ping(&self) -> impl Future<Output = Result<(), ChainReadError>> + Send;
+
+    /// A contiguous run of complete note-commitment subtree roots for a
+    /// shielded pool, from `start_index` (`z_getsubtreesbyindex`). A
+    /// `start_index` past the end of the pool's completed subtrees is an
+    /// empty list, not an error.
+    fn subtree_roots(
+        &self,
+        pool: String,
+        start_index: u16,
+    ) -> impl Future<Output = Result<SubtreeRoots, ChainReadError>> + Send;
+
     /// Every transaction currently in the mempool, with its entry detail.
     fn raw_mempool(&self)
         -> impl Future<Output = Result<Vec<MempoolEntry>, ChainReadError>> + Send;
@@ -348,6 +361,28 @@ pub struct NodeStatus {
     pub mempool_size: u64,
     /// Total serialized size of the mempool's transactions, in bytes.
     pub mempool_bytes: u64,
+}
+
+/// A contiguous run of complete note-commitment subtree roots for a
+/// shielded pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtreeRoots {
+    /// The pool queried — `sapling` or `orchard`.
+    pub pool: String,
+    /// Index of the first subtree in [`Self::roots`].
+    pub start_index: u16,
+    /// The roots, in ascending index order from `start_index`. Empty when
+    /// `start_index` is past the end of the pool's completed subtrees.
+    pub roots: Vec<SubtreeRoot>,
+}
+
+/// One completed note-commitment subtree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtreeRoot {
+    /// The subtree's root hash, as hex.
+    pub root: String,
+    /// The block height at which the subtree completed.
+    pub end_height: u32,
 }
 
 /// Richer blockchain-level facts than [`NodeStatus`]'s compact summary.

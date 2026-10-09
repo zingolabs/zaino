@@ -9,8 +9,8 @@ use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
     BlockSummary, BlockchainInfo, ChainReadError, ChainReader, MempoolEntry, MiningInfo,
     NetworkInfo, NodeDiagnostics, NodeStatus, OutputStatus, PeerInfo, PoolTreestate, SpendInfo,
-    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers,
-    ValueMovement,
+    SubtreeRoot, SubtreeRoots, TransactionDelta, TransactionDetail, TransactionOutput, Treestate,
+    UnifiedReceivers, ValueMovement,
 };
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
@@ -521,6 +521,37 @@ impl ChainReader for ZainoClient {
             verification_progress: response.verification_progress,
             size_on_disk: response.size_on_disk,
             estimated_height: response.estimated_height,
+        })
+    }
+
+    async fn ping(&self) -> Result<(), ChainReadError> {
+        self.0
+            .ping()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))
+    }
+
+    async fn subtree_roots(
+        &self,
+        pool: String,
+        start_index: u16,
+    ) -> Result<SubtreeRoots, ChainReadError> {
+        let response = self
+            .0
+            .z_subtrees_by_index(pool, start_index, None)
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(SubtreeRoots {
+            pool: response.pool,
+            start_index: response.start_index,
+            roots: response
+                .subtrees
+                .into_iter()
+                .map(|s| SubtreeRoot {
+                    root: s.root,
+                    end_height: s.end_height,
+                })
+                .collect(),
         })
     }
 
@@ -1633,6 +1664,57 @@ mod tests {
         assert_eq!(info.chain, "main");
         assert_eq!(info.blocks, 300);
         assert_eq!(info.estimated_height, 300);
+
+        let _ = handle.stop();
+    }
+
+    /// `ping` against a real mock server: the mock is always responsive,
+    /// so this proves the pipe reaches the real adapter, not just that
+    /// `()` is easy to construct.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ping_against_a_real_server() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        reader.ping().await.expect("ping ok");
+
+        let _ = handle.stop();
+    }
+
+    /// `subtree_roots` against a real mock server: a scripted root maps
+    /// field-for-field into a [`zaino_explorer_domain::SubtreeRoots`].
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subtree_roots_against_a_real_server() {
+        use zaino_primitives::types::{
+            Height as PrimHeight, SubtreeRoot as PrimSubtreeRoot, TreeRoot,
+        };
+
+        let chain = MockChain {
+            subtree_roots: vec![PrimSubtreeRoot {
+                root: TreeRoot::from([0x22; 32]),
+                end_height: PrimHeight::try_from(300).expect("valid height"),
+            }],
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let roots = reader
+            .subtree_roots("sapling".to_string(), 0)
+            .await
+            .expect("subtree_roots ok");
+
+        assert_eq!(roots.pool, "sapling");
+        assert_eq!(roots.roots.len(), 1);
+        assert_eq!(roots.roots[0].root, "22".repeat(32));
+        assert_eq!(roots.roots[0].end_height, 300);
 
         let _ = handle.stop();
     }
