@@ -69,6 +69,10 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
 
     /// The validator's own status and the mempool's current size.
     fn node_status(&self) -> impl Future<Output = Result<NodeStatus, ChainReadError>> + Send;
+
+    /// Every transaction currently in the mempool, with its entry detail.
+    fn raw_mempool(&self)
+        -> impl Future<Output = Result<Vec<MempoolEntry>, ChainReadError>> + Send;
 }
 
 /// One block's summary, as shown in a block list — not the full block.
@@ -223,6 +227,21 @@ pub struct NodeStatus {
     pub mempool_size: u64,
     /// Total serialized size of the mempool's transactions, in bytes.
     pub mempool_bytes: u64,
+}
+
+/// One mempool transaction's entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MempoolEntry {
+    /// The transaction's id.
+    pub txid: String,
+    /// Serialized byte length.
+    pub size: u64,
+    /// The transaction's fee, in zatoshis.
+    pub fee_zat: u64,
+    /// When the transaction entered the mempool, when known.
+    pub time: Option<i64>,
+    /// Chain tip height when the transaction entered the mempool.
+    pub height: u32,
 }
 
 /// Why a [`ChainReader`] read failed.

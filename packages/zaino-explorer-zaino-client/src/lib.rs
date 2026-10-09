@@ -7,13 +7,13 @@
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReadError, ChainReader,
-    NodeStatus, PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput,
-    Treestate, ValueMovement,
+    MempoolEntry, NodeStatus, PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail,
+    TransactionOutput, Treestate, ValueMovement,
 };
 use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
 use zaino_noderpc::wire::response::{
     GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse, PoolTreestateResponse,
-    TreestateResponse,
+    RawMempoolResponse, TreestateResponse,
 };
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -38,6 +38,12 @@ struct UnexpectedTransactionVerbosity;
 #[derive(Debug, thiserror::Error)]
 #[error("getblockdeltas output satoshis exceeds i64 range")]
 struct OutputValueOutOfRange;
+
+/// An invariant violation: `getrawmempool` was asked for `verbose=true` and
+/// answered with the plain-txid shape instead.
+#[derive(Debug, thiserror::Error)]
+#[error("getrawmempool verbose=true returned an unexpected response shape")]
+struct UnexpectedMempoolVerbosity;
 
 /// Wraps a [`HttpClient`] built against zaino-noderpc's generated
 /// `NodeRpcApiClient`.
@@ -163,6 +169,30 @@ fn pool_treestate_from_response(response: PoolTreestateResponse) -> PoolTreestat
     PoolTreestate {
         final_root: response.commitments.final_root,
         final_state: response.commitments.final_state,
+    }
+}
+
+/// Map a `getrawmempool` verbose response to a list of [`MempoolEntry`]s. A
+/// pure function so the mapping is unit-testable without a server. This
+/// client always requests `verbose=true`, so the non-verbose (plain txid
+/// list) shape is an adapter-side invariant violation.
+fn raw_mempool_from_response(
+    response: RawMempoolResponse,
+) -> Result<Vec<MempoolEntry>, ChainReadError> {
+    match response {
+        RawMempoolResponse::Verbose(entries) => Ok(entries
+            .into_iter()
+            .map(|(txid, entry)| MempoolEntry {
+                txid,
+                size: entry.size,
+                fee_zat: entry.fee_zat,
+                time: entry.time,
+                height: entry.height,
+            })
+            .collect()),
+        RawMempoolResponse::Txids(_) => {
+            Err(ChainReadError::Rpc(Box::new(UnexpectedMempoolVerbosity)))
+        }
     }
 }
 
@@ -315,13 +345,23 @@ impl ChainReader for ZainoClient {
             mempool_bytes: mempool.bytes,
         })
     }
+
+    async fn raw_mempool(&self) -> Result<Vec<MempoolEntry>, ChainReadError> {
+        let response = self
+            .0
+            .raw_mempool(Some(true))
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        raw_mempool_from_response(response)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         block_deltas_from_response, block_detail_from_response, block_summary_from_response,
-        transaction_detail_from_response, treestate_from_response, ZainoClient,
+        raw_mempool_from_response, transaction_detail_from_response, treestate_from_response,
+        ZainoClient,
     };
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
@@ -537,6 +577,48 @@ mod tests {
         assert_eq!(sapling.final_state, "deadbeef");
         assert!(treestate.orchard.is_none());
         assert!(treestate.ironwood.is_none());
+    }
+
+    /// A `getrawmempool` verbose response maps field-for-field into a list
+    /// of [`zaino_explorer_domain::MempoolEntry`]s — no server needed.
+    #[test]
+    fn verbose_raw_mempool_response_maps_to_mempool_entries() {
+        use std::collections::BTreeMap;
+        use zaino_noderpc::wire::response::{MempoolEntryObject, RawMempoolResponse};
+
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "ab".repeat(32),
+            MempoolEntryObject {
+                size: 250,
+                fee: 0.00001,
+                fee_zat: 1_000,
+                time: Some(1_700_000_300),
+                height: 300,
+            },
+        );
+
+        let mempool =
+            raw_mempool_from_response(RawMempoolResponse::Verbose(entries)).expect("maps ok");
+
+        assert_eq!(mempool.len(), 1);
+        assert_eq!(mempool[0].txid, "ab".repeat(32));
+        assert_eq!(mempool[0].size, 250);
+        assert_eq!(mempool[0].fee_zat, 1_000);
+        assert_eq!(mempool[0].time, Some(1_700_000_300));
+        assert_eq!(mempool[0].height, 300);
+    }
+
+    /// The non-verbose (plain txid list) shape is a typed error here, not a
+    /// panic — this client always requests `verbose=true`.
+    #[test]
+    fn non_verbose_raw_mempool_response_is_a_typed_error_not_a_panic() {
+        use zaino_noderpc::wire::response::RawMempoolResponse;
+
+        let err = raw_mempool_from_response(RawMempoolResponse::Txids(vec!["ab".repeat(32)]))
+            .expect_err("plain txid list should error");
+        let source = std::error::Error::source(&err).expect("Rpc variant carries a source");
+        assert!(source.to_string().contains("unexpected"));
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -847,6 +929,41 @@ mod tests {
         assert_eq!(sapling.final_root, Some("22".repeat(32)));
         assert_eq!(sapling.final_state, "deadbeef");
         assert!(treestate.orchard.is_none());
+
+        let _ = handle.stop();
+    }
+
+    /// `raw_mempool` against a real mock server: proof the whole wire path
+    /// produces [`zaino_explorer_domain::MempoolEntry`]s, not just the
+    /// pure-function mapping.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn raw_mempool_against_a_real_server() {
+        use zaino_primitives::types::{
+            BlockHash as PrimBlockHash, BlockRef, Height as PrimHeight, TransactionId,
+        };
+        use zaino_service::MempoolTx;
+
+        let chain = MockChain {
+            mempool: vec![MempoolTx {
+                txid: TransactionId::from([0x7A; 32]),
+                validated_against: BlockRef {
+                    height: PrimHeight::try_from(300).expect("valid height"),
+                    hash: PrimBlockHash::from([0x11; 32]),
+                },
+            }],
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mempool = reader.raw_mempool().await.expect("raw_mempool ok");
+
+        assert_eq!(mempool.len(), 1);
+        assert_eq!(mempool[0].txid, "7a".repeat(32));
+        assert_eq!(mempool[0].height, 300);
 
         let _ = handle.stop();
     }
