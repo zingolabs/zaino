@@ -39,7 +39,7 @@ pub struct MempoolEntryObject {
     #[serde(rename = "feeZat")]
     pub fee_zat: u64,
     /// Unix time (seconds) the transaction entered the mempool, when known.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub time: Option<i64>,
     /// Chain tip height when the transaction entered the mempool.
     pub height: u32,
@@ -95,7 +95,7 @@ pub struct AddressDeltaEntry {
     /// Input or output index within the transaction.
     pub index: u32,
     /// Position of the transaction within its block, when the source knows it.
-    #[serde(rename = "blockindex", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "blockindex", skip_serializing_if = "Option::is_none", default)]
     pub block_index: Option<u32>,
     /// Block height of the delta.
     pub height: u32,
@@ -119,7 +119,7 @@ pub struct AddressDeltasResponse {
     /// The deltas, in `(height, blockindex, index)` order.
     pub deltas: Vec<AddressDeltaEntry>,
     /// The queried range, when `chainInfo` was requested.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub range: Option<DeltaRange>,
 }
 
@@ -152,10 +152,10 @@ pub struct ValidateAddressResponse {
     /// Whether the address is a transparent address on the queried network.
     pub isvalid: bool,
     /// The address as supplied, when valid.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub address: Option<String>,
     /// Whether the address is pay-to-script-hash, when valid.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub isscript: Option<bool>,
 }
 
@@ -167,26 +167,26 @@ pub struct ZValidateAddressResponse {
     /// Whether the address belongs to the node's wallet. Zaino serves no wallet,
     /// so it is always `false` when present; emitted on a valid address, as
     /// zcashd and zebra do, and omitted on an invalid one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ismine: Option<bool>,
     /// The address, re-encoded for the queried network, when valid.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub address: Option<String>,
     /// zcashd's address-kind tag: `p2pkh`, `p2sh`, `sapling` or `unified`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub address_type: Option<String>,
     /// The same address-kind tag under zcashd's original `type` key. Emitted
     /// alongside `address_type` because the explorer's search pattern-matches on
     /// `type`; carries the identical value.
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none", default)]
     pub kind: Option<String>,
     /// Sapling diversifier as hex, for a Sapling address.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub diversifier: Option<String>,
     /// Sapling `pk_d` as hex, for a Sapling address.
     #[serde(
         rename = "diversifiedtransmissionkey",
-        skip_serializing_if = "Option::is_none"
+        skip_serializing_if = "Option::is_none", default
     )]
     pub diversified_transmission_key: Option<String>,
 }
@@ -196,16 +196,16 @@ pub struct ZValidateAddressResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnifiedReceiversResponse {
     /// Orchard receiver.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub orchard: Option<String>,
     /// Sapling receiver.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sapling: Option<String>,
     /// Transparent pay-to-public-key-hash receiver.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub p2pkh: Option<String>,
     /// Transparent pay-to-script-hash receiver.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub p2sh: Option<String>,
 }
 
@@ -228,7 +228,7 @@ pub struct PoolTreestateResponse {
 pub struct CommitmentsResponse {
     /// Root of the pool's note-commitment tree after this block, as hex (display
     /// order). Absent when the source does not report it.
-    #[serde(rename = "finalRoot", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "finalRoot", skip_serializing_if = "Option::is_none", default)]
     pub final_root: Option<String>,
     /// The pool's serialized note-commitment tree, as hex.
     #[serde(rename = "finalState")]
@@ -249,13 +249,13 @@ pub struct TreestateResponse {
     /// Block time, in seconds since the Unix epoch.
     pub time: u32,
     /// Sapling commitment tree; absent before Sapling activation.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub sapling: Option<PoolTreestateResponse>,
     /// Orchard commitment tree; absent before Orchard activation.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub orchard: Option<PoolTreestateResponse>,
     /// Ironwood commitment tree; absent before NU6.3.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub ironwood: Option<PoolTreestateResponse>,
 }
 
@@ -304,7 +304,7 @@ pub struct BlockHeaderResponse {
     pub merkle_root: String,
     /// Sapling commitment tree root after this block, as hex. Absent before
     /// Sapling activation and from validators that omit it.
-    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none", default)]
     pub final_sapling_root: Option<String>,
     /// Block time, in seconds since the Unix epoch.
     pub time: u32,
@@ -318,14 +318,14 @@ pub struct BlockHeaderResponse {
     pub difficulty: f64,
     /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
     /// validator does not track it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chainwork: Option<String>,
     /// Hash of the previous block, as hex. Absent for genesis.
-    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none", default)]
     pub previous_block_hash: Option<String>,
     /// Hash of the next block on the best chain, as hex. Absent for the tip or a
     /// side-chain block.
-    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none", default)]
     pub next_block_hash: Option<String>,
 }
 
@@ -370,7 +370,7 @@ pub enum TransactionInput {
         value_sat: u64,
         /// The address the spent output paid, when its script is a standard
         /// P2PKH/P2SH template; absent otherwise.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(skip_serializing_if = "Option::is_none", default)]
         address: Option<String>,
     },
 }
@@ -418,16 +418,16 @@ pub struct ScriptPubKey {
     pub hex: String,
     /// Number of signatures required to spend — `1` for a standard P2PKH/P2SH
     /// template; absent for a non-standard script, matching zcashd.
-    #[serde(rename = "reqSigs", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "reqSigs", skip_serializing_if = "Option::is_none", default)]
     pub required_signatures: Option<u32>,
     /// The address the output pays, as a one-element array; absent when the
     /// script is non-standard. The explorer iterates it, so a non-standard
     /// output omits the key rather than rendering an empty or null array.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub addresses: Option<Vec<String>>,
     /// zcashd's script-type tag — `pubkeyhash` or `scripthash`; absent for a
     /// non-standard script.
-    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none", default)]
     pub script_type: Option<String>,
 }
 
@@ -514,12 +514,12 @@ pub struct TransactionObject {
     /// Whether the Overwinter format flag is set.
     pub overwintered: bool,
     /// Version group id, as 8-digit hex; present only when overwintered.
-    #[serde(rename = "versiongroupid", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "versiongroupid", skip_serializing_if = "Option::is_none", default)]
     pub version_group_id: Option<String>,
     /// Raw `nLockTime`.
     pub locktime: u32,
     /// Expiry height; present only when overwintered.
-    #[serde(rename = "expiryheight", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "expiryheight", skip_serializing_if = "Option::is_none", default)]
     pub expiry_height: Option<u32>,
     /// Serialized byte length of the transaction.
     pub size: u64,
@@ -533,16 +533,16 @@ pub struct TransactionObject {
     /// Sprout JoinSplits, in order; empty on a non-Sprout transaction.
     pub vjoinsplit: Vec<JoinSplitObject>,
     /// Net Sapling value balance, as a ZEC float; present from version 4.
-    #[serde(rename = "valueBalance", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "valueBalance", skip_serializing_if = "Option::is_none", default)]
     pub value_balance: Option<f64>,
     /// Net Sapling value balance, in zatoshis; present from version 4.
-    #[serde(rename = "valueBalanceZat", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "valueBalanceZat", skip_serializing_if = "Option::is_none", default)]
     pub value_balance_zat: Option<i64>,
     /// Sapling spends; present from version 4.
-    #[serde(rename = "vShieldedSpend", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "vShieldedSpend", skip_serializing_if = "Option::is_none", default)]
     pub shielded_spends: Option<Vec<ShieldedSpend>>,
     /// Sapling outputs; present from version 4.
-    #[serde(rename = "vShieldedOutput", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "vShieldedOutput", skip_serializing_if = "Option::is_none", default)]
     pub shielded_outputs: Option<Vec<ShieldedOutput>>,
     /// Orchard bundle; emitted on every transaction, with empty actions and a
     /// zero value balance when the transaction has no Orchard bundle — matching
@@ -551,7 +551,7 @@ pub struct TransactionObject {
     /// Whether the transaction is in the active (best) chain. Present when
     /// derivable — `true` for a transaction in a best-chain block, `false` for a
     /// side-chain one; absent for a mempool transaction, which is in no chain.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub in_active_chain: Option<bool>,
 }
 
@@ -566,22 +566,22 @@ pub struct RawTransactionResponse {
     #[serde(flatten)]
     pub transaction: TransactionObject,
     /// Height of the containing block; absent for a mempool transaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub height: Option<u32>,
     /// Depth of the containing block in the best chain; absent for a mempool
     /// transaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub confirmations: Option<i64>,
     /// Hash of the containing block, as hex; absent for a mempool transaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub blockhash: Option<String>,
     /// Time of the containing block, in Unix seconds; absent for a mempool
     /// transaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub time: Option<u32>,
     /// Time of the containing block, in Unix seconds (zcashd emits it twice);
     /// absent for a mempool transaction.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub blocktime: Option<u32>,
 }
 
@@ -630,11 +630,11 @@ pub struct BlockResponse<T> {
     pub block_commitments: String,
     /// Sapling commitment tree root after this block, as hex. Absent before
     /// Sapling activation and from validators that omit it.
-    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "finalsaplingroot", skip_serializing_if = "Option::is_none", default)]
     pub final_sapling_root: Option<String>,
     /// Orchard commitment tree root after this block, as hex. Absent before
     /// Orchard activation and from validators that omit it.
-    #[serde(rename = "finalorchardroot", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "finalorchardroot", skip_serializing_if = "Option::is_none", default)]
     pub final_orchard_root: Option<String>,
     /// Number of transactions in the block.
     #[serde(rename = "nTx")]
@@ -651,11 +651,11 @@ pub struct BlockResponse<T> {
     pub difficulty: f64,
     /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
     /// validator does not track it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chainwork: Option<String>,
     /// Total chain value as of this block, unnamed. Absent when the validator
     /// does not report per-block supply.
-    #[serde(rename = "chainSupply", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "chainSupply", skip_serializing_if = "Option::is_none", default)]
     pub chain_supply: Option<ValuePoolResponse>,
     /// Per-pool value balances as of this block. Empty when the validator reports
     /// none.
@@ -667,10 +667,10 @@ pub struct BlockResponse<T> {
     /// Serialized byte length of the whole block.
     pub size: u64,
     /// Hash of the previous block, as hex. Absent for genesis.
-    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none", default)]
     pub previous_block_hash: Option<String>,
     /// Hash of the next block on the best chain, as hex. Absent for the tip.
-    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none", default)]
     pub next_block_hash: Option<String>,
     /// The block's transactions — ids at verbosity 1, decoded at verbosity 2.
     pub tx: Vec<T>,
@@ -754,12 +754,12 @@ pub struct ValuePoolResponse {
     pub chain_value_zat: u64,
     /// Change to the pool's balance from the latest block, as a ZEC float. Absent
     /// when the validator does not report a delta.
-    #[serde(rename = "valueDelta", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "valueDelta", skip_serializing_if = "Option::is_none", default)]
     pub value_delta: Option<f64>,
     /// Change to the pool's balance from the latest block, in zatoshis — the
     /// exact amount. Absent when the validator does not report a delta; signed,
     /// as value leaves a pool as well as entering it.
-    #[serde(rename = "valueDeltaZat", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "valueDeltaZat", skip_serializing_if = "Option::is_none", default)]
     pub value_delta_zat: Option<i64>,
 }
 
@@ -809,7 +809,7 @@ pub struct BlockchainInfoResponse {
     pub verification_progress: f64,
     /// Total work in the best chain, as 64-character big-endian hex. Absent when
     /// the validator does not track it.
-    #[serde(rename = "chainwork", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "chainwork", skip_serializing_if = "Option::is_none", default)]
     pub chain_work: Option<String>,
     /// Whether the validator has pruned block data.
     pub pruned: bool,
@@ -855,17 +855,17 @@ pub struct NodeInfoResponse {
     /// Whether the validator considers itself on a test network.
     pub testnet: bool,
     /// Configured proxy, when the validator reports one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub proxy: Option<String>,
     /// Minimum transaction fee, in zatoshis per kilobyte.
     pub paytxfee: u64,
     /// Minimum relay fee, in zatoshis per kilobyte.
     pub relayfee: u64,
     /// The validator's last error or warning, when there is one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub errors: Option<String>,
     /// When `errors` was raised, in seconds since the Unix epoch.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub errorstimestamp: Option<i64>,
 }
 
@@ -875,26 +875,26 @@ pub struct MiningInfoResponse {
     /// Height of the current best-chain tip.
     pub blocks: u32,
     /// Size in bytes of the last block the validator built, when it tracks it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub currentblocksize: Option<u64>,
     /// Transaction count in the last block the validator built, when it tracks it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub currentblocktx: Option<u64>,
     /// Current difficulty as a multiple of the network minimum, when reported.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub difficulty: Option<f64>,
     /// Estimated network solution rate, in solutions per second, when reported.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub networksolps: Option<u64>,
     /// Estimated network hash rate, in hashes per second, when reported.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub networkhashps: Option<u64>,
     /// Name of the chain being served.
     pub chain: String,
     /// Whether the validator considers itself on a test network.
     pub testnet: bool,
     /// Validator status or error message, when there is one.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub errors: Option<String>,
 }
 
@@ -1035,13 +1035,13 @@ pub struct GetBlockDeltasResponse {
     pub difficulty: f64,
     /// Cumulative chainwork, as 64-character big-endian hex. Absent when the
     /// validator does not track it.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chainwork: Option<String>,
     /// Hash of the previous block, as hex. Absent for genesis.
-    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "previousblockhash", skip_serializing_if = "Option::is_none", default)]
     pub previous_block_hash: Option<String>,
     /// Hash of the next block on the best chain, as hex. Absent at the tip.
-    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "nextblockhash", skip_serializing_if = "Option::is_none", default)]
     pub next_block_hash: Option<String>,
 }
 
@@ -1067,7 +1067,7 @@ pub struct TransactionDeltaEntry {
 pub struct InputDeltaEntry {
     /// The transparent address the value left, when the spent output's script is
     /// a standard template; absent otherwise.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub address: Option<String>,
     /// The negation of the spent output's value, in zatoshis: a spend is negative.
     pub satoshis: i64,
@@ -1086,7 +1086,7 @@ pub struct InputDeltaEntry {
 pub struct OutputDeltaEntry {
     /// The transparent address the value arrived at, when the script is a standard
     /// template; absent otherwise.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub address: Option<String>,
     /// The output's value, in zatoshis.
     pub satoshis: u64,
@@ -1097,8 +1097,8 @@ pub struct OutputDeltaEntry {
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressBalanceResponse, AddressDeltaEntry, AddressDeltasResponse, DeltaRange,
-        UnifiedReceiversResponse, ValidateAddressResponse,
+        AddressBalanceResponse, AddressDeltaEntry, AddressDeltasResponse, BlockResponse,
+        DeltaRange, UnifiedReceiversResponse, ValidateAddressResponse,
     };
     use serde_json::Value;
 
@@ -1321,5 +1321,49 @@ mod tests {
         let obj = json.as_object().expect("a JSON object");
         assert!(!obj.contains_key("sapling"));
         assert!(!obj.contains_key("p2sh"));
+    }
+
+    /// A field marked `skip_serializing_if = "Option::is_none"` must also be
+    /// deserializable when the server omits it — that attribute only
+    /// controls serialization; without `#[serde(default)]` too, a correctly
+    /// omitted field makes the whole response fail to parse. This is the
+    /// exact live-zainod shape: a tip block reports no `chainwork` (Zebra
+    /// doesn't track it) and no `nextblockhash` (it's the tip), and a
+    /// generated client deserializing this response must still succeed —
+    /// caught by `zaino-explorer`'s own client against a real deployment,
+    /// where it was the first thing to ever deserialize this type.
+    #[test]
+    fn block_response_deserializes_with_every_optional_field_omitted() {
+        let json = serde_json::json!({
+            "hash": "ab".repeat(32),
+            "confirmations": 1,
+            "height": 300,
+            "version": 4,
+            "merkleroot": "cd".repeat(32),
+            "blockcommitments": "ef".repeat(32),
+            "nTx": 2,
+            "time": 1_700_000_000,
+            "nonce": "00".repeat(32),
+            "solution": "",
+            "bits": "1c0088c0",
+            "difficulty": 1.0,
+            "valuePools": [],
+            "trees": {
+                "sapling": {"size": 0},
+                "orchard": {"size": 0},
+                "ironwood": {"size": 0},
+            },
+            "size": 1000,
+            "tx": ["ab".repeat(32)],
+        });
+
+        let response: BlockResponse<String> =
+            serde_json::from_value(json).expect("deserializes with optional fields absent");
+
+        assert_eq!(response.height, 300);
+        assert!(response.chainwork.is_none());
+        assert!(response.next_block_hash.is_none());
+        assert!(response.final_sapling_root.is_none());
+        assert!(response.chain_supply.is_none());
     }
 }

@@ -5,8 +5,10 @@
 #![forbid(unsafe_code)]
 
 use jsonrpsee::http_client::HttpClient;
-use zaino_explorer_domain::{BlockSummary, ChainReadError, ChainReader};
-use zaino_noderpc::wire::response::GetBlockResponse;
+use zaino_explorer_domain::{
+    BlockSummary, ChainReadError, ChainReader, TransactionDetail, TransactionOutput,
+};
+use zaino_noderpc::wire::response::{GetBlockResponse, GetRawTransactionResponse};
 use zaino_noderpc::NodeRpcApiClient;
 
 /// An invariant violation: `getblock` was asked for verbosity 1 and answered
@@ -16,6 +18,12 @@ use zaino_noderpc::NodeRpcApiClient;
 #[derive(Debug, thiserror::Error)]
 #[error("getblock verbosity=1 returned an unexpected response shape")]
 struct UnexpectedBlockVerbosity;
+
+/// An invariant violation: `getrawtransaction` was asked for verbosity 1 and
+/// answered with the raw-hex shape instead.
+#[derive(Debug, thiserror::Error)]
+#[error("getrawtransaction verbosity=1 returned an unexpected response shape")]
+struct UnexpectedTransactionVerbosity;
 
 /// Wraps a [`HttpClient`] built against zaino-noderpc's generated
 /// `NodeRpcApiClient`.
@@ -60,6 +68,33 @@ fn block_summary_from_response(response: GetBlockResponse) -> Result<BlockSummar
     }
 }
 
+/// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
+/// A pure function so the mapping is unit-testable without a server.
+fn transaction_detail_from_response(
+    response: GetRawTransactionResponse,
+) -> Result<TransactionDetail, ChainReadError> {
+    match response {
+        GetRawTransactionResponse::Verbose(tx) => Ok(TransactionDetail {
+            txid: tx.transaction.txid.clone(),
+            size: tx.transaction.size,
+            height: tx.height,
+            confirmations: tx.confirmations,
+            outputs: tx
+                .transaction
+                .vout
+                .iter()
+                .map(|output| TransactionOutput {
+                    value_zat: output.value_zat,
+                    addresses: output.script_pub_key.addresses.clone().unwrap_or_default(),
+                })
+                .collect(),
+        }),
+        GetRawTransactionResponse::Raw(_) => {
+            Err(ChainReadError::Rpc(Box::new(UnexpectedTransactionVerbosity)))
+        }
+    }
+}
+
 impl ChainReader for ZainoClient {
     async fn chain_height(&self) -> Result<u32, ChainReadError> {
         self.0
@@ -77,15 +112,27 @@ impl ChainReader for ZainoClient {
         }
         Ok(summaries)
     }
+
+    async fn transaction(&self, txid: String) -> Result<TransactionDetail, ChainReadError> {
+        let response = self
+            .0
+            .raw_transaction(txid, Some(1))
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        transaction_detail_from_response(response)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{block_summary_from_response, ZainoClient};
+    use super::{block_summary_from_response, transaction_detail_from_response, ZainoClient};
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
     use zaino_explorer_domain::ChainReader;
-    use zaino_noderpc::wire::response::{BlockResponse, GetBlockResponse};
+    use zaino_noderpc::wire::response::{
+        BlockResponse, GetBlockResponse, GetRawTransactionResponse, OrchardObject,
+        RawTransactionResponse, ScriptPubKey, TransactionObject, TransactionOutput,
+    };
     use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
     use zaino_primitives::types::{
         Block, BlockHash, BlockHeader, BlockTreeSizes, BlockVerbose, ChainMetadata,
@@ -157,6 +204,83 @@ mod tests {
     fn non_verbose1_response_is_a_typed_error_not_a_panic() {
         let err = block_summary_from_response(GetBlockResponse::Raw("deadbeef".to_string()))
             .expect_err("wrong verbosity should error");
+        let source = std::error::Error::source(&err).expect("Rpc variant carries a source");
+        assert!(source.to_string().contains("unexpected"));
+    }
+
+    /// A minimal but complete verbose transaction, for the mapping tests
+    /// below — one output, no shielded fields, an empty Orchard bundle (as
+    /// zebra renders even a version-4 transaction).
+    fn scripted_transaction_object() -> TransactionObject {
+        TransactionObject {
+            txid: "ab".repeat(32),
+            version: 4,
+            overwintered: true,
+            version_group_id: Some("892f2085".to_string()),
+            locktime: 0,
+            expiry_height: Some(500_000),
+            size: 250,
+            hex: String::new(),
+            vin: Vec::new(),
+            vout: vec![TransactionOutput {
+                value: 0.0001,
+                value_zat: 10_000,
+                n: 0,
+                script_pub_key: ScriptPubKey {
+                    asm: String::new(),
+                    hex: String::new(),
+                    required_signatures: Some(1),
+                    addresses: Some(vec!["t1examplePayoutAddress".to_string()]),
+                    script_type: Some("pubkeyhash".to_string()),
+                },
+            }],
+            vjoinsplit: Vec::new(),
+            value_balance: None,
+            value_balance_zat: None,
+            shielded_spends: None,
+            shielded_outputs: None,
+            orchard: OrchardObject {
+                actions: Vec::new(),
+                value_balance: 0.0,
+                value_balance_zat: 0,
+            },
+            in_active_chain: Some(true),
+        }
+    }
+
+    /// A `getrawtransaction` verbosity-1 response maps field-for-field into
+    /// a [`zaino_explorer_domain::TransactionDetail`] — including each
+    /// output's value and address — no server needed.
+    #[test]
+    fn verbose_response_maps_to_transaction_detail() {
+        let response = GetRawTransactionResponse::Verbose(Box::new(RawTransactionResponse {
+            transaction: scripted_transaction_object(),
+            height: Some(12_345),
+            confirmations: Some(5),
+            blockhash: Some("cd".repeat(32)),
+            time: Some(1_700_000_000),
+            blocktime: Some(1_700_000_000),
+        }));
+
+        let detail = transaction_detail_from_response(response).expect("maps ok");
+
+        assert_eq!(detail.txid, "ab".repeat(32));
+        assert_eq!(detail.size, 250);
+        assert_eq!(detail.height, Some(12_345));
+        assert_eq!(detail.confirmations, Some(5));
+        assert_eq!(detail.outputs.len(), 1);
+        assert_eq!(detail.outputs[0].value_zat, 10_000);
+        assert_eq!(detail.outputs[0].addresses, vec!["t1examplePayoutAddress"]);
+    }
+
+    /// The raw-hex (verbosity 0) shape is a typed error here too, not a
+    /// panic — this client always requests verbosity 1.
+    #[test]
+    fn raw_transaction_response_is_a_typed_error_not_a_panic() {
+        let err = transaction_detail_from_response(GetRawTransactionResponse::Raw(
+            "deadbeef".to_string(),
+        ))
+        .expect_err("raw response should error");
         let source = std::error::Error::source(&err).expect("Rpc variant carries a source");
         assert!(source.to_string().contains("unexpected"));
     }

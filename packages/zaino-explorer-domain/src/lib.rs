@@ -19,6 +19,12 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         &self,
         count: u32,
     ) -> impl Future<Output = Result<Vec<BlockSummary>, ChainReadError>> + Send;
+
+    /// One transaction, by id.
+    fn transaction(
+        &self,
+        txid: String,
+    ) -> impl Future<Output = Result<TransactionDetail, ChainReadError>> + Send;
 }
 
 /// One block's summary, as shown in a block list — not the full block.
@@ -32,6 +38,32 @@ pub struct BlockSummary {
     pub time: u32,
     /// Number of transactions in the block.
     pub tx_count: u32,
+}
+
+/// One transaction, as shown on a transaction detail page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionDetail {
+    /// The transaction's id.
+    pub txid: String,
+    /// Serialized byte length.
+    pub size: u64,
+    /// Height of the containing block; absent for a mempool transaction.
+    pub height: Option<u32>,
+    /// Depth of the containing block in the best chain; absent for a
+    /// mempool transaction.
+    pub confirmations: Option<i64>,
+    /// This transaction's transparent outputs.
+    pub outputs: Vec<TransactionOutput>,
+}
+
+/// One transparent output, as shown on a transaction detail page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionOutput {
+    /// The output's value, in zatoshis.
+    pub value_zat: u64,
+    /// The address this output pays, when its script is a standard
+    /// template. Empty for a non-standard script.
+    pub addresses: Vec<String>,
 }
 
 /// Why a [`ChainReader`] read failed.

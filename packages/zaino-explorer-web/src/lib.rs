@@ -7,7 +7,7 @@
 //! `src/bin/web.rs` alone.
 #![forbid(unsafe_code)]
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::Html;
 use axum::routing::get;
 use axum::Router;
@@ -18,7 +18,10 @@ use zaino_explorer_domain::ChainReader;
 /// never a cached or locally re-derived value — that's the whole point of a
 /// dogfood client.
 pub fn build_app<C: ChainReader>(reader: C) -> Router {
-    Router::new().route("/", get(home::<C>)).with_state(reader)
+    Router::new()
+        .route("/", get(home::<C>))
+        .route("/tx/:txid", get(transaction::<C>))
+        .with_state(reader)
 }
 
 /// How many recent blocks the home page lists.
@@ -43,6 +46,43 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
             },
             Err(e) => p { "RPC error: " (e.to_string()) },
         }
+    };
+    Html(body.into_string())
+}
+
+/// `GET /tx/{txid}`: one transaction's detail, fetched live. Not yet linked
+/// from the block list (which carries only a transaction count, not ids) —
+/// reachable by direct URL today.
+async fn transaction<C: ChainReader>(
+    State(reader): State<C>,
+    Path(txid): Path<String>,
+) -> Html<String> {
+    let body = match reader.transaction(txid.clone()).await {
+        Ok(tx) => html! {
+            h1 { "Transaction " (tx.txid) }
+            p { "Size: " (tx.size) " bytes" }
+            @if let Some(height) = tx.height {
+                p { "Block height: " (height) }
+            }
+            @if let Some(confirmations) = tx.confirmations {
+                p { "Confirmations: " (confirmations) }
+            }
+            h2 { "Outputs" }
+            ul {
+                @for output in &tx.outputs {
+                    li {
+                        (output.value_zat) " zat"
+                        @if !output.addresses.is_empty() {
+                            " — " (output.addresses.join(", "))
+                        }
+                    }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Transaction " (txid) }
+            p { "RPC error: " (e.to_string()) }
+        },
     };
     Html(body.into_string())
 }
@@ -126,6 +166,46 @@ mod tests {
         assert!(
             text.contains("RPC error"),
             "unscripted getblock should render as an RPC error, not silence: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// `/tx/{txid}` for an unscripted txid renders a graceful RPC error
+    /// (zcashd's own "not found" for an unknown transaction), not a panic
+    /// or a 500 — the route is reachable and its error path is wired. The
+    /// happy-path mapping (`TransactionDetail` field-for-field) is covered
+    /// in `zaino-explorer-zaino-client`'s own pure-function tests, which
+    /// don't need a server; this test is about the route, not the mapping.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transaction_route_renders_rpc_error_for_an_unknown_txid() {
+        let (addr, handle) = spawn_mock_server().await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/tx/{}", "ab".repeat(32)))
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("RPC error"),
+            "an unscripted txid should render as an RPC error, not a panic: {text}"
         );
 
         let _ = handle.stop();
