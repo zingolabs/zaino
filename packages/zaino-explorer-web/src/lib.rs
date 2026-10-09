@@ -22,6 +22,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
         .route("/", get(home::<C>))
         .route("/block/:id", get(block::<C>))
         .route("/block/:id/treestate", get(treestate::<C>))
+        .route("/mempool", get(mempool::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
         .with_state(reader)
@@ -45,7 +46,8 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         }
         @match status {
             Ok(status) => p {
-                (status.subversion) " — " (status.connections) " peers — mempool: "
+                (status.subversion) " — " (status.connections) " peers — "
+                a href="/mempool" { "mempool" } ": "
                 (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
             },
             Err(e) => p { "Node status unavailable: " (e.to_string()) },
@@ -236,6 +238,35 @@ async fn address<C: ChainReader>(
         },
         Err(e) => html! {
             h1 { "Address " (address) }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// `GET /mempool`: every transaction currently in the mempool, with its
+/// size, fee, and the tip height it was validated against. Linked from the
+/// home page's status line.
+async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+    let body = match reader.raw_mempool().await {
+        Ok(entries) => html! {
+            h1 { "Mempool" }
+            p { (entries.len()) " transactions" }
+            ul {
+                @for entry in &entries {
+                    li {
+                        a href=(format!("/tx/{}", entry.txid)) { (entry.txid) }
+                        " — " (entry.size) " bytes — " (entry.fee_zat) " zat fee — entered at height "
+                        (entry.height)
+                        @if let Some(time) = entry.time {
+                            " — " (time)
+                        }
+                    }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Mempool" }
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -545,6 +576,44 @@ mod tests {
         let truncated = super::truncate_hex(&long);
         assert!(truncated.len() < long.len());
         assert!(truncated.contains("200 hex chars total"));
+    }
+
+    /// `/mempool` for an empty mock mempool renders zero transactions, not
+    /// an error — an empty mempool is routine, not a failure. Proves the
+    /// route is reachable; the field-mapping itself is covered by
+    /// `zaino-explorer-zaino-client`'s own tests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mempool_route_renders_zero_transactions_for_an_empty_mempool() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/mempool")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("0 transactions"),
+            "an empty mempool should read as zero, not an error: {text}"
+        );
+
+        let _ = handle.stop();
     }
 
     /// `/tx/{txid}` for an unscripted txid renders a graceful RPC error
