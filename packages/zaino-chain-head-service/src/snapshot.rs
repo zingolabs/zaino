@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use zaino_chain_head::{
     snapshot::{
         ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
-        ChainHeadTxPosition, SpenderLocation,
+        ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
     },
     ChainHeadBlock, ChainHeadError, ChainHeadSnapshot,
 };
@@ -56,6 +56,8 @@ pub struct MapBackedSnapshot {
     tip: ChainHeadBlock,
     others: HashMap<BlockHash, ChainHeadBlock>,
     heights_to_hashes: HashMap<Height, BlockHash>,
+    /// The block this graph's work is measured from, recorded at anchoring because retention prunes that block while every surviving block's work still counts from it.
+    work_anchor: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Private even to the rest of this crate, and written only by
@@ -126,6 +128,7 @@ impl ChainGraph for MapBackedSnapshot {
     fn from_initial_block(block: ChainHeadBlock) -> Self {
         let heights_to_hashes = HashMap::from([(block.height(), block.hash())]);
         Self {
+            work_anchor: block.reference,
             tip: block,
             others: HashMap::new(),
             heights_to_hashes,
@@ -198,6 +201,10 @@ impl ChainGraph for MapBackedSnapshot {
 impl ChainHeadSnapshot for MapBackedSnapshot {
     fn best_tip(&self) -> BlockRef {
         self.tip.reference
+    }
+
+    fn work_anchor(&self) -> BlockRef {
+        self.work_anchor
     }
 
     fn epoch(&self) -> ChainStateEpoch {
@@ -323,6 +330,8 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     }
 }
 
+impl ChainHeadTxOutSetService for MapBackedSnapshot {}
+
 impl ChainHeadTransactionService for MapBackedSnapshot {
     /// A bounded scan of the window. The window is small and this is not on a
     /// hot path; when it becomes one, the answer is a `txid ->` position index
@@ -333,7 +342,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
         for block in self.blocks() {
             let Some((slot, _transaction)) = block
                 .block
-                .transactions
+                .transactions()
                 .iter()
                 .enumerate()
                 .find(|(_, transaction)| &transaction.txid == txid)
@@ -370,7 +379,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             let Some(block) = self.block_by_hash(hash) else {
                 continue;
             };
-            for (slot, transaction) in block.block.transactions.iter().enumerate() {
+            for (slot, transaction) in block.block.transactions().iter().enumerate() {
                 for input in &transaction.transparent.inputs {
                     spenders.insert(
                         Outpoint {

@@ -59,13 +59,14 @@ use core::future::Future;
 
 use zaino_chain_store::{
     ChainStoreError, ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService,
-    ChainStoreSource, ChainStoreSourceError, CompactBlockRead, PoolFilter, SpenderRef,
+    ChainStoreSource, ChainStoreSourceError, CompactBlockRead, FrozenBlock, PoolFilter, SpenderRef,
     SpentOutputIndex, StoreCapabilities, StoreSchema, StoreWatermark, StoredBlock, StoredBlockRead,
     StoredTxOut, TransactionIndex, TxOutSetAccumulator, TxOutSetIndex,
 };
+use zaino_component::{ComponentName, ComponentStatus, Health, Lifecycle, StatusSource};
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock, Height as DomainHeight,
-    Outpoint as DomainOutpoint, TransactionId,
+    AbsoluteChainWork, BlockHash as DomainBlockHash, BlockTxPosition, CompactBlock,
+    Height as DomainHeight, Outpoint as DomainOutpoint, TransactionId,
 };
 use zaino_status::StatusType;
 
@@ -119,9 +120,16 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
             None => Ok(None),
         }
     }
+}
 
-    fn status(&self) -> StatusType {
-        DbReader::status(self)
+/// A reader reports the store's status, not one of its own.
+///
+/// It holds the `FinalisedState` it reads from, so there is one status and one
+/// name however many handles exist. A supervisor observing a reader and a
+/// service sees the same component.
+impl<T: ChainStoreSource> StatusSource for DbReader<T> {
+    fn status(&self) -> ComponentStatus {
+        component_status(self.inner.name(), DbReader::status(self))
     }
 }
 
@@ -518,10 +526,6 @@ impl<T: ChainStoreSource> ChainStoreService for FinalisedState<T> {
         FinalisedState::reader(self)
     }
 
-    fn status(&self) -> StatusType {
-        FinalisedState::status(self)
-    }
-
     fn subscribe_watermark(&self) -> tokio::sync::watch::Receiver<StoreWatermark> {
         self.subscribe_watermark()
     }
@@ -551,26 +555,93 @@ impl<T: ChainStoreSource> ChainStoreIngest for FinalisedState<T> {
     }
 }
 
+impl<T: ChainStoreSource> FinalisedState<T> {
+    /// The absolute chainwork of the block this store holds at its tip.
+    ///
+    /// `None` on an empty store, which is genesis's parent: nothing below it,
+    /// so the first block written accumulates onto nothing.
+    ///
+    /// Read through this store's own reader. That costs a whole block for one
+    /// number, which no port offers alone — paid once per freeze batch, where
+    /// the batch then folds forward in memory.
+    async fn tip_chainwork(&self) -> Result<Option<AbsoluteChainWork>, ChainStoreError> {
+        let Some(tip) = self.db_height().await.map_err(chain_store_error)? else {
+            return Ok(None);
+        };
+        let tip = domain_height(tip)?;
+
+        let chunk = ChainStoreService::reader(self)
+            .blocks_chunk(tip, tip)
+            .await?;
+        let tip_block = chunk
+            .first()
+            .ok_or_else(|| ChainStoreError::MissingRow(format!("the tip block at height {tip}")))?;
+
+        Ok(Some(tip_block.chainwork))
+    }
+}
+
+impl<T: ChainStoreSource> StatusSource for FinalisedState<T> {
+    fn status(&self) -> ComponentStatus {
+        component_status(self.name(), FinalisedState::status(self))
+    }
+}
+
+/// This store's fused status, as the two axes a component reports.
+///
+/// Transitional, and deliberately the only place the two vocabularies meet.
+/// The store tracks the fused [`StatusType`] throughout; nothing inside it
+/// changes shape, and when it is rewritten to hold a phase and a condition
+/// separately this function goes rather than being threaded further in.
+///
+/// The mapping is exact but for the two error states. They are *health* in the
+/// split model, but in the fused one they overwrite the phase — a `Ready`
+/// store that hits a recoverable fault stops recording that it was ready — so
+/// the phase they came from is not recoverable here. A fixed phase is chosen,
+/// erring towards caution: a degraded store reports `Syncing` rather than
+/// claiming readiness it may not have, and a broken one reports `Offline`
+/// rather than a phase it is not really in.
+///
+/// `Busy` has no counterpart either; the component crate defers the load axis.
+/// It is only ever produced when the router cannot resolve a backend for core
+/// reads, which is a degraded store rather than a loaded one — so it maps that
+/// way, and not to the readiness the fused model gave it.
+fn component_status(name: ComponentName, status: StatusType) -> ComponentStatus {
+    let (lifecycle, health) = match status {
+        StatusType::Spawning => (Lifecycle::Spawning, Health::Healthy),
+        StatusType::Syncing => (Lifecycle::Syncing, Health::Healthy),
+        StatusType::Ready => (Lifecycle::Ready, Health::Healthy),
+        StatusType::Closing => (Lifecycle::Closing, Health::Healthy),
+        StatusType::Offline => (Lifecycle::Offline, Health::Offline),
+        StatusType::Busy | StatusType::RecoverableError => {
+            (Lifecycle::Syncing, Health::Recoverable)
+        }
+        StatusType::CriticalError => (Lifecycle::Offline, Health::Critical),
+    };
+
+    ComponentStatus::new(name, lifecycle, health)
+}
+
 impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
     /// Writes blocks the composer has already seen fall beyond reorg.
     ///
-    /// Idempotent on `(height, hash)` by delegation: the writer's put is a
-    /// byte-compare on conflict, so re-seeing a block it already holds is a
-    /// no-op and re-seeing a *different* block at the same height is an error
-    /// rather than a silent overwrite. That is the property the freeze stream
-    /// needs, because it can deliver the same heights twice across a reorg.
-    ///
-    /// Blocks below the store's tip are skipped rather than rejected. The
-    /// stream has a retention window in which a block is both emitted and still
-    /// held by the chain head, so a store that built past it through its own
-    /// source will legitimately be handed blocks it already has.
-    ///
-    /// A gap is not repaired here. The writer is append-only and contiguous, so
-    /// a block above `tip + 1` cannot be written; it is left for the
-    /// source-driven build path, which is why that path cannot be removed.
-    async fn freeze(&self, blocks: &[StoredBlock]) -> Result<(), ChainStoreError> {
+    /// Idempotent at `tip + 1` by delegation: the writer's put is a
+    /// byte-compare on conflict, so re-seeing the block already there is a
+    /// no-op and re-seeing a *different* block there is an error rather than a
+    /// silent overwrite. That is the property the freeze stream needs, because
+    /// it can deliver the same heights twice across a reorg.
+    async fn freeze(&self, blocks: &[FrozenBlock]) -> Result<(), ChainStoreError> {
+        // Where this store is, and what the next block accumulates onto. Both
+        // read once and advanced in step, because a block is only ever written
+        // at `tip + 1`: after a write the tip is the block just written and its
+        // chainwork is that block's. Re-reading either per block would be a
+        // store round trip for a number this loop already holds, paid once for
+        // every block in the batch.
+        let mut store_tip = self.db_height().await.map_err(chain_store_error)?;
+        let mut parent_chainwork = self.tip_chainwork().await?;
+
         for block in blocks {
-            let expected = match self.db_height().await.map_err(chain_store_error)? {
+            let expected = match store_tip {
                 Some(tip) => tip.0.saturating_add(1),
                 None => crate::types::GENESIS_HEIGHT.0,
             };
@@ -580,12 +651,39 @@ impl<T: ChainStoreSource> ChainStoreFreezeSink for FinalisedState<T> {
                 continue;
             }
             if height > expected {
-                break;
+                // The tracked tip, not a fresh read: nothing has written to
+                // this store since the loop started but the loop itself, which
+                // is what `store_tip` has been following.
+                return Err(ChainStoreError::FreezeGap {
+                    store_tip: store_tip.map(domain_height).transpose()?,
+                    first_frozen: block.header.height,
+                });
             }
 
-            self.write_block(indexed_block_from_stored(block)?)
+            let chainwork = crate::conversion::chainwork_from_parent(
+                block.header.bits.to_work(),
+                stored_hash(block.header.hash),
+                crate::types::Height(height),
+                parent_chainwork,
+            )
+            .map_err(|error| {
+                ChainStoreError::backend_because(
+                    format!("block {} chainwork could not be derived", block.header.hash),
+                    error,
+                )
+            })?;
+            let stored = StoredBlock {
+                header: block.header.clone(),
+                transactions: block.transactions.clone(),
+                tree_roots: block.tree_roots.clone(),
+                chainwork,
+            };
+
+            self.write_block(indexed_block_from_stored(&stored)?)
                 .await
                 .map_err(chain_store_error)?;
+            parent_chainwork = Some(chainwork);
+            store_tip = Some(crate::types::Height(height));
         }
 
         Ok(())

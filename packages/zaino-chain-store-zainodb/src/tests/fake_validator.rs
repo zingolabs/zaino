@@ -91,7 +91,7 @@ impl FakeValidator {
                 let height = entry.block.header.height;
                 entry
                     .block
-                    .transactions
+                    .transactions()
                     .iter()
                     .map(move |tx| (tx.txid, height))
             })
@@ -141,6 +141,10 @@ impl FakeValidator {
     fn at(&self, height: Height) -> Option<&FakeBlock> {
         self.blocks.get(u32::from(height) as usize)
     }
+}
+
+impl zaino_source::ValidatorSource for FakeValidator {
+    type NonDomain = zaino_source::NonDomainError;
 }
 
 impl OneShotGetBestBlockHeight for FakeValidator {

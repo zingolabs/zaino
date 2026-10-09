@@ -384,9 +384,7 @@ pub enum TxOutSetError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{TransactionId, Zatoshis};
-
-    use crate::output::StoredAddress;
+    use zaino_primitives::types::{TransactionId, TransparentAddressKey, Zatoshis};
 
     fn outpoint() -> Outpoint {
         Outpoint {
@@ -398,7 +396,7 @@ mod tests {
     fn output(script_type: ScriptType) -> StoredTxOut {
         StoredTxOut::new(
             Zatoshis::new(21_000_000).expect("within range"),
-            StoredAddress::new([0xbb; 20], script_type),
+            TransparentAddressKey::new([0xbb; 20], script_type),
         )
     }
 

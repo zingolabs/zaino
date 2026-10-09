@@ -91,7 +91,9 @@ let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodabl
 A transaction's position is the block's to know, not the transaction's:
 `Transaction` stores no index, and coinbase-ness is read from block order via
 `Block::coinbase()` (position 0), never from a per-transaction field that could
-disagree with the container.
+disagree with the container. The list itself is fixed at construction:
+`Block::transactions()` lends it as a slice, and no holder of a `Block` can
+add, drop, or reorder a transaction after `try_new` has accepted it.
 
 `CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
 form a compact transaction serves to light clients, not the full 580-byte

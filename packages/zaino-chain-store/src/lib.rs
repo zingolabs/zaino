@@ -58,14 +58,14 @@ pub mod ports;
 pub mod transparent;
 pub mod txout_set;
 
-pub use block::{PoolFilter, StoredBlock, StoredTx};
+pub use block::{FrozenBlock, PoolFilter, StoredBlock, StoredTx};
 pub use capability::{
     MigrationState, Provenance, SchemaVersion, StoreCapabilities, StoreCapability, StoreSchema,
     StoreWatermark,
 };
 pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
-pub use output::{SpenderRef, StoredAddress, StoredTxOut};
+pub use output::{SpenderRef, StoredTxOut};
 pub use ports::{
     ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability,
     ChainStoreService, ChainStoreSource, CompactBlockRead, CompactBlockReadCapability,
