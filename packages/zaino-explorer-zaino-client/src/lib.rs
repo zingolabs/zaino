@@ -6,9 +6,10 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    BlockSummary, ChainReadError, ChainReader, SpendInfo, TransactionDetail, TransactionOutput,
+    AddressSummary, BlockSummary, ChainReadError, ChainReader, SpendInfo, TransactionDetail,
+    TransactionOutput,
 };
-use zaino_noderpc::wire::params::GetSpentInfoParam;
+use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
 use zaino_noderpc::wire::response::{GetBlockResponse, GetRawTransactionResponse};
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -136,6 +137,31 @@ impl ChainReader for ZainoClient {
             spending_txid: response.txid,
             spending_input_index: response.index,
             height: response.height,
+        })
+    }
+
+    async fn address(&self, address: String) -> Result<AddressSummary, ChainReadError> {
+        let balance = self
+            .0
+            .address_balance(AddressesParam {
+                addresses: vec![address.clone()],
+            })
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        let txids = self
+            .0
+            .address_txids(AddressTxidsParam {
+                addresses: vec![address.clone()],
+                start: None,
+                end: None,
+            })
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(AddressSummary {
+            address,
+            balance_zat: balance.balance,
+            received_zat: balance.received,
+            txids,
         })
     }
 }
@@ -405,6 +431,52 @@ mod tests {
         assert_eq!(spend.spending_txid, "02".repeat(32));
         assert_eq!(spend.spending_input_index, 1);
         assert_eq!(spend.height, 300);
+
+        let _ = handle.stop();
+    }
+
+    /// `address` against a real mock server: balance and txids, both
+    /// fetched live — not a hand-rolled combination.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn address_against_a_real_server() {
+        use zaino_primitives::types::{
+            AddressBalance, BlockHash, BlockRef, Height as PrimHeight, TransactionId, Zatoshis,
+            ZatoshisFlowSum,
+        };
+
+        let chain = MockChain {
+            // `address_balance`'s serviceability check reads `ChainSegment::
+            // coverage`, which the mock derives from `tip` — not a
+            // `serviceable` field (that one's for a different capability).
+            tip: Some(BlockRef {
+                height: PrimHeight::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x09; 32]),
+            }),
+            balances: vec![(
+                "t1exampleaddress".to_string(),
+                AddressBalance {
+                    balance: Zatoshis::new(5_000).expect("valid amount"),
+                    received: ZatoshisFlowSum::from_summed(10_000u64),
+                },
+            )],
+            txids: vec![TransactionId::from([0x03; 32])],
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let summary = reader
+            .address("t1exampleaddress".to_string())
+            .await
+            .expect("address ok");
+
+        assert_eq!(summary.address, "t1exampleaddress");
+        assert_eq!(summary.balance_zat, 5_000);
+        assert_eq!(summary.received_zat, 10_000);
+        assert_eq!(summary.txids, vec!["03".repeat(32)]);
 
         let _ = handle.stop();
     }

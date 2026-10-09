@@ -7,14 +7,15 @@
 use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
-use zaino_explorer_domain::{BlockSummary, ChainReader, TransactionDetail};
+use zaino_explorer_domain::{AddressSummary, BlockSummary, ChainReader, TransactionDetail};
 
 /// How many recent blocks the TUI lists.
 const RECENT_BLOCKS: u32 = 10;
 
 /// Which screen is showing. The home screen (height + recent blocks) is
-/// always refreshed on a timer; the other two are driven by user input —
-/// `t` starts typing a txid, Enter looks it up, Esc returns home.
+/// always refreshed on a timer; the others are driven by user input — `t`
+/// starts typing a txid, `a` starts typing an address, Enter looks it up,
+/// Esc returns home.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Screen {
     #[default]
@@ -23,6 +24,10 @@ pub enum Screen {
     EnterTxid(String),
     /// Looked up: the txid and what came back.
     Transaction(String, Result<(), String>),
+    /// Typing an address to look up.
+    EnterAddress(String),
+    /// Looked up: the address and what came back.
+    Address(String, Result<(), String>),
 }
 
 /// The TUI's whole state: the last successful read, or the last error, for
@@ -37,6 +42,8 @@ pub struct AppState {
     /// output index — populated only on screen `Transaction`.
     transaction: Option<TransactionDetail>,
     spends: Vec<Result<zaino_explorer_domain::SpendInfo, String>>,
+    /// The looked-up address — populated only on screen `Address`.
+    address: Option<AddressSummary>,
 }
 
 impl AppState {
@@ -63,18 +70,28 @@ impl AppState {
         self.screen = Screen::EnterTxid(String::new());
     }
 
-    /// Append a character to the txid buffer, if currently in input mode.
+    /// Enter address-input mode, starting from an empty buffer.
+    pub fn start_address_input(&mut self) {
+        self.screen = Screen::EnterAddress(String::new());
+    }
+
+    /// Append a character to the current input buffer, if currently typing
+    /// a txid or an address.
     pub fn push_char(&mut self, c: char) {
-        if let Screen::EnterTxid(buffer) = &mut self.screen {
-            buffer.push(c);
+        match &mut self.screen {
+            Screen::EnterTxid(buffer) | Screen::EnterAddress(buffer) => buffer.push(c),
+            _ => {}
         }
     }
 
-    /// Remove the last character from the txid buffer, if currently in
-    /// input mode.
+    /// Remove the last character from the current input buffer, if
+    /// currently typing a txid or an address.
     pub fn backspace(&mut self) {
-        if let Screen::EnterTxid(buffer) = &mut self.screen {
-            buffer.pop();
+        match &mut self.screen {
+            Screen::EnterTxid(buffer) | Screen::EnterAddress(buffer) => {
+                buffer.pop();
+            }
+            _ => {}
         }
     }
 
@@ -119,14 +136,39 @@ impl AppState {
             }
         }
     }
+
+    /// Look up the address currently in the input buffer. Does nothing if
+    /// not currently in address-input mode.
+    pub async fn lookup_address<C: ChainReader>(&mut self, reader: &C) {
+        let Screen::EnterAddress(address) = &self.screen else {
+            return;
+        };
+        let address = address.clone();
+        match reader.address(address.clone()).await {
+            Ok(summary) => {
+                self.address = Some(summary);
+                self.screen = Screen::Address(address, Ok(()));
+            }
+            Err(e) => {
+                self.address = None;
+                self.screen = Screen::Address(address, Err(e.to_string()));
+            }
+        }
+    }
 }
 
 /// Render the current state into `frame`, whichever screen is active.
 pub fn render(frame: &mut Frame, state: &AppState) {
     match &state.screen {
         Screen::Home => render_home(frame, state),
-        Screen::EnterTxid(buffer) => render_txid_input(frame, buffer),
+        Screen::EnterTxid(buffer) => {
+            render_input(frame, buffer, "Enter txid (Enter: look up, Esc: cancel)")
+        }
         Screen::Transaction(txid, result) => render_transaction(frame, txid, result, state),
+        Screen::EnterAddress(buffer) => {
+            render_input(frame, buffer, "Enter address (Enter: look up, Esc: cancel)")
+        }
+        Screen::Address(address, result) => render_address(frame, address, result, state),
     }
 }
 
@@ -168,13 +210,9 @@ fn render_home(frame: &mut Frame, state: &AppState) {
     );
 }
 
-fn render_txid_input(frame: &mut Frame, buffer: &str) {
+fn render_input(frame: &mut Frame, buffer: &str, title: &str) {
     frame.render_widget(
-        Paragraph::new(format!("{buffer}_")).block(
-            Block::new()
-                .borders(Borders::ALL)
-                .title("Enter txid (Enter: look up, Esc: cancel)"),
-        ),
+        Paragraph::new(format!("{buffer}_")).block(Block::new().borders(Borders::ALL).title(title)),
         frame.area(),
     );
 }
@@ -225,6 +263,34 @@ fn render_transaction(
     };
     frame.render_widget(
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Transaction")),
+        frame.area(),
+    );
+}
+
+fn render_address(frame: &mut Frame, address: &str, result: &Result<(), String>, state: &AppState) {
+    let text = match result {
+        Err(e) => format!("Address {address}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(summary) = &state.address else {
+                return;
+            };
+            let mut lines = vec![
+                format!("Address {}", summary.address),
+                format!("Balance: {} zat", summary.balance_zat),
+                format!("Lifetime received: {} zat", summary.received_zat),
+                String::new(),
+                "Transactions:".to_string(),
+            ];
+            for txid in &summary.txids {
+                lines.push(format!("  {txid}"));
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Address")),
         frame.area(),
     );
 }
@@ -466,6 +532,86 @@ mod tests {
         assert!(content.contains("no such transaction"), "{content}");
     }
 
+    /// Typing and editing an address is pure state transition, mirroring
+    /// the txid input mode.
+    #[test]
+    fn address_input_mode_types_and_cancels() {
+        use super::Screen;
+
+        let mut state = AppState::default();
+        state.start_address_input();
+        assert_eq!(state.screen, Screen::EnterAddress(String::new()));
+
+        state.push_char('t');
+        state.push_char('1');
+        assert_eq!(state.screen, Screen::EnterAddress("t1".to_string()));
+
+        state.backspace();
+        assert_eq!(state.screen, Screen::EnterAddress("t".to_string()));
+
+        state.go_home();
+        assert_eq!(state.screen, Screen::Home);
+    }
+
+    /// A looked-up address renders its balance, lifetime received, and
+    /// txids.
+    #[test]
+    fn renders_address_with_balance_and_txids() {
+        use super::Screen;
+        use zaino_explorer_domain::AddressSummary;
+
+        let state = AppState {
+            screen: Screen::Address("t1example".to_string(), Ok(())),
+            address: Some(AddressSummary {
+                address: "t1example".to_string(),
+                balance_zat: 5_000,
+                received_zat: 10_000,
+                txids: vec!["ab".repeat(32)],
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("t1example"), "{content}");
+        assert!(content.contains("5000"), "{content}");
+        assert!(content.contains("10000"), "{content}");
+        assert!(content.contains(&"ab".repeat(32)), "{content}");
+    }
+
+    /// A failed address lookup renders the error, not a panic.
+    #[test]
+    fn renders_address_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Address("t1bad".to_string(), Err("not found".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("not found"), "{content}");
+    }
+
     /// `AppState::refresh` against a real adapter and a real server: proof
     /// the generic state logic actually works end-to-end with the one real
     /// `ChainReader`, not just with hand-constructed state.
@@ -590,6 +736,55 @@ mod tests {
         match &state.screen {
             Screen::Transaction(txid, Err(_)) => assert_eq!(txid, &"ab".repeat(32)),
             other => panic!("expected a failed Transaction screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_address` against a real mock server: proof the pipe reaches
+    /// the real adapter. An address with no scripted history and no
+    /// scripted tip reads as a zero balance (explorer policy), not an
+    /// error — mirroring `zaino-explorer-web`'s equivalent test and
+    /// `zaino-explorer-zaino-client`'s own coverage of the happy path with
+    /// a scripted balance.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_address_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.start_address_input();
+        for c in "t1unknown".chars() {
+            state.push_char(c);
+        }
+        state.lookup_address(&reader).await;
+
+        match &state.screen {
+            Screen::Address(address, Ok(())) => {
+                assert_eq!(address, "t1unknown");
+                let summary = state.address.as_ref().expect("address state populated");
+                assert_eq!(summary.balance_zat, 0);
+            }
+            other => panic!("expected a successful zero-balance Address screen, got {other:?}"),
         }
 
         let _ = handle.stop();

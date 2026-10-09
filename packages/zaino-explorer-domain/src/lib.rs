@@ -35,6 +35,12 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         txid: String,
         output_index: u32,
     ) -> impl Future<Output = Result<SpendInfo, ChainReadError>> + Send;
+
+    /// One transparent address's balance and transaction history.
+    fn address(
+        &self,
+        address: String,
+    ) -> impl Future<Output = Result<AddressSummary, ChainReadError>> + Send;
 }
 
 /// One block's summary, as shown in a block list — not the full block.
@@ -85,6 +91,20 @@ pub struct SpendInfo {
     pub spending_input_index: u32,
     /// The height that mined the spending transaction.
     pub height: u32,
+}
+
+/// One transparent address's balance and recent transaction history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressSummary {
+    /// The address itself.
+    pub address: String,
+    /// Total currently held, in zatoshis.
+    pub balance_zat: u64,
+    /// Lifetime gross receipts, in zatoshis (not supply-bounded, hence the
+    /// wider type).
+    pub received_zat: u128,
+    /// Transaction ids this address appears in.
+    pub txids: Vec<String>,
 }
 
 /// Why a [`ChainReader`] read failed.

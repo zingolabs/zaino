@@ -21,6 +21,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
     Router::new()
         .route("/", get(home::<C>))
         .route("/tx/:txid", get(transaction::<C>))
+        .route("/address/:address", get(address::<C>))
         .with_state(reader)
 }
 
@@ -92,6 +93,33 @@ async fn transaction<C: ChainReader>(
         },
         Err(e) => html! {
             h1 { "Transaction " (txid) }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// `GET /address/{address}`: one transparent address's balance and
+/// transaction history, fetched live. Not yet linked from anywhere — the
+/// explorer has no search form yet, so this is reachable only by direct URL.
+async fn address<C: ChainReader>(
+    State(reader): State<C>,
+    Path(address): Path<String>,
+) -> Html<String> {
+    let body = match reader.address(address.clone()).await {
+        Ok(summary) => html! {
+            h1 { "Address " (summary.address) }
+            p { "Balance: " (summary.balance_zat) " zat" }
+            p { "Lifetime received: " (summary.received_zat) " zat" }
+            h2 { "Transactions" }
+            ul {
+                @for txid in &summary.txids {
+                    li { a href=(format!("/tx/{txid}")) { (txid) } }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Address " (address) }
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -217,6 +245,46 @@ mod tests {
         assert!(
             text.contains("RPC error"),
             "an unscripted txid should render as an RPC error, not a panic: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// `/address/{address}` for an address with no scripted history renders
+    /// a zero balance, not an error — explorer policy reads "nothing found"
+    /// as zero, distinct from an actual RPC failure. Proves the route is
+    /// reachable and composes both underlying calls (balance + txids)
+    /// without crashing; the field-mapping itself is covered by
+    /// `zaino-explorer-zaino-client`'s own test against a scripted balance.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn address_route_renders_zero_balance_for_an_unknown_address() {
+        let (addr, handle) = spawn_mock_server().await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/address/t1unknown")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("Balance: 0 zat"),
+            "an address with no history should read as zero, not an error: {text}"
         );
 
         let _ = handle.stop();

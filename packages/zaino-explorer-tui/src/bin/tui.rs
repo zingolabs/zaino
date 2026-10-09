@@ -4,9 +4,10 @@
 //!
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
 //! web surface. `q` quits from anywhere. On the home screen: `t` starts a
-//! txid lookup, and the chain height refreshes every 5s. While typing a
-//! txid: characters append, Backspace edits, Enter looks it up, Esc
-//! cancels back home. On the transaction screen: Esc goes back home.
+//! txid lookup, `a` starts an address lookup, and the chain height
+//! refreshes every 5s. While typing: characters append, Backspace edits,
+//! Enter looks it up, Esc cancels back home. On the transaction/address
+//! screen: Esc goes back home.
 
 use std::io;
 use std::time::Duration;
@@ -66,11 +67,11 @@ async fn run(
                     return Ok(());
                 }
                 match state.screen() {
-                    Screen::Home => {
-                        if key.code == KeyCode::Char('t') {
-                            state.start_txid_input();
-                        }
-                    }
+                    Screen::Home => match key.code {
+                        KeyCode::Char('t') => state.start_txid_input(),
+                        KeyCode::Char('a') => state.start_address_input(),
+                        _ => {}
+                    },
                     Screen::EnterTxid(_) => match key.code {
                         KeyCode::Char(c) => state.push_char(c),
                         KeyCode::Backspace => state.backspace(),
@@ -78,7 +79,14 @@ async fn run(
                         KeyCode::Esc => state.go_home(),
                         _ => {}
                     },
-                    Screen::Transaction(_, _) => {
+                    Screen::EnterAddress(_) => match key.code {
+                        KeyCode::Char(c) => state.push_char(c),
+                        KeyCode::Backspace => state.backspace(),
+                        KeyCode::Enter => state.lookup_address(reader).await,
+                        KeyCode::Esc => state.go_home(),
+                        _ => {}
+                    },
+                    Screen::Transaction(_, _) | Screen::Address(_, _) => {
                         if key.code == KeyCode::Esc {
                             state.go_home();
                         }
