@@ -8,9 +8,9 @@ use zaino_indexes::sets::node_rpc_local::NodeRpcLocal as NodeRpcLocalIndexes;
 use zaino_service::use_cases::NodeRpc;
 use zaino_source::{
     GetBlock, GetBlockByHash, GetBlockDecoded, GetBlockDecodedByHash, GetBlockHeader,
-    GetBlockVerbose, GetBlockVerboseByHash, GetBlockchainInfo, GetDifficulty, GetMempoolMetadata,
-    GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs,
-    GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetTransaction,
+    GetBlockSubsidy, GetBlockVerbose, GetBlockVerboseByHash, GetBlockchainInfo, GetDifficulty,
+    GetMempoolMetadata, GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo,
+    GetNetworkSolPs, GetNodeInfo, GetPeerInfo, GetRawBlock, GetRawBlockByHash, GetTransaction,
     GetTransactionVerbose, GetTxOut, Ping, SendRawTransaction,
 };
 
@@ -107,6 +107,7 @@ pub trait NodeRpcSource:
     + GetNetworkInfo
     + Ping
     + GetTxOut
+    + GetBlockSubsidy
     + GetMempoolTxids
     + GetMempoolMetadata
     + GetMempoolSourceTip
@@ -135,6 +136,7 @@ impl<S> NodeRpcSource for S where
         + GetNetworkInfo
         + Ping
         + GetTxOut
+        + GetBlockSubsidy
         + GetMempoolTxids
         + GetMempoolMetadata
         + GetMempoolSourceTip

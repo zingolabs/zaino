@@ -33,9 +33,10 @@ use zcash_protocol::consensus::Network;
 use crate::error::RpcError;
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltaEntry, AddressUtxoEntry, BlockHashLogical,
-    BlockHeaderResponse, BlockResponse, BlockchainInfoResponse, CommitmentsResponse,
-    GetBlockDeltasResponse, GetBlockHashesResponse, InputDeltaEntry, JoinSplitObject,
-    LocalAddressResponse, MempoolEntryObject, MiningInfoResponse, NetworkEntryResponse,
+    BlockHeaderResponse, BlockResponse, BlockSubsidyResponse, BlockchainInfoResponse,
+    ChainTipEntry, CommitmentsResponse, FundingStreamEntry, GetBlockDeltasResponse,
+    GetBlockHashesResponse, InputDeltaEntry, JoinSplitObject, LocalAddressResponse,
+    LockboxStreamEntry, MempoolEntryObject, MiningInfoResponse, NetworkEntryResponse,
     NetworkInfoResponse, NetworkUpgradeResponse, NodeInfoResponse, OrchardActionObject,
     OrchardObject, OutputDeltaEntry, PeerInfoEntry, PoolTreestateResponse, ScriptPubKey, ScriptSig,
     ShieldedOutput, ShieldedSpend, SpentInfoResponse, SubtreeRootEntry, SubtreeRootsResponse,
@@ -293,6 +294,58 @@ fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> f64 {
 /// The shared renderer for zcashd's `chainValue` / transaction `value` family.
 fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
     zatoshi_magnitude_to_zec(false, amount.as_u64())
+}
+
+/// Render the retained chain tips as the `getchaintips` response (domain ->
+/// wire). The order is the domain's — highest first, already tie-broken on the
+/// display hash — so it is kept, not re-sorted.
+pub(crate) fn chain_tips_to_wire(
+    tips: Vec<zaino_primitives::types::rpc::ChainTip>,
+) -> Vec<ChainTipEntry> {
+    tips.into_iter()
+        .map(|tip| ChainTipEntry {
+            height: tip.height.into(),
+            hash: block_hash_to_display(tip.hash),
+            branchlen: tip.branch_len,
+            status: tip.status.to_string(),
+        })
+        .collect()
+}
+
+/// Render a subsidy split as the `getblocksubsidy` response (domain -> wire).
+/// Totals are ZEC floats; each stream carries its ZEC float with the exact
+/// zatoshi integer beside it as `valueZat`, as zebra does.
+pub(crate) fn block_subsidy_to_wire(
+    subsidy: zaino_primitives::types::rpc::BlockSubsidy,
+) -> BlockSubsidyResponse {
+    BlockSubsidyResponse {
+        funding_streams: subsidy
+            .funding_streams
+            .into_iter()
+            .map(|stream| FundingStreamEntry {
+                recipient: stream.recipient,
+                specification: stream.specification,
+                value: zatoshis_to_zec(stream.value),
+                value_zat: stream.value.as_u64(),
+                address: stream.address,
+            })
+            .collect(),
+        lockbox_streams: subsidy
+            .lockbox_streams
+            .into_iter()
+            .map(|stream| LockboxStreamEntry {
+                recipient: stream.recipient,
+                specification: stream.specification,
+                value: zatoshis_to_zec(stream.value),
+                value_zat: stream.value.as_u64(),
+            })
+            .collect(),
+        miner: zatoshis_to_zec(subsidy.miner),
+        founders: zatoshis_to_zec(subsidy.founders),
+        funding_streams_total: zatoshis_to_zec(subsidy.funding_streams_total),
+        lockbox_total: zatoshis_to_zec(subsidy.lockbox_total),
+        total_block_subsidy: zatoshis_to_zec(subsidy.total_block_subsidy),
+    }
 }
 
 /// Render one verbose mempool entry for the wire (domain -> wire): the txid hex
@@ -2869,5 +2922,110 @@ mod tests {
                 assert_eq!(out["end_height"], fixture_entry["end_height"]);
             }
         }
+    }
+
+    /// `getchaintips` renders zcashd's shape: display-order hash, `branchlen`
+    /// (no underscore), kebab-case status — in the domain's order, not re-sorted.
+    #[test]
+    fn chain_tips_render_zcashd_shape_in_domain_order() {
+        use super::chain_tips_to_wire;
+        use zaino_primitives::types::rpc::{ChainTip, ChainTipStatus};
+        use zaino_primitives::types::{BlockHash, Height};
+
+        let mut active = [0u8; 32];
+        active[0] = 0xaa;
+        let mut fork = [0u8; 32];
+        fork[0] = 0xbb;
+        let tips = vec![
+            ChainTip {
+                height: Height::try_from(5).expect("valid height"),
+                hash: BlockHash::from(active),
+                branch_len: 0,
+                status: ChainTipStatus::Active,
+            },
+            ChainTip {
+                height: Height::try_from(4).expect("valid height"),
+                hash: BlockHash::from(fork),
+                branch_len: 1,
+                status: ChainTipStatus::ValidFork,
+            },
+        ];
+
+        let json = serde_json::to_value(chain_tips_to_wire(tips)).expect("serialize");
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {
+                    "height": 5,
+                    "hash": format!("{}aa", "00".repeat(31)),
+                    "branchlen": 0,
+                    "status": "active"
+                },
+                {
+                    "height": 4,
+                    "hash": format!("{}bb", "00".repeat(31)),
+                    "branchlen": 1,
+                    "status": "valid-fork"
+                }
+            ])
+        );
+    }
+
+    /// `getblocksubsidy` renders exactly what zebra 6.4.2 answers on mainnet.
+    /// Both expected objects are zebra's own responses, captured at heights
+    /// 3,511,000 (NU6 streams) and 1,000,000 (founders' reward, no streams, so
+    /// both stream keys are omitted).
+    #[test]
+    fn block_subsidy_renders_zebra_oracle_shape() {
+        use super::block_subsidy_to_wire;
+        use zaino_primitives::types::rpc::{BlockSubsidy, FundingStream, LockboxStream};
+        use zaino_primitives::types::Zatoshis;
+
+        let zat = |amount: u64| Zatoshis::new(amount).expect("valid amount");
+
+        let nu6 = BlockSubsidy {
+            miner: zat(125_000_000),
+            founders: zat(0),
+            funding_streams_total: zat(12_500_000),
+            lockbox_total: zat(18_750_000),
+            total_block_subsidy: zat(156_250_000),
+            funding_streams: vec![FundingStream {
+                recipient: "Zcash Community Grants NU6".to_string(),
+                specification: "https://zips.z.cash/zip-1015".to_string(),
+                value: zat(12_500_000),
+                address: Some("t3cFfPt1Bcvgez9ZbMBFWeZsskxTkPzGCow".to_string()),
+            }],
+            lockbox_streams: vec![LockboxStream {
+                recipient: "Lockbox NU6".to_string(),
+                specification: "https://zips.z.cash/zip-1015".to_string(),
+                value: zat(18_750_000),
+            }],
+        };
+        let oracle: Value = serde_json::from_str(
+            r#"{"fundingstreams":[{"recipient":"Zcash Community Grants NU6","specification":"https://zips.z.cash/zip-1015","value":0.125,"valueZat":12500000,"address":"t3cFfPt1Bcvgez9ZbMBFWeZsskxTkPzGCow"}],"lockboxstreams":[{"recipient":"Lockbox NU6","specification":"https://zips.z.cash/zip-1015","value":0.1875,"valueZat":18750000}],"miner":1.25,"founders":0.0,"fundingstreamstotal":0.125,"lockboxtotal":0.1875,"totalblocksubsidy":1.5625}"#,
+        )
+        .expect("oracle parses");
+        assert_eq!(
+            serde_json::to_value(block_subsidy_to_wire(nu6)).expect("serialize"),
+            oracle
+        );
+
+        let founders_era = BlockSubsidy {
+            miner: zat(500_000_000),
+            founders: zat(125_000_000),
+            funding_streams_total: zat(0),
+            lockbox_total: zat(0),
+            total_block_subsidy: zat(625_000_000),
+            funding_streams: Vec::new(),
+            lockbox_streams: Vec::new(),
+        };
+        let oracle: Value = serde_json::from_str(
+            r#"{"miner":5.0,"founders":1.25,"fundingstreamstotal":0.0,"lockboxtotal":0.0,"totalblocksubsidy":6.25}"#,
+        )
+        .expect("oracle parses");
+        assert_eq!(
+            serde_json::to_value(block_subsidy_to_wire(founders_era)).expect("serialize"),
+            oracle
+        );
     }
 }

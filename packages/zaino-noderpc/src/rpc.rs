@@ -16,6 +16,7 @@ use zaino_service::error::SpendReadError;
 use zaino_service::error::TransactionViewError;
 use zaino_service::error::TreestateReadError;
 use zaino_service::error::TxReadError;
+use zaino_service::BlockSubsidyReadError;
 use zaino_service::NodeRpcService;
 use zaino_service::NodeStatusError;
 
@@ -25,11 +26,11 @@ use crate::wire::params::{
 };
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
-    BlockchainInfoResponse, GetBlockDeltasResponse, GetBlockHashesResponse, GetBlockResponse,
-    GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse,
-    NodeInfoResponse, PeerInfoEntry, RawMempoolResponse, SpentInfoResponse, SubtreeRootsResponse,
-    TreestateResponse, TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    BlockSubsidyResponse, BlockchainInfoResponse, ChainTipEntry, GetBlockDeltasResponse,
+    GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
+    MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
+    SpentInfoResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
+    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -98,6 +99,15 @@ pub(crate) trait NodeRpcApi {
 
     #[method(name = "getinfo")]
     async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "getchaintips")]
+    async fn chain_tips(&self) -> Result<Vec<ChainTipEntry>, ErrorObjectOwned>;
+
+    #[method(name = "getblocksubsidy")]
+    async fn block_subsidy(
+        &self,
+        height: Option<u32>,
+    ) -> Result<BlockSubsidyResponse, ErrorObjectOwned>;
 
     #[method(name = "getmininginfo")]
     async fn mining_info(&self) -> Result<MiningInfoResponse, ErrorObjectOwned>;
@@ -265,6 +275,17 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned> {
         self.get_info().await.map_err(to_error_object)
+    }
+    async fn chain_tips(&self) -> Result<Vec<ChainTipEntry>, ErrorObjectOwned> {
+        self.get_chain_tips().await.map_err(to_error_object)
+    }
+    async fn block_subsidy(
+        &self,
+        height: Option<u32>,
+    ) -> Result<BlockSubsidyResponse, ErrorObjectOwned> {
+        self.get_block_subsidy(height)
+            .await
+            .map_err(to_error_object)
     }
     async fn mining_info(&self) -> Result<MiningInfoResponse, ErrorObjectOwned> {
         self.get_mining_info().await.map_err(to_error_object)
@@ -462,6 +483,14 @@ fn to_error_object(err: RpcError) -> ErrorObjectOwned {
         // reached — neither is the caller's fault, and neither may render as a
         // success a warmer would cache. Each variant's own `Display` is used,
         // which does not stringify the `#[source]` cause.
+        // The validator has no subsidy for the height: zcashd's out-of-range
+        // error. A failed read behind it is the server's fault.
+        RpcError::BlockSubsidy(BlockSubsidyReadError::HeightNotReached(_)) => {
+            (OUT_OF_RANGE_CODE, "Block height out of range".to_string())
+        }
+        RpcError::BlockSubsidy(BlockSubsidyReadError::Read(e)) => {
+            (ErrorCode::InternalError.code(), e.to_string())
+        }
         RpcError::NodeStatus(e @ NodeStatusError::NotReady) => {
             (ErrorCode::InternalError.code(), e.to_string())
         }
@@ -919,6 +948,79 @@ mod tests {
             ))),
         ] {
             assert_eq!(to_error_object(err).code(), ErrorCode::InternalError.code());
+        }
+    }
+
+    /// `getchaintips` is served through the generated surface from the pinned
+    /// snapshot's tips, and `getblocksubsidy` from the engine: with no height it
+    /// asks at the pinned tip, and a height the validator has no subsidy for is
+    /// zcashd's out-of-range error (`-8`), not an internal one.
+    #[tokio::test]
+    async fn getchaintips_and_getblocksubsidy_are_served() {
+        use super::NodeRpcApiServer;
+        use crate::NodeRpc;
+        use jsonrpsee::core::params::ArrayParams;
+        use zaino_primitives::types::rpc::{BlockSubsidy, ChainTip, ChainTipStatus};
+        use zaino_primitives::types::{BlockHash, BlockRef, Height, Zatoshis};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let tip = BlockRef {
+            height: Height::try_from(7).expect("valid height"),
+            hash: BlockHash::from([0x11; 32]),
+        };
+        let zat = |amount: u64| Zatoshis::new(amount).expect("valid amount");
+        let chain = MockChain {
+            tip: Some(tip),
+            chain_tips: vec![ChainTip {
+                height: tip.height,
+                hash: tip.hash,
+                branch_len: 0,
+                status: ChainTipStatus::Active,
+            }],
+            block_subsidy: Some(BlockSubsidy {
+                miner: zat(125_000_000),
+                founders: zat(0),
+                funding_streams_total: zat(0),
+                lockbox_total: zat(0),
+                total_block_subsidy: zat(125_000_000),
+                funding_streams: Vec::new(),
+                lockbox_streams: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let module = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork).into_rpc();
+
+        let tips = module
+            .call::<_, serde_json::Value>("getchaintips", ArrayParams::new())
+            .await
+            .expect("getchaintips is served");
+        assert_eq!(tips[0]["status"], "active");
+        assert_eq!(tips[0]["height"], 7);
+        assert_eq!(tips[0]["branchlen"], 0);
+
+        let subsidy = module
+            .call::<_, serde_json::Value>("getblocksubsidy", ArrayParams::new())
+            .await
+            .expect("getblocksubsidy is served without a height");
+        assert_eq!(subsidy["miner"], 1.25);
+        assert_eq!(subsidy["totalblocksubsidy"], 1.25);
+        assert!(subsidy.get("fundingstreams").is_none());
+
+        let unscripted = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        )
+        .into_rpc();
+        let mut params = ArrayParams::new();
+        params.insert(100u32).expect("height param");
+        let err = unscripted
+            .call::<_, serde_json::Value>("getblocksubsidy", params)
+            .await
+            .expect_err("no subsidy at this height");
+        match err {
+            jsonrpsee::core::server::MethodsError::JsonRpc(obj) => assert_eq!(obj.code(), -8),
+            other => panic!("expected a JSON-RPC error, got {other:?}"),
         }
     }
 

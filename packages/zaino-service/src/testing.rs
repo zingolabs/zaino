@@ -23,7 +23,7 @@ use crate::{
     ServiceableRange, SpendStatus, TxStatus,
 };
 use zaino_primitives::types::rpc::{
-    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo,
+    BlockHeaderVerbose, BlockSubsidy, ChainTip, MiningInfo, NetworkInfo, NodeInfo, PeerInfo,
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
@@ -41,13 +41,13 @@ use crate::error::{
 };
 use crate::{
     AddressRead, AddressReceiveRead, BlockDeltas, BlockDeltasRead, BlockHashAt, BlockHashRead,
-    BlockRead, BlockTransactionViews, BlockVerboseRead, Broadcast, ChainInfoRead, ChainSegment,
-    CompactBlockRead, CompactNullifierRead, ForkReconcile, HeaderRead, HeaderSummary,
-    IndexerService, LocatedTransactionView, MempoolContent, MempoolEntry, MempoolListing,
-    MempoolSubscribe, MempoolSummary, NodeStatusError, NodeStatusRead, PoolActivationSource,
-    RawTransactionRead, ReadBudget, ReportedUpgrades, Serviceable, Snapshot, SpendRead,
-    TakeSnapshot, TipSubscribe, TransactionRead, TransactionViewRead, TreestateRead,
-    TreestateWindowRead, TxOutRead,
+    BlockRead, BlockSubsidyRead, BlockSubsidyReadError, BlockTransactionViews, BlockVerboseRead,
+    Broadcast, ChainInfoRead, ChainSegment, ChainTipsRead, CompactBlockRead, CompactNullifierRead,
+    ForkReconcile, HeaderRead, HeaderSummary, IndexerService, LocatedTransactionView,
+    MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe, MempoolSummary,
+    NodeStatusError, NodeStatusRead, PoolActivationSource, RawTransactionRead, ReadBudget,
+    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TransactionViewRead, TreestateRead, TreestateWindowRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -102,6 +102,12 @@ pub struct MockChain {
     /// pinned tip with neutral values for everything else. A test that needs to
     /// distinguish a rendered field from a defaulted one scripts this.
     pub blockchain_info: Option<BlockchainInfo>,
+    /// Scripted chain tips, returned verbatim by [`ChainTipsRead::chain_tips`].
+    pub chain_tips: Vec<ChainTip>,
+    /// Scripted subsidy split. When `Some`,
+    /// [`BlockSubsidyRead::block_subsidy`] returns it for any height; when
+    /// `None`, it answers `HeightNotReached`.
+    pub block_subsidy: Option<BlockSubsidy>,
     /// Scripted verbose block header. When `Some`,
     /// [`BlockVerboseRead::block_header_verbose`] returns it for any hash; when
     /// `None`, it answers `Ok(None)`.
@@ -350,6 +356,15 @@ impl TxOutRead for MockIndexerService {
         // A scripted output is returned for any outpoint; `None` is the ordinary
         // "spent or unknown" answer (the mock has no validator behind it).
         Ok(self.current().tx_out.clone())
+    }
+}
+
+impl BlockSubsidyRead for MockIndexerService {
+    async fn block_subsidy(&self, height: Height) -> Result<BlockSubsidy, BlockSubsidyReadError> {
+        self.current()
+            .block_subsidy
+            .clone()
+            .ok_or(BlockSubsidyReadError::HeightNotReached(height))
     }
 }
 
@@ -632,6 +647,12 @@ impl CompactNullifierRead for MockSnapshot {
         _at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
         Ok(None)
+    }
+}
+
+impl ChainTipsRead for MockSnapshot {
+    fn chain_tips(&self) -> Vec<ChainTip> {
+        self.chain.chain_tips.clone()
     }
 }
 

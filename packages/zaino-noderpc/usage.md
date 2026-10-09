@@ -25,7 +25,7 @@ in internal order per the lightwalletd protocol.)
 
 `getblockcount`, `getbestblockhash`, `getblockchaininfo`, `getblock`,
 `getblockheader`, `getblockhashes`, `getblockhash`, `getblockdeltas`,
-`getspentinfo`, `gettxout`, `getrawtransaction`, `sendrawtransaction`,
+`getchaintips`, `getblocksubsidy`, `getspentinfo`, `gettxout`, `getrawtransaction`, `sendrawtransaction`,
 `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`, `getrawmempool`,
 `getmempoolinfo`, `getdifficulty`, `getnetworkinfo`, `ping`, `getaddressbalance`,
 `getaddressdeltas`, `getaddresstxids`, `getaddressutxos`, `z_gettreestate`,
@@ -336,6 +336,29 @@ unspent or unknown (`-5`). An output spent very recently can therefore read as
 spent in `gettxout` yet unspent/unknown in `getspentinfo` for the duration of
 that lag. In steady state the non-finalised head tracks the chain tip, so the
 window is small; it widens only during initial sync or catch-up after downtime.
+
+## `getchaintips`
+
+Served **locally** through `ChainTipsRead` on the pinned snapshot; Zebra has no
+such method. The non-finalised head is the only tier that holds more than one
+branch, so its retained graph answers whole: an array of `{height, hash,
+branchlen, status}`, highest first, the hash in display order.
+
+What it can report is bounded by what the head has seen. It lists the active tip
+(`active`, `branchlen` 0) and each branch the head followed and was then
+reorged off (`valid-fork`), for as long as that branch stays inside the retained
+window. A fork the validator knew but never made its best chain is not listed,
+and neither are zcashd's `invalid`, `headers-only` or `valid-headers` statuses:
+the head retains only whole valid blocks.
+
+## `getblocksubsidy`
+
+Passthrough through `BlockSubsidyRead`: `(height?)`, where an omitted height
+means the pinned tip. Rendered in zebra's shape — `fundingstreams` and
+`lockboxstreams` first and omitted when empty, each stream carrying `value` (ZEC)
+beside `valueZat`, then `miner`, `founders`, `fundingstreamstotal`,
+`lockboxtotal` and `totalblocksubsidy` as ZEC floats. A height the validator has
+no subsidy for is zcashd's out-of-range error (`-8`).
 
 ## Not modelled here
 

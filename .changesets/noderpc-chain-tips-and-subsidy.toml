@@ -1,0 +1,58 @@
+[[changes]]
+crate = "zaino-noderpc"
+kind = "feature"
+description = """
+`getchaintips` and `getblocksubsidy` are served. `getchaintips` is answered \
+locally from the non-finalised head's retained graph, in zcashd's shape; Zebra \
+has no such method. `getblocksubsidy` is relayed from the validator and rendered \
+in zebra's shape, with an omitted height meaning the current tip.
+"""
+
+[[changes]]
+crate = "zaino-service"
+kind = "breaking"
+description = """
+`NodeRpcReads` now requires `ChainTipsRead` and `NodeRpcService` now requires \
+`BlockSubsidyRead`. Both traits are new, with `BlockSubsidyReadError` beside the \
+second. The testing `MockChain` gains `chain_tips` and `block_subsidy`.
+"""
+migration = """
+A type serving the node-RPC use case implements `ChainTipsRead` on its snapshot \
+and `BlockSubsidyRead` on the service.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+`HeadSnapshot` implements `ChainTipsRead`, exposing the retained graph's tips \
+— the active tip and each displaced branch still inside the window.
+"""
+
+[[changes]]
+crate = "zaino-core"
+kind = "feature"
+description = """
+The engine snapshot answers `ChainTipsRead` from its non-finalised tier, and the \
+engine answers `BlockSubsidyRead` by passthrough over a `GetBlockSubsidy` source.
+"""
+
+[[changes]]
+crate = "zaino-source"
+kind = "feature"
+description = """
+`Arc<V>` forwards `OneShotGetBlockSubsidy`, and the mock validator answers it \
+through `with_block_subsidy`.
+"""
+
+[[changes]]
+crate = "zaino-runtime"
+kind = "breaking"
+description = """
+`NodeRpcSource` now requires `GetBlockSubsidy`, since the node-RPC deployment \
+relays `getblocksubsidy`.
+"""
+migration = """
+A validator source used with the node-RPC deployment implements \
+`OneShotGetBlockSubsidy`. The zebra source already does.
+"""

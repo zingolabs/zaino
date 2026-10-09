@@ -110,6 +110,7 @@ pub struct MockChain {
     node_info_response: Option<NodeInfo>,
     /// Canned `getmininginfo` response; `None` answers a domain not-ready.
     mining_info_response: Option<MiningInfo>,
+    block_subsidy_response: Option<zaino_primitives::types::rpc::BlockSubsidy>,
     /// Canned peer listing, returned for any query. Empty is a valid answer from
     /// an isolated validator, so this never answers a domain error.
     peer_info_response: Vec<PeerInfo>,
@@ -154,6 +155,7 @@ impl MockChain {
             subtree_roots: Vec::new(),
             node_info_response: None,
             mining_info_response: None,
+            block_subsidy_response: None,
             peer_info_response: Vec::new(),
             network_sol_ps_response: None,
             difficulty_response: None,
@@ -303,6 +305,15 @@ impl MockChain {
         self
     }
 
+    /// Seed the response `get_block_subsidy` returns, for any height.
+    pub fn with_block_subsidy(
+        mut self,
+        subsidy: zaino_primitives::types::rpc::BlockSubsidy,
+    ) -> Self {
+        self.block_subsidy_response = Some(subsidy);
+        self
+    }
+
     /// Seed the response `get_mining_info` returns.
     pub fn with_mining_info(mut self, info: MiningInfo) -> Self {
         self.mining_info_response = Some(info);
@@ -417,6 +428,7 @@ impl Clone for MockChain {
             subtree_roots: self.subtree_roots.clone(),
             node_info_response: self.node_info_response.clone(),
             mining_info_response: self.mining_info_response.clone(),
+            block_subsidy_response: self.block_subsidy_response.clone(),
             peer_info_response: self.peer_info_response.clone(),
             network_sol_ps_response: self.network_sol_ps_response,
             difficulty_response: self.difficulty_response,
@@ -886,6 +898,23 @@ impl crate::OneShotGetNodeInfo for MockChain {
         self.node_info_response
             .clone()
             .ok_or(QueryError::Domain(GetNodeInfoError::NotReady))
+    }
+}
+
+impl crate::OneShotGetBlockSubsidy for MockChain {
+    async fn get_block_subsidy(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::rpc::BlockSubsidy, QueryError<crate::GetBlockSubsidyError>>
+    {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
+        self.block_subsidy_response
+            .clone()
+            .ok_or(QueryError::Domain(
+                crate::GetBlockSubsidyError::HeightNotReached(height),
+            ))
     }
 }
 

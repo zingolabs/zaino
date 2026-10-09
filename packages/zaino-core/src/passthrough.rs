@@ -19,7 +19,7 @@
 //! sound for the immutable, historical data light clients query.
 
 use zaino_primitives::types::rpc::{
-    BlockHeaderVerbose, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
+    BlockHeaderVerbose, BlockSubsidy, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
 };
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockRef, BlockVerbose, BlockchainInfo,
@@ -27,6 +27,7 @@ use zaino_primitives::types::{
     ShieldedPool, SubtreeRoot, TransactionId, TransparentAddress, TransparentOutput, Treestate,
     Utxo,
 };
+use zaino_service::BlockSubsidyReadError;
 use zaino_service::NodeStatusError;
 use zaino_service::error::{
     AddressReadError, BlockReadError, BroadcastRejection, MempoolReadError, ReadError,
@@ -37,17 +38,17 @@ use zaino_source::{
     DecodedTransaction, FailureMode, GetAddressBalance, GetAddressBalanceError, GetAddressDeltas,
     GetAddressDeltasError, GetAddressTxids, GetAddressTxidsError, GetAddressUtxos,
     GetAddressUtxosError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockDecoded,
-    GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockVerbose,
-    GetBlockVerboseByHash, GetBlockVerboseError, GetBlockchainInfo, GetBlockchainInfoError,
-    GetDifficulty, GetDifficultyError, GetMempoolCompactTransaction, GetMempoolMetadata,
-    GetMempoolMetadataError, GetMempoolSourceTip, GetMempoolTxids, GetMempoolTxidsError,
-    GetMiningInfo, GetMiningInfoError, GetNetworkInfo, GetNetworkInfoError, GetNetworkSolPs,
-    GetNetworkSolPsError, GetNodeInfo, GetNodeInfoError, GetPeerInfo, GetPeerInfoError,
-    GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction, GetRawMempoolTransactionError,
-    GetSubtreeRoots, GetSubtreeRootsError, GetTransaction, GetTransactionError,
-    GetTransactionVerbose, GetTransactionVerboseError, GetTreestate, GetTreestateError, GetTxOut,
-    GetTxOutError, Ping, SendRawTransaction, SendRawTransactionError, SourceError,
-    TransactionResponse,
+    GetBlockDecodedByHash, GetBlockError, GetBlockHeader, GetBlockHeaderError, GetBlockSubsidy,
+    GetBlockSubsidyError, GetBlockVerbose, GetBlockVerboseByHash, GetBlockVerboseError,
+    GetBlockchainInfo, GetBlockchainInfoError, GetDifficulty, GetDifficultyError,
+    GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolMetadataError, GetMempoolSourceTip,
+    GetMempoolTxids, GetMempoolTxidsError, GetMiningInfo, GetMiningInfoError, GetNetworkInfo,
+    GetNetworkInfoError, GetNetworkSolPs, GetNetworkSolPsError, GetNodeInfo, GetNodeInfoError,
+    GetPeerInfo, GetPeerInfoError, GetRawBlock, GetRawBlockByHash, GetRawMempoolTransaction,
+    GetRawMempoolTransactionError, GetSubtreeRoots, GetSubtreeRootsError, GetTransaction,
+    GetTransactionError, GetTransactionVerbose, GetTransactionVerboseError, GetTreestate,
+    GetTreestateError, GetTxOut, GetTxOutError, Ping, SendRawTransaction, SendRawTransactionError,
+    SourceError, TransactionResponse,
 };
 
 /// The passthrough provider over a resilient source handle `Src`.
@@ -852,6 +853,31 @@ where
             Err(SourceError::Domain(GetNodeInfoError::NotReady)) => Err(NodeStatusError::NotReady),
             Err(SourceError::NonDomain(cause)) => Err(NodeStatusError::unreachable(cause)),
             Err(SourceError::Unavailable(cause)) => Err(NodeStatusError::unreachable(cause)),
+        }
+    }
+}
+
+impl<Src> PassthroughProvider<Src>
+where
+    Src: GetBlockSubsidy,
+{
+    /// The subsidy split at `height`, live from the validator. Passthrough:
+    /// Zaino carries no subsidy schedule.
+    pub(crate) async fn block_subsidy(
+        &self,
+        height: Height,
+    ) -> Result<BlockSubsidy, BlockSubsidyReadError> {
+        match self.source.get_block_subsidy(height).await {
+            Ok(subsidy) => Ok(subsidy),
+            Err(SourceError::Domain(GetBlockSubsidyError::HeightNotReached(height))) => {
+                Err(BlockSubsidyReadError::HeightNotReached(height))
+            }
+            Err(SourceError::NonDomain(cause)) => Err(BlockSubsidyReadError::Read(
+                ReadError::Transient(format!("validator unavailable: {cause}")),
+            )),
+            Err(SourceError::Unavailable(cause)) => Err(BlockSubsidyReadError::Read(
+                ReadError::Transient(format!("validator unavailable: {cause}")),
+            )),
         }
     }
 }

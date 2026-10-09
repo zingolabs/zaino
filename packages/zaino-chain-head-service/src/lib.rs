@@ -38,6 +38,7 @@
 pub mod metric_names;
 
 mod address;
+mod chain_tips;
 mod error;
 mod graph;
 mod serve;

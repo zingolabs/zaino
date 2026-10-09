@@ -1323,3 +1323,74 @@ mod tests {
         assert!(!obj.contains_key("p2sh"));
     }
 }
+
+/// One entry of a `getchaintips` response, in zcashd's shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ChainTipEntry {
+    /// Height of this tip.
+    pub height: u32,
+    /// Block hash of this tip, as hex (display order).
+    pub hash: String,
+    /// Length of the branch connecting this tip to the active chain; zero for
+    /// the active tip.
+    pub branchlen: u32,
+    /// Validation status, in zcashd's kebab-case vocabulary (`active`,
+    /// `valid-fork`, ...).
+    pub status: String,
+}
+
+/// One funding stream of a `getblocksubsidy` response.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FundingStreamEntry {
+    /// Who receives this stream.
+    pub recipient: String,
+    /// URL of the specification defining it.
+    pub specification: String,
+    /// The stream's amount at this height, in ZEC.
+    pub value: f64,
+    /// The same amount, in zatoshis.
+    #[serde(rename = "valueZat")]
+    pub value_zat: u64,
+    /// The receiving address; absent when the stream has none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+}
+
+/// One lockbox stream of a `getblocksubsidy` response.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LockboxStreamEntry {
+    /// The lockbox this stream funds.
+    pub recipient: String,
+    /// URL of the specification defining it.
+    pub specification: String,
+    /// The stream's amount at this height, in ZEC.
+    pub value: f64,
+    /// The same amount, in zatoshis.
+    #[serde(rename = "valueZat")]
+    pub value_zat: u64,
+}
+
+/// The `getblocksubsidy` response, in zebra's shape: the stream lists first and
+/// omitted when empty, then the ZEC totals.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BlockSubsidyResponse {
+    /// Funding streams paid at this height; omitted when there are none.
+    #[serde(rename = "fundingstreams", skip_serializing_if = "Vec::is_empty")]
+    pub funding_streams: Vec<FundingStreamEntry>,
+    /// Lockbox streams funded at this height; omitted when there are none.
+    #[serde(rename = "lockboxstreams", skip_serializing_if = "Vec::is_empty")]
+    pub lockbox_streams: Vec<LockboxStreamEntry>,
+    /// The miner's share, in ZEC.
+    pub miner: f64,
+    /// The founders' reward, in ZEC.
+    pub founders: f64,
+    /// The sum of the funding streams, in ZEC.
+    #[serde(rename = "fundingstreamstotal")]
+    pub funding_streams_total: f64,
+    /// The sum of the lockbox streams, in ZEC.
+    #[serde(rename = "lockboxtotal")]
+    pub lockbox_total: f64,
+    /// The whole block subsidy, in ZEC.
+    #[serde(rename = "totalblocksubsidy")]
+    pub total_block_subsidy: f64,
+}

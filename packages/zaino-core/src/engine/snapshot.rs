@@ -18,13 +18,13 @@ use crate::chain_view::ChainViewSnapshot;
 use crate::routing::Routing;
 use zaino_primitives::types::{
     BlockRef, BlockSelector, BlockchainInfo, CompactBlock, HeightRange, RawTransaction,
-    TransactionId,
+    TransactionId, rpc::ChainTip,
 };
 use zaino_service::ServiceableRange;
 use zaino_service::error::{BlockReadError, ReadError, TxReadError};
 use zaino_service::{
-    ChainInfoRead, ChainSegment, CompactBlockRead, CompactNullifierRead, RawTransactionRead,
-    Snapshot,
+    ChainInfoRead, ChainSegment, ChainTipsRead, CompactBlockRead, CompactNullifierRead,
+    RawTransactionRead, Snapshot,
 };
 use zaino_source::{GetBlockchainInfo, GetTransaction};
 
@@ -202,6 +202,21 @@ where
             .compact_block(at)
             .await?
             .map(crate::nullifiers::strip_to_nullifiers))
+    }
+}
+
+/// Always local, and from the head alone: the non-finalised window is the only
+/// tier that retains more than one branch, so its graph answers whole. No
+/// validator port backs this — Zebra has no `getchaintips`.
+impl<F, N, Src, R> ChainTipsRead for EngineSnapshot<F, N, Src, R>
+where
+    F: ChainTier,
+    N: ChainTier + ChainTipsRead,
+    Src: Send + Sync + 'static,
+    R: Routing,
+{
+    fn chain_tips(&self) -> Vec<ChainTip> {
+        self.local.non_finalised().chain_tips()
     }
 }
 

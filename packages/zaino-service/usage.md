@@ -115,6 +115,19 @@ outpoint and the height, and `None` collapses unspent and never-created into the
 one answer `getspentinfo` renders as zcashd's not-found error. It is served
 `Local` over the tiers' spends index, composed across the seam — no source port.
 
+`NodeRpcReads` also carries `ChainTipsRead`, the `getchaintips` surface — a third
+indexer-only method (Zebra answers `-32601`). `chain_tips() -> Vec<ChainTip>` is
+synchronous and infallible because the answer is the non-finalised head's
+retained graph, already pinned in memory. It reports the active tip and each
+competing branch still inside the retained window, highest first; it adds no
+source port.
+
+`NodeRpcService` also demands `BlockSubsidyRead`, the control behind
+`getblocksubsidy`: `block_subsidy(Height) -> Result<BlockSubsidy, BlockSubsidyReadError>`.
+The split is a consensus rule the validator evaluates for any height, and Zaino
+carries no subsidy schedule, so it is passthrough. `HeightNotReached` is the
+validator having no subsidy for the height; `Read` is a failed relay.
+
 `NodeRpcService` also demands `NodeStatusRead`, the node-operator status control
 behind `getinfo`, `getmininginfo`, `getpeerinfo`, `getnetworksolps`,
 `getdifficulty`, `getnetworkinfo` and `ping`. These are facts about the validator,

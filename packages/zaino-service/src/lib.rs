@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 mod block_deltas;
+mod block_subsidy;
 mod bundle;
 mod capability;
 mod controls;
@@ -41,6 +42,7 @@ pub mod conformance;
 pub mod testing;
 
 pub use block_deltas::{BlockDeltas, BlockDeltasRead, InputDelta, OutputDelta, TransactionDeltas};
+pub use block_subsidy::{BlockSubsidyRead, BlockSubsidyReadError};
 pub use bundle::{ChainSegment, IndexerService, ServiceableRange, Snapshot};
 pub use capability::{Answerable, Capability, ServiceabilityManifest};
 pub use controls::{
@@ -54,10 +56,10 @@ pub use node_status::{NodeStatusError, NodeStatusRead};
 pub use read_sets::{FullWalletReads, LightWalletReads, NodeRpcReads, WalletReadCore};
 pub use reads::{
     AddressRead, AddressReceiveRead, BlockHashAt, BlockHashRead, BlockRead, BlockTransactionViews,
-    BlockVerboseRead, ChainInfoRead, CompactBlockRead, CompactNullifierRead, ForkReconcile,
-    HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid, PoolActivationSource,
-    RawTransactionRead, ReadBudget, ResolvedInput, SpendRead, TransactionRead, TransactionView,
-    TransactionViewRead, TreestateRead, TreestateWindowRead,
+    BlockVerboseRead, ChainInfoRead, ChainTipsRead, CompactBlockRead, CompactNullifierRead,
+    ForkReconcile, HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid,
+    PoolActivationSource, RawTransactionRead, ReadBudget, ResolvedInput, SpendRead,
+    TransactionRead, TransactionView, TransactionViewRead, TreestateRead, TreestateWindowRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use tx_out::TxOutRead;

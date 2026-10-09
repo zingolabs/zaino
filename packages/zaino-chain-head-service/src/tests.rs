@@ -498,6 +498,63 @@ async fn a_higher_reorg_retains_the_displaced_branch() {
     assert!(!snapshot.is_on_best_chain(displaced.reference));
 }
 
+/// After a reorg the served head reports two tips: the new best tip as
+/// `active` with no branch, and the displaced block as a `valid-fork` one block
+/// off the best chain. Highest first, which is `getchaintips` order.
+#[tokio::test]
+async fn chain_tips_report_the_active_tip_and_the_displaced_branch() {
+    use zaino_primitives::types::rpc::{ChainTip, ChainTipStatus};
+    use zaino_service::{ChainTipsRead as _, TakeSnapshot as _};
+
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 100).await;
+    step_to_tip(&service, &validator).await;
+
+    let before = service
+        .subscriber()
+        .snapshot()
+        .await
+        .expect("a head snapshot")
+        .chain_tips();
+    assert_eq!(
+        before,
+        vec![ChainTip {
+            height: height(4),
+            hash: hash(4),
+            branch_len: 0,
+            status: ChainTipStatus::Active,
+        }],
+        "a linear chain has exactly its active tip"
+    );
+
+    validator.reorg(4, &[40, 41]);
+    step_to_tip(&service, &validator).await;
+
+    let after = service
+        .subscriber()
+        .snapshot()
+        .await
+        .expect("a head snapshot")
+        .chain_tips();
+    assert_eq!(
+        after,
+        vec![
+            ChainTip {
+                height: height(5),
+                hash: hash(41),
+                branch_len: 0,
+                status: ChainTipStatus::Active,
+            },
+            ChainTip {
+                height: height(4),
+                hash: hash(4),
+                branch_len: 1,
+                status: ChainTipStatus::ValidFork,
+            },
+        ]
+    );
+}
+
 /// A branch swap at the same height. The extension loop cannot see this — it
 /// finds no higher block — so `check_for_nonhigher_reorgs` is what catches it.
 #[tokio::test]

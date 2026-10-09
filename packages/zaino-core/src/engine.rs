@@ -143,7 +143,9 @@ use futures::stream::{self, BoxStream, StreamExt};
 use crate::chain_view::ChainTier;
 use crate::chain_view::ChainView;
 use crate::routing::{PlacementKind, Routing};
-use zaino_primitives::types::rpc::{MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut};
+use zaino_primitives::types::rpc::{
+    BlockSubsidy, MiningInfo, NetworkInfo, NodeInfo, PeerInfo, TxOut,
+};
 use zaino_primitives::types::{Difficulty, Height, OutputIndex};
 use zaino_primitives::types::{PreIndexCompactTx, TransactionId};
 use zaino_service::error::{BroadcastRejection, MempoolReadError, ReadError, Transient};
@@ -152,13 +154,15 @@ use zaino_service::{
     ServiceabilityManifest, TipEvent,
 };
 use zaino_service::{
-    Broadcast, IndexerService, MempoolContent, MempoolListing, MempoolSubscribe, NodeStatusRead,
-    ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe, TxOutRead,
+    BlockSubsidyRead, BlockSubsidyReadError, Broadcast, IndexerService, MempoolContent,
+    MempoolListing, MempoolSubscribe, NodeStatusRead, ReportedUpgrades, Serviceable, TakeSnapshot,
+    TipSubscribe, TxOutRead,
 };
 use zaino_source::{
-    GetDifficulty, GetMempoolCompactTransaction, GetMempoolMetadata, GetMempoolSourceTip,
-    GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs, GetNodeInfo, GetPeerInfo,
-    GetRawMempoolTransaction, GetTreestate, GetTxOut, Ping, SendRawTransaction,
+    GetBlockSubsidy, GetDifficulty, GetMempoolCompactTransaction, GetMempoolMetadata,
+    GetMempoolSourceTip, GetMempoolTxids, GetMiningInfo, GetNetworkInfo, GetNetworkSolPs,
+    GetNodeInfo, GetPeerInfo, GetRawMempoolTransaction, GetTreestate, GetTxOut, Ping,
+    SendRawTransaction,
 };
 
 use crate::passthrough::PassthroughProvider;
@@ -442,6 +446,21 @@ where
         include_mempool: bool,
     ) -> Result<Option<TxOut>, ReadError> {
         self.passthrough.tx_out(txid, index, include_mempool).await
+    }
+}
+
+/// Always passthrough: the subsidy split is a consensus rule the validator
+/// evaluates, and Zaino carries no schedule of its own. Forwards to the
+/// passthrough provider.
+impl<Fs, Nfs, Src, R> BlockSubsidyRead for Engine<Fs, Nfs, Src, R>
+where
+    Fs: Send + Sync + 'static,
+    Nfs: Send + Sync + 'static,
+    Src: GetBlockSubsidy,
+    R: Routing,
+{
+    async fn block_subsidy(&self, height: Height) -> Result<BlockSubsidy, BlockSubsidyReadError> {
+        self.passthrough.block_subsidy(height).await
     }
 }
 

@@ -9,6 +9,7 @@ use zaino_service::error::{
     AddressReadError, BlockDeltasError, BlockHashReadError, BroadcastRejection, MempoolReadError,
     ReadError, SpendReadError, TransactionViewError, Transient, TreestateReadError, TxReadError,
 };
+use zaino_service::BlockSubsidyReadError;
 use zaino_service::NodeStatusError;
 
 /// A node-RPC handler failure.
@@ -69,4 +70,7 @@ pub enum RpcError {
     /// not-found error above, not this).
     #[error(transparent)]
     Spend(#[from] SpendReadError),
+    /// The block-subsidy read failed (`getblocksubsidy`).
+    #[error(transparent)]
+    BlockSubsidy(#[from] BlockSubsidyReadError),
 }

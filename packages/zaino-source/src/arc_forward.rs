@@ -410,6 +410,20 @@ impl<V: OneShotGetNodeInfo + ?Sized> OneShotGetNodeInfo for Arc<V> {
     }
 }
 
+impl<V: crate::OneShotGetBlockSubsidy + ?Sized> crate::OneShotGetBlockSubsidy for Arc<V> {
+    fn get_block_subsidy(
+        &self,
+        height: Height,
+    ) -> impl Future<
+        Output = Result<
+            zaino_primitives::types::rpc::BlockSubsidy,
+            QueryError<crate::GetBlockSubsidyError, Self::NonDomain>,
+        >,
+    > + Send {
+        (**self).get_block_subsidy(height)
+    }
+}
+
 impl<V: OneShotGetMiningInfo + ?Sized> OneShotGetMiningInfo for Arc<V> {
     fn get_mining_info(
         &self,

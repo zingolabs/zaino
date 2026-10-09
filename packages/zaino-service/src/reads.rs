@@ -6,7 +6,7 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 use crate::{ForkPoint, Locator, SpendStatus, TxStatus};
-use zaino_primitives::types::rpc::BlockHeaderVerbose;
+use zaino_primitives::types::rpc::{BlockHeaderVerbose, ChainTip};
 use zaino_primitives::types::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockRef, BlockSelector,
     BlockTime, BlockVerbose, BlockchainInfo, CompactBlock, DecodedBlock, Height, HeightRange,
@@ -610,4 +610,15 @@ pub trait CompactNullifierRead: Send + Sync {
 /// that could disagree about the height they describe.
 pub trait ChainInfoRead: Send + Sync {
     fn chain_info(&self) -> impl Future<Output = Result<BlockchainInfo, ReadError>> + Send;
+}
+
+/// The tips of the block tree — the domain behind `getchaintips`.
+///
+/// Backed by: the non-finalised head's retained graph. It reports the active
+/// tip and every competing branch still inside the retained window; a branch
+/// the head never followed, or one trimmed below the window, is not known to
+/// it. Infallible and synchronous: the graph is already pinned in memory.
+pub trait ChainTipsRead: Send + Sync {
+    /// Every retained tip, the active one included, highest first.
+    fn chain_tips(&self) -> Vec<ChainTip>;
 }

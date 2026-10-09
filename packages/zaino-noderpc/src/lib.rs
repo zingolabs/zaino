@@ -26,6 +26,7 @@ use zaino_service::queries;
 use zaino_service::BlockDeltasRead;
 use zaino_service::BlockHashRead;
 use zaino_service::BlockVerboseRead;
+use zaino_service::ChainTipsRead;
 use zaino_service::RawTransactionRead;
 use zaino_service::SpendRead;
 use zaino_service::TransactionViewRead;
@@ -40,20 +41,21 @@ use crate::wire::params::{
 };
 use crate::wire::response::{
     AddressBalanceResponse, AddressDeltasResponse, AddressUtxoEntry, BlockHeaderResponse,
-    BlockchainInfoResponse, DeltaRange, GetBlockDeltasResponse, GetBlockHashesResponse,
-    GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse, MiningInfoResponse,
-    NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
-    RawTransactionResponse, SpentInfoResponse, SubtreeRootsResponse, TreestateResponse,
-    TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    BlockSubsidyResponse, BlockchainInfoResponse, ChainTipEntry, DeltaRange,
+    GetBlockDeltasResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
+    MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry,
+    RawMempoolResponse, RawTransactionResponse, SpentInfoResponse, SubtreeRootsResponse,
+    TreestateResponse, TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_deltas_to_wire, block_hash_to_display, block_hashes_to_wire,
-    block_header_to_wire, block_to_wire_v1, block_to_wire_v2, blockchain_info_to_wire,
-    blockhash_from_hex, bytes_from_hex, bytes_to_hex, delta_to_wire, mempool_entry_to_wire,
-    mining_info_to_wire, network_info_to_wire, node_info_to_wire, peer_info_to_wire,
-    spent_info_to_wire, subtree_roots_to_wire, transaction_view_to_wire, treestate_to_wire,
-    tx_out_to_wire, txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire,
-    validated_to_wire, z_validated_to_wire,
+    block_header_to_wire, block_subsidy_to_wire, block_to_wire_v1, block_to_wire_v2,
+    blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, chain_tips_to_wire,
+    delta_to_wire, mempool_entry_to_wire, mining_info_to_wire, network_info_to_wire,
+    node_info_to_wire, peer_info_to_wire, spent_info_to_wire, subtree_roots_to_wire,
+    transaction_view_to_wire, treestate_to_wire, tx_out_to_wire, txid_from_hex, txid_to_display,
+    unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -455,6 +457,33 @@ impl<S: NodeRpcService> NodeRpc<S> {
     pub(crate) async fn get_ping(&self) -> Result<(), RpcError> {
         self.engine.ping().await?;
         Ok(())
+    }
+
+    /// `getchaintips`: every tip of the block tree the non-finalised head
+    /// retains — the active tip and each competing branch still inside its
+    /// window. Served locally; Zebra has no such method.
+    pub(crate) async fn get_chain_tips(&self) -> Result<Vec<ChainTipEntry>, RpcError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(chain_tips_to_wire(snapshot.chain_tips()))
+    }
+
+    /// `getblocksubsidy`: the subsidy split at `height`, relayed from the
+    /// validator. An omitted height means the current tip, as in zcashd.
+    pub(crate) async fn get_block_subsidy(
+        &self,
+        height: Option<u32>,
+    ) -> Result<BlockSubsidyResponse, RpcError> {
+        let height = match height {
+            Some(height) => Height::try_from(height)
+                .map_err(|_| RpcError::InvalidParams("height is not a valid height".into()))?,
+            None => {
+                let snapshot = self.engine.snapshot().await?;
+                snapshot.pinned_tip().ok_or(RpcError::NoBlocks)?.height
+            }
+        };
+        Ok(block_subsidy_to_wire(
+            self.engine.block_subsidy(height).await?,
+        ))
     }
 
     /// `getnetworksolps`: the network solution rate, relayed. `blocks` and
