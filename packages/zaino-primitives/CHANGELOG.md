@@ -13,6 +13,12 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-10-09
+### Added
+- `Script::as_bytes` borrows a script's raw bytes.
+### Changed
+- Block.transactions is a private field read through Block::transactions(), which returns the list in block order. A Block is built only through Block::try_new, so its transaction list is fixed at construction and every block carries at least its coinbase.
+
 ## [0.3.0] - 2026-09-26
 ### Added
 - Add RelativeChainWork, the proof-of-work total a run of blocks holds, measured from where the run begins rather than from genesis.

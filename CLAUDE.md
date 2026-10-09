@@ -108,11 +108,6 @@ can't add inherent methods to them):
   step; the `WireXError` enum documents each rejection reason.
   Replaces `impl TryFrom<proto::X> for X`.
 
-**Reference**: `BlockIndex` wire methods in
-`packages/zaino-state/src/chain_index/types/wire.rs`. Copy its shape
-when adding wire conversions for other business types (BlockHash,
-TransactionHash, etc.).
-
 **Enforcement (covers both boundaries)**:
 
 - CI lint: `makers lint-boundary-conversions` (run as part of

@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::TransactionId;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`SendRawTransaction`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -26,10 +26,12 @@ pub enum SendRawTransactionError {
 /// must not treat an error as proof the transaction was not accepted earlier.
 ///
 /// Maps to `sendrawtransaction` over JSON-RPC.
-pub trait OneShotSendRawTransaction: Send + Sync {
+pub trait OneShotSendRawTransaction: ValidatorSource + Send + Sync {
     /// Submit a serialised transaction, returning its id on acceptance.
     fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
+    ) -> impl Future<
+        Output = Result<TransactionId, QueryError<SendRawTransactionError, Self::NonDomain>>,
+    > + Send;
 }

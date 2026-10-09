@@ -71,6 +71,7 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-chain-head-service/          Non-finalised chain head: the runtime
   zaino-chain-store/                 Finalised state: vocabulary and ports
   zaino-chain-store-zainodb/         Finalised state: the LMDB implementation
+  zaino-chain/                       ChainView: the unified chain read surface, ports + composer
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
@@ -181,33 +182,27 @@ parallelism — re-run, or lower `--test-threads`.
 
 ### Architecture Decision Records
 Decisions that shape the codebase, with the reasoning that produced them. Read
-these before changing the structure they describe. Every record lives in
-[zingolabs/zingo-adrs](https://github.com/zingolabs/zingo-adrs). This
-repository checks in only a submodule pointer to it at `docs/adr/`, so the
-directory is empty until you materialise it, and zaino's own records then sit
-under `docs/adr/zaino/`. Propose a record in zingo-adrs, never here.
-
-```sh
-# materialise the records after cloning
-git submodule update --init docs/adr
-
-# advance the pointer to the current dev of zingo-adrs, then commit
-git submodule update --remote docs/adr
-```
+these before changing the structure they describe. The records live in
+[zingo-adrs](https://github.com/zingolabs/zingo-adrs), and zaino's own records
+sit under `docs/adr/zaino/` once the submodule is initialised. The [zingo-adrs
+README](https://github.com/zingolabs/zingo-adrs#pointing-a-code-repository-at-zingo-adrs) explains how to read them, advance the pointer, and propose
+a record.
 
 Records a newcomer needs first:
-- [ADR-0006](./docs/adr/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
-- [ADR-0007](./docs/adr/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
-- [ADR-0008](./docs/adr/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
-- [ADR-0009](./docs/adr/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
-- [ADR-0010](./docs/adr/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
-- [ADR-0011](./docs/adr/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
-- [ADR-0012](./docs/adr/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
+- [ADR-0006](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
+- [ADR-0007](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
+- [ADR-0008](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
+- [ADR-0009](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0010](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0010-mempool-subsystem-separation.md): the mempool subsystem is separated into `zaino-mempool` behind ports.
+- [ADR-0011](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
+- [ADR-0012](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0012-chain-store-subsystem-separation.md): the finalised state is a subsystem behind ports, and its database is one implementation of them.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
 mistakes its design is trying to prevent.
 - [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
+- [`zaino-logging`](./packages/zaino-logging/usage.md): centralized tracing setup, and the panic-at-origin hook that routes panics through the same sink.
+- [`zaino-async`](./packages/zaino-async/usage.md): the low-level async/tokio primitives (named, panic-rendering `Task`) the component layer is built on.
 - [`zaino-component`](./packages/zaino-component/usage.md): the component abstraction, its two independent axes, and the observed/owned line.
 - [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
@@ -226,6 +221,7 @@ mistakes its design is trying to prevent.
 - [`zaino-encoding`](./packages/zaino-encoding/usage.md): the versioned record format, and why nested fields must have their version pinned.
 - [`zaino-chain-store`](./packages/zaino-chain-store/usage.md): the finalised state's ports, why the chunk is the block-read primitive, and why a read past the watermark is not a miss.
 - [`zaino-chain-store-zainodb`](./packages/zaino-chain-store-zainodb/usage.md): the LMDB store, its on-disk compatibility contract, and why its checksums are load-bearing.
+- [`zaino-chain`](./packages/zaino-chain/usage.md): ChainView's ports, how coverage decides which provider answers, and what a hole between the tiers degrades versus what it refuses.
 - [`zaino-serve`](./packages/zaino-serve/usage.md): served RPCs.
 - [`zainod`](./packages/zainod/usage.md): the admin listener — what goes on `/metrics`, `/metrics` (quantities) vs `/readyz` (per-component health & modes).
 

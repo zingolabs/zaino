@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{Block, BlockHash};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBlockByHash`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -16,10 +16,10 @@ pub enum GetBlockByHashError {
 
 /// Fetch a fully parsed block identified by its hash.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBlockByHash: Send + Sync {
+pub trait OneShotGetBlockByHash: ValidatorSource + Send + Sync {
     /// Fetch a parsed block by hash.
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError, Self::NonDomain>>> + Send;
 }

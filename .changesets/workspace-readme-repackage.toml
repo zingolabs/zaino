@@ -1,0 +1,33 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a12116-6308-7282-993c-885e067ff56b"
+consumed_in = "zainod-0-10-2"
+
+[[changes]]
+crate       = "zaino-address"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."
+
+[[changes]]
+crate       = "zaino-common"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."
+
+[[changes]]
+crate       = "zaino-consensus"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."
+
+[[changes]]
+crate       = "zaino-encoding"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."
+
+[[changes]]
+crate       = "zaino-source-macros"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."
+
+[[changes]]
+crate       = "zaino-status"
+kind        = "internal"
+description = "The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content."

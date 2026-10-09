@@ -5,7 +5,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
+
+## [2026-10-09]
+### zaino-common 0.5.4
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-address 0.1.3
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-consensus 0.2.1
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-status 0.1.3
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-encoding 0.1.2
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-source-macros 0.1.2
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+
+## [0.5.0 through 0.10.1]
+
+The entries below accumulated across several releases without being sectioned.
+They are kept verbatim for the record; from 0.5.0 onwards each crate's own
+changelog under `packages/<crate>/CHANGELOG.md` is the authority for what
+shipped in which version.
 
 ### Added
 - **Eight new crates** implementing validator access as a hexagonal port /
@@ -272,6 +293,133 @@ and this library adheres to Rust's notion of
   `NU5`).
 - The mempool stream parses each transaction once rather than twice, removing an
   `.unwrap()` on the same path.
+
+## [2026-10-09]
+### zainod 0.10.2
+- dependency `zaino-chain-head-service` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-state` 0.10.0→0.11.0 crossed the requirement `^0.10.0`
+### zaino-serve 0.9.1
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-state` 0.10.0→0.11.0 crossed the requirement `^0.10.0`
+- Adapt to the renamed non-domain seam error (`FetchError` -> `NonDomainError`, `Fetch` -> `NonDomain`).
+### zaino-state 0.11.0
+- `WithChainViewSource` reaches ChainView from `ChainIndex`'s source vocabulary, and the mockchain source answers the remaining validator ports a chain view passes through. `ChainIndex` still reads through its existing path; this makes the view reachable, not yet load-bearing.
+- Removed unused public items: `chain_index::chain_head::indexed_block` and `ChainHeadConversionError`, `chain_index::wire_types::block_index_from_wire` and `WireBlockIdError`, and `chain_index::source::InvalidData`.
+- dependency `zaino-chain` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-head-service` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-store-zainodb` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- `ChainIndex::get_block_range` streams in descending order when `start` is above `end`, and yields an error when either bound is above the snapshot's tip instead of clamping `end` or returning `None`. A missing `end` is the tip.
+- `GetTaddressTransactions` reads every transaction from one snapshot rather than one per transaction, so a reorg mid-stream can no longer mix chains.
+- Indexer RPC fixes: `GetBlock`/`GetBlockNullifiers` no longer report the tip height itself as out of range; `GetBlockNullifiers` rejects heights *below* Sapling activation (the check was inverted) and names the activation height; `getrawtransaction` with `verbose = 0` returns raw hex; `RawTransaction.height` is `u64::MAX` for a transaction mined only on a non-best chain and 0 in the mempool, per the protocol, in `GetTransaction` and `GetTaddressTransactions`; `GetLatestTreeState` reads the tip's treestate by hash, so a moving tip cannot mix two blocks; timeout errors name the RPC that timed out. Block and transaction reads that fail now return the failure's own gRPC status (`unavailable`, `internal`, `not_found`, ...) instead of `unknown`.
+- Adapt to the renamed seam error; the legacy source delegators implement `ValidatorSource` (pass-through non-domain type).
+- The sync and coherence-freeze gauges and the 120 s freeze warning moved to `zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` re-exports the constants; its `GAUGES` table is gone.
+- `NodeBackedChainIndex` is a thin adapter: it launches the chain store, chain head, ChainView (with its sync loop) and the mempool, and answers the `ChainIndex` traits through ChainView and the mempool. The legacy sync loop is gone; the chain head's retry ladder now drives the index's error status, and the mempool is woken by the chain head's tip changes.
+- `NodeBackedIndexerService` reads through ChainView directly where it used to rebuild legacy shapes: treestates and subtree roots come from one snapshot read, and the streaming RPCs share one spawn-and-timeout helper. RPC signatures, statuses and messages are unchanged, except that `GetTaddressBalanceStream` reports a single timeout message.
+### zaino-proto 0.6.2
+- Declares `librocksdb-sys` with `bindgen-runtime`, which fixes a cold build of the workspace. Two bindgen major versions share one `clang-sys`: the newer enables its `runtime` feature for the whole graph, while rocksdb's older one re-enables neither of librocksdb-sys' `bindgen-*` features, so its `ensure_libclang_is_loaded` compiles to a no-op and the first stub reached panics. Remove once rocksdb enables one itself, or the two bindgen versions converge.
+### zaino-primitives 0.4.0
+- `Script::as_bytes` borrows a script's raw bytes.
+- Block.transactions is a private field read through Block::transactions(), which returns the list in block order. A Block is built only through Block::try_new, so its transaction list is fixed at construction and every block carries at least its coinbase.
+### zaino-source 0.3.0
+- Rename the non-answer error `FetchError` to `NonDomainError`, and the `QueryError`/`SourceError` `Fetch` variant to `NonDomain` — it is the complement of a domain answer (unreachable, timed out, unauthorized, or an unusable/undecodable response), not specifically a transport.
+  _Migration:_ Replace `zaino_source::FetchError` with `NonDomainError`, `FetchError::new`/`from_cause` with `NonDomainError::new`/`from_cause`, and `QueryError::Fetch`/`SourceError::Fetch` with the `NonDomain` variant.
+- Add the `ValidatorSource` port contract: each adapter declares `type NonDomain: Error + Send + Sync + Into<NonDomainError>`, every `OneShot*` port gains it as a supertrait and returns `QueryError<E, Self::NonDomain>`, and `QueryError` gains a second type parameter `N` (defaulting to `NonDomainError`). The resilience wrapper erases `N` to the seam, so the consumer-facing `SourceError<E>` is unchanged.
+  _Migration:_ External adapters implementing a `OneShot*` port must now `impl ValidatorSource` (set `type NonDomain = NonDomainError` if the adapter has no distinct non-domain type) and return `QueryError<E, Self::NonDomain>`.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- `NonDomainError` now preserves the concrete transport cause via `Error::source()` instead of flattening it into a message string, so an abort trail reaches the underlying error.
+### zaino-rpc 0.4.0
+- `From<RpcError>` now converts into `zaino_source::NonDomainError` (renamed from `FetchError`); a coded JSON-RPC refusal carries the server's message directly rather than a `to_string()` of the whole error.
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### zaino-convert-zebra 0.3.1
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+### zaino-source-zebra-rpc 0.2.3
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- Implement `ValidatorSource` (`type NonDomain = NonDomainError`) and adapt to the renamed seam error; classification is unchanged.
+### zaino-source-zebra-readstate 0.2.3
+- The read-state adapter owns its non-domain faults as a new public `ReadStateError` (unreachable / invalid-data / off-contract), mapped to the seam by one deterministic `From<ReadStateError> for NonDomainError`; it implements `ValidatorSource` with `type NonDomain = ReadStateError`.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### zaino-source-zebra 0.2.3
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- The composite validator implements `ValidatorSource` and normalises its read-state fast-path faults to the seam; adapt to the renamed seam error.
+### zaino-mempool 0.2.3
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- Compiles again with default features off: the `ChainStateEpoch` import is gated behind `tip_aware_mempool` like its only uses.
+### zaino-mempool-service 0.2.3
+- The coherence loop emits `MEMPOOL_COHERENCE_FROZEN_SECONDS` and warns when coherence stays frozen for over 120 s, once per freeze.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- Adapt to the renamed non-domain seam error.
+### zaino-chain-head 0.3.0
+- `ChainHeadTxOutSetService::txout_delta(start)` reports what the canonical window did to the transparent UTXO set from `start` to the tip: the outputs it created and did not spend, and the outpoints it spent that were created below `start`. Provided once on the trait, so every snapshot answers it identically. A `start` below the retained window is refused with the new `ChainHeadError::BelowWindow` rather than answered from a partial range.
+- `ChainHeadSnapshot::work_anchor` names the block `ChainHeadWork` is counted from: the parent of the window floor, so a block's work sums block work over `(anchor, B]` and a consumer can rebase it onto absolute chainwork.
+  _Migration:_ Implementors of `ChainHeadSnapshot` must add `work_anchor`, returning the parent of the lowest block their graph accumulates from, or `None` when that block is genesis.
+- Transparent-history effects are keyed by `TransparentAddressKey` rather than by the wallet-facing string, which is network-specific and cannot name a non-standard output. Still declared, not implemented.
+  _Migration:_ Behind the non-default `transparent_address_history_experimental` feature. `TransparentHistoryQuery::addresses`, `LocatedTransparentOutput::address` and `LocatedTransparentSpend::address` are now `zaino_primitives::types::TransparentAddressKey`. Build one with `TransparentAddressKey::from_script`, which shares `classify_script` with the finalised store's indexing so the two halves of an address's history cannot key differently.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### zaino-chain-head-service 0.3.0
+- The map-backed snapshot records its work anchor, and keeps it across pruning and re-anchoring of the retention floor.
+- The chain head emits `CHAIN_TIP_HEIGHT`, `SYNC_CONSECUTIVE_FAILURES` and `SYNC_BACKOFF_SECONDS` from its own poll loop, listed in a new `metric_names::GAUGES`. Metric names are unchanged.
+- Both concrete handles report through `zaino_component::StatusSource` rather than `zaino_status::Status`, and answer a `ComponentStatus`.
+  _Migration:_ `ChainHeadService::status` and `ChainHeadSubscriber::status` return `ComponentStatus` instead of `StatusType`; read `.lifecycle` and `.health` where a `StatusType` was matched. The trait to import is `StatusSource`. The runtime still folds a tick outcome into one fused value internally and splits it at the reporting boundary, so no transition changes.
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- Adapt to the renamed non-domain seam error.
+### zaino-chain-store 0.2.0
+- `StoredTxOut::from_output` reduces a domain transparent output to what the store indexes, so every consumer classifies a script the same way.
+- `ChainStoreService` and `ChainStoreReader` report health through `zaino_component::StatusSource` rather than a `status` method of their own, so a store is a component a supervisor can observe alongside every other subsystem without knowing it is a store. Two axes rather than one: a lifecycle phase the runtime moves, and a health condition that never overwrites it.
+  _Migration:_ Remove `fn status(&self) -> StatusType` from both impls and add a single `impl StatusSource`, returning a `ComponentStatus` built from a `ComponentName`, a `Lifecycle` and a `Health`. Where a type is its own reader, one impl serves both ports. Callers reading a status through a bare `.status()` may need `StatusSource::status(&x)` if an inherent method of the same name still shadows the trait.
+- `StoredAddress` is gone: transparent outputs are keyed by `zaino_primitives::types::TransparentAddressKey`, the same key the chain head reports its half of an address's history under, so a consumer merging the two joins them without translating.
+  _Migration:_ Replace `StoredAddress` with `zaino_primitives::types::TransparentAddressKey`, which has the same `hash` and `script_type` fields and the same `new` and `is_standard` methods, plus `from_script`. `StoredTxOut::address` and `TransparentHistoryQuery::addresses` now hold the new type; neither struct is `#[non_exhaustive]`, so literal construction sites need the rename too.
+- `ChainStoreFreezeSink::freeze` now takes `FrozenBlock`, a stored block without its chainwork. Cumulative work needs an unbroken chain below a block, so the store derives its own rather than trusting a value measured elsewhere — a field a caller could fill is a field a caller could fill wrongly.
+  _Migration:_ Drop the `chainwork` field when building the batch: a `StoredBlock` becomes a `FrozenBlock` by carrying `header`, `transactions` and `tree_roots` across. Any value a caller was computing for it can go — the store derives its own, and a caller's was measured from somewhere else.
+- `ChainStoreError::FreezeGap` — a frozen batch starting above `tip + 1` is refused rather than written into a hole, and carries both the store's tip and the first height it could not take so a caller can repair it. Previously the store stopped silently and returned `Ok(())`, which left it never advancing again while every subsequent freeze also succeeded.
+  _Migration:_ `ChainStoreError` is not `#[non_exhaustive]`, so a downstream `match` over it must add a `FreezeGap` arm. Handle it by building to `first_frozen - 1` through `ChainStoreIngest::build_to` and freezing the batch again; it is a routine handover state, not a failure, so classifying it as an internal error is only right on a path that cannot repair it.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### zaino-chain-store-zainodb 0.3.0
+- `conversion::compact_tx_to_wire` is public, temporarily, so the indexer renders mempool transactions with the same conversion as stored blocks.
+- The backend reports a `ComponentStatus`, and names itself: `FinalisedState` carries a `ComponentName` set at construction, with `FinalisedState::COMPONENT` as the default. The name belongs to the component because a deployment running two stores wants two names, and a supervisor needs to know which one escalated.
+  _Migration:_ `ChainStoreService::status` and `ChainStoreReader::status` now come from `StatusSource` and answer `ComponentStatus`. The fused `StatusType` is still tracked internally and converted at the port; a caller matching on `StatusType` reads `.lifecycle` and `.health` instead.
+- The backend derives each frozen block's chainwork from its own tip, and reports a gap instead of stopping silently.
+  _Migration:_ `FinalisedState`'s `ChainStoreFreezeSink` impl follows the port: it takes `&[FrozenBlock]` rather than `&[StoredBlock]`, and a batch starting above `tip + 1` now returns `ChainStoreError::FreezeGap` where it previously stopped and returned `Ok(())`. A caller that relied on the silent stop was not advancing the store and had no way to tell.
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- Adapt to the renamed non-domain seam error.
+### zaino-chain 0.2.0
+- New crate. ChainView: the unified chain read surface, composed from the finalised store below the reorg seam, the chain head's recent window above it, and validator passthrough for what neither indexes. Ships the ports and a composer generic over them, so a deployment bringing its own store or head uses the same crate. Where a tier cannot answer it reports `None` rather than a guess — chainwork above the seam is meaningless until the store has built far enough to say what the anchor's own work was.
+- A deployment can offer less than its tiers can answer: `ServedCapabilities` and a type-gated builder, so a capability cannot be advertised by a deployment whose providers cannot supply it. What is served is a decision, not a consequence of what happens to be wired up.
+- `ChainViewComposer::spawn_sync` feeds the finalised store from the chain head's freeze stream, building to the height the store reports it is missing. There is no separate catch-up phase: a block from the middle of the chain handed to an empty store answers `FreezeGap`, and closing that gap is the initial sync, so a cold start and a re-anchor after an outage take the same path. Asked for rather than assumed, so a deployment driving its own store does not end up with two writers on one database. The returned handle reports through `StatusSource` and `StatusWatch`.
+- Every range read streams in either direction. `stream_blocks`, `stream_raw_blocks` and `stream_compact` run from `start` to `end` inclusive: ascending when `start <= end`, descending when `start > end`, truncated at the chain tip either way. A descending walk plans the same provider segments top-down and reverses each chunk, so it holds no more memory than an ascending one.
+- `TxOutSetRead::txout_set` answers at the snapshot's tip for the whole chain, not at the finalised watermark. The composer extends the store's accumulator with the chain head's `txout_delta`, resolving the window's spends of older outputs through the store's spend index, and refuses while a hole separates the store from the window. Offering it now needs the store's `SpentOutputs` and `Transactions` indexes as well as `TxOutSet`, and a head snapshot implementing `ChainHeadTxOutSetService`.
+- `BlockRead::block_height` no longer reports a height for a block that is off the best chain or at a height this view pins to a different block. For a hash neither tier holds it asks the validator for the block's header and accepts the height only if the validator places it on its best chain at a height no tier covers. `ChainViewSource` now requires `OneShotGetBlockHeader` in place of `OneShotGetBlockByHash`.
+- An invalid address or subtree request — an address that does not parse, a range the validator cannot serve, a pool not yet active — is now the new `ChainViewError::Rejected` rather than a zero balance or an empty list. An address never paid is still an ordinary empty answer.
+- `ChainViewSnapshot::epoch()` returns the chain state the snapshot is pinned to, so mempool coherence can be checked against the view being read. Implementors must add it.
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- `ForkReconcile::fork_point` resolves a retained competing-branch hash to the point its branch forks from the canonical chain, via the chain head's own `find_fork_point`, rather than skipping it. A client whose locator names only an orphaned block now gets a resume point instead of `None`.
+- Raw blocks are pinned to the snapshot. `BlockRead::raw_block` by height and `stream_raw_blocks` fetch each block the store or chain head covers by the hash the snapshot holds at that height, so a reorg since the snapshot was taken can no longer substitute a block the snapshot never saw. Only heights in a hole are still fetched by height. A pinned block the validator no longer serves is `Transient` rather than a silently short range.
+- Compact blocks from the chain head and the validator keep every transaction, as the store's do. Dropping those left empty by the pool filter renumbered the rest, so wallets read the wrong `CompactTx.index` for recent blocks.
+- `TreestateRead::treestate` carries each pool's root. The validator's tree port leaves it unset, so the roots are read by the treestate's own block hash and joined in, as `z_gettreestate` reports them.
+- A treestate asked for by height is pinned to the snapshot: where the store or chain head covers the height it is fetched by the hash the snapshot holds there, so a reorg since the snapshot was taken cannot substitute another block's trees. Only heights in a hole are still fetched by height.
+- `spawn_sync` builds the store up to the chain head's floor on launch, then follows the freeze stream. A store previously came up only once a block was frozen, so on a chain that was not moving — or when the chain head's first freeze was sent before the loop subscribed — it was never built. The loop reports `Ready` once the store's watermark reaches the floor.
+- `ChainViewSync` no longer deadlocks when the store rejects a freeze with an error other than a gap, such as `NotReady` during a background build.
 
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around

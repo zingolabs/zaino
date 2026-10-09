@@ -13,6 +13,11 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-10-09
+### Changed
+- `From<RpcError>` now converts into `zaino_source::NonDomainError` (renamed from `FetchError`); a coded JSON-RPC refusal carries the server's message directly rather than a `to_string()` of the whole error.
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+
 ## [0.3.0] - 2026-09-26
 ### Changed
 - `RpcClient::call` / `call_with_timeout` take `method: &'static str` (bounds metric-label cardinality). Outbound metrics are now `zaino.rpc.outbound.duration_seconds{method}` and `zaino.rpc.outbound.errors_total{method,outcome}` (`transport_error`, `rpc_error`, `retried`).

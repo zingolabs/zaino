@@ -1,0 +1,106 @@
+consumed_in = "zainod-0-10-2"
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+The chain head emits `CHAIN_TIP_HEIGHT`, `SYNC_CONSECUTIVE_FAILURES` and \
+`SYNC_BACKOFF_SECONDS` from its own poll loop, listed in a new \
+`metric_names::GAUGES`. Metric names are unchanged.
+"""
+
+[[changes]]
+crate = "zaino-mempool-service"
+kind = "feature"
+description = """
+The coherence loop emits `MEMPOOL_COHERENCE_FROZEN_SECONDS` and warns when \
+coherence stays frozen for over 120 s, once per freeze.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+The sync and coherence-freeze gauges and the 120 s freeze warning moved to \
+`zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` \
+re-exports the constants; its `GAUGES` table is gone.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+`NodeBackedChainIndex` is a thin adapter: it launches the chain store, chain \
+head, ChainView (with its sync loop) and the mempool, and answers the \
+`ChainIndex` traits through ChainView and the mempool. The legacy sync loop \
+is gone; the chain head's retry ladder now drives the index's error status, \
+and the mempool is woken by the chain head's tip changes.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`ChainIndex::get_block_range` streams in descending order when `start` is \
+above `end`, and yields an error when either bound is above the snapshot's \
+tip instead of clamping `end` or returning `None`. A missing `end` is the tip.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`ChainViewSync` no longer deadlocks when the store rejects a freeze with an \
+error other than a gap, such as `NotReady` during a background build.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "internal"
+description = """
+`NodeBackedIndexerService` reads through ChainView directly where it used to \
+rebuild legacy shapes: treestates and subtree roots come from one snapshot \
+read, and the streaming RPCs share one spawn-and-timeout helper. RPC \
+signatures, statuses and messages are unchanged, except that \
+`GetTaddressBalanceStream` reports a single timeout message.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+`GetTaddressTransactions` reads every transaction from one snapshot rather \
+than one per transaction, so a reorg mid-stream can no longer mix chains.
+"""
+
+[[changes]]
+crate = "zaino-chain-store-zainodb"
+kind = "feature"
+description = """
+`conversion::compact_tx_to_wire` is public, temporarily, so the indexer \
+renders mempool transactions with the same conversion as stored blocks.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+description = """
+Indexer RPC fixes: `GetBlock`/`GetBlockNullifiers` no longer report the tip \
+height itself as out of range; `GetBlockNullifiers` rejects heights *below* \
+Sapling activation (the check was inverted) and names the activation height; \
+`getrawtransaction` with `verbose = 0` returns raw hex; `RawTransaction.height` \
+is `u64::MAX` for a transaction mined only on a non-best chain and 0 in the \
+mempool, per the protocol, in `GetTransaction` and `GetTaddressTransactions`; \
+`GetLatestTreeState` reads the tip's treestate by hash, so a moving tip cannot \
+mix two blocks; timeout errors name the RPC that timed out. Block and \
+transaction reads that fail now return the failure's own gRPC status \
+(`unavailable`, `internal`, `not_found`, ...) instead of `unknown`.
+"""
+
+[[changes]]
+crate = "zaino-state"
+kind = "breaking"
+description = """
+Removed unused public items: `chain_index::chain_head::indexed_block` and \
+`ChainHeadConversionError`, `chain_index::wire_types::block_index_from_wire` \
+and `WireBlockIdError`, and `chain_index::source::InvalidData`.
+"""

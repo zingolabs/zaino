@@ -659,6 +659,29 @@ pub trait IndexedTipIndexer: Send + Sync + 'static {
     fn subscribe_indexed_tips(&self) -> IndexedTipStream;
 }
 
+/// Runs `body` in a task feeding the returned channel, sending `on_timeout` if
+/// it outlives `multiple` × the service timeout.
+fn spawn_timed_stream<T, F>(
+    (timeout_secs, channel_size): (u32, u32),
+    multiple: u64,
+    on_timeout: tonic::Status,
+    body: impl FnOnce(mpsc::Sender<Result<T, tonic::Status>>) -> F,
+) -> mpsc::Receiver<Result<T, tonic::Status>>
+where
+    T: Send + 'static,
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (sender, receiver) = mpsc::channel(channel_size as usize);
+    let work = body(sender.clone());
+    let limit = std::time::Duration::from_secs(u64::from(timeout_secs) * multiple);
+    tokio::spawn(async move {
+        if timeout(limit, work).await.is_err() {
+            sender.send(Err(on_timeout)).await.ok();
+        }
+    });
+    receiver
+}
+
 /// Clamps an optional block-range endpoint to the chain height, or errors
 /// with `out_of_range_message` when the provided height cannot be
 /// represented as a `u32`.
@@ -826,12 +849,11 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                     limit.map(NoteCommitmentSubtreeIndex),
                 )
                 .await?;
-            let (service_timeout, service_channel_size) = self.timeout_channel_size();
-            let (channel_tx, channel_rx) = mpsc::channel(service_channel_size as usize);
-            tokio::spawn(async move {
-                let timeout = timeout(
-                std::time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
+            let channel_rx = spawn_timed_stream(
+                self.timeout_channel_size(),
+                4,
+                tonic::Status::deadline_exceeded("Error: get_subtree_roots gRPC request timed out"),
+                |channel_tx| async move {
                     for subtree in &subtrees.subtrees {
                         match service_clone
                             .z_get_block(u32::from(subtree.end_height).to_string(), Some(1))
@@ -907,20 +929,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                         }
                     }
                 },
-            )
-            .await;
-                match timeout {
-                    Ok(_) => {}
-                    Err(_) => {
-                        channel_tx
-                            .send(Err(tonic::Status::deadline_exceeded(
-                                "Error: get_mempool_stream gRPC request timed out",
-                            )))
-                            .await
-                            .ok();
-                    }
-                }
-            });
+            );
             Ok(SubtreeRootReplyStream::new(channel_rx))
         }
     }
@@ -963,41 +972,6 @@ pub trait LightWalletService: Sized + ZcashService<Subscriber: LightWalletIndexe
 
 impl<T> LightWalletService for T where T: ZcashService {}
 
-pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
-    chain_height: u64,
-    transaction: Result<GetRawTransaction, Indexer::Error>,
-    transmitter: mpsc::Sender<Result<RawTransaction, tonic::Status>>,
-) -> Result<(), mpsc::error::SendError<Result<RawTransaction, tonic::Status>>> {
-    match transaction {
-        Ok(GetRawTransaction::Object(transaction_obj)) => {
-            let height: u64 = match transaction_obj.height() {
-                Some(h) => h as u64,
-                // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                None => chain_height,
-            };
-            transmitter
-                .send(Ok(RawTransaction {
-                    data: bytes::Bytes::copy_from_slice(transaction_obj.hex().as_ref()),
-                    height,
-                }))
-                .await
-        }
-        Ok(GetRawTransaction::Raw(_)) => {
-            transmitter
-                .send(Err(tonic::Status::unknown(
-                    "Received raw transaction type, this should not be impossible.",
-                )))
-                .await
-        }
-        Err(e) => {
-            // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-            transmitter
-                .send(Err(tonic::Status::unknown(e.to_string())))
-                .await
-        }
-    }
-}
-
 /// Builds the gRPC [`TreeState`](zaino_proto::proto::service::TreeState) from a
 /// `z_gettreestate` answer: hex-encoded per-pool final states (the ironwood field is
 /// the empty string below NU6.3 activation, matching lightwalletd behaviour).
@@ -1018,31 +992,6 @@ fn tree_state_from_treestate_response(
         sapling_tree: final_state(treestate.sapling),
         orchard_tree: final_state(treestate.orchard),
         ironwood_tree: final_state(treestate.ironwood),
-    }
-}
-
-/// Builds the `z_gettreestate` answer from the per-pool treestates the chain index
-/// reported.
-///
-/// The ironwood treestate is `Some` only from NU6.3 activation, so pre-NU6.3
-/// answers omit the pool exactly as zebrad does.
-fn build_treestate_response(
-    hash: zaino_primitives::types::BlockHash,
-    height: zaino_primitives::types::Height,
-    time: u32,
-    (sapling, orchard, ironwood): (
-        Option<zaino_primitives::types::PoolTreestate>,
-        Option<zaino_primitives::types::PoolTreestate>,
-        Option<zaino_primitives::types::PoolTreestate>,
-    ),
-) -> zaino_primitives::types::Treestate {
-    zaino_primitives::types::Treestate {
-        block_hash: hash,
-        height,
-        time,
-        sapling,
-        orchard,
-        ironwood,
     }
 }
 

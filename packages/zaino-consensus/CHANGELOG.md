@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.1] - 2026-10-09
+### Internal
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+
 ## [0.2.0] - 2026-09-26
 ### Changed
 - `work_from_bits`, `WorkError` and the `work` module are removed; `zaino-primitives` owns the one native difficulty pipeline.

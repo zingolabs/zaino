@@ -4,6 +4,7 @@
 //! [`reconcile`]: super::CoherenceService::reconcile
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::broadcast;
 use zaino_status::StatusType;
@@ -11,7 +12,28 @@ use zaino_status::StatusType;
 use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::update::MempoolUpdate;
 
+/// A freeze longer than this means the validator and Zaino tips have stopped agreeing.
+const FREEZE_ESCALATION: Duration = Duration::from_secs(120);
+
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
+    /// Sets the frozen-seconds gauge, warning once per freeze that outlives
+    /// [`FREEZE_ESCALATION`].
+    fn report_frozen(&self, escalated: &mut bool) {
+        let frozen_for = super::frozen_for(&self.frozen_since);
+        metrics::gauge!(crate::metric_names::MEMPOOL_COHERENCE_FROZEN_SECONDS)
+            .set(frozen_for.map_or(0.0, |frozen| frozen.as_secs_f64()));
+
+        let escalating = frozen_for.is_some_and(|frozen| frozen >= FREEZE_ESCALATION);
+        if escalating && !*escalated {
+            tracing::warn!(
+                frozen_for_secs = frozen_for.map_or(0, |frozen| frozen.as_secs()),
+                "mempool coherence has been frozen far longer than a tip \
+                 transition should take; tip-coherent reads are unavailable"
+            );
+        }
+        *escalated = escalating;
+    }
+
     /// The coherence reconcile task.
     ///
     /// One long-lived span, as with the core's poll loop: reconciles are
@@ -40,6 +62,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         );
 
         self.reconcile();
+        let mut escalated = false;
 
         loop {
             tokio::select! {
@@ -50,6 +73,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                 }
                 _ = interval.tick() => {
                     self.reconcile();
+                    self.report_frozen(&mut escalated);
                 }
                 _ = async {
                     match epoch_wake.as_mut() {

@@ -5992,7 +5992,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-address"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hex",
  "sapling-crypto",
@@ -6004,8 +6004,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-chain-head"
+name = "zaino-async"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "zaino-chain"
 version = "0.2.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-chain",
+ "zaino-chain-head",
+ "zaino-chain-store",
+ "zaino-chain-store-zainodb",
+ "zaino-component",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra",
+]
+
+[[package]]
+name = "zaino-chain-head"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
@@ -6017,7 +6047,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-chain-head-service"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "futures",
@@ -6028,6 +6058,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
+ "zaino-component",
  "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
@@ -6036,21 +6067,21 @@ dependencies = [
 
 [[package]]
 name = "zaino-chain-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "blake2",
  "futures",
  "thiserror 2.0.20",
  "tokio",
+ "zaino-component",
  "zaino-primitives",
  "zaino-source",
  "zaino-source-zebra",
- "zaino-status",
 ]
 
 [[package]]
 name = "zaino-chain-store-zainodb"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.2",
@@ -6078,6 +6109,7 @@ dependencies = [
  "tracing-subscriber",
  "zaino-chain-store",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
@@ -6094,7 +6126,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "rustls",
  "serde",
@@ -6117,7 +6149,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-consensus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "thiserror 2.0.20",
@@ -6125,7 +6157,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-convert-zebra"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proptest",
  "thiserror 2.0.20",
@@ -6136,14 +6168,24 @@ dependencies = [
 
 [[package]]
 name = "zaino-encoding"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "corez",
 ]
 
 [[package]]
+name = "zaino-logging"
+version = "0.1.0"
+dependencies = [
+ "time",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-tree",
+]
+
+[[package]]
 name = "zaino-mempool"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "bytes",
  "futures",
@@ -6155,7 +6197,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-mempool-service"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -6182,7 +6224,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-primitives"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "thiserror 2.0.20",
  "zcash_address",
@@ -6191,8 +6233,9 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
+ "librocksdb-sys",
  "prost",
  "tonic",
  "tonic-prost",
@@ -6204,7 +6247,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-rpc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "metrics",
  "reqwest 0.13.1",
@@ -6219,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.9.0"
+version = "0.9.1"
 dependencies = [
  "futures",
  "hex",
@@ -6247,7 +6290,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "thiserror 2.0.20",
  "tokio",
@@ -6257,7 +6300,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6266,7 +6309,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "tokio",
  "zaino-primitives",
@@ -6277,10 +6320,11 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-readstate"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "serde_json",
+ "thiserror 2.0.20",
  "tokio",
  "tower 0.4.13",
  "tracing",
@@ -6294,7 +6338,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-rpc"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "hex",
  "incrementalmerkletree",
@@ -6314,7 +6358,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "arc-swap",
  "blake2",
@@ -6347,11 +6391,13 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "zaino-address",
+ "zaino-chain",
  "zaino-chain-head",
  "zaino-chain-head-service",
  "zaino-chain-store",
  "zaino-chain-store-zainodb",
  "zaino-common",
+ "zaino-component",
  "zaino-consensus",
  "zaino-convert-zebra",
  "zaino-encoding",
@@ -6376,14 +6422,14 @@ dependencies = [
 
 [[package]]
 name = "zaino-status"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "tracing",
 ]
 
 [[package]]
 name = "zainod"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "clap",
  "config",

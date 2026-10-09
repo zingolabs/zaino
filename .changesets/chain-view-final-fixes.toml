@@ -1,0 +1,144 @@
+consumed_in = "zainod-0-10-2"
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`ForkReconcile::fork_point` resolves a retained competing-branch hash to the \
+point its branch forks from the canonical chain, via the chain head's own \
+`find_fork_point`, rather than skipping it. A client whose locator names only \
+an orphaned block now gets a resume point instead of `None`.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Raw blocks are pinned to the snapshot. `BlockRead::raw_block` by height and \
+`stream_raw_blocks` fetch each block the store or chain head covers by the hash \
+the snapshot holds at that height, so a reorg since the snapshot was taken can \
+no longer substitute a block the snapshot never saw. Only heights in a hole are \
+still fetched by height. A pinned block the validator no longer serves is \
+`Transient` rather than a silently short range.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "feature"
+description = """
+Every range read streams in either direction. `stream_blocks`, \
+`stream_raw_blocks` and `stream_compact` run from `start` to `end` inclusive: \
+ascending when `start <= end`, descending when `start > end`, truncated at the \
+chain tip either way. A descending walk plans the same provider segments \
+top-down and reverses each chunk, so it holds no more memory than an \
+ascending one.
+"""
+
+[[changes]]
+crate = "zaino-chain-head"
+kind = "feature"
+description = """
+`ChainHeadTxOutSetService::txout_delta(start)` reports what the canonical \
+window did to the transparent UTXO set from `start` to the tip: the outputs it \
+created and did not spend, and the outpoints it spent that were created below \
+`start`. Provided once on the trait, so every snapshot answers it identically. \
+A `start` below the retained window is refused with the new \
+`ChainHeadError::BelowWindow` rather than answered from a partial range.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`TxOutSetRead::txout_set` answers at the snapshot's tip for the whole chain, \
+not at the finalised watermark. The composer extends the store's accumulator \
+with the chain head's `txout_delta`, resolving the window's spends of older \
+outputs through the store's spend index, and refuses while a hole separates \
+the store from the window. Offering it now needs the store's `SpentOutputs` \
+and `Transactions` indexes as well as `TxOutSet`, and a head snapshot \
+implementing `ChainHeadTxOutSetService`.
+"""
+
+[[changes]]
+crate = "zaino-chain-store"
+kind = "feature"
+description = """
+`StoredTxOut::from_output` reduces a domain transparent output to what the \
+store indexes, so every consumer classifies a script the same way.
+"""
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+description = """
+`Script::as_bytes` borrows a script's raw bytes.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+Compact blocks from the chain head and the validator keep every transaction, \
+as the store's do. Dropping those left empty by the pool filter renumbered the \
+rest, so wallets read the wrong `CompactTx.index` for recent blocks.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`BlockRead::block_height` no longer reports a height for a block that is off \
+the best chain or at a height this view pins to a different block. For a hash \
+neither tier holds it asks the validator for the block's header and accepts the \
+height only if the validator places it on its best chain at a height no tier \
+covers. `ChainViewSource` now requires `OneShotGetBlockHeader` in place of \
+`OneShotGetBlockByHash`.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`TreestateRead::treestate` carries each pool's root. The validator's tree port \
+leaves it unset, so the roots are read by the treestate's own block hash and \
+joined in, as `z_gettreestate` reports them.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+An invalid address or subtree request — an address that does not parse, a \
+range the validator cannot serve, a pool not yet active — is now the new \
+`ChainViewError::Rejected` rather than a zero balance or an empty list. An \
+address never paid is still an ordinary empty answer.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+A treestate asked for by height is pinned to the snapshot: where the store or \
+chain head covers the height it is fetched by the hash the snapshot holds \
+there, so a reorg since the snapshot was taken cannot substitute another \
+block's trees. Only heights in a hole are still fetched by height.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "fix"
+description = """
+`spawn_sync` builds the store up to the chain head's floor on launch, then \
+follows the freeze stream. A store previously came up only once a block was \
+frozen, so on a chain that was not moving — or when the chain head's first \
+freeze was sent before the loop subscribed — it was never built. The loop \
+reports `Ready` once the store's watermark reaches the floor.
+"""
+
+[[changes]]
+crate = "zaino-chain"
+kind = "breaking"
+description = """
+`ChainViewSnapshot::epoch()` returns the chain state the snapshot is pinned \
+to, so mempool coherence can be checked against the view being read. \
+Implementors must add it.
+"""

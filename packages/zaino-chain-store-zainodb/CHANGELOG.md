@@ -13,6 +13,20 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-10-09
+### Added
+- `conversion::compact_tx_to_wire` is public, temporarily, so the indexer renders mempool transactions with the same conversion as stored blocks.
+### Changed
+- The backend reports a `ComponentStatus`, and names itself: `FinalisedState` carries a `ComponentName` set at construction, with `FinalisedState::COMPONENT` as the default. The name belongs to the component because a deployment running two stores wants two names, and a supervisor needs to know which one escalated.
+  _Migration:_ `ChainStoreService::status` and `ChainStoreReader::status` now come from `StatusSource` and answer `ComponentStatus`. The fused `StatusType` is still tracked internally and converted at the port; a caller matching on `StatusType` reads `.lifecycle` and `.health` instead.
+- The backend derives each frozen block's chainwork from its own tip, and reports a gap instead of stopping silently.
+  _Migration:_ `FinalisedState`'s `ChainStoreFreezeSink` impl follows the port: it takes `&[FrozenBlock]` rather than `&[StoredBlock]`, and a batch starting above `tip + 1` now returns `ChainStoreError::FreezeGap` where it previously stopped and returned `Ok(())`. A caller that relied on the silent stop was not advancing the store and had no way to tell.
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Internal
+- Adapt to the renamed non-domain seam error.
+
 ## [0.2.0] - 2026-09-26
 ### Changed
 - The crate's own chain-work type is replaced by a re-export of the `zaino-primitives` type. The on-disk format is unchanged.

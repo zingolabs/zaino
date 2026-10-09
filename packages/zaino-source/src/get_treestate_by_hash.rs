@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, Treestate};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetTreestateByHash`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -23,10 +23,11 @@ pub enum GetTreestateByHashError {
 /// block, whereas a hash can name a block on a side chain, so the two are
 /// different questions that adapters may answer from different places.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetTreestateByHash: Send + Sync {
+pub trait OneShotGetTreestateByHash: ValidatorSource + Send + Sync {
     /// Fetch treestate at a block hash.
     fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateByHashError>>> + Send;
+    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateByHashError, Self::NonDomain>>>
+           + Send;
 }
