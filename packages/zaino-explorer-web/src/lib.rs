@@ -20,6 +20,7 @@ use zaino_explorer_domain::ChainReader;
 pub fn build_app<C: ChainReader>(reader: C) -> Router {
     Router::new()
         .route("/", get(home::<C>))
+        .route("/block/:id", get(block::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
         .with_state(reader)
@@ -51,7 +52,10 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         @match blocks {
             Ok(blocks) => ul {
                 @for block in &blocks {
-                    li { (block.height) " — " (block.hash) " — " (block.time) " — " (block.tx_count) " tx" }
+                    li {
+                        a href=(format!("/block/{}", block.height)) { (block.height) }
+                        " — " (block.hash) " — " (block.time) " — " (block.tx_count) " tx"
+                    }
                 }
             },
             Err(e) => p { "RPC error: " (e.to_string()) },
@@ -60,9 +64,33 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     Html(body.into_string())
 }
 
-/// `GET /tx/{txid}`: one transaction's detail, fetched live. Not yet linked
-/// from the block list (which carries only a transaction count, not ids) —
-/// reachable by direct URL today.
+/// `GET /block/{id}`: one block's detail — hash, time, and every
+/// transaction id it contains, each linked to `/tx/{txid}` — by height or
+/// hash (`getblock`'s own polymorphic id parameter). Linked from the home
+/// page's block list.
+async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) -> Html<String> {
+    let body = match reader.block(id.clone()).await {
+        Ok(detail) => html! {
+            h1 { "Block " (detail.height) }
+            p { "Hash: " (detail.hash) }
+            p { "Time: " (detail.time) }
+            h2 { "Transactions" }
+            ul {
+                @for txid in &detail.tx_ids {
+                    li { a href=(format!("/tx/{txid}")) { (txid) } }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Block " (id) }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// `GET /tx/{txid}`: one transaction's detail, fetched live. Linked from a
+/// block's transaction list and from an address's transaction history.
 async fn transaction<C: ChainReader>(
     State(reader): State<C>,
     Path(txid): Path<String>,
@@ -214,6 +242,45 @@ mod tests {
         assert!(
             text.contains("RPC error"),
             "unscripted getblock should render as an RPC error, not silence: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// `/block/{id}` for an unscripted height renders a graceful RPC error,
+    /// not a panic or a 500 — the route is reachable and its error path is
+    /// wired. The happy-path mapping (`BlockDetail` field-for-field,
+    /// including txids) is covered in `zaino-explorer-zaino-client`'s own
+    /// pure-function and mock-server tests; this test is about the route.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_route_renders_rpc_error_for_an_unscripted_height() {
+        let (addr, handle) = spawn_mock_server().await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/block/1")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("RPC error"),
+            "an unscripted height should render as an RPC error, not a panic: {text}"
         );
 
         let _ = handle.stop();
