@@ -61,6 +61,20 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         output_index: u32,
     ) -> impl Future<Output = Result<SpendInfo, ChainReadError>> + Send;
 
+    /// Whether a transparent output is currently unspent, and if so its
+    /// value and confirmation depth (`gettxout`, checked against the
+    /// mempool too). `Ok(None)` means spent or unknown — zcashd/zebra
+    /// don't distinguish the two here either, but combined with
+    /// [`ChainReader::spend_info`] (which answers the spent case by
+    /// naming the spender) the two calls together *do* disambiguate all
+    /// three states: spent (`spend_info` succeeds), unspent (`spend_info`
+    /// fails, this succeeds), and genuinely unknown (both fail/empty).
+    fn output_status(
+        &self,
+        txid: String,
+        output_index: u32,
+    ) -> impl Future<Output = Result<Option<OutputStatus>, ChainReadError>> + Send;
+
     /// One transparent address's balance and transaction history.
     fn address(
         &self,
@@ -225,6 +239,16 @@ pub struct SpendInfo {
     pub spending_input_index: u32,
     /// The height that mined the spending transaction.
     pub height: u32,
+}
+
+/// A transparent output's status when it is currently unspent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputStatus {
+    /// The output's value, in zatoshis.
+    pub value_zat: u64,
+    /// Depth of the containing block in the best chain; `0` when the
+    /// output is in the mempool.
+    pub confirmations: i64,
 }
 
 /// Whether an address is one Zaino recognizes, and its kind if so.

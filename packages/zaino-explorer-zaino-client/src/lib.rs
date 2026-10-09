@@ -8,8 +8,9 @@ use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
     BlockSummary, ChainReadError, ChainReader, MempoolEntry, MiningInfo, NetworkInfo,
-    NodeDiagnostics, NodeStatus, PeerInfo, PoolTreestate, SpendInfo, TransactionDelta,
-    TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers, ValueMovement,
+    NodeDiagnostics, NodeStatus, OutputStatus, PeerInfo, PoolTreestate, SpendInfo,
+    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers,
+    ValueMovement,
 };
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
@@ -379,6 +380,22 @@ impl ChainReader for ZainoClient {
             spending_input_index: response.index,
             height: response.height,
         })
+    }
+
+    async fn output_status(
+        &self,
+        txid: String,
+        output_index: u32,
+    ) -> Result<Option<OutputStatus>, ChainReadError> {
+        let response = self
+            .0
+            .tx_out(txid, output_index, Some(true))
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(response.map(|r| OutputStatus {
+            value_zat: r.value_zat,
+            confirmations: r.confirmations,
+        }))
     }
 
     async fn address(&self, address: String) -> Result<AddressSummary, ChainReadError> {
@@ -1395,6 +1412,70 @@ mod tests {
         assert_eq!(spend.spending_txid, "02".repeat(32));
         assert_eq!(spend.spending_input_index, 1);
         assert_eq!(spend.height, 300);
+
+        let _ = handle.stop();
+    }
+
+    /// `output_status` against a real mock server: a scripted unspent
+    /// output reports its value and confirmations — the differentiator
+    /// pairing with `spend_info` that disambiguates "unspent" from
+    /// "unknown", which `spend_info` alone cannot.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_status_against_a_real_server_reports_an_unspent_output() {
+        use zaino_primitives::types::rpc::{ScriptPubKey, TxOut};
+        use zaino_primitives::types::{BlockHash, Script, Zatoshis};
+
+        let chain = MockChain {
+            tx_out: Some(TxOut {
+                best_block: BlockHash::from([0x11; 32]),
+                confirmations: 5,
+                value: Zatoshis::new(5_000).expect("valid amount"),
+                script_pub_key: ScriptPubKey {
+                    script: Script::new(vec![0x76, 0xa9]),
+                    asm: None,
+                    script_type: None,
+                    required_signatures: None,
+                    addresses: Vec::new(),
+                },
+                coinbase: false,
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let status = reader
+            .output_status("ab".repeat(32), 0)
+            .await
+            .expect("output_status ok")
+            .expect("output is unspent");
+
+        assert_eq!(status.value_zat, 5_000);
+        assert_eq!(status.confirmations, 5);
+
+        let _ = handle.stop();
+    }
+
+    /// `output_status` for an unscripted outpoint answers `Ok(None)` — a
+    /// spent-or-unknown output is a domain answer, not a failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn output_status_against_a_real_server_reports_none_for_an_unscripted_output() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let status = reader
+            .output_status("ab".repeat(32), 0)
+            .await
+            .expect("output_status ok");
+
+        assert!(status.is_none());
 
         let _ = handle.stop();
     }
