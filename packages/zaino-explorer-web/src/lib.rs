@@ -24,6 +24,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
         .route("/block/:id/treestate", get(treestate::<C>))
         .route("/mempool", get(mempool::<C>))
         .route("/node", get(node::<C>))
+        .route("/subtrees/:pool/:start_index", get(subtree_roots::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
         .with_state(reader)
@@ -136,12 +137,12 @@ async fn treestate<C: ChainReader>(
             h1 { "Treestate for block " (state.height) }
             p { "Hash: " (state.hash) }
             p { "Time: " (state.time) }
-            @for (pool, tree) in [
-                ("Sapling", &state.sapling),
-                ("Orchard", &state.orchard),
-                ("Ironwood", &state.ironwood),
+            @for (label, pool, tree) in [
+                ("Sapling", "sapling", &state.sapling),
+                ("Orchard", "orchard", &state.orchard),
+                ("Ironwood", "ironwood", &state.ironwood),
             ] {
-                h2 { (pool) }
+                h2 { (label) }
                 @match tree {
                     Some(tree) => div {
                         @match &tree.final_root {
@@ -149,6 +150,7 @@ async fn treestate<C: ChainReader>(
                             None => p { "Final root: unavailable" },
                         }
                         p { "Final state: " (truncate_hex(&tree.final_state)) }
+                        p { a href=(format!("/subtrees/{pool}/0")) { "Subtree roots" } }
                     },
                     None => p { "Not active at this block." },
                 }
@@ -156,6 +158,36 @@ async fn treestate<C: ChainReader>(
         },
         Err(e) => html! {
             h1 { "Treestate for block " (id) }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// `GET /subtrees/{pool}/{start_index}`: a contiguous run of complete
+/// note-commitment subtree roots for a pool, from `start_index`. Linked
+/// from the treestate page's active-pool sections. A `start_index` past
+/// the end of the pool's completed subtrees renders an empty list, not
+/// an error.
+async fn subtree_roots<C: ChainReader>(
+    State(reader): State<C>,
+    Path((pool, start_index)): Path<(String, u16)>,
+) -> Html<String> {
+    let body = match reader.subtree_roots(pool.clone(), start_index).await {
+        Ok(roots) => html! {
+            h1 { "Subtree roots — " (roots.pool) " from index " (roots.start_index) }
+            @if roots.roots.is_empty() {
+                p { "None (past the end of this pool's completed subtrees, or none yet)" }
+            } @else {
+                ul {
+                    @for root in &roots.roots {
+                        li { (root.root) " — completed at height " (root.end_height) }
+                    }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Subtree roots — " (pool) }
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -364,11 +396,21 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 /// line — mining/network facts and every connected peer. Linked from the
 /// home page's status line.
 async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
-    // Independent of node_diagnostics below — a richer blockchain summary
-    // than the home page's compact height, rendered on its own so a
-    // failure here doesn't hide mining/network/peer facts that answered.
+    // Both independent of node_diagnostics below — their own failure
+    // doesn't hide mining/network/peer facts that answered.
     let blockchain = reader.blockchain_info().await;
+    let ping = reader.ping().await;
+    let ping_line = html! {
+        p {
+            "Validator: "
+            @match ping {
+                Ok(()) => "responsive",
+                Err(_) => "unresponsive",
+            }
+        }
+    };
     let blockchain_section = html! {
+        (ping_line)
         h2 { "Blockchain" }
         @match &blockchain {
             Ok(info) => div {
@@ -854,6 +896,47 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).expect("utf8 body");
         assert!(text.contains("Blockchain"), "{text}");
         assert!(text.contains("Blocks: 291"), "{text}");
+        assert!(
+            text.contains("Validator: responsive"),
+            "the mock always answers ping: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// `/subtrees/{pool}/{start_index}` for an unscripted pool renders an
+    /// empty list, not an error — the mock has no roots scripted, which
+    /// is a legitimate "none yet" answer, not a failure.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subtree_roots_route_renders_empty_list_for_an_unscripted_pool() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/subtrees/sapling/0")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("None (past the end"),
+            "an unscripted pool should read as empty, not an error: {text}"
+        );
 
         let _ = handle.stop();
     }
