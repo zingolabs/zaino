@@ -5,7 +5,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
+
+## [0.5.0 through 0.10.1]
+
+The entries below accumulated across several releases without being sectioned.
+They are kept verbatim for the record; from 0.5.0 onwards each crate's own
+changelog under `packages/<crate>/CHANGELOG.md` is the authority for what
+shipped in which version.
 
 ### Added
 - **Eight new crates** implementing validator access as a hexagonal port /
