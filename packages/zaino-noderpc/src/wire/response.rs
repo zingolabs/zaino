@@ -742,7 +742,7 @@ pub enum GetBlockHashesResponse {
 pub struct ValuePoolResponse {
     /// Pool name — `transparent`, `sapling`, `orchard`, … Absent for the
     /// chain-supply total, which zcashd reports unnamed.
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(skip_serializing_if = "String::is_empty", default)]
     pub id: String,
     /// Whether the validator is tracking this pool's balance.
     pub monitored: bool,
@@ -1347,6 +1347,14 @@ mod tests {
             "solution": "",
             "bits": "1c0088c0",
             "difficulty": 1.0,
+            // The unnamed chain-supply total: zcashd/zebra omit `id` entirely
+            // rather than send an empty string — the second real-world case
+            // of this bug, on a plain String field rather than an Option.
+            "chainSupply": {
+                "monitored": true,
+                "chainValue": 1.0,
+                "chainValueZat": 100_000_000,
+            },
             "valuePools": [],
             "trees": {
                 "sapling": {"size": 0},
@@ -1364,6 +1372,8 @@ mod tests {
         assert!(response.chainwork.is_none());
         assert!(response.next_block_hash.is_none());
         assert!(response.final_sapling_root.is_none());
-        assert!(response.chain_supply.is_none());
+        let chain_supply = response.chain_supply.expect("chainSupply was present");
+        assert_eq!(chain_supply.id, "", "an absent id defaults to empty, not an error");
+        assert_eq!(chain_supply.chain_value_zat, 100_000_000);
     }
 }

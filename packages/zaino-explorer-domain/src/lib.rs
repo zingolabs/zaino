@@ -25,6 +25,16 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         &self,
         txid: String,
     ) -> impl Future<Output = Result<TransactionDetail, ChainReadError>> + Send;
+
+    /// Where a specific transparent output was spent, if at all. A
+    /// differentiator capability: Zebra itself does not serve
+    /// `getspentinfo`, so no explorer built directly on Zebra's own RPC can
+    /// offer this.
+    fn spend_info(
+        &self,
+        txid: String,
+        output_index: u32,
+    ) -> impl Future<Output = Result<SpendInfo, ChainReadError>> + Send;
 }
 
 /// One block's summary, as shown in a block list — not the full block.
@@ -64,6 +74,17 @@ pub struct TransactionOutput {
     /// The address this output pays, when its script is a standard
     /// template. Empty for a non-standard script.
     pub addresses: Vec<String>,
+}
+
+/// Where a transparent output was spent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpendInfo {
+    /// The id of the transaction that spent it.
+    pub spending_txid: String,
+    /// The spending transaction's input index.
+    pub spending_input_index: u32,
+    /// The height that mined the spending transaction.
+    pub height: u32,
 }
 
 /// Why a [`ChainReader`] read failed.

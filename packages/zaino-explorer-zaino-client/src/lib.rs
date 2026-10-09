@@ -6,8 +6,9 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    BlockSummary, ChainReadError, ChainReader, TransactionDetail, TransactionOutput,
+    BlockSummary, ChainReadError, ChainReader, SpendInfo, TransactionDetail, TransactionOutput,
 };
+use zaino_noderpc::wire::params::GetSpentInfoParam;
 use zaino_noderpc::wire::response::{GetBlockResponse, GetRawTransactionResponse};
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -120,6 +121,22 @@ impl ChainReader for ZainoClient {
             .await
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
         transaction_detail_from_response(response)
+    }
+
+    async fn spend_info(&self, txid: String, output_index: u32) -> Result<SpendInfo, ChainReadError> {
+        let response = self
+            .0
+            .spent_info(GetSpentInfoParam {
+                txid,
+                index: output_index,
+            })
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(SpendInfo {
+            spending_txid: response.txid,
+            spending_input_index: response.index,
+            height: response.height,
+        })
     }
 }
 
@@ -351,6 +368,43 @@ mod tests {
         assert_eq!(blocks[0].height, 300);
         assert_eq!(blocks[0].hash, "11".repeat(32));
         assert_eq!(blocks[0].time, 1_700_000_300);
+
+        let _ = handle.stop();
+    }
+
+    /// `spend_info` against a real mock server — the differentiator
+    /// capability (Zebra itself does not serve `getspentinfo`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spend_info_against_a_real_server() {
+        use zaino_primitives::types::{Outpoint, TransactionId, TransparentSpend};
+
+        let chain = MockChain {
+            spend_info: Some(TransparentSpend {
+                outpoint: Outpoint {
+                    txid: TransactionId::from([0x01; 32]),
+                    index: 0,
+                },
+                by: TransactionId::from([0x02; 32]),
+                input_index: 1,
+                height: Height::try_from(300).expect("valid height"),
+                block_index: 0,
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let spend = reader
+            .spend_info("01".repeat(32), 0)
+            .await
+            .expect("spend_info ok");
+
+        assert_eq!(spend.spending_txid, "02".repeat(32));
+        assert_eq!(spend.spending_input_index, 1);
+        assert_eq!(spend.height, 300);
 
         let _ = handle.stop();
     }

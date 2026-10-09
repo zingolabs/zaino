@@ -69,11 +69,22 @@ async fn transaction<C: ChainReader>(
             }
             h2 { "Outputs" }
             ul {
-                @for output in &tx.outputs {
+                @for (index, output) in tx.outputs.iter().enumerate() {
                     li {
                         (output.value_zat) " zat"
                         @if !output.addresses.is_empty() {
                             " — " (output.addresses.join(", "))
+                        }
+                        " — "
+                        // getspentinfo answers "not found" for both a genuinely
+                        // unspent output and an unknown one — the RPC does not
+                        // distinguish them, so neither does this page. A real
+                        // error (network, decode) renders the same way; telling
+                        // those apart would need a typed error-kind this
+                        // adapter's ChainReadError doesn't carry yet.
+                        @match reader.spend_info(tx.txid.clone(), index as u32).await {
+                            Ok(spend) => (format!("spent by {} in block {}", spend.spending_txid, spend.height)),
+                            Err(_) => ("unspent (or unknown)".to_string()),
                         }
                     }
                 }
