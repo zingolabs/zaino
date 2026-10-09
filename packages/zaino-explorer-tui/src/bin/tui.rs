@@ -7,8 +7,8 @@
 //! txid lookup, `a` starts an address lookup, `b` starts a block
 //! height/hash lookup, and the chain height refreshes every 5s. While
 //! typing: characters append, Backspace edits, Enter looks it up, Esc
-//! cancels back home. On the transaction/address/block screen: Esc goes
-//! back home.
+//! cancels back home. On the block screen: `s` looks up its treestate.
+//! On the transaction/address/block/treestate screen: Esc goes back home.
 
 use std::io;
 use std::time::Duration;
@@ -97,7 +97,12 @@ async fn run(
                         KeyCode::Esc => state.go_home(),
                         _ => {}
                     },
-                    Screen::Transaction(_, _) | Screen::Address(_, _) | Screen::Block(_, _) => {
+                    Screen::Block(_, _) => match key.code {
+                        KeyCode::Char('s') => state.lookup_treestate(reader).await,
+                        KeyCode::Esc => state.go_home(),
+                        _ => {}
+                    },
+                    Screen::Transaction(_, _) | Screen::Address(_, _) | Screen::Treestate(_, _) => {
                         if key.code == KeyCode::Esc {
                             state.go_home();
                         }

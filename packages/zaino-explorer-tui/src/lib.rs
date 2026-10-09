@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
     AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReader, TransactionDetail,
+    Treestate,
 };
 
 /// How many recent blocks the TUI lists.
@@ -34,6 +35,9 @@ pub enum Screen {
     EnterBlock(String),
     /// Looked up: the height-or-hash and what came back.
     Block(String, Result<(), String>),
+    /// A block's shielded commitment-tree state, looked up (via `s` on the
+    /// `Block` screen) for the same height-or-hash.
+    Treestate(String, Result<(), String>),
 }
 
 /// The TUI's whole state: the last successful read, or the last error, for
@@ -57,6 +61,9 @@ pub struct AppState {
     /// "unavailable" rather than hiding the rest of the block, since not
     /// every deployed zainod serves it.
     block_deltas: Option<BlockDeltas>,
+    /// The looked-up block's shielded commitment-tree state — populated
+    /// only on screen `Treestate`.
+    treestate: Option<Treestate>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -208,6 +215,26 @@ impl AppState {
             }
         }
     }
+
+    /// Look up the shielded commitment-tree state of the block currently
+    /// shown on the `Block` screen. Does nothing if not currently on that
+    /// screen.
+    pub async fn lookup_treestate<C: ChainReader>(&mut self, reader: &C) {
+        let Screen::Block(id, _) = &self.screen else {
+            return;
+        };
+        let id = id.clone();
+        match reader.treestate(id.clone()).await {
+            Ok(state) => {
+                self.treestate = Some(state);
+                self.screen = Screen::Treestate(id, Ok(()));
+            }
+            Err(e) => {
+                self.treestate = None;
+                self.screen = Screen::Treestate(id, Err(e.to_string()));
+            }
+        }
+    }
 }
 
 /// Render the current state into `frame`, whichever screen is active.
@@ -228,6 +255,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
             "Enter block height or hash (Enter: look up, Esc: cancel)",
         ),
         Screen::Block(id, result) => render_block(frame, id, result, state),
+        Screen::Treestate(id, result) => render_treestate(frame, id, result, state),
     }
 }
 
@@ -400,7 +428,7 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
                 None => lines.push("  unavailable".to_string()),
             }
             lines.push(String::new());
-            lines.push("(Esc: back)".to_string());
+            lines.push("(s: treestate, Esc: back)".to_string());
             lines.join("\n")
         }
     };
@@ -408,6 +436,58 @@ fn render_block(frame: &mut Frame, id: &str, result: &Result<(), String>, state:
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Block")),
         frame.area(),
     );
+}
+
+fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, state: &AppState) {
+    let text = match result {
+        Err(e) => format!("Treestate for block {id}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(treestate) = &state.treestate else {
+                return;
+            };
+            let mut lines = vec![
+                format!("Treestate for block {}", treestate.height),
+                format!("Hash: {}", treestate.hash),
+                format!("Time: {}", treestate.time),
+                String::new(),
+            ];
+            for (pool, tree) in [
+                ("Sapling", &treestate.sapling),
+                ("Orchard", &treestate.orchard),
+                ("Ironwood", &treestate.ironwood),
+            ] {
+                lines.push(format!("{pool}:"));
+                match tree {
+                    Some(tree) => {
+                        let root = tree.final_root.as_deref().unwrap_or("unavailable");
+                        lines.push(format!("  Final root: {root}"));
+                        lines.push(format!(
+                            "  Final state: {}",
+                            truncate_hex(&tree.final_state)
+                        ));
+                    }
+                    None => lines.push("  not active at this block".to_string()),
+                }
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Treestate")),
+        frame.area(),
+    );
+}
+
+/// Truncates a long hex string for display, noting its full length — a
+/// serialized commitment tree can be large and isn't meant to be read raw.
+fn truncate_hex(hex: &str) -> String {
+    const PREVIEW_LEN: usize = 64;
+    if hex.len() <= PREVIEW_LEN {
+        return hex.to_string();
+    }
+    format!("{}… ({} hex chars total)", &hex[..PREVIEW_LEN], hex.len())
 }
 
 #[cfg(test)]
@@ -846,6 +926,80 @@ mod tests {
         assert!(content.contains("t1receiver"), "{content}");
     }
 
+    /// A looked-up treestate renders each active pool's root and state,
+    /// and an inactive pool's absence.
+    #[test]
+    fn renders_treestate_with_active_and_inactive_pools() {
+        use super::Screen;
+        use zaino_explorer_domain::{PoolTreestate, Treestate};
+
+        let state = AppState {
+            screen: Screen::Treestate("300".to_string(), Ok(())),
+            treestate: Some(Treestate {
+                hash: "aa".repeat(32),
+                height: 300,
+                time: 1_700_000_300,
+                sapling: Some(PoolTreestate {
+                    final_root: Some("cd".repeat(32)),
+                    final_state: "deadbeef".to_string(),
+                }),
+                orchard: None,
+                ironwood: None,
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains(&"cd".repeat(32)), "{content}");
+        assert!(content.contains("deadbeef"), "{content}");
+        assert!(content.contains("not active at this block"), "{content}");
+    }
+
+    /// A failed treestate lookup renders the error, not a panic.
+    #[test]
+    fn renders_treestate_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Treestate("999999".to_string(), Err("not found".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("not found"), "{content}");
+    }
+
+    /// A hex string within the preview length renders in full; a longer
+    /// one truncates and notes the full length rather than printing it raw.
+    #[test]
+    fn truncate_hex_leaves_short_strings_alone_and_truncates_long_ones() {
+        assert_eq!(super::truncate_hex("deadbeef"), "deadbeef");
+        let long = "ab".repeat(100);
+        let truncated = super::truncate_hex(&long);
+        assert!(truncated.len() < long.len());
+        assert!(truncated.contains("200 hex chars total"));
+    }
+
     /// A failed block lookup renders the error, not a panic.
     #[test]
     fn renders_block_lookup_error() {
@@ -1180,6 +1334,17 @@ mod tests {
                 prev_hash: None,
                 next_hash: None,
             }),
+            treestate: Some(zaino_primitives::types::Treestate {
+                block_hash: BlockHash::from([0x11; 32]),
+                height: Height::try_from(300).expect("valid height"),
+                time: 1_700_000_300,
+                sapling: Some(zaino_primitives::types::PoolTreestate {
+                    final_root: Some(zaino_primitives::types::TreeRoot::from([0x44; 32])),
+                    final_state: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                }),
+                orchard: None,
+                ironwood: None,
+            }),
             ..Default::default()
         };
         let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
@@ -1217,6 +1382,18 @@ mod tests {
                 assert_eq!(deltas.deltas[0].outputs[0].value_zat, 600);
             }
             other => panic!("expected a successful Block screen, got {other:?}"),
+        }
+
+        state.lookup_treestate(&reader).await;
+
+        match &state.screen {
+            Screen::Treestate(id, Ok(())) => {
+                assert_eq!(id, "300");
+                let treestate = state.treestate.as_ref().expect("treestate state populated");
+                let sapling = treestate.sapling.as_ref().expect("sapling active");
+                assert_eq!(sapling.final_state, "deadbeef");
+            }
+            other => panic!("expected a successful Treestate screen, got {other:?}"),
         }
 
         let _ = handle.stop();
