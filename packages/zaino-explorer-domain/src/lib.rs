@@ -88,6 +88,13 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
     /// The validator's own status and the mempool's current size.
     fn node_status(&self) -> impl Future<Output = Result<NodeStatus, ChainReadError>> + Send;
 
+    /// Richer node diagnostics than [`NodeStatus`]'s compact summary —
+    /// mining/network facts and every connected peer (`getmininginfo` +
+    /// `getnetworkinfo` + `getpeerinfo`).
+    fn node_diagnostics(
+        &self,
+    ) -> impl Future<Output = Result<NodeDiagnostics, ChainReadError>> + Send;
+
     /// Every transaction currently in the mempool, with its entry detail.
     fn raw_mempool(&self)
         -> impl Future<Output = Result<Vec<MempoolEntry>, ChainReadError>> + Send;
@@ -310,6 +317,39 @@ pub struct NodeStatus {
     pub mempool_size: u64,
     /// Total serialized size of the mempool's transactions, in bytes.
     pub mempool_bytes: u64,
+}
+
+/// Richer node diagnostics than [`NodeStatus`]'s compact summary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeDiagnostics {
+    /// Name of the chain being served.
+    pub chain: String,
+    /// Current difficulty as a multiple of the network minimum, when
+    /// reported.
+    pub difficulty: Option<f64>,
+    /// Estimated network solution rate, in solutions per second, when
+    /// reported.
+    pub network_sol_ps: Option<u64>,
+    /// Peer-to-peer protocol version.
+    pub protocol_version: u32,
+    /// The node's service-flags bitfield, as the hex string the validator
+    /// reports.
+    pub local_services: String,
+    /// Minimum relay fee, as a ZEC-denominated float.
+    pub relay_fee: f64,
+    /// The validator's networking warnings, empty when there are none.
+    pub warnings: String,
+    /// Every connected peer.
+    pub peers: Vec<PeerInfo>,
+}
+
+/// One connected peer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerInfo {
+    /// Remote peer address as the validator reports it.
+    pub addr: String,
+    /// Whether the peer initiated the connection to the validator.
+    pub inbound: bool,
 }
 
 /// One mempool transaction's entry.

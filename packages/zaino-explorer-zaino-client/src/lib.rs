@@ -7,9 +7,9 @@
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
-    BlockSummary, ChainReadError, ChainReader, MempoolEntry, NodeStatus, PoolTreestate, SpendInfo,
-    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers,
-    ValueMovement,
+    BlockSummary, ChainReadError, ChainReader, MempoolEntry, NodeDiagnostics, NodeStatus, PeerInfo,
+    PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput, Treestate,
+    UnifiedReceivers, ValueMovement,
 };
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
@@ -250,6 +250,32 @@ fn unified_receivers_from_response(response: UnifiedReceiversResponse) -> Unifie
     }
 }
 
+/// Combine `getmininginfo`, `getnetworkinfo` and `getpeerinfo` into a
+/// [`NodeDiagnostics`]. A pure function so the mapping is unit-testable
+/// without a server.
+fn node_diagnostics_from_responses(
+    mining: zaino_noderpc::wire::response::MiningInfoResponse,
+    network: zaino_noderpc::wire::response::NetworkInfoResponse,
+    peers: Vec<zaino_noderpc::wire::response::PeerInfoEntry>,
+) -> NodeDiagnostics {
+    NodeDiagnostics {
+        chain: mining.chain,
+        difficulty: mining.difficulty,
+        network_sol_ps: mining.networksolps,
+        protocol_version: network.protocolversion,
+        local_services: network.localservices,
+        relay_fee: network.relayfee,
+        warnings: network.warnings,
+        peers: peers
+            .into_iter()
+            .map(|p| PeerInfo {
+                addr: p.addr,
+                inbound: p.inbound,
+            })
+            .collect(),
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -447,6 +473,25 @@ impl ChainReader for ZainoClient {
             mempool_size: mempool.size,
             mempool_bytes: mempool.bytes,
         })
+    }
+
+    async fn node_diagnostics(&self) -> Result<NodeDiagnostics, ChainReadError> {
+        let mining = self
+            .0
+            .mining_info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        let network = self
+            .0
+            .network_info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        let peers = self
+            .0
+            .peer_info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(node_diagnostics_from_responses(mining, network, peers))
     }
 
     async fn raw_mempool(&self) -> Result<Vec<MempoolEntry>, ChainReadError> {
@@ -834,6 +879,54 @@ mod tests {
         assert!(receivers.sapling.is_none());
         assert_eq!(receivers.p2pkh, Some("t1examplereceiver".to_string()));
         assert!(receivers.p2sh.is_none());
+    }
+
+    /// `getmininginfo` + `getnetworkinfo` + `getpeerinfo` combine
+    /// field-for-field into a [`zaino_explorer_domain::NodeDiagnostics`] —
+    /// no server needed.
+    #[test]
+    fn mining_network_peer_responses_combine_into_node_diagnostics() {
+        use zaino_noderpc::wire::response::{
+            MiningInfoResponse, NetworkInfoResponse, PeerInfoEntry,
+        };
+
+        let mining = MiningInfoResponse {
+            blocks: 300,
+            currentblocksize: None,
+            currentblocktx: None,
+            difficulty: Some(42.5),
+            networksolps: Some(1_000_000),
+            networkhashps: None,
+            chain: "main".to_string(),
+            testnet: false,
+            errors: None,
+        };
+        let network = NetworkInfoResponse {
+            version: 1,
+            subversion: "/Zebra:6.4.2/".to_string(),
+            protocolversion: 170_100,
+            localservices: "0000000000000000".to_string(),
+            timeoffset: 0,
+            connections: 2,
+            networks: Vec::new(),
+            relayfee: 0.000_001,
+            localaddresses: Vec::new(),
+            warnings: String::new(),
+        };
+        let peers = vec![PeerInfoEntry {
+            addr: "1.2.3.4:8233".to_string(),
+            inbound: true,
+        }];
+
+        let diagnostics = super::node_diagnostics_from_responses(mining, network, peers);
+
+        assert_eq!(diagnostics.chain, "main");
+        assert_eq!(diagnostics.difficulty, Some(42.5));
+        assert_eq!(diagnostics.network_sol_ps, Some(1_000_000));
+        assert_eq!(diagnostics.protocol_version, 170_100);
+        assert_eq!(diagnostics.peers.len(), 1);
+        assert_eq!(diagnostics.peers[0].addr, "1.2.3.4:8233");
+        assert!(diagnostics.peers[0].inbound);
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -1359,6 +1452,26 @@ mod tests {
         let reader = ZainoClient::new(client);
 
         let result = reader.node_status().await;
+
+        assert!(result.is_err(), "an unready node should error, not panic");
+
+        let _ = handle.stop();
+    }
+
+    /// `node_diagnostics` against a real mock server: `getmininginfo`
+    /// cannot be scripted on this mock (always `NotReady`, like
+    /// `node_status`'s own `getinfo` dependency), so this proves the
+    /// failure surfaces as a typed `Err`, not a panic.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_diagnostics_surfaces_not_ready_as_an_error() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let result = reader.node_diagnostics().await;
 
         assert!(result.is_err(), "an unready node should error, not panic");
 
