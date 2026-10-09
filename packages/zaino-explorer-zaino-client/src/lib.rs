@@ -7,9 +7,9 @@
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
-    BlockSummary, ChainReadError, ChainReader, MempoolEntry, NodeDiagnostics, NodeStatus, PeerInfo,
-    PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput, Treestate,
-    UnifiedReceivers, ValueMovement,
+    BlockSummary, ChainReadError, ChainReader, MempoolEntry, MiningInfo, NetworkInfo,
+    NodeDiagnostics, NodeStatus, PeerInfo, PoolTreestate, SpendInfo, TransactionDelta,
+    TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers, ValueMovement,
 };
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
@@ -254,18 +254,22 @@ fn unified_receivers_from_response(response: UnifiedReceiversResponse) -> Unifie
 /// [`NodeDiagnostics`]. A pure function so the mapping is unit-testable
 /// without a server.
 fn node_diagnostics_from_responses(
-    mining: zaino_noderpc::wire::response::MiningInfoResponse,
-    network: zaino_noderpc::wire::response::NetworkInfoResponse,
+    mining: Option<zaino_noderpc::wire::response::MiningInfoResponse>,
+    network: Option<zaino_noderpc::wire::response::NetworkInfoResponse>,
     peers: Vec<zaino_noderpc::wire::response::PeerInfoEntry>,
 ) -> NodeDiagnostics {
     NodeDiagnostics {
-        chain: mining.chain,
-        difficulty: mining.difficulty,
-        network_sol_ps: mining.networksolps,
-        protocol_version: network.protocolversion,
-        local_services: network.localservices,
-        relay_fee: network.relayfee,
-        warnings: network.warnings,
+        mining: mining.map(|m| MiningInfo {
+            chain: m.chain,
+            difficulty: m.difficulty,
+            network_sol_ps: m.networksolps,
+        }),
+        network: network.map(|n| NetworkInfo {
+            protocol_version: n.protocolversion,
+            local_services: n.localservices,
+            relay_fee: n.relayfee,
+            warnings: n.warnings,
+        }),
         peers: peers
             .into_iter()
             .map(|p| PeerInfo {
@@ -476,21 +480,12 @@ impl ChainReader for ZainoClient {
     }
 
     async fn node_diagnostics(&self) -> Result<NodeDiagnostics, ChainReadError> {
-        let mining = self
-            .0
-            .mining_info()
-            .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
-        let network = self
-            .0
-            .network_info()
-            .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
-        let peers = self
-            .0
-            .peer_info()
-            .await
-            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        // Three independent RPCs, not every deployed zainod serves all
+        // three — each degrades to absent on its own failure rather than
+        // one missing method hiding the two that did answer.
+        let mining = self.0.mining_info().await.ok();
+        let network = self.0.network_info().await.ok();
+        let peers = self.0.peer_info().await.unwrap_or_default();
         Ok(node_diagnostics_from_responses(mining, network, peers))
     }
 
@@ -918,15 +913,48 @@ mod tests {
             inbound: true,
         }];
 
-        let diagnostics = super::node_diagnostics_from_responses(mining, network, peers);
+        let diagnostics =
+            super::node_diagnostics_from_responses(Some(mining), Some(network), peers);
 
-        assert_eq!(diagnostics.chain, "main");
-        assert_eq!(diagnostics.difficulty, Some(42.5));
-        assert_eq!(diagnostics.network_sol_ps, Some(1_000_000));
-        assert_eq!(diagnostics.protocol_version, 170_100);
+        let mining = diagnostics.mining.expect("mining info present");
+        assert_eq!(mining.chain, "main");
+        assert_eq!(mining.difficulty, Some(42.5));
+        assert_eq!(mining.network_sol_ps, Some(1_000_000));
+        let network = diagnostics.network.expect("network info present");
+        assert_eq!(network.protocol_version, 170_100);
         assert_eq!(diagnostics.peers.len(), 1);
         assert_eq!(diagnostics.peers[0].addr, "1.2.3.4:8233");
         assert!(diagnostics.peers[0].inbound);
+    }
+
+    /// When `getnetworkinfo` isn't scripted (absent), the mining and peer
+    /// data that *did* answer still comes through — the whole page
+    /// doesn't vanish because one of three independent reads failed.
+    #[test]
+    fn missing_network_info_does_not_hide_mining_or_peers() {
+        use zaino_noderpc::wire::response::{MiningInfoResponse, PeerInfoEntry};
+
+        let mining = MiningInfoResponse {
+            blocks: 300,
+            currentblocksize: None,
+            currentblocktx: None,
+            difficulty: Some(42.5),
+            networksolps: Some(1_000_000),
+            networkhashps: None,
+            chain: "main".to_string(),
+            testnet: false,
+            errors: None,
+        };
+        let peers = vec![PeerInfoEntry {
+            addr: "1.2.3.4:8233".to_string(),
+            inbound: true,
+        }];
+
+        let diagnostics = super::node_diagnostics_from_responses(Some(mining), None, peers);
+
+        assert!(diagnostics.mining.is_some());
+        assert!(diagnostics.network.is_none());
+        assert_eq!(diagnostics.peers.len(), 1);
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -1463,7 +1491,7 @@ mod tests {
     /// `node_status`'s own `getinfo` dependency), so this proves the
     /// failure surfaces as a typed `Err`, not a panic.
     #[tokio::test(flavor = "multi_thread")]
-    async fn node_diagnostics_surfaces_not_ready_as_an_error() {
+    async fn node_diagnostics_degrades_to_empty_when_nothing_is_ready() {
         let chain = MockChain::default();
         let (addr, handle) = spawn_mock_server(chain);
         let client = HttpClientBuilder::default()
@@ -1471,9 +1499,14 @@ mod tests {
             .expect("build http client");
         let reader = ZainoClient::new(client);
 
-        let result = reader.node_diagnostics().await;
+        let diagnostics = reader
+            .node_diagnostics()
+            .await
+            .expect("never hard-fails: each of the three reads degrades independently");
 
-        assert!(result.is_err(), "an unready node should error, not panic");
+        assert!(diagnostics.mining.is_none());
+        assert!(diagnostics.network.is_none());
+        assert!(diagnostics.peers.is_empty());
 
         let _ = handle.stop();
     }

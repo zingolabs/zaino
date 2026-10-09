@@ -320,8 +320,25 @@ pub struct NodeStatus {
 }
 
 /// Richer node diagnostics than [`NodeStatus`]'s compact summary.
+///
+/// `mining`, `network` and `peers` are independent RPCs
+/// (`getmininginfo`/`getnetworkinfo`/`getpeerinfo`) — not every deployed
+/// zainod serves all three, so each degrades to absent on its own failure
+/// rather than hiding the other two that *did* answer.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeDiagnostics {
+    /// Mining/chain facts, absent when `getmininginfo` fails.
+    pub mining: Option<MiningInfo>,
+    /// Networking facts, absent when `getnetworkinfo` fails.
+    pub network: Option<NetworkInfo>,
+    /// Every connected peer; empty when `getpeerinfo` fails or the node
+    /// genuinely has no peers — this adapter cannot distinguish the two.
+    pub peers: Vec<PeerInfo>,
+}
+
+/// Mining/chain facts from `getmininginfo`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MiningInfo {
     /// Name of the chain being served.
     pub chain: String,
     /// Current difficulty as a multiple of the network minimum, when
@@ -330,6 +347,11 @@ pub struct NodeDiagnostics {
     /// Estimated network solution rate, in solutions per second, when
     /// reported.
     pub network_sol_ps: Option<u64>,
+}
+
+/// Networking facts from `getnetworkinfo`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkInfo {
     /// Peer-to-peer protocol version.
     pub protocol_version: u32,
     /// The node's service-flags bitfield, as the hex string the validator
@@ -339,8 +361,6 @@ pub struct NodeDiagnostics {
     pub relay_fee: f64,
     /// The validator's networking warnings, empty when there are none.
     pub warnings: String,
-    /// Every connected peer.
-    pub peers: Vec<PeerInfo>,
 }
 
 /// One connected peer.
