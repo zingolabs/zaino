@@ -19,6 +19,7 @@ use super::{
     file_name,
     filter::FilterError,
     layout::{Navigation, Shape},
+    slots::Slot,
     Result, SegmentError, SegmentMeta,
 };
 use crate::{
@@ -69,15 +70,16 @@ impl SegmentOut {
         Ok(())
     }
 
-    /// Records, then navigation, sealed (fsynced) → meta a manifest would list + rows' digest
-    fn finish(mut self) -> Result<(SegmentMeta, u32)> {
+    /// Records, then navigation, sealed (fsynced) → meta a manifest would list + rows' digest +
+    /// the file
+    fn finish(mut self) -> Result<(SegmentMeta, u32, PagedFile)> {
         self.file.append(&self.chunk)?;
         let id = self.id;
         self.navigation
             .finish(self.records, &mut self.file)
             .map_err(|error| navigation_error(id, error))?;
         let meta = SegmentMeta { id, records: self.records, sealed: self.file.seal()? };
-        Ok((meta, self.digest.finalize()))
+        Ok((meta, self.digest.finalize(), self.file))
     }
 }
 
@@ -132,6 +134,7 @@ impl SegmentWriter {
         id: u32,
         inputs: &[SegmentMeta],
         cancel: &AtomicBool,
+        slot: &Slot<'_>,
     ) -> Result<Option<SegmentMeta>> {
         assert!(inputs.len() >= 2, "merge of {} segments", inputs.len());
         let sources = inputs
@@ -150,22 +153,35 @@ impl SegmentWriter {
             (0..sources.len()).filter_map(|source| head(source, 0)).collect();
 
         let mut out = self.create(id, total)?;
-        while let Some(Reverse((_, source, slot))) = heads.pop() {
+        // read + written per row, charged to the engine's merge bandwidth a chunk at a time
+        let mut uncharged = 0;
+        while let Some(Reverse((_, source, at))) = heads.pop() {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
             }
-            out.push(sources[source].row(slot))?;
-            heads.extend(head(source, slot + 1));
+            let row = sources[source].row(at);
+            out.push(row)?;
+            uncharged += 2 * row.len();
+            if uncharged >= CHUNK {
+                slot.charge(std::mem::take(&mut uncharged));
+            }
+            heads.extend(head(source, at + 1));
         }
+        slot.charge(uncharged);
         // `finish` asserts every input record was emitted once
         self.sealed(out).map(Some)
     }
 
-    /// `out` finished, then (under [`VERIFY`]) read back through its page checksums
+    /// `out` finished, then (under [`VERIFY`]) read back through its page checksums, then out of
+    /// page cache unless its table [`cache_writes`](crate::MapTable::cache_writes) (after the
+    /// read-back: it faults every page back in)
     fn sealed(&self, out: SegmentOut) -> Result<SegmentMeta> {
-        let (meta, digest) = out.finish()?;
+        let (meta, digest, file) = out.finish()?;
         if VERIFY {
             self.verify(&meta, digest)?;
+        }
+        if !self.shape.cache_writes {
+            file.drop_cache()?;
         }
         Ok(meta)
     }

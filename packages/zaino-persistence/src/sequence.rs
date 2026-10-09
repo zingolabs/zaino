@@ -80,6 +80,7 @@ pub(crate) struct SequenceFile {
     ends: Option<PagedFile>,
     sealed: Seals,
     grown: bool,
+    cache_writes: bool,
 }
 
 impl SequenceFile {
@@ -96,7 +97,8 @@ impl SequenceFile {
             Width::Fixed(_) => None,
             Width::Variable => Some(file(ends_name(table), sealed.ends)?),
         };
-        Ok(Self { width: table.record, data, ends, sealed, grown: false })
+        let cache_writes = table.cache_writes;
+        Ok(Self { width: table.record, data, ends, sealed, grown: false, cache_writes })
     }
 
     /// File names a fresh directory must not hold data in
@@ -129,6 +131,13 @@ impl SequenceFile {
             self.sealed.data = self.data.seal()?;
             if let Some(ends) = &mut self.ends {
                 self.sealed.ends = ends.seal()?;
+            }
+            // synced = clean: dropping costs nothing now, one 4 KiB re-read of the tail page later
+            if !self.cache_writes {
+                self.data.drop_cache()?;
+                if let Some(ends) = &self.ends {
+                    ends.drop_cache()?;
+                }
             }
             self.grown = false;
         }

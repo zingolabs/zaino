@@ -53,7 +53,7 @@ pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
 /// Buffered heap that commits a bulk run (a `Finalized` block commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
+    std::num::NonZeroUsize::new(256 << 20).expect("256 MiB is non-zero");
 
 const RECEIVES: MapTable = MapTable::new(
     0,

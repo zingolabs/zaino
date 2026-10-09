@@ -119,6 +119,10 @@ impl FileHandle for RealFile {
         start_writeback(&self.0, range)
     }
 
+    fn drop_cache(&self) -> io::Result<()> {
+        Ok(rustix::fs::fadvise(&self.0, 0, None, rustix::fs::Advice::DontNeed)?)
+    }
+
     fn map(&self) -> io::Result<Option<Mapping>> {
         if self.len()? == 0 {
             return Ok(None);

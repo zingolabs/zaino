@@ -80,9 +80,15 @@ fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
 
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    let mut log =
-        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, Arc::new(Slots::new(4)))
-            .expect("open");
+    let mut log = SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        &scanned(),
+        &[],
+        2,
+        Arc::new(Slots::new(4, u64::MAX)),
+    )
+    .expect("open");
     let short_value = catch_unwind(AssertUnwindSafe(|| log.batch(vec![(&[0; 12], &[0; 7])])));
     let message = panic_message(short_value.expect_err("a 7-byte value"));
     assert!(message.contains("LSM map scanned: (key, value) widths"), "{message}");
@@ -137,9 +143,15 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
 
     // same tier as `kept` at fanout 2 → opening both launches their merge (reads the page)
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
-    let log =
-        SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], 2, Arc::new(Slots::new(4)))
-            .expect("merge");
+    let log = SegmentLog::open(
+        fs.clone(),
+        dir,
+        &scanned(),
+        &[kept, second],
+        2,
+        Arc::new(Slots::new(4, u64::MAX)),
+    )
+    .expect("merge");
     log.settle();
     let log = std::sync::Mutex::new(log);
     died(&|| {

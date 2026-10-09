@@ -35,3 +35,11 @@ description = """
 `WRITE_BUFFER` (8 MiB): this index's buffered heap before a bulk commit (the `write_buffer` \
 `zainod` opens its store with).
 """
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "feature"
+section = "changed"
+description = """
+Every table `cache_writes()`: its fold reads the tip's sizes and frontier nodes off them.
+"""

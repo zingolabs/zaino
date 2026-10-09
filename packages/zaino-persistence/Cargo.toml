@@ -30,6 +30,7 @@ tracing.workspace = true
 proptest = { workspace = true, optional = true }
 imbl.workspace = true
 hashbrown.workspace = true
+rustix = { version = "1.1", features = ["fs"] }
 
 [dev-dependencies]
 proptest.workspace = true

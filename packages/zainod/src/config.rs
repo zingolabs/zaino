@@ -394,18 +394,21 @@ pub(crate) struct LsmStoreConfig {
     pub(crate) fanout: usize,
     /// Merges doing disk I/O at once (the rest wait, smallest first)
     pub(crate) merge_slots: NonZeroUsize,
+    /// MiB/s every merge together may read + write (commits never paced: the rest of the disk)
+    pub(crate) merge_mib_per_sec: NonZeroU32,
 }
 
 impl Default for LsmStoreConfig {
     fn default() -> Self {
-        let LsmConfig { fanout, merge_slots } = LsmConfig::default();
-        Self { fanout, merge_slots }
+        let LsmConfig { fanout, merge_slots, merge_mib_per_sec } = LsmConfig::default();
+        Self { fanout, merge_slots, merge_mib_per_sec }
     }
 }
 
 impl From<&LsmStoreConfig> for LsmConfig {
     fn from(config: &LsmStoreConfig) -> Self {
-        Self { fanout: config.fanout, merge_slots: config.merge_slots }
+        let (fanout, merge_slots) = (config.fanout, config.merge_slots);
+        Self { fanout, merge_slots, merge_mib_per_sec: config.merge_mib_per_sec }
     }
 }
 
@@ -838,7 +841,7 @@ enabled = false
             assert_eq!(found, keys, "[{table}]");
         };
         printed("sync", &["finalised_depth", "concurrency", "queue_mib"]);
-        printed("sync.lsm_store", &["fanout", "merge_slots"]);
+        printed("sync.lsm_store", &["fanout", "merge_slots", "merge_mib_per_sec"]);
         for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
@@ -956,15 +959,17 @@ path = "/tmp/zaino-compact-block"
     }
 
     #[test]
-    fn sync_lsm_store_parses_into_the_engine_config_and_a_fanout_below_two_is_refused() {
+    fn sync_lsm_store_parses_into_the_engine_config_and_a_fanout_below_two_or_a_zero_is_refused() {
         let parsed = |table: &str| {
             toml::from_str::<DaemonConfig>(&format!(
                 "network = \"mainnet\"\n[sync.lsm_store]\n{table}"
             ))
         };
 
-        let config = parsed("fanout = 4\nmerge_slots = 1\n").expect("deserialise");
-        let expected = LsmConfig { fanout: 4, merge_slots: NonZeroUsize::MIN };
+        let config =
+            parsed("fanout = 4\nmerge_slots = 1\nmerge_mib_per_sec = 300\n").expect("deserialise");
+        let merge_mib_per_sec = NonZeroU32::new(300).expect("non-zero");
+        let expected = LsmConfig { fanout: 4, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
         assert_eq!(LsmConfig::from(&config.sync.lsm_store), expected);
         assert!(config.validate().is_ok());
 
@@ -972,6 +977,7 @@ path = "/tmp/zaino-compact-block"
             parsed("fanout = 1\n").expect("deserialise").validate().expect_err("fanout 1");
         assert!(refused.to_string().contains("sync.lsm_store.fanout = 1"), "{refused}");
         assert!(parsed("merge_slots = 0\n").is_err(), "merge_slots non-zero");
+        assert!(parsed("merge_mib_per_sec = 0\n").is_err(), "merge_mib_per_sec non-zero");
         assert!(parsed("fan_out = 4\n").is_err(), "unknown key");
     }
 

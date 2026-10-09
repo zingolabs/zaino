@@ -173,7 +173,9 @@ report.is_clean();
   - A tier merges once it holds `fanout` segments (default 16; write amplification
     `log_fanout(rows)`).
   - Run on background threads, at most one per size tier and `merge_slots` doing
-    work across every store of one engine (default 2), lowest tier first, at
+    work across every store of one engine (default 4), sharing
+    `merge_mib_per_sec` of read + written bytes (default 200; a debt bucket, one
+    second of burst; commits are never paced), lowest tier first, at
     background CPU and I/O priority. The I/O priority only binds under a
     scheduler that honours it (`mq-deadline`, `bfq`); `none` ignores it.
   - A finished merge is swapped in by the next commit's manifest, and its
@@ -182,6 +184,14 @@ report.is_clean();
     behind (`STALL_WINDOWS`), which bounds read fan-out.
   - Merge errors and panics surface at the next commit.
   - Dropping the store cancels and joins every merge.
+- **Page cache:** every segment a commit or merge writes, and every sequence
+  append, is dropped from page cache once synced (`POSIX_FADV_DONTNEED`; a map
+  keeps only what opening the view reads: summary + filters). A table a fold
+  reads declares `cache_writes()` (value-balance's `outputs`, every tree-state
+  table) and keeps what it writes cached; the rest fault pages in when served.
+  Appends stay as fast (pages are dropped clean, after the fsync); the cost is
+  one 4 KiB re-read of a sequence's tail page per commit. Bulk writes and merges
+  never evict the tables folds read.
 - **Duplicate keys** panic, whether within a batch or across segments (on a
   read or a merge).
 - **Read-back check:** under `cfg(test)` or feature `testing`, every sealed

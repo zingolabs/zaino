@@ -694,6 +694,10 @@ impl FileHandle for SimFile {
         Ok(())
     }
 
+    fn drop_cache(&self) -> io::Result<()> {
+        Ok(())
+    }
+
     fn map(&self) -> io::Result<Option<Mapping>> {
         let inner = self.lock_inner();
         let data = &inner.image.files[self.id].current;

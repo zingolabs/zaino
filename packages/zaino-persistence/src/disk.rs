@@ -54,7 +54,8 @@ impl DiskEngine {
     /// Panics: `lsm.fanout` < 2 (a merge of one segment = no merge)
     pub fn new(fs: Arc<dyn Fs>, lsm: LsmConfig) -> Self {
         assert!(lsm.fanout >= 2, "lsm fanout {} < 2", lsm.fanout);
-        let slots = Arc::new(Slots::new(lsm.merge_slots.get()));
+        let bytes_per_sec = u64::from(lsm.merge_mib_per_sec.get()) << 20;
+        let slots = Arc::new(Slots::new(lsm.merge_slots.get(), bytes_per_sec));
         Self { fs, fanout: lsm.fanout, slots }
     }
 

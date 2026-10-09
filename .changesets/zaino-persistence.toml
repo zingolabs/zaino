@@ -91,7 +91,7 @@ kind = "breaking"
 section = "changed"
 description = """
 `DiskEngine::new(fs, LsmConfig { fanout, merge_slots })`: the map tables' merge fanout (default \
-16, was a fixed 8) and the merges doing I/O at once (default 2, was a fixed 4), the latter shared \
+16) and the merges doing I/O at once (default 4), the latter shared \
 by every store one engine opens (was process-wide).
 """
 migration = """
@@ -124,4 +124,28 @@ description = """
 page-cache share by `mincore`, `None` when not knowable). Each commit records \
 `zaino_store_commit_seconds` + `zaino_store_commit_bytes_total` `{index}`; crate-level \
 `describe_metrics` (store + LSM) and `METRIC_BUCKETS`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "changed"
+description = """
+Map segments written by commits and merges, and sequence appends, leave page cache once synced \
+(`FileHandle::drop_cache`, `POSIX_FADV_DONTNEED`), unless the table declares \
+`MapTable::cache_writes()` / `SequenceTable::cache_writes()` (a fold reads it): bulk writes no \
+longer evict the tables folds read.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`LsmConfig::merge_mib_per_sec` (default 200): every merge of one engine shares that many read + \
+written MiB/s (one second of burst), so merges never take the whole device from commits' fsyncs and \
+folds' lookups. Commits are not paced.
+"""
+migration = """
+Add `merge_mib_per_sec` where an `LsmConfig` is built field by field (or use `..LsmConfig::default()`).
 """

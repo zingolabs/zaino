@@ -5219,6 +5219,7 @@ dependencies = [
  "metrics",
  "proptest",
  "rayon",
+ "rustix",
  "serde",
  "tempfile",
  "thiserror 2.0.18",

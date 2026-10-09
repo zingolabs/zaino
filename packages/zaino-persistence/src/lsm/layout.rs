@@ -38,6 +38,7 @@ pub(crate) struct Shape {
     pub(crate) group_fences: usize,
     pub(crate) probed: bool,
     pub(crate) filtered: usize,
+    pub(crate) cache_writes: bool,
 }
 
 impl Shape {
@@ -60,6 +61,7 @@ impl Shape {
             group_fences: (BLOCK_BYTES / key_len).max(1),
             probed: scope == 0,
             filtered,
+            cache_writes: table.cache_writes,
         }
     }
 

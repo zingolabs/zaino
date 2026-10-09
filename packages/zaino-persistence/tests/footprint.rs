@@ -12,20 +12,22 @@ use zaino_persistence::{
 use zaino_primitives::types::{BlockHash, BlockRef, Height};
 use zcash_protocol::consensus::NetworkType;
 
-const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32));
+const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32)).cache_writes();
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
-const MAP: MapTable = MapTable::new(0, "map", Width::fixed(36), Width::fixed(8), 0);
+const DROPPED: MapTable = MapTable::new(0, "dropped", Width::fixed(36), Width::fixed(8), 0);
+const CACHED: MapTable =
+    MapTable::new(1, "cached", Width::fixed(36), Width::fixed(8), 0).cache_writes();
 const SCHEMA: Schema = Schema::new(
     IndexKind::ValueBalance,
     1,
     NetworkType::Regtest,
-    Tables::new(&[FIXED, VARIABLE], &[MAP]),
+    Tables::new(&[FIXED, VARIABLE], &[DROPPED, CACHED]),
 );
 
 /// - bytes = committed data (records + 8-byte ends, every listed segment), never the files'
 ///   preallocated tails
-/// - cached = all of it right after a commit wrote it (written pages stay in page cache), never
-///   above bytes
+/// - cached right after the commit: each `cache_writes` table all of it; a default sequence none
+///   (dropped once synced), a default map only what opening the view reads (summary + filters)
 /// - `SimFs`: same bytes, cached unknowable (`None`)
 #[test]
 fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
@@ -42,7 +44,8 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
         changes.sequence(VARIABLE).append(&vec![n as u8; 100 + (n % 200) as usize]);
         let mut key = [0u8; 36];
         key[..8].copy_from_slice(&n.wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes());
-        changes.map(MAP).insert(&key, &n.to_le_bytes());
+        changes.map(DROPPED).insert(&key, &n.to_le_bytes());
+        changes.map(CACHED).insert(&key, &n.to_le_bytes());
         store.apply(changes);
     }
     let mut height = Height::GENESIS;
@@ -55,20 +58,35 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
     store.commit().expect("commit");
     sim.commit().expect("commit sim");
 
-    let segments: u64 = fs::read_dir(dir.path().join("map"))
-        .expect("map dir")
-        .filter_map(Result::ok)
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
-        .map(|entry| fs::metadata(entry.path()).expect("segment").len())
-        .sum();
+    let segments = |map: &str| -> u64 {
+        fs::read_dir(dir.path().join(map))
+            .expect("map dir")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "seg"))
+            .map(|entry| fs::metadata(entry.path()).expect("segment").len())
+            .sum()
+    };
+    let (dropped, cached) = (segments("dropped"), segments("cached"));
+    assert!(dropped > 0 && dropped == cached, "same rows, same segment bytes");
     let variable: u64 = (0..20_000u64).map(|n| 100 + n % 200).sum::<u64>() + 20_000 * 8;
-    let committed = [("fixed", 20_000 * 32), ("variable", variable), ("map", segments)];
-    let expected: Vec<TableFootprint> = committed
+    let footprint = store.committed().footprint();
+    let opened = footprint.iter().find(|table| table.table == "dropped").and_then(|t| t.cached);
+    assert!(opened.is_some_and(|bytes| bytes < dropped / 10), "dropped: {footprint:?}");
+    let tables = [
+        ("fixed", 20_000 * 32, None),
+        ("variable", variable, Some(0)),
+        ("dropped", dropped, opened),
+        ("cached", cached, None),
+    ];
+    let expected: Vec<TableFootprint> = tables
         .iter()
-        .map(|&(table, bytes)| TableFootprint { table, bytes, cached: Some(bytes) })
+        .map(|&(table, bytes, cached)| TableFootprint {
+            table,
+            bytes,
+            cached: cached.or(Some(bytes)),
+        })
         .collect();
-    assert_eq!(store.committed().footprint(), expected);
-    assert!(segments > 0, "the map wrote a segment");
+    assert_eq!(footprint, expected);
 
     let simulated = sim.committed().footprint();
     let unknowable: Vec<TableFootprint> =

@@ -70,8 +70,9 @@ pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(8 << 20).expect("8 MiB is non-zero");
 
+/// Every table `cache_writes`: the fold reads the tip's sizes + frontier nodes off them
 const HEIGHTS: SequenceTable =
-    SequenceTable::new(0, "heights", Width::fixed(heights::RECORD as u32));
+    SequenceTable::new(0, "heights", Width::fixed(heights::RECORD as u32)).cache_writes();
 
 /// Level sequences + subtrees, per pool
 const POOL_TABLES: usize = MERKLE_DEPTH as usize + 1;
@@ -115,12 +116,13 @@ const fn pool_tables(
     subtrees: &'static str,
 ) -> [SequenceTable; POOL_TABLES] {
     let entry = Width::fixed(subtrees::ENTRY as u32);
-    let mut tables =
-        [SequenceTable::new(first + MERKLE_DEPTH as u16, subtrees, entry); POOL_TABLES];
+    let subtrees = SequenceTable::new(first + MERKLE_DEPTH as u16, subtrees, entry).cache_writes();
+    let mut tables = [subtrees; POOL_TABLES];
     let mut level = 0;
     while level < levels.len() {
+        let node = Width::fixed(NODE as u32);
         tables[level] =
-            SequenceTable::new(first + level as u16, levels[level], Width::fixed(NODE as u32));
+            SequenceTable::new(first + level as u16, levels[level], node).cache_writes();
         level += 1;
     }
     tables

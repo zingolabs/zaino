@@ -66,6 +66,10 @@ pub trait FileHandle: Send + Sync + fmt::Debug {
 
     /// Read-only view of the whole file; `None` when empty (mmap refuses zero length)
     fn map(&self) -> io::Result<Option<Mapping>>;
+
+    /// Its clean pages out of page cache (`POSIX_FADV_DONTNEED`; advisory: later reads fault them
+    /// back in)
+    fn drop_cache(&self) -> io::Result<()>;
 }
 
 impl dyn FileHandle {

@@ -1,9 +1,10 @@
 //! Engine-wide merge slots: <= `LsmConfig::merge_slots` merges working at once across every set
-//! of every index; next free slot → lowest waiting tier
+//! of every index, sharing `LsmConfig::merge_mib_per_sec`; next free slot → lowest waiting tier
 //!
 //! - cap: else a merge per tier per set = dozens of threads competing with serving reads for disk
+//! - bandwidth: merges never take the whole device (commits' fsyncs + folds' reads queue behind)
 //! - lowest tier first: small merges (bound a commit's stall) never queue behind a large one
-//! - slot holder waits only on its own I/O → every waiting merge gets a slot eventually
+//! - slot holder waits only on its own I/O + the shared bandwidth → every waiting merge gets a slot
 
 use std::{
     cmp::Reverse,
@@ -12,7 +13,8 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Condvar, Mutex, MutexGuard,
     },
-    time::Duration,
+    thread,
+    time::{Duration, Instant},
 };
 
 /// How often a waiting merge rechecks its cancel flag
@@ -23,6 +25,38 @@ pub(crate) struct Slots {
     state: Mutex<State>,
     freed: Condvar,
     capacity: usize,
+    bandwidth: Bandwidth,
+}
+
+/// Merge bytes per second across every slot holder: a debt bucket, one second's worth of burst
+///
+/// - each charge sleeps off the debt it finds (concurrent merges share the rate, never exceed it)
+#[derive(Debug)]
+struct Bandwidth {
+    per_sec: f64,
+    bucket: Mutex<(f64, Instant)>,
+}
+
+impl Bandwidth {
+    fn new(bytes_per_sec: u64) -> Self {
+        let per_sec = bytes_per_sec as f64;
+        Self { per_sec, bucket: Mutex::new((per_sec, Instant::now())) }
+    }
+
+    fn charge(&self, bytes: usize) {
+        let debt = {
+            let mut bucket = self.bucket.lock().expect("bandwidth never held across a panic");
+            let (tokens, at) = &mut *bucket;
+            let now = Instant::now();
+            let refill = now.duration_since(*at).as_secs_f64() * self.per_sec;
+            *tokens = (*tokens + refill).min(self.per_sec) - bytes as f64;
+            *at = now;
+            (*tokens < 0.0).then(|| Duration::from_secs_f64(-*tokens / self.per_sec))
+        };
+        if let Some(debt) = debt {
+            thread::sleep(debt);
+        }
+    }
 }
 
 /// `waiting` = `(tier, arrival)`: lowest waiting tier first, ties in arrival order
@@ -39,11 +73,12 @@ pub(super) struct Slot<'a> {
 }
 
 impl Slots {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize, bytes_per_sec: u64) -> Self {
         Self {
             state: Mutex::new(State { running: 0, waiting: BinaryHeap::new(), arrivals: 0 }),
             freed: Condvar::new(),
             capacity,
+            bandwidth: Bandwidth::new(bytes_per_sec),
         }
     }
 
@@ -73,6 +108,13 @@ impl Slots {
     }
 }
 
+impl Slot<'_> {
+    /// `bytes` of merge I/O done: waits while the engine's merges run ahead of their bandwidth
+    pub(super) fn charge(&self, bytes: usize) {
+        self.slots.bandwidth.charge(bytes);
+    }
+}
+
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
         self.slots.lock().running -= 1;
@@ -90,7 +132,7 @@ mod tests {
     /// - cancelled waiter leaves the queue without a slot
     #[test]
     fn slots_cap_concurrency_and_serve_the_lowest_tier_first() {
-        let slots: &'static Slots = Box::leak(Box::new(Slots::new(1)));
+        let slots: &'static Slots = Box::leak(Box::new(Slots::new(1, u64::MAX)));
         let running = AtomicBool::new(false);
         let held = slots.acquire(5, &running).expect("free slot");
 
@@ -122,5 +164,26 @@ mod tests {
         }
         assert_eq!(*order.lock().expect("order"), [2, 4, 7], "lowest tier first");
         assert_eq!(slots.lock().running, 0);
+    }
+
+    /// One second's worth free, the rest paced: 30 MB at 20 MB/s ≈ 0.5 s, whoever charges it
+    #[test]
+    fn bandwidth_lets_one_seconds_burst_through_then_paces_every_charger_to_the_rate() {
+        let bandwidth = Arc::new(Bandwidth::new(20_000_000));
+        let started = Instant::now();
+        let chargers: Vec<_> = (0..3)
+            .map(|_| {
+                let bandwidth = Arc::clone(&bandwidth);
+                thread::spawn(move || (0..10).for_each(|_| bandwidth.charge(1_000_000)))
+            })
+            .collect();
+        for charger in chargers {
+            charger.join().expect("charger");
+        }
+        let took = started.elapsed();
+        assert!(
+            (0.4..1.5).contains(&took.as_secs_f64()),
+            "30 MB at 20 MB/s, 20 MB burst: {took:?}"
+        );
     }
 }

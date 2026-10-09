@@ -30,6 +30,6 @@ Open the delta with `store.changes(block.at())` (or a layer's), open the store w
 crate = "zaino-index-transparent-address"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (the `write_buffer` `zainod` \
-opens its store with).
+`WRITE_BUFFER` = 256 MiB: this index's buffered heap before a bulk commit (the `write_buffer` \
+`zainod` opens its store with; larger first segments = fewer tiers each row is rewritten through).
 """

@@ -35,7 +35,7 @@ pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
 pub(crate) use reader::Snapshot;
 pub(crate) use slots::Slots;
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use crate::pages::PageError;
 
@@ -43,15 +43,21 @@ use crate::pages::PageError;
 ///
 /// - `fanout` (>= 2) same-tier segments merge into one: write amplification `log_fanout(rows)`
 /// - `merge_slots` = merges doing I/O at once (the rest wait, lowest tier first)
+/// - `merge_mib_per_sec` = their read + written bytes per second, shared (commits never paced)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LsmConfig {
     pub fanout: usize,
     pub merge_slots: NonZeroUsize,
+    pub merge_mib_per_sec: NonZeroU32,
 }
 
 impl Default for LsmConfig {
     fn default() -> Self {
-        Self { fanout: 16, merge_slots: NonZeroUsize::new(2).expect("2 is non-zero") }
+        Self {
+            fanout: 16,
+            merge_slots: NonZeroUsize::new(4).expect("4 is non-zero"),
+            merge_mib_per_sec: NonZeroU32::new(200).expect("200 is non-zero"),
+        }
     }
 }
 

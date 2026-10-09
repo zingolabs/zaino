@@ -217,11 +217,11 @@ impl SegmentLog {
                 move || {
                     let _owner = span.enter();
                     crate::fs::background_priority();
-                    let Some(_slot) = slots.acquire(tier, &cancel) else {
+                    let Some(slot) = slots.acquire(tier, &cancel) else {
                         return Ok(None);
                     };
                     let started = Instant::now();
-                    let Some(segment) = writer.merge(id, &inputs, &cancel)? else {
+                    let Some(segment) = writer.merge(id, &inputs, &cancel, &slot)? else {
                         return Ok(None);
                     };
                     writer.sync_dir()?;

@@ -269,6 +269,11 @@ impl PagedFile {
 
     /// Data fsync → completed pages' CRCs written + fsynced → seal for the owner's next manifest
     /// (committed only once that manifest is durable)
+    /// Synced data out of page cache (advisory)
+    pub(crate) fn drop_cache(&self) -> io::Result<()> {
+        self.data.drop_cache()
+    }
+
     pub(crate) fn seal(&mut self) -> io::Result<Sealed> {
         self.data.sync_data()?;
         if !self.unsealed_sums.is_empty() {

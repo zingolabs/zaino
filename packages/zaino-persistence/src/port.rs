@@ -215,17 +215,26 @@ impl Width {
 }
 
 /// Handle + declaration: `name` = place in the store (`/` = sub-directory, for engines with them)
+///
+/// - `cache_writes` = appended data kept in page cache ([`cache_writes`](Self::cache_writes))
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SequenceTable {
     pub(crate) id: SequenceId,
     pub name: &'static str,
     pub record: Width,
+    pub(crate) cache_writes: bool,
 }
 
 impl SequenceTable {
     /// `id` = position in its [`Tables`]
     pub const fn new(id: u16, name: &'static str, record: Width) -> Self {
-        Self { id: SequenceId(id), name, record }
+        Self { id: SequenceId(id), name, record, cache_writes: false }
+    }
+
+    /// A fold reads it: what a commit appends stays in page cache (default: dropped once synced,
+    /// so bulk appends never evict the tables folds read; serving faults pages back in)
+    pub const fn cache_writes(self) -> Self {
+        Self { cache_writes: true, ..self }
     }
 }
 
@@ -233,6 +242,7 @@ impl SequenceTable {
 ///
 /// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
+/// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTable {
     pub(crate) id: MapId,
@@ -240,12 +250,19 @@ pub struct MapTable {
     pub key: Width,
     pub(crate) value: Width,
     pub(crate) scope: u32,
+    pub(crate) cache_writes: bool,
 }
 
 impl MapTable {
     /// `id` = position in its [`Tables`]
     pub const fn new(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
-        Self { id: MapId(id), name, key, value, scope }
+        Self { id: MapId(id), name, key, value, scope, cache_writes: false }
+    }
+
+    /// A fold reads it: what a commit or merge writes stays in page cache (default: dropped once
+    /// synced, so bulk writes never evict the tables folds read; serving faults pages back in)
+    pub const fn cache_writes(self) -> Self {
+        Self { cache_writes: true, ..self }
     }
 }
 

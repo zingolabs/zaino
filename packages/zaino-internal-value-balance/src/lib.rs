@@ -39,11 +39,12 @@ pub const TABLES: Tables = Tables::new(&[], &[OUTPUTS]);
 
 /// Buffered heap that commits a bulk run (a `Finalized` block commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
+    std::num::NonZeroUsize::new(256 << 20).expect("256 MiB is non-zero");
 
 const VALUE: usize = 8;
 const OUTPUTS: MapTable =
-    MapTable::new(0, "outputs", Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32), 0);
+    MapTable::new(0, "outputs", Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32), 0)
+        .cache_writes();
 
 fn encode_value(value: Zatoshis) -> [u8; VALUE] {
     value.as_u64().to_be_bytes()
