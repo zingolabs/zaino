@@ -52,9 +52,10 @@ const INDEX_DISK_GIB: u64 = 160;
 /// Set on zaino, not mirrored from its default
 const FINALISED_DEPTH: u32 = 1_000;
 /// Ordered stream → throughput = in-flight / tail latency
+/// - blocks, 4 per getblock batch → 64 batches = connections in flight
+const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(256).expect("non-zero");
+/// Batches carried <= this − the poll's 1 − 2 other lanes' reserves (69 >= 64)
 /// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (not configurable)
-const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(64).expect("non-zero");
-/// Fetches carried <= this − the poll's 1 − 2 other lanes' reserves (zainod's 32 default → 29)
 const VALIDATOR_CONNECTIONS: NonZeroU32 = NonZeroU32::new(72).expect("non-zero");
 /// zebrad's catch-up past the pin: 1 verify thread of its 4 cores (rest = zaino's getblocks)
 const ZEBRA_SYNC_BUDGET: SyncBudget = SyncBudget {
