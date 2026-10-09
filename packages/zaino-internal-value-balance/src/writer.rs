@@ -14,7 +14,8 @@ use zaino_primitives::types::{
     Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
 };
 use zaino_sync::{
-    apply, blocking, commit, held, FeeSink, IndexHandle, IndexPublisher, Step, Subscription,
+    apply, assert_run, blocking, commit, held, FeeSink, IndexHandle, IndexPublisher, Step,
+    Subscription,
 };
 
 use crate::{encode_value, ValueBalanceReader, OUTPUTS};
@@ -120,7 +121,7 @@ pub(crate) fn fold_run<V: MapRead>(
     blocks: &[&Block],
     out: &mut [BlockChanges],
 ) -> Result<Vec<BlockFees>, FoldError> {
-    BlockChanges::assert_run(parent.view().tip(), blocks, out);
+    assert_run(parent.view().tip(), blocks, out);
     run_fees(parent, blocks, |at, outpoint, value| {
         out[at].map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
     })

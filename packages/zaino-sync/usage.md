@@ -88,6 +88,9 @@ commit; `false` = writer gone).
 ## Writer loop
 
 - `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip).
+- `assert_next(out, parent_tip, block)` / `assert_run(parent_tip, blocks, outs)`: a fold's
+  preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one
+  height above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
 - `apply(store, changes)` = `Store::apply` + counted (`zaino_index_applied_blocks_total`, its
   records + rows into `zaino_index_applied_rows_total`). Commits: the store's own once its buffer
   reaches the `write_buffer` it was opened with (`zaino_persistence` usage).

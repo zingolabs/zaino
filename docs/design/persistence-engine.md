@@ -127,9 +127,10 @@ let spend = store.committed().map(SPENT).value(&outpoint.encode());
   the table. Callers encode into temporaries and never manage a lifetime.
 - **Reads mirror writes**: `view.sequence(T)` (`count`, `record`, `records`) and `view.map(T)`
   (`value`, `values`, `range`) check the handle against `View::schema` and read by its position.
-- **Folds** check their preconditions with `BlockChanges::assert_next(parent_tip, block)` (the delta
-  opened for `block`, `block` one height above `parent_tip` and linked to it by `prev_hash`,
-  genesis on an empty parent; `BlockHeader::extends`), or `BlockChanges::assert_run` for a run.
+- **Folds** check their preconditions with `zaino_sync::assert_next(out, parent_tip, block)` (the
+  delta opened for `block` = `out.block()`, `block` one height above `parent_tip` and linked to it
+  by `prev_hash`, genesis on an empty parent; `BlockHeader::extends`), or `assert_run` for a run.
+  The port carries no block type.
 - **Apply** buffers one `BlockChanges` (the store's `WriteBuffer`): `staged()` reads it, `committed()` does not, and
   nothing is durable yet. Its tip must be above the last applied one. Buffer heap
   (`buffered_bytes`) at the `write_buffer` given to `open` = committed by `apply` itself; that
@@ -151,7 +152,7 @@ schema is a constant in the index's code, so a mismatch is a bug, not a runtime 
 | `BlockChanges::sequence` / `map`    | a table of another schema                                                                |
 | `append` / `insert`            | a fixed-width item of the wrong size                                                     |
 | `View::sequence` / `map`       | a table of another schema                                                                |
-| `BlockChanges::assert_next` / `run` | a delta opened for another block; a block off the parent tip (an index's fold)           |
+| `zaino_sync::assert_next` / `assert_run` | a delta opened for another block; a block off the parent tip (an index's fold)      |
 | the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes       |
 | the LSM (each batch)           | a row of the wrong widths; a duplicate key                                               |
 | sequence files (each append)   | a fixed-width record of the wrong size                                                   |

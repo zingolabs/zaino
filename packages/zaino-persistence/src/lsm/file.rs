@@ -59,6 +59,10 @@ impl SegmentFile {
         self.pages.read(range);
     }
 
+    pub(crate) fn pages(&self) -> &Pages {
+        &self.pages
+    }
+
     pub(crate) fn records(&self) -> usize {
         self.sections.records
     }

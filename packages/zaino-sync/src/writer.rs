@@ -6,9 +6,29 @@
 
 use tokio::sync::watch;
 use zaino_persistence::{BlockChanges, Store, View};
-use zaino_primitives::types::{BlockRef, Height};
+use zaino_primitives::types::{Block, BlockRef, Height};
 
 use crate::{emit, IndexHandle};
+
+/// Fold's preconditions, panic naming the index: `out` opened for `block`, `block` next above
+/// `parent` (`None` = empty parent: genesis)
+pub fn assert_next(out: &BlockChanges, parent: Option<BlockRef>, block: &Block) {
+    let (name, at, opened) = (out.schema().kind.name(), block.at(), out.block());
+    assert!(opened == at, "{name}: changes opened for another block ({opened:?}), folding {at:?}");
+    let extends = block.header().extends(parent);
+    assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
+}
+
+/// [`assert_next`] over a run: `out[i]` for `blocks[i]`, each block next above the one before it
+/// (the first above `parent`)
+pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChanges]) {
+    assert_eq!(blocks.len(), out.len(), "one delta per block of the run");
+    let mut below = parent;
+    for (block, out) in blocks.iter().zip(out) {
+        assert_next(out, below, block);
+        below = Some(block.at());
+    }
+}
 
 /// `height` at or below `store`'s staged tip (a restart resends from the lowest durable tip)
 pub fn held<S: Store>(store: &S, height: Height) -> bool {

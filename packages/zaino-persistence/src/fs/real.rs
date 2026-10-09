@@ -128,6 +128,33 @@ impl FileHandle for RealFile {
     }
 }
 
+/// Bytes of `map[..len]` in page cache (`mincore`; sound: `map` = a live mapping, `len` <= its
+/// length, the vector one byte per page)
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub(crate) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
+    assert!(len <= map.len(), "residency of {len} bytes past a {}-byte mapping", map.len());
+    if len == 0 {
+        return Ok(0);
+    }
+    let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
+        .map_err(|_| io::Error::other("no page size"))?;
+    let mut pages = vec![0u8; len.div_ceil(page)];
+    match unsafe { libc::mincore(map.as_ptr().cast_mut().cast(), len, pages.as_mut_ptr()) } {
+        0 => {
+            let resident = pages.iter().filter(|&&page| page & 1 == 1).count();
+            Ok(u64::try_from(resident.saturating_mul(page).min(len)).unwrap_or(u64::MAX))
+        }
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// No `mincore` reading off Linux
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn resident_bytes(_: &Mmap, _: usize) -> io::Result<u64> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 /// `Arc<Mmap>` as the `AsRef<[u8]>` owner `Bytes::from_owner` wants
 struct Shared(Arc<Mmap>);
 

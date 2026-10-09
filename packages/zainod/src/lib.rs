@@ -15,6 +15,7 @@ mod bootstrap;
 mod chainview;
 pub mod cli;
 mod config;
+mod disk_monitor;
 pub mod error;
 mod fd_limit;
 mod indexer;

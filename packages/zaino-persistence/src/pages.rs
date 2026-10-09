@@ -304,6 +304,14 @@ fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageErr
     Ok(())
 }
 
+/// `(sealed bytes, bytes of them in page cache)` over `pages` (`None` = any one not knowable)
+pub(crate) fn footprint<'a>(pages: impl IntoIterator<Item = &'a Pages>) -> (u64, Option<u64>) {
+    pages.into_iter().fold((0, Some(0)), |(bytes, cached), pages| {
+        let cached = cached.zip(pages.resident_bytes()).map(|(sum, resident)| sum + resident);
+        (bytes + pages.len() as u64, cached)
+    })
+}
+
 /// Sealed file, mapped: every page checked on a read's first touch
 ///
 /// - failed check = bytes changed on disk after the seal → dies (never serves unverified bytes;
@@ -433,6 +441,14 @@ impl Pages {
             self.inner.path.display()
         );
         &self.inner.data[range]
+    }
+
+    /// Sealed bytes in page cache (`None` = not knowable; an empty file holds none)
+    pub(crate) fn resident_bytes(&self) -> Option<u64> {
+        match &self.inner.mapping {
+            Some(mapping) => mapping.resident_bytes(self.inner.data.len()),
+            None => Some(0),
+        }
     }
 
     /// `MADV_WILLNEED` over `range`, clipped to the sealed bytes (advisory)

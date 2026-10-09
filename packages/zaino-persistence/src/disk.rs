@@ -17,6 +17,7 @@ use std::{
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Instant,
 };
 
 use bytes::Bytes;
@@ -31,7 +32,7 @@ use crate::{
     },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::OverlayView,
-    pages::{scrub, Sealed},
+    pages::{footprint, scrub, Sealed},
     port::{
         BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema, SequenceId,
         SequenceRead, Store, Verification, View,
@@ -345,7 +346,7 @@ impl Store for DiskStore {
     fn apply(&mut self, changes: BlockChanges) {
         assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
         let last = self.buffer.tip().or(self.view.tip()).map(|tip| tip.height);
-        let tip = changes.tip().height;
+        let tip = changes.block().height;
         assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
         self.buffer.push(&changes);
         if self.buffer.heap() >= self.write_buffer.get() {
@@ -362,7 +363,9 @@ impl Store for DiskStore {
     fn commit(&mut self) -> Result<(), StoreError> {
         assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
         let Some(tip) = self.buffer.tip() else { return Ok(()) };
+        let (bytes, started) = (self.buffer.item_bytes(), Instant::now());
         self.write(tip).inspect_err(|_| self.failed = true)?;
+        crate::emit::committed(self.schema.kind.name(), bytes, started.elapsed());
         self.buffer = WriteBuffer::empty(&self.schema);
         Ok(())
     }
@@ -377,7 +380,29 @@ impl Store for DiskStore {
 }
 
 // names unique vs callers' methods (inherent methods win resolution, even private ones)
+/// One table's committed files: bytes on disk, bytes of them in page cache (`None` = not
+/// knowable: a simulated filesystem, or the kernel refused)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableFootprint {
+    pub table: &'static str,
+    pub bytes: u64,
+    pub cached: Option<u64>,
+}
+
 impl DiskView {
+    /// Each table's [`TableFootprint`], schema order (sequences, then maps)
+    ///
+    /// - one `mincore` pass over every mapped file: ~1 byte per 4 KiB page, no I/O
+    pub fn footprint(&self) -> Vec<TableFootprint> {
+        let schema = &self.state.schema;
+        let sequences = schema.sequences().iter().zip(&self.state.sequences);
+        let sequences = sequences.map(|(table, pages)| (table.name, footprint(pages.pages())));
+        let maps = schema.maps().iter().zip(&self.state.maps);
+        let maps = maps.map(|(table, snapshot)| (table.name, footprint(snapshot.pages())));
+        let tables = sequences.chain(maps);
+        tables.map(|(table, (bytes, cached))| TableFootprint { table, bytes, cached }).collect()
+    }
+
     fn sequence_pages(&self, table: SequenceId) -> &SequencePages {
         let at = usize::from(table.0);
         self.state.sequences.get(at).unwrap_or_else(|| panic!("{table:?} not in the schema"))

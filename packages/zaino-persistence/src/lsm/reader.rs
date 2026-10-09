@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     fs::{Access, Fs},
-    pages::PAGE,
+    pages::{Pages, PAGE},
 };
 
 /// Batch size from which [`Snapshot::get_many`] fans out on rayon (measured, 9 segments, 2.3M
@@ -181,11 +181,13 @@ impl Snapshot {
     ///   flight) every candidate's record block → device sees the whole batch at once
     /// - candidate = segment whose filter admits the key (≈ only the segment holding it)
     /// - sorted keys give ascending ranges per segment, merged where they share a page
+    /// - planned + advised on the rayon pool (one thread = queue depth 1 when the records round
+    ///   faults fences, or advice blocks on a congested device)
     fn prefetch(&self, sorted: &[(&[u8], usize)]) {
         for step in [Prefetch::Fences, Prefetch::Records] {
-            for (segment, range) in self.prefetch_plan(step, sorted) {
-                self.segments[segment].will_need(range);
-            }
+            let plan = self.prefetch_plan(step, sorted);
+            plan.into_par_iter()
+                .for_each(|(segment, range)| self.segments[segment].will_need(range));
         }
     }
 
@@ -198,15 +200,15 @@ impl Snapshot {
         step: Prefetch,
         sorted: &[(&[u8], usize)],
     ) -> Vec<(usize, Range<usize>)> {
-        let mut plan = Vec::new();
-        for (segment, file) in self.segments.iter().enumerate() {
-            let wanted = sorted
-                .iter()
+        let per_segment = self.segments.par_iter().enumerate().map(|(segment, file)| {
+            let wanted: Vec<Range<usize>> = sorted
+                .par_iter()
                 .filter(|(key, _)| file.may_contain(&key[..file.filtered()]))
-                .map(|(key, _)| file.prefetch_range(step, key));
-            plan.extend(coalesced(wanted).into_iter().map(|range| (segment, range)));
-        }
-        plan
+                .map(|(key, _)| file.prefetch_range(step, key))
+                .collect();
+            coalesced(wanted.into_iter()).into_iter().map(move |range| (segment, range))
+        });
+        per_segment.flatten_iter().collect()
     }
 
     /// Newest segment first: list ≈ data age (batches append, merge takes its oldest input's slot)
@@ -220,6 +222,11 @@ impl Snapshot {
             let slot = file.seek(key);
             (slot < file.records() && file.key(slot) == key).then(|| file.entry(slot).1)
         })
+    }
+
+    /// Every committed segment's file
+    pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
+        self.segments.iter().map(|file| file.pages())
     }
 
     /// Committed segments in list order (the merge policy's input)

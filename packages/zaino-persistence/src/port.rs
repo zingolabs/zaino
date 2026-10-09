@@ -12,7 +12,7 @@ use std::{
 
 use bytes::Bytes;
 use serde::Serialize;
-use zaino_primitives::types::{Block, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::{manifest::IndexKind, write_buffer::StagedView, StoreError};
@@ -318,49 +318,29 @@ impl Schema {
 /// - fixed-width tables: bytes only; variable: + end offset per item
 #[derive(Debug, Clone)]
 pub struct BlockChanges {
-    tip: BlockRef,
+    block: BlockRef,
     schema: Schema,
     sequences: Vec<Items>,
     maps: Vec<[Items; 2]>,
 }
 
 impl BlockChanges {
-    pub(crate) fn new(tip: BlockRef, schema: Schema) -> Self {
+    pub(crate) fn new(block: BlockRef, schema: Schema) -> Self {
         Self {
-            tip,
+            block,
             schema,
             sequences: vec![Items::default(); schema.sequences().len()],
             maps: vec![[Items::default(), Items::default()]; schema.maps().len()],
         }
     }
 
-    pub fn tip(&self) -> BlockRef {
-        self.tip
+    /// Block these changes are for (applied = the store's tip)
+    pub fn block(&self) -> BlockRef {
+        self.block
     }
 
-    pub(crate) fn schema(&self) -> &Schema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
-    }
-
-    /// Fold's preconditions, panic naming the index: opened for `block`, `block` next above
-    /// `parent` (`None` = empty parent: genesis)
-    pub fn assert_next(&self, parent: Option<BlockRef>, block: &Block) {
-        let (name, at) = (self.schema.kind.name(), block.at());
-        let tip = self.tip;
-        assert!(tip == at, "{name}: changes opened for another block ({tip:?}), folding {at:?}");
-        let extends = block.header().extends(parent);
-        assert!(extends, "{name}: block {at:?} does not extend the parent tip {parent:?}");
-    }
-
-    /// [`assert_next`](Self::assert_next) over a run: `out[i]` for `blocks[i]`, each block next
-    /// above the one before it (the first above `parent`)
-    pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChanges]) {
-        assert_eq!(blocks.len(), out.len(), "one delta per block of the run");
-        let mut below = parent;
-        for (block, out) in blocks.iter().zip(out) {
-            out.assert_next(below, block);
-            below = Some(block.at());
-        }
     }
 
     /// `table`'s appends (panics: not in this schema)
@@ -374,12 +354,6 @@ impl BlockChanges {
         let at = self.schema.map_at(table);
         let [keys, values] = &mut self.maps[at];
         MapInserts { table, keys, values }
-    }
-
-    /// Item bytes held, every table (end offsets not counted)
-    pub fn bytes(&self) -> usize {
-        let maps = self.maps.iter().flatten();
-        self.sequences.iter().chain(maps).map(|buffer| buffer.bytes.len()).sum()
     }
 
     /// Records appended + rows inserted, every table
@@ -490,6 +464,11 @@ impl Items {
         let base = self.bytes.len();
         self.ends.extend(other.ends.iter().map(|end| base + end));
         self.bytes.extend_from_slice(&other.bytes);
+    }
+
+    /// Item bytes held (end offsets not counted)
+    pub(crate) fn item_bytes(&self) -> usize {
+        self.bytes.len()
     }
 
     /// Heap held (capacity, not length)

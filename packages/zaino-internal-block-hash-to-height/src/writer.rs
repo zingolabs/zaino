@@ -2,7 +2,9 @@
 
 use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
+use zaino_sync::{
+    apply, assert_next, blocking, commit, held, IndexHandle, IndexPublisher, Subscription,
+};
 
 use crate::{
     by_hash::{encode_height, BY_HASH},
@@ -59,7 +61,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
 
 /// `block` onto `parent`: its one `by_hash` row (its own header only, nothing read)
 pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut BlockChanges) {
-    out.assert_next(parent.view().tip(), block);
+    assert_next(out, parent.view().tip(), block);
     let header = block.header();
     out.map(BY_HASH).insert(&<[u8; HASH]>::from(header.hash), &encode_height(header.height));
 }

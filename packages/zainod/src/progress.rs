@@ -71,9 +71,15 @@ pub(crate) async fn run(
             _ = ticks.tick() => {}
         }
         if walked.is_none_or(|at| at.elapsed() >= WALK_EVERY) {
-            disk.send_replace(walk(&indexes).await?);
+            let usage = walk(&indexes).await?;
+            for (index, usage) in &usage {
+                crate::disk_monitor::walked(index, usage);
+            }
+            disk.send_replace(usage);
             walked = Some(Instant::now());
         }
+        let views = crate::disk_monitor::views(&indexes);
+        tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
         let now = Sample { at: Instant::now(), blocks: progress.blocks() };
         let snap = snapshots.load();
         let tips = snap.tips();

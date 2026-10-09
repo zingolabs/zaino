@@ -12,7 +12,9 @@ use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
 use zaino_primitives::types::{Block, Height, PerPool, ShieldedPool, TreeRoot, TreeSizes};
-use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
+use zaino_sync::{
+    apply, assert_run, blocking, commit, held, IndexHandle, IndexPublisher, Subscription,
+};
 use zcash_primitives::merkle_tree::HashSer;
 
 use crate::{
@@ -113,7 +115,7 @@ pub(crate) fn fold_run<V: SequenceRead>(
     blocks: &[&Block],
     out: &mut [BlockChanges],
 ) -> Result<(), FoldError> {
-    BlockChanges::assert_run(parent.view().tip(), blocks, out);
+    assert_run(parent.view().tip(), blocks, out);
     if blocks.is_empty() {
         return Ok(());
     }
@@ -484,7 +486,7 @@ mod tests {
                 .sequences()
                 .iter()
                 .map(|&table| changes.appends(table).map(<[u8]>::to_vec).collect::<Vec<_>>());
-            (changes.tip(), appends.collect::<Vec<_>>())
+            (changes.block(), appends.collect::<Vec<_>>())
         };
         let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
         let one_by_one: Vec<_> = chain

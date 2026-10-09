@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
 use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
-use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Step, Subscription};
+use zaino_sync::{
+    apply, assert_next, blocking, commit, held, IndexHandle, IndexPublisher, Step, Subscription,
+};
 
 use crate::{encode_compact_block, position, CompactBlockReader, BLOCKS};
 
@@ -92,7 +94,7 @@ pub fn fold<V: SequenceRead>(
     fees: &BlockFees,
     out: &mut BlockChanges,
 ) -> Result<(), TreeSizeOutOfRange> {
-    out.assert_next(parent.tip(), block);
+    assert_next(out, parent.tip(), block);
     let sizes = parent.tip_sizes().advance(block)?;
     out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
     Ok(())

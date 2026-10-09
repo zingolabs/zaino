@@ -66,10 +66,9 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   another schema panics at `sequence` / `map` (writes and reads alike), a
   fixed-width item of the wrong size at `append` / `insert`, each naming the
   table.
-- **Folds** open with `out.assert_next(parent_tip, block)` (or
-  `BlockChanges::assert_run(parent_tip, blocks, outs)` for a run): panics naming the
-  index on a delta opened for another block, or a block that is not one height
-  above `parent_tip` linked by `prev_hash` (genesis on an empty parent).
+- **`changes.block()`** = the block a delta is for (its tip once applied). A fold's
+  preconditions on it and on the parent linkage are `zaino_sync::assert_next` /
+  `assert_run`, not this crate's.
 - **`apply`** appends final changes to the store's `WriteBuffer` in RAM: each
   table's items back to back, as `BlockChanges` holds them, map rows unsorted (the
   LSM sorts a batch at commit) with one hash index of row numbers per map.
@@ -188,8 +187,13 @@ report.is_clean();
 - **Read-back check:** under `cfg(test)` or feature `testing`, every sealed
   segment is read back: row count, ascending keys, no filter false negative, and
   a CRC of the rows.
-- **Metrics:** `zaino_lsm_*`, labelled `set` = the map's name. Register them
-  with `lsm::describe_metrics` and `lsm::METRIC_BUCKETS`.
+- **Metrics:** `zaino_lsm_*`, labelled `set` = the map's name, and per store
+  `zaino_store_commit_seconds` / `zaino_store_commit_bytes_total` (`index`).
+  Register them with the crate's `describe_metrics`, `METRIC_BUCKETS` and
+  `lsm::METRIC_BUCKETS`.
+- **`DiskView::footprint()`:** per table, committed bytes and how many of them
+  are in page cache (`TableFootprint`; `cached: None` on `SimFs`). One
+  `mincore` pass over the mapped files, no I/O.
 - **Logs:** `Compacting segments` / `Compacted segments` (debug) and
   `Commit waited on compaction` (warn).
 

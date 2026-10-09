@@ -56,6 +56,21 @@ as it applies blocks ([`zaino-sync`](../zaino-sync/usage.md)): `zaino_index_appl
 `zaino_index_finalized_height` (all `{index}`). One progress task logs the sync summary and each
 index's `Syncing` line (applied, durable, size) every 30 s.
 
+The same task samples the disk every 30 s (a metric whose source is unreadable, e.g. no cgroup v2
+PSI, is left out rather than reported as zero):
+
+| Metric | Labels | Answers |
+|---|---|---|
+| `zaino_disk_committed_bytes` | `index`, `table` | committed data per table |
+| `zaino_disk_cached_bytes` | `index`, `table` | how much of it sits in page cache (`mincore`; the rest = a disk read on first touch) |
+| `zaino_disk_bytes` | `index` | the index directory on disk, preallocation and unlanded merges included (the 2-minute walk) |
+| `zaino_disk_free_bytes`, `zaino_disk_capacity_bytes` | `index` | room left on the index's filesystem |
+| `zaino_disk_read_bytes_total`, `zaino_disk_written_bytes_total` | | block-device bytes zainod moved (`/proc/self/io`) |
+| `zaino_io_stall_seconds_total` | `kind` = `some` / `full` | time zainod's own cgroup had tasks stalled on I/O |
+
+Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit_bytes_total`
+(`{index}`, [`zaino-persistence`](../zaino-persistence/usage.md)).
+
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.
 - At most 32 admin connections are served at once; the rest wait in the accept backlog.

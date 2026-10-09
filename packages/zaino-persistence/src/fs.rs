@@ -12,8 +12,8 @@ mod real;
 #[cfg(any(test, feature = "testing"))]
 mod sim;
 
-pub(crate) use real::background_priority;
 pub use real::RealFs;
+pub(crate) use real::{background_priority, resident_bytes};
 #[cfg(any(test, feature = "testing"))]
 pub use sim::{CrashState, SimFs};
 
@@ -105,6 +105,12 @@ impl Mapping {
         if let Some(map) = &self.advice {
             let _ = map.advise_range(memmap2::Advice::WillNeed, range.start, range.len());
         }
+    }
+
+    /// Bytes of the first `len` in page cache (`None` = not knowable: no real mapping, or the
+    /// kernel refused)
+    pub(crate) fn resident_bytes(&self, len: usize) -> Option<u64> {
+        resident_bytes(self.advice.as_deref()?, len).ok()
     }
 
     /// Readahead for this mapping only (advice is per mapping, never per file; advisory)

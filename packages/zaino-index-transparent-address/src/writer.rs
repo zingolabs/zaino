@@ -2,7 +2,9 @@
 
 use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
+use zaino_sync::{
+    apply, assert_next, blocking, commit, held, IndexHandle, IndexPublisher, Subscription,
+};
 
 use crate::{
     address::address_key,
@@ -67,7 +69,7 @@ pub fn fold<V: MapRead>(
     block: &Block,
     out: &mut BlockChanges,
 ) {
-    out.assert_next(parent.view().tip(), block);
+    assert_next(out, parent.view().tip(), block);
     let height = u32::from(block.header().height);
     for tx in block.transactions() {
         // coinbase inputs elided upstream (`zaino-source` decode.rs)

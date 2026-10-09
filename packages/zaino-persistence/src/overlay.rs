@@ -93,7 +93,7 @@ impl Overlay {
 
     /// [`with`](Self::with) in place
     fn push(&mut self, changes: &BlockChanges) {
-        let (tip, last) = (changes.tip(), self.tip());
+        let (tip, last) = (changes.block(), self.tip());
         let above = last.is_none_or(|last| tip.height > last.height);
         assert!(above, "layer: {tip:?} not above its tip {last:?}");
         assert_eq!(changes.schema(), &self.schema, "layer: another schema");

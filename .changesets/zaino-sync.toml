@@ -16,7 +16,7 @@ byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carr
 value-balance's fees to compact-block; the follower sends the block at the chain's final tip \
 as `Step::Finalized`. Each writer runs its own loop: `Subscription::next_run` = one run of \
 queued steps (`Run { blocks, finalized }`, to the queue's budget; `None` = `Shutdown`), folded \
-in one `blocking` hop through `held(store, height)`, `apply(store, changes)` (`Store::apply`, \
+in one `blocking` hop through `held(store, height)`, `assert_next` / `assert_run` (a fold's preconditions), `apply(store, changes)` (`Store::apply`, \
 counted) and `commit(store)` (after a finalized run and at `Shutdown`; a failure panics naming \
 the index and its directory); the store commits a full buffer by itself. `IndexPublisher` \
 (`new(&store)`, `handle()`, `publish(&store)` after every hop) is the writer's end of its \

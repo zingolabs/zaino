@@ -28,7 +28,7 @@ pub use offload::{blocking, compute};
 pub use per_index::PerIndex;
 pub use progress::SyncProgress;
 pub use report::{ByteSize, Human};
-pub use writer::{apply, commit, held, IndexPublisher};
+pub use writer::{apply, assert_next, assert_run, commit, held, IndexPublisher};
 
 use zaino_primitives::types::{Block, BlockFees};
 

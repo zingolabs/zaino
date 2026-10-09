@@ -163,6 +163,11 @@ pub(crate) struct SequencePages {
 }
 
 impl SequencePages {
+    /// Its files (data + ends when variable)
+    pub(crate) fn pages(&self) -> impl Iterator<Item = &Pages> {
+        std::iter::once(&self.data).chain(&self.ends)
+    }
+
     pub(crate) fn len(&self) -> u64 {
         match (self.width, &self.ends) {
             (Width::Fixed(n), _) => self.data.len() as u64 / u64::from(n.get()),

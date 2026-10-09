@@ -1,7 +1,8 @@
 //! What every Zaino index stores through: persistence port (`port.rs`) + its engine,
 //! [`DiskEngine`] (`docs/design/persistence-engine.md`, `docs/design/durability.md`)
 
-// only `unsafe` = `fs::real::{map_read_only, start_writeback}` (mmap, sync_file_range)
+// only `unsafe` = `fs::real::{map_read_only, start_writeback, resident_bytes}` (mmap,
+// sync_file_range, mincore)
 #![deny(unsafe_code)]
 
 use std::{
@@ -14,6 +15,7 @@ use std::{
 pub mod conformance;
 mod dir;
 mod disk;
+mod emit;
 pub mod fs;
 pub mod lsm;
 mod manifest;
@@ -24,7 +26,8 @@ mod sequence;
 mod write_buffer;
 
 pub use dir::disk_bytes;
-pub use disk::{DiskEngine, DiskStore, DiskView};
+pub use disk::{DiskEngine, DiskStore, DiskView, TableFootprint};
+pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::LsmConfig;
 pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{Overlay, OverlayView, Uncommitted};

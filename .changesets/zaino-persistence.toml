@@ -29,8 +29,7 @@ private: a block's delta comes from `Store::changes(at)` or `Overlay::changes(at
 `changes.sequence(T).append(..)` / `changes.map(T).insert(..)` (`SequenceAppends`, `MapInserts`). \
 Reads mirror writes: `view.sequence(T)` (`count`, `record`, `records`) and `view.map(T)` \
 (`value`, `values`, `range`); `View::schema()`. A handle of another schema panics naming the \
-table. `BlockChanges::assert_next` / `assert_run` = every fold's precondition (the delta's block, the \
-parent linkage). On-disk layout unchanged.
+table. `BlockChanges::block()` = the block a delta is for. On-disk layout unchanged.
 """
 migration = """
 Declare the index's tables as `const` handles + `pub const TABLES: Tables`, open with \
@@ -97,4 +96,32 @@ by every store one engine opens (was process-wide).
 """
 migration = """
 `DiskEngine::new(fs)` → `DiskEngine::new(fs, LsmConfig::default())`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`BlockChanges::tip()` → `block()` (the block a delta is for, its tip only once applied); \
+`BlockChanges::bytes()` removed (unused); `assert_next` / `assert_run` move to zaino-sync (the \
+port no longer names the block type); `BlockChanges::schema()` is public. Batched point lookups \
+(`MapRead::values`, 64 keys and up) plan and issue their readahead across the rayon pool instead \
+of one thread.
+"""
+migration = """
+`changes.tip()` → `changes.block()`; `out.assert_next(parent, block)` → \
+`zaino_sync::assert_next(out, parent, block)`, `BlockChanges::assert_run(..)` → \
+`zaino_sync::assert_run(..)`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+section = "added"
+description = """
+`DiskView::footprint()` → `TableFootprint { table, bytes, cached }` per table (committed bytes, \
+page-cache share by `mincore`, `None` when not knowable). Each commit records \
+`zaino_store_commit_seconds` + `zaino_store_commit_bytes_total` `{index}`; crate-level \
+`describe_metrics` (store + LSM) and `METRIC_BUCKETS`.
 """

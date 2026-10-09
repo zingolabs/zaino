@@ -62,8 +62,8 @@ impl WriteBuffer {
         for (&table, rows) in self.schema.maps().iter().zip(&mut self.maps) {
             rows.append(table, changes.map_items(table), &self.hasher);
         }
-        self.first.get_or_insert(changes.tip().height);
-        self.tip = Some(changes.tip());
+        self.first.get_or_insert(changes.block().height);
+        self.tip = Some(changes.block());
     }
 
     fn assert_new_keys(&self, changes: &BlockChanges) {
@@ -85,6 +85,13 @@ impl WriteBuffer {
     pub(crate) fn map_rows(&self, table: MapTable) -> Vec<(&[u8], &[u8])> {
         let rows = &self.maps[usize::from(table.id.0)];
         rows.keys.items(table.key).zip(rows.values.items(table.value)).collect()
+    }
+
+    /// Record + row bytes held, every table
+    pub(crate) fn item_bytes(&self) -> usize {
+        let sequences: usize = self.sequences.iter().map(Items::item_bytes).sum();
+        let maps = self.maps.iter().map(|rows| rows.keys.item_bytes() + rows.values.item_bytes());
+        sequences + maps.sum::<usize>()
     }
 
     /// Heap held: every table's bytes + the key indexes (capacity)

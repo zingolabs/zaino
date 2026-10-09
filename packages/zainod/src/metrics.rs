@@ -24,6 +24,7 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
         .iter()
         .chain(zaino_source::METRIC_BUCKETS)
         .chain(zaino_chainview::METRIC_BUCKETS)
+        .chain(zaino_persistence::METRIC_BUCKETS)
         .chain(zaino_persistence::lsm::METRIC_BUCKETS)
         .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
             builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
@@ -66,7 +67,8 @@ pub(crate) fn describe_all() {
     zaino_nfs::describe_metrics();
     zaino_snapshot::describe_metrics();
     zaino_sync::describe_metrics();
-    zaino_persistence::lsm::describe_metrics();
+    zaino_persistence::describe_metrics();
+    crate::disk_monitor::describe_metrics();
     metrics::describe_gauge!(BUILD_INFO, "Always 1; the zainod version rides the `version` label");
     metrics::gauge!(BUILD_INFO, "version" => env!("CARGO_PKG_VERSION")).set(1.0);
 }
