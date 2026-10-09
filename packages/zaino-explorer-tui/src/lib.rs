@@ -8,8 +8,8 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
-    AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, ChainReader,
-    MempoolEntry, NodeDiagnostics, TransactionDetail, Treestate, UnifiedReceivers,
+    AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, BlockchainInfo,
+    ChainReader, MempoolEntry, NodeDiagnostics, TransactionDetail, Treestate, UnifiedReceivers,
 };
 
 /// How many recent blocks the TUI lists.
@@ -85,6 +85,9 @@ pub struct AppState {
     /// The looked-up node diagnostics — populated only on screen
     /// `NodeInfo`.
     node_diagnostics: Option<NodeDiagnostics>,
+    /// The looked-up blockchain info — populated only on screen
+    /// `NodeInfo`, independently of `node_diagnostics` (a separate RPC).
+    blockchain_info: Option<BlockchainInfo>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -296,6 +299,9 @@ impl AppState {
     /// Look up richer node diagnostics. Like the mempool, there's nothing
     /// to type first — this runs directly from the home screen.
     pub async fn lookup_node_diagnostics<C: ChainReader>(&mut self, reader: &C) {
+        // Independent of node_diagnostics below — a failure here doesn't
+        // hide mining/network/peer facts that answered.
+        self.blockchain_info = reader.blockchain_info().await.ok();
         match reader.node_diagnostics().await {
             Ok(diagnostics) => {
                 self.node_diagnostics = Some(diagnostics);
@@ -676,14 +682,50 @@ fn render_mempool(frame: &mut Frame, result: &Result<(), String>, state: &AppSta
     );
 }
 
+/// The blockchain-info section shown on the `NodeInfo` screen,
+/// independent of `node_diagnostics` — a separate RPC, so its absence
+/// (not scripted, or genuinely unready) doesn't block the rest.
+fn format_blockchain_info(info: &Option<BlockchainInfo>) -> Vec<String> {
+    let mut lines = vec!["Blockchain:".to_string()];
+    match info {
+        Some(info) => {
+            lines.push(format!("  Chain: {}", info.chain));
+            lines.push(format!(
+                "  Blocks: {} — headers: {}",
+                info.blocks, info.headers
+            ));
+            lines.push(format!("  Best block: {}", info.best_block_hash));
+            lines.push(format!("  Difficulty: {}", info.difficulty));
+            lines.push(format!(
+                "  Verification progress: {}",
+                info.verification_progress
+            ));
+            lines.push(format!(
+                "  Estimated network height: {}",
+                info.estimated_height
+            ));
+        }
+        None => lines.push("  unavailable".to_string()),
+    }
+    lines.push(String::new());
+    lines
+}
+
 fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppState) {
     let text = match result {
-        Err(e) => format!("Node info\n\nRPC error: {e}\n\n(Esc: back)"),
+        Err(e) => {
+            let mut lines = format_blockchain_info(&state.blockchain_info);
+            lines.push(format!("RPC error: {e}"));
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
         Ok(()) => {
             let Some(diagnostics) = &state.node_diagnostics else {
                 return;
             };
-            let mut lines = vec!["Mining:".to_string()];
+            let mut lines = format_blockchain_info(&state.blockchain_info);
+            lines.push("Mining:".to_string());
             match &diagnostics.mining {
                 Some(mining) => {
                     lines.push(format!("  Chain: {}", mining.chain));
@@ -1531,6 +1573,46 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(content.contains("connection refused"), "{content}");
+    }
+
+    /// The blockchain-info section renders independently of
+    /// `node_diagnostics` — populated here even though the screen is on
+    /// the error path, proving the two don't depend on each other for
+    /// rendering.
+    #[test]
+    fn renders_blockchain_info_independently_of_node_diagnostics() {
+        use super::Screen;
+        use zaino_explorer_domain::BlockchainInfo;
+
+        let state = AppState {
+            screen: Screen::NodeInfo(Err("not ready".to_string())),
+            blockchain_info: Some(BlockchainInfo {
+                chain: "main".to_string(),
+                blocks: 300,
+                headers: 300,
+                best_block_hash: "aa".repeat(32),
+                difficulty: 42.5,
+                verification_progress: 1.0,
+                size_on_disk: 1_000_000,
+                estimated_height: 300,
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Blockchain"), "{content}");
+        assert!(content.contains("Blocks: 300"), "{content}");
+        assert!(content.contains("not ready"), "{content}");
     }
 
     /// A hex string within the preview length renders in full; a longer
