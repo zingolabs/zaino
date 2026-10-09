@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
     AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, ChainReader,
-    MempoolEntry, TransactionDetail, Treestate, UnifiedReceivers,
+    MempoolEntry, NodeDiagnostics, TransactionDetail, Treestate, UnifiedReceivers,
 };
 
 /// How many recent blocks the TUI lists.
@@ -42,6 +42,9 @@ pub enum Screen {
     /// The mempool's current contents, looked up via `m` on the home
     /// screen — no input needed, there's nothing to type.
     Mempool(Result<(), String>),
+    /// Richer node diagnostics, looked up via `n` on the home screen — no
+    /// input needed.
+    NodeInfo(Result<(), String>),
 }
 
 /// The TUI's whole state: the last successful read, or the last error, for
@@ -77,6 +80,9 @@ pub struct AppState {
     treestate: Option<Treestate>,
     /// The looked-up mempool contents — populated only on screen `Mempool`.
     mempool: Vec<MempoolEntry>,
+    /// The looked-up node diagnostics — populated only on screen
+    /// `NodeInfo`.
+    node_diagnostics: Option<NodeDiagnostics>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -287,6 +293,21 @@ impl AppState {
             }
         }
     }
+
+    /// Look up richer node diagnostics. Like the mempool, there's nothing
+    /// to type first — this runs directly from the home screen.
+    pub async fn lookup_node_diagnostics<C: ChainReader>(&mut self, reader: &C) {
+        match reader.node_diagnostics().await {
+            Ok(diagnostics) => {
+                self.node_diagnostics = Some(diagnostics);
+                self.screen = Screen::NodeInfo(Ok(()));
+            }
+            Err(e) => {
+                self.node_diagnostics = None;
+                self.screen = Screen::NodeInfo(Err(e.to_string()));
+            }
+        }
+    }
 }
 
 /// Render the current state into `frame`, whichever screen is active.
@@ -309,6 +330,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         Screen::Block(id, result) => render_block(frame, id, result, state),
         Screen::Treestate(id, result) => render_treestate(frame, id, result, state),
         Screen::Mempool(result) => render_mempool(frame, result, state),
+        Screen::NodeInfo(result) => render_node_info(frame, result, state),
     }
 }
 
@@ -322,7 +344,9 @@ fn render_home(frame: &mut Frame, state: &AppState) {
 
     let mut status_text = match (state.height, &state.error) {
         (Some(height), _) => {
-            format!("Chain height: {height}  (t: tx, a: address, b: block, m: mempool, q: quit)")
+            format!(
+                "Chain height: {height}  (t: tx, a: address, b: block, m: mempool, n: node info, q: quit)"
+            )
         }
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
         (None, None) => "Loading...  (q to quit)".to_string(),
@@ -636,6 +660,50 @@ fn render_mempool(frame: &mut Frame, result: &Result<(), String>, state: &AppSta
     };
     frame.render_widget(
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Mempool")),
+        frame.area(),
+    );
+}
+
+fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppState) {
+    let text = match result {
+        Err(e) => format!("Node info\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(diagnostics) = &state.node_diagnostics else {
+                return;
+            };
+            let mut lines = vec![format!("Chain: {}", diagnostics.chain)];
+            if let Some(difficulty) = diagnostics.difficulty {
+                lines.push(format!("Difficulty: {difficulty}"));
+            }
+            if let Some(sol_ps) = diagnostics.network_sol_ps {
+                lines.push(format!("Network solution rate: {sol_ps} sol/s"));
+            }
+            lines.push(format!(
+                "Protocol version: {}",
+                diagnostics.protocol_version
+            ));
+            lines.push(format!("Local services: {}", diagnostics.local_services));
+            lines.push(format!("Relay fee: {} ZEC", diagnostics.relay_fee));
+            if !diagnostics.warnings.is_empty() {
+                lines.push(format!("Warnings: {}", diagnostics.warnings));
+            }
+            lines.push(String::new());
+            lines.push("Peers:".to_string());
+            if diagnostics.peers.is_empty() {
+                lines.push("  none".to_string());
+            } else {
+                for peer in &diagnostics.peers {
+                    let direction = if peer.inbound { "inbound" } else { "outbound" };
+                    lines.push(format!("  {}  {direction}", peer.addr));
+                }
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Node info")),
         frame.area(),
     );
 }
@@ -1376,6 +1444,72 @@ mod tests {
         assert!(content.contains("connection refused"), "{content}");
     }
 
+    /// A looked-up node-info screen renders mining/network facts and every
+    /// peer.
+    #[test]
+    fn renders_node_info_with_peers() {
+        use super::Screen;
+        use zaino_explorer_domain::{NodeDiagnostics, PeerInfo};
+
+        let state = AppState {
+            screen: Screen::NodeInfo(Ok(())),
+            node_diagnostics: Some(NodeDiagnostics {
+                chain: "main".to_string(),
+                difficulty: Some(42.5),
+                network_sol_ps: Some(1_000_000),
+                protocol_version: 170_100,
+                local_services: "0000000000000000".to_string(),
+                relay_fee: 0.000_001,
+                warnings: String::new(),
+                peers: vec![PeerInfo {
+                    addr: "1.2.3.4:8233".to_string(),
+                    inbound: true,
+                }],
+            }),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 20);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("main"), "{content}");
+        assert!(content.contains("42.5"), "{content}");
+        assert!(content.contains("1.2.3.4:8233"), "{content}");
+        assert!(content.contains("inbound"), "{content}");
+    }
+
+    /// A failed node-info lookup renders the error, not a panic.
+    #[test]
+    fn renders_node_info_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::NodeInfo(Err("connection refused".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("connection refused"), "{content}");
+    }
+
     /// A hex string within the preview length renders in full; a longer
     /// one truncates and notes the full length rather than printing it raw.
     #[test]
@@ -1895,6 +2029,49 @@ mod tests {
                 assert_eq!(state.mempool[0].height, 300);
             }
             other => panic!("expected a successful Mempool screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_node_diagnostics` against a real mock server: `getmininginfo`
+    /// cannot be scripted on this mock (always `NotReady`), so this proves
+    /// the pipe reaches the real adapter and the failure surfaces as a
+    /// typed error on the `NodeInfo` screen, not a panic — mirroring
+    /// `zaino-explorer-web`'s equivalent coverage for the `/node` route.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_node_diagnostics_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let handler = NodeRpc::new(
+            MockIndexerService::new(MockChain::default()),
+            Network::MainNetwork,
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.lookup_node_diagnostics(&reader).await;
+
+        match &state.screen {
+            Screen::NodeInfo(Err(_)) => {}
+            other => panic!("expected a failed NodeInfo screen, got {other:?}"),
         }
 
         let _ = handle.stop();
