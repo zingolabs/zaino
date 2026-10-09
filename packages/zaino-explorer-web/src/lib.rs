@@ -64,23 +64,50 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
     Html(body.into_string())
 }
 
-/// `GET /block/{id}`: one block's detail — hash, time, and every
-/// transaction id it contains, each linked to `/tx/{txid}` — by height or
-/// hash (`getblock`'s own polymorphic id parameter). Linked from the home
-/// page's block list.
+/// `GET /block/{id}`: one block's detail — hash, time, every transaction id
+/// it contains (each linked to `/tx/{txid}`), and every transparent value
+/// movement within it — by height or hash (`getblock`'s own polymorphic id
+/// parameter). Linked from the home page's block list. The value-movements
+/// read is by the block's resolved hash (`getblockdeltas` takes no height
+/// form) and renders independently of the transaction list, so a failure
+/// there doesn't hide the rest of the page.
 async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) -> Html<String> {
     let body = match reader.block(id.clone()).await {
-        Ok(detail) => html! {
-            h1 { "Block " (detail.height) }
-            p { "Hash: " (detail.hash) }
-            p { "Time: " (detail.time) }
-            h2 { "Transactions" }
-            ul {
-                @for txid in &detail.tx_ids {
-                    li { a href=(format!("/tx/{txid}")) { (txid) } }
+        Ok(detail) => {
+            let deltas = reader.block_deltas(detail.hash.clone()).await;
+            html! {
+                h1 { "Block " (detail.height) }
+                p { "Hash: " (detail.hash) }
+                p { "Time: " (detail.time) }
+                h2 { "Transactions" }
+                ul {
+                    @for txid in &detail.tx_ids {
+                        li { a href=(format!("/tx/{txid}")) { (txid) } }
+                    }
+                }
+                h2 { "Value movements" }
+                @match deltas {
+                    Ok(block_deltas) => ul {
+                        @for delta in &block_deltas.deltas {
+                            li {
+                                a href=(format!("/tx/{}", delta.txid)) { (delta.txid) }
+                                ul {
+                                    @for movement in delta.inputs.iter().chain(delta.outputs.iter()) {
+                                        li {
+                                            (movement.value_zat) " zat"
+                                            @if let Some(address) = &movement.address {
+                                                " — " (address)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => p { "RPC error: " (e.to_string()) },
                 }
             }
-        },
+        }
         Err(e) => html! {
             h1 { "Block " (id) }
             p { "RPC error: " (e.to_string()) }
@@ -174,19 +201,12 @@ mod tests {
     use zaino_service::testing::{MockChain, MockIndexerService};
     use zcash_protocol::consensus::Network;
 
-    /// Boot a real `NodeRpc` jsonrpsee server on an ephemeral port, over a mock
-    /// chain tipped at height 291, and return its address and a handle the test
-    /// stops when done.
-    async fn spawn_mock_server() -> (std::net::SocketAddr, jsonrpsee::server::ServerHandle) {
-        use zaino_primitives::types::{BlockHash, Height};
-
-        let chain = MockChain {
-            tip: Some(zaino_primitives::types::BlockRef {
-                height: Height::try_from(291).expect("valid height"),
-                hash: BlockHash::from([0xCDu8; 32]),
-            }),
-            ..Default::default()
-        };
+    /// Boot a real `NodeRpc` jsonrpsee server on an ephemeral port, over the
+    /// given mock chain, and return its address and a handle the test stops
+    /// when done.
+    async fn spawn_mock_server(
+        chain: MockChain,
+    ) -> (std::net::SocketAddr, jsonrpsee::server::ServerHandle) {
         let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
@@ -196,6 +216,22 @@ mod tests {
             .expect("build server from listener");
         let handle = server.start(handler.into_rpc());
         (addr, handle)
+    }
+
+    /// A mock chain tipped at height 291 with nothing else scripted — the
+    /// baseline most route tests use, where only the height itself resolves
+    /// and everything else (blocks, transactions, addresses) correctly
+    /// reports an RPC error.
+    fn tip_only_chain() -> MockChain {
+        use zaino_primitives::types::{BlockHash, BlockRef, Height};
+
+        MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(291).expect("valid height"),
+                hash: BlockHash::from([0xCDu8; 32]),
+            }),
+            ..Default::default()
+        }
     }
 
     /// The home page renders the mock chain's height (291) fetched live
@@ -214,7 +250,7 @@ mod tests {
     // `transport.rs` server tests.
     #[tokio::test(flavor = "multi_thread")]
     async fn home_page_renders_block_rpc_error_without_losing_the_height() {
-        let (addr, handle) = spawn_mock_server().await;
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
@@ -254,7 +290,7 @@ mod tests {
     /// pure-function and mock-server tests; this test is about the route.
     #[tokio::test(flavor = "multi_thread")]
     async fn block_route_renders_rpc_error_for_an_unscripted_height() {
-        let (addr, handle) = spawn_mock_server().await;
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
@@ -286,6 +322,129 @@ mod tests {
         let _ = handle.stop();
     }
 
+    /// `/block/{id}` for a fully-scripted block renders its value
+    /// movements — a negative input and a positive output, each with its
+    /// address — alongside the transaction list. The differentiator
+    /// capability (`getblockdeltas`) rendering end to end, not just the
+    /// pure-function mapping `zaino-explorer-zaino-client` already covers.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_route_renders_value_movements() {
+        use zaino_primitives::types::{
+            Block, BlockHash, BlockHeader, BlockRef, BlockTreeSizes, BlockVerbose, ChainMetadata,
+            CompactDifficulty, DecodedBlock, EquihashSolution, Height, Script, SignedZatoshis,
+            TransactionId, Zatoshis,
+        };
+        use zaino_service::{InputDelta, OutputDelta, TransactionDeltas};
+
+        let header = BlockHeader {
+            hash: BlockHash::from([0x11; 32]),
+            version: 4,
+            prev_hash: BlockHash::from([0x22; 32]),
+            height: Height::try_from(300).expect("valid height"),
+            time: 1_700_000_300,
+            merkle_root: [0x33; 32].into(),
+            block_commitments: [0x44; 32].into(),
+            bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+            nonce: [0x55; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        let p2pkh = |b: u8| {
+            let mut bytes = vec![0x76, 0xa9, 0x14];
+            bytes.extend_from_slice(&[b; 20]);
+            bytes.extend_from_slice(&[0x88, 0xac]);
+            Script::new(bytes)
+        };
+        let spend = TransactionDeltas {
+            txid: TransactionId::from([0x7A; 32]),
+            index: 0,
+            inputs: vec![InputDelta {
+                script: p2pkh(0x02),
+                satoshis: SignedZatoshis::try_new(-1_000).expect("valid amount"),
+                index: 0,
+                prev_txid: TransactionId::from([0xAB; 32]),
+                prevout: 2,
+            }],
+            outputs: vec![OutputDelta {
+                script: p2pkh(0x03),
+                satoshis: Zatoshis::new(600).expect("valid amount"),
+                index: 0,
+            }],
+        };
+        let chain = MockChain {
+            tip: Some(BlockRef {
+                height: Height::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x11; 32]),
+            }),
+            block: Some(Block {
+                header,
+                transactions: Vec::new(),
+                chain_metadata: ChainMetadata::ZERO,
+            }),
+            block_verbose: Some(BlockVerbose {
+                confirmations: 1,
+                difficulty: 1.0,
+                chainwork: None,
+                chain_supply: None,
+                value_pools: Vec::new(),
+                final_sapling_root: None,
+                final_orchard_root: None,
+                tree_sizes: BlockTreeSizes::default(),
+                next_block_hash: None,
+            }),
+            decoded_block: Some(DecodedBlock {
+                size: 1_000,
+                transactions: Vec::new(),
+            }),
+            block_deltas: Some(zaino_service::BlockDeltas {
+                hash: BlockHash::from([0x11; 32]),
+                confirmations: 1,
+                size: 500,
+                height: Height::try_from(300).expect("valid height"),
+                version: 4,
+                merkle_root: [0x22; 32].into(),
+                deltas: vec![spend],
+                time: 1_700_000_300,
+                median_time: 1_700_000_000,
+                nonce: [0x33; 32],
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+                difficulty: 1.0,
+                chainwork: None,
+                prev_hash: None,
+                next_hash: None,
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/block/300")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("-1000 zat"), "{text}");
+        assert!(text.contains("600 zat"), "{text}");
+        assert!(text.contains("Value movements"), "{text}");
+
+        let _ = handle.stop();
+    }
+
     /// `/tx/{txid}` for an unscripted txid renders a graceful RPC error
     /// (zcashd's own "not found" for an unknown transaction), not a panic
     /// or a 500 — the route is reachable and its error path is wired. The
@@ -294,7 +453,7 @@ mod tests {
     /// don't need a server; this test is about the route, not the mapping.
     #[tokio::test(flavor = "multi_thread")]
     async fn transaction_route_renders_rpc_error_for_an_unknown_txid() {
-        let (addr, handle) = spawn_mock_server().await;
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
@@ -334,7 +493,7 @@ mod tests {
     /// `zaino-explorer-zaino-client`'s own test against a scripted balance.
     #[tokio::test(flavor = "multi_thread")]
     async fn address_route_renders_zero_balance_for_an_unknown_address() {
-        let (addr, handle) = spawn_mock_server().await;
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
         let client = HttpClientBuilder::default()
             .build(format!("http://{addr}"))
             .expect("build http client");
