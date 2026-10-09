@@ -76,6 +76,15 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         address: String,
     ) -> impl Future<Output = Result<AddressValidity, ChainReadError>> + Send;
 
+    /// The receivers a unified address bundles, each re-encoded standalone
+    /// (`z_listunifiedreceivers`). Only meaningful for a unified address —
+    /// the RPC itself rejects any other kind as a parameter error, so
+    /// callers should check [`AddressValidity::kind`] first.
+    fn list_receivers(
+        &self,
+        address: String,
+    ) -> impl Future<Output = Result<UnifiedReceivers, ChainReadError>> + Send;
+
     /// The validator's own status and the mempool's current size.
     fn node_status(&self) -> impl Future<Output = Result<NodeStatus, ChainReadError>> + Send;
 
@@ -221,6 +230,21 @@ pub struct AddressValidity {
     /// The address kind — `p2pkh`, `p2sh`, `sapling`, or `unified` — when
     /// valid.
     pub kind: Option<String>,
+}
+
+/// The receivers a unified address bundles, each re-encoded standalone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnifiedReceivers {
+    /// Orchard receiver, when the address bundles one.
+    pub orchard: Option<String>,
+    /// Sapling receiver, when the address bundles one.
+    pub sapling: Option<String>,
+    /// Transparent pay-to-public-key-hash receiver, when the address
+    /// bundles one.
+    pub p2pkh: Option<String>,
+    /// Transparent pay-to-script-hash receiver, when the address bundles
+    /// one.
+    pub p2sh: Option<String>,
 }
 
 /// One transparent address's balance and recent transaction history.

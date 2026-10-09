@@ -8,14 +8,15 @@ use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
     BlockSummary, ChainReadError, ChainReader, MempoolEntry, NodeStatus, PoolTreestate, SpendInfo,
-    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, ValueMovement,
+    TransactionDelta, TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers,
+    ValueMovement,
 };
 use zaino_noderpc::wire::params::{
     AddressDeltasParam, AddressTxidsParam, AddressesParam, GetSpentInfoParam,
 };
 use zaino_noderpc::wire::response::{
     GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse, PoolTreestateResponse,
-    RawMempoolResponse, TreestateResponse, ZValidateAddressResponse,
+    RawMempoolResponse, TreestateResponse, UnifiedReceiversResponse, ZValidateAddressResponse,
 };
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -237,6 +238,18 @@ fn address_validity_from_response(response: ZValidateAddressResponse) -> Address
     }
 }
 
+/// Map a `z_listunifiedreceivers` response to a [`UnifiedReceivers`]. A
+/// pure function so the mapping is unit-testable without a server.
+/// Infallible: a field-for-field copy.
+fn unified_receivers_from_response(response: UnifiedReceiversResponse) -> UnifiedReceivers {
+    UnifiedReceivers {
+        orchard: response.orchard,
+        sapling: response.sapling,
+        p2pkh: response.p2pkh,
+        p2sh: response.p2sh,
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -406,6 +419,15 @@ impl ChainReader for ZainoClient {
             .await
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
         Ok(address_validity_from_response(response))
+    }
+
+    async fn list_receivers(&self, address: String) -> Result<UnifiedReceivers, ChainReadError> {
+        let response = self
+            .0
+            .z_list_receivers(address)
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(unified_receivers_from_response(response))
     }
 
     async fn node_status(&self) -> Result<NodeStatus, ChainReadError> {
@@ -793,6 +815,27 @@ mod tests {
         assert!(validity.address.is_none());
     }
 
+    /// A `z_listunifiedreceivers` response maps field-for-field into a
+    /// [`zaino_explorer_domain::UnifiedReceivers`] — no server needed.
+    #[test]
+    fn unified_receivers_response_maps_to_unified_receivers() {
+        use zaino_noderpc::wire::response::UnifiedReceiversResponse;
+
+        let response = UnifiedReceiversResponse {
+            orchard: Some("orchardreceiver".to_string()),
+            sapling: None,
+            p2pkh: Some("t1examplereceiver".to_string()),
+            p2sh: None,
+        };
+
+        let receivers = super::unified_receivers_from_response(response);
+
+        assert_eq!(receivers.orchard, Some("orchardreceiver".to_string()));
+        assert!(receivers.sapling.is_none());
+        assert_eq!(receivers.p2pkh, Some("t1examplereceiver".to_string()));
+        assert!(receivers.p2sh.is_none());
+    }
+
     /// A minimal but complete verbose transaction, for the mapping tests
     /// below — one output, no shielded fields, an empty Orchard bundle (as
     /// zebra renders even a version-4 transaction).
@@ -1166,6 +1209,34 @@ mod tests {
             .await
             .expect("validate_address ok");
         assert!(!invalid.valid);
+
+        let _ = handle.stop();
+    }
+
+    /// `list_receivers` against a real mock server: a real mainnet unified
+    /// address reports its bundled receivers. Pure function of the address
+    /// and network (same vector `zaino-address` already exercises), so no
+    /// chain state needs scripting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn list_receivers_against_a_real_server() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
+                  drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
+                  gwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw\
+                  6uh7hyvzjse8ksx"
+            .to_string();
+        let receivers = reader.list_receivers(ua).await.expect("list_receivers ok");
+
+        assert!(
+            receivers.orchard.is_some(),
+            "this vector carries an Orchard receiver"
+        );
 
         let _ = handle.stop();
     }
