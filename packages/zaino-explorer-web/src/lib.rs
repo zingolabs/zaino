@@ -364,9 +364,29 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
 /// line — mining/network facts and every connected peer. Linked from the
 /// home page's status line.
 async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+    // Independent of node_diagnostics below — a richer blockchain summary
+    // than the home page's compact height, rendered on its own so a
+    // failure here doesn't hide mining/network/peer facts that answered.
+    let blockchain = reader.blockchain_info().await;
+    let blockchain_section = html! {
+        h2 { "Blockchain" }
+        @match &blockchain {
+            Ok(info) => div {
+                p { "Chain: " (info.chain) }
+                p { "Blocks: " (info.blocks) " — headers: " (info.headers) }
+                p { "Best block: " (info.best_block_hash) }
+                p { "Difficulty: " (info.difficulty) }
+                p { "Verification progress: " (info.verification_progress) }
+                p { "Size on disk: " (info.size_on_disk) " bytes" }
+                p { "Estimated network height: " (info.estimated_height) }
+            },
+            Err(e) => p { "RPC error: " (e.to_string()) },
+        }
+    };
     let body = match reader.node_diagnostics().await {
         Ok(diagnostics) => html! {
             h1 { "Node info" }
+            (blockchain_section)
             h2 { "Mining" }
             @match &diagnostics.mining {
                 Some(mining) => div {
@@ -408,6 +428,7 @@ async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         },
         Err(e) => html! {
             h1 { "Node info" }
+            (blockchain_section)
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -797,6 +818,42 @@ mod tests {
             text.contains("Unavailable on this deployment"),
             "an unready node's sections should degrade, not error the whole page: {text}"
         );
+
+        let _ = handle.stop();
+    }
+
+    /// `/node` renders the blockchain section even when only `tip` is
+    /// scripted — `blockchain_info`'s own mock synthesizes an aggregate
+    /// from the tip when nothing richer is scripted, mirroring a real
+    /// zainod with no validator behind it yet.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_route_renders_blockchain_section() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/node")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("Blockchain"), "{text}");
+        assert!(text.contains("Blocks: 291"), "{text}");
 
         let _ = handle.stop();
     }
