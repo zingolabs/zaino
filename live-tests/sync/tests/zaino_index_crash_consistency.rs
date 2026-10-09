@@ -144,6 +144,8 @@ async fn zaino_index_crash_consistency(run: SyncRunner) -> SyncOutcome {
             };
             let served = match zaino.get_tree_state(BlockHeight::from_u32(at)).await {
                 Ok(served) => served,
+                // nothing served yet (an index uncommitted): retry, not a wrong answer
+                Err(e) if e.grpc_code() == Some(tonic::Code::Unavailable) => return Ok(()),
                 Err(e) => sync_fail!(at = at, "zaino GetTreeState: {e}"),
             };
             let truth = Zebra::new(zebra.json_rpc().await?).tree_state(at).await?;
@@ -160,6 +162,8 @@ async fn zaino_index_crash_consistency(run: SyncRunner) -> SyncOutcome {
             };
             let served = match zaino.get_block(BlockHeight::from_u32(at)).await {
                 Ok(served) => served,
+                // nothing served yet (an index uncommitted): retry, not a wrong answer
+                Err(e) if e.grpc_code() == Some(tonic::Code::Unavailable) => return Ok(()),
                 Err(e) => sync_fail!(at = at, "zaino GetBlock: {e}"),
             };
             let reference = Zebra::new(zebra.json_rpc().await?);

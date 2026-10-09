@@ -4274,6 +4274,7 @@ dependencies = [
  "anyhow",
  "serde_json",
  "tokio",
+ "tonic",
  "ztest",
 ]
 

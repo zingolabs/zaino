@@ -20,6 +20,7 @@ use ztest::prelude::*;
 use ztest::snapshots::IRONWOOD_MAINNET;
 use ztest::sync::Severity::Fatal;
 use ztest::sync::{commitment_tree_root, hours, mins, secs, Op, OpSet, SyncOutcome, SyncRunner};
+use ztest::zebrad_sync::SyncBudget;
 use ztest::{sync_ensure, sync_fail};
 
 /// Zingo team's frozen mainnet test wallet (view key only; never sent to or from again)
@@ -53,6 +54,14 @@ const FINALISED_DEPTH: u32 = 1_000;
 /// Ordered stream → throughput = in-flight / tail latency
 /// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (not configurable)
 const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(64).expect("non-zero");
+/// Fetches carried <= this − the poll's 1 − 2 other lanes' reserves (zainod's 32 default → 29)
+const VALIDATOR_CONNECTIONS: NonZeroU32 = NonZeroU32::new(72).expect("non-zero");
+/// zebrad's catch-up past the pin: 1 verify thread of its 4 cores (rest = zaino's getblocks)
+const ZEBRA_SYNC_BUDGET: SyncBudget = SyncBudget {
+    verify_threads: NonZeroU32::new(1),
+    full_verify_blocks: NonZeroU32::new(2).expect("non-zero"),
+    download_blocks: NonZeroU32::new(50).expect("non-zero"),
+};
 /// Above any mainnet address (pool payouts hold millions of receives): the oracle holds whole
 /// histories to zebra; the budget's own refusal = unit-tested in zaino-index-transparent-address
 const MAX_ADDRESS_ROWS: NonZeroU32 = NonZeroU32::new(1_000_000_000).expect("non-zero");
@@ -119,6 +128,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 context = "../../../zebra",
                 version = "6.3.0"
             )
+            .sync_budget(ZEBRA_SYNC_BUDGET)
             .follow_from(IRONWOOD_MAINNET, [GOLDEN_MAINNET_P2P])
             .disk(Disk::gib(CHAIN_DISK_GIB))
             .resources(Cpu::cores(4), Mem::gib(10)),
@@ -128,6 +138,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 .snapshot(IRONWOOD_MAINNET)
                 .finalised_depth(FINALISED_DEPTH)
                 .fetch_concurrency(FETCH_CONCURRENCY)
+                .validator_max_connections(VALIDATOR_CONNECTIONS)
                 .max_address_rows(MAX_ADDRESS_ROWS)
                 .disk(Disk::gib(INDEX_DISK_GIB))
                 .resources(Cpu::cores(10), Mem::gib(10)),
@@ -165,6 +176,8 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             };
             let served = match zaino.get_tree_state(BlockHeight::from_u32(at)).await {
                 Ok(served) => served,
+                // nothing served yet (an index uncommitted): retry, not a wrong answer
+                Err(e) if e.grpc_code() == Some(tonic::Code::Unavailable) => return Ok(()),
                 Err(e) => sync_fail!(at = at, "zaino GetTreeState: {e}"),
             };
             let truth = Zebra::new(zebra.json_rpc().await?).tree_state(at).await?;
@@ -181,6 +194,8 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             };
             let served = match zaino.get_block(BlockHeight::from_u32(at)).await {
                 Ok(served) => served,
+                // nothing served yet (an index uncommitted): retry, not a wrong answer
+                Err(e) if e.grpc_code() == Some(tonic::Code::Unavailable) => return Ok(()),
                 Err(e) => sync_fail!(at = at, "zaino GetBlock: {e}"),
             };
             let reference = Zebra::new(zebra.json_rpc().await?);
