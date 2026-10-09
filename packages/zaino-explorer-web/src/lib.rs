@@ -240,10 +240,32 @@ async fn address<C: ChainReader>(
             Err(e) => p { "Validity unavailable: " (e.to_string()) },
         }
     };
+    // z_listunifiedreceivers rejects any non-unified address as a
+    // parameter error, so only call it once validity has actually said
+    // "unified" — calling it on every address would just manufacture an
+    // error on the common (transparent) case.
+    let is_unified = matches!(&validity, Ok(v) if v.kind.as_deref() == Some("unified"));
+    let receivers_section = if is_unified {
+        match reader.list_receivers(address.clone()).await {
+            Ok(receivers) => html! {
+                h2 { "Receivers" }
+                ul {
+                    @if let Some(r) = &receivers.orchard { li { "Orchard: " (r) } }
+                    @if let Some(r) = &receivers.sapling { li { "Sapling: " (r) } }
+                    @if let Some(r) = &receivers.p2pkh { li { "Transparent (P2PKH): " (r) } }
+                    @if let Some(r) = &receivers.p2sh { li { "Transparent (P2SH): " (r) } }
+                }
+            },
+            Err(e) => html! { p { "Receivers unavailable: " (e.to_string()) } },
+        }
+    } else {
+        html! {}
+    };
     let body = match reader.address(address.clone()).await {
         Ok(summary) => html! {
             h1 { "Address " (summary.address) }
             (validity_line)
+            (receivers_section)
             p { "Balance: " (summary.balance_zat) " zat" }
             p { "Lifetime received: " (summary.received_zat) " zat" }
             h2 { "Transactions" }
@@ -282,6 +304,7 @@ async fn address<C: ChainReader>(
         Err(e) => html! {
             h1 { "Address " (address) }
             (validity_line)
+            (receivers_section)
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -772,6 +795,47 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).expect("utf8 body");
         assert!(text.contains("Valid address"), "{text}");
         assert!(text.contains("p2pkh"), "{text}");
+
+        let _ = handle.stop();
+    }
+
+    /// `/address/{address}` for a real mainnet unified address renders its
+    /// bundled receivers — the route only calls `z_listunifiedreceivers`
+    /// once validity has said "unified", so this also proves that gating
+    /// doesn't misfire on the one kind it should fire for.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn address_route_renders_receivers_for_a_unified_address() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let ua = "u1pg2aaph7jp8rpf6yhsza25722sg5fcn3vaca6ze27hqjw7jvvhhuxkpcg0ge9xh6\
+                  drsgdkda8qjq5chpehkcpxf87rnjryjqwymdheptpvnljqqrjqzjwkc2ma6hcq666k\
+                  gwfytxwac8eyex6ndgr6ezte66706e3vaqrd25dzvzkc69kw0jgywtd0cmq52q5lkw\
+                  6uh7hyvzjse8ksx";
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/address/{ua}"))
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(text.contains("unified"), "{text}");
+        assert!(text.contains("Receivers"), "{text}");
+        assert!(text.contains("Orchard:"), "{text}");
 
         let _ = handle.stop();
     }
