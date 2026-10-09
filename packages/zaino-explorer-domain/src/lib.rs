@@ -29,6 +29,15 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         height_or_hash: String,
     ) -> impl Future<Output = Result<BlockDetail, ChainReadError>> + Send;
 
+    /// A block's per-transaction transparent value movements, by hash. A
+    /// differentiator capability: Zebra itself does not serve
+    /// `getblockdeltas`, so no explorer built directly on Zebra's own RPC
+    /// can offer this.
+    fn block_deltas(
+        &self,
+        hash: String,
+    ) -> impl Future<Output = Result<BlockDeltas, ChainReadError>> + Send;
+
     /// One transaction, by id.
     fn transaction(
         &self,
@@ -81,6 +90,40 @@ pub struct BlockDetail {
     pub time: u32,
     /// Every transaction id in the block, in block order.
     pub tx_ids: Vec<String>,
+}
+
+/// A block's per-transaction transparent value movements.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockDeltas {
+    /// The block's hash.
+    pub hash: String,
+    /// The block's height.
+    pub height: u32,
+    /// Each transaction's value movements, in block order.
+    pub deltas: Vec<TransactionDelta>,
+}
+
+/// One transaction's transparent value movements within a block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionDelta {
+    /// The transaction's id.
+    pub txid: String,
+    /// The transparent inputs, each a negative value movement. Empty for a
+    /// coinbase transaction.
+    pub inputs: Vec<ValueMovement>,
+    /// The transparent outputs, each a positive value movement.
+    pub outputs: Vec<ValueMovement>,
+}
+
+/// A single transparent value movement: negative for a spend, positive for
+/// a receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueMovement {
+    /// The address the value moved through, when the script is a standard
+    /// template; absent otherwise.
+    pub address: Option<String>,
+    /// The signed value, in zatoshis.
+    pub value_zat: i64,
 }
 
 /// One transaction, as shown on a transaction detail page.

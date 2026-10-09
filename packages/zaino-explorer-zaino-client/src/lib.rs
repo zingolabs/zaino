@@ -6,11 +6,13 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    AddressSummary, BlockDetail, BlockSummary, ChainReadError, ChainReader, NodeStatus, SpendInfo,
-    TransactionDetail, TransactionOutput,
+    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReadError, ChainReader,
+    NodeStatus, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput, ValueMovement,
 };
 use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
-use zaino_noderpc::wire::response::{GetBlockResponse, GetRawTransactionResponse};
+use zaino_noderpc::wire::response::{
+    GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse,
+};
 use zaino_noderpc::NodeRpcApiClient;
 
 /// An invariant violation: `getblock` was asked for verbosity 1 and answered
@@ -26,6 +28,14 @@ struct UnexpectedBlockVerbosity;
 #[derive(Debug, thiserror::Error)]
 #[error("getrawtransaction verbosity=1 returned an unexpected response shape")]
 struct UnexpectedTransactionVerbosity;
+
+/// An invariant violation: `getblockdeltas` reported an output value that
+/// does not fit in an `i64` — outside the invariant this adapter encodes
+/// (every zatoshi quantity zcashd/zaino actually produce fits well within
+/// that range). A typed error rather than a silent truncation or a panic.
+#[derive(Debug, thiserror::Error)]
+#[error("getblockdeltas output satoshis exceeds i64 range")]
+struct OutputValueOutOfRange;
 
 /// Wraps a [`HttpClient`] built against zaino-noderpc's generated
 /// `NodeRpcApiClient`.
@@ -88,6 +98,50 @@ fn block_detail_from_response(response: GetBlockResponse) -> Result<BlockDetail,
     }
 }
 
+/// Map a `getblockdeltas` response to a [`BlockDeltas`]. A pure function so
+/// the mapping is unit-testable without a server. Fallible only on an
+/// output value too large for `i64` — never observed in practice, but not
+/// assumed away either.
+fn block_deltas_from_response(
+    response: GetBlockDeltasResponse,
+) -> Result<BlockDeltas, ChainReadError> {
+    let deltas = response
+        .deltas
+        .into_iter()
+        .map(|delta| {
+            let outputs = delta
+                .outputs
+                .into_iter()
+                .map(|output| {
+                    i64::try_from(output.satoshis)
+                        .map(|value_zat| ValueMovement {
+                            address: output.address,
+                            value_zat,
+                        })
+                        .map_err(|_| ChainReadError::Rpc(Box::new(OutputValueOutOfRange)))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TransactionDelta {
+                txid: delta.txid,
+                inputs: delta
+                    .inputs
+                    .into_iter()
+                    .map(|input| ValueMovement {
+                        address: input.address,
+                        value_zat: input.satoshis,
+                    })
+                    .collect(),
+                outputs,
+            })
+        })
+        .collect::<Result<Vec<_>, ChainReadError>>()?;
+    Ok(BlockDeltas {
+        hash: response.hash,
+        height: response.height,
+        deltas,
+    })
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -140,6 +194,15 @@ impl ChainReader for ZainoClient {
             .await
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
         block_detail_from_response(response)
+    }
+
+    async fn block_deltas(&self, hash: String) -> Result<BlockDeltas, ChainReadError> {
+        let response = self
+            .0
+            .block_deltas(hash)
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        block_deltas_from_response(response)
     }
 
     async fn transaction(&self, txid: String) -> Result<TransactionDetail, ChainReadError> {
@@ -224,8 +287,8 @@ impl ChainReader for ZainoClient {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_detail_from_response, block_summary_from_response, transaction_detail_from_response,
-        ZainoClient,
+        block_deltas_from_response, block_detail_from_response, block_summary_from_response,
+        transaction_detail_from_response, ZainoClient,
     };
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
@@ -351,6 +414,62 @@ mod tests {
         assert_eq!(detail.hash, "ab".repeat(32));
         assert_eq!(detail.time, 1_700_000_000);
         assert_eq!(detail.tx_ids, vec!["cd".repeat(32), "ef".repeat(32)]);
+    }
+
+    /// A `getblockdeltas` response maps field-for-field into a
+    /// [`zaino_explorer_domain::BlockDeltas`] — a negative input value, a
+    /// positive output value, and each movement's optional address, with no
+    /// server needed.
+    #[test]
+    fn getblockdeltas_response_maps_to_block_deltas_with_signed_values() {
+        use zaino_noderpc::wire::response::{
+            GetBlockDeltasResponse, InputDeltaEntry, OutputDeltaEntry, TransactionDeltaEntry,
+        };
+
+        let response = GetBlockDeltasResponse {
+            hash: "ab".repeat(32),
+            confirmations: 5,
+            size: 777,
+            height: 100,
+            version: 4,
+            merkle_root: String::new(),
+            deltas: vec![TransactionDeltaEntry {
+                txid: "cd".repeat(32),
+                index: 1,
+                inputs: vec![InputDeltaEntry {
+                    address: Some("t1spender".to_string()),
+                    satoshis: -1_000,
+                    index: 0,
+                    prevtxid: "ef".repeat(32),
+                    prevout: 2,
+                }],
+                outputs: vec![OutputDeltaEntry {
+                    address: Some("t1receiver".to_string()),
+                    satoshis: 600,
+                    index: 0,
+                }],
+            }],
+            time: 1_600_000_000,
+            mediantime: 1_599_999_000,
+            nonce: String::new(),
+            bits: String::new(),
+            difficulty: 1.0,
+            chainwork: None,
+            previous_block_hash: None,
+            next_block_hash: None,
+        };
+
+        let deltas = block_deltas_from_response(response).expect("maps ok");
+
+        assert_eq!(deltas.hash, "ab".repeat(32));
+        assert_eq!(deltas.height, 100);
+        assert_eq!(deltas.deltas.len(), 1);
+        let tx = &deltas.deltas[0];
+        assert_eq!(tx.txid, "cd".repeat(32));
+        assert_eq!(tx.inputs[0].value_zat, -1_000);
+        assert_eq!(tx.inputs[0].address, Some("t1spender".to_string()));
+        assert_eq!(tx.outputs[0].value_zat, 600);
+        assert_eq!(tx.outputs[0].address, Some("t1receiver".to_string()));
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -543,6 +662,81 @@ mod tests {
         assert_eq!(detail.height, 300);
         assert_eq!(detail.hash, "11".repeat(32));
         assert_eq!(detail.time, 1_700_000_300);
+
+        let _ = handle.stop();
+    }
+
+    /// `block_deltas` against a real mock server — the differentiator
+    /// capability (Zebra itself does not serve `getblockdeltas`). Proves
+    /// the whole wire path produces signed [`zaino_explorer_domain::
+    /// ValueMovement`]s, not just the pure-function mapping.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_deltas_against_a_real_server() {
+        use zaino_primitives::types::{
+            BlockHash as PrimBlockHash, CompactDifficulty, Height as PrimHeight, Script,
+            SignedZatoshis, TransactionId, Zatoshis,
+        };
+        use zaino_service::{InputDelta, OutputDelta, TransactionDeltas};
+
+        let p2pkh = |b: u8| {
+            let mut bytes = vec![0x76, 0xa9, 0x14];
+            bytes.extend_from_slice(&[b; 20]);
+            bytes.extend_from_slice(&[0x88, 0xac]);
+            Script::new(bytes)
+        };
+        let spend = TransactionDeltas {
+            txid: TransactionId::from([0x7A; 32]),
+            index: 0,
+            inputs: vec![InputDelta {
+                script: p2pkh(0x02),
+                satoshis: SignedZatoshis::try_new(-1_000).expect("valid amount"),
+                index: 0,
+                prev_txid: TransactionId::from([0xAB; 32]),
+                prevout: 2,
+            }],
+            outputs: vec![OutputDelta {
+                script: p2pkh(0x03),
+                satoshis: Zatoshis::new(600).expect("valid amount"),
+                index: 0,
+            }],
+        };
+        let chain = MockChain {
+            block_deltas: Some(zaino_service::BlockDeltas {
+                hash: PrimBlockHash::from([0x11; 32]),
+                confirmations: 1,
+                size: 500,
+                height: PrimHeight::try_from(300).expect("valid height"),
+                version: 4,
+                merkle_root: [0x22; 32].into(),
+                deltas: vec![spend],
+                time: 1_700_000_300,
+                median_time: 1_700_000_000,
+                nonce: [0x33; 32],
+                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
+                difficulty: 1.0,
+                chainwork: None,
+                prev_hash: None,
+                next_hash: None,
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let deltas = reader
+            .block_deltas("11".repeat(32))
+            .await
+            .expect("block_deltas ok");
+
+        assert_eq!(deltas.height, 300);
+        assert_eq!(deltas.deltas.len(), 1);
+        let tx = &deltas.deltas[0];
+        assert_eq!(tx.inputs[0].value_zat, -1_000);
+        assert_eq!(tx.outputs[0].value_zat, 600);
+        assert!(tx.outputs[0].address.is_some());
 
         let _ = handle.stop();
     }
