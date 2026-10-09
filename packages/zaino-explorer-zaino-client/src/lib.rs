@@ -7,8 +7,8 @@
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
-    BlockSummary, ChainReadError, ChainReader, MempoolEntry, MiningInfo, NetworkInfo,
-    NodeDiagnostics, NodeStatus, OutputStatus, PeerInfo, PoolTreestate, SpendInfo,
+    BlockSummary, BlockchainInfo, ChainReadError, ChainReader, MempoolEntry, MiningInfo,
+    NetworkInfo, NodeDiagnostics, NodeStatus, OutputStatus, PeerInfo, PoolTreestate, SpendInfo,
     TransactionDelta, TransactionDetail, TransactionOutput, Treestate, UnifiedReceivers,
     ValueMovement,
 };
@@ -504,6 +504,24 @@ impl ChainReader for ZainoClient {
         let network = self.0.network_info().await.ok();
         let peers = self.0.peer_info().await.unwrap_or_default();
         Ok(node_diagnostics_from_responses(mining, network, peers))
+    }
+
+    async fn blockchain_info(&self) -> Result<BlockchainInfo, ChainReadError> {
+        let response = self
+            .0
+            .blockchain_info()
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(BlockchainInfo {
+            chain: response.chain,
+            blocks: response.blocks,
+            headers: response.headers,
+            best_block_hash: response.best_block_hash,
+            difficulty: response.difficulty,
+            verification_progress: response.verification_progress,
+            size_on_disk: response.size_on_disk,
+            estimated_height: response.estimated_height,
+        })
     }
 
     async fn raw_mempool(&self) -> Result<Vec<MempoolEntry>, ChainReadError> {
@@ -1588,6 +1606,33 @@ mod tests {
         assert!(diagnostics.mining.is_none());
         assert!(diagnostics.network.is_none());
         assert!(diagnostics.peers.is_empty());
+
+        let _ = handle.stop();
+    }
+
+    /// `blockchain_info` against a real mock server: proof the whole wire
+    /// path produces a [`zaino_explorer_domain::BlockchainInfo`], not just
+    /// a hand-constructed value.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn blockchain_info_against_a_real_server() {
+        let chain = MockChain {
+            tip: Some(zaino_primitives::types::BlockRef {
+                height: Height::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x11; 32]),
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let info = reader.blockchain_info().await.expect("blockchain_info ok");
+
+        assert_eq!(info.chain, "main");
+        assert_eq!(info.blocks, 300);
+        assert_eq!(info.estimated_height, 300);
 
         let _ = handle.stop();
     }

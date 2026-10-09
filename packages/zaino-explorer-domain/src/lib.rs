@@ -109,6 +109,13 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         &self,
     ) -> impl Future<Output = Result<NodeDiagnostics, ChainReadError>> + Send;
 
+    /// Richer blockchain-level facts than the home page's compact height
+    /// — verification progress, on-disk size, and the network's
+    /// estimated height (`getblockchaininfo`).
+    fn blockchain_info(
+        &self,
+    ) -> impl Future<Output = Result<BlockchainInfo, ChainReadError>> + Send;
+
     /// Every transaction currently in the mempool, with its entry detail.
     fn raw_mempool(&self)
         -> impl Future<Output = Result<Vec<MempoolEntry>, ChainReadError>> + Send;
@@ -341,6 +348,29 @@ pub struct NodeStatus {
     pub mempool_size: u64,
     /// Total serialized size of the mempool's transactions, in bytes.
     pub mempool_bytes: u64,
+}
+
+/// Richer blockchain-level facts than [`NodeStatus`]'s compact summary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockchainInfo {
+    /// Network name — `main`, `test`, `regtest`.
+    pub chain: String,
+    /// Number of blocks the validator has fully processed.
+    pub blocks: u32,
+    /// Height of the best header chain the validator has validated.
+    pub headers: u32,
+    /// Hash of the current best block, as hex.
+    pub best_block_hash: String,
+    /// Current difficulty, as a multiple of the network minimum.
+    pub difficulty: f64,
+    /// Verification progress relative to the estimated network tip, in
+    /// `0.0..=1.0`.
+    pub verification_progress: f64,
+    /// Approximate on-disk size of the validator's block and undo data,
+    /// in bytes.
+    pub size_on_disk: u64,
+    /// Height the validator estimates the network tip to be at.
+    pub estimated_height: u32,
 }
 
 /// Richer node diagnostics than [`NodeStatus`]'s compact summary.
