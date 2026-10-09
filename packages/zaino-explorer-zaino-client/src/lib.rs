@@ -7,11 +7,13 @@
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
     AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReadError, ChainReader,
-    NodeStatus, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput, ValueMovement,
+    NodeStatus, PoolTreestate, SpendInfo, TransactionDelta, TransactionDetail, TransactionOutput,
+    Treestate, ValueMovement,
 };
 use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
 use zaino_noderpc::wire::response::{
-    GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse,
+    GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse, PoolTreestateResponse,
+    TreestateResponse,
 };
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -142,6 +144,28 @@ fn block_deltas_from_response(
     })
 }
 
+/// Map a `z_gettreestate` response to a [`Treestate`]. A pure function so
+/// the mapping is unit-testable without a server. Infallible: every field
+/// is a direct, same-shape copy.
+fn treestate_from_response(response: TreestateResponse) -> Treestate {
+    Treestate {
+        hash: response.hash,
+        height: response.height,
+        time: response.time,
+        sapling: response.sapling.map(pool_treestate_from_response),
+        orchard: response.orchard.map(pool_treestate_from_response),
+        ironwood: response.ironwood.map(pool_treestate_from_response),
+    }
+}
+
+/// Map one pool's `z_gettreestate` entry to a [`PoolTreestate`].
+fn pool_treestate_from_response(response: PoolTreestateResponse) -> PoolTreestate {
+    PoolTreestate {
+        final_root: response.commitments.final_root,
+        final_state: response.commitments.final_state,
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -203,6 +227,15 @@ impl ChainReader for ZainoClient {
             .await
             .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
         block_deltas_from_response(response)
+    }
+
+    async fn treestate(&self, height_or_hash: String) -> Result<Treestate, ChainReadError> {
+        let response = self
+            .0
+            .z_treestate(height_or_hash)
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(treestate_from_response(response))
     }
 
     async fn transaction(&self, txid: String) -> Result<TransactionDetail, ChainReadError> {
@@ -288,7 +321,7 @@ impl ChainReader for ZainoClient {
 mod tests {
     use super::{
         block_deltas_from_response, block_detail_from_response, block_summary_from_response,
-        transaction_detail_from_response, ZainoClient,
+        transaction_detail_from_response, treestate_from_response, ZainoClient,
     };
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
@@ -470,6 +503,40 @@ mod tests {
         assert_eq!(tx.inputs[0].address, Some("t1spender".to_string()));
         assert_eq!(tx.outputs[0].value_zat, 600);
         assert_eq!(tx.outputs[0].address, Some("t1receiver".to_string()));
+    }
+
+    /// A `z_gettreestate` response maps field-for-field into a
+    /// [`zaino_explorer_domain::Treestate`] — an active pool's root and
+    /// state, and an inactive pool's absence, both preserved.
+    #[test]
+    fn z_gettreestate_response_maps_to_treestate() {
+        use zaino_noderpc::wire::response::{
+            CommitmentsResponse, PoolTreestateResponse, TreestateResponse,
+        };
+
+        let response = TreestateResponse {
+            hash: "ab".repeat(32),
+            height: 300,
+            time: 1_700_000_300,
+            sapling: Some(PoolTreestateResponse {
+                commitments: CommitmentsResponse {
+                    final_root: Some("cd".repeat(32)),
+                    final_state: "deadbeef".to_string(),
+                },
+            }),
+            orchard: None,
+            ironwood: None,
+        };
+
+        let treestate = treestate_from_response(response);
+
+        assert_eq!(treestate.hash, "ab".repeat(32));
+        assert_eq!(treestate.height, 300);
+        let sapling = treestate.sapling.expect("sapling active");
+        assert_eq!(sapling.final_root, Some("cd".repeat(32)));
+        assert_eq!(sapling.final_state, "deadbeef");
+        assert!(treestate.orchard.is_none());
+        assert!(treestate.ironwood.is_none());
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -737,6 +804,49 @@ mod tests {
         assert_eq!(tx.inputs[0].value_zat, -1_000);
         assert_eq!(tx.outputs[0].value_zat, 600);
         assert!(tx.outputs[0].address.is_some());
+
+        let _ = handle.stop();
+    }
+
+    /// `treestate` against a real mock server: proof the whole wire path
+    /// produces a [`zaino_explorer_domain::Treestate`] with an active
+    /// pool's root and an inactive pool's absence.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn treestate_against_a_real_server() {
+        use zaino_primitives::types::{
+            BlockHash as PrimBlockHash, Height as PrimHeight, PoolTreestate, TreeRoot, Treestate,
+        };
+
+        let chain = MockChain {
+            treestate: Some(Treestate {
+                block_hash: PrimBlockHash::from([0x11; 32]),
+                height: PrimHeight::try_from(300).expect("valid height"),
+                time: 1_700_000_300,
+                sapling: Some(PoolTreestate {
+                    final_root: Some(TreeRoot::from([0x22; 32])),
+                    final_state: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                }),
+                orchard: None,
+                ironwood: None,
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let treestate = reader
+            .treestate("300".to_string())
+            .await
+            .expect("treestate ok");
+
+        assert_eq!(treestate.height, 300);
+        let sapling = treestate.sapling.expect("sapling active");
+        assert_eq!(sapling.final_root, Some("22".repeat(32)));
+        assert_eq!(sapling.final_state, "deadbeef");
+        assert!(treestate.orchard.is_none());
 
         let _ = handle.stop();
     }

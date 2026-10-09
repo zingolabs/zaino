@@ -38,6 +38,13 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         hash: String,
     ) -> impl Future<Output = Result<BlockDeltas, ChainReadError>> + Send;
 
+    /// A block's shielded commitment-tree state (`z_gettreestate`), by
+    /// height or hash — each active pool's tree root and serialized state.
+    fn treestate(
+        &self,
+        height_or_hash: String,
+    ) -> impl Future<Output = Result<Treestate, ChainReadError>> + Send;
+
     /// One transaction, by id.
     fn transaction(
         &self,
@@ -124,6 +131,34 @@ pub struct ValueMovement {
     pub address: Option<String>,
     /// The signed value, in zatoshis.
     pub value_zat: i64,
+}
+
+/// A block's shielded commitment-tree state, by pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Treestate {
+    /// The block's hash.
+    pub hash: String,
+    /// The block's height.
+    pub height: u32,
+    /// The block's timestamp (seconds since the Unix epoch).
+    pub time: u32,
+    /// The Sapling pool's tree state; absent before Sapling activation.
+    pub sapling: Option<PoolTreestate>,
+    /// The Orchard pool's tree state; absent before Orchard activation.
+    pub orchard: Option<PoolTreestate>,
+    /// The Ironwood pool's tree state; absent before NU6.3.
+    pub ironwood: Option<PoolTreestate>,
+}
+
+/// One pool's commitment-tree root and serialized state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolTreestate {
+    /// The tree's root after this block, as hex (display order). Absent
+    /// when the source does not report it.
+    pub final_root: Option<String>,
+    /// The pool's serialized note-commitment tree, as hex. Can be large —
+    /// a renderer should summarize rather than print it in full.
+    pub final_state: String,
 }
 
 /// One transaction, as shown on a transaction detail page.
