@@ -141,7 +141,7 @@ zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
-zaino-status = { path = "packages/zaino-status", version = "0.1.2" }
+zaino-status = { path = "packages/zaino-status", version = "0.1.3" }
 # What a supervised component is: a lifecycle phase and a health condition as
 # two independent axes, plus the ports to read and watch them. Replaces the
 # fused `zaino-status` model; consumers adopt it one at a time, so both are
@@ -151,7 +151,7 @@ zaino-component = { path = "packages/zaino-component", version = "0.1.0" }
 # and the protocol-limit validation built on them. A leaf that depends on no
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
-zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
+zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.1" }
 # Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
 # traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
 # formats are written in. A leaf over `corez` alone, so a storage backend and a
@@ -159,19 +159,19 @@ zaino-consensus = { path = "packages/zaino-consensus", version = "0.2.0" }
 # other. Holds no impl for any domain type: those live with the type whose
 # bytes they describe, which is what keeps a schema out of the vocabulary
 # crates. See docs/adr/zaino/0012.
-zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.1" }
+zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.2" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/zaino/0010.
 zaino-primitives = { path = "packages/zaino-primitives", version = "0.4.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
-zaino-address = { path = "packages/zaino-address", version = "0.1.2" }
+zaino-address = { path = "packages/zaino-address", version = "0.1.3" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.3.0" }
-zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.1" }
+zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.2" }
 zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.3" }
 zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.3" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
@@ -186,7 +186,7 @@ zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate",
 # Composite over the two adapters: capability decides what each can answer,
 # this decides which to ask.
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.3" }
-zaino-common = { path = "packages/zaino-common", version = "0.5.3" }
+zaino-common = { path = "packages/zaino-common", version = "0.5.4" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead

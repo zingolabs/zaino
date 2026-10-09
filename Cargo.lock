@@ -5992,7 +5992,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-address"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "hex",
  "sapling-crypto",
@@ -6126,7 +6126,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "rustls",
  "serde",
@@ -6149,7 +6149,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-consensus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "thiserror 2.0.20",
@@ -6168,7 +6168,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-encoding"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "corez",
 ]
@@ -6300,7 +6300,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-macros"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6422,7 +6422,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-status"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "tracing",
 ]

@@ -7,6 +7,20 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+## [2026-10-09]
+### zaino-common 0.5.4
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-address 0.1.3
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-consensus 0.2.1
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-status 0.1.3
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-encoding 0.1.2
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+### zaino-source-macros 0.1.2
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+
 ## [0.5.0 through 0.10.1]
 
 The entries below accumulated across several releases without being sectioned.

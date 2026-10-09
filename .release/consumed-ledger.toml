@@ -92,3 +92,8 @@ slug = "pr-1586"
 id = "01a0ded8-8f69-7b61-bfa9-f00b3e8120fb"
 cycle = "zainod-0-10-2"
 slug = "blessing-changelog-before-bump"
+
+[[consumed]]
+id = "01a12116-6308-7282-993c-885e067ff56b"
+cycle = "zainod-0-10-2"
+slug = "workspace-readme-repackage"

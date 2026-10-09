@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.3] - 2026-10-09
+### Internal
+- The packaged crate carries the workspace README, whose crate-guide index now lists zaino-chain. No code change: the crate is otherwise byte-identical, and a published version cannot be reused with different content.
+
 ## [0.1.2] - 2026-09-26
 ### Internal
 - The packaged lockfile picks up the workspace's minor and patch dependency updates.
