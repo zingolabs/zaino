@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-10-09
+
+### Added
 - New crate. The component abstraction: a supervised in-process subsystem, and
   what every subsystem otherwise hand-rolls — `ComponentStatus`, `Lifecycle`,
   `Health`, `Managed`, and `Task`.

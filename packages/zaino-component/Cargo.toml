@@ -1,9 +1,17 @@
 [package]
 name = "zaino-component"
-version = "0.1.0"
-edition = "2024"
-publish = false
 description = "A supervised in-process subsystem (a Component): its health, lifecycle, management, and task supervision. Status is one facet, not the crate's identity."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+# Not inherited: the workspace pins 2021 for the crates that predate it, and a
+# new crate takes the latest edition.
+edition = "2024"
+license = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+version = "0.1.0"
 
 [dependencies]
 strum = { workspace = true }

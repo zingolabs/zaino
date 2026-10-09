@@ -124,3 +124,7 @@ path = "packages/zaino-chain-store-zainodb"
 [[target]]
 name = "zaino-chain"
 path = "packages/zaino-chain"
+
+[[target]]
+name = "zaino-component"
+path = "packages/zaino-component"
