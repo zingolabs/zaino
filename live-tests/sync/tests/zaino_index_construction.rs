@@ -54,6 +54,8 @@ const FINALISED_DEPTH: u32 = 1_000;
 /// Ordered stream → throughput = in-flight / tail latency
 /// - blocks, 4 per getblock batch → 64 batches = connections in flight
 const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(256).expect("non-zero");
+/// Merges' read + written MiB/s (zainod default 200: the sync pool's NVMe takes more)
+const MERGE_MIB_PER_SEC: NonZeroU32 = NonZeroU32::new(300).expect("non-zero");
 /// Batches carried <= this − the poll's 1 − 2 other lanes' reserves (69 >= 64)
 /// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (not configurable)
 const VALIDATOR_CONNECTIONS: NonZeroU32 = NonZeroU32::new(72).expect("non-zero");
@@ -139,6 +141,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 .snapshot(IRONWOOD_MAINNET)
                 .finalised_depth(FINALISED_DEPTH)
                 .fetch_concurrency(FETCH_CONCURRENCY)
+                .lsm_merge_mib_per_sec(MERGE_MIB_PER_SEC)
                 .validator_max_connections(VALIDATOR_CONNECTIONS)
                 .max_address_rows(MAX_ADDRESS_ROWS)
                 .disk(Disk::gib(INDEX_DISK_GIB))
