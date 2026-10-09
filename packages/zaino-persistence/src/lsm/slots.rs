@@ -1,5 +1,5 @@
-//! Process-wide merge slots: <= [`MERGE_SLOTS`] merges working at once across every set of every
-//! index; next free slot → lowest waiting tier
+//! Engine-wide merge slots: <= `LsmConfig::merge_slots` merges working at once across every set
+//! of every index; next free slot → lowest waiting tier
 //!
 //! - cap: else a merge per tier per set = dozens of threads competing with serving reads for disk
 //! - lowest tier first: small merges (bound a commit's stall) never queue behind a large one
@@ -15,19 +15,18 @@ use std::{
     time::Duration,
 };
 
-/// Merges doing work at once, process-wide
-pub(super) const MERGE_SLOTS: usize = 4;
-
 /// How often a waiting merge rechecks its cancel flag
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
-pub(super) struct Slots {
+#[derive(Debug)]
+pub(crate) struct Slots {
     state: Mutex<State>,
     freed: Condvar,
     capacity: usize,
 }
 
 /// `waiting` = `(tier, arrival)`: lowest waiting tier first, ties in arrival order
+#[derive(Debug)]
 struct State {
     running: usize,
     waiting: BinaryHeap<Reverse<(u32, u64)>>,
@@ -39,10 +38,8 @@ pub(super) struct Slot<'a> {
     slots: &'a Slots,
 }
 
-pub(super) static SLOTS: Slots = Slots::new(MERGE_SLOTS);
-
 impl Slots {
-    const fn new(capacity: usize) -> Self {
+    pub(crate) fn new(capacity: usize) -> Self {
         Self {
             state: Mutex::new(State { running: 0, waiting: BinaryHeap::new(), arrivals: 0 }),
             freed: Condvar::new(),

@@ -245,7 +245,7 @@ fn a_spend_carries_its_fee_and_commitments_into_the_compact_block_record() {
     let paid = Fee::Paid(Zatoshis::new(1_000).expect("in supply"));
     assert_eq!(chain.fees(spent.hash).fees, [Fee::Coinbase, paid]);
 
-    let open = DiskEngine::new(SimFs::new()).open(Path::new("/cb"), &schema(REGTEST), WRITE_BUFFER);
+    let open = DiskEngine::new(SimFs::new(), LsmConfig::default()).open(Path::new("/cb"), &schema(REGTEST), WRITE_BUFFER);
     let mut store = open.expect("open");
     let mut last = Vec::new();
     for block in chain.blocks(spent) {

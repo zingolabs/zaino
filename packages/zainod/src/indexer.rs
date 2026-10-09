@@ -39,7 +39,9 @@ use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema};
+use zaino_persistence::{
+    DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine, Schema,
+};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
 use zaino_snapshot::Publisher;
@@ -182,7 +184,7 @@ async fn pipeline<S: ChainDataSource>(
     let mut indexes = Indexes { follower, nfs, opened: Vec::new() };
     // declared after the follower: dropped first
     let mut tasks = tasks;
-    let engine = DiskEngine::new(fs);
+    let engine = DiskEngine::new(fs, LsmConfig::from(&config.sync.lsm_store));
 
     if let Some((cb, vb)) = config.compact_block()? {
         // compact-block folds after value-balance (its fees)

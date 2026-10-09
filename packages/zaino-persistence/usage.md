@@ -26,7 +26,7 @@ pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]);   // ids = position
 pub const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(64 << 20).expect("non-zero"); // buffered heap
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES); // Copy, built once
-let engine = DiskEngine::new(fs);
+let engine = DiskEngine::new(fs, LsmConfig::default());
 let mut store = engine.open(path, &schema, WRITE_BUFFER)?; // fresh = empty, else the committed tip
 
 let mut changes = store.changes(block.at());              // one block's empty delta
@@ -116,7 +116,7 @@ spent.range(&start, &end, limit);                         // [start, end); None 
 ## Verifying offline
 
 ```rust
-let report = DiskEngine::new(fs).verify(path, &schema)?;  // plain std::fs reads, no lock
+let report = DiskEngine::new(fs, LsmConfig::default()).verify(path, &schema)?;  // plain std::fs reads, no lock
 report.heights;          // blocks committed from genesis
 report.units;            // Vec<Checked { name, committed_bytes, orphaned_bytes, lost, bad_sums, bad_pages }>
 report.is_clean();
@@ -170,9 +170,13 @@ report.is_clean();
     then its block of records) and resolves the keys on the rayon pool.
   - Below 64 keys it stays on the calling thread, where rayon's wake-up cost
     5–10× the lookups (measured).
-- **Merges:**
-  - Run on background threads, at most one per size tier and four doing work
-    across the process, lowest tier first, at background CPU and I/O priority.
+- **Merges:** `DiskEngine::new(fs, LsmConfig { fanout, merge_slots })`
+  - A tier merges once it holds `fanout` segments (default 16; write amplification
+    `log_fanout(rows)`).
+  - Run on background threads, at most one per size tier and `merge_slots` doing
+    work across every store of one engine (default 2), lowest tier first, at
+    background CPU and I/O priority. The I/O priority only binds under a
+    scheduler that honours it (`mq-deadline`, `bfq`); `none` ignores it.
   - A finished merge is swapped in by the next commit's manifest, and its
     inputs are unlinked once that manifest is durable.
   - A commit waits for a merging tier only once that tier is two idle windows

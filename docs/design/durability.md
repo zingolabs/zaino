@@ -182,7 +182,7 @@ Compact-block keeps no tree sizes in its manifest: the sizes after the tip are i
 `ChainMetadata`. The block-hash index is its own commit point, so a hash-to-height answer is always
 confirmed by the index that serves it.
 
-Merges are size-tiered. When a tier holds `FANOUT` segments (8 by default), a background thread
+Merges are size-tiered. When a tier holds `fanout` segments (`LsmConfig`, 16 by default), a background thread
 merges them, one merge per tier at a time so small merges never queue behind a large one. The merge
 streams its inputs through their page checksums, so a corrupt input dies instead of propagating,
 then seals its output and fsyncs its directory. It does not commit on its own: the next batch's

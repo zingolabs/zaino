@@ -346,7 +346,7 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
 fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let populated = || {
         let fs = SimFs::new();
-        let mut store = open(&DiskEngine::new(fs.clone()));
+        let mut store = open(&DiskEngine::new(fs.clone(), LsmConfig::default()));
         store.apply(Model::default().advance(4, &[1, 2], 3));
         store.commit().expect("commit");
         fs
@@ -357,7 +357,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let fs = populated();
     let committed = (0..4).map(|n| block(n).len()).sum::<usize>();
     fs.corrupt(&path("blocks.dat"), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
-    let store = open(&DiskEngine::new(fs.clone()));
+    let store = open(&DiskEngine::new(fs.clone(), LsmConfig::default()));
     assert_eq!(blocks_len(&fs), committed, "uncommitted tail truncated");
     let records = store.committed().sequence(BLOCKS).records(0..4);
     assert_eq!(records, (0..4).map(block).collect::<Vec<_>>());
@@ -366,7 +366,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let refused = |edit: &dyn Fn(&SimFs)| {
         let fs = populated();
         edit(&fs);
-        DiskEngine::new(fs)
+        DiskEngine::new(fs, LsmConfig::default())
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .expect_err("refused")
             .to_string()
@@ -379,7 +379,11 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let bare = SimFs::new();
     bare.create_dir_all(Path::new(ROOT)).expect("dir");
     bare.open(&path("heights.dat")).expect("file").write_all_at(&[1], 0).expect("write");
-    let opened = DiskEngine::new(bare).open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX);
+    let opened = DiskEngine::new(bare, LsmConfig::default()).open(
+        Path::new(ROOT),
+        &SCHEMA,
+        NonZeroUsize::MAX,
+    );
     assert!(matches!(opened, Err(StoreError::Manifest(ManifestError::Unmanifested { .. }))));
 }
 

@@ -23,7 +23,7 @@ use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TAB
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
-let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TransparentAddressIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.tip(), queue_bytes);

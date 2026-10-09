@@ -67,7 +67,7 @@ fold(&parent, &block, &fees, &mut out)?;              // Result<(), TreeSizeOutO
 use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
-let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);

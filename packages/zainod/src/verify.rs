@@ -68,7 +68,7 @@ fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
         IndexKind::TransparentAddress,
     ];
 
-    let engine = DiskEngine::new(RealFs::shared());
+    let engine = DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default());
     let mut reports = BTreeMap::new();
     for kind in indexes {
         let index = kind.name();
@@ -159,7 +159,10 @@ mod tests {
             root.path().join("ta"),
         );
         // the five index loops wired as the daemon wires them, the chain sent as bulk
-        let (engine, net) = (DiskEngine::new(RealFs::shared()), NetworkType::Main);
+        let (engine, net) = (
+            DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default()),
+            NetworkType::Main,
+        );
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
         let (mut block_sink, mut fee_sink) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
         let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);

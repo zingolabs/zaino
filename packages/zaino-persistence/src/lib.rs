@@ -25,6 +25,7 @@ mod write_buffer;
 
 pub use dir::disk_bytes;
 pub use disk::{DiskEngine, DiskStore, DiskView};
+pub use lsm::LsmConfig;
 pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;

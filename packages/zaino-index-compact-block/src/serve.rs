@@ -218,7 +218,7 @@ mod tests {
 
     fn store() -> DiskStore {
         let schema = Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
-        DiskEngine::new(SimFs::new())
+        DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
             .open(std::path::Path::new("/cb"), &schema, NonZeroUsize::MAX)
             .expect("open")
     }

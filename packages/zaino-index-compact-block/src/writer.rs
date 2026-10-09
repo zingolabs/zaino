@@ -124,7 +124,9 @@ mod tests {
 
     /// `write_buffer` = MIN: every applied block committed by the store itself
     fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/cb"), &SCHEMA, write_buffer).expect("open")
+        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
+            .open(Path::new("/cb"), &SCHEMA, write_buffer)
+            .expect("open")
     }
 
     /// Genesis ..= tip, each block beside the fees value-balance derives for it

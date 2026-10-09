@@ -13,7 +13,7 @@ use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES, WRITE_BUFFER}
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
-let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let store = DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?;
 let writer = TreeStateIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::TreeState, handle.tip(), queue_bytes);

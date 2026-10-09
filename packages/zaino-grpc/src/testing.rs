@@ -39,7 +39,10 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         IndexKind::ValueBalance => panic!("not a served index"),
     };
     let schema = Schema::new(kind, format, chain.schedule().network, tables);
-    let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
+    let engine = DiskEngine::new(
+        zaino_persistence::fs::SimFs::new(),
+        zaino_persistence::LsmConfig::default(),
+    );
     let mut index =
         engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {

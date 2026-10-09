@@ -26,7 +26,9 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     dir::IndexDir,
     fs::Fs,
-    lsm::{decode_list, encode_list, file_name, SegmentLog, SegmentMeta, Snapshot},
+    lsm::{
+        decode_list, encode_list, file_name, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
+    },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::OverlayView,
     pages::{scrub, Sealed},
@@ -39,25 +41,26 @@ use crate::{
     StoreError,
 };
 
-/// Same-tier segments merged into one (write amplification `log_FANOUT(rows)`)
-const FANOUT: usize = 8;
-
-/// Files for sequences, LSM for maps, on one filesystem
+/// Files for sequences, LSM for maps, on one filesystem (clones share the merge slots)
 #[derive(Debug, Clone)]
 pub struct DiskEngine {
     fs: Arc<dyn Fs>,
     fanout: usize,
+    slots: Arc<Slots>,
 }
 
 impl DiskEngine {
-    pub fn new(fs: Arc<dyn Fs>) -> Self {
-        Self { fs, fanout: FANOUT }
+    /// Panics: `lsm.fanout` < 2 (a merge of one segment = no merge)
+    pub fn new(fs: Arc<dyn Fs>, lsm: LsmConfig) -> Self {
+        assert!(lsm.fanout >= 2, "lsm fanout {} < 2", lsm.fanout);
+        let slots = Arc::new(Slots::new(lsm.merge_slots.get()));
+        Self { fs, fanout: lsm.fanout, slots }
     }
 
     /// Merges after `fanout` same-tier segments (small = merges in a handful of commits)
     #[cfg(test)]
     pub(crate) fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
-        Self { fs, fanout }
+        Self::new(fs, LsmConfig { fanout, ..LsmConfig::default() })
     }
 }
 
@@ -201,7 +204,8 @@ impl PersistenceEngine for DiskEngine {
         let mut maps = Vec::with_capacity(schema.maps().len());
         for ((table, list), map_dir) in schema.maps().iter().zip(&body.maps).zip(&map_dirs) {
             let fs = Arc::clone(&self.fs);
-            maps.push(SegmentLog::open(fs, map_dir, table, list, self.fanout)?);
+            let slots = Arc::clone(&self.slots);
+            maps.push(SegmentLog::open(fs, map_dir, table, list, self.fanout, slots)?);
         }
         let state = State {
             schema: *schema,

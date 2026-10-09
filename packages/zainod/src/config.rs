@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
-use zaino_persistence::IndexKind;
+use zaino_persistence::{IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zcash_protocol::consensus::NetworkType;
 
@@ -370,6 +370,7 @@ pub(crate) struct SyncConfig {
     pub(crate) concurrency: NonZeroUsize,
     /// MiB of final blocks one index may trail the fetch before it throttles the pipeline
     queue_mib: NonZeroU32,
+    pub(crate) lsm_store: LsmStoreConfig,
 }
 
 impl Default for SyncConfig {
@@ -379,7 +380,32 @@ impl Default for SyncConfig {
                 .expect("the consensus reorg bound is non-zero"),
             concurrency: NonZeroUsize::new(32).expect("32 is non-zero"),
             queue_mib: NonZeroU32::new(256).expect("256 is non-zero"),
+            lsm_store: LsmStoreConfig::default(),
         }
+    }
+}
+
+/// `[sync.lsm_store]`: the disk engine's map tables (one engine per process: every index shares
+/// `merge_slots`)
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields, default)]
+pub(crate) struct LsmStoreConfig {
+    /// Same-tier segments merged into one (>= 2; higher = less rewriting, larger merges)
+    pub(crate) fanout: usize,
+    /// Merges doing disk I/O at once (the rest wait, smallest first)
+    pub(crate) merge_slots: NonZeroUsize,
+}
+
+impl Default for LsmStoreConfig {
+    fn default() -> Self {
+        let LsmConfig { fanout, merge_slots } = LsmConfig::default();
+        Self { fanout, merge_slots }
+    }
+}
+
+impl From<&LsmStoreConfig> for LsmConfig {
+    fn from(config: &LsmStoreConfig) -> Self {
+        Self { fanout: config.fanout, merge_slots: config.merge_slots }
     }
 }
 
@@ -607,6 +633,12 @@ impl DaemonConfig {
                     .to_string(),
             ));
         }
+        if self.sync.lsm_store.fanout < 2 {
+            return Err(IndexerError::ConfigError(format!(
+                "sync.lsm_store.fanout = {}: a merge needs at least 2 segments",
+                self.sync.lsm_store.fanout
+            )));
+        }
         let depth = self.sync.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::ConfigError(format!(
@@ -806,6 +838,7 @@ enabled = false
             assert_eq!(found, keys, "[{table}]");
         };
         printed("sync", &["finalised_depth", "concurrency", "queue_mib"]);
+        printed("sync.lsm_store", &["fanout", "merge_slots"]);
         for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
@@ -920,6 +953,26 @@ path = "/tmp/zaino-compact-block"
             assert!(validated(network, MAX_BLOCK_REORG_HEIGHT + 1).is_ok(), "{network}");
         }
         assert!(validated("regtest", 100).is_ok());
+    }
+
+    #[test]
+    fn sync_lsm_store_parses_into_the_engine_config_and_a_fanout_below_two_is_refused() {
+        let parsed = |table: &str| {
+            toml::from_str::<DaemonConfig>(&format!(
+                "network = \"mainnet\"\n[sync.lsm_store]\n{table}"
+            ))
+        };
+
+        let config = parsed("fanout = 4\nmerge_slots = 1\n").expect("deserialise");
+        let expected = LsmConfig { fanout: 4, merge_slots: NonZeroUsize::MIN };
+        assert_eq!(LsmConfig::from(&config.sync.lsm_store), expected);
+        assert!(config.validate().is_ok());
+
+        let refused =
+            parsed("fanout = 1\n").expect("deserialise").validate().expect_err("fanout 1");
+        assert!(refused.to_string().contains("sync.lsm_store.fanout = 1"), "{refused}");
+        assert!(parsed("merge_slots = 0\n").is_err(), "merge_slots non-zero");
+        assert!(parsed("fan_out = 4\n").is_err(), "unknown key");
     }
 
     #[test]

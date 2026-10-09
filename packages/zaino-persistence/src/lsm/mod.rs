@@ -33,8 +33,27 @@ pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use log::SegmentLog;
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
 pub(crate) use reader::Snapshot;
+pub(crate) use slots::Slots;
+
+use std::num::NonZeroUsize;
 
 use crate::pages::PageError;
+
+/// Map tables' merge policy, one per [`DiskEngine`] (every store it opens shares `merge_slots`)
+///
+/// - `fanout` (>= 2) same-tier segments merge into one: write amplification `log_fanout(rows)`
+/// - `merge_slots` = merges doing I/O at once (the rest wait, lowest tier first)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LsmConfig {
+    pub fanout: usize,
+    pub merge_slots: NonZeroUsize,
+}
+
+impl Default for LsmConfig {
+    fn default() -> Self {
+        Self { fanout: 16, merge_slots: NonZeroUsize::new(2).expect("2 is non-zero") }
+    }
+}
 
 /// Why a segment could not be read or written
 #[derive(Debug, thiserror::Error)]

@@ -237,7 +237,9 @@ mod tests {
 
     /// `write_buffer` = MIN: every applied block committed by the store itself
     fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/vb"), &SCHEMA, write_buffer).expect("open")
+        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
+            .open(Path::new("/vb"), &SCHEMA, write_buffer)
+            .expect("open")
     }
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from

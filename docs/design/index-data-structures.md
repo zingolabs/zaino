@@ -223,13 +223,13 @@ filter page, and the filters stay resident as the page cache allows.
 
 Segments never change after they are built, which is what a static filter is for (RocksDB's
 per-SST filters are the same idea), so we use a sharded BinaryFuse8. Mainnet has about 190M
-transparent outputs (Blockchair, Sep 2026), so `spent` holds about 190M rows over up to ~35 live
-segments (size tiers × fanout 8). Measured here with xorf 0.13, BinaryFuse8 and BinaryFuse16 both
+transparent outputs (Blockchair, Sep 2026), so `spent` holds about 190M rows over up to
+`fanout − 1` live segments per size tier. Measured here with xorf 0.13, BinaryFuse8 and BinaryFuse16 both
 build at about 100 ns per key and probe in about 17 ns, at 9 and 18 bits per key and false-positive
-rates of 2⁻⁸ and 2⁻¹⁶. With 8-bit fingerprints a miss wastes at most 35 × 2⁻⁸, about 0.14 block
-reads. The filters only stay cheap while resident, and at mainnet scale they cost about 200 MB
+rates of 2⁻⁸ and 2⁻¹⁶. With 8-bit fingerprints a miss wastes about 2⁻⁸ block reads per live
+segment (0.004; a higher fanout = more live segments per probe). The filters only stay cheap while resident, and at mainnet scale they cost about 200 MB
 against 400 MB, so the smaller one wins. Build throughput does not separate them: it is about
-400 ns per row over a row's life, across roughly log₈ merges, and sync is bound by validator RPC.
+400 ns per row over a row's life, across roughly `log_fanout` merges, and sync is bound by validator RPC.
 
 Each shard holds at most 2²⁰ keys, chosen by the key's top bits, which are uniform for a txid. That
 bounds build scratch at about 26 MiB whatever the segment's size, and since shards close in key

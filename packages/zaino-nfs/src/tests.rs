@@ -115,7 +115,7 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
 
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
 fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
-    let engine = DiskEngine::new(SimFs::new());
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let open =
         |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
@@ -425,7 +425,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     tokio::spawn(balancing.run(stop_balancing.clone()));
     let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let params = ChainParams::of(&blocks, genesis);
-    let engine = DiskEngine::new(SimFs::new());
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
     let mut check = |snapshot: &Indexed<DiskView>, context: &str| {
         verify(snapshot, &blocks, &mined, &mut oracles, context)
@@ -479,7 +479,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
     tokio::spawn(balancing.run(stop_balancing.clone()));
     let (verified, verified_rx) = watch::channel(headers.verified().map(Arc::new));
     let params = ChainParams::of(&blocks, trunk[16].at());
-    let engine = DiskEngine::new(SimFs::new());
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let mut oracles = HashMap::new();
     let mut check = |snapshot: &Indexed<DiskView>, context: &str| {
         verify(snapshot, &blocks, &mined, &mut oracles, context)
@@ -538,7 +538,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let source = Arc::new(MockValidator::following(&blocks, a5));
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
-    let engine = DiskEngine::new(SimFs::new());
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let store =
         engine.open(Path::new("block_hash"), &schema(IndexKind::BlockHash), NonZeroUsize::MIN);
     let writer = BlockHashIndexWriter::new(store.expect("store"));

@@ -30,7 +30,7 @@ use zaino_sync::FeeSink;
 let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
 let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
-let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?);
+let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();               // also CompactBlockIndexWriter::new's fee source
 let blocks = follower.subscribe(IndexKind::ValueBalance, handle.tip(), queue);
 nfs.add(IndexKind::ValueBalance, handle);   // before compact_block: its fees feed that fold

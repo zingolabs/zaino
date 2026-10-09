@@ -103,7 +103,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     headers.finalize(at(&a[2]));
     let chain = Arc::new(headers.verified().expect("verified"));
 
-    let engine = DiskEngine::new(SimFs::new());
+    let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
     let schema = Schema::new(
         IndexKind::BlockHash,
         block_hash::FORMAT,

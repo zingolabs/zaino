@@ -102,7 +102,7 @@ const SPENT: MapTable = MapTable::new(1, "spent", Width::fixed(36), Width::fixed
 pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
 let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
-let mut store = DiskEngine::new(fs).open(path, &schema, WRITE_BUFFER)?;
+let mut store = DiskEngine::new(fs, LsmConfig::default()).open(path, &schema, WRITE_BUFFER)?;
 
 let mut changes = store.changes(block.at());
 changes.map(SPENT).insert(&outpoint.encode(), &encode_spend(&spend));

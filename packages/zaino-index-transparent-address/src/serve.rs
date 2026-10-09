@@ -186,7 +186,7 @@ mod tests {
         });
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
-        let mut store = DiskEngine::new(SimFs::new())
+        let mut store = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
             .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
             .expect("open");
         for (height, block) in chain.blocks(two).iter().enumerate() {
@@ -241,7 +241,7 @@ mod tests {
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10).pay(&pays_second, 10)));
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
-        let mut store = DiskEngine::new(SimFs::new())
+        let mut store = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
             .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
             .expect("open");
         for (height, block) in chain.blocks(three).iter().enumerate() {

@@ -12,7 +12,7 @@ use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES, 
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
-let writer = BlockHashIndexWriter::new(DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?);
+let writer = BlockHashIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::BlockHash, handle.tip(), queue_bytes);
 nfs.add(IndexKind::BlockHash, handle);

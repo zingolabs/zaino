@@ -21,7 +21,7 @@ use super::{
     meta::{merge_candidates, tier_of, tier_shape},
     reader::Snapshot,
     report::{self, Landed},
-    slots::SLOTS,
+    slots::Slots,
     writer::SegmentWriter,
     Result, SegmentMeta,
 };
@@ -33,7 +33,7 @@ const STALL_WINDOWS: usize = 2;
 
 /// Map's committed list + merges running under it + list staged for the next manifest
 ///
-/// - one merge per tier at a time, <= `MERGE_SLOTS` working process-wide (lowest tier first:
+/// - one merge per tier at a time, <= `slots` working engine-wide (lowest tier first:
 ///   small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
@@ -44,6 +44,7 @@ pub(crate) struct SegmentLog {
     snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
     fanout: usize,
+    slots: Arc<Slots>,
     next: u32,
     segments: Vec<SegmentMeta>,
     staged: Option<Staged>,
@@ -79,6 +80,7 @@ impl SegmentLog {
         table: &MapTable,
         listed: &[SegmentMeta],
         fanout: usize,
+        slots: Arc<Slots>,
     ) -> Result<Self> {
         let shape = Shape::of(table);
         let snapshot = Arc::new(Snapshot::open(fs.as_ref(), dir, shape, listed)?);
@@ -95,6 +97,7 @@ impl SegmentLog {
             shape,
             snapshot,
             fanout,
+            slots,
             next,
             segments: listed.to_vec(),
             staged: None,
@@ -209,11 +212,12 @@ impl SegmentLog {
             thread::Builder::new().name(format!("merge {} t{tier}", self.name)).spawn({
                 let (inputs, cancel, name) =
                     (inputs.clone(), Arc::clone(&cancel), self.name.clone());
+                let slots = Arc::clone(&self.slots);
                 let span = tracing::Span::current();
                 move || {
                     let _owner = span.enter();
                     crate::fs::background_priority();
-                    let Some(_slot) = SLOTS.acquire(tier, &cancel) else {
+                    let Some(_slot) = slots.acquire(tier, &cancel) else {
                         return Ok(None);
                     };
                     let started = Instant::now();

@@ -151,7 +151,7 @@ mod tests {
         use IndexKind::*;
         let all = INDEXES;
         for enabled in [&all[..], &[ValueBalance, CompactBlock, TreeState]] {
-            let engine = DiskEngine::new(SimFs::new());
+            let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());
             for &kind in enabled {

@@ -85,3 +85,16 @@ migration = """
 Bound served views on `V: CommittedView` (it was `SequenceRead + MapRead`); read a staged view \
 inside the fold and drop it before `apply`.
 """
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`DiskEngine::new(fs, LsmConfig { fanout, merge_slots })`: the map tables' merge fanout (default \
+16, was a fixed 8) and the merges doing I/O at once (default 2, was a fixed 4), the latter shared \
+by every store one engine opens (was process-wide).
+"""
+migration = """
+`DiskEngine::new(fs)` → `DiskEngine::new(fs, LsmConfig::default())`.
+"""
