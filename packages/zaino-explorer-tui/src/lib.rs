@@ -411,8 +411,12 @@ fn render_home(frame: &mut Frame, state: &AppState) {
     status_text.push('\n');
     status_text.push_str(&match &state.node_status {
         Some(status) => format!(
-            "{} — {} peers — mempool: {} tx, {} bytes",
-            status.subversion, status.connections, status.mempool_size, status.mempool_bytes
+            "Connected validator: {} (build {}) — {} peers — mempool: {} tx, {} bytes",
+            status.subversion,
+            status.build,
+            status.connections,
+            status.mempool_size,
+            status.mempool_bytes
         ),
         None => "Node status unavailable".to_string(),
     });
@@ -984,6 +988,7 @@ mod tests {
             height: Some(300),
             node_status: Some(NodeStatus {
                 subversion: "/Zebra:6.4.2/".to_string(),
+                build: "v6.4.2".to_string(),
                 connections: 12,
                 mempool_size: 3,
                 mempool_bytes: 1_024,
