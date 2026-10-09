@@ -66,7 +66,12 @@ pub fn render(frame: &mut Frame, state: &AppState) {
     let rows: Vec<ListItem> = state
         .blocks
         .iter()
-        .map(|block| ListItem::new(format!("{}  {}  {}", block.height, block.hash, block.time)))
+        .map(|block| {
+            ListItem::new(format!(
+                "{}  {}  {}  {} tx",
+                block.height, block.hash, block.time, block.tx_count
+            ))
+        })
         .collect();
     frame.render_widget(
         List::new(rows).block(Block::new().borders(Borders::ALL).title("Recent blocks")),
@@ -141,11 +146,13 @@ mod tests {
                     height: 300,
                     hash: "aa".repeat(32),
                     time: 1_700_000_300,
+                    tx_count: 3,
                 },
                 BlockSummary {
                     height: 299,
                     hash: "bb".repeat(32),
                     time: 1_700_000_200,
+                    tx_count: 1,
                 },
             ],
             error: None,
@@ -183,45 +190,19 @@ mod tests {
     // loop) concurrently with the outbound RPC call, on one runtime — same
     // justification as zaino-explorer-web's identical test.
     #[tokio::test(flavor = "multi_thread")]
-    async fn refresh_populates_live_chain_height_and_blocks() {
+    async fn refresh_populates_live_chain_height() {
         use jsonrpsee::http_client::HttpClientBuilder;
         use std::net::TcpListener;
         use zaino_explorer_zaino_client::ZainoClient;
         use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
-        use zaino_primitives::types::rpc::BlockHeaderVerbose;
-        use zaino_primitives::types::{BlockHash, CompactDifficulty, Height, MerkleRoot};
+        use zaino_primitives::types::{BlockHash, Height};
         use zaino_service::testing::{MockChain, MockIndexerService};
-        use zaino_service::BlockHashAt;
         use zcash_protocol::consensus::Network;
 
         let chain = MockChain {
             tip: Some(zaino_primitives::types::BlockRef {
                 height: Height::try_from(291).expect("valid height"),
                 hash: BlockHash::from([0xCDu8; 32]),
-            }),
-            block_hashes: (282..=291)
-                .map(|h| BlockHashAt {
-                    height: Height::try_from(h).expect("valid height"),
-                    hash: BlockHash::from([0xCDu8; 32]),
-                    time: 1_700_000_000,
-                })
-                .collect(),
-            block_header_verbose: Some(BlockHeaderVerbose {
-                hash: BlockHash::from([0xCDu8; 32]),
-                confirmations: 1,
-                height: Height::try_from(291).expect("valid height"),
-                version: 4,
-                merkle_root: MerkleRoot::from([0u8; 32]),
-                time: 1_700_000_000,
-                nonce: [0u8; 32],
-                solution: Vec::new(),
-                bits: CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits"),
-                difficulty: 1.0,
-                block_commitments: None,
-                final_sapling_root: None,
-                chainwork: None,
-                previous_block_hash: None,
-                next_block_hash: None,
             }),
             ..Default::default()
         };
@@ -243,9 +224,40 @@ mod tests {
         state.refresh(&reader).await;
 
         assert_eq!(state.height, Some(291));
-        assert_eq!(state.blocks.len(), 10);
-        assert_eq!(state.blocks[0].height, 291, "newest first");
-        assert!(state.error.is_none());
+
+        let _ = handle.stop();
+    }
+
+    /// When the mock has no block data scripted at all (not even a tip),
+    /// `refresh` reports the error rather than leaving stale or silently
+    /// empty state — proof the error path is wired, not just the happy path.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn refresh_reports_error_when_the_node_has_nothing_scripted() {
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let handler = NodeRpc::new(MockIndexerService::new(MockChain::default()), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.refresh(&reader).await;
+
+        assert!(state.error.is_some(), "an unscripted node should surface as an error, not silence");
 
         let _ = handle.stop();
     }

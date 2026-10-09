@@ -30,6 +30,8 @@ pub struct BlockSummary {
     pub hash: String,
     /// The block's timestamp (seconds since the Unix epoch).
     pub time: u32,
+    /// Number of transactions in the block.
+    pub tx_count: u32,
 }
 
 /// Why a [`ChainReader`] read failed.

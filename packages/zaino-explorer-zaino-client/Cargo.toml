@@ -13,6 +13,7 @@ description = "Dogfood block explorer: the one production ChainReader, over zain
 zaino-explorer-domain = { path = "../zaino-explorer-domain" }
 zaino-noderpc = { path = "../zaino-noderpc" }
 jsonrpsee = { workspace = true, features = ["http-client"] }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 zaino-service = { path = "../zaino-service", features = ["testing"] }
