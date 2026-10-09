@@ -21,6 +21,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
     Router::new()
         .route("/", get(home::<C>))
         .route("/block/:id", get(block::<C>))
+        .route("/block/:id/treestate", get(treestate::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
         .with_state(reader)
@@ -79,6 +80,7 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
                 h1 { "Block " (detail.height) }
                 p { "Hash: " (detail.hash) }
                 p { "Time: " (detail.time) }
+                p { a href=(format!("/block/{id}/treestate")) { "Treestate" } }
                 h2 { "Transactions" }
                 ul {
                     @for txid in &detail.tx_ids {
@@ -114,6 +116,56 @@ async fn block<C: ChainReader>(State(reader): State<C>, Path(id): Path<String>) 
         },
     };
     Html(body.into_string())
+}
+
+/// `GET /block/{id}/treestate`: a block's shielded commitment-tree state,
+/// by pool — each active pool's tree root, plus a truncated preview of its
+/// serialized state (which can be large) noting the full length. Linked
+/// from the block page; kept as its own route rather than folded into it
+/// so a large tree doesn't bloat every block-page load.
+async fn treestate<C: ChainReader>(
+    State(reader): State<C>,
+    Path(id): Path<String>,
+) -> Html<String> {
+    let body = match reader.treestate(id.clone()).await {
+        Ok(state) => html! {
+            h1 { "Treestate for block " (state.height) }
+            p { "Hash: " (state.hash) }
+            p { "Time: " (state.time) }
+            @for (pool, tree) in [
+                ("Sapling", &state.sapling),
+                ("Orchard", &state.orchard),
+                ("Ironwood", &state.ironwood),
+            ] {
+                h2 { (pool) }
+                @match tree {
+                    Some(tree) => div {
+                        @match &tree.final_root {
+                            Some(root) => p { "Final root: " (root) },
+                            None => p { "Final root: unavailable" },
+                        }
+                        p { "Final state: " (truncate_hex(&tree.final_state)) }
+                    },
+                    None => p { "Not active at this block." },
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Treestate for block " (id) }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// Truncates a long hex string for display, noting its full length — a
+/// serialized commitment tree can be large and isn't meant to be read raw.
+fn truncate_hex(hex: &str) -> String {
+    const PREVIEW_LEN: usize = 64;
+    if hex.len() <= PREVIEW_LEN {
+        return hex.to_string();
+    }
+    format!("{}… ({} hex chars total)", &hex[..PREVIEW_LEN], hex.len())
 }
 
 /// `GET /tx/{txid}`: one transaction's detail, fetched live. Linked from a
@@ -443,6 +495,56 @@ mod tests {
         assert!(text.contains("Value movements"), "{text}");
 
         let _ = handle.stop();
+    }
+
+    /// `/block/{id}/treestate` for an unscripted block renders a graceful
+    /// RPC error, not a panic — the route is reachable and its error path
+    /// is wired. The happy-path mapping is covered in
+    /// `zaino-explorer-zaino-client`'s own tests; `truncate_hex` is covered
+    /// directly below.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn treestate_route_renders_rpc_error_for_an_unscripted_block() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/block/1/treestate")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("RPC error"),
+            "an unscripted block should render as an RPC error, not a panic: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// A hex string within the preview length renders in full; a longer one
+    /// truncates and notes the full length rather than printing it raw.
+    #[test]
+    fn truncate_hex_leaves_short_strings_alone_and_truncates_long_ones() {
+        assert_eq!(super::truncate_hex("deadbeef"), "deadbeef");
+        let long = "ab".repeat(100);
+        let truncated = super::truncate_hex(&long);
+        assert!(truncated.len() < long.len());
+        assert!(truncated.contains("200 hex chars total"));
     }
 
     /// `/tx/{txid}` for an unscripted txid renders a graceful RPC error
