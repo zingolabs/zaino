@@ -23,6 +23,7 @@ pub fn build_app<C: ChainReader>(reader: C) -> Router {
         .route("/block/:id", get(block::<C>))
         .route("/block/:id/treestate", get(treestate::<C>))
         .route("/mempool", get(mempool::<C>))
+        .route("/node", get(node::<C>))
         .route("/tx/:txid", get(transaction::<C>))
         .route("/address/:address", get(address::<C>))
         .with_state(reader)
@@ -49,6 +50,7 @@ async fn home<C: ChainReader>(State(reader): State<C>) -> Html<String> {
                 (status.subversion) " — " (status.connections) " peers — "
                 a href="/mempool" { "mempool" } ": "
                 (status.mempool_size) " tx, " (status.mempool_bytes) " bytes"
+                " — " a href="/node" { "node info" }
             },
             Err(e) => p { "Node status unavailable: " (e.to_string()) },
         }
@@ -334,6 +336,48 @@ async fn mempool<C: ChainReader>(State(reader): State<C>) -> Html<String> {
         },
         Err(e) => html! {
             h1 { "Mempool" }
+            p { "RPC error: " (e.to_string()) }
+        },
+    };
+    Html(body.into_string())
+}
+
+/// `GET /node`: richer node diagnostics than the home page's compact status
+/// line — mining/network facts and every connected peer. Linked from the
+/// home page's status line.
+async fn node<C: ChainReader>(State(reader): State<C>) -> Html<String> {
+    let body = match reader.node_diagnostics().await {
+        Ok(diagnostics) => html! {
+            h1 { "Node info" }
+            p { "Chain: " (diagnostics.chain) }
+            @if let Some(difficulty) = diagnostics.difficulty {
+                p { "Difficulty: " (difficulty) }
+            }
+            @if let Some(sol_ps) = diagnostics.network_sol_ps {
+                p { "Network solution rate: " (sol_ps) " sol/s" }
+            }
+            p { "Protocol version: " (diagnostics.protocol_version) }
+            p { "Local services: " (diagnostics.local_services) }
+            p { "Relay fee: " (diagnostics.relay_fee) " ZEC" }
+            @if !diagnostics.warnings.is_empty() {
+                p { "Warnings: " (diagnostics.warnings) }
+            }
+            h2 { "Peers" }
+            @if diagnostics.peers.is_empty() {
+                p { "None" }
+            } @else {
+                ul {
+                    @for peer in &diagnostics.peers {
+                        li {
+                            (peer.addr) " — "
+                            @if peer.inbound { "inbound" } @else { "outbound" }
+                        }
+                    }
+                }
+            }
+        },
+        Err(e) => html! {
+            h1 { "Node info" }
             p { "RPC error: " (e.to_string()) }
         },
     };
@@ -678,6 +722,45 @@ mod tests {
         assert!(
             text.contains("0 transactions"),
             "an empty mempool should read as zero, not an error: {text}"
+        );
+
+        let _ = handle.stop();
+    }
+
+    /// `/node` renders a graceful RPC error when `getmininginfo` isn't
+    /// scripted (the mock always answers `NotReady` for it, mirroring
+    /// `node_status`'s own dependency) — not a panic. The happy-path
+    /// mapping is covered in `zaino-explorer-zaino-client`'s own
+    /// pure-function test; this test is about the route.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn node_route_renders_rpc_error_when_not_ready() {
+        let (addr, handle) = spawn_mock_server(tip_only_chain()).await;
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let app = crate::build_app(ZainoClient::new(client));
+
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/node")
+                    .body(axum::body::Body::empty())
+                    .expect("build request"),
+            )
+            .await
+            .expect("router does not error");
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .expect("read body")
+            .to_bytes();
+        let text = String::from_utf8(body.to_vec()).expect("utf8 body");
+        assert!(
+            text.contains("RPC error"),
+            "an unready node should render as an RPC error, not a panic: {text}"
         );
 
         let _ = handle.stop();
