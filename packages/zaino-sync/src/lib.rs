@@ -20,7 +20,7 @@ mod report;
 mod writer;
 
 pub use data_sink::{Applied, IndexerDataSink, Run, Step, Subscription, Weight};
-pub use emit::describe_metrics;
+pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use fetch::{check_block, check_block_at, fetch, fetch_at, merkle_root, Checked, Misanswer};
 pub use follower::{FinalFollower, FollowError};
 pub use handle::IndexHandle;
@@ -28,7 +28,7 @@ pub use offload::{blocking, compute};
 pub use per_index::PerIndex;
 pub use progress::SyncProgress;
 pub use report::{ByteSize, Human};
-pub use writer::{apply, assert_next, assert_run, commit, held, IndexPublisher};
+pub use writer::{apply, assert_next, assert_run, commit, held, ran, IndexPublisher};
 
 use zaino_primitives::types::{Block, BlockFees};
 

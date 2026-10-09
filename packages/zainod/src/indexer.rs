@@ -188,7 +188,7 @@ async fn pipeline<S: ChainDataSource>(
 
     if let Some((cb, vb)) = config.compact_block()? {
         // compact-block folds after value-balance (its fees)
-        let mut fee_sink = FeeSink::new("fees");
+        let mut fee_sink = FeeSink::new();
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
         let schema = stores::schema(IndexKind::ValueBalance, network);
         let buffer = zaino_internal_value_balance::WRITE_BUFFER;

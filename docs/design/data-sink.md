@@ -65,8 +65,10 @@ Shutdown on cancel
   any of them, so the slowest writer paces the follower and memory stays bounded.
 - An index ahead of the start pops the heights it holds and skips them (`zaino_sync::held`), so
   every queue drains in order.
-- `zaino_sink_queue_bytes{sink, subscriber}`: a queue at its budget is the index holding the
-  pipeline back.
+- Who holds the pipeline back = the index whose `zaino_index_applied_height` stops while
+  `zaino_fetch_height` waits; why = its `zaino_index_run_seconds` (one run end to end) against
+  `zaino_index_write_seconds` (the store's share): run ≈ write = the disk, run ≫ write = the fold
+  (or, for compact-block, waiting on value-balance's fees).
 - Failures are loud. A dropped subscriber panics the sink, and a dropped sink panics its
   subscribers. There is no error channel.
 

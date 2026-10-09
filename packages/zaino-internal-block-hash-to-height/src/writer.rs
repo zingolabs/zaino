@@ -1,9 +1,11 @@
 //! block_hash writer: the final stream → one [`fold`] per block → its store
 
+use std::time::{Duration, Instant};
+
 use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
 use zaino_sync::{
-    apply, assert_next, blocking, commit, held, IndexHandle, IndexPublisher, Subscription,
+    apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
 
 use crate::{
@@ -34,21 +36,25 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
     pub async fn run(self, mut blocks: Subscription<Block>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
-            store = blocking(move || {
+            let started = Instant::now();
+            let write;
+            (store, write) = blocking(move || {
+                let mut write = Duration::ZERO;
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
                         fold(&BlockHashReader::new(store.staged()), block, &mut changes);
-                        apply(&mut store, changes);
+                        write += apply(&mut store, changes);
                     }
                 }
                 if run.finalized {
-                    commit(&mut store);
+                    write += commit(&mut store);
                 }
-                store
+                (store, write)
             })
             .await;
             publisher.publish(&store);
+            ran(&store, started, write);
         }
         store = blocking(move || {
             commit(&mut store);
@@ -103,7 +109,7 @@ mod tests {
     ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
         let writer = BlockHashIndexWriter::new(store);
         let handle = writer.handle();
-        let mut sink = IndexerDataSink::new("final");
+        let mut sink = IndexerDataSink::new();
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
         (sink, handle, running)
     }

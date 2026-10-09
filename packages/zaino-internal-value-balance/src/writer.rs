@@ -7,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     slice,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Store};
@@ -14,7 +15,7 @@ use zaino_primitives::types::{
     Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
 };
 use zaino_sync::{
-    apply, assert_run, blocking, commit, held, FeeSink, IndexHandle, IndexPublisher, Step,
+    apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
 
@@ -49,8 +50,10 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
     pub async fn run(self, mut blocks: Subscription<Block>, sink: FeeSink) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
-            let paid;
-            (store, paid) = blocking(move || {
+            let started = Instant::now();
+            let (paid, write);
+            (store, paid, write) = blocking(move || {
+                let mut write = Duration::ZERO;
                 let (resent, fresh): (Vec<_>, Vec<_>) =
                     run.blocks.iter().partition(|(height, _)| held(&store, *height));
                 let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
@@ -62,12 +65,12 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
                 let folded = fold_run(&ValueBalanceReader::new(store.staged()), &fresh, &mut out);
                 paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
                 for changes in out {
-                    apply(&mut store, changes);
+                    write += apply(&mut store, changes);
                 }
                 if run.finalized {
-                    commit(&mut store);
+                    write += commit(&mut store);
                 }
-                (store, paid)
+                (store, paid, write)
             })
             .await;
             publisher.publish(&store);
@@ -75,6 +78,7 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
                 sink.send(Step::Apply { height: block_fees.height, data: Arc::new(block_fees) })
                     .await;
             }
+            ran(&store, started, write);
         }
         store = blocking(move || {
             commit(&mut store);
@@ -416,7 +420,7 @@ mod tests {
     ) {
         let writer = ValueBalanceIndexWriter::new(store);
         let handle = writer.handle();
-        let (mut sink, mut fee_sink) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
+        let (mut sink, mut fee_sink) = (IndexerDataSink::new(), FeeSink::new());
         let consumer = fee_sink.subscribe("consumer", QUEUE);
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, queue), fee_sink));
         (sink, handle, consumer, running)

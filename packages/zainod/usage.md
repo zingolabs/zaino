@@ -52,8 +52,9 @@ moves it by one. Traffic data: keep the listener private.
 (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they happen
 ([`zaino-nfs`](../zaino-nfs/usage.md#observability)). Each index writer reports its own progress
 as it applies blocks ([`zaino-sync`](../zaino-sync/usage.md)): `zaino_index_applied_height`,
-`zaino_index_applied_blocks_total`, `zaino_index_applied_rows_total` and, per commit,
-`zaino_index_finalized_height` (all `{index}`). One progress task logs the sync summary and each
+`zaino_index_applied_blocks_total`, `zaino_index_applied_rows_total`, per commit
+`zaino_index_finalized_height`, and per run `zaino_index_run_seconds` / `zaino_index_write_seconds`
+(the store's share of it; run − write = the fold + waits) (all `{index}`). One progress task logs the sync summary and each
 index's `Syncing` line (applied, durable, size) every 30 s.
 
 The same task samples the disk every 30 s (a metric whose source is unreadable, e.g. no cgroup v2

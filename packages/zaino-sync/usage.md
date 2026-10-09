@@ -73,7 +73,8 @@ commit; `false` = writer gone).
 
 ## `IndexerDataSink<T>`
 
-- `new(name)`, then `subscribe(name, budget)` per subscriber; every subscriber joins first.
+- `new()`, then `subscribe(name, budget)` per subscriber (`name` = its panic messages); every
+  subscriber joins first.
 - `send(step)`: the same step to every queue (one `Arc<T>`), all or nothing; a full queue waits
   (the slowest subscriber paces the publisher).
 - `shutdown()`: `Step::Shutdown` last in every queue, never waits.
@@ -82,12 +83,14 @@ commit; `false` = writer gone).
   `Shutdown`.
 - `Run { blocks, finalized }`: `finalized` = its last block = `Step::Finalized` (the chain's final
   tip; ends the run).
-- `zaino_sink_queue_bytes{sink, subscriber}`: bytes each queue holds; at its budget = that
-  subscriber holds the publisher back.
 
 ## Writer loop
 
 - `held(store, height)`: at or below the staged tip (a restart resends from the lowest durable tip).
+- `apply` / `commit` return the time spent in the store; `ran(&store, started, write)` after each
+  run records `zaino_index_run_seconds` (taken off the queue → published, waits included) and
+  `zaino_index_write_seconds` (that run's applies + commits), both `{index}`: run − write = the
+  fold + waits. Buckets: `METRIC_BUCKETS`.
 - `assert_next(out, parent_tip, block)` / `assert_run(parent_tip, blocks, outs)`: a fold's
   preconditions, panicking naming the index: `out` opened for `block` (`out.block()`), `block` one
   height above `parent_tip` linked by `prev_hash` (genesis on an empty parent).

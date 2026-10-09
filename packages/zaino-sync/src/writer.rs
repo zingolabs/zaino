@@ -4,6 +4,8 @@
 //!   `Shutdown`
 //! - [`IndexPublisher`] = the writer's end of its [`IndexHandle`]
 
+use std::time::{Duration, Instant};
+
 use tokio::sync::watch;
 use zaino_persistence::{BlockChanges, Store, View};
 use zaino_primitives::types::{Block, BlockRef, Height};
@@ -35,19 +37,30 @@ pub fn held<S: Store>(store: &S, height: Height) -> bool {
     Some(height) <= store.staged().tip().map(|tip| tip.height)
 }
 
-/// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`)
-pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) {
+/// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`); time it took (an
+/// auto-commit included)
+pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
     emit::applied_block(store.schema().kind.name(), changes.rows());
+    let started = Instant::now();
     store.apply(changes);
+    started.elapsed()
 }
 
-/// Everything buffered → disk now (nothing buffered = nothing written)
+/// Everything buffered → disk now (nothing buffered = nothing written); time it took
 ///
 /// - failure = panic naming the index and its directory (store poisoned)
-pub fn commit<S: Store>(store: &mut S) {
+pub fn commit<S: Store>(store: &mut S) -> Duration {
+    let started = Instant::now();
     if let Err(error) = store.commit() {
         error.commit_failed(store.schema().kind.name(), store.path());
     }
+    started.elapsed()
+}
+
+/// One run done: `started` (taken off the queue) → now, `write` of it in [`apply`] + [`commit`]
+/// (`zaino_index_{run,write}_seconds`)
+pub fn ran<S: Store>(store: &S, started: Instant, write: Duration) {
+    emit::index_run(store.schema().kind.name(), started.elapsed(), write);
 }
 
 /// Writer's end of its [`IndexHandle`]: applied tip after every hop, committed view on each commit

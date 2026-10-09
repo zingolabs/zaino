@@ -1,8 +1,8 @@
 //! Sink + final-stream metrics (fetch names = ztest's `zainod` families: a rename breaks its probes)
 
-use zaino_primitives::types::{Block, Height, Transaction};
+use std::time::Duration;
 
-const SINK_QUEUE_BYTES: &str = "zaino.sink.queue_bytes";
+use zaino_primitives::types::{Block, Height, Transaction};
 
 mod names {
     pub(super) const FETCH_BLOCKS_TOTAL: &str = "zaino.fetch.blocks_total";
@@ -18,15 +18,18 @@ mod names {
     pub(super) const INDEX_APPLIED_BLOCKS_TOTAL: &str = "zaino.index.applied_blocks_total";
     pub(super) const INDEX_APPLIED_ROWS_TOTAL: &str = "zaino.index.applied_rows_total";
     pub(super) const INDEX_FINALIZED_HEIGHT: &str = "zaino.index.finalized_height";
+    pub(super) const INDEX_RUN_SECONDS: &str = "zaino.index.run_seconds";
+    pub(super) const INDEX_WRITE_SECONDS: &str = "zaino.index.write_seconds";
 }
+
+/// `(metric, bucket edges)` for the exporter (ms tip runs → minutes for a stalled bulk run)
+pub const METRIC_BUCKETS: &[(&str, &[f64])] =
+    &[(names::INDEX_RUN_SECONDS, RUN_BUCKETS), (names::INDEX_WRITE_SECONDS, RUN_BUCKETS)];
+
+const RUN_BUCKETS: &[f64] = &[1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0];
 
 /// `# HELP` registrations for every metric this crate emits
 pub fn describe_metrics() {
-    metrics::describe_gauge!(
-        SINK_QUEUE_BYTES,
-        "Bytes queued for one subscriber, not yet popped, by sink and subscriber; at its budget \
-         = that subscriber is holding back the publisher"
-    );
     for (name, what) in [
         (names::FETCH_BLOCKS_TOTAL, "Blocks"),
         (names::FETCH_TRANSACTIONS_TOTAL, "Transactions"),
@@ -53,6 +56,18 @@ pub fn describe_metrics() {
     metrics::describe_counter!(
         names::INDEX_APPLIED_ROWS_TOTAL,
         "Records and rows the index has written into its store, by index; a restart counts again"
+    );
+    metrics::describe_histogram!(
+        names::INDEX_RUN_SECONDS,
+        metrics::Unit::Seconds,
+        "One run of final blocks through an index writer, taken off its queue → published \
+         (fold + write + any wait for input), by index"
+    );
+    metrics::describe_histogram!(
+        names::INDEX_WRITE_SECONDS,
+        metrics::Unit::Seconds,
+        "The store side of one run: applies + commits (buffering, segment writes, fsync), by index; \
+         run − write = fold + waits"
     );
     metrics::describe_gauge!(
         names::INDEX_FINALIZED_HEIGHT,
@@ -99,24 +114,8 @@ pub(crate) fn handed(block: &Block) {
         .increment(sum(|tx| tx.ironwood.actions.len()));
 }
 
-/// Bytes one subscriber's queue holds: + on push, − on pop (exact permit counts, no sampling)
-#[derive(Clone)]
-pub(crate) struct QueueBytes {
-    gauge: metrics::Gauge,
-}
-
-impl QueueBytes {
-    pub(crate) fn new(sink: &'static str, subscriber: &'static str) -> Self {
-        Self {
-            gauge: metrics::gauge!(SINK_QUEUE_BYTES, "sink" => sink, "subscriber" => subscriber),
-        }
-    }
-
-    pub(crate) fn pushed(&self, bytes: u32) {
-        self.gauge.increment(f64::from(bytes));
-    }
-
-    pub(crate) fn popped(&self, bytes: usize) {
-        self.gauge.decrement(bytes as f64);
-    }
+/// One writer run: `run` end to end, `write` of it in the store
+pub(crate) fn index_run(index: &'static str, run: Duration, write: Duration) {
+    metrics::histogram!(names::INDEX_RUN_SECONDS, "index" => index).record(run.as_secs_f64());
+    metrics::histogram!(names::INDEX_WRITE_SECONDS, "index" => index).record(write.as_secs_f64());
 }

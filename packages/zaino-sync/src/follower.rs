@@ -57,7 +57,7 @@ impl<S: ChainDataSource> FinalFollower<S> {
             chain,
             balancer,
             lookahead,
-            sink: IndexerDataSink::new("final"),
+            sink: IndexerDataSink::new(),
             durable: Vec::new(),
             progress: SyncProgress::default(),
         }

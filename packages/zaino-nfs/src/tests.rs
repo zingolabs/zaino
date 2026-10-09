@@ -228,7 +228,7 @@ impl Pipeline {
         let queue = NonZeroUsize::new(1 << 24).expect("nz");
         let mut follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
         let mut nfs = Nfs::new(chain.clone(), balancer.clone(), params, DEPTH, lookahead);
-        let mut fee_sink = FeeSink::new("fees");
+        let mut fee_sink = FeeSink::new();
         let mut fees = kinds
             .contains(&IndexKind::CompactBlock)
             .then(|| fee_sink.subscribe(IndexKind::CompactBlock.name(), queue));
@@ -546,7 +546,7 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let params = ChainParams::of(&blocks, a5);
     let mut nfs: Nfs<_, DiskView> = Nfs::new(verified_rx, balancer, params, DEPTH, lookahead);
     nfs.add(IndexKind::BlockHash, writer.handle());
-    let mut sink = zaino_sync::IndexerDataSink::new("final");
+    let mut sink = zaino_sync::IndexerDataSink::new();
     let blocks = sink.subscribe(IndexKind::BlockHash.name(), NonZeroUsize::MAX);
     let run = tokio::spawn(nfs.run(CancellationToken::new()));
     sink.shutdown();

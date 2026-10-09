@@ -3,12 +3,16 @@
 //! - fees: one [`BlockFees`] off value-balance's sink per step, held heights included
 //!   (value-balance re-folds them: both streams stay in step with either index ahead)
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
 use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
 use zaino_sync::{
-    apply, assert_next, blocking, commit, held, IndexHandle, IndexPublisher, Step, Subscription,
+    apply, assert_next, blocking, commit, held, ran, IndexHandle, IndexPublisher, Step,
+    Subscription,
 };
 
 use crate::{encode_compact_block, position, CompactBlockReader, BLOCKS};
@@ -41,27 +45,31 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     pub async fn run(self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
         let Self { mut store, publisher } = self;
         while let Some(run) = blocks.next_run().await {
+            let started = Instant::now();
             let mut paid = Vec::with_capacity(run.blocks.len());
             for (_, block) in &run.blocks {
                 paid.push(next_fees(&mut fees, block).await);
             }
-            store = blocking(move || {
+            let write;
+            (store, write) = blocking(move || {
+                let mut write = Duration::ZERO;
                 for ((height, block), fees) in run.blocks.iter().zip(&paid) {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
                         let parent = CompactBlockReader::new(store.staged());
                         let folded = fold(&parent, block, fees, &mut changes);
                         folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"));
-                        apply(&mut store, changes);
+                        write += apply(&mut store, changes);
                     }
                 }
                 if run.finalized {
-                    commit(&mut store);
+                    write += commit(&mut store);
                 }
-                store
+                (store, write)
             })
             .await;
             publisher.publish(&store);
+            ran(&store, started, write);
         }
         store = blocking(move || {
             commit(&mut store);
@@ -236,7 +244,7 @@ mod tests {
         fn start(store: DiskStore) -> Self {
             let writer = CompactBlockIndexWriter::new(store);
             let handle = writer.handle();
-            let (mut blocks, mut fees) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
+            let (mut blocks, mut fees) = (IndexerDataSink::new(), FeeSink::new());
             let (block_sub, fee_sub) = (blocks.subscribe(NAME, QUEUE), fees.subscribe(NAME, QUEUE));
             let run = tokio::spawn(writer.run(block_sub, fee_sub));
             Self { blocks, fees, handle, run }

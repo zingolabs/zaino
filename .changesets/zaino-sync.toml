@@ -21,8 +21,10 @@ counted) and `commit(store)` (after a finalized run and at `Shutdown`; a failure
 the index and its directory); the store commits a full buffer by itself. `IndexPublisher` \
 (`new(&store)`, `handle()`, `publish(&store)` after every hop) is the writer's end of its \
 `IndexHandle`, what the rest of the daemon knows about one index (`view`, `tip`, `changed`). \
-`SyncProgress` = the last height sent (`zaino_fetch_height`); `zaino_fetch_*_total` and \
-`zaino_sink_queue_bytes` metrics; `compute` for CPU work on the rayon pool.
+`SyncProgress` = the last height sent (`zaino_fetch_height`); `zaino_fetch_*_total` metrics; \
+per writer run `zaino_index_run_seconds` + `zaino_index_write_seconds` `{index}` (`ran`; \
+`apply` / `commit` return their store time; `METRIC_BUCKETS`); `compute` for CPU work on the \
+rayon pool. `IndexerDataSink::new()` takes no name.
 """
 
 [[changes]]

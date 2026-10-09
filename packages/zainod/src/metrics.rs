@@ -25,6 +25,7 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
         .chain(zaino_source::METRIC_BUCKETS)
         .chain(zaino_chainview::METRIC_BUCKETS)
         .chain(zaino_persistence::METRIC_BUCKETS)
+        .chain(zaino_sync::METRIC_BUCKETS)
         .chain(zaino_persistence::lsm::METRIC_BUCKETS)
         .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
             builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)

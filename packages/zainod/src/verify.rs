@@ -164,7 +164,7 @@ mod tests {
             NetworkType::Main,
         );
         let batch = NonZeroUsize::new(1 << 20).expect("non-zero");
-        let (mut block_sink, mut fee_sink) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
+        let (mut block_sink, mut fee_sink) = (IndexerDataSink::new(), FeeSink::new());
         let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
         let (compact_blocks, fee_blocks) =
             (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::ValueBalance));

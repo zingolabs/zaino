@@ -27,7 +27,7 @@ use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES, WRIT
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 use zaino_sync::FeeSink;
 
-let mut fee_sink = FeeSink::new("fees");
+let mut fee_sink = FeeSink::new();
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
 let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
 let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
