@@ -5,7 +5,6 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    num::NonZeroUsize,
     slice,
     sync::Arc,
 };
@@ -14,7 +13,9 @@ use zaino_persistence::{BlockChanges, IndexKind, MapRead, Store};
 use zaino_primitives::types::{
     Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
 };
-use zaino_sync::{held, Committer, FeeSink, IndexHandle, Step, Subscription};
+use zaino_sync::{
+    apply, blocking, commit, held, FeeSink, IndexHandle, IndexPublisher, Step, Subscription,
+};
 
 use crate::{encode_value, ValueBalanceReader, OUTPUTS};
 
@@ -22,43 +23,64 @@ const NAME: &str = IndexKind::ValueBalance.name();
 
 /// Records every transparent output and derives one [`BlockFees`] per bulk block
 pub struct ValueBalanceIndexWriter<S: Store> {
-    store: Committer<S>,
+    store: S,
+    publisher: IndexPublisher<S::View>,
 }
 
 impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
-    /// bulk commit (one fsync), and one run's stream bytes
-    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
-        Self { store: Committer::new(store, batch_bytes) }
+    /// Over `store` (opened with [`TABLES`](crate::TABLES))
+    pub fn new(store: S) -> Self {
+        let publisher = IndexPublisher::new(&store);
+        Self { store, publisher }
     }
 
     /// For `Nfs::add`: committed view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
-        self.store.handle()
+        self.publisher.handle()
     }
 
     /// Follows `blocks` through `Shutdown`, then ends `sink`
     ///
+    /// - one `fold_run` per run (every block the store lacks: one prevout probe), held blocks'
+    ///   fees re-derived
+    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
     /// - a failure panics (dropped `sink` = no `Shutdown`: compact-block panics too)
-    pub async fn run(mut self, mut blocks: Subscription<Block>, sink: FeeSink) {
-        while let Some(run) = self.store.next(&mut blocks).await {
-            let paid = self.store.compute(move |store| {
-                let resent = run.blocks.iter().filter(|(height, _)| held(store, *height));
-                let resent: Vec<&Block> = resent.map(|(_, block)| &**block).collect();
+    pub async fn run(self, mut blocks: Subscription<Block>, sink: FeeSink) {
+        let Self { mut store, publisher } = self;
+        while let Some(run) = blocks.next_run().await {
+            let paid;
+            (store, paid) = blocking(move || {
+                let (resent, fresh): (Vec<_>, Vec<_>) =
+                    run.blocks.iter().partition(|(height, _)| held(&store, *height));
+                let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
+                let fresh: Vec<&Block> = fresh.into_iter().map(|(_, block)| &**block).collect();
                 let refolded = fees(&ValueBalanceReader::new(store.staged()), &resent);
                 let mut paid = refolded.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
-                let fresh = run.apply_batch(store, |store, blocks, out| {
-                    let folded = fold_run(&ValueBalanceReader::new(store.staged()), blocks, out);
-                    folded.unwrap_or_else(|error| panic!("{NAME} index: {error}"))
-                });
-                paid.extend(fresh);
-                paid
-            });
-            for block_fees in paid.await {
+                let mut out: Vec<BlockChanges> =
+                    fresh.iter().map(|block| store.changes(block.at())).collect();
+                let folded = fold_run(&ValueBalanceReader::new(store.staged()), &fresh, &mut out);
+                paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
+                for changes in out {
+                    apply(&mut store, changes);
+                }
+                if run.finalized {
+                    commit(&mut store);
+                }
+                (store, paid)
+            })
+            .await;
+            publisher.publish(&store);
+            for block_fees in paid {
                 sink.send(Step::Apply { height: block_fees.height, data: Arc::new(block_fees) })
                     .await;
             }
         }
+        store = blocking(move || {
+            commit(&mut store);
+            store
+        })
+        .await;
+        publisher.publish(&store);
         sink.shutdown();
     }
 }
@@ -193,6 +215,7 @@ fn fee(
 #[cfg(test)]
 mod tests {
     use std::{
+        num::NonZeroUsize,
         panic::{catch_unwind, AssertUnwindSafe},
         path::Path,
     };
@@ -212,8 +235,9 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::ValueBalance, FORMAT, NetworkType::Regtest, TABLES);
 
-    fn open(fs: &Arc<SimFs>) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/vb"), &SCHEMA).expect("open")
+    /// `write_buffer` = MIN: every applied block committed by the store itself
+    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
+        DiskEngine::new(fs.clone()).open(Path::new("/vb"), &SCHEMA, write_buffer).expect("open")
     }
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
@@ -251,7 +275,7 @@ mod tests {
         });
         let blocks = chain.blocks(two);
         let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
-        let mut store = open(&SimFs::new());
+        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
         let genesis_fees = fold(&ValueBalanceReader::new(store.staged()), &blocks[0], &mut genesis);
         assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
@@ -357,7 +381,7 @@ mod tests {
         ];
 
         for (case, blocks, expected) in cases {
-            let store = open(&SimFs::new());
+            let store = open(&SimFs::new(), NonZeroUsize::MAX);
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
                 run.iter().map(|block| store.changes(block.at())).collect();
@@ -365,7 +389,7 @@ mod tests {
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
 
-        let (store, two) = (open(&SimFs::new()), block(two));
+        let (store, two) = (open(&SimFs::new(), NonZeroUsize::MAX), block(two));
         let run = [&*genesis, &*two];
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
@@ -377,26 +401,31 @@ mod tests {
         assert!(message.contains("does not extend the parent tip"), "{message}");
     }
 
-    /// Writer over `store`: its final stream, handle and fee stream
+    /// Writer over `store`: its final stream (`queue` bytes = one run's), handle and fee stream
     fn start(
         store: DiskStore,
-        batch: NonZeroUsize,
+        queue: NonZeroUsize,
     ) -> (
         IndexerDataSink<Block>,
         IndexHandle<DiskView>,
         Subscription<BlockFees>,
         tokio::task::JoinHandle<()>,
     ) {
-        let writer = ValueBalanceIndexWriter::new(store, batch);
+        let writer = ValueBalanceIndexWriter::new(store);
         let handle = writer.handle();
         let (mut sink, mut fee_sink) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
         let consumer = fee_sink.subscribe("consumer", QUEUE);
-        let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE), fee_sink));
+        let running = tokio::spawn(writer.run(sink.subscribe(NAME, queue), fee_sink));
         (sink, handle, consumer, running)
     }
 
     fn step(block: &Arc<Block>) -> Step<Block> {
         Step::Apply { height: block.header().height, data: Arc::clone(block) }
+    }
+
+    /// The chain's final tip: the writer commits after it
+    fn finalized(block: &Arc<Block>) -> Step<Block> {
+        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
     }
 
     /// Until `handle`'s durable tip = `height`
@@ -416,7 +445,7 @@ mod tests {
         out
     }
 
-    /// Four bulk blocks, each its own commit (batch = 1 byte), crashed after every operation:
+    /// Four bulk blocks, each its own commit (write_buffer = 1 byte), crashed after every operation:
     /// each state reopens to an acknowledged or attempted commit, and the writer on it resolves
     /// the next block's fees against the outputs it recovered and commits it
     #[tokio::test]
@@ -448,7 +477,7 @@ mod tests {
 
         // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
         let fs = SimFs::recording();
-        let (sink, mut handle, mut consumer, running) = start(open(&fs), NonZeroUsize::MIN);
+        let (sink, mut handle, mut consumer, running) = start(open(&fs, NonZeroUsize::MIN), QUEUE);
         for (acked, block) in (1u64..).zip(&blocks[..4]) {
             sink.send(step(block)).await;
             durable_at(&mut handle, u32::from(block.header().height)).await;
@@ -464,7 +493,7 @@ mod tests {
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let crashed = &state.label;
-            let store = open(&state.fs);
+            let store = open(&state.fs, NonZeroUsize::MAX);
             let tip = tip_of(&store.committed());
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
             assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
@@ -487,11 +516,11 @@ mod tests {
     /// - 2: enters orchard and sprout; 3: spends 1's outputs with value leaving sprout; 4: spends
     ///   3's and enters ironwood
     ///
-    /// - Boot 1: 0..=4, one fee step each
+    /// - Boot 1: 0..=4 (4 `Finalized`), one fee step each
     /// - Boot 2, compact-block durable at 0: 1..=4 resent, all held → re-folded, fees out again,
     ///   identical
-    /// - Both batch sizes: 1 byte = one block per run, 1 MiB = one run
-    #[tokio::test(start_paused = true)]
+    /// - Both queue sizes: 1 byte = one block per run, 1 MiB = one run
+    #[tokio::test]
     async fn fees_resolve_every_prevout_wherever_it_lives_and_held_heights_republish_them() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest()
@@ -544,24 +573,26 @@ mod tests {
         let blocks = chain.blocks(tip);
         let expected: Vec<BlockFees> =
             blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
-        for batch in [NonZeroUsize::MIN, QUEUE] {
+        for queue in [NonZeroUsize::MIN, QUEUE] {
             let fs = SimFs::new();
-            let (sink, mut handle, mut consumer, running) = start(open(&fs), batch);
-            for block in &blocks {
+            let (sink, mut handle, mut consumer, running) =
+                start(open(&fs, NonZeroUsize::MAX), queue);
+            for block in &blocks[..4] {
                 sink.send(step(block)).await;
             }
+            sink.send(finalized(&blocks[4])).await;
             durable_at(&mut handle, 4).await;
             sink.shutdown();
             running.await.expect("clean stop");
-            assert_eq!(drained(&mut consumer).await, expected, "batch {batch}: one per block");
+            assert_eq!(drained(&mut consumer).await, expected, "queue {queue}: one per block");
 
-            let (sink, handle, mut consumer, running) = start(open(&fs), batch);
+            let (sink, handle, mut consumer, running) = start(open(&fs, NonZeroUsize::MAX), queue);
             for block in &blocks[1..] {
                 sink.send(step(block)).await;
             }
             sink.shutdown();
             running.await.expect("clean stop");
-            assert_eq!(drained(&mut consumer).await, expected[1..], "batch {batch}: republished");
+            assert_eq!(drained(&mut consumer).await, expected[1..], "queue {queue}: republished");
             let tip = handle.tip().map(|tip| tip.height);
             assert_eq!(tip, Some(h(4)), "held: nothing new");
         }
@@ -571,7 +602,8 @@ mod tests {
     /// sees `Shutdown` (its sink dropped → it panics too)
     #[tokio::test]
     async fn a_fold_error_panics_the_writer_and_its_consumer() {
-        let (sink, _handle, mut consumer, running) = start(open(&SimFs::new()), QUEUE);
+        let (sink, _handle, mut consumer, running) =
+            start(open(&SimFs::new(), NonZeroUsize::MAX), QUEUE);
         let downstream = tokio::spawn(async move { consumer.next().await });
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest()

@@ -32,12 +32,13 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
     let not_found =
         |answer| matches!(answer, Err(QueryError::Domain(GetBlockByHashError::NotFound(_))));
     assert!(not_found(unserved), "nothing above its tip");
-    let at_three = validator.get_block_by_height(h(3)).await.expect("on its best");
-    assert_eq!(at_three.header().hash, three.hash, "by height: its best-chain block");
-    let above_tip = validator.get_block_by_height(h(4)).await;
+    let batch = validator.get_blocks_by_height(&[h(3), h(2)]).await.expect("on its best");
+    let hashes: Vec<_> = batch.iter().map(|block| block.header().hash).collect();
+    assert_eq!(hashes, [three.hash, chain.at(h(2)).hash], "by height: best-chain blocks, in order");
+    let above_tip = validator.get_blocks_by_height(&[h(3), h(4)]).await;
     let height_not_found = matches!(above_tip,
         Err(QueryError::Domain(GetAtHeightError::HeightNotFound(at))) if at == h(4));
-    assert!(height_not_found, "nothing above its tip by height");
+    assert!(height_not_found, "one height above its tip fails the batch, naming it");
 
     let fork = chain.fork(h(2)).outweigh().mine_empty(1).tip();
     validator.reorg_after_next_poll(&chain, fork);
@@ -76,7 +77,7 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
         validator.lie(lie);
         let served = validator.get_block_by_hash(three.hash).await.expect("answers");
         assert_eq!(shape(&served), expected, "{lie:?} by hash");
-        let served = validator.get_block_by_height(h(3)).await.expect("answers");
+        let served = validator.get_blocks_by_height(&[h(3)]).await.expect("answers").remove(0);
         assert_eq!(shape(&served), expected, "{lie:?} by height");
     }
 

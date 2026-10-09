@@ -1,8 +1,8 @@
 //! One body per wanted block, from whichever member the balancer picks
 //!
 //! - By hash (NFS): hash + coinbase height + merkle root vs the verified header
-//! - By height (FinalFollower, trusted members only): coinbase height + merkle root vs its own
-//!   header (linkage = the follower's, in delivery order)
+//! - By height (FinalFollower, trusted members only, batched): coinbase height + merkle root vs
+//!   its own header (linkage = the follower's, in delivery order)
 //! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again; who, hedges, retries =
 //!   `zaino-traffic`'s
 
@@ -93,15 +93,19 @@ pub async fn fetch<S: ChainDataSource>(
     }
 }
 
-/// Until a trusted member's body at `height` passes [`check_block_at`] (drop = abandon)
+/// Until one trusted member's batch at `heights` passes [`check_block_at`] block by block
+/// (`heights` order; drop = abandon)
 pub async fn fetch_at<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
-    height: Height,
+    heights: Arc<[Height]>,
     urgency: Urgency,
-) -> Checked {
+) -> Vec<Checked> {
     loop {
-        let answered = balancer.block_at(height, urgency).await;
-        match check_block_at(answered.value, height) {
+        let answered = balancer.blocks_at(Arc::clone(&heights), urgency).await;
+        let blocks = answered.value.into_iter().zip(heights.iter());
+        let checked: Result<Vec<_>, _> =
+            blocks.map(|(block, height)| check_block_at(block, *height)).collect();
+        match checked {
             Ok(checked) => return checked,
             Err(why) => balancer.report(answered.ticket, &why),
         }
@@ -176,7 +180,7 @@ mod tests {
         let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
         let passed = check_block(honest, h(2), &record).map(|checked| checked.at());
         assert_eq!(passed, Ok(two));
-        let honest = validator.get_block_by_height(h(2)).await.expect("on its best");
+        let honest = validator.get_blocks_by_height(&[h(2)]).await.expect("on its best").remove(0);
         assert_eq!(check_block_at(honest, h(2)).map(|checked| checked.at()), Ok(two));
 
         type Expected = fn(&Block) -> Option<Misanswer>;
@@ -195,7 +199,7 @@ mod tests {
             let expected = by_hash(&served);
             let checked = check_block(served, h(2), &record).err();
             assert_eq!(checked, expected, "{lie:?} by hash");
-            let served = validator.get_block_by_height(h(2)).await.expect("answers");
+            let served = validator.get_blocks_by_height(&[h(2)]).await.expect("answers").remove(0);
             let expected = by_height(&served);
             assert_eq!(check_block_at(served, h(2)).err(), expected, "{lie:?} by height");
         }

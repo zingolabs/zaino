@@ -1,6 +1,6 @@
 //! The run loop over real watches, the `/statusz` + `/metrics` goldens, `check()`'s fire drills
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
@@ -110,7 +110,8 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         NetworkType::Regtest,
         block_hash::TABLES,
     );
-    let mut store = engine.open(Path::new("block_hash"), &schema).expect("fresh store");
+    let mut store =
+        engine.open(Path::new("block_hash"), &schema, NonZeroUsize::MAX).expect("fresh store");
     for block in &a {
         let mut out = store.changes(block.at());
         block_hash::fold(&block_hash::BlockHashReader::new(store.staged()), block, &mut out);
@@ -205,7 +206,6 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     for line in [
         "zaino_best_tip 5".to_owned(),
         "zaino_fetch_height 5".to_owned(),
-        "zaino_index_finalized_height{index=\"block_hash\"} 5".to_owned(),
         "zaino_index_synced{index=\"block_hash\"} 1".to_owned(),
         "zaino_chainview_best_height 5".to_owned(),
         "zaino_chainview_tip_holders 1".to_owned(),

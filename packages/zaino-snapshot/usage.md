@@ -92,8 +92,8 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
   `finality_paused`), mempool counts, forks (work as a decimal string). zainod flattens it beside
   its process fields.
 - Gauges, all set at scrape from one load (names = ztest's `zainod` families): `zaino_best_tip`,
-  `zaino_fetch_height` (`handed`), `zaino_index_finalized_height{index}`,
-  `zaino_index_synced{index}`, and the chain view's `zaino_chainview_*` state:
+  `zaino_fetch_height` (`handed`), `zaino_index_synced{index}`, and the chain view's
+  `zaino_chainview_*` state:
   `endpoint_state{endpoint,state}`, `agreement{endpoint,agreement}`, `tip_height{endpoint}`,
   `stale_blocks{endpoint}`, `peers{endpoint,direction}`, `push_stream{endpoint}`,
   `release{endpoint,build,user_agent}`, `end_of_service_height{endpoint}`, `tip_holders`,

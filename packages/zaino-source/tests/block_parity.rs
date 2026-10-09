@@ -102,7 +102,8 @@ fn load_fixtures() -> HashMap<String, String> {
     map
 }
 
-/// Minimal HTTP server: `getblock <hash or height>` → canned fixture hex, unknown → `-8`
+/// Minimal HTTP server, single or batched JSON-RPC: `getblock <hash or height>` → canned fixture
+/// hex, unknown → `-8`
 async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>) {
     loop {
         let (mut stream, _) = match listener.accept().await {
@@ -117,48 +118,17 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
                 _ => return,
             };
             let body_str = String::from_utf8_lossy(&buf[..n]);
-
             let json_body = body_str.split("\r\n\r\n").nth(1).unwrap_or(&body_str);
-
             let req: serde_json::Value =
                 serde_json::from_str(json_body).expect("invalid JSON-RPC request");
 
-            let method = req["method"].as_str().unwrap_or("");
-            let id = &req["id"];
-
-            let result = match method {
-                "getblock" => {
-                    let hash = req["params"][0].as_str().unwrap_or("");
-                    match fixtures.get(hash) {
-                        Some(hex) => serde_json::Value::String(hex.clone()),
-                        None => {
-                            let err_resp = serde_json::json!({
-                                "jsonrpc": "2.0",
-                                "id": id,
-                                "result": null,
-                                "error": {"code": -8, "message": "Block not found"}
-                            });
-                            let err_body = serde_json::to_string(&err_resp).expect("json");
-                            let resp = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                                err_body.len(),
-                                err_body,
-                            );
-                            let _ = stream.write_all(resp.as_bytes()).await;
-                            return;
-                        }
-                    }
-                }
-                _ => serde_json::Value::Null,
+            let reply = match req {
+                serde_json::Value::Array(calls) => serde_json::Value::Array(
+                    calls.iter().map(|call| answer(call, &fixtures)).collect(),
+                ),
+                call => answer(&call, &fixtures),
             };
-
-            let resp_json = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": result,
-                "error": null,
-            });
-            let resp_body = serde_json::to_string(&resp_json).expect("json");
+            let resp_body = serde_json::to_string(&reply).expect("json");
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
                 resp_body.len(),
@@ -166,6 +136,25 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
             );
             let _ = stream.write_all(resp.as_bytes()).await;
         });
+    }
+}
+
+/// One JSON-RPC call's response object
+fn answer(call: &serde_json::Value, fixtures: &HashMap<String, String>) -> serde_json::Value {
+    let id = &call["id"];
+    let block = (call["method"] == "getblock")
+        .then(|| fixtures.get(call["params"][0].as_str().unwrap_or("")))
+        .flatten();
+    match block {
+        Some(hex) => {
+            serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": hex, "error": null })
+        }
+        None => serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": null,
+            "error": {"code": -8, "message": "Block not found"},
+        }),
     }
 }
 
@@ -191,9 +180,10 @@ async fn block_parity_with_explorer_offline() {
             .unwrap_or_else(|e| panic!("getblock {} failed: {e}", expected.hash));
         assert_eq!(block.header().height, height, "coinbase height");
         let by_height = adapter
-            .get_block_by_height(height)
+            .get_blocks_by_height(&[height])
             .await
-            .unwrap_or_else(|e| panic!("getblock \"{height}\" failed: {e}"));
+            .unwrap_or_else(|e| panic!("getblock \"{height}\" failed: {e}"))
+            .remove(0);
         let txids = |block: &zaino_primitives::types::Block| {
             block.transactions().iter().map(|tx| tx.txid).collect::<Vec<_>>()
         };

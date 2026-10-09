@@ -64,11 +64,11 @@ fold(&parent, &block, &fees, &mut out)?;              // Result<(), TreeSizeOutO
 ## Building
 
 ```rust,ignore
-use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES};
+use zaino_index_compact_block::{CompactBlockIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES);
-let store = DiskEngine::new(fs).open(&path, &schema)?;
-let writer = CompactBlockIndexWriter::new(store, batch_bytes);
+let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
@@ -81,12 +81,13 @@ tokio::spawn(writer.run(blocks, fees));     // fees: value-balance's FeeSink sub
 - `new` asserts one record per committed height. `handle()` = the
   `IndexHandle` the NFS reads (committed view, durable tip), `requiring`
   value-balance's (its fee source).
-- `run(blocks, fees)` follows the final stream (from `FinalFollower`) through
-  `zaino_sync::Committer` ([the shape every writer shares](../zaino-sync/usage.md#committer)):
-  per run, one fee step off value-balance's `FeeSink` per block (held ones
-  included), then on the CPU pool each block not held folded onto `staged()`
-  with its fees into the delta `Run::apply` opened for it. Commits: batch full
-  or 1 s idle. It ends after its stream's `Shutdown` and the fee stream's.
+- `run(blocks, fees)` follows the final stream (from `FinalFollower`) run by
+  run ([the shape every writer shares](../zaino-sync/usage.md#writer-loop)):
+  one fee step off value-balance's `FeeSink` per block (held ones included),
+  then on the blocking pool each block not held folded onto `staged()` with its
+  fees into a delta opened for it, then `zaino_sync::apply`. Commits: a
+  `Finalized` block, a full buffer, `Shutdown`. It ends after its stream's
+  `Shutdown` and the fee stream's.
 - Fallible only at boot (the engine's `open` → `StoreError`). `run` panics on a
   failed commit, a tree size past `u32` (#549), out-of-step fees, and when
   value-balance's fee sink drops

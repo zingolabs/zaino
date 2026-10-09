@@ -23,14 +23,14 @@ against `Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES)`
 ## Wiring
 
 ```rust
-use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES};
+use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new("fees");
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
 let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
-let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
+let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();               // also CompactBlockIndexWriter::new's fee source
 let blocks = follower.subscribe(IndexKind::ValueBalance, handle.tip(), queue);
 nfs.add(IndexKind::ValueBalance, handle);   // before compact_block: its fees feed that fold
@@ -40,8 +40,8 @@ tokio::spawn(writer.run(blocks, fee_sink));
 - Generic over the persistence port: `ValueBalanceIndexWriter<S: Store>` with
   `S::View: MapRead`; zainod picks `DiskEngine`. zainod enables it with
   `index.compact_block` (its directory beside compact-block's).
-- `run` follows the final stream through `zaino_sync::Committer`
-  ([the writer shape](../zaino-sync/usage.md#committer)), then ends the fee
+- `run` follows the final stream run by run
+  ([the writer shape](../zaino-sync/usage.md#writer-loop)), then ends the fee
   sink. Fallible only at boot (the engine's `open` → `StoreError`); a failed
   commit or an unresolvable fee panics
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
@@ -72,8 +72,8 @@ let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, an
   through it; the NFS tests price compact-block's fold with it.
 - `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
   internal (fees are the only consumer).
-- The writer folds a run's blocks at once (`fold_run`, crate-internal,
-  through `Run::apply_batch`: one caller-opened delta per block): block `k`
+- The writer folds a run's blocks at once (`fold_run`, crate-internal, one
+  delta per block, each then `zaino_sync::apply`d): block `k`
   resolves against `parent` plus the outputs of blocks `0..=k`, and every
   prevout from outside the run is asked in one `MapRead::values` call. A
   sandblast transaction spends thousands of outputs, and one random lookup each
@@ -85,9 +85,10 @@ let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, an
 
 ## Resolved per run
 
-Each run (`Committer::next`, queued steps to `batch_bytes`) folds the blocks
-it does not hold as one `fold_run` onto `staged()` on the CPU pool and applies
-them; held ones (a restart's resend) are priced by `fees` with no rows. Every
+Each run (`Subscription::next_run`, queued steps to the queue's budget) folds
+the blocks it does not hold as one `fold_run` onto `staged()` on the blocking
+pool and applies them; held ones (a restart's resend) are priced by `fees` with
+no rows. Every
 step's fees go out, held ones first. Resolving at commit time instead would
 deadlock, since compact-block waits on fees step by step while a commit waits
 for a whole batch.

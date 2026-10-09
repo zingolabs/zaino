@@ -21,11 +21,11 @@ use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
 use zaino_internal_value_balance::{ValueBalanceIndexWriter, ValueBalanceReader};
 use zaino_persistence::{
-    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, Store,
-    View, Width,
+    fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine, Schema,
+    SequenceRead, Store, View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
-use zaino_primitives::types::{Block, BlockHash, Height, OutPoint};
+use zaino_primitives::types::{Block, BlockFees, BlockHash, Height, OutPoint};
 use zaino_source::testing::{Lie, MockValidator};
 use zaino_sync::{FeeSink, FinalFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, Trusted};
@@ -64,12 +64,11 @@ pub(crate) fn schema(kind: IndexKind) -> Schema {
     Schema::new(kind, format, NETWORK, tables)
 }
 
-/// `kind`'s own fold of `block` onto `parent` into `out` (`value_balance` = a state at or past
-/// the block's parent: compact-block's fees)
+/// `kind`'s own fold of `block` onto `parent` into `out` (`fees` = compact-block's)
 fn own_fold(
     kind: IndexKind,
     parent: impl SequenceRead + MapRead,
-    value_balance: impl MapRead,
+    fees: &BlockFees,
     block: &Block,
     out: &mut BlockChanges,
 ) {
@@ -79,10 +78,8 @@ fn own_fold(
             zaino_internal_value_balance::fold(&parent, block, out).expect("prevouts held");
         }
         IndexKind::CompactBlock => {
-            let fees = ValueBalanceReader::new(value_balance);
-            let fees = zaino_internal_value_balance::fees(&fees, &[block]).expect("held");
             let parent = CompactBlockReader::new(parent);
-            zaino_index_compact_block::fold(&parent, block, &fees[0], out).expect("sizes in range");
+            zaino_index_compact_block::fold(&parent, block, fees, out).expect("sizes in range");
         }
         IndexKind::BlockHash => {
             let parent = BlockHashReader::new(parent);
@@ -119,14 +116,16 @@ fn tables(view: &(impl SequenceRead + MapRead)) -> Tables {
 /// Every index folded from genesis through `path` by its own fold, into fresh stores
 fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let engine = DiskEngine::new(SimFs::new());
-    let open = |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind));
+    let open =
+        |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
         ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
     for block in path {
-        let value_balance = stores[0].1.staged();
+        let value_balance = ValueBalanceReader::new(stores[0].1.staged());
+        let fees = zaino_internal_value_balance::fees(&value_balance, &[block]).expect("held");
         for (kind, store) in &mut stores {
             let mut out = store.changes(block.at());
-            own_fold(*kind, store.staged(), value_balance.clone(), block, &mut out);
+            own_fold(*kind, store.staged(), &fees[0], block, &mut out);
             store.apply(out);
         }
     }
@@ -226,7 +225,7 @@ impl Pipeline {
         params: ChainParams,
     ) -> Self {
         let lookahead = NonZeroUsize::new(4).expect("nonzero");
-        let (queue, batch) = (NonZeroUsize::new(1 << 24).expect("nz"), NonZeroUsize::MIN);
+        let queue = NonZeroUsize::new(1 << 24).expect("nz");
         let mut follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
         let mut nfs = Nfs::new(chain.clone(), balancer.clone(), params, DEPTH, lookahead);
         let mut fee_sink = FeeSink::new("fees");
@@ -236,7 +235,8 @@ impl Pipeline {
         let mut fee_sink = Some(fee_sink);
         let (mut writers, mut handles) = (tokio::task::JoinSet::new(), Vec::new());
         for &kind in kinds {
-            let store = engine.open(Path::new(kind.name()), &schema(kind)).expect("store");
+            let store = engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MIN);
+            let store = store.expect("store");
             let mut add = |handle: IndexHandle<DiskView>| {
                 handles.push((kind, handle.clone()));
                 let blocks = follower.subscribe(kind, handle.tip(), queue);
@@ -245,27 +245,27 @@ impl Pipeline {
             };
             match kind {
                 IndexKind::ValueBalance => {
-                    let writer = ValueBalanceIndexWriter::new(store, batch);
+                    let writer = ValueBalanceIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks, fee_sink.take().expect("one value-balance")));
                 }
                 IndexKind::CompactBlock => {
-                    let writer = CompactBlockIndexWriter::new(store, batch);
+                    let writer = CompactBlockIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks, fees.take().expect("one compact-block")));
                 }
                 IndexKind::BlockHash => {
-                    let writer = BlockHashIndexWriter::new(store, batch);
+                    let writer = BlockHashIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks));
                 }
                 IndexKind::TreeState => {
-                    let writer = TreeStateIndexWriter::new(store, batch);
+                    let writer = TreeStateIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks));
                 }
                 IndexKind::TransparentAddress => {
-                    let writer = TransparentAddressIndexWriter::new(store, batch);
+                    let writer = TransparentAddressIndexWriter::new(store);
                     let blocks = add(writer.handle());
                     writers.spawn(writer.run(blocks));
                 }
@@ -539,8 +539,9 @@ async fn the_nfs_stops_when_an_index_writer_is_gone() {
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
     let engine = DiskEngine::new(SimFs::new());
-    let store = engine.open(Path::new("block_hash"), &schema(IndexKind::BlockHash)).expect("store");
-    let writer = BlockHashIndexWriter::new(store, NonZeroUsize::MIN);
+    let store =
+        engine.open(Path::new("block_hash"), &schema(IndexKind::BlockHash), NonZeroUsize::MIN);
+    let writer = BlockHashIndexWriter::new(store.expect("store"));
     let lookahead = NonZeroUsize::MIN;
     let params = ChainParams::of(&blocks, a5);
     let mut nfs: Nfs<_, DiskView> = Nfs::new(verified_rx, balancer, params, DEPTH, lookahead);

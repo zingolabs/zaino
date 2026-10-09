@@ -46,10 +46,14 @@ pub trait Weight {
     fn weight(&self) -> usize;
 }
 
-/// One step, the same for every subscriber (`Shutdown` last: commit what is held, stop)
+/// One step, the same for every subscriber
+///
+/// - `Finalized` = the block at the chain's final tip (apply, then commit: caught up)
+/// - `Shutdown` last: commit what is held, stop
 #[derive(Debug)]
 pub enum Step<T> {
     Apply { height: Height, data: Arc<T> },
+    Finalized { height: Height, data: Arc<T> },
     Shutdown,
 }
 
@@ -57,7 +61,7 @@ impl<T: Weight> Weight for Step<T> {
     fn weight(&self) -> usize {
         size_of::<Self>()
             + match self {
-                Self::Apply { data, .. } => data.weight(),
+                Self::Apply { data, .. } | Self::Finalized { data, .. } => data.weight(),
                 Self::Shutdown => 0,
             }
     }
@@ -67,6 +71,9 @@ impl<T> Clone for Step<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Apply { height, data } => Self::Apply { height: *height, data: Arc::clone(data) },
+            Self::Finalized { height, data } => {
+                Self::Finalized { height: *height, data: Arc::clone(data) }
+            }
             Self::Shutdown => Self::Shutdown,
         }
     }
@@ -79,25 +86,28 @@ pub(crate) struct Queued<T> {
     _held: Option<OwnedSemaphorePermit>,
 }
 
-/// One delivered block of a `Subscription` run
+/// One delivered block of a [`Run`]
 pub type Applied<T> = (Height, Arc<T>);
 
-/// One consumer's end: its queue, in stream order
+/// One batch of work off a [`Subscription`], in height order
 ///
-/// - `ended_run` = the step that ended the last `run`: the next one out
+/// - `finalized` = its last block = `Step::Finalized` (the chain's final tip)
+pub struct Run<T> {
+    pub blocks: Vec<Applied<T>>,
+    pub finalized: bool,
+}
+
+/// One consumer's end: its queue, in stream order
 pub struct Subscription<T> {
     rx: mpsc::UnboundedReceiver<Queued<T>>,
     queued: QueueBytes,
+    budget: NonZeroUsize,
     shut_down: bool,
-    ended_run: Option<Step<T>>,
 }
 
 impl<T> Subscription<T> {
     /// Next step, its bytes returned to the budget; `Shutdown` again on every call after it
     pub async fn next(&mut self) -> Step<T> {
-        if let Some(step) = self.ended_run.take() {
-            return step;
-        }
         let queued = self.rx.recv().await;
         self.popped(queued)
     }
@@ -126,23 +136,36 @@ impl<T> Subscription<T> {
 }
 
 impl<T: Weight> Subscription<T> {
-    /// `first` + every `Apply` already queued behind it, to `budget` bytes (one batch of work,
-    /// never a wait)
+    /// Next step + every `Apply` already queued behind it, to the queue's budget (one batch of
+    /// work, no wait past the first step); `None` = `Shutdown`
     ///
-    /// - step ending the run = the next [`next`](Self::next)'s
-    pub(crate) fn run(&mut self, first: Applied<T>, budget: NonZeroUsize) -> Vec<Applied<T>> {
-        let mut bytes = first.1.weight();
-        let mut run = vec![first];
-        while bytes < budget.get() {
-            match self.try_next() {
-                Some(Step::Apply { height, data }) => {
+    /// - `Finalized` block ends the run, included
+    pub async fn next_run(&mut self) -> Option<Run<T>> {
+        let first = self.next().await;
+        let run = self.run(first, self.budget);
+        (!run.blocks.is_empty()).then_some(run)
+    }
+
+    /// `first` + queued `Apply`s to `budget` bytes; `Shutdown` ends it (the next `next` = it again)
+    fn run(&mut self, first: Step<T>, budget: NonZeroUsize) -> Run<T> {
+        let mut run = Run { blocks: Vec::new(), finalized: false };
+        let mut bytes = 0usize;
+        let mut step = Some(first);
+        while let Some(next) = step.take() {
+            match next {
+                Step::Apply { height, data } => {
                     bytes = bytes.saturating_add(data.weight());
-                    run.push((height, data));
+                    run.blocks.push((height, data));
                 }
-                other => {
-                    self.ended_run = other;
+                Step::Finalized { height, data } => {
+                    run.blocks.push((height, data));
+                    run.finalized = true;
                     break;
                 }
+                Step::Shutdown => break,
+            }
+            if bytes < budget.get() {
+                step = self.try_next();
             }
         }
         run
@@ -183,19 +206,19 @@ impl<T> IndexerDataSink<T> {
         Self { name, subscribers: Vec::new() }
     }
 
-    /// `budget` = bytes the queue may hold ([`Weight`])
+    /// `budget` = bytes the queue may hold ([`Weight`]), and one [`Run`]'s
     pub fn subscribe(&mut self, name: &'static str, budget: NonZeroUsize) -> Subscription<T> {
         let (tx, rx) = mpsc::unbounded_channel();
         let queued = QueueBytes::new(self.name, name);
-        let budget = budget.get().min(Semaphore::MAX_PERMITS);
+        let permits = budget.get().min(Semaphore::MAX_PERMITS);
         self.subscribers.push(Subscriber {
             name,
             tx,
             queued: queued.clone(),
-            budget: Arc::new(Semaphore::new(budget)),
-            capacity: u32::try_from(budget).unwrap_or(u32::MAX),
+            budget: Arc::new(Semaphore::new(permits)),
+            capacity: u32::try_from(permits).unwrap_or(u32::MAX),
         });
-        Subscription { rx, queued, shut_down: false, ended_run: None }
+        Subscription { rx, queued, budget, shut_down: false }
     }
 
     /// `Shutdown` last in every queue; never waits (budget bypassed)
@@ -251,7 +274,7 @@ mod tests {
     fn popped(step: Step<Blob>) -> Height {
         match step {
             Step::Apply { height, .. } => height,
-            Step::Shutdown => panic!("expected an apply"),
+            Step::Finalized { .. } | Step::Shutdown => panic!("expected an apply"),
         }
     }
 
@@ -282,29 +305,32 @@ mod tests {
         }
     }
 
-    /// Run = first `Apply` + those already queued, cut at its budget or `Shutdown`; the step
-    /// ending it = the next one out
+    /// Run = first block + `Apply`s already queued, cut at its budget, by a `Finalized` block
+    /// (included, `true`) or by `Shutdown` (the next one out)
     #[tokio::test]
-    async fn a_run_gathers_queued_applies_to_its_budget_and_hands_back_the_step_ending_it() {
+    async fn a_run_gathers_queued_applies_to_its_budget_ends_at_a_finalized_block_or_shutdown() {
         let mut sink = IndexerDataSink::<Blob>::new("test");
         let mut sub = sink.subscribe("one", NonZeroUsize::new(1 << 20).expect("nz"));
         for height in 0..5 {
             sink.send(apply(height, 10)).await;
         }
+        sink.send(Step::Finalized { height: h(5), data: Arc::new(Blob(10)) }).await;
+        sink.send(Step::Finalized { height: h(6), data: Arc::new(Blob(10)) }).await;
+        sink.send(apply(7, 10)).await;
         sink.shutdown();
-        let first = |step: Step<Blob>| match step {
-            Step::Apply { height, data } => (height, data),
-            Step::Shutdown => panic!("expected an apply"),
-        };
-        let heights = |run: Vec<Applied<Blob>>| -> Vec<u32> {
-            run.into_iter().map(|(height, _)| u32::from(height)).collect()
+        let heights = |run: Run<Blob>| -> (Vec<u32>, bool) {
+            (run.blocks.into_iter().map(|(height, _)| u32::from(height)).collect(), run.finalized)
         };
         let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
 
-        let start = first(sub.next().await);
-        assert_eq!(heights(sub.run(start, twenty)), [0, 1], "cut at its 20-byte budget");
-        let start = first(sub.next().await);
-        assert_eq!(heights(sub.run(start, all)), [2, 3, 4], "cut by Shutdown");
+        let start = sub.next().await;
+        assert_eq!(heights(sub.run(start, twenty)), (vec![0, 1], false), "cut at 20 bytes");
+        let start = sub.next().await;
+        assert_eq!(heights(sub.run(start, all)), (vec![2, 3, 4, 5], true), "ends at Finalized 5");
+        let start = sub.next().await;
+        assert_eq!(heights(sub.run(start, all)), (vec![6], true), "a Finalized first = alone");
+        let start = sub.next().await;
+        assert_eq!(heights(sub.run(start, all)), (vec![7], false), "cut by Shutdown");
         assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown ended the last run");
         assert!(matches!(sub.next().await, Step::Shutdown), "and stays");
     }

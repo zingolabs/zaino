@@ -160,7 +160,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, IndexKind, PersistenceEngine, Schema, Store};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
@@ -186,8 +186,9 @@ mod tests {
         });
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
-        let mut store =
-            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &SCHEMA).expect("open");
+        let mut store = DiskEngine::new(SimFs::new())
+            .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
+            .expect("open");
         for (height, block) in chain.blocks(two).iter().enumerate() {
             let mut changes = store.changes(block.at());
             fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
@@ -240,8 +241,9 @@ mod tests {
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10).pay(&pays_second, 10)));
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
-        let mut store =
-            DiskEngine::new(SimFs::new()).open(Path::new("/ta"), &SCHEMA).expect("open");
+        let mut store = DiskEngine::new(SimFs::new())
+            .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
+            .expect("open");
         for (height, block) in chain.blocks(three).iter().enumerate() {
             let mut changes = store.changes(block.at());
             fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);

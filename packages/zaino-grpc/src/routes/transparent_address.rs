@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
-use zaino_persistence::{MapRead, OverlayView};
+use zaino_persistence::{CommittedView, OverlayView};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::Zatoshis;
 use zaino_proto::proto::service as proto;
@@ -39,7 +39,7 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-pub(crate) async fn dispatch<V: MapRead, B>(
+pub(crate) async fn dispatch<V: CommittedView, B>(
     index: Addresses<V>,
     path: &str,
     body: B,
@@ -75,7 +75,7 @@ where
 ///
 /// - Fetched lazily, one per poll (busy address = thousands; a client that stops reading stops
 ///   the round trips; HTTP/2 flow control paces)
-pub(crate) async fn transactions<S: ChainDataSource, V: MapRead, B>(
+pub(crate) async fn transactions<S: ChainDataSource, V: CommittedView, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
     body: B,
@@ -117,7 +117,7 @@ where
 }
 
 /// Txids touching the address, height order
-async fn found_transactions<V: MapRead, B>(
+async fn found_transactions<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -163,7 +163,7 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
 }
 
 /// `GetAddressUtxos` / `GetAddressUtxosStream`: one walk, two response shapes
-async fn utxos<V: MapRead, B>(
+async fn utxos<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -222,7 +222,7 @@ fn reply(
     })
 }
 
-async fn balance_of<V: MapRead, B>(
+async fn balance_of<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -236,7 +236,7 @@ where
 }
 
 /// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), reply = one total
-async fn streamed_balance_of<V: MapRead, B>(
+async fn streamed_balance_of<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -253,7 +253,7 @@ where
 
 /// Deduped on the parsed address (a repeated address counts once)
 /// - distinct addresses' balances sum within the supply, so overflow = index corruption
-async fn balance<V: MapRead>(
+async fn balance<V: CommittedView>(
     index: Addresses<V>,
     addresses: &[String],
     reads: &ReadLanes,

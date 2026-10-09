@@ -51,7 +51,7 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
-/// Buffered heap before a bulk commit (max age commits first)
+/// Buffered heap that commits a bulk run (a `Finalized` block commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
 

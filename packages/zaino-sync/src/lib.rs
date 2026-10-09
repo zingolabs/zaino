@@ -2,12 +2,12 @@
 //! (`docs/design/data-sink.md`)
 //!
 //! - One sender, every step final: each height once, ascending, never retracted
-//! - Each writer: its own loop over its [`Subscription`], its store behind a [`Committer`]
+//! - Each writer: its own loop over its [`Subscription`]'s runs, its store published through an
+//!   [`IndexPublisher`]
 //! - An index's per-block output for another = a second sink (value-balance → [`FeeSink`])
 
 #![forbid(unsafe_code)]
 
-mod committer;
 mod data_sink;
 mod emit;
 mod fetch;
@@ -17,18 +17,18 @@ mod offload;
 mod per_index;
 mod progress;
 mod report;
+mod writer;
 
-pub use committer::{held, Committer, Run};
-pub use data_sink::{Applied, IndexerDataSink, Step, Subscription, Weight};
+pub use data_sink::{Applied, IndexerDataSink, Run, Step, Subscription, Weight};
 pub use emit::describe_metrics;
 pub use fetch::{check_block, check_block_at, fetch, fetch_at, merkle_root, Checked, Misanswer};
 pub use follower::{FinalFollower, FollowError};
 pub use handle::IndexHandle;
-pub use offload::compute;
-use offload::Offloaded;
+pub use offload::{blocking, compute};
 pub use per_index::PerIndex;
 pub use progress::SyncProgress;
 pub use report::{ByteSize, Human};
+pub use writer::{apply, commit, held, IndexPublisher};
 
 use zaino_primitives::types::{Block, BlockFees};
 

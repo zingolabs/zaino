@@ -23,21 +23,21 @@ const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable); 
 const SPENT: MapTable = MapTable::new(0, "spent", Width::fixed(36), Width::fixed(36), 0); // spent/
 pub const FORMAT: u16 = 1;
 pub const TABLES: Tables = Tables::new(&[BLOCKS], &[SPENT]);   // ids = positions, checked at compile time
+pub const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(64 << 20).expect("non-zero"); // buffered heap
 
 let schema = Schema::new(IndexKind::CompactBlock, FORMAT, network, TABLES); // Copy, built once
 let engine = DiskEngine::new(fs);
-let mut store = engine.open(path, &schema)?;              // fresh = empty, else the committed tip
+let mut store = engine.open(path, &schema, WRITE_BUFFER)?; // fresh = empty, else the committed tip
 
 let mut changes = store.changes(block.at());              // one block's empty delta
 changes.sequence(BLOCKS).append(&record);                 // at the end, in call order
 changes.map(SPENT).insert(&outpoint.encode(), &spend);    // keys unique
 store.apply(changes);                                     // buffered: in staged(), not in view()
-if store.buffered_bytes() >= batch {
-    store.commit()?;                                      // every buffer, one fsync, then in view()
-}
+                                                          // (WRITE_BUFFER reached = committed here)
+store.commit()?;                                          // every buffer, one fsync, then in view()
 
 let view = store.committed();                                  // committed only (what serving pins)
-let staged = store.staged();                              // StagedView: committed + buffered
+let staged = store.staged();                              // StagedView: committed + buffered (borrow)
 view.tip();                                               // Option<BlockRef>
 let blocks = view.sequence(BLOCKS);                       // one table of one view
 blocks.count(); blocks.record(h); blocks.records(a..b);   // zero-copy mmap slices
@@ -73,14 +73,16 @@ spent.range(&start, &end, limit);                         // [start, end); None 
 - **`apply`** appends final changes to the store's `WriteBuffer` in RAM: each
   table's items back to back, as `BlockChanges` holds them, map rows unsorted (the
   LSM sorts a batch at commit) with one hash index of row numbers per map.
-  `staged()` reads them (`StagedView<V>` = `OverlayView<V, Arc<WriteBuffer>>`),
+  `staged()` reads them (`StagedView<'_, V>` = `OverlayView<V, &WriteBuffer>`: a borrow, so
+  a writer cannot hold one across `apply`),
   `committed()` and the disk do not until `commit`. It panics, buffering nothing,
   on changes built for another schema, a tip not above the last applied one,
   or a map key the buffer already holds (or one `BlockChanges` inserts twice).
-  `buffered_bytes()` = the buffer's allocated capacity (a writer's batch
-  trigger), within ±30% of the real heap for every table shape
-  (`tests/buffer_heap.rs` measures it with a counting allocator). A budget is
-  RAM, not bytes on disk.
+  `buffered_bytes()` = the buffer's allocated capacity, within ±30% of the real
+  heap for every table shape (`tests/buffer_heap.rs` measures it with a counting
+  allocator). Once it reaches the `write_buffer` given to `open`, `apply`
+  commits by itself; that commit failing panics via `commit_failed`. A budget
+  is RAM, not bytes on disk.
 - **`commit`:**
   - Every buffered change goes to disk in one commit at the last applied tip:
     appends are sealed (only tables that grew are fsynced) and each map's rows
@@ -92,7 +94,7 @@ spent.range(&start, &end, limit);                         // [start, end); None 
     never retried; `durability.md` §6). Drop the store and reopen it: the
     buffer is gone with it.
   - `StoreError::commit_failed(index, path)` turns the `Err` into a panic
-    naming the index and directory (`zaino_sync::Committer` calls it):
+    naming the index and directory (`apply`'s own commit and `zaino_sync::commit` call it):
     `<index> index commit failed: disk <dir> full` when `StorageFull` or
     `QuotaExceeded` sits anywhere in the error chain, else
     `<index> index commit failed at <dir>: <error>`.
@@ -216,10 +218,11 @@ let child = child.rebase(&store.committed());     // after a commit: what durabl
 
 ## Who drives a store
 
-- Index writers fold each final block into `Store::changes(block)`, buffer it
-  with `Store::apply` and commit through
-  [`zaino_sync::Committer`](../zaino-sync/usage.md) (batch full, after a folded
-  run, or 1 s idle); a bulk fold reads its parent through `staged()`.
+- Index writers fold each final block into `Store::changes(block)` and buffer
+  it with `zaino_sync::apply` (`Store::apply`, counted); commits: the store's
+  own at `write_buffer`, the writer's `zaino_sync::commit` after a finalized
+  run and at `Shutdown` ([the writer loop](../zaino-sync/usage.md#writer-loop));
+  a bulk fold reads its parent through `staged()`.
 - Non-final blocks never reach a store: `zaino-nfs` holds one `Overlay` per index
   per block and serves `OverlayView::new(view(), layer)` from its snapshots
   ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-layers-and-writers)).
@@ -230,7 +233,8 @@ let child = child.rebase(&store.committed());     // after a commit: what durabl
 writer drives it (`apply`, `commit`) under `Overlay`s kept as the NFS keeps them (`with`,
 `rebase`). An engine implements `conformance::Subject`, which is `engine()` and `path()`
 plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
-`conformance::history` under proptest and `conformance::contract` as a plain test.
+`conformance::history` under proptest and `conformance::contract` as a plain test (`contract`
+includes `apply`'s own commit at `write_buffer`).
 `PROPTEST_CASES=1000` is its heavy run. `conformance::Model` is the expected state for an
 engine's own crash tests. Design:
 [`persistence-engine.md` §4](../../docs/design/persistence-engine.md#4-tests).

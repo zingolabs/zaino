@@ -1,7 +1,7 @@
 //! Shared route-test infra: `Routes` over a `MockValidator`, request builders, indexes folded
 //! from a `MockChain`'s genesis and served through one fixed snapshot
 
-use std::sync::Arc;
+use std::{num::NonZeroUsize, sync::Arc};
 
 use http::Request;
 use http_body_util::Full;
@@ -40,7 +40,8 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
     };
     let schema = Schema::new(kind, format, chain.schedule().network, tables);
     let engine = DiskEngine::new(zaino_persistence::fs::SimFs::new());
-    let mut index = engine.open(std::path::Path::new(kind.name()), &schema).expect("open");
+    let mut index =
+        engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {
         let parent = index.staged();
         let mut out = index.changes(block.at());

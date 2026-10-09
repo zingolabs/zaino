@@ -8,7 +8,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
-use zaino_persistence::{IndexKind, MapRead, OverlayView, SequenceRead};
+use zaino_persistence::{CommittedView, IndexKind, OverlayView};
 use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{
     BlockHash, CommitmentTreeBytes, Height, ShieldedPool, SubtreeRoot, Treestate,
@@ -52,7 +52,7 @@ pub(crate) struct Answering<V> {
     pub(crate) memos: Arc<Memos<V>>,
 }
 
-impl<V: SequenceRead + MapRead> Answering<V> {
+impl<V: CommittedView> Answering<V> {
     fn served(&self) -> &At<V> {
         self.indexed.served()
     }
@@ -145,7 +145,7 @@ fn to_status(error: ServeError) -> Status {
 
 pub(crate) async fn dispatch<V, B>(answering: Answering<V>, path: &str, body: B) -> Response<Body>
 where
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -164,7 +164,7 @@ where
     }
 }
 
-async fn latest<V: SequenceRead + MapRead>(answering: &Answering<V>) -> Result<Bytes, Status> {
+async fn latest<V: CommittedView>(answering: &Answering<V>) -> Result<Bytes, Status> {
     let state = answering.state_at(answering.served().tip().height);
     answering.once(|memos| &memos.states, State::Latest, state).await?
 }
@@ -174,7 +174,7 @@ async fn latest<V: SequenceRead + MapRead>(answering: &Answering<V>) -> Result<B
 /// - by height, in the snapshot's layer (the synced wallets' tip asks): once per snapshot
 async fn treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -235,7 +235,7 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
 /// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
 async fn subtree_roots<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {

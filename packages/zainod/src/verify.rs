@@ -169,18 +169,17 @@ mod tests {
         let tree_blocks = subscribe(IndexKind::TreeState);
         let transparent_blocks = subscribe(IndexKind::TransparentAddress);
         let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
-        let open = |path: &Path, kind| engine.open(path, &schema(kind, net)).expect("open");
+        let open = |path: &Path, kind| engine.open(path, &schema(kind, net), batch).expect("open");
         let value_balance_store = open(&vb, IndexKind::ValueBalance);
         let compact_block_store = open(&cb, IndexKind::CompactBlock);
         let block_hash_store = open(&bh, IndexKind::BlockHash);
         let tree_state_store = open(&ts, IndexKind::TreeState);
         let transparent_address_store = open(&ta, IndexKind::TransparentAddress);
-        let value_balance = ValueBalanceIndexWriter::new(value_balance_store, batch);
-        let compact_block = CompactBlockIndexWriter::new(compact_block_store, batch);
-        let block_hash = BlockHashIndexWriter::new(block_hash_store, batch);
-        let tree_state = TreeStateIndexWriter::new(tree_state_store, batch);
-        let transparent_address =
-            TransparentAddressIndexWriter::new(transparent_address_store, batch);
+        let value_balance = ValueBalanceIndexWriter::new(value_balance_store);
+        let compact_block = CompactBlockIndexWriter::new(compact_block_store);
+        let block_hash = BlockHashIndexWriter::new(block_hash_store);
+        let tree_state = TreeStateIndexWriter::new(tree_state_store);
+        let transparent_address = TransparentAddressIndexWriter::new(transparent_address_store);
 
         let mut loops = tokio::task::JoinSet::new();
         loops.spawn(compact_block.run(compact_blocks, compact_fees));

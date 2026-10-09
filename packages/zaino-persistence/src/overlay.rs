@@ -13,7 +13,9 @@ use bytes::Bytes;
 use imbl::{OrdMap, Vector};
 use zaino_primitives::types::{BlockRef, Height};
 
-use crate::port::{BlockChanges, MapId, MapRead, Schema, SequenceId, SequenceRead, View};
+use crate::port::{
+    BlockChanges, CommittedView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
+};
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
 ///
@@ -221,7 +223,7 @@ impl Uncommitted for Overlay {
     }
 }
 
-impl<A: Uncommitted> Uncommitted for Arc<A> {
+impl<A: Uncommitted> Uncommitted for &A {
     fn schema(&self) -> &Schema {
         (**self).schema()
     }
@@ -275,7 +277,7 @@ impl<V: View, A: Uncommitted> OverlayView<V, A> {
     }
 }
 
-impl<V: View, A: Uncommitted + Send + Sync + 'static> View for OverlayView<V, A> {
+impl<V: View, A: Uncommitted + Send + Sync> View for OverlayView<V, A> {
     fn tip(&self) -> Option<BlockRef> {
         self.above.tip().or_else(|| self.durable.tip())
     }
@@ -294,7 +296,9 @@ impl<V: View, A: Uncommitted> fmt::Debug for OverlayView<V, A> {
     }
 }
 
-impl<V: SequenceRead, A: Uncommitted + Send + Sync + 'static> SequenceRead for OverlayView<V, A> {
+impl<V: CommittedView> CommittedView for OverlayView<V, Overlay> {}
+
+impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView<V, A> {
     fn len(&self, table: SequenceId) -> u64 {
         self.durable.len(table) + self.above.record_count(table)
     }
@@ -320,7 +324,7 @@ impl<V: SequenceRead, A: Uncommitted + Send + Sync + 'static> SequenceRead for O
     }
 }
 
-impl<V: MapRead, A: Uncommitted + Send + Sync + 'static> MapRead for OverlayView<V, A> {
+impl<V: MapRead, A: Uncommitted + Send + Sync> MapRead for OverlayView<V, A> {
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
         self.above.value(table, key).or_else(|| self.durable.value(table, key))
     }

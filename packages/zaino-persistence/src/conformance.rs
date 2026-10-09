@@ -10,6 +10,7 @@
 
 use std::{
     collections::BTreeMap,
+    num::NonZeroUsize,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
 };
@@ -26,7 +27,6 @@ use crate::{
         BlockChanges, MapRead, MapTable, PersistenceEngine, Schema, SequenceRead, SequenceTable,
         Store, Tables, View, Width,
     },
-    write_buffer::StagedView,
 };
 
 pub const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
@@ -65,8 +65,9 @@ pub trait Subject {
 
 pub type StoreOf<S> = <<S as Subject>::Engine as PersistenceEngine>::Store;
 
+/// Commits only when told (`write_buffer` never reached)
 fn open<S: Subject>(subject: &S) -> StoreOf<S> {
-    subject.engine().open(subject.path(), &SCHEMA).expect("open")
+    subject.engine().open(subject.path(), &SCHEMA, NonZeroUsize::MAX).expect("open")
 }
 
 /// Record `n` of `blocks`: 0 to 22 bytes (empty records included)
@@ -340,14 +341,12 @@ impl Oracle {
     }
 }
 
-/// Views taken at step `at` + the models they must keep answering
+/// Views taken at step `at` + the models they must keep answering (staged = a borrow: never pinned)
 struct Pinned<V> {
     at: usize,
     committed: Model,
-    buffered: Model,
     newest: Model,
     view: V,
-    staged: StagedView<V>,
     node: OverlayView<V>,
 }
 
@@ -468,10 +467,8 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
                 pinned = Some(Pinned {
                     at,
                     committed: oracle.committed.clone(),
-                    buffered: oracle.buffered().clone(),
                     newest: oracle.newest().clone(),
                     view: store.committed(),
-                    staged: store.staged(),
                     node: oracle.newest_view(store.committed()),
                 })
             }
@@ -490,7 +487,6 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
         if let Some(pin) = &pinned {
             let label = format!("{label}: pinned at step {}", pin.at);
             pin.committed.assert_view(&pin.view, &format!("{label}: view"));
-            pin.buffered.assert_view(&pin.staged, &format!("{label}: staged"));
             pin.newest.assert_view(&pin.node, &format!("{label}: newest node"));
         }
     }
@@ -521,6 +517,7 @@ impl View for Tip {
 /// - empty open; apply buffered (staged, not in the view) until commit; empty commit = no write
 /// - identity refused across kind / format / network; reopen resumes at the tip; verify clean
 /// - each store + layer misuse panics with nothing buffered, work continuing after
+/// - `write_buffer` reached = committed by `apply` itself
 pub fn contract<S: Subject>(subject: S) {
     let engine = subject.engine();
     let mut model = Model::default();
@@ -550,7 +547,7 @@ pub fn contract<S: Subject>(subject: S) {
         ("kind", Schema::new(IndexKind::TreeState, 1, NetworkType::Regtest, TABLES)),
         ("format", Schema::new(IndexKind::CompactBlock, 2, NetworkType::Regtest, TABLES)),
     ] {
-        let refused = engine.open(subject.path(), &schema).map(|_| ());
+        let refused = engine.open(subject.path(), &schema, NonZeroUsize::MAX).map(|_| ());
         assert!(refused.is_err(), "another {what} opened as this store");
     }
 
@@ -610,4 +607,10 @@ pub fn contract<S: Subject>(subject: S) {
     nodes.assert_view(&view, "layers continue after misuse");
     let rebased = layer.rebase(&Tip(Some(block_ref(4))));
     assert_eq!(rebased, Overlay::empty(&SCHEMA), "rebase onto its tip = empty");
+    drop(store);
+
+    let mut store = engine.open(subject.path(), &SCHEMA, NonZeroUsize::MIN).expect("open");
+    store.apply(buffered.advance(1, &[4], 1));
+    buffered.assert_view(&store.committed(), "write_buffer reached: committed by apply");
+    assert_eq!(store.buffered_bytes(), 0, "write_buffer reached: nothing left buffered");
 }

@@ -1,10 +1,8 @@
 //! transparent_address writer: the final stream → one [`fold`] per block → its store
 
-use std::num::NonZeroUsize;
-
 use zaino_persistence::{BlockChanges, MapRead, Store};
 use zaino_primitives::types::Block;
-use zaino_sync::{Committer, IndexHandle, Subscription};
+use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
 
 use crate::{
     address::address_key,
@@ -13,31 +11,50 @@ use crate::{
 };
 
 pub struct TransparentAddressIndexWriter<S: Store> {
-    store: Committer<S>,
+    store: S,
+    publisher: IndexPublisher<S::View>,
 }
 
 impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
-    /// bulk commit (one fsync)
-    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
-        Self { store: Committer::new(store, batch_bytes) }
+    /// Over `store` (opened with [`TABLES`](crate::TABLES))
+    pub fn new(store: S) -> Self {
+        let publisher = IndexPublisher::new(&store);
+        Self { store, publisher }
     }
 
     /// For `Nfs::add`: committed view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
-        self.store.handle()
+        self.publisher.handle()
     }
 
     /// Follows `blocks` through `Shutdown` (a failure panics)
-    pub async fn run(mut self, mut blocks: Subscription<Block>) {
-        while let Some(run) = self.store.next(&mut blocks).await {
-            let applied = move |store: &mut S| {
-                run.apply(store, |store, block, out| {
-                    fold(&TransparentAddressReader::new(store.staged()), block, out)
-                });
-            };
-            self.store.compute(applied).await;
+    ///
+    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    pub async fn run(self, mut blocks: Subscription<Block>) {
+        let Self { mut store, publisher } = self;
+        while let Some(run) = blocks.next_run().await {
+            store = blocking(move || {
+                for (height, block) in &run.blocks {
+                    if !held(&store, *height) {
+                        let mut changes = store.changes(block.at());
+                        fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
+                        apply(&mut store, changes);
+                    }
+                }
+                if run.finalized {
+                    commit(&mut store);
+                }
+                store
+            })
+            .await;
+            publisher.publish(&store);
         }
+        store = blocking(move || {
+            commit(&mut store);
+            store
+        })
+        .await;
+        publisher.publish(&store);
     }
 }
 
@@ -70,7 +87,7 @@ pub fn fold<V: MapRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc};
+    use std::{num::NonZeroUsize, path::Path, sync::Arc};
 
     use proptest::strategy::Strategy as _;
     use zaino_persistence::{
@@ -90,16 +107,16 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
-    fn open(fs: &Arc<SimFs>) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/ta"), &SCHEMA).expect("open")
+    /// `write_buffer` = MIN: every applied block committed by the store itself
+    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
+        DiskEngine::new(fs.clone()).open(Path::new("/ta"), &SCHEMA, write_buffer).expect("open")
     }
 
     /// Writer over `store`, its final stream and handle
     fn start(
         store: DiskStore,
-        batch: NonZeroUsize,
     ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
-        let writer = TransparentAddressIndexWriter::new(store, batch);
+        let writer = TransparentAddressIndexWriter::new(store);
         let handle = writer.handle();
         let mut sink = IndexerDataSink::new("final");
         let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
@@ -108,6 +125,11 @@ mod tests {
 
     fn step(block: &Arc<Block>) -> Step<Block> {
         Step::Apply { height: block.header().height, data: Arc::clone(block) }
+    }
+
+    /// The chain's final tip: the writer commits after it
+    fn finalized(block: &Arc<Block>) -> Step<Block> {
+        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
     }
 
     /// Block 1 spends alice's block-0 receive, paying bob: its `BlockChanges` = the spend under the
@@ -131,13 +153,12 @@ mod tests {
         let blocks = chain.blocks(one);
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
-        let mut store = open(&SimFs::new());
-        let reader = |store: &DiskStore| TransparentAddressReader::new(store.staged());
+        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
-        fold(&reader(&store), &blocks[0], &mut genesis);
+        fold(&TransparentAddressReader::new(store.staged()), &blocks[0], &mut genesis);
         store.apply(genesis);
         let mut changes = store.changes(blocks[1].at());
-        fold(&reader(&store), &blocks[1], &mut changes);
+        fold(&TransparentAddressReader::new(store.staged()), &blocks[1], &mut changes);
 
         let spender = TransactionId::from([0x20; 32]);
         let spend = encode_spend(&Spend { height: 1, spender });
@@ -152,7 +173,7 @@ mod tests {
         assert_eq!(receives, vec![(&key[..], &value[..])], "receives row");
 
         store.apply(changes);
-        let read = reader(&store);
+        let read = TransparentAddressReader::new(store.staged());
         let unspent =
             read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX).expect("rows");
         let values: Vec<Vec<(u32, u64)>> = unspent
@@ -171,9 +192,9 @@ mod tests {
         }
     }
 
-    /// Ten one-block commits (batch = 1 byte: each block commits as it arrives; the 9th launches
-    /// a background merge), crashed at every persistence point: each state reopens to a committed
-    /// prefix with its one unspent output and balance exact, takes the next block
+    /// Ten one-block commits (write_buffer = 1 byte: each block commits as it arrives; the 9th
+    /// launches a background merge), crashed at every persistence point: each state reopens to a
+    /// committed prefix with its one unspent output and balance exact, takes the next block
     ///
     /// - block `h`'s coinbase pays alice `h + 1` zats (vout 0); its tx spends block `h - 1`'s
     #[tokio::test]
@@ -192,7 +213,7 @@ mod tests {
         let blocks = chain.blocks(chain.tip());
         let fs = SimFs::recording();
         {
-            let (sink, mut handle, running) = start(open(&fs), NonZeroUsize::MIN);
+            let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MIN));
             for (acked, block) in (1u64..).zip(&blocks[..10]) {
                 sink.send(step(block)).await;
                 reached(&mut handle, Some(u32::from(block.header().height))).await;
@@ -216,27 +237,27 @@ mod tests {
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs);
+            let store = open(&state.fs, NonZeroUsize::MAX);
             // one block per commit: blocks held = commits recovered
             let count = store.committed().tip().map_or(0, |tip| u64::from(tip.height) + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
             assert!(acked.contains(&count), "{label}: recovered {count}");
             assert_eq!(observed(store.committed()), expected(count), "{label}");
 
-            let (sink, _handle, running) = start(store, QUEUE);
+            let (sink, _handle, running) = start(store);
             sink.send(step(&blocks[count as usize])).await;
             sink.shutdown();
             running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let after = observed(open(&state.fs).committed());
+            let after = observed(open(&state.fs, NonZeroUsize::MAX).committed());
             assert_eq!(after, expected(count + 1), "{label}: next after recovery");
         }
     }
 
     /// Receive in one segment, its spend in the next, queried across both, after restarts
     ///
-    /// - 0, 1 (committed once the stream idles), then 2
-    /// - restart: 1 and 2 resent (held: skipped), then 3
-    #[tokio::test(start_paused = true)]
+    /// - 0, 1 (`Finalized`: committed there), then 2 (`Finalized`)
+    /// - restart: 1 and 2 resent (held: skipped), then 3 (`Finalized`)
+    #[tokio::test]
     async fn a_spend_in_a_later_segment_retires_a_utxo_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();
         let alice = TransparentAddress::PublicKeyHash([0xa1; 20]);
@@ -261,13 +282,12 @@ mod tests {
         let reader = |handle: &IndexHandle<DiskView>| TransparentAddressReader::new(handle.view());
         let zats = |balance: Result<Zatoshis, _>| balance.map(Zatoshis::as_u64);
 
-        let (sink, mut handle, running) = start(open(&fs), QUEUE);
-        for block in &blocks[..2] {
-            sink.send(step(block)).await;
-        }
+        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
+        sink.send(step(&blocks[0])).await;
+        sink.send(finalized(&blocks[1])).await;
         reached(&mut handle, Some(1)).await;
         assert_eq!(zats(reader(&handle).balance(&alice)), Ok(800), "both receives unspent");
-        sink.send(step(&blocks[2])).await;
+        sink.send(finalized(&blocks[2])).await;
         reached(&mut handle, Some(2)).await;
         let at_two = reader(&handle);
         assert_eq!(zats(at_two.balance(&alice)), Ok(300), "2's spend retires 0's receive");
@@ -290,11 +310,12 @@ mod tests {
         sink.shutdown();
         running.await.expect("stops at Shutdown");
 
-        let (sink, mut handle, running) = start(open(&fs), QUEUE);
+        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
         assert_eq!(zats(reader(&handle).balance(&bob)), Ok(560), "resumed at 2, no replay");
-        for block in &blocks[1..=3] {
+        for block in &blocks[1..3] {
             sink.send(step(block)).await;
         }
+        sink.send(finalized(&blocks[3])).await;
         reached(&mut handle, Some(3)).await;
         let at_three = reader(&handle);
         assert_eq!(zats(at_three.balance(&alice)), Ok(290), "pre-restart receive spent after it");
@@ -431,7 +452,7 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let (mut sink, mut handle, mut running) = start(open(&fs), NonZeroUsize::MIN);
+        let (mut sink, mut handle, mut running) = start(open(&fs, NonZeroUsize::MIN));
         let mut sent = 0usize;
         for (at, next) in moves.iter().enumerate() {
             match *next {
@@ -444,7 +465,7 @@ mod tests {
                 Move::Reopen => {
                     sink.shutdown();
                     running.await.expect("stops at Shutdown");
-                    (sink, handle, running) = start(open(&fs), NonZeroUsize::MIN);
+                    (sink, handle, running) = start(open(&fs, NonZeroUsize::MIN));
                     if let Some(held) = sent.checked_sub(1) {
                         sink.send(step(&blocks[held])).await;
                     }

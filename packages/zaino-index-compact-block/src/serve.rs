@@ -163,6 +163,8 @@ impl<V: SequenceRead> RangeCursor<V> {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
+
     use super::*;
     use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
@@ -216,7 +218,9 @@ mod tests {
 
     fn store() -> DiskStore {
         let schema = Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
-        DiskEngine::new(SimFs::new()).open(std::path::Path::new("/cb"), &schema).expect("open")
+        DiskEngine::new(SimFs::new())
+            .open(std::path::Path::new("/cb"), &schema, NonZeroUsize::MAX)
+            .expect("open")
     }
 
     /// `chain`'s blocks `heights` folded onto `store`

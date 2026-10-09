@@ -47,23 +47,24 @@ And exactly two kinds of table:
 ```rust
 pub trait PersistenceEngine: Send + Sync + 'static {
     type Store: Store;
-    fn open(&self, path: &Path, schema: &Schema) -> Result<Self::Store, StoreError>;
+    fn open(&self, path: &Path, schema: &Schema, write_buffer: NonZeroUsize)
+        -> Result<Self::Store, StoreError>;                // commits by itself at `write_buffer`
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError>;
 }
 
 pub trait Store: Send + 'static {
-    type View: View;
+    type View: CommittedView;
     fn schema(&self) -> &Schema;
     fn path(&self) -> &Path;
     fn changes(&self, at: BlockRef) -> BlockChanges;           // one block's empty delta (provided)
-    fn apply(&mut self, changes: BlockChanges);                // buffered: not durable, not in view()
+    fn apply(&mut self, changes: BlockChanges);                // buffered (full buffer = committed)
     fn buffered_bytes(&self) -> usize;                    // ≈ buffer's heap (RAM, not disk)
     fn commit(&mut self) -> Result<(), StoreError>;      // every buffer, one atomic commit
-    fn view(&self) -> Self::View;                         // committed only
-    fn staged(&self) -> OverlayView<Self::View>;          // committed + buffered
+    fn committed(&self) -> Self::View;                    // committed only
+    fn staged(&self) -> StagedView<'_, Self::View>;       // committed + buffered, borrowed
 }
 
-pub trait View: Clone + Send + Sync + 'static {
+pub trait View: Clone + Send + Sync {                    // committed or staged
     fn tip(&self) -> Option<BlockRef>;
     fn schema(&self) -> &Schema;                          // the store's, as opened
 }
@@ -82,7 +83,15 @@ pub trait MapRead: View {
         -> Option<Vec<(Bytes, Bytes)>>;                                     // None = over `limit`
     fn map(&self, table: MapTable) -> MapView<'_, Self>;                    // index side (provided)
 }
+
+// gRPC's read: committed snapshot, fixed while held, owned (read on any thread);
+// NFS layers over one (`OverlayView<V, Overlay>`) = one too
+pub trait CommittedView: SequenceRead + MapRead + 'static {}
 ```
+
+- `StagedView<'_, V>` = `OverlayView<V, &WriteBuffer>`: a writer's fold read, borrowing the
+  store; holding one across `apply` does not compile (never a copy of the buffer)
+- `CommittedView` = what serves: gRPC is generic over it, so any engine plugs in end to end
 
 An index declares its tables once, as constants; the store is opened by them, and each block's
 delta comes from the store (or a layer) and is filled table by table:
@@ -93,7 +102,7 @@ const SPENT: MapTable = MapTable::new(1, "spent", Width::fixed(36), Width::fixed
 pub const TABLES: Tables = Tables::new(&[], &[RECEIVES, SPENT]);
 
 let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
-let mut store = DiskEngine::new(fs).open(path, &schema)?;
+let mut store = DiskEngine::new(fs).open(path, &schema, WRITE_BUFFER)?;
 
 let mut changes = store.changes(block.at());
 changes.map(SPENT).insert(&outpoint.encode(), &encode_spend(&spend));
@@ -122,7 +131,9 @@ let spend = store.committed().map(SPENT).value(&outpoint.encode());
   opened for `block`, `block` one height above `parent_tip` and linked to it by `prev_hash`,
   genesis on an empty parent; `BlockHeader::extends`), or `BlockChanges::assert_run` for a run.
 - **Apply** buffers one `BlockChanges` (the store's `WriteBuffer`): `staged()` reads it, `committed()` does not, and
-  nothing is durable yet. Its tip must be above the last applied one.
+  nothing is durable yet. Its tip must be above the last applied one. Buffer heap
+  (`buffered_bytes`) at the `write_buffer` given to `open` = committed by `apply` itself; that
+  commit failing panics (`StoreError::commit_failed`: index + directory named).
 - **Commit** makes every buffered change and the last applied tip durable together (one fsync),
   then moves `committed()`; nothing buffered = nothing written. An `Err` poisons the store: every
   later commit panics, and recovery is a reopen (a failed sync is never retried).
@@ -238,7 +249,7 @@ proptest! { #[test] fn conforms(steps in conformance::steps()) { conformance::hi
   writing nothing, identity refused across kind, format and network, a reopen resuming at the
   tip, `verify` clean with every commit counted, and every `Store::apply`, `Overlay::with` /
   `rebase` and `OverlayView::new` precondition panicking with nothing buffered, work continuing
-  after each.
+  after each; `write_buffer` reached = committed by `apply` itself, nothing left buffered.
 - `Model` doubles as the expected state for an engine's own crash and fault tests.
 
 `DiskEngine` runs the suite on `SimFs` (power loss = `SimFs::power_loss`, settle = merges, check
@@ -292,16 +303,19 @@ impl<V: View> OverlayView<V> {
 Non-final data lives in `zaino-nfs`: one node per block above the durable root, each holding one
 `Overlay` per index (its parent's `.with` its own `BlockChanges`); a snapshot reads every index as
 `OverlayView::new(committed view, node layer rebased onto it)`. A store only ever holds final
-data. Each index writer drives its store through `zaino_sync::Committer`
+data. Each index writer drives its own store, one run of final steps per blocking hop
 ([data-sink.md](./data-sink.md)):
 
-| Final step                       | Writer                                                      |
-| -------------------------------- | ----------------------------------------------------------- |
-| held (at or below `staged()`)    | skipped (a restart resends from the lowest durable tip)     |
-| unfolded (bulk)                  | `Store::changes`, fold onto `staged()` into it (compute pool), `Store::apply` |
-| folded (the tip)                 | `Store::apply` its `BlockChanges` as the NFS sent them           |
-| batch full, folded run, 1 s idle | `Store::commit` (one fsync), committed view sent to the NFS |
-| `Shutdown`                       | `Store::commit`, stop                                       |
+| Final step                    | Writer                                                         |
+| ----------------------------- | -------------------------------------------------------------- |
+| held (at or below `staged()`) | skipped (a restart resends from the lowest durable tip)        |
+| not held                      | `Store::changes`, fold onto `staged()`, `zaino_sync::apply`    |
+| buffer at `write_buffer`      | `Store::apply` commits by itself (one fsync)                   |
+| run ending at `Finalized`     | `zaino_sync::commit`                                           |
+| `Shutdown`                    | `zaino_sync::commit`, stop                                     |
+
+- After every hop `IndexPublisher::publish`: the applied tip, the committed view once its tip moved
+  (what the NFS reads).
 
 - A fold reads its parent's state off `staged()` (compact-block's tree sizes, tree-state's
   frontiers) instead of carrying it: a restart needs no step of its own ([data-sink.md](data-sink.md)).

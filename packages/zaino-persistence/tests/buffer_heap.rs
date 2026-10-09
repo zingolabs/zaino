@@ -6,6 +6,7 @@
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
+    num::NonZeroUsize,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -86,7 +87,9 @@ fn buffered_bytes_track_the_real_heap_of_each_table_shape_within_30_percent() {
     let mut report = Vec::new();
     for (shape, per_block, fill) in cases {
         let dir = tempfile::tempdir().expect("tempdir");
-        let mut store = DiskEngine::new(RealFs::shared()).open(dir.path(), &SCHEMA).expect("open");
+        let mut store = DiskEngine::new(RealFs::shared())
+            .open(dir.path(), &SCHEMA, NonZeroUsize::MAX)
+            .expect("open");
         let before = LIVE.load(Ordering::Relaxed);
         let mut height = Height::GENESIS;
         for first in (0..ROWS).step_by(per_block as usize) {

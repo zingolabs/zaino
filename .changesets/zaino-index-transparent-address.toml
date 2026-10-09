@@ -9,7 +9,7 @@ address) and `spent` (by outpoint) (`schema(network)`), each a pure projection o
 (`fold`). `TransparentAddressReader::as_of(tip).with_max_rows(n)` answers `utxos`, `utxos_of`, \
 `balance`, `balances` and `transactions`, refusing a walk past `n` receives \
 (`DEFAULT_MAX_ADDRESS_ROWS` = 100,000) rather than answering short. \
-`TransparentAddressIndexWriter::new(store, batch_bytes)` follows the final stream.
+`TransparentAddressIndexWriter::new(store)` follows the final stream.
 """
 
 [[changes]]
@@ -30,5 +30,6 @@ Open the delta with `store.changes(block.at())` (or a layer's), open the store w
 crate = "zaino-index-transparent-address"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (the `write_buffer` `zainod` \
+opens its store with).
 """

@@ -2,7 +2,8 @@
 //!
 //! - `Syncing blocks` (handed, best, bps, eta) while the blocks handed trail the best; a stall
 //!   warning when a whole interval hands over nothing
-//! - one `Syncing` line per enabled index (durable, size) while not synced
+//! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
+//!   not synced
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` `disk`)
 
 use std::{
@@ -16,9 +17,10 @@ use serde::Serialize;
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
 use zaino_persistence::{disk_bytes, DiskView, IndexKind};
+use zaino_primitives::types::BlockRef;
 use zaino_snapshot::Snapshots;
-use zaino_sync::SyncProgress;
 use zaino_sync::{ByteSize, Human};
+use zaino_sync::{IndexHandle, SyncProgress};
 
 use crate::error::IndexerError;
 use crate::logging::HeightCol;
@@ -26,11 +28,12 @@ use crate::logging::HeightCol;
 pub(crate) const REPORT_INTERVAL: Duration = Duration::from_secs(30);
 const WALK_EVERY: Duration = Duration::from_secs(120);
 
-/// One enabled index: its log component and directory
+/// One enabled index: its log component, directory and writer's handle
 pub(crate) struct Index {
     pub(crate) kind: IndexKind,
     pub(crate) span: Span,
     pub(crate) dir: PathBuf,
+    pub(crate) handle: IndexHandle<DiskView>,
 }
 
 /// Bytes under one index directory: its total, each top-level subdirectory's share by name
@@ -78,15 +81,14 @@ pub(crate) async fn run(
             summarise(last, now, handed.map_or(0, u32::from), u32::from(best.height));
         }
         if !tips.synced {
-            let durable: Vec<_> =
-                snap.indexed().into_iter().flat_map(|indexed| indexed.durable()).collect();
             let sizes = disk.borrow();
+            let column = |tip: Option<BlockRef>| HeightCol(tip.map(|tip| tip.height.into()));
             for index in &indexes {
-                let tip = durable.iter().find(|(kind, _)| *kind == index.kind);
-                let durable = HeightCol(tip.and_then(|(_, tip)| *tip).map(|tip| tip.height.into()));
+                let applied = column(index.handle.applied());
+                let durable = column(index.handle.tip());
                 let size =
                     sizes.get(index.kind.name()).map(|usage| display(ByteSize(usage.size_bytes)));
-                index.span.in_scope(|| info!(%durable, size, "Syncing"));
+                index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
             }
         }
         last = now;

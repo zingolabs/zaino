@@ -3,7 +3,7 @@
 //! - map rows unsorted (the LSM sorts each batch at commit)
 //! - per map: row numbers by key (staged lookups + the held-key check)
 
-use std::{hash::BuildHasher, sync::Arc};
+use std::hash::BuildHasher;
 
 use bytes::Bytes;
 use hashbrown::{DefaultHashBuilder, HashTable};
@@ -14,8 +14,10 @@ use crate::{
     port::{BlockChanges, Items, MapId, MapTable, Schema, SequenceId, SequenceTable},
 };
 
-/// Committed view + its store's buffer ([`Store::staged`](crate::Store::staged))
-pub type StagedView<V> = OverlayView<V, Arc<WriteBuffer>>;
+/// Committed view + its store's buffer, borrowed ([`Store::staged`](crate::Store::staged))
+///
+/// - borrow = none held across `apply` (compile error, never a buffer copy)
+pub type StagedView<'a, V> = OverlayView<V, &'a WriteBuffer>;
 
 #[derive(Debug, Clone)]
 pub struct WriteBuffer {

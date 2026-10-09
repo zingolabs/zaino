@@ -26,7 +26,7 @@ use crate::{
 const ROOT: &str = "/idx";
 
 fn open(engine: &DiskEngine) -> DiskStore {
-    engine.open(Path::new(ROOT), &SCHEMA).expect("open")
+    engine.open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX).expect("open")
 }
 
 /// `DiskEngine` on `SimFs`: crash = `SimFs::power_loss`, background work = merges, internal
@@ -140,7 +140,7 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
     for state in states {
         let label = &state.label;
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
-            .open(Path::new(ROOT), &SCHEMA)
+            .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
         let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         let acked = usize::try_from(state.tag).expect("small");
@@ -177,7 +177,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
         fs.fail_from(fail_at);
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
         let mut acked = 0;
-        let error = match engine.open(Path::new(ROOT), &SCHEMA) {
+        let error = match engine.open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX) {
             Err(error) => error,
             Ok(mut store) => {
                 let mut failed = None;
@@ -217,7 +217,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
 
         let fs = fs.restarted();
         let mut store = DiskEngine::with_fanout(fs.clone(), 2)
-            .open(Path::new(ROOT), &SCHEMA)
+            .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
         let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         assert!(
@@ -252,10 +252,10 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
         let fs = fs.restarted();
         fs.fail_reads_from(fail_at);
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
-        let opened = catch_unwind(AssertUnwindSafe(|| engine.open(Path::new(ROOT), &SCHEMA)))
-            .unwrap_or_else(|payload| {
-                panic!("read {fail_at}: panicked: {}", panic_message(payload))
-            });
+        let opened = catch_unwind(AssertUnwindSafe(|| {
+            engine.open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
+        }))
+        .unwrap_or_else(|payload| panic!("read {fail_at}: panicked: {}", panic_message(payload)));
         match opened {
             Ok(store) => {
                 model.assert_view(&store.committed(), &format!("read {fail_at}"));
@@ -366,7 +366,10 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let refused = |edit: &dyn Fn(&SimFs)| {
         let fs = populated();
         edit(&fs);
-        DiskEngine::new(fs).open(Path::new(ROOT), &SCHEMA).expect_err("refused").to_string()
+        DiskEngine::new(fs)
+            .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
+            .expect_err("refused")
+            .to_string()
     };
     let short = refused(&|fs| fs.corrupt(&path("pool/nodes.dat"), |bytes| bytes.truncate(10)));
     assert_eq!(short, "/idx/pool/nodes.dat is 10 bytes, the committed state needs 32");
@@ -376,7 +379,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let bare = SimFs::new();
     bare.create_dir_all(Path::new(ROOT)).expect("dir");
     bare.open(&path("heights.dat")).expect("file").write_all_at(&[1], 0).expect("write");
-    let opened = DiskEngine::new(bare).open(Path::new(ROOT), &SCHEMA);
+    let opened = DiskEngine::new(bare).open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX);
     assert!(matches!(opened, Err(StoreError::Manifest(ManifestError::Unmanifested { .. }))));
 }
 
@@ -434,7 +437,7 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     let path = root.path().join("idx");
     let fs = RealFs::shared();
     let engine = DiskEngine::with_fanout(fs.clone(), 2);
-    let mut store = engine.open(&path, &SCHEMA).expect("open");
+    let mut store = engine.open(&path, &SCHEMA, NonZeroUsize::MAX).expect("open");
     let mut model = Model::default();
     store.apply(model.advance(3, &[1], 1));
     store.commit().expect("commit");

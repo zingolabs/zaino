@@ -13,6 +13,7 @@
 
 use std::{
     io,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -30,8 +31,8 @@ use crate::{
     overlay::OverlayView,
     pages::{scrub, Sealed},
     port::{
-        BlockChanges, MapId, MapRead, PersistenceEngine, Schema, SequenceId, SequenceRead, Store,
-        Verification, View,
+        BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema, SequenceId,
+        SequenceRead, Store, Verification, View,
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
     write_buffer::{StagedView, WriteBuffer},
@@ -68,7 +69,8 @@ pub struct DiskStore {
     sequences: Vec<SequenceFile>,
     maps: Vec<SegmentLog>,
     view: DiskView,
-    buffer: Arc<WriteBuffer>,
+    buffer: WriteBuffer,
+    write_buffer: NonZeroUsize,
     failed: bool,
 }
 
@@ -158,7 +160,12 @@ fn parent(name: &str) -> Option<&str> {
 impl PersistenceEngine for DiskEngine {
     type Store = DiskStore;
 
-    fn open(&self, path: &Path, schema: &Schema) -> Result<DiskStore, StoreError> {
+    fn open(
+        &self,
+        path: &Path,
+        schema: &Schema,
+        write_buffer: NonZeroUsize,
+    ) -> Result<DiskStore, StoreError> {
         let opened = IndexDir::open(Arc::clone(&self.fs), path, identity(schema))?;
         let mut dir = opened.dir;
         let body = match &opened.body {
@@ -208,7 +215,8 @@ impl PersistenceEngine for DiskEngine {
             sequences,
             maps,
             view: DiskView { state: Arc::new(state) },
-            buffer: Arc::new(WriteBuffer::empty(schema)),
+            buffer: WriteBuffer::empty(schema),
+            write_buffer,
             failed: false,
         })
     }
@@ -263,7 +271,7 @@ impl DiskStore {
 
     /// WriteBuffer written + sealed, every table in parallel → manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
-        let (schema, buffer) = (&self.schema, &*self.buffer);
+        let (schema, buffer) = (&self.schema, &self.buffer);
         let (sequences, maps) = rayon::join(
             || write_sequences(&mut self.sequences, schema, buffer),
             || write_maps(&mut self.maps, schema, buffer),
@@ -330,14 +338,17 @@ impl Store for DiskStore {
         self.dir.path()
     }
 
-    /// `make_mut` copies only while a [`staged`](Store::staged) view is held (folds drop theirs
-    /// before applying)
     fn apply(&mut self, changes: BlockChanges) {
         assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
         let last = self.buffer.tip().or(self.view.tip()).map(|tip| tip.height);
         let tip = changes.tip().height;
         assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
-        Arc::make_mut(&mut self.buffer).push(&changes);
+        self.buffer.push(&changes);
+        if self.buffer.heap() >= self.write_buffer.get() {
+            if let Err(error) = self.commit() {
+                error.commit_failed(self.schema.kind.name(), self.dir.path());
+            }
+        }
     }
 
     fn buffered_bytes(&self) -> usize {
@@ -348,7 +359,7 @@ impl Store for DiskStore {
         assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
         let Some(tip) = self.buffer.tip() else { return Ok(()) };
         self.write(tip).inspect_err(|_| self.failed = true)?;
-        self.buffer = Arc::new(WriteBuffer::empty(&self.schema));
+        self.buffer = WriteBuffer::empty(&self.schema);
         Ok(())
     }
 
@@ -356,8 +367,8 @@ impl Store for DiskStore {
         self.view.clone()
     }
 
-    fn staged(&self) -> StagedView<DiskView> {
-        OverlayView::new(self.view.clone(), Arc::clone(&self.buffer))
+    fn staged(&self) -> StagedView<'_, DiskView> {
+        OverlayView::new(self.view.clone(), &self.buffer)
     }
 }
 
@@ -383,6 +394,8 @@ impl View for DiskView {
         &self.state.schema
     }
 }
+
+impl CommittedView for DiskView {}
 
 impl SequenceRead for DiskView {
     fn len(&self, table: SequenceId) -> u64 {

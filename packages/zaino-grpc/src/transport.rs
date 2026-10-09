@@ -23,7 +23,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn, Instrument as _, Span};
-use zaino_persistence::{MapRead, SequenceRead};
+use zaino_persistence::CommittedView;
 use zaino_source::ChainDataSource;
 
 use crate::admission::{Admission, Class, Permits};
@@ -76,7 +76,7 @@ pub enum GrpcServeError {
     Serve(String),
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
+impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
     pub fn new(routes: Routes<S, V>, bind: SocketAddr, limits: GrpcLimits) -> Self {
         let dispatch = Dispatch::new(routes, &limits);
         Self { dispatch, bind, limits, proxies: TrustedProxies::default(), tls: None }
@@ -119,7 +119,7 @@ pub struct BoundGrpcService<S: ChainDataSource, V> {
     listener: TcpListener,
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> GrpcService<S, V> {
+impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
     /// Awaited at boot, before spawning `run` (EADDRINUSE = boot failure, not a serve-loop
     /// failure (#1081))
     pub async fn bind(self) -> Result<BoundGrpcService<S, V>, GrpcServeError> {
@@ -145,7 +145,7 @@ struct Shared<S: ChainDataSource, V> {
     cancel: CancellationToken,
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
+impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
     /// Permits and connections held now, each against its cap
     fn held(&self) -> Held {
         Held {
@@ -158,7 +158,7 @@ impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> BoundGrpcService<S, V> {
+impl<S: ChainDataSource, V: CommittedView> BoundGrpcService<S, V> {
     /// Accept + serve until `cancel`, then drain: listener closed, every connection GOAWAY'd,
     /// returns once they all finish or `drain_timeout` passes (the rest dropped)
     ///
@@ -263,7 +263,7 @@ fn tune(socket: &TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> Shared<S, V> {
+impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
     /// Names the client, applies its cap, then serves HTTP/2 until close or `cancel`
     async fn connection(
         self: Arc<Self>,

@@ -8,11 +8,11 @@ holds the same block there.
 ## Wiring
 
 ```rust
-use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES};
+use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES);
-let writer = BlockHashIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
+let writer = BlockHashIndexWriter::new(DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::BlockHash, handle.tip(), queue_bytes);
 nfs.add(IndexKind::BlockHash, handle);
@@ -21,10 +21,12 @@ tokio::spawn(writer.run(blocks));
 
 - Generic over the persistence port: `BlockHashIndexWriter<S: Store>` with
   `S::View: MapRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream (`"block_hash"`, from `FinalFollower`) through
-  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
-  each block not held = `fold` into the delta `Run::apply` opened for it.
+- `run` follows the final stream (`"block_hash"`, from `FinalFollower`) run by
+  run ([the writer shape](../zaino-sync/usage.md#writer-loop)): each block not
+  held = `fold` into a delta opened for it, then `zaino_sync::apply`.
   `handle()` = the `IndexHandle` the NFS reads (committed view, durable tip).
+- `WRITE_BUFFER` = 2 MiB (≈100 B per block → ≈20k blocks per bulk commit); a
+  `Finalized` block commits at once.
 
 ## Folding and reading
 

@@ -347,15 +347,18 @@ impl ChainDataSource for MockValidator {
         Ok(state.answer(block))
     }
 
-    async fn get_block_by_height(
+    async fn get_blocks_by_height(
         &self,
-        height: Height,
-    ) -> Result<Block, QueryError<GetAtHeightError>> {
-        self.enter(Port::Block, |calls| calls.blocks += 1).await?;
+        heights: &[Height],
+    ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
+        self.enter(Port::Block, |calls| calls.blocks += heights.len()).await?;
         let state = self.state();
-        let block = state.best_at(height);
-        let block = block.ok_or(QueryError::Domain(GetAtHeightError::HeightNotFound(height)))?;
-        Ok(state.answer(block))
+        let answer = |height: &Height| {
+            let block = state.best_at(*height);
+            let absent = || QueryError::Domain(GetAtHeightError::HeightNotFound(*height));
+            Ok(state.answer(block.ok_or_else(absent)?))
+        };
+        heights.iter().map(answer).collect()
     }
 
     async fn get_block_links(&self, heights: &[Height]) -> Result<BlockLinks, NonDomainError> {

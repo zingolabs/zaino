@@ -10,8 +10,8 @@ value-balance index; 0 for a coinbase or a fee of 2^32 zatoshis or more). `fold(
 fees)` derives one block's record; `CompactBlockReader` reads any view (`tip`, `block`, `range`, \
 `block_at`, `resident_block`); `RangeCursor` walks a range in ≤ 1 MiB windows, ascending or \
 descending, projected to the requested `Pools` (a transaction left with no component dropped, \
-as lightwalletd does). `CompactBlockIndexWriter::new(store, batch_bytes)` follows the final \
-stream through `zaino_sync::Committer`.
+as lightwalletd does). `CompactBlockIndexWriter::new(store)` follows the final stream, one fee \
+step off value-balance's `FeeSink` per block.
 """
 
 [[changes]]
@@ -33,5 +33,6 @@ Open the delta with `store.changes(block.at())` (or a layer's), open the store w
 crate = "zaino-index-compact-block"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (the `write_buffer` `zainod` \
+opens its store with).
 """

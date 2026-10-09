@@ -5,26 +5,33 @@ crate = "zaino-sync"
 kind = "feature"
 description = """
 First release. The final path: `FinalFollower::new(chain, balancer, lookahead)` fetches every \
-block up to the `VerifiedChain`'s final tip height, by height from trusted members, in order \
-(`fetch_at` / `check_block_at`: coinbase height + merkle root vs its own header, \
+block up to the `VerifiedChain`'s final tip height, by height from trusted members (4 per \
+batched `getblock` request), in order (`fetch_at` / `check_block_at`: coinbase height + merkle root vs its own header, \
 CVE-2012-2459; a misanswer `report`ed and re-asked; no header history read) onto one \
 `IndexerDataSink<Block>`, from the lowest durable tip (`subscribe(kind, durable, queue)`). Each \
 block must extend the block sent before it (`FollowError::Unlinked`) and each durable tip it \
 reaches (`FollowError::Diverged`, naming the index). `fetch` / `check_block` fetch by hash \
 against a verified header (the NFS's). `IndexerDataSink<T>` is a \
 byte-bounded broadcast queue (all-or-nothing `send`, `shutdown`); `FeeSink` carries \
-value-balance's fees to compact-block. `Committer` is the apply / commit loop every writer runs \
-(commits when the batch fills or 1 s after its oldest uncommitted run; `Run::{apply, apply_batch}` fold each block a \
-store lacks); `IndexHandle` is what the rest of the daemon knows about one index (`view`, `tip`, \
-`changed`). `SyncProgress` = the last height sent \
-(`zaino_fetch_height`); `zaino_fetch_*_total` and `zaino_sink_queue_bytes` metrics; `compute` \
-for CPU work on the rayon pool.
+value-balance's fees to compact-block; the follower sends the block at the chain's final tip \
+as `Step::Finalized`. Each writer runs its own loop: `Subscription::next_run` = one run of \
+queued steps (`Run { blocks, finalized }`, to the queue's budget; `None` = `Shutdown`), folded \
+in one `blocking` hop through `held(store, height)`, `apply(store, changes)` (`Store::apply`, \
+counted) and `commit(store)` (after a finalized run and at `Shutdown`; a failure panics naming \
+the index and its directory); the store commits a full buffer by itself. `IndexPublisher` \
+(`new(&store)`, `handle()`, `publish(&store)` after every hop) is the writer's end of its \
+`IndexHandle`, what the rest of the daemon knows about one index (`view`, `tip`, `changed`). \
+`SyncProgress` = the last height sent (`zaino_fetch_height`); `zaino_fetch_*_total` and \
+`zaino_sink_queue_bytes` metrics; `compute` for CPU work on the rayon pool.
 """
 
 [[changes]]
 crate = "zaino-sync"
-kind = "fix"
+kind = "feature"
+section = "changed"
 description = """
-`Committer` commits 1 s after its oldest uncommitted run, steady stream or quiet (was: 1 s of \
-quiet, re-armed per block, so a steady bulk stream only committed on a full batch).
+Index progress comes from each writer, not the served snapshot: `zaino_index_applied_height`, \
+`zaino_index_applied_blocks_total` and `zaino_index_applied_rows_total` as blocks are applied, \
+`zaino_index_finalized_height` = the committed tip (moved from zaino-snapshot), all `{index}`; \
+`IndexHandle::applied()`.
 """

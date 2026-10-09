@@ -4,7 +4,11 @@
 //! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
 //! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
 
-use std::{num::NonZeroU32, ops::Range, path::Path};
+use std::{
+    num::{NonZeroU32, NonZeroUsize},
+    ops::Range,
+    path::Path,
+};
 
 use bytes::Bytes;
 use serde::Serialize;
@@ -17,11 +21,17 @@ use crate::{manifest::IndexKind, write_buffer::StagedView, StoreError};
 pub trait PersistenceEngine: Send + Sync + 'static {
     type Store: Store;
 
-    /// Store at `path`: created, or resumed at its committed tip
+    /// Store at `path`: created, or resumed at its committed tip; commits by itself once
+    /// `write_buffer` bytes are buffered
     ///
     /// - another identity there (kind, format, network) = error, never a reformat
     /// - table this engine cannot hold = panic naming it (tables = constants: a bug)
-    fn open(&self, path: &Path, schema: &Schema) -> Result<Self::Store, StoreError>;
+    fn open(
+        &self,
+        path: &Path,
+        schema: &Schema,
+        write_buffer: NonZeroUsize,
+    ) -> Result<Self::Store, StoreError>;
 
     /// Every committed byte against its integrity data (read-only: safe beside a running writer)
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError>;
@@ -29,9 +39,10 @@ pub trait PersistenceEngine: Send + Sync + 'static {
 
 /// Index's store = commit point of all its tables (one writer)
 ///
-/// - final data: [`apply`](Self::apply) buffers, [`commit`](Self::commit) makes it durable
+/// - final data: [`apply`](Self::apply) buffers (commits itself on a full buffer),
+///   [`commit`](Self::commit) makes the rest durable now
 pub trait Store: Send + 'static {
-    type View: View;
+    type View: CommittedView;
 
     /// As opened
     fn schema(&self) -> &Schema;
@@ -45,13 +56,14 @@ pub trait Store: Send + 'static {
     }
 
     /// `changes` buffered: in [`staged`](Self::staged), not in [`committed`](Self::committed),
-    /// not durable
+    /// not durable; buffer then at `write_buffer` bytes = committed (as [`commit`](Self::commit))
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
+    /// - panics: that commit failing ([`StoreError::commit_failed`]: index + directory named)
     fn apply(&mut self, changes: BlockChanges);
 
-    /// Heap the buffer holds (≈ RAM, >= its item bytes; a writer's batch trigger)
+    /// Heap the buffer holds (≈ RAM, >= its item bytes; `write_buffer` of it = a commit)
     fn buffered_bytes(&self) -> usize;
 
     /// Every buffered change + the last applied tip, durable together (one fsync), then in
@@ -65,11 +77,11 @@ pub trait Store: Send + 'static {
     fn committed(&self) -> Self::View;
 
     /// Committed + buffered (what a bulk fold reads its parent through)
-    fn staged(&self) -> StagedView<Self::View>;
+    fn staged(&self) -> StagedView<'_, Self::View>;
 }
 
-/// Committed state: fixed while held, shared by clones
-pub trait View: Clone + Send + Sync + 'static {
+/// State at a tip: [`CommittedView`] (served) or [`StagedView`] (a writer's fold, borrowed)
+pub trait View: Clone + Send + Sync {
     /// Last committed block (`None` = nothing committed yet)
     fn tip(&self) -> Option<BlockRef>;
 
@@ -124,6 +136,11 @@ pub trait MapRead: View {
         MapView { view: self, table: table.id }
     }
 }
+
+/// gRPC's read: a committed snapshot, fixed while held, owned (read on any thread)
+///
+/// - NFS layers over one (`OverlayView<V, Overlay>`) = one too
+pub trait CommittedView: SequenceRead + MapRead + 'static {}
 
 /// One sequence table of one view
 #[derive(Debug, Clone, Copy)]
@@ -363,6 +380,15 @@ impl BlockChanges {
     pub fn bytes(&self) -> usize {
         let maps = self.maps.iter().flatten();
         self.sequences.iter().chain(maps).map(|buffer| buffer.bytes.len()).sum()
+    }
+
+    /// Records appended + rows inserted, every table
+    pub fn rows(&self) -> usize {
+        let schema = self.schema;
+        let records =
+            schema.sequences().iter().map(|&table| self.sequence_items(table).len(table.record));
+        let rows = schema.maps().iter().map(|&table| self.map_items(table)[0].len(table.key));
+        records.chain(rows).sum()
     }
 
     /// `table`'s appends, in the order made

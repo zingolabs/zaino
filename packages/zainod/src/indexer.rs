@@ -292,26 +292,27 @@ impl<S: ChainDataSource> Indexes<S> {
         span: &Span,
     ) -> Subscription<Block> {
         let blocks = self.follower.subscribe(kind, handle.tip(), config.queue_bytes);
-        self.nfs.add(kind, handle);
+        self.nfs.add(kind, handle.clone());
         let (span, dir) = (span.clone(), config.path.clone());
-        self.opened.push(crate::progress::Index { kind, span, dir });
+        self.opened.push(crate::progress::Index { kind, span, dir, handle });
         blocks
     }
 }
 
-/// `config.path` opened as `schema`'s store and handed to `writer` with the index's own write
-/// buffer, under the index's component span (logged); the span then carries the index's task
+/// `config.path` opened as `schema`'s store (committing at the index's own write buffer) and
+/// handed to `writer`, under the index's component span (logged); the span then carries the
+/// index's task
 fn open<W>(
     engine: &DiskEngine,
     config: &IndexConfig,
     schema: Schema,
-    writer: impl FnOnce(DiskStore, NonZeroUsize) -> W,
-    buffer: NonZeroUsize,
+    writer: impl FnOnce(DiskStore) -> W,
+    write_buffer: NonZeroUsize,
 ) -> Result<(Span, W), IndexerError> {
     let span = crate::logging::index_component(schema.kind.name());
     let opened = span.in_scope(|| {
         debug!("Opening from {}", crate::logging::shown_path(&config.path));
-        engine.open(&config.path, &schema).map(|store| writer(store, buffer))
+        engine.open(&config.path, &schema, write_buffer).map(writer)
     })?;
     Ok((span, opened))
 }

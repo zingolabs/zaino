@@ -19,11 +19,12 @@ version.
 ## Wiring
 
 ```rust
-use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TABLES};
+use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::TransparentAddress, FORMAT, network, TABLES);
-let writer = TransparentAddressIndexWriter::new(DiskEngine::new(fs).open(&path, &schema)?, batch_bytes);
+let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let writer = TransparentAddressIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::TransparentAddress, handle.tip(), queue_bytes);
 nfs.add(IndexKind::TransparentAddress, handle);
@@ -32,11 +33,11 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
 
 - Generic over the persistence port: `TransparentAddressIndexWriter<S: Store>`
   with `S::View: MapRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream (from `FinalFollower`) through
-  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
-  blocks not held are folded onto `staged()` on the CPU pool, each into the
-  delta `Run::apply` opened for it. `handle()` = the `IndexHandle` the NFS
-  reads (committed view, durable tip).
+- `run` follows the final stream (from `FinalFollower`) run by run
+  ([the writer shape](../zaino-sync/usage.md#writer-loop)): blocks not held are
+  folded onto `staged()` on the blocking pool, each into a delta opened for it,
+  then `zaino_sync::apply`. `handle()` = the `IndexHandle` the NFS reads
+  (committed view, durable tip).
 - Fallible only at boot (the engine's `open` → `StoreError`); `run` panics on a
   failed commit ([Failure](../zaino-sync/usage.md#failure-panic-never-err)).
 - zainod builds it only when `index.transparent_address.enabled`; disabled =
@@ -106,7 +107,7 @@ contiguous heights: a gap would leave spent outputs counted as balance.
 
 ## Storage
 
-- `new(store, batch_bytes)` takes a store opened with `TABLES` at its
+- `new(store)` takes a store opened with `TABLES` and `WRITE_BUFFER` at its
   committed tip. Layout, merges, checksums and crash recovery are the engine's
   ([`zaino-persistence`](../zaino-persistence/usage.md)); a foreign network or
   format is refused at open.

@@ -85,8 +85,8 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     balancer.report(first.ticket, &std::io::Error::other("merkle root mismatch"));
     let again = balancer.block(hash, Urgency::Bulk).await;
     assert_eq!(again.from, MemberId::Trusted(v(1)), "the reported member benched");
-    let by_height = balancer.block_at(h(2), Urgency::Bulk).await;
-    let served = (by_height.from, by_height.value.header().hash);
+    let by_height = balancer.blocks_at(Arc::from([h(2)]), Urgency::Bulk).await;
+    let served = (by_height.from, by_height.value[0].header().hash);
     assert_eq!(served, (MemberId::Trusted(v(1)), hash), "by height: the benched member skipped");
     tokio::time::sleep(Duration::from_millis(1)).await;
     let table = balancer.members().borrow().clone();
@@ -287,7 +287,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
         _ => None,
     };
     assert_eq!(mode, Some(FailureMode::Connection), "never asked of the peer");
-    let by_height = balancer.block_at(h(1), Urgency::Bulk);
+    let by_height = balancer.blocks_at(Arc::from([h(1)]), Urgency::Bulk);
     tokio::pin!(by_height);
     let unserved = tokio::time::timeout(Duration::from_secs(10), &mut by_height).await;
     assert!(unserved.is_err(), "by height: never asked of the peer, pending for a trusted one");
@@ -302,6 +302,6 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     let back = pending.await;
     assert_eq!(back.from, MemberId::Trusted(v(0)));
     let at_one = by_height.await;
-    assert_eq!((at_one.from, at_one.value.header().hash), (MemberId::Trusted(v(0)), hash));
+    assert_eq!((at_one.from, at_one.value[0].header().hash), (MemberId::Trusted(v(0)), hash));
     cancel.cancel();
 }

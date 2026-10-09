@@ -64,9 +64,9 @@ tokio::spawn(bound.run(cancel.child_token()));
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [`docs/design/boundaries.md`](../../docs/design/boundaries.md).
-- `V` = the persistence engine's committed view every snapshot holds
-  (`SequenceRead + MapRead`; zainod: `zaino_persistence::DiskView`): `Routes<S,
-  V>`, `GrpcService<S, V>`. The crate names no engine.
+- `V` = the indexes' `zaino_persistence::CommittedView` (zainod: `DiskView`): every read = an
+  index's reader over a committed snapshot + the NFS's layers, on a read lane (any thread).
+  Any engine's committed view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the
   snapshot's `block_hash` view: `height_of(hash)` names the height (above the
   tip = `NOT_FOUND`), and the answering index must hold the same hash there

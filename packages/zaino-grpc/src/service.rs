@@ -20,7 +20,7 @@ use std::{
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
-use zaino_persistence::{IndexKind, MapRead, SequenceRead};
+use zaino_persistence::{CommittedView, IndexKind};
 use zaino_snapshot::{Snapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
@@ -66,14 +66,14 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> Dispatch<S, V> {
+impl<S: ChainDataSource, V: CommittedView> Dispatch<S, V> {
     pub(crate) fn new(routes: Routes<S, V>, limits: &GrpcLimits) -> Self {
         let (reads, idle) = (ReadLanes::new(limits), limits.stall_timeout);
         Self(Arc::new(Wired { routes, reads, tree_states: Arc::default(), idle }))
     }
 }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> Wired<S, V> {
+impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
     /// One request, answered by the route its path names
     async fn answer<B>(&self, path: &str, body: B) -> Response<Body>
     where
@@ -168,7 +168,7 @@ fn absent(path: &str, kind: IndexKind) -> Response<Body> {
 impl<S, V, ReqBody> tower::Service<Request<ReqBody>> for Dispatch<S, V>
 where
     S: ChainDataSource,
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     ReqBody: http_body::Body + Send + 'static,
     ReqBody::Data: Send,
     ReqBody::Error: std::fmt::Display,

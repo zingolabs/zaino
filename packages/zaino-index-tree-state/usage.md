@@ -9,12 +9,12 @@ is described in
 ## Wiring
 
 ```rust
-use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES};
+use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
 let schema = Schema::new(IndexKind::TreeState, FORMAT, network, TABLES);
-let store = DiskEngine::new(fs).open(&path, &schema)?;
-let writer = TreeStateIndexWriter::new(store, batch_bytes);
+let store = DiskEngine::new(fs).open(&path, &schema, WRITE_BUFFER)?;
+let writer = TreeStateIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::TreeState, handle.tip(), queue_bytes);
 nfs.add(IndexKind::TreeState, handle);
@@ -23,12 +23,12 @@ tokio::spawn(writer.run(blocks));
 
 - Generic over the persistence port: `TreeStateIndexWriter<S: Store>` with
   `S::View: SequenceRead`; zainod picks `DiskEngine`.
-- `run` follows the final stream (`"tree_state"`, from `FinalFollower`) through
-  `zaino_sync::Committer` ([the writer shape](../zaino-sync/usage.md#committer)):
-  per run, the blocks not held are folded as one [`fold_run`](#fold) onto
-  `staged()` on the CPU pool into one delta per block (`Run::apply_batch` opens
-  them). Commits: batch full or 1 s idle. `handle()` = the `IndexHandle` the
-  NFS reads (committed view, durable tip).
+- `run` follows the final stream (`"tree_state"`, from `FinalFollower`) run by
+  run ([the writer shape](../zaino-sync/usage.md#writer-loop)): the blocks not
+  held are folded as one [`fold_run`](#fold) onto `staged()` into one delta per
+  block, each then `zaino_sync::apply`d. Commits: a `Finalized` block, a full
+  buffer (`WRITE_BUFFER` = 8 MiB), `Shutdown`. `handle()` = the `IndexHandle`
+  the NFS reads (committed view, durable tip).
 - Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
   one record per committed height. `run` panics on a failed commit or an
   unfoldable block (`tree_state index: <FoldError>`,
@@ -101,9 +101,9 @@ encodings.
   as an ommer, so it cannot be derived from stored nodes later).
 - One block = one delta (`BlockChanges`): its height record, the nodes whose last
   leaf it holds and the subtree roots it closes, each asserted at its table's
-  end (slot = position). A commit merges the held blocks' `BlockChanges` into one
-  `Store::commit`, which fsyncs only the tables that grew (~4 of 100 per
-  batch).
+  end (slot = position). One `Store::commit` writes every buffered block's
+  `BlockChanges` and fsyncs only the tables that grew (~4 of 100 per
+  commit).
 - `new` asserts one `heights` record per committed height.
 - Subtrees are the protocol's 2^16-leaf shards (`SUBTREE_LEVEL`, a constant).
 - `Schema::new(IndexKind::TreeState, FORMAT, network, TABLES)` = what
@@ -123,7 +123,7 @@ fold(&parent, &block, &mut out)?;                   // block = next above parent
 
 - `fold` lives in `writer.rs`, beside the writer loop and its crate-internal
   `fold_run(parent, blocks, out: &mut [BlockChanges])` (a contiguous run, one
-  caller-opened delta per block, the writer's via `Run::apply_batch`).
+  caller-opened delta per block).
 - The parent's state (tree sizes from its tip record, each pool's frontier,
   each table's length) is read through the reader; nothing is carried between
   calls, so reorg and restart need no step. A delta opened for another block,
@@ -146,7 +146,7 @@ exactly as the files, read through the same `TreeStateReader` over a
 its parent node's frontiers: no reverse fold. Nothing reorg-able is ever
 fsynced. See [`docs/design/nfs.md`](../../docs/design/nfs.md).
 
-The writer's `fold_run` runs on the CPU pool (`Committer::compute`), reading
-note commitments straight off the stream's shared `Arc<Block>`s; the commit
-runs on the blocking pool. A panic in either re-raises on the caller (and
-aborts zainod).
+The writer's `fold_run`, apply and commit run in one `zaino_sync::blocking`
+hop per run, reading note commitments straight off the stream's shared
+`Arc<Block>`s (the pools' hashing on the rayon pool via `rayon::join`). A panic
+re-raises on the caller (and aborts zainod).

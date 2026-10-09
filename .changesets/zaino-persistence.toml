@@ -6,7 +6,7 @@ kind = "feature"
 description = """
 First release. The persistence port every Zaino index stores through: `PersistenceEngine` \
 (`open`, `verify`), `Store` (`apply` buffers final changes, `commit` writes them in one atomic \
-commit, `view` / `staged` read), `View`, the read traits `SequenceRead` and `MapRead`, and \
+commit, `committed` / `staged` read), `View`, the read traits `SequenceRead` and `MapRead`, and \
 `Schema` / `BlockChanges` (sequence and map tables, fixed or variable width). `Overlay` and \
 `OverlayView` hold non-final data over a committed view by structural sharing. `DiskEngine` \
 implements it: positional files for sequences, an LSM with binary-fuse filters and fence keys \
@@ -52,4 +52,36 @@ to ~750 MB before its first commit.
 migration = """
 A batch budget compared against `buffered_bytes()` is now RAM: the same figure commits 2–10× \
 sooner. Size it as the buffer's heap, not bytes on disk.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`PersistenceEngine::open(path, schema, write_buffer: NonZeroUsize)`: the store commits by itself \
+in `Store::apply` once its buffer (`buffered_bytes`, heap) reaches `write_buffer`; that commit \
+failing panics through `StoreError::commit_failed` (index + directory named). \
+`conformance::contract` checks it.
+"""
+migration = """
+Pass the index's `WRITE_BUFFER` to `open` and drop any `buffered_bytes()` threshold check before \
+`commit`; call `commit` only to make a buffer durable early (the final tip, shutdown). \
+`NonZeroUsize::MAX` = commits only when told.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+Two read contracts: `CommittedView` (`SequenceRead + MapRead + 'static`, a committed snapshot \
+read on any thread; `DiskView` and `OverlayView<V, Overlay>` over one) is what serves, and \
+`Store::View: CommittedView`; `Store::staged` returns `StagedView<'_, V>` = \
+`OverlayView<V, &WriteBuffer>`, a borrow of the store (holding one across `apply` no longer \
+compiles, never a buffer copy). `View` drops its `'static` bound.
+"""
+migration = """
+Bound served views on `V: CommittedView` (it was `SequenceRead + MapRead`); read a staged view \
+inside the fold and drop it before `apply`.
 """

@@ -105,7 +105,7 @@ fn absent(kind: IndexKind) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
@@ -156,7 +156,9 @@ mod tests {
                 (Vec::new(), PerIndex::default(), PerIndex::default());
             for &kind in enabled {
                 let schema = crate::tests::schema(kind);
-                let store = engine.open(Path::new(kind.name()), &schema).expect("fresh store");
+                let store = engine
+                    .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
+                    .expect("fresh store");
                 durable.insert(kind, store.committed());
                 root.insert(kind, Overlay::empty(&schema));
                 stores.push(store);

@@ -172,12 +172,23 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         self.raw_block(hash.to_string(), || GetBlockByHashError::NotFound(hash)).await
     }
 
-    async fn get_block_by_height(
+    async fn get_blocks_by_height(
         &self,
-        height: Height,
-    ) -> Result<Block, QueryError<GetAtHeightError>> {
-        let id = u32::from(height).to_string();
-        self.raw_block(id, || GetAtHeightError::HeightNotFound(height)).await
+        heights: &[Height],
+    ) -> Result<Vec<Block>, QueryError<GetAtHeightError>> {
+        let call = |height: &Height| Call {
+            method: "getblock",
+            params: vec![u32::from(*height).to_string().into(), 0.into()],
+        };
+        let replies = self.rpc.call_batch::<parse::HexBytes>(heights.iter().map(call).collect());
+        let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
+        let decoded = heights.iter().zip(replies).map(|(height, reply)| {
+            let absent = || GetAtHeightError::HeightNotFound(*height);
+            let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
+            decode::block(&raw)
+                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+        });
+        decoded.collect()
     }
 
     /// Raw form (verbose = two extra state reads per header on zebrad)

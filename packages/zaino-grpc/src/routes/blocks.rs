@@ -7,7 +7,7 @@ use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
-use zaino_persistence::{IndexKind, MapRead, OverlayView, SequenceRead};
+use zaino_persistence::{CommittedView, IndexKind, OverlayView};
 use zaino_primitives::types::Height;
 
 use crate::limits::Lane;
@@ -36,7 +36,7 @@ pub(crate) async fn dispatch<V, B>(
     reads: ReadLanes,
 ) -> Response<Body>
 where
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -73,7 +73,7 @@ struct Walk<V> {
 ///
 /// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
 /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
-fn range_response<V: SequenceRead>(
+fn range_response<V: CommittedView>(
     walk: Walk<V>,
     reads: ReadLanes,
     reproject: fn(Bytes) -> Result<Bytes, Status>,
@@ -128,7 +128,7 @@ async fn block<V, B>(
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
 where
-    V: SequenceRead + MapRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -157,7 +157,7 @@ where
 /// `GetBlockRange` (wallet-sync path: must stay cheap)
 async fn range<V, B>(blocks: Blocks<V>, through: Height, body: B) -> Result<Walk<V>, Status>
 where
-    V: SequenceRead,
+    V: CommittedView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -168,7 +168,7 @@ where
 
 /// - walk order up to the first height past `through`: a first height past it = refused before
 ///   any block (lightwalletd: the first `getblock` fails)
-fn open_range<V: SequenceRead>(
+fn open_range<V: CommittedView>(
     blocks: Blocks<V>,
     through: Height,
     request: &proto::BlockRange,
@@ -225,7 +225,7 @@ mod deprecated_nullifiers {
         body: B,
     ) -> Result<Walk<V>, Status>
     where
-        V: zaino_persistence::SequenceRead,
+        V: zaino_persistence::CommittedView,
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {

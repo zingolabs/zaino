@@ -3,53 +3,70 @@
 //! - fees: one [`BlockFees`] off value-balance's sink per step, held heights included
 //!   (value-balance re-folds them: both streams stay in step with either index ahead)
 
-use std::{num::NonZeroUsize, sync::Arc};
+use std::sync::Arc;
 
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, Store, View};
 use zaino_primitives::types::{Block, BlockFees, TreeSizeOutOfRange};
-use zaino_sync::{Committer, IndexHandle, Step, Subscription};
+use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Step, Subscription};
 
 use crate::{encode_compact_block, position, CompactBlockReader, BLOCKS};
 
 const NAME: &str = IndexKind::CompactBlock.name();
 
 pub struct CompactBlockIndexWriter<S: Store> {
-    store: Committer<S>,
+    store: S,
+    publisher: IndexPublisher<S::View>,
 }
 
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
-    /// Over `store` (opened with [`TABLES`](crate::TABLES)); `batch_bytes` = buffered bytes per
-    /// bulk commit (one fsync)
-    pub fn new(store: S, batch_bytes: NonZeroUsize) -> Self {
+    /// Over `store` (opened with [`TABLES`](crate::TABLES))
+    pub fn new(store: S) -> Self {
         let view = store.committed();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
         assert_eq!(view.sequence(BLOCKS).count(), held, "{NAME}: one record per committed height");
-        Self { store: Committer::new(store, batch_bytes) }
+        let publisher = IndexPublisher::new(&store);
+        Self { store, publisher }
     }
 
     /// For `Nfs::add`: committed view after every commit
     pub fn handle(&self) -> IndexHandle<S::View> {
-        self.store.handle()
+        self.publisher.handle()
     }
 
     /// Follows `blocks` and `fees` (value-balance's) through their `Shutdown` (a failure panics)
-    pub async fn run(mut self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
-        while let Some(run) = self.store.next(&mut blocks).await {
+    ///
+    /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
+    pub async fn run(self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
+        let Self { mut store, publisher } = self;
+        while let Some(run) = blocks.next_run().await {
             let mut paid = Vec::with_capacity(run.blocks.len());
             for (_, block) in &run.blocks {
                 paid.push(next_fees(&mut fees, block).await);
             }
-            let applied = move |store: &mut S| {
-                let mut paid = paid.into_iter();
-                run.apply(store, |store, block, out| {
-                    let height = block.header().height;
-                    let fees = paid.find(|fees| fees.height == height).expect("one per step");
-                    let folded = fold(&CompactBlockReader::new(store.staged()), block, &fees, out);
-                    folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"));
-                });
-            };
-            self.store.compute(applied).await;
+            store = blocking(move || {
+                for ((height, block), fees) in run.blocks.iter().zip(&paid) {
+                    if !held(&store, *height) {
+                        let mut changes = store.changes(block.at());
+                        let parent = CompactBlockReader::new(store.staged());
+                        let folded = fold(&parent, block, fees, &mut changes);
+                        folded.unwrap_or_else(|error| panic!("{NAME} index at {height}: {error}"));
+                        apply(&mut store, changes);
+                    }
+                }
+                if run.finalized {
+                    commit(&mut store);
+                }
+                store
+            })
+            .await;
+            publisher.publish(&store);
         }
+        store = blocking(move || {
+            commit(&mut store);
+            store
+        })
+        .await;
+        publisher.publish(&store);
         let ended = matches!(fees.next().await, Step::Shutdown);
         assert!(ended, "{NAME}: fees past the last block");
     }
@@ -83,7 +100,7 @@ pub fn fold<V: SequenceRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{panic::AssertUnwindSafe, path::Path};
+    use std::{num::NonZeroUsize, panic::AssertUnwindSafe, path::Path};
 
     use proptest::strategy::Strategy as _;
     use prost::Message as _;
@@ -105,8 +122,9 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
 
-    fn open(fs: &Arc<SimFs>) -> DiskStore {
-        DiskEngine::new(fs.clone()).open(Path::new("/cb"), &SCHEMA).expect("open")
+    /// `write_buffer` = MIN: every applied block committed by the store itself
+    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
+        DiskEngine::new(fs.clone()).open(Path::new("/cb"), &SCHEMA, write_buffer).expect("open")
     }
 
     /// Genesis ..= tip, each block beside the fees value-balance derives for it
@@ -152,7 +170,7 @@ mod tests {
             let parent = CompactBlockReader::new(store.staged());
             fold(&parent, block, &fees(block), &mut changes).map(|()| changes)
         };
-        let mut through_three = open(&SimFs::new());
+        let mut through_three = open(&SimFs::new(), NonZeroUsize::MAX);
         for (at, after) in [
             (chain.genesis(), sizes(0, 0, 0)),
             (one, sizes(2, 1, 0)),
@@ -169,7 +187,7 @@ mod tests {
         }
 
         // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
-        let mut seeded = open(&SimFs::new());
+        let mut seeded = open(&SimFs::new(), NonZeroUsize::MAX);
         seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
         let mut changes = Overlay::empty(&SCHEMA).changes(one);
         let near_full = sizes(u32::MAX - 1, 0, 0);
@@ -180,7 +198,7 @@ mod tests {
         assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
 
         // parents: `through_three` = 0..=3, `seeded` = 0..=1, `through_two` = 0..=2
-        let mut through_two = open(&SimFs::new());
+        let mut through_two = open(&SimFs::new(), NonZeroUsize::MAX);
         for at in [chain.genesis(), one, two] {
             through_two.apply(folded(&through_two, chain.block(at.hash)).expect("small"));
         }
@@ -211,8 +229,8 @@ mod tests {
     }
 
     impl Running {
-        fn start(store: DiskStore, batch: NonZeroUsize) -> Self {
-            let writer = CompactBlockIndexWriter::new(store, batch);
+        fn start(store: DiskStore) -> Self {
+            let writer = CompactBlockIndexWriter::new(store);
             let handle = writer.handle();
             let (mut blocks, mut fees) = (IndexerDataSink::new("final"), FeeSink::new("fees"));
             let (block_sub, fee_sub) = (blocks.subscribe(NAME, QUEUE), fees.subscribe(NAME, QUEUE));
@@ -225,6 +243,13 @@ mod tests {
             let height = block.header().height;
             self.fees.send(Step::Apply { height, data: Arc::new(fees.clone()) }).await;
             self.blocks.send(Step::Apply { height, data: Arc::clone(block) }).await;
+        }
+
+        /// [`send`](Self::send) as the chain's final tip: the writer commits after it
+        async fn finalize(&self, (block, fees): &(Arc<Block>, BlockFees)) {
+            let height = block.header().height;
+            self.fees.send(Step::Apply { height, data: Arc::new(fees.clone()) }).await;
+            self.blocks.send(Step::Finalized { height, data: Arc::clone(block) }).await;
         }
 
         async fn reached(&mut self, tip: Option<u32>) {
@@ -258,7 +283,7 @@ mod tests {
     /// Tree sizes accumulate block by block, and a restart resending held heights (their fees
     /// popped, their records untouched) folds the next block onto the committed tip record (not
     /// zero)
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn tree_sizes_and_fees_accumulate_across_blocks_and_a_restart() {
         let fs = SimFs::new();
         let miner = p2pkh([0xc0; 20]);
@@ -280,10 +305,11 @@ mod tests {
         }
         let chain = with_fees(&mock);
 
-        let mut index = Running::start(open(&fs), QUEUE);
-        for block in &chain[..4] {
+        let mut index = Running::start(open(&fs, NonZeroUsize::MAX));
+        for block in &chain[..3] {
             index.send(block).await;
         }
+        index.finalize(&chain[3]).await;
         index.reached(Some(3)).await;
         let view = index.stop().await;
         let stored = [0, 1, 2, 3].map(|height| record(&view, height));
@@ -296,10 +322,11 @@ mod tests {
         ];
         assert_eq!(stored, expected, "cumulative sizes, each block's own fees");
 
-        let mut resumed = Running::start(open(&fs), QUEUE);
-        for block in &chain[2..=4] {
+        let mut resumed = Running::start(open(&fs, NonZeroUsize::MAX));
+        for block in &chain[2..4] {
             resumed.send(block).await;
         }
+        resumed.finalize(&chain[4]).await;
         resumed.reached(Some(4)).await;
         let view = resumed.stop().await;
         assert_eq!(record(&view, 3), expected[3], "held: untouched");
@@ -334,9 +361,9 @@ mod tests {
                 ],
                 1..16,
             ),
-            batch in proptest::prop_oneof![
+            write_buffer in proptest::prop_oneof![
                 proptest::strategy::Just(NonZeroUsize::MIN),
-                proptest::strategy::Just(QUEUE),
+                proptest::strategy::Just(NonZeroUsize::MAX),
             ],
         ) {
             tokio::runtime::Builder::new_current_thread()
@@ -344,14 +371,14 @@ mod tests {
                 .start_paused(true)
                 .build()
                 .expect("runtime")
-                .block_on(random_history(counts, moves, batch));
+                .block_on(random_history(counts, moves, write_buffer));
         }
     }
 
     async fn random_history(
         counts: Vec<(usize, usize, usize)>,
         moves: Vec<Move>,
-        batch: NonZeroUsize,
+        write_buffer: NonZeroUsize,
     ) {
         // genesis, then block h: coinbase pays 1 000 × h, spent whole by one tx committing
         // `counts[h - 1]` (sapling, orchard, ironwood)
@@ -378,19 +405,23 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let mut index = Running::start(open(&fs), batch);
+        let mut index = Running::start(open(&fs, write_buffer));
         let mut sent = 0usize;
         for (at, next) in moves.iter().enumerate() {
             match *next {
                 Move::Send(count) => {
-                    for block in chain.iter().skip(sent).take(count) {
-                        index.send(block).await;
+                    let burst: Vec<_> = chain.iter().skip(sent).take(count).collect();
+                    for (at, block) in burst.iter().enumerate() {
+                        match at + 1 == burst.len() {
+                            true => index.finalize(block).await,
+                            false => index.send(block).await,
+                        }
                         sent += 1;
                     }
                 }
                 Move::Reopen => {
                     index.stop().await;
-                    index = Running::start(open(&fs), batch);
+                    index = Running::start(open(&fs, write_buffer));
                     if let Some(held) = sent.checked_sub(1) {
                         index.send(&chain[held]).await;
                     }
@@ -449,7 +480,7 @@ mod tests {
             })
         };
         let fs = SimFs::recording();
-        let mut index = Running::start(open(&fs), NonZeroUsize::MIN);
+        let mut index = Running::start(open(&fs, NonZeroUsize::MIN));
         for (acked, block) in (1u64..).zip(&chain[..5]) {
             index.send(block).await;
             index.reached(Some(u32::from(block.0.header().height))).await;
@@ -462,7 +493,7 @@ mod tests {
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs);
+            let store = open(&state.fs, NonZeroUsize::MIN);
             let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
@@ -470,7 +501,7 @@ mod tests {
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
             assert_eq!(served, records[..count], "{label}: byte-identical records");
 
-            let mut index = Running::start(store, NonZeroUsize::MIN);
+            let mut index = Running::start(store);
             index.send(&chain[count]).await;
             index.reached(Some(count as u32)).await;
             let (sizes, _) = record(&index.stop().await, count as u32);

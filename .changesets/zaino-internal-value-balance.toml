@@ -9,9 +9,8 @@ First release. The value-balance index: every transparent output's value in one 
 transaction's `Fee` (transparent in − out plus the Sprout, Sapling, Orchard and Ironwood value \
 balances) with one batched prevout lookup per run, read through `ValueBalanceReader`; a negative \
 fee on a non-coinbase transaction is consensus-invalid (`FoldError`). \
-`ValueBalanceIndexWriter::new(store, batch_bytes)` follows the final stream and publishes \
-`BlockFees` into a `zaino_sync::FeeSink` for the compact-block index (one per unfolded step; a \
-folded step's fees ride in its fold).
+`ValueBalanceIndexWriter::new(store)` follows the final stream and publishes `BlockFees` into a \
+`zaino_sync::FeeSink` for the compact-block index (one per step, held heights re-priced).
 """
 
 [[changes]]
@@ -36,5 +35,6 @@ a block the parent already holds with `fees`; open the store with \
 crate = "zaino-internal-value-balance"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+`WRITE_BUFFER`: this index's buffered heap before a bulk commit (the `write_buffer` `zainod` \
+opens its store with).
 """

@@ -245,7 +245,7 @@ fn a_spend_carries_its_fee_and_commitments_into_the_compact_block_record() {
     let paid = Fee::Paid(Zatoshis::new(1_000).expect("in supply"));
     assert_eq!(chain.fees(spent.hash).fees, [Fee::Coinbase, paid]);
 
-    let open = DiskEngine::new(SimFs::new()).open(Path::new("/cb"), &schema(REGTEST));
+    let open = DiskEngine::new(SimFs::new()).open(Path::new("/cb"), &schema(REGTEST), WRITE_BUFFER);
     let mut store = open.expect("open");
     let mut last = Vec::new();
     for block in chain.blocks(spent) {
@@ -285,7 +285,7 @@ deleted in the step that removes its last caller):
    `model.rs`, `chain/fire_drills.rs`
 1. `zaino-source`: `MockValidator` (absorbing `FakeValidator`'s features), `raw_transaction`,
    `fixtures`; migrate `decode.rs` and the mock's own test
-1. `zaino-sync` (`committer`), then value-balance, block-hash, transparent-address, tree-state,
+1. `zaino-sync`, then value-balance, block-hash, transparent-address, tree-state,
    compact-block (deletes its `testing` module once grpc's `blocks.rs` is moved in step 7)
 1. `zaino-chainview`: `MockPeers`; migrate `tests.rs`, `network_model.rs`, `holders/`
 1. `zaino-nfs`: `ChainParams::of`; migrate `tests.rs`, `fold.rs`, `fetch.rs`, `core/model.rs`,

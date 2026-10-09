@@ -6,8 +6,8 @@ kind = "feature"
 description = """
 First release. The block hash → height index every by-hash request resolves through: one map \
 `by_hash` (`schema(network)`), one row per block (`fold`), read with \
-`BlockHashReader::height_of` over any view. `BlockHashIndexWriter::new(store, batch_bytes)` \
-follows the final stream.
+`BlockHashReader::height_of` over any view. `BlockHashIndexWriter::new(store)` follows the \
+final stream.
 """
 
 [[changes]]
@@ -29,5 +29,6 @@ open the store with `Schema::new(IndexKind::BlockHash, FORMAT, network, TABLES)`
 crate = "zaino-internal-block-hash-to-height"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+`WRITE_BUFFER` (2 MiB, ≈20k blocks): this index's buffered heap before a bulk commit (the \
+`write_buffer` `zainod` opens its store with).
 """

@@ -76,7 +76,7 @@ pub(super) fn height(raw: u64, field: &str) -> Result<Height, Status> {
 ///
 /// - height only: the answering index confirms it holds `hash` there (indexes fold one block at
 ///   a time; a test may pair views of different chains)
-pub(super) fn locate<V: zaino_persistence::MapRead>(
+pub(super) fn locate<V: zaino_persistence::CommittedView>(
     at: &zaino_nfs::At<V>,
     through: Height,
     raw: &[u8],

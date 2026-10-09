@@ -197,24 +197,28 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.block_by(urgency, Route::Any, send).await
     }
 
-    /// Best-chain block at `height` from a trusted member (peers answer by hash only); pending
-    /// until one serves it; drop = abandon
-    pub async fn block_at(&self, height: Height, urgency: Urgency) -> Answered<Block> {
+    /// Best-chain blocks at `heights`, one batched request to a trusted member (peers answer by
+    /// hash only); pending until one serves them all; drop = abandon
+    pub async fn blocks_at(
+        &self,
+        heights: Arc<[Height]>,
+        urgency: Urgency,
+    ) -> Answered<Vec<Block>> {
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
-            let source = shared.trusted_only(member);
-            async move { source.get_block_by_height(height).await }.boxed()
+            let (source, heights) = (shared.trusted_only(member), Arc::clone(&heights));
+            async move { source.get_blocks_by_height(&heights).await }.boxed()
         };
         self.block_by(urgency, Route::Trusted, send).await
     }
 
     /// One block ask in `urgency`'s class (rounds retried, never unanswered)
-    async fn block_by<E>(
+    async fn block_by<T, E>(
         &self,
         urgency: Urgency,
         route: Route,
-        send: impl Fn(MemberId) -> BoxFuture<'static, Result<Block, QueryError<E>>>,
-    ) -> Answered<Block>
+        send: impl Fn(MemberId) -> BoxFuture<'static, Result<T, QueryError<E>>>,
+    ) -> Answered<T>
     where
         E: fmt::Debug + fmt::Display,
     {

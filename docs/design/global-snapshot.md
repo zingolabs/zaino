@@ -81,7 +81,7 @@ pub struct At<V> { block: BlockRef, branch: Branch, params: ChainParams, views: 
 pub enum Branch { Best, Side { from: BlockRef } }
 impl<V> At<V> { pub fn tip(&self) -> BlockRef; pub fn params(&self) -> ChainParams; pub fn views(&self) -> &Views<V>; }
 
-impl<S: ChainDataSource, V: SequenceRead + MapRead> Nfs<S, V> {
+impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
     pub fn indexed(&self) -> watch::Receiver<Option<Arc<Indexed<V>>>>;   // replaces handle()
 }
 impl<S: ChainDataSource> FinalFollower<S> {
@@ -184,8 +184,8 @@ pub struct ForkView { pub fork: Fork, pub folded: Option<BlockRef> }  // deepest
 ## 4. Routes
 
 ```rust
-pub struct Routes<S: ChainDataSource, V> {
-    pub snapshots: Snapshots<V>,         // every read
+pub struct Routes<S: ChainDataSource> {
+    pub snapshots: Snapshots<DiskView>,  // every read
     pub submit: Arc<ChainView<S>>,       // SendTransaction only
     pub validators: TrafficBalancer<S>,  // GetTransaction, address tx bytes
     pub network: NetworkType,

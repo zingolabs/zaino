@@ -47,11 +47,14 @@ as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip,
 moves it by one. Traffic data: keep the listener private.
 
 `/metrics` sets every state gauge from the snapshot first (`zaino_best_tip`,
-`zaino_fetch_height`, `zaino_index_finalized_height{index}`, `zaino_index_synced{index}`, the
-`zaino_chainview_*` gauges: [`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then
-renders; events (`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they
-happen ([`zaino-nfs`](../zaino-nfs/usage.md#observability)). One progress task logs the sync
-summary and each index's `Syncing` line every 30 s.
+`zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
+[`zaino-snapshot`](../zaino-snapshot/usage.md#reporting)), then renders; events
+(`zaino_reorgs_total`, `zaino_fetch_*_total`, histograms) are counted where they happen
+([`zaino-nfs`](../zaino-nfs/usage.md#observability)). Each index writer reports its own progress
+as it applies blocks ([`zaino-sync`](../zaino-sync/usage.md)): `zaino_index_applied_height`,
+`zaino_index_applied_blocks_total`, `zaino_index_applied_rows_total` and, per commit,
+`zaino_index_finalized_height` (all `{index}`). One progress task logs the sync summary and each
+index's `Syncing` line (applied, durable, size) every 30 s.
 
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.

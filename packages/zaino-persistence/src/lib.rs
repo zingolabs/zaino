@@ -29,9 +29,9 @@ pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;
 pub use port::{
-    BlockChanges, Checked, MapId, MapInserts, MapRead, MapTable, MapView, PersistenceEngine,
-    Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable, SequenceView, Store, Tables,
-    Verification, View, Width,
+    BlockChanges, Checked, CommittedView, MapId, MapInserts, MapRead, MapTable, MapView,
+    PersistenceEngine, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable,
+    SequenceView, Store, Tables, Verification, View, Width,
 };
 pub use write_buffer::{StagedView, WriteBuffer};
 

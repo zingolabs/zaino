@@ -28,57 +28,11 @@ pub async fn compute<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) 
 }
 
 /// Runs `f` on the blocking-I/O pool
-pub(crate) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let span = tracing::Span::current();
     tokio::task::spawn_blocking(move || span.in_scope(f))
         .await
         .unwrap_or_else(|join| panic::resume_unwind(join.into_panic()))
-}
-
-/// Writer-owned state (a store's files) that crosses to a pool for one hop and comes back
-///
-/// - [`get`](Self::get) = the state itself, never a cached copy of it
-/// - absent only inside a hop (which holds `&mut self`): a read there panics, never waits
-pub(crate) struct Offloaded<S>(Option<S>);
-
-impl<S: Send + 'static> Offloaded<S> {
-    pub(crate) fn new(state: S) -> Self {
-        Self(Some(state))
-    }
-
-    pub(crate) fn get(&self) -> &S {
-        self.0.as_ref().expect("offloaded state read mid-hop (its hop was cancelled)")
-    }
-
-    /// `f` on the CPU pool, the state moved there and back
-    pub(crate) async fn compute<T: Send + 'static>(
-        &mut self,
-        f: impl FnOnce(&mut S) -> T + Send + 'static,
-    ) -> T {
-        let mut state = self.0.take().expect("offloaded state already mid-hop");
-        let (state, out) = compute(move || {
-            let out = f(&mut state);
-            (state, out)
-        })
-        .await;
-        self.0 = Some(state);
-        out
-    }
-
-    /// `f` on the blocking-I/O pool (a commit's writes and fsyncs), the state moved there and back
-    pub(crate) async fn blocking<T: Send + 'static>(
-        &mut self,
-        f: impl FnOnce(&mut S) -> T + Send + 'static,
-    ) -> T {
-        let mut state = self.0.take().expect("offloaded state already mid-hop");
-        let (state, out) = blocking(move || {
-            let out = f(&mut state);
-            (state, out)
-        })
-        .await;
-        self.0 = Some(state);
-        out
-    }
 }
 
 #[cfg(test)]
@@ -93,13 +47,6 @@ mod tests {
         assert!(compute(off_runtime).await, "compute ran on a runtime thread");
         assert_eq!(compute(|| (1..=4u64).product::<u64>()).await, 24);
         assert_eq!(blocking(|| 7).await, 7);
-
-        // state crosses, is mutated there, and is back for the next read
-        let mut state = Offloaded::new(vec![1u8]);
-        assert!(state.compute(move |_| off_runtime()).await, "state hop ran on a runtime thread");
-        state.compute(|v| v.push(2)).await;
-        state.blocking(|v| v.push(3)).await;
-        assert_eq!(state.get(), &[1, 2, 3], "every hop's mutation kept, in order");
 
         for hop in ["compute", "blocking"] {
             let task = tokio::spawn(async move {

@@ -6,6 +6,8 @@
 //! - Each block's parent = the block sent before it, and = the durable tip of each index it
 //!   extends (else `Unlinked` / `Diverged`: stop, never skip)
 //! - Bulk and tip alike: each block once, after it turns final (the NFS never sends)
+//! - The block at the chain's final tip = `Finalized` (writers commit after it, else on a full
+//!   buffer)
 
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -44,7 +46,8 @@ pub struct FinalFollower<S> {
 }
 
 impl<S: ChainDataSource> FinalFollower<S> {
-    /// `lookahead` = fetches in flight ahead of the next block sent
+    /// `lookahead` = blocks in flight ahead of the next block sent ([`BLOCKS_PER_REQUEST`] per
+    /// batched request)
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         balancer: TrafficBalancer<S>,
@@ -99,26 +102,42 @@ async fn follow<S: ChainDataSource>(
     let mut wanted = durable.iter().map(|(_, tip)| next(tip)).min().unwrap_or(Height::GENESIS);
     let mut last_sent: Option<BlockHash> = None;
     let mut fetching = FuturesOrdered::new();
+    let requests = lookahead.get().div_ceil(BLOCKS_PER_REQUEST);
     loop {
         let final_height = chain.borrow_and_update().as_ref().map(|chain| chain.final_tip().height);
-        while fetching.len() < lookahead.get() && Some(wanted) <= final_height {
-            fetching.push_back(fetch_at(balancer.clone(), wanted, Urgency::Bulk));
-            wanted = wanted.next();
+        while fetching.len() < requests && Some(wanted) <= final_height {
+            let mut heights = Vec::with_capacity(BLOCKS_PER_REQUEST);
+            while heights.len() < BLOCKS_PER_REQUEST && Some(wanted) <= final_height {
+                heights.push(wanted);
+                wanted = wanted.next();
+            }
+            fetching.push_back(fetch_at(balancer.clone(), heights.into(), Urgency::Bulk));
         }
         tokio::select! {
             changed = chain.changed() => changed.map_err(|_| FollowError::ChainGone)?,
-            Some(body) = fetching.next(), if !fetching.is_empty() => {
-                let block = Arc::clone(body.block());
-                link(&durable, last_sent, &block)?;
-                let height = block.header().height;
-                last_sent = Some(block.header().hash);
-                emit::handed(&block);
-                progress.hand(height);
-                sink.send(Step::Apply { height, data: block }).await;
+            Some(bodies) = fetching.next(), if !fetching.is_empty() => {
+                for body in bodies {
+                    let block = Arc::clone(body.block());
+                    link(&durable, last_sent, &block)?;
+                    let height = block.header().height;
+                    last_sent = Some(block.header().hash);
+                    emit::handed(&block);
+                    progress.hand(height);
+                    let final_tip = chain.borrow().as_ref().map(|chain| chain.final_tip().height);
+                    let step = match Some(height) == final_tip {
+                        true => Step::Finalized { height, data: block },
+                        false => Step::Apply { height, data: block },
+                    };
+                    sink.send(step).await;
+                }
             }
         }
     }
 }
+
+/// Blocks per batched `getblock` request (4 full 2 MB blocks as hex = 16 MiB < the 32 MiB reply
+/// cap)
+const BLOCKS_PER_REQUEST: usize = 4;
 
 /// `block`'s parent = each durable tip it extends (an index's own chain), then = the block sent
 /// before it (the validator's history unmoved)
@@ -153,6 +172,7 @@ mod tests {
     /// Chain A 0..=11, final 5 then 8; an honest member + a `Lie::Poisoned` liar (by height
     /// too); two subscribers, one durable at A2, one fresh:
     /// - both queues = A0..=A8, once each, in order, the honest bodies (a lie never sent)
+    /// - the final tip's block (A5, then A8) `Finalized`, every other `Apply`
     /// - nothing above the final tip; progress = the last height sent, blocks counted
     /// - cancel → `Ok`, `Shutdown` last in every queue
     #[tokio::test(start_paused = true)]
@@ -190,23 +210,28 @@ mod tests {
         let sent = async |queue: &mut Subscription<Block>, count: usize| {
             let mut sent = Vec::new();
             for _ in 0..count {
-                let Step::Apply { height, data } = queue.next().await else {
-                    panic!("Shutdown early")
+                let (height, data, finalized) = match queue.next().await {
+                    Step::Apply { height, data } => (height, data, false),
+                    Step::Finalized { height, data } => (height, data, true),
+                    Step::Shutdown => panic!("Shutdown early"),
                 };
                 assert_eq!(data.header().height, height, "step height = its block's");
-                sent.push(data.at());
+                sent.push((data.at(), finalized));
             }
             sent
         };
+        let steps = |range: std::ops::RangeInclusive<usize>, final_tip: usize| -> Vec<_> {
+            range.map(|at| (trunk[at].at(), at == final_tip)).collect()
+        };
 
-        let first: Vec<BlockRef> = trunk[..=5].iter().map(|block| block.at()).collect();
+        let first = steps(0..=5, 5);
         assert_eq!(sent(&mut durable_at_a2, 6).await, first, "from the lowest durable tip (fresh)");
         assert_eq!(sent(&mut fresh, 6).await, first, "the same steps to every subscriber");
         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
         assert_eq!(progress.handed(), Some(h(5)), "nothing above the final tip");
 
         verified.send_replace(Some(Arc::new(chain.verified_final(a11, h(8)))));
-        let next: Vec<BlockRef> = trunk[6..=8].iter().map(|block| block.at()).collect();
+        let next = steps(6..=8, 8);
         assert_eq!(sent(&mut durable_at_a2, 3).await, next, "the final tip moved: its blocks next");
         assert_eq!(sent(&mut fresh, 3).await, next);
         assert_eq!((progress.handed(), progress.blocks()), (Some(h(8)), 9));
@@ -262,7 +287,10 @@ mod tests {
         let running = tokio::spawn(follower.run(CancellationToken::new()));
         let mut sent = Vec::new();
         for _ in 0..=5 {
-            let Step::Apply { data, .. } = fresh.next().await else { panic!("Shutdown early") };
+            let data = match fresh.next().await {
+                Step::Apply { data, .. } | Step::Finalized { data, .. } => data,
+                Step::Shutdown => panic!("Shutdown early"),
+            };
             sent.push(data.at());
         }
         let trunk: Vec<BlockRef> = chain.blocks(a7)[..=5].iter().map(|block| block.at()).collect();

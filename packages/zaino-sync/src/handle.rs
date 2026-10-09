@@ -1,4 +1,5 @@
-//! [`IndexHandle`]: one index's committed view, as the rest of the daemon reads it (`data-sink.md`)
+//! [`IndexHandle`]: one index's committed view + applied tip, as the rest of the daemon reads them
+//! (`data-sink.md`)
 
 use tokio::sync::watch;
 use zaino_persistence::View;
@@ -8,11 +9,20 @@ use zaino_primitives::types::BlockRef;
 #[derive(Clone)]
 pub struct IndexHandle<V> {
     committed: watch::Receiver<V>,
+    applied: watch::Receiver<Option<BlockRef>>,
 }
 
 impl<V: View> IndexHandle<V> {
-    pub(crate) fn new(committed: watch::Receiver<V>) -> Self {
-        Self { committed }
+    pub(crate) fn new(
+        committed: watch::Receiver<V>,
+        applied: watch::Receiver<Option<BlockRef>>,
+    ) -> Self {
+        Self { committed, applied }
+    }
+
+    /// Last block folded + applied to the store (committed or not)
+    pub fn applied(&self) -> Option<BlockRef> {
+        *self.applied.borrow()
     }
 
     /// Committed view (what snapshots and folds read)

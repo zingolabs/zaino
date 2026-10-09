@@ -24,7 +24,7 @@ blocks by height checked only for integrity (parent link, merkle root). The cons
                   ┌─────────────────┴─────────────────┐
                   │ zaino-traffic   TrafficBalancer   │  who answers; hedge, retry, bench
                   └──┬──────────────┬──────────────┬──┘
-           headers() │  block_at(h) │      block() │
+           headers() │ blocks_at(h…)│      block() │
                      ▼              │              │
             ┌──────────────────┐    │              │
             │ zaino-chainview  │    │              │
@@ -67,20 +67,22 @@ VerifiedChain::{best(), final_tip(), on_best(at), hash_at(h), header_at(h), hold
 
 // zaino-traffic: every request to a validator
 TrafficBalancer::block(&self, hash, Urgency) -> Answered<Block>;    // Urgency = Tip | Bulk
-TrafficBalancer::block_at(&self, height, Urgency) -> Answered<Block>; // trusted members only
+TrafficBalancer::blocks_at(&self, heights, Urgency) -> Answered<Vec<Block>>; // one batch, trusted only
 TrafficBalancer::report(&self, ticket, why);                        // wrong answer: bench sender
 
 // zaino-sync: the final path (data-sink.md)
 FinalFollower::new(chain, balancer, lookahead);
 FinalFollower::subscribe(&mut self, kind, durable: Option<BlockRef>, queue) -> Subscription<Block>;
 FinalFollower::run(self, cancel) -> Result<(), FollowError>;
-fetch_at(balancer, height, Urgency) -> Checked;  // final path: coinbase height + merkle root
+fetch_at(balancer, heights, Urgency) -> Vec<Checked>; // final path: 4 per batched request
 fetch(balancer, at, record, Urgency) -> Checked; // tip path: hash + height + merkle root
-IndexHandle::{view() -> V, tip(), changed()};       // one index's committed view
+IndexHandle::{view() -> V, tip(), applied(), changed()};  // one index's committed view
+held(store, h); apply(store, changes); commit(store);      // each writer's loop, per run
+IndexPublisher::{new(&store), handle(), publish(&store)};   // writer's end of its IndexHandle
 
 // each index crate: one fold, one writer (data-sink.md)
 fold(parent: &XReader<V>, block, [inputs,] out: &mut BlockChanges);      // shared by writer + NFS
-XIndexWriter::{new(store, batch), handle() -> IndexHandle<V>, run(blocks)};
+XIndexWriter::{new(store), handle() -> IndexHandle<V>, run(blocks)}; // store: its WRITE_BUFFER
 
 // zaino-nfs: the tip path (nfs.md)
 Nfs::new(chain, balancer, params, depth, lookahead);                // window = 2 · depth

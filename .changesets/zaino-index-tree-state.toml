@@ -9,7 +9,7 @@ per-height tree sizes and subtree roots (`schema(network)`), so any historical f
 without hashing. `fold` / `fold_run` derive a block's (or a run's) changes with batched Merkle \
 hashing across cores; `TreeStateReader` answers `treestate` and `subtree_roots` over any view, \
 and a tree state writes a pool's tree only from its activation (`PoolActivations`). \
-`TreeStateIndexWriter::new(store, batch_bytes)` follows the final stream.
+`TreeStateIndexWriter::new(store)` follows the final stream.
 """
 
 [[changes]]
@@ -32,5 +32,6 @@ Open the delta with `store.changes(block.at())` (or a layer's), open the store w
 crate = "zaino-index-tree-state"
 kind = "feature"
 description = """
-`WRITE_BUFFER`: this index's buffered heap before a bulk commit (what `zainod` hands its writer).
+`WRITE_BUFFER` (8 MiB): this index's buffered heap before a bulk commit (the `write_buffer` \
+`zainod` opens its store with).
 """

@@ -18,7 +18,6 @@ use crate::snapshot::Snapshot;
 mod names {
     pub(super) const BEST_TIP: &str = "zaino.best_tip";
     pub(super) const FETCH_HEIGHT: &str = "zaino.fetch_height";
-    pub(super) const INDEX_FINALIZED_HEIGHT: &str = "zaino.index.finalized_height";
     pub(super) const INDEX_SYNCED: &str = "zaino.index.synced";
     pub(super) const ENDPOINT_STATE: &str = "zaino.chainview.endpoint_state";
     pub(super) const AGREEMENT: &str = "zaino.chainview.agreement";
@@ -288,10 +287,6 @@ pub fn describe_metrics() {
         "Highest height handed to the indexes (folded, or sent final unfolded); rewinds on a reorg"
     );
     describe_gauge!(
-        names::INDEX_FINALIZED_HEIGHT,
-        "Highest height the index has durably written, by index"
-    );
-    describe_gauge!(
         names::INDEX_SYNCED,
         "1 = served at the verified tip, 0 = the served tip trails it (still syncing), by index"
     );
@@ -347,13 +342,8 @@ pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &SyncProgress) {
     if let Some(handed) = progress.handed() {
         metrics::gauge!(names::FETCH_HEIGHT).set(f64::from(u32::from(handed)));
     }
-    for (kind, durable) in snap.indexed().into_iter().flat_map(|indexed| indexed.durable()) {
-        let index = kind.name();
-        if let Some(durable) = durable {
-            metrics::gauge!(names::INDEX_FINALIZED_HEIGHT, "index" => index)
-                .set(f64::from(u32::from(durable.height)));
-        }
-        metrics::gauge!(names::INDEX_SYNCED, "index" => index).set(f64::from(tips.synced));
+    for (kind, _) in snap.indexed().into_iter().flat_map(|indexed| indexed.durable()) {
+        metrics::gauge!(names::INDEX_SYNCED, "index" => kind.name()).set(f64::from(tips.synced));
     }
     chain_view_gauges(snap.view());
 }
