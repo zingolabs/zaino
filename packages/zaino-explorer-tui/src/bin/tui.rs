@@ -9,8 +9,9 @@
 //! node diagnostics directly, and the chain height refreshes every 5s.
 //! While typing: characters append, Backspace edits, Enter looks it up,
 //! Esc cancels back home. On the block screen: `s` looks up its
-//! treestate. On the transaction/address/block/treestate/mempool/
-//! node-info screen: Esc goes back home.
+//! treestate. On the treestate screen: `r` looks up the Sapling pool's
+//! subtree roots. On the transaction/address/mempool/node-info/
+//! subtree-roots screen: Esc goes back home.
 
 use std::io;
 use std::time::Duration;
@@ -106,11 +107,16 @@ async fn run(
                         KeyCode::Esc => state.go_home(),
                         _ => {}
                     },
+                    Screen::Treestate(_, _) => match key.code {
+                        KeyCode::Char('r') => state.lookup_subtree_roots(reader).await,
+                        KeyCode::Esc => state.go_home(),
+                        _ => {}
+                    },
                     Screen::Transaction(_, _)
                     | Screen::Address(_, _)
-                    | Screen::Treestate(_, _)
                     | Screen::Mempool(_)
-                    | Screen::NodeInfo(_) => {
+                    | Screen::NodeInfo(_)
+                    | Screen::SubtreeRoots(_, _) => {
                         if key.code == KeyCode::Esc {
                             state.go_home();
                         }

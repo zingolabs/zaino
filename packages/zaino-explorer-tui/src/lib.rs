@@ -9,7 +9,8 @@ use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
     AddressSummary, AddressValidity, BlockDeltas, BlockDetail, BlockSummary, BlockchainInfo,
-    ChainReader, MempoolEntry, NodeDiagnostics, TransactionDetail, Treestate, UnifiedReceivers,
+    ChainReader, MempoolEntry, NodeDiagnostics, SubtreeRoots, TransactionDetail, Treestate,
+    UnifiedReceivers,
 };
 
 /// How many recent blocks the TUI lists.
@@ -39,6 +40,11 @@ pub enum Screen {
     /// A block's shielded commitment-tree state, looked up (via `s` on the
     /// `Block` screen) for the same height-or-hash.
     Treestate(String, Result<(), String>),
+    /// The Sapling pool's subtree roots from index 0, looked up via `r`
+    /// on the `Treestate` screen. (Orchard's own roots are reachable on
+    /// the web surface via `/subtrees/orchard/0`; the TUI only wires the
+    /// one key for now.)
+    SubtreeRoots(String, Result<(), String>),
     /// The mempool's current contents, looked up via `m` on the home
     /// screen — no input needed, there's nothing to type.
     Mempool(Result<(), String>),
@@ -88,6 +94,12 @@ pub struct AppState {
     /// The looked-up blockchain info — populated only on screen
     /// `NodeInfo`, independently of `node_diagnostics` (a separate RPC).
     blockchain_info: Option<BlockchainInfo>,
+    /// Whether the validator answered `ping` — populated only on screen
+    /// `NodeInfo`, independently of the others.
+    ping_ok: Option<bool>,
+    /// The looked-up subtree roots — populated only on screen
+    /// `SubtreeRoots`.
+    subtree_roots: Option<Result<SubtreeRoots, String>>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -299,9 +311,10 @@ impl AppState {
     /// Look up richer node diagnostics. Like the mempool, there's nothing
     /// to type first — this runs directly from the home screen.
     pub async fn lookup_node_diagnostics<C: ChainReader>(&mut self, reader: &C) {
-        // Independent of node_diagnostics below — a failure here doesn't
-        // hide mining/network/peer facts that answered.
+        // All three independent of node_diagnostics below — a failure in
+        // one doesn't hide facts the others answered.
         self.blockchain_info = reader.blockchain_info().await.ok();
+        self.ping_ok = Some(reader.ping().await.is_ok());
         match reader.node_diagnostics().await {
             Ok(diagnostics) => {
                 self.node_diagnostics = Some(diagnostics);
@@ -310,6 +323,24 @@ impl AppState {
             Err(e) => {
                 self.node_diagnostics = None;
                 self.screen = Screen::NodeInfo(Err(e.to_string()));
+            }
+        }
+    }
+
+    /// Look up the Sapling pool's subtree roots from index 0. Does
+    /// nothing if not currently on the `Treestate` screen.
+    pub async fn lookup_subtree_roots<C: ChainReader>(&mut self, reader: &C) {
+        if !matches!(self.screen, Screen::Treestate(_, _)) {
+            return;
+        }
+        match reader.subtree_roots("sapling".to_string(), 0).await {
+            Ok(roots) => {
+                self.subtree_roots = Some(Ok(roots));
+                self.screen = Screen::SubtreeRoots("sapling".to_string(), Ok(()));
+            }
+            Err(e) => {
+                self.subtree_roots = Some(Err(e.to_string()));
+                self.screen = Screen::SubtreeRoots("sapling".to_string(), Err(e.to_string()));
             }
         }
     }
@@ -356,6 +387,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         Screen::Treestate(id, result) => render_treestate(frame, id, result, state),
         Screen::Mempool(result) => render_mempool(frame, result, state),
         Screen::NodeInfo(result) => render_node_info(frame, result, state),
+        Screen::SubtreeRoots(pool, result) => render_subtree_roots(frame, pool, result, state),
     }
 }
 
@@ -643,12 +675,52 @@ fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, st
                 }
             }
             lines.push(String::new());
-            lines.push("(Esc: back)".to_string());
+            lines.push("(r: sapling subtree roots, Esc: back)".to_string());
             lines.join("\n")
         }
     };
     frame.render_widget(
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Treestate")),
+        frame.area(),
+    );
+}
+
+fn render_subtree_roots(
+    frame: &mut Frame,
+    pool: &str,
+    result: &Result<(), String>,
+    state: &AppState,
+) {
+    let text = match result {
+        Err(e) => format!("Subtree roots — {pool}\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let Some(Ok(roots)) = &state.subtree_roots else {
+                return;
+            };
+            let mut lines = vec![format!(
+                "Subtree roots — {} from index {}",
+                roots.pool, roots.start_index
+            )];
+            if roots.roots.is_empty() {
+                lines.push(
+                    "  none (past the end of this pool's completed subtrees, or none yet)"
+                        .to_string(),
+                );
+            } else {
+                for root in &roots.roots {
+                    lines.push(format!(
+                        "  {}  completed at height {}",
+                        root.root, root.end_height
+                    ));
+                }
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Subtree roots")),
         frame.area(),
     );
 }
@@ -711,10 +783,22 @@ fn format_blockchain_info(info: &Option<BlockchainInfo>) -> Vec<String> {
     lines
 }
 
+/// The validator-responsiveness line, independent of every other
+/// section — its own RPC, so absence doesn't imply anything about the
+/// others.
+fn format_ping(ping_ok: Option<bool>) -> String {
+    match ping_ok {
+        Some(true) => "Validator: responsive".to_string(),
+        Some(false) => "Validator: unresponsive".to_string(),
+        None => "Validator: not checked".to_string(),
+    }
+}
+
 fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppState) {
     let text = match result {
         Err(e) => {
-            let mut lines = format_blockchain_info(&state.blockchain_info);
+            let mut lines = vec![format_ping(state.ping_ok), String::new()];
+            lines.extend(format_blockchain_info(&state.blockchain_info));
             lines.push(format!("RPC error: {e}"));
             lines.push(String::new());
             lines.push("(Esc: back)".to_string());
@@ -724,7 +808,8 @@ fn render_node_info(frame: &mut Frame, result: &Result<(), String>, state: &AppS
             let Some(diagnostics) = &state.node_diagnostics else {
                 return;
             };
-            let mut lines = format_blockchain_info(&state.blockchain_info);
+            let mut lines = vec![format_ping(state.ping_ok), String::new()];
+            lines.extend(format_blockchain_info(&state.blockchain_info));
             lines.push("Mining:".to_string());
             match &diagnostics.mining {
                 Some(mining) => {
@@ -1615,6 +1700,91 @@ mod tests {
         assert!(content.contains("not ready"), "{content}");
     }
 
+    /// The validator-responsiveness line renders independently of every
+    /// other `NodeInfo` section.
+    #[test]
+    fn renders_ping_status() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::NodeInfo(Err("not ready".to_string())),
+            ping_ok: Some(true),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("Validator: responsive"), "{content}");
+    }
+
+    /// A looked-up subtree-roots screen renders each root with its
+    /// completion height.
+    #[test]
+    fn renders_subtree_roots() {
+        use super::Screen;
+        use zaino_explorer_domain::{SubtreeRoot, SubtreeRoots};
+
+        let state = AppState {
+            screen: Screen::SubtreeRoots("sapling".to_string(), Ok(())),
+            subtree_roots: Some(Ok(SubtreeRoots {
+                pool: "sapling".to_string(),
+                start_index: 0,
+                roots: vec![SubtreeRoot {
+                    root: "aa".repeat(32),
+                    end_height: 300,
+                }],
+            })),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(100, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains(&"aa".repeat(32)), "{content}");
+        assert!(content.contains("height 300"), "{content}");
+    }
+
+    /// A failed subtree-roots lookup renders the error, not a panic.
+    #[test]
+    fn renders_subtree_roots_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::SubtreeRoots("sapling".to_string(), Err("not found".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("not found"), "{content}");
+    }
+
     /// A hex string within the preview length renders in full; a longer
     /// one truncates and notes the full length rather than printing it raw.
     #[test]
@@ -2185,6 +2355,67 @@ mod tests {
                 assert!(diagnostics.network.is_none());
             }
             other => panic!("expected a successful NodeInfo screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_subtree_roots` against a real mock server: proof the pipe
+    /// reaches the real adapter, mirroring `zaino-explorer-web`'s
+    /// equivalent coverage for the `/subtrees` route. Requires actually
+    /// being on the `Treestate` screen first — the method does nothing
+    /// otherwise.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_subtree_roots_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_primitives::types::{Height, SubtreeRoot as PrimSubtreeRoot, TreeRoot};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zcash_protocol::consensus::Network;
+
+        let chain = MockChain {
+            subtree_roots: vec![PrimSubtreeRoot {
+                root: TreeRoot::from([0x22; 32]),
+                end_height: Height::try_from(300).expect("valid height"),
+            }],
+            ..Default::default()
+        };
+        let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState {
+            screen: Screen::Treestate("300".to_string(), Ok(())),
+            ..Default::default()
+        };
+        state.lookup_subtree_roots(&reader).await;
+
+        match &state.screen {
+            Screen::SubtreeRoots(pool, Ok(())) => {
+                assert_eq!(pool, "sapling");
+                let roots = state
+                    .subtree_roots
+                    .as_ref()
+                    .expect("subtree_roots state populated")
+                    .as_ref()
+                    .expect("ok result");
+                assert_eq!(roots.roots.len(), 1);
+                assert_eq!(roots.roots[0].end_height, 300);
+            }
+            other => panic!("expected a successful SubtreeRoots screen, got {other:?}"),
         }
 
         let _ = handle.stop();
