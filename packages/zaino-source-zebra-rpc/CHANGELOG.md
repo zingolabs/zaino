@@ -13,6 +13,14 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.3] - 2026-10-09
+### Changed
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Internal
+- Implement `ValidatorSource` (`type NonDomain = NonDomainError`) and adapt to the renamed seam error; classification is unchanged.
+
 ## [0.2.2] - 2026-09-26
 ### Changed
 - dependency `zaino-convert-zebra` 0.2.1→0.3.0 crossed the requirement `^0.2.1`

@@ -1,5 +1,6 @@
 # Machine-assigned changeset identity — do not edit.
 id = "01a0d62f-520a-71e0-a888-142cd63c9b5c"
+consumed_in = "zainod-0-10-2"
 
 [[changes]]
 crate       = "zaino-mempool"

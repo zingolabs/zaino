@@ -13,6 +13,21 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-10-09
+### Added
+- `StoredTxOut::from_output` reduces a domain transparent output to what the store indexes, so every consumer classifies a script the same way.
+### Changed
+- `ChainStoreService` and `ChainStoreReader` report health through `zaino_component::StatusSource` rather than a `status` method of their own, so a store is a component a supervisor can observe alongside every other subsystem without knowing it is a store. Two axes rather than one: a lifecycle phase the runtime moves, and a health condition that never overwrites it.
+  _Migration:_ Remove `fn status(&self) -> StatusType` from both impls and add a single `impl StatusSource`, returning a `ComponentStatus` built from a `ComponentName`, a `Lifecycle` and a `Health`. Where a type is its own reader, one impl serves both ports. Callers reading a status through a bare `.status()` may need `StatusSource::status(&x)` if an inherent method of the same name still shadows the trait.
+- `StoredAddress` is gone: transparent outputs are keyed by `zaino_primitives::types::TransparentAddressKey`, the same key the chain head reports its half of an address's history under, so a consumer merging the two joins them without translating.
+  _Migration:_ Replace `StoredAddress` with `zaino_primitives::types::TransparentAddressKey`, which has the same `hash` and `script_type` fields and the same `new` and `is_standard` methods, plus `from_script`. `StoredTxOut::address` and `TransparentHistoryQuery::addresses` now hold the new type; neither struct is `#[non_exhaustive]`, so literal construction sites need the rename too.
+- `ChainStoreFreezeSink::freeze` now takes `FrozenBlock`, a stored block without its chainwork. Cumulative work needs an unbroken chain below a block, so the store derives its own rather than trusting a value measured elsewhere — a field a caller could fill is a field a caller could fill wrongly.
+  _Migration:_ Drop the `chainwork` field when building the batch: a `StoredBlock` becomes a `FrozenBlock` by carrying `header`, `transactions` and `tree_roots` across. Any value a caller was computing for it can go — the store derives its own, and a caller's was measured from somewhere else.
+- `ChainStoreError::FreezeGap` — a frozen batch starting above `tip + 1` is refused rather than written into a hole, and carries both the store's tip and the first height it could not take so a caller can repair it. Previously the store stopped silently and returned `Ok(())`, which left it never advancing again while every subsequent freeze also succeeded.
+  _Migration:_ `ChainStoreError` is not `#[non_exhaustive]`, so a downstream `match` over it must add a `FreezeGap` arm. Handle it by building to `first_frozen - 1` through `ChainStoreIngest::build_to` and freezing the batch again; it is a routine handover state, not a failure, so classifying it as an internal error is only right on a path that cannot repair it.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+
 ## [0.1.1] - 2026-09-26
 ### Changed
 - dependency `zaino-primitives` 0.2.1→0.3.0 crossed the requirement `^0.2.1`

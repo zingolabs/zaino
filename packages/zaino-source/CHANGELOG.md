@@ -13,6 +13,16 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-10-09
+### Changed
+- Rename the non-answer error `FetchError` to `NonDomainError`, and the `QueryError`/`SourceError` `Fetch` variant to `NonDomain` — it is the complement of a domain answer (unreachable, timed out, unauthorized, or an unusable/undecodable response), not specifically a transport.
+  _Migration:_ Replace `zaino_source::FetchError` with `NonDomainError`, `FetchError::new`/`from_cause` with `NonDomainError::new`/`from_cause`, and `QueryError::Fetch`/`SourceError::Fetch` with the `NonDomain` variant.
+- Add the `ValidatorSource` port contract: each adapter declares `type NonDomain: Error + Send + Sync + Into<NonDomainError>`, every `OneShot*` port gains it as a supertrait and returns `QueryError<E, Self::NonDomain>`, and `QueryError` gains a second type parameter `N` (defaulting to `NonDomainError`). The resilience wrapper erases `N` to the seam, so the consumer-facing `SourceError<E>` is unchanged.
+  _Migration:_ External adapters implementing a `OneShot*` port must now `impl ValidatorSource` (set `type NonDomain = NonDomainError` if the adapter has no distinct non-domain type) and return `QueryError<E, Self::NonDomain>`.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+### Fixed
+- `NonDomainError` now preserves the concrete transport cause via `Error::source()` instead of flattening it into a message string, so an abort trail reaches the underlying error.
+
 ## [0.2.2] - 2026-09-26
 ### Added
 - `OneShotGetCommitmentTreeRootsByHeight`, with its resilient twin `GetCommitmentTreeRootsByHeight`: tree roots at the best-chain block at a height, answering with the block's hash alongside the roots. The hash names which block answered, so a consumer pairing this query with a concurrent hash-addressed read can detect a reorg between the two.

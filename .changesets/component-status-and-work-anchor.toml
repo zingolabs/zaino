@@ -1,3 +1,4 @@
+consumed_in = "zainod-0-10-2"
 [[changes]]
 crate = "zaino-chain-store"
 kind = "breaking"

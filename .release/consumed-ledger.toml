@@ -14,6 +14,11 @@ cycle = "zainod-0-10-1"
 slug = "amber-meadow"
 
 [[consumed]]
+id = "01a0d62f-520a-71e0-a888-142cd63c9b5c"
+cycle = "zainod-0-10-2"
+slug = "mempool-cfg-gate-epoch-import"
+
+[[consumed]]
 id = "01a0db8a-f862-74b1-85d6-2a16f9831921"
 cycle = "zainod-0-10-1"
 slug = "pr-1508"
@@ -82,3 +87,8 @@ slug = "pr-1377"
 id = "01a0db8a-f8b7-7c93-abd0-9f4af20a0003"
 cycle = "zainod-0-10-1"
 slug = "pr-1586"
+
+[[consumed]]
+id = "01a0ded8-8f69-7b61-bfa9-f00b3e8120fb"
+cycle = "zainod-0-10-2"
+slug = "blessing-changelog-before-bump"

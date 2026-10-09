@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.1] - 2026-10-09
+### Changed
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+
 ## [0.3.0] - 2026-09-26
 ### Changed
 - `transaction_from_zebra` takes only the transaction; a transaction's position, and whether it is the coinbase, now comes from its order in the block. `ConvertError` gains a `Block` variant for converted transactions that do not form a valid block.
