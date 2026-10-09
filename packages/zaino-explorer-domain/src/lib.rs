@@ -20,6 +20,15 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         count: u32,
     ) -> impl Future<Output = Result<Vec<BlockSummary>, ChainReadError>> + Send;
 
+    /// One block's full detail — including every transaction id it
+    /// contains — by height or hash. Lets a block list navigate down into
+    /// its transactions, the same way `address`'s `txids` does for an
+    /// address's history.
+    fn block(
+        &self,
+        height_or_hash: String,
+    ) -> impl Future<Output = Result<BlockDetail, ChainReadError>> + Send;
+
     /// One transaction, by id.
     fn transaction(
         &self,
@@ -57,6 +66,21 @@ pub struct BlockSummary {
     pub time: u32,
     /// Number of transactions in the block.
     pub tx_count: u32,
+}
+
+/// One block's full detail, as shown on a block detail page or screen —
+/// everything [`BlockSummary`] has, plus every transaction id the block
+/// contains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockDetail {
+    /// The block's height.
+    pub height: u32,
+    /// The block's hash, in the wire's display (byte-reversed) hex form.
+    pub hash: String,
+    /// The block's timestamp (seconds since the Unix epoch).
+    pub time: u32,
+    /// Every transaction id in the block, in block order.
+    pub tx_ids: Vec<String>,
 }
 
 /// One transaction, as shown on a transaction detail page.

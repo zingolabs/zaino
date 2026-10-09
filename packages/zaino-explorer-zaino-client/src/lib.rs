@@ -6,7 +6,7 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    AddressSummary, BlockSummary, ChainReadError, ChainReader, NodeStatus, SpendInfo,
+    AddressSummary, BlockDetail, BlockSummary, ChainReadError, ChainReader, NodeStatus, SpendInfo,
     TransactionDetail, TransactionOutput,
 };
 use zaino_noderpc::wire::params::{AddressTxidsParam, AddressesParam, GetSpentInfoParam};
@@ -70,6 +70,24 @@ fn block_summary_from_response(response: GetBlockResponse) -> Result<BlockSummar
     }
 }
 
+/// Map a `getblock` verbosity-1 response to a [`BlockDetail`] — the same
+/// response `block_summary_from_response` reads, kept as a separate pure
+/// function rather than built on top of it so each caller only pays for the
+/// fields it needs (a block list has no use for every txid).
+fn block_detail_from_response(response: GetBlockResponse) -> Result<BlockDetail, ChainReadError> {
+    match response {
+        GetBlockResponse::Verbose1(block) => Ok(BlockDetail {
+            height: block.height,
+            hash: block.hash,
+            time: block.time,
+            tx_ids: block.tx,
+        }),
+        GetBlockResponse::Raw(_) | GetBlockResponse::Verbose2(_) => {
+            Err(ChainReadError::Rpc(Box::new(UnexpectedBlockVerbosity)))
+        }
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -91,9 +109,9 @@ fn transaction_detail_from_response(
                 })
                 .collect(),
         }),
-        GetRawTransactionResponse::Raw(_) => {
-            Err(ChainReadError::Rpc(Box::new(UnexpectedTransactionVerbosity)))
-        }
+        GetRawTransactionResponse::Raw(_) => Err(ChainReadError::Rpc(Box::new(
+            UnexpectedTransactionVerbosity,
+        ))),
     }
 }
 
@@ -115,6 +133,15 @@ impl ChainReader for ZainoClient {
         Ok(summaries)
     }
 
+    async fn block(&self, height_or_hash: String) -> Result<BlockDetail, ChainReadError> {
+        let response = self
+            .0
+            .block(height_or_hash, Some(1))
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        block_detail_from_response(response)
+    }
+
     async fn transaction(&self, txid: String) -> Result<TransactionDetail, ChainReadError> {
         let response = self
             .0
@@ -124,7 +151,11 @@ impl ChainReader for ZainoClient {
         transaction_detail_from_response(response)
     }
 
-    async fn spend_info(&self, txid: String, output_index: u32) -> Result<SpendInfo, ChainReadError> {
+    async fn spend_info(
+        &self,
+        txid: String,
+        output_index: u32,
+    ) -> Result<SpendInfo, ChainReadError> {
         let response = self
             .0
             .spent_info(GetSpentInfoParam {
@@ -192,7 +223,10 @@ impl ChainReader for ZainoClient {
 
 #[cfg(test)]
 mod tests {
-    use super::{block_summary_from_response, transaction_detail_from_response, ZainoClient};
+    use super::{
+        block_detail_from_response, block_summary_from_response, transaction_detail_from_response,
+        ZainoClient,
+    };
     use jsonrpsee::http_client::HttpClientBuilder;
     use std::net::TcpListener;
     use zaino_explorer_domain::ChainReader;
@@ -210,7 +244,9 @@ mod tests {
 
     /// Boot a real `NodeRpc` jsonrpsee server over the given mock chain, on an
     /// ephemeral port.
-    fn spawn_mock_server(chain: MockChain) -> (std::net::SocketAddr, jsonrpsee::server::ServerHandle) {
+    fn spawn_mock_server(
+        chain: MockChain,
+    ) -> (std::net::SocketAddr, jsonrpsee::server::ServerHandle) {
         let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         listener.set_nonblocking(true).expect("set nonblocking");
@@ -273,6 +309,48 @@ mod tests {
             .expect_err("wrong verbosity should error");
         let source = std::error::Error::source(&err).expect("Rpc variant carries a source");
         assert!(source.to_string().contains("unexpected"));
+    }
+
+    /// A `getblock` verbosity-1 response maps field-for-field into a
+    /// [`zaino_explorer_domain::BlockDetail`], including every txid — the
+    /// field a block list's `BlockSummary` doesn't carry.
+    #[test]
+    fn verbose1_response_maps_to_block_detail_with_txids() {
+        let response = GetBlockResponse::Verbose1(BlockResponse {
+            hash: "ab".repeat(32),
+            confirmations: 5,
+            height: 12_345,
+            version: 4,
+            merkle_root: String::new(),
+            block_commitments: String::new(),
+            final_sapling_root: None,
+            final_orchard_root: None,
+            n_tx: 2,
+            time: 1_700_000_000,
+            nonce: String::new(),
+            solution: String::new(),
+            bits: String::new(),
+            difficulty: 1.0,
+            chainwork: None,
+            chain_supply: None,
+            value_pools: Vec::new(),
+            trees: zaino_noderpc::wire::response::TreesResponse {
+                sapling: zaino_noderpc::wire::response::TreePoolSize { size: 0 },
+                orchard: zaino_noderpc::wire::response::TreePoolSize { size: 0 },
+                ironwood: zaino_noderpc::wire::response::TreePoolSize { size: 0 },
+            },
+            size: 1_000,
+            previous_block_hash: None,
+            next_block_hash: None,
+            tx: vec!["cd".repeat(32), "ef".repeat(32)],
+        });
+
+        let detail = block_detail_from_response(response).expect("maps ok");
+
+        assert_eq!(detail.height, 12_345);
+        assert_eq!(detail.hash, "ab".repeat(32));
+        assert_eq!(detail.time, 1_700_000_000);
+        assert_eq!(detail.tx_ids, vec!["cd".repeat(32), "ef".repeat(32)]);
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -418,6 +496,53 @@ mod tests {
         assert_eq!(blocks[0].height, 300);
         assert_eq!(blocks[0].hash, "11".repeat(32));
         assert_eq!(blocks[0].time, 1_700_000_300);
+
+        let _ = handle.stop();
+    }
+
+    /// `block` against a real mock server, by height: proof the whole wire
+    /// path produces a [`zaino_explorer_domain::BlockDetail`] with its
+    /// txids populated, not just the summary fields `recent_blocks` needs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn block_against_a_real_server() {
+        let chain = MockChain {
+            tip: Some(zaino_primitives::types::BlockRef {
+                height: Height::try_from(300).expect("valid height"),
+                hash: BlockHash::from([0x11; 32]),
+            }),
+            block: Some(Block {
+                header: scripted_header(),
+                transactions: Vec::new(),
+                chain_metadata: ChainMetadata::ZERO,
+            }),
+            block_verbose: Some(BlockVerbose {
+                confirmations: 1,
+                difficulty: 1.0,
+                chainwork: None,
+                chain_supply: None,
+                value_pools: Vec::new(),
+                final_sapling_root: None,
+                final_orchard_root: None,
+                tree_sizes: BlockTreeSizes::default(),
+                next_block_hash: None,
+            }),
+            decoded_block: Some(DecodedBlock {
+                size: 1_000,
+                transactions: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let detail = reader.block("300".to_string()).await.expect("block ok");
+
+        assert_eq!(detail.height, 300);
+        assert_eq!(detail.hash, "11".repeat(32));
+        assert_eq!(detail.time, 1_700_000_300);
 
         let _ = handle.stop();
     }
