@@ -6,8 +6,8 @@
 
 use jsonrpsee::http_client::HttpClient;
 use zaino_explorer_domain::{
-    AddressDelta, AddressSummary, AddressUtxo, BlockDeltas, BlockDetail, BlockSummary,
-    ChainReadError, ChainReader, MempoolEntry, NodeStatus, PoolTreestate, SpendInfo,
+    AddressDelta, AddressSummary, AddressUtxo, AddressValidity, BlockDeltas, BlockDetail,
+    BlockSummary, ChainReadError, ChainReader, MempoolEntry, NodeStatus, PoolTreestate, SpendInfo,
     TransactionDelta, TransactionDetail, TransactionOutput, Treestate, ValueMovement,
 };
 use zaino_noderpc::wire::params::{
@@ -15,7 +15,7 @@ use zaino_noderpc::wire::params::{
 };
 use zaino_noderpc::wire::response::{
     GetBlockDeltasResponse, GetBlockResponse, GetRawTransactionResponse, PoolTreestateResponse,
-    RawMempoolResponse, TreestateResponse,
+    RawMempoolResponse, TreestateResponse, ZValidateAddressResponse,
 };
 use zaino_noderpc::NodeRpcApiClient;
 
@@ -225,6 +225,18 @@ fn address_delta_from_entry(
     }
 }
 
+/// Map a `z_validateaddress` response to an [`AddressValidity`]. A pure
+/// function so the mapping is unit-testable without a server. Infallible:
+/// a field-for-field copy, dropping the fields this adapter has no use for
+/// (`ismine`, the Sapling diversifier, the duplicate `type` key).
+fn address_validity_from_response(response: ZValidateAddressResponse) -> AddressValidity {
+    AddressValidity {
+        valid: response.isvalid,
+        address: response.address,
+        kind: response.address_type,
+    }
+}
+
 /// Map a `getrawtransaction` verbosity-1 response to a [`TransactionDetail`].
 /// A pure function so the mapping is unit-testable without a server.
 fn transaction_detail_from_response(
@@ -385,6 +397,15 @@ impl ChainReader for ZainoClient {
             utxos,
             deltas,
         })
+    }
+
+    async fn validate_address(&self, address: String) -> Result<AddressValidity, ChainReadError> {
+        let response = self
+            .0
+            .z_validate_addr(address)
+            .await
+            .map_err(|e| ChainReadError::Rpc(Box::new(e)))?;
+        Ok(address_validity_from_response(response))
     }
 
     async fn node_status(&self) -> Result<NodeStatus, ChainReadError> {
@@ -726,6 +747,50 @@ mod tests {
         assert_eq!(delta.index, 0);
         assert_eq!(delta.height, 300);
         assert_eq!(delta.value_zat, -1_000);
+    }
+
+    /// A `z_validateaddress` response maps field-for-field into an
+    /// [`zaino_explorer_domain::AddressValidity`] — no server needed.
+    #[test]
+    fn z_validateaddress_response_maps_to_address_validity() {
+        use zaino_noderpc::wire::response::ZValidateAddressResponse;
+
+        let response = ZValidateAddressResponse {
+            isvalid: true,
+            ismine: Some(false),
+            address: Some("t1exampleaddress".to_string()),
+            address_type: Some("p2pkh".to_string()),
+            kind: Some("p2pkh".to_string()),
+            diversifier: None,
+            diversified_transmission_key: None,
+        };
+
+        let validity = super::address_validity_from_response(response);
+
+        assert!(validity.valid);
+        assert_eq!(validity.address, Some("t1exampleaddress".to_string()));
+        assert_eq!(validity.kind, Some("p2pkh".to_string()));
+    }
+
+    /// An invalid address maps to a typed `valid: false`, not a panic.
+    #[test]
+    fn invalid_address_response_maps_to_invalid_validity() {
+        use zaino_noderpc::wire::response::ZValidateAddressResponse;
+
+        let response = ZValidateAddressResponse {
+            isvalid: false,
+            ismine: None,
+            address: None,
+            address_type: None,
+            kind: None,
+            diversifier: None,
+            diversified_transmission_key: None,
+        };
+
+        let validity = super::address_validity_from_response(response);
+
+        assert!(!validity.valid);
+        assert!(validity.address.is_none());
     }
 
     /// A minimal but complete verbose transaction, for the mapping tests
@@ -1071,6 +1136,36 @@ mod tests {
         assert_eq!(mempool.len(), 1);
         assert_eq!(mempool[0].txid, "7a".repeat(32));
         assert_eq!(mempool[0].height, 300);
+
+        let _ = handle.stop();
+    }
+
+    /// `validate_address` against a real mock server: a well-formed
+    /// mainnet transparent address reads as valid, with its kind, and a
+    /// clearly-garbage string reads as invalid — not an error either way.
+    /// Pure function of the address and network, so no chain state needs
+    /// scripting.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn validate_address_against_a_real_server() {
+        let chain = MockChain::default();
+        let (addr, handle) = spawn_mock_server(chain);
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let valid = reader
+            .validate_address("t1VTjv7XF3hYqxQkxKmHHErvus3bDrbbkGg".to_string())
+            .await
+            .expect("validate_address ok");
+        assert!(valid.valid);
+        assert_eq!(valid.kind, Some("p2pkh".to_string()));
+
+        let invalid = reader
+            .validate_address("not-an-address".to_string())
+            .await
+            .expect("validate_address ok");
+        assert!(!invalid.valid);
 
         let _ = handle.stop();
     }

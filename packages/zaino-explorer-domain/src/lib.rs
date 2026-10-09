@@ -67,6 +67,15 @@ pub trait ChainReader: Clone + Send + Sync + 'static {
         address: String,
     ) -> impl Future<Output = Result<AddressSummary, ChainReadError>> + Send;
 
+    /// Whether a given string is an address Zaino recognizes on this
+    /// network, and its kind if so (`z_validateaddress` — a strict
+    /// superset of `validateaddress`, covering shielded and unified
+    /// addresses too, not just transparent).
+    fn validate_address(
+        &self,
+        address: String,
+    ) -> impl Future<Output = Result<AddressValidity, ChainReadError>> + Send;
+
     /// The validator's own status and the mempool's current size.
     fn node_status(&self) -> impl Future<Output = Result<NodeStatus, ChainReadError>> + Send;
 
@@ -200,6 +209,18 @@ pub struct SpendInfo {
     pub spending_input_index: u32,
     /// The height that mined the spending transaction.
     pub height: u32,
+}
+
+/// Whether an address is one Zaino recognizes, and its kind if so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddressValidity {
+    /// Whether the address is valid on the queried network.
+    pub valid: bool,
+    /// The address, re-encoded for the queried network, when valid.
+    pub address: Option<String>,
+    /// The address kind — `p2pkh`, `p2sh`, `sapling`, or `unified` — when
+    /// valid.
+    pub kind: Option<String>,
 }
 
 /// One transparent address's balance and recent transaction history.
