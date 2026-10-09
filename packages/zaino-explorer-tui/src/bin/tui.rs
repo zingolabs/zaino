@@ -5,10 +5,11 @@
 //! Config: `ZAINO_RPC_URL` (default `http://127.0.0.1:8232`), same as the
 //! web surface. `q` quits from anywhere. On the home screen: `t` starts a
 //! txid lookup, `a` starts an address lookup, `b` starts a block
-//! height/hash lookup, and the chain height refreshes every 5s. While
-//! typing: characters append, Backspace edits, Enter looks it up, Esc
-//! cancels back home. On the block screen: `s` looks up its treestate.
-//! On the transaction/address/block/treestate screen: Esc goes back home.
+//! height/hash lookup, `m` looks up the mempool directly, and the chain
+//! height refreshes every 5s. While typing: characters append, Backspace
+//! edits, Enter looks it up, Esc cancels back home. On the block screen:
+//! `s` looks up its treestate. On the transaction/address/block/
+//! treestate/mempool screen: Esc goes back home.
 
 use std::io;
 use std::time::Duration;
@@ -74,6 +75,7 @@ async fn run(
                         KeyCode::Char('t') => state.start_txid_input(),
                         KeyCode::Char('a') => state.start_address_input(),
                         KeyCode::Char('b') => state.start_block_input(),
+                        KeyCode::Char('m') => state.lookup_mempool(reader).await,
                         _ => {}
                     },
                     Screen::EnterTxid(_) => match key.code {
@@ -102,7 +104,10 @@ async fn run(
                         KeyCode::Esc => state.go_home(),
                         _ => {}
                     },
-                    Screen::Transaction(_, _) | Screen::Address(_, _) | Screen::Treestate(_, _) => {
+                    Screen::Transaction(_, _)
+                    | Screen::Address(_, _)
+                    | Screen::Treestate(_, _)
+                    | Screen::Mempool(_) => {
                         if key.code == KeyCode::Esc {
                             state.go_home();
                         }

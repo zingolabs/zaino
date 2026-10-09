@@ -8,8 +8,8 @@ use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 use ratatui::Frame;
 use zaino_explorer_domain::{
-    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReader, TransactionDetail,
-    Treestate,
+    AddressSummary, BlockDeltas, BlockDetail, BlockSummary, ChainReader, MempoolEntry,
+    TransactionDetail, Treestate,
 };
 
 /// How many recent blocks the TUI lists.
@@ -18,7 +18,8 @@ const RECENT_BLOCKS: u32 = 10;
 /// Which screen is showing. The home screen (height + recent blocks) is
 /// always refreshed on a timer; the others are driven by user input — `t`
 /// starts typing a txid, `a` starts typing an address, `b` starts typing a
-/// block height or hash, Enter looks it up, Esc returns home.
+/// block height or hash, `m` looks up the mempool directly (no input
+/// needed), Enter looks up whatever's being typed, Esc returns home.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum Screen {
     #[default]
@@ -38,6 +39,9 @@ pub enum Screen {
     /// A block's shielded commitment-tree state, looked up (via `s` on the
     /// `Block` screen) for the same height-or-hash.
     Treestate(String, Result<(), String>),
+    /// The mempool's current contents, looked up via `m` on the home
+    /// screen — no input needed, there's nothing to type.
+    Mempool(Result<(), String>),
 }
 
 /// The TUI's whole state: the last successful read, or the last error, for
@@ -64,6 +68,8 @@ pub struct AppState {
     /// The looked-up block's shielded commitment-tree state — populated
     /// only on screen `Treestate`.
     treestate: Option<Treestate>,
+    /// The looked-up mempool contents — populated only on screen `Mempool`.
+    mempool: Vec<MempoolEntry>,
     /// The validator/mempool status, refreshed alongside the home screen.
     node_status: Option<zaino_explorer_domain::NodeStatus>,
 }
@@ -235,6 +241,22 @@ impl AppState {
             }
         }
     }
+
+    /// Look up the mempool's current contents. Unlike every other lookup,
+    /// there's nothing to type first — this can run directly from the
+    /// home screen.
+    pub async fn lookup_mempool<C: ChainReader>(&mut self, reader: &C) {
+        match reader.raw_mempool().await {
+            Ok(entries) => {
+                self.mempool = entries;
+                self.screen = Screen::Mempool(Ok(()));
+            }
+            Err(e) => {
+                self.mempool = Vec::new();
+                self.screen = Screen::Mempool(Err(e.to_string()));
+            }
+        }
+    }
 }
 
 /// Render the current state into `frame`, whichever screen is active.
@@ -256,6 +278,7 @@ pub fn render(frame: &mut Frame, state: &AppState) {
         ),
         Screen::Block(id, result) => render_block(frame, id, result, state),
         Screen::Treestate(id, result) => render_treestate(frame, id, result, state),
+        Screen::Mempool(result) => render_mempool(frame, result, state),
     }
 }
 
@@ -269,7 +292,7 @@ fn render_home(frame: &mut Frame, state: &AppState) {
 
     let mut status_text = match (state.height, &state.error) {
         (Some(height), _) => {
-            format!("Chain height: {height}  (t: tx, a: address, b: block, q: quit)")
+            format!("Chain height: {height}  (t: tx, a: address, b: block, m: mempool, q: quit)")
         }
         (None, Some(err)) => format!("RPC error: {err}  (q to quit)"),
         (None, None) => "Loading...  (q to quit)".to_string(),
@@ -476,6 +499,35 @@ fn render_treestate(frame: &mut Frame, id: &str, result: &Result<(), String>, st
     };
     frame.render_widget(
         Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Treestate")),
+        frame.area(),
+    );
+}
+
+fn render_mempool(frame: &mut Frame, result: &Result<(), String>, state: &AppState) {
+    let text = match result {
+        Err(e) => format!("Mempool\n\nRPC error: {e}\n\n(Esc: back)"),
+        Ok(()) => {
+            let mut lines = vec![
+                format!("{} transactions", state.mempool.len()),
+                String::new(),
+            ];
+            for entry in &state.mempool {
+                let time = entry
+                    .time
+                    .map(|t| format!(" — entered at {t}"))
+                    .unwrap_or_default();
+                lines.push(format!(
+                    "{}  {} bytes  {} zat fee  height {}{time}",
+                    entry.txid, entry.size, entry.fee_zat, entry.height
+                ));
+            }
+            lines.push(String::new());
+            lines.push("(Esc: back)".to_string());
+            lines.join("\n")
+        }
+    };
+    frame.render_widget(
+        Paragraph::new(text).block(Block::new().borders(Borders::ALL).title("Mempool")),
         frame.area(),
     );
 }
@@ -989,6 +1041,94 @@ mod tests {
         assert!(content.contains("not found"), "{content}");
     }
 
+    /// A looked-up mempool renders each entry's txid, size, fee, and
+    /// height.
+    #[test]
+    fn renders_mempool_with_entries() {
+        use super::Screen;
+        use zaino_explorer_domain::MempoolEntry;
+
+        let state = AppState {
+            screen: Screen::Mempool(Ok(())),
+            mempool: vec![MempoolEntry {
+                txid: "ab".repeat(32),
+                size: 250,
+                fee_zat: 1_000,
+                time: Some(1_700_000_300),
+                height: 300,
+            }],
+            ..Default::default()
+        };
+
+        // Wide enough that the txid plus its trailing detail fits on one
+        // line — a narrower backend truncates it, same as any terminal
+        // too small for its content.
+        let backend = TestBackend::new(140, 15);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains(&"ab".repeat(32)), "{content}");
+        assert!(content.contains("250 bytes"), "{content}");
+        assert!(content.contains("1000 zat fee"), "{content}");
+        assert!(content.contains("height 300"), "{content}");
+    }
+
+    /// An empty mempool renders zero transactions, not an error — an empty
+    /// mempool is routine.
+    #[test]
+    fn renders_empty_mempool() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Mempool(Ok(())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("0 transactions"), "{content}");
+    }
+
+    /// A failed mempool lookup renders the error, not a panic.
+    #[test]
+    fn renders_mempool_lookup_error() {
+        use super::Screen;
+
+        let state = AppState {
+            screen: Screen::Mempool(Err("connection refused".to_string())),
+            ..Default::default()
+        };
+
+        let backend = TestBackend::new(80, 10);
+        let mut terminal = Terminal::new(backend).expect("create terminal");
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+
+        let content: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(content.contains("connection refused"), "{content}");
+    }
+
     /// A hex string within the preview length renders in full; a longer
     /// one truncates and notes the full length rather than printing it raw.
     #[test]
@@ -1394,6 +1534,60 @@ mod tests {
                 assert_eq!(sapling.final_state, "deadbeef");
             }
             other => panic!("expected a successful Treestate screen, got {other:?}"),
+        }
+
+        let _ = handle.stop();
+    }
+
+    /// `lookup_mempool` against a real mock server: proof the pipe reaches
+    /// the real adapter, mirroring `zaino-explorer-web`'s equivalent
+    /// coverage for the `/mempool` route.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn lookup_mempool_against_a_real_server() {
+        use super::Screen;
+        use jsonrpsee::http_client::HttpClientBuilder;
+        use std::net::TcpListener;
+        use zaino_explorer_zaino_client::ZainoClient;
+        use zaino_noderpc::{NodeRpc, NodeRpcApiServer};
+        use zaino_primitives::types::{BlockHash, BlockRef, Height, TransactionId};
+        use zaino_service::testing::{MockChain, MockIndexerService};
+        use zaino_service::MempoolTx;
+        use zcash_protocol::consensus::Network;
+
+        let chain = MockChain {
+            mempool: vec![MempoolTx {
+                txid: TransactionId::from([0x7A; 32]),
+                validated_against: BlockRef {
+                    height: Height::try_from(300).expect("valid height"),
+                    hash: BlockHash::from([0x11; 32]),
+                },
+            }],
+            ..Default::default()
+        };
+        let handler = NodeRpc::new(MockIndexerService::new(chain), Network::MainNetwork);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        listener.set_nonblocking(true).expect("set nonblocking");
+        let addr = listener.local_addr().expect("local addr");
+        let server = jsonrpsee::server::ServerBuilder::default()
+            .build_from_tcp(listener)
+            .expect("build server from listener");
+        let handle = server.start(handler.into_rpc());
+
+        let client = HttpClientBuilder::default()
+            .build(format!("http://{addr}"))
+            .expect("build http client");
+        let reader = ZainoClient::new(client);
+
+        let mut state = AppState::default();
+        state.lookup_mempool(&reader).await;
+
+        match &state.screen {
+            Screen::Mempool(Ok(())) => {
+                assert_eq!(state.mempool.len(), 1);
+                assert_eq!(state.mempool[0].txid, "7a".repeat(32));
+                assert_eq!(state.mempool[0].height, 300);
+            }
+            other => panic!("expected a successful Mempool screen, got {other:?}"),
         }
 
         let _ = handle.stop();
