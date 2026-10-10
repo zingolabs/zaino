@@ -2,6 +2,8 @@
 //!
 //! - map rows unsorted (the LSM sorts each batch at commit)
 //! - per map: row numbers by key (staged lookups + the held-key check)
+//! - a removed key = a tombstone row, unless the buffer holds its insert: both cancel (neither
+//!   reaches a segment; `docs/design/lsm-deletes.md`)
 
 use std::hash::BuildHasher;
 
@@ -10,8 +12,10 @@ use hashbrown::{DefaultHashBuilder, HashTable};
 use zaino_primitives::types::{BlockRef, Height};
 
 use crate::{
-    overlay::{OverlayView, Uncommitted},
-    port::{BlockChanges, Items, MapId, MapTable, Schema, SequenceId, SequenceTable},
+    overlay::{Entry, OverlayView, Uncommitted},
+    port::{
+        BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId, SequenceTable, Width,
+    },
 };
 
 /// Committed view + its store's buffer, borrowed ([`Store::staged`](crate::Store::staged))
@@ -30,11 +34,24 @@ pub struct WriteBuffer {
 }
 
 /// One map's rows in arrival order + their row numbers by key
+///
+/// - a tombstone row's value bytes = zeros (fixed width) / empty (variable)
 #[derive(Debug, Clone, Default)]
 struct MapRows {
     keys: Items,
     values: Items,
+    kinds: Vec<Row>,
     by_key: HashTable<usize>,
+}
+
+/// What a buffered map row is
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    Value,
+    Tombstone,
+    /// inserted, then removed by a later buffered block: written nowhere, still indexed (a third
+    /// write of the key = bug, caught)
+    Cancelled,
 }
 
 impl WriteBuffer {
@@ -53,7 +70,8 @@ impl WriteBuffer {
         self.tip
     }
 
-    /// Panics before buffering anything: a map key held or inserted twice
+    /// Panics before buffering anything: a map key held or inserted twice, removed twice, or
+    /// removed after its removal here
     pub(crate) fn push(&mut self, changes: &BlockChanges) {
         self.assert_new_keys(changes);
         for (&table, held) in self.schema.sequences().iter().zip(&mut self.sequences) {
@@ -67,12 +85,16 @@ impl WriteBuffer {
     }
 
     fn assert_new_keys(&self, changes: &BlockChanges) {
+        changes.assert_distinct_keys();
         for (&table, rows) in self.schema.maps().iter().zip(&self.maps) {
-            let mut keys: Vec<&[u8]> = changes.inserts(table).map(|(key, _)| key).collect();
-            keys.sort_unstable();
-            let twice = keys.windows(2).any(|pair| pair[0] == pair[1])
-                || keys.iter().any(|key| rows.find(table, key, &self.hasher).is_some());
-            assert!(!twice, "{}: a map key held twice", table.name);
+            let name = table.name;
+            let held = |key: &[u8]| rows.find(table, key, &self.hasher);
+            let held_twice = changes.inserts(table).any(|(key, _)| held(key).is_some());
+            assert!(!held_twice, "{name}: a map key held twice");
+            let removed_twice = changes
+                .removes(table)
+                .any(|key| held(key).is_some_and(|row| rows.kinds[row] != Row::Value));
+            assert!(!removed_twice, "{name}: a map key removed twice");
         }
     }
 
@@ -81,10 +103,16 @@ impl WriteBuffer {
         self.sequences[usize::from(table.id.0)].items(table.record)
     }
 
-    /// `table`'s rows, arrival order (commit: the LSM sorts them)
-    pub(crate) fn map_rows(&self, table: MapTable) -> Vec<(&[u8], &[u8])> {
+    /// `table`'s rows, arrival order (commit: the LSM sorts them); `None` = a tombstone
+    pub(crate) fn map_rows(&self, table: MapTable) -> Vec<(&[u8], Option<&[u8]>)> {
         let rows = &self.maps[usize::from(table.id.0)];
-        rows.keys.items(table.key).zip(rows.values.items(table.value)).collect()
+        let all = rows.keys.items(table.key).zip(rows.values.items(table.value)).zip(&rows.kinds);
+        let written = all.filter_map(|((key, value), kind)| match kind {
+            Row::Value => Some((key, Some(value))),
+            Row::Tombstone => Some((key, None)),
+            Row::Cancelled => None,
+        });
+        written.collect()
     }
 
     /// Record + row bytes held, every table
@@ -97,10 +125,10 @@ impl WriteBuffer {
     /// Heap held: every table's bytes + the key indexes (capacity)
     pub(crate) fn heap(&self) -> usize {
         let sequences: usize = self.sequences.iter().map(Items::heap).sum();
-        let maps = self
-            .maps
-            .iter()
-            .map(|rows| rows.keys.heap() + rows.values.heap() + rows.by_key.allocation_size());
+        let maps = self.maps.iter().map(|rows| {
+            let kinds = rows.kinds.capacity() * size_of::<Row>();
+            rows.keys.heap() + rows.values.heap() + kinds + rows.by_key.allocation_size()
+        });
         sequences + maps.sum::<usize>()
     }
 
@@ -120,15 +148,34 @@ impl WriteBuffer {
 }
 
 impl MapRows {
-    fn append(
-        &mut self,
-        table: MapTable,
-        [keys, values]: &[Items; 2],
-        hasher: &DefaultHashBuilder,
-    ) {
+    /// Inserts as value rows; each removal cancels the buffered insert of its key, else becomes a
+    /// tombstone row
+    fn append(&mut self, table: MapTable, items: &MapItems, hasher: &DefaultHashBuilder) {
         let first = self.keys.len(table.key);
-        self.keys.extend(keys);
-        self.values.extend(values);
+        self.keys.extend(&items.keys);
+        self.values.extend(&items.values);
+        self.kinds.resize(self.keys.len(table.key), Row::Value);
+        self.index(table, first, hasher);
+        for key in items.removed.items(table.key) {
+            if let Some(row) = self.find(table, key, hasher) {
+                assert_eq!(self.kinds[row], Row::Value, "{}: a map key removed twice", table.name);
+                self.kinds[row] = Row::Cancelled;
+                continue;
+            }
+            let first = self.keys.len(table.key);
+            self.keys.extend_one(table.key, key);
+            let zeros = match table.value {
+                Width::Fixed(n) => vec![0; n.get() as usize],
+                Width::Variable => Vec::new(),
+            };
+            self.values.extend_one(table.value, &zeros);
+            self.kinds.push(Row::Tombstone);
+            self.index(table, first, hasher);
+        }
+    }
+
+    /// Rows from `first` on, indexed by key
+    fn index(&mut self, table: MapTable, first: usize, hasher: &DefaultHashBuilder) {
         for row in first..self.keys.len(table.key) {
             let held = &self.keys;
             let hash = hasher.hash_one(key_at(held, table, row));
@@ -140,6 +187,20 @@ impl MapRows {
     fn find(&self, table: MapTable, key: &[u8], hasher: &DefaultHashBuilder) -> Option<usize> {
         let same = |&row: &usize| self.keys.get(table.key, row) == Some(key);
         self.by_key.find(hasher.hash_one(key), same).copied()
+    }
+}
+
+impl MapRows {
+    /// Row `row` as seen above durable (a cancelled key = removed: its insert is buffered here,
+    /// never durable)
+    fn entry(&self, table: MapTable, row: usize) -> Entry {
+        match self.kinds[row] {
+            Row::Value => {
+                let value = self.values.get(table.value, row).expect("a value row is buffered");
+                Entry::Value(Bytes::copy_from_slice(value))
+            }
+            Row::Tombstone | Row::Cancelled => Entry::Removed,
+        }
     }
 }
 
@@ -155,8 +216,10 @@ impl WriteBuffer {
         assert!(first.is_none_or(|ordered| ordered), "{label}: buffer first above its tip");
         for (&table, rows) in self.schema.maps().iter().zip(&self.maps) {
             let count = rows.keys.len(table.key);
-            let paired = rows.values.len(table.value) == count && rows.by_key.len() == count;
-            assert!(paired, "{label}: {} keys, values and index agree", table.name);
+            let paired = rows.values.len(table.value) == count
+                && rows.kinds.len() == count
+                && rows.by_key.len() == count;
+            assert!(paired, "{label}: {} keys, values, kinds and index agree", table.name);
             let indexed = (0..count).all(|row| {
                 rows.find(table, key_at(&rows.keys, table, row), &self.hasher) == Some(row)
             });
@@ -188,22 +251,22 @@ impl Uncommitted for WriteBuffer {
         records.get(table.record, usize::try_from(at).ok()?).map(Bytes::copy_from_slice)
     }
 
-    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Entry> {
         let (table, rows) = self.map(table);
         let row = rows.find(table, key, &self.hasher)?;
-        rows.values.get(table.value, row).map(Bytes::copy_from_slice)
+        Some(rows.entry(table, row))
     }
 
     /// Full scan (no fold ranges over its own buffer: tests and tools only)
-    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)> {
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8]) -> Vec<(Bytes, Entry)> {
         let (table, rows) = self.map(table);
-        let all = rows.keys.items(table.key).zip(rows.values.items(table.value));
-        let mut within: Vec<(&[u8], &[u8])> =
-            all.filter(|(key, _)| (start..end).contains(key)).collect();
-        within.sort_unstable_by_key(|(key, _)| *key);
-        let taken = within.into_iter().take(limit);
-        taken
-            .map(|(key, value)| (Bytes::copy_from_slice(key), Bytes::copy_from_slice(value)))
+        let keys = rows.keys.items(table.key).enumerate();
+        let mut within: Vec<(usize, &[u8])> =
+            keys.filter(|(_, key)| (start..end).contains(key)).collect();
+        within.sort_unstable_by_key(|(_, key)| *key);
+        within
+            .into_iter()
+            .map(|(row, key)| (Bytes::copy_from_slice(key), rows.entry(table, row)))
             .collect()
     }
 }

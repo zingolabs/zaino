@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use super::SegmentMeta;
+use super::{writer::Merged, SegmentMeta};
 
 mod names {
     pub(super) const SEGMENTS: &str = "zaino.lsm.segments";
@@ -13,6 +13,7 @@ mod names {
     pub(super) const BATCH_ROWS_TOTAL: &str = "zaino.lsm.batch_rows_total";
     pub(super) const MERGE_ROWS_TOTAL: &str = "zaino.lsm.merge_rows_total";
     pub(super) const MERGE_BYTES_TOTAL: &str = "zaino.lsm.merge_bytes_total";
+    pub(super) const MERGE_CANCELLED_TOTAL: &str = "zaino.lsm.merge_cancelled_total";
     pub(super) const MERGE_DURATION_SECONDS: &str = "zaino.lsm.merge_duration_seconds";
     pub(super) const STALL_DURATION_SECONDS: &str = "zaino.lsm.stall_duration_seconds";
 }
@@ -52,6 +53,10 @@ pub fn describe_metrics() {
         Unit::Bytes,
         "Segment bytes written by finished background merges, by set"
     );
+    describe_counter!(
+        names::MERGE_CANCELLED_TOTAL,
+        "Key value + tombstone pairs dropped by finished background merges, by set"
+    );
     describe_histogram!(
         names::MERGE_DURATION_SECONDS,
         Unit::Seconds,
@@ -84,15 +89,15 @@ pub(super) fn batched(set: &str, segment: &SegmentMeta) {
 }
 
 /// `tier` = the inputs' tier (output lands one above)
-pub(super) fn merged(set: &str, tier: u32, segment: &SegmentMeta, took: Duration) {
-    {
-        let set = set.to_owned();
-        metrics::counter!(names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(segment.records);
-        metrics::counter!(names::MERGE_BYTES_TOTAL, "set" => set.clone())
-            .increment(segment.sealed.len);
-        metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
-            .record(took);
-    }
+pub(super) fn merged(set: &str, tier: u32, merged: &Merged, took: Duration) {
+    let set = set.to_owned();
+    let (rows, bytes) = merged.output.map_or((0, 0), |output| (output.records, output.sealed.len));
+    metrics::counter!(names::MERGE_ROWS_TOTAL, "set" => set.clone()).increment(rows);
+    metrics::counter!(names::MERGE_BYTES_TOTAL, "set" => set.clone()).increment(bytes);
+    metrics::counter!(names::MERGE_CANCELLED_TOTAL, "set" => set.clone())
+        .increment(merged.cancelled);
+    metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set, "tier" => tier.to_string())
+        .record(took);
 }
 
 pub(super) fn stalled(set: &str, took: Duration) {

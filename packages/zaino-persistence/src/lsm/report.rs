@@ -8,13 +8,13 @@ use std::{fmt, time::Duration};
 
 use tracing::{debug, warn};
 
-use super::SegmentMeta;
+use super::{writer::Merged, SegmentMeta};
 
-/// Merge the log swaps in: `tier` → `output`, `took` = its thread's wall time
+/// Merge the log swaps in: `tier` → `merged`, `took` = its thread's wall time
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Landed {
     pub(super) tier: u32,
-    pub(super) output: SegmentMeta,
+    pub(super) merged: Merged,
     pub(super) took: Duration,
 }
 
@@ -25,11 +25,13 @@ pub(super) fn launched(set: &str, tier: u32, inputs: &[SegmentMeta]) {
 }
 
 pub(super) fn swapped(set: &str, landed: &Landed) {
+    let output = landed.merged.output;
     debug!(
         set,
         tier = landed.tier,
-        rows = landed.output.records,
-        size = %Size(landed.output.sealed.len),
+        rows = output.map_or(0, |output| output.records),
+        cancelled = landed.merged.cancelled,
+        size = %Size(output.map_or(0, |output| output.sealed.len)),
         took = %Elapsed(landed.took),
         "Compacted segments"
     );

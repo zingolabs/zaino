@@ -120,12 +120,21 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
         |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
         ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
+    let ((first, value_balance), others) = stores.split_first_mut().expect("indexes");
+    assert_eq!(
+        *first,
+        IndexKind::ValueBalance,
+        "value-balance folds first: the rest read its fees"
+    );
     for block in path {
-        let value_balance = ValueBalanceReader::new(stores[0].1.staged());
-        let fees = zaino_internal_value_balance::fees(&value_balance, &[block]).expect("held");
-        for (kind, store) in &mut stores {
+        let mut out = value_balance.changes(block.at());
+        let parent = ValueBalanceReader::new(value_balance.staged());
+        let fees =
+            zaino_internal_value_balance::fold(&parent, block, &mut out).expect("prevouts held");
+        value_balance.apply(out);
+        for (kind, store) in others.iter_mut() {
             let mut out = store.changes(block.at());
-            own_fold(*kind, store.staged(), &fees[0], block, &mut out);
+            own_fold(*kind, store.staged(), &fees, block, &mut out);
             store.apply(out);
         }
     }

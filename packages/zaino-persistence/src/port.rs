@@ -1,6 +1,7 @@
 //! Persistence port: what an index may ask of storage (`docs/design/persistence-engine.md`)
 //!
-//! - final data only, insert only, buffered then one atomic commit, snapshot reads, verifiable
+//! - final data only, insert only (+ single removes on a `deletes()` map), buffered then one atomic
+//!   commit, snapshot reads, verifiable
 //! - sequence table = records at positions 0, 1, 2, ...; map table = values under unique keys
 //! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
 
@@ -243,6 +244,7 @@ impl SequenceTable {
 /// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
 /// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
+/// - `deletes` = keys removable ([`deletes`](Self::deletes), `docs/design/lsm-deletes.md`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTable {
     pub(crate) id: MapId,
@@ -251,12 +253,21 @@ pub struct MapTable {
     pub(crate) value: Width,
     pub(crate) scope: u32,
     pub(crate) cache_writes: bool,
+    pub(crate) deletes: bool,
 }
 
 impl MapTable {
     /// `id` = position in its [`Tables`]
     pub const fn new(id: u16, name: &'static str, key: Width, value: Width, scope: u32) -> Self {
-        Self { id: MapId(id), name, key, value, scope, cache_writes: false }
+        Self { id: MapId(id), name, key, value, scope, cache_writes: false, deletes: false }
+    }
+
+    /// Keys removable ([`MapChanges::remove`]) under a contract: per key, inserted at most once,
+    /// removed at most once, never re-inserted (`docs/design/lsm-deletes.md`)
+    ///
+    /// - the LSM then stores a flag byte per row (value or tombstone)
+    pub const fn deletes(self) -> Self {
+        Self { deletes: true, ..self }
     }
 
     /// A fold reads it: what a commit or merge writes stays in page cache (default: dropped once
@@ -338,7 +349,15 @@ pub struct BlockChanges {
     block: BlockRef,
     schema: Schema,
     sequences: Vec<Items>,
-    maps: Vec<[Items; 2]>,
+    maps: Vec<MapItems>,
+}
+
+/// One map's share of a [`BlockChanges`]: inserted `(keys, values)` + removed keys
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MapItems {
+    pub(crate) keys: Items,
+    pub(crate) values: Items,
+    pub(crate) removed: Items,
 }
 
 impl BlockChanges {
@@ -347,7 +366,7 @@ impl BlockChanges {
             block,
             schema,
             sequences: vec![Items::default(); schema.sequences().len()],
-            maps: vec![[Items::default(), Items::default()]; schema.maps().len()],
+            maps: vec![MapItems::default(); schema.maps().len()],
         }
     }
 
@@ -366,19 +385,21 @@ impl BlockChanges {
         SequenceAppends { table, buffer: &mut self.sequences[at] }
     }
 
-    /// `table`'s inserts (panics: not in this schema)
-    pub fn map(&mut self, table: MapTable) -> MapInserts<'_> {
+    /// `table`'s inserts + removes (panics: not in this schema)
+    pub fn map(&mut self, table: MapTable) -> MapChanges<'_> {
         let at = self.schema.map_at(table);
-        let [keys, values] = &mut self.maps[at];
-        MapInserts { table, keys, values }
+        MapChanges { table, items: &mut self.maps[at] }
     }
 
-    /// Records appended + rows inserted, every table
+    /// Records appended + rows inserted + keys removed, every table
     pub fn rows(&self) -> usize {
         let schema = self.schema;
         let records =
             schema.sequences().iter().map(|&table| self.sequence_items(table).len(table.record));
-        let rows = schema.maps().iter().map(|&table| self.map_items(table)[0].len(table.key));
+        let rows = schema.maps().iter().map(|&table| {
+            let items = self.map_items(table);
+            items.keys.len(table.key) + items.removed.len(table.key)
+        });
         records.chain(rows).sum()
     }
 
@@ -389,17 +410,38 @@ impl BlockChanges {
 
     /// `table`'s inserts as `(key, value)`, in the order made
     pub fn inserts(&self, table: MapTable) -> impl Iterator<Item = (&[u8], &[u8])> {
-        let [keys, values] = &self.maps[self.schema.map_at(table)];
-        keys.items(table.key).zip(values.items(table.value))
+        let items = &self.maps[self.schema.map_at(table)];
+        items.keys.items(table.key).zip(items.values.items(table.value))
+    }
+
+    /// `table`'s removed keys, in the order made
+    pub fn removes(&self, table: MapTable) -> impl Iterator<Item = &[u8]> {
+        self.maps[self.schema.map_at(table)].removed.items(table.key)
     }
 
     pub(crate) fn sequence_items(&self, table: SequenceTable) -> &Items {
         &self.sequences[self.schema.sequence_at(table)]
     }
 
-    /// `[keys, values]`
-    pub(crate) fn map_items(&self, table: MapTable) -> &[Items; 2] {
+    pub(crate) fn map_items(&self, table: MapTable) -> &MapItems {
         &self.maps[self.schema.map_at(table)]
+    }
+
+    /// Panics before anything is applied: a key inserted twice, removed twice, or both inserted
+    /// and removed in these changes (a block creating and spending a key writes neither)
+    pub(crate) fn assert_distinct_keys(&self) {
+        for (&table, items) in self.schema.maps().iter().zip(&self.maps) {
+            let name = table.name;
+            let mut inserted: Vec<&[u8]> = items.keys.items(table.key).collect();
+            let mut removed: Vec<&[u8]> = items.removed.items(table.key).collect();
+            inserted.sort_unstable();
+            removed.sort_unstable();
+            let twice = |keys: &[&[u8]]| keys.windows(2).any(|pair| pair[0] == pair[1]);
+            assert!(!twice(&inserted), "{name}: a map key inserted twice");
+            assert!(!twice(&removed), "{name}: a map key removed twice");
+            let both = removed.iter().any(|key| inserted.binary_search(key).is_ok());
+            assert!(!both, "{name}: a map key inserted and removed by one block");
+        }
     }
 }
 
@@ -417,19 +459,28 @@ impl SequenceAppends<'_> {
     }
 }
 
-/// One map table's inserts in a [`BlockChanges`]
+/// One map table's inserts + removes in a [`BlockChanges`]
 #[derive(Debug)]
-pub struct MapInserts<'a> {
+pub struct MapChanges<'a> {
     table: MapTable,
-    keys: &'a mut Items,
-    values: &'a mut Items,
+    items: &'a mut MapItems,
 }
 
-impl MapInserts<'_> {
+impl MapChanges<'_> {
     /// `value` under `key` (keys unique: second insert = bug, caught at apply)
     pub fn insert(&mut self, key: &[u8], value: &[u8]) {
-        self.keys.push(self.table.name, self.table.key, key);
-        self.values.push(self.table.name, self.table.value, value);
+        self.items.keys.push(self.table.name, self.table.key, key);
+        self.items.values.push(self.table.name, self.table.value, value);
+    }
+
+    /// `key` gone from this block on (insert-once / remove-once: a second remove, a remove of a
+    /// key inserted here, or a re-insert = bug, caught at apply)
+    ///
+    /// - panics: the table does not declare [`MapTable::deletes`]
+    pub fn remove(&mut self, key: &[u8]) {
+        let name = self.table.name;
+        assert!(self.table.deletes, "{name}: remove on a table without `deletes()`");
+        self.items.removed.push(name, self.table.key, key);
     }
 }
 
@@ -486,6 +537,11 @@ impl Items {
     /// Item bytes held (end offsets not counted)
     pub(crate) fn item_bytes(&self) -> usize {
         self.bytes.len()
+    }
+
+    /// `item` after these (one item)
+    pub(crate) fn extend_one(&mut self, width: Width, item: &[u8]) {
+        self.push("", width, item);
     }
 
     /// Heap held (capacity, not length)

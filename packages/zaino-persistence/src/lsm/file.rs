@@ -7,7 +7,7 @@ use bytes::Bytes;
 use super::{
     file_name,
     filter::FilterLayout,
-    layout::{Sections, Shape},
+    layout::{decode_row, Row, Sections, Shape},
     Result, SegmentMeta,
 };
 use crate::{
@@ -75,10 +75,23 @@ impl SegmentFile {
         &self.row(slot)[..self.sections.shape.key_len]
     }
 
-    /// `(key, value)` at `slot`, zero-copy slices of the mapping
+    /// Row at `slot`: its value or tombstone
+    ///
+    /// - panics: a row that decodes as neither (page checksums passed: a writer bug)
+    pub(crate) fn content(&self, slot: usize) -> Row<'_> {
+        let shape = &self.sections.shape;
+        let decoded = decode_row(shape, self.row(slot));
+        let (_, row) = decoded
+            .unwrap_or_else(|| panic!("segment {} slot {slot}: a bad row flag", self.meta.id));
+        row
+    }
+
+    /// `(key, value)` at `slot`, zero-copy slices of the mapping (a tombstone's = zeroed bytes)
     pub(crate) fn entry(&self, slot: usize) -> (Bytes, Bytes) {
+        let shape = &self.sections.shape;
         let mut key = self.pages.bytes(self.row_range(slot));
-        let value = key.split_off(self.sections.shape.key_len);
+        let mut value = key.split_off(shape.key_len);
+        value.truncate(shape.value_len);
         (key, value)
     }
 

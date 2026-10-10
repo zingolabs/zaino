@@ -99,8 +99,10 @@ that manifest is durable. A commit never waits on a merge unless the merging tie
 windows behind, at 24 segments (`STALL_WINDOWS` in `lsm/log.rs`), which bounds the fan-out a read
 can see.
 
-A merge here is not compaction. With no deletes and no updates it is a pure k-way merge of sorted
-arrays, with no tombstones and no version conflicts, and correctness never depends on one. Segments
+A merge here is not compaction. With no updates it is a k-way merge of sorted arrays with no
+version conflicts, and correctness never depends on one. The one exception is a map declaring
+`deletes()`, where a value and its tombstone that meet in a merge are both dropped
+([lsm-deletes.md](./lsm-deletes.md)). Segments
 are also the state rather than a log of mutations to it, so an unmerged set costs read time but
 never restart time.
 
@@ -144,21 +146,25 @@ such as an exchange hot wallet, and not for a light wallet's mostly single-use r
 ever matters, a maintained set can be added as an accelerator over the same segments without
 changing the source of truth.
 
-### Fees: the one lookup, still no Shape C
+### Fees: the one lookup, the one Shape C
 
 `CompactTx.fee` is the one value resolved at write time, because it is encoded into the compact
 record, and its transparent term (the value of everything the inputs spend) exists nowhere in the
 block. Every other term, the Sprout, Sapling, Orchard and Ironwood value balances, is in the
 transaction. So some fold has to look up an outpoint's value once per transparent input.
 
-`zaino-internal-value-balance` does that without becoming Shape C, by the same move: it never
-deletes. Its `outputs` set maps `(txid, vout)` to a value and keeps spent outputs too, so it is a
-probed Shape B set like `spent`. A reorg drops the non-finalized state with nothing to undo, and
-any height resolves the same way every time, so an index downstream that is behind it replays
-through the same lookups with no rewind. Every probe
-hits, since a valid spend's prevout exists, so the filter picks the one segment holding it and a
-probe costs one block read. At mainnet scale that is about 190M outputs × 44 B, or 8.4 GB, against
-about 1.4 GB resident plus a delete path for a maintained UTXO set.
+`zaino-internal-value-balance` holds the UTXO set: `outputs` maps an unspent `(txid, vout)` to its
+value, and a spend removes its prevout (`MapTable::deletes()`, [lsm-deletes.md](./lsm-deletes.md)).
+It is the one map that deletes, and its deletes stay simple because a key is inserted once and
+removed at most once, so a tombstone cancels its value wherever the two meet, in any merge order.
+Reorgs still never reach storage: the NFS holds a non-final block's removals in memory like its
+inserts. Keeping spent outputs instead, as a Shape B set, cost the fold its working set: at height
+1.75M, 155M outputs in about 7 GB, against 21.5M unspent in about 1 GB that fits in page cache.
+
+Removal has one consequence: once a later block spends a block's prevouts, its fees can no longer
+be re-derived. So the fold stores them in `fees`, a sequence with one record per height, and a held
+height's fees are read back. The writer reads them when a restart resends a block, and the NFS
+reads them when compact-block folds a block that value-balance already holds.
 
 The value-balance index serves nothing itself. Its writer publishes each block's per-transaction
 fees into a `FeeSink`, and the compact-block writer pops one fee step per block. At the tip the NFS

@@ -1,7 +1,9 @@
 //! Size-tiered LSM over immutable sorted segments: the map tables of [`DiskEngine`]
 //!
-//! - Stripped to what Zaino's indexes use: **nothing updated or deleted** (every row derives from
-//!   one block) → no memtable, no WAL, no tombstones, no versions
+//! - Stripped to what Zaino's indexes use: **nothing updated** (every row derives from one block)
+//!   → no memtable, no WAL, no versions
+//! - `deletes()` map: insert-once / remove-once → a tombstone row, cancelled with its value in any
+//!   merge (`docs/design/lsm-deletes.md`)
 //! - Segment = one batch, sorted by key, **fixed stride, 100% packed**, then per-block fences and
 //!   a binary fuse filter (`layout.rs`)
 //! - Committed segments = owner's manifest list (`SegmentMeta`: id, record count, file seal)
@@ -72,6 +74,10 @@ pub enum SegmentError {
 
     #[error("segment {segment} filter build failed: {reason}")]
     Filter { segment: u32, reason: &'static str },
+
+    /// Rows breaking the insert-once / remove-once contract met in a merge (a writer bug)
+    #[error("merge into segment {segment}: {reason}")]
+    Contract { segment: u32, reason: String },
 }
 
 type Result<T> = std::result::Result<T, SegmentError>;

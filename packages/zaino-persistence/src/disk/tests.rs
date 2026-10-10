@@ -15,8 +15,8 @@ use zcash_protocol::consensus::NetworkType;
 use super::*;
 use crate::{
     conformance::{
-        self, block, block_ref, panic_message, scanned_key, Model, Subject, BLOCKS, HEIGHTS,
-        SCANNED, SCHEMA, TABLES,
+        self, block, block_ref, panic_message, probed_key, scanned_key, Model, Subject, BLOCKS,
+        HEIGHTS, PROBED, SCANNED, SCHEMA, TABLES,
     },
     fs::{RealFs, SimFs},
     manifest::IndexKind,
@@ -113,26 +113,28 @@ fn the_disk_engine_keeps_the_port_contract() {
     conformance::contract(SimDisk::new(2));
 }
 
-/// Fanout 2, merges launched + landed mid-history; per crash state: recovered = an acked or the
-/// attempted commit, every table = the model at that commit, only listed files, commits continue
+/// Fanout 2, merges launched + landed mid-history, some cancelling value + tombstone pairs; per
+/// crash state: recovered = an acked or the attempted commit, every table = the model at that
+/// commit (a removed row never back), only listed files, commits continue
 #[test]
 fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
     let fs = SimFs::recording();
-    let batches: [(u8, &[u8], u16); 4] =
-        [(2, &[1, 2, 1], 2), (1, &[1, 3], 1), (0, &[], 1), (3, &[4], 0)];
+    let batches: [(u8, &[u8], u16, &[u16]); 4] =
+        [(2, &[1, 2, 1], 2, &[]), (1, &[1, 3], 1, &[0]), (0, &[], 1, &[0, 1]), (3, &[4], 0, &[])];
     let mut models = vec![Model::default()];
     {
         let mut store = open(&DiskEngine::with_fanout(fs.clone(), 2));
-        for (acked, (records, owners, ids)) in (1u64..).zip(batches) {
+        for (acked, (records, owners, ids, removals)) in (1u64..).zip(batches) {
             store.settle();
             let mut model = models.last().expect("seeded").clone();
-            store.apply(model.advance(records, owners, ids));
+            store.apply(model.advance(records, owners, ids, removals));
             store.commit().expect("commit");
             models.push(model);
             fs.set_tag(acked);
         }
         let merged = store.maps.iter().map(|log| log.segments().len()).collect::<Vec<_>>();
-        assert_eq!(merged, [2, 2], "merges landed: scanned 2+2+1 rows, probed 1+1+1");
+        // scanned: 3 + (2 + a tombstone) merged → 4 (one pair cancelled), 2 tombstones, 1 row
+        assert_eq!(merged, [3, 2], "merges landed: scanned 4+2+1 rows, probed 2+2");
     }
 
     let states = fs.crash_states();
@@ -149,7 +151,7 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
         assert_tiers(&store, &state.fs, 2, true, label);
 
         let mut model = models[recovered].clone();
-        store.apply(model.advance(1, &[9], 1));
+        store.apply(model.advance(1, &[9], 1, &[]));
         store.commit().expect("commit after recovery");
         model.assert_view(
             &store.committed(),
@@ -162,11 +164,12 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
 /// (never a panic, never swallowed), later commits refused, restart = acked or attempted commit
 #[test]
 fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_state() {
-    let batches: [(u8, &[u8], u16); 3] = [(2, &[1, 2], 1), (1, &[1], 1), (1, &[3], 2)];
+    let batches: [(u8, &[u8], u16, &[u16]); 3] =
+        [(2, &[1, 2], 1, &[]), (1, &[1], 1, &[0]), (1, &[3], 2, &[1])];
     let mut models = vec![Model::default()];
-    for (records, owners, ids) in batches {
+    for (records, owners, ids, removals) in batches {
         let mut model = models.last().expect("seeded").clone();
-        model.advance(records, owners, ids);
+        model.advance(records, owners, ids, removals);
         models.push(model);
     }
 
@@ -183,8 +186,8 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
                 let mut failed = None;
                 for at in 0..batches.len() {
                     store.settle();
-                    let (records, owners, ids) = batches[at];
-                    store.apply(models[at].clone().advance(records, owners, ids));
+                    let (records, owners, ids, removals) = batches[at];
+                    store.apply(models[at].clone().advance(records, owners, ids, removals));
                     match store.commit() {
                         Ok(()) => acked = at + 1,
                         Err(error) => {
@@ -201,7 +204,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
                             break;
                         }
                         // op `fail_at` hit a merge the last commit launched: surfaces next commit
-                        store.apply(models[acked].clone().advance(0, &[], 0));
+                        store.apply(models[acked].clone().advance(0, &[], 0, &[]));
                         let next = store.commit();
                         next.expect_err("a failed background merge surfaces at the next commit")
                     }
@@ -225,7 +228,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
             "op {fail_at}: recovered {recovered}"
         );
         models[recovered].assert_view(&store.committed(), &format!("op {fail_at}"));
-        store.apply(models[recovered].clone().advance(1, &[9], 1));
+        store.apply(models[recovered].clone().advance(1, &[9], 1, &[]));
         store.commit().expect("commit after restart");
     }
     assert!(failures > 40, "only {failures} failure points exercised");
@@ -241,7 +244,7 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
     {
         let mut store = open(&DiskEngine::with_fanout(fs.clone(), 2));
         for n in 0..3u8 {
-            store.apply(model.advance(2, &[n], 1));
+            store.apply(model.advance(2, &[n], 1, &[]));
             store.commit().expect("commit");
         }
     }
@@ -313,31 +316,52 @@ fn invariant_checks_fire_on_the_bugs_they_guard() {
         committed(&mut store, changes(1));
         store.apply(changes(1));
     });
-    fires("scanned: a map key held twice", &|| {
+    fires("scanned: a map key inserted twice", &|| {
         let mut twice = changes(1);
         twice.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
         twice.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
         store().apply(twice);
     });
-    let one_row = |n| {
+    fires("probed: remove on a table without `deletes()`", &|| {
+        changes(1).map(PROBED).remove(&probed_key(0));
+    });
+    // same key inserted by two commits: neither layer above durable can see the first
+    let one_row = |n, table| {
         let mut changes = changes(n);
-        changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
+        match table {
+            "probed" => changes.map(PROBED).insert(&probed_key(0), &[0; 4]),
+            _ => changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]),
+        }
         changes
     };
     fires("a key listed in two committed segments", &|| {
         let mut store = store();
-        committed(&mut store, one_row(1));
-        committed(&mut store, one_row(2));
+        committed(&mut store, one_row(1, "probed"));
+        committed(&mut store, one_row(2, "probed"));
+        store.committed().map(PROBED).range(&[0; 16], &[0xff; 16], usize::MAX);
+    });
+    fires("a key held 2 times across committed segments", &|| {
+        let mut store = store();
+        committed(&mut store, one_row(1, "scanned"));
+        committed(&mut store, one_row(2, "scanned"));
         store.committed().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
     });
     // two 1-row segments at fanout 2 = merge; its duplicate panics on its thread, resumed here
     fires("strictly ascending", &|| {
         let mut store = store();
-        committed(&mut store, one_row(1));
-        committed(&mut store, one_row(2));
+        committed(&mut store, one_row(1, "probed"));
+        committed(&mut store, one_row(2, "probed"));
         store.settle();
         committed(&mut store, changes(3));
     });
+    // `deletes()` table: same duplicate = the merge's `Contract` error, surfaced at the next commit
+    let mut store = store();
+    committed(&mut store, one_row(1, "scanned"));
+    committed(&mut store, one_row(2, "scanned"));
+    store.settle();
+    store.apply(changes(3));
+    let refused = store.commit().expect_err("a merge of two values of one key").to_string();
+    assert!(refused.contains("key held twice as [Value("), "{refused}");
 }
 
 /// - open drops bytes past the manifest
@@ -347,7 +371,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     let populated = || {
         let fs = SimFs::new();
         let mut store = open(&DiskEngine::new(fs.clone(), LsmConfig::default()));
-        store.apply(Model::default().advance(4, &[1, 2], 3));
+        store.apply(Model::default().advance(4, &[1, 2], 3, &[]));
         store.commit().expect("commit");
         fs
     };
@@ -443,14 +467,14 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     let engine = DiskEngine::with_fanout(fs.clone(), 2);
     let mut store = engine.open(&path, &SCHEMA, NonZeroUsize::MAX).expect("open");
     let mut model = Model::default();
-    store.apply(model.advance(3, &[1], 1));
+    store.apply(model.advance(3, &[1], 1, &[]));
     store.commit().expect("commit");
-    store.apply(model.advance(1, &[2], 1));
+    store.apply(model.advance(1, &[2], 1, &[]));
     store.commit().expect("commit");
     let read = || manifest::read(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
     let before = read();
     store.settle();
-    store.apply(model.advance(0, &[], 0));
+    store.apply(model.advance(0, &[], 0, &[]));
     store.commit().expect("the merge lands, its inputs unlinked");
     let after = read();
 

@@ -4,13 +4,15 @@
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
+
+use bytes::Bytes;
 
 use super::{
     file::{Prefetch, SegmentFile},
     file_name,
-    layout::Shape,
+    layout::{Row, Shape},
     writer::SegmentWriter,
     SegmentError, SegmentLog, Slots, Snapshot,
 };
@@ -48,8 +50,8 @@ fn probed_row(n: u32) -> (Vec<u8>, Vec<u8>) {
     (id, n.to_be_bytes().to_vec())
 }
 
-fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], &[u8])> {
-    rows.iter().map(|(key, value)| (key.as_slice(), value.as_slice())).collect()
+fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
+    rows.iter().map(|(key, value)| (key.as_slice(), Some(value.as_slice()))).collect()
 }
 
 /// Panic payload text (`panic!` with arguments → `String`, a literal → `&str`)
@@ -63,7 +65,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// - map the LSM cannot hold panics at construction, naming the map and why
-/// - batch row of the wrong widths panics naming the map
+/// - batch row of the wrong widths, or a tombstone without `deletes()`, panics naming the map
 #[test]
 fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
     let cases = [
@@ -89,9 +91,17 @@ fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
         Arc::new(Slots::new(4, u64::MAX)),
     )
     .expect("open");
-    let short_value = catch_unwind(AssertUnwindSafe(|| log.batch(vec![(&[0; 12], &[0; 7])])));
-    let message = panic_message(short_value.expect_err("a 7-byte value"));
-    assert!(message.contains("LSM map scanned: (key, value) widths"), "{message}");
+    type Refused = (&'static [u8], Option<&'static [u8]>, &'static str);
+    let rows: [Refused; 3] = [
+        (&[0; 11], Some(&[0; 8]), "LSM map scanned: key width"),
+        (&[0; 12], Some(&[0; 7]), "LSM map scanned: value"),
+        (&[0; 12], None, "LSM map scanned: tombstone"),
+    ];
+    for (key, value, expected) in rows {
+        let refused = catch_unwind(AssertUnwindSafe(|| log.batch(vec![(key, value)])));
+        let message = panic_message(refused.expect_err(expected));
+        assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
+    }
 }
 
 /// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
@@ -316,4 +326,143 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     let absent = 10_000u64;
     let passed = (1_000..1_000 + absent).filter(|a| file.may_contain(&account(*a))).count();
     assert!(passed < 200, "{passed} of {absent} absent accounts passed (≈ 39 expected)");
+}
+
+/// Merge of `deletes()` segments, one row group per key (row `(n, live)` = `probed_row(n)`, its
+/// value if `live`, else its tombstone; expected = output rows + pairs cancelled):
+///
+/// - value + tombstone → both dropped, in either input order; all dropped → no output segment
+/// - lone tombstone → kept (its value lives outside the merge)
+/// - two values, two tombstones, three rows of one key → `Contract`, naming the rows
+#[test]
+fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other_duplicates() {
+    type Rows = &'static [(u32, bool)];
+    type Merged = Result<(Rows, u64), &'static str>;
+    let cases: [(&str, &[Rows], Merged); 7] = [
+        ("pair, nothing left", &[&[(1, true)], &[(1, false)]], Ok((&[], 1))),
+        ("tombstone first", &[&[(1, false)], &[(1, true)]], Ok((&[], 1))),
+        (
+            "pair among others",
+            &[&[(1, true), (2, true)], &[(1, false), (3, true)]],
+            Ok((&[(2, true), (3, true)], 1)),
+        ),
+        ("lone tombstone", &[&[(1, false)], &[(2, true)]], Ok((&[(1, false), (2, true)], 0))),
+        ("two values", &[&[(1, true)], &[(1, true)]], Err("key held twice as [Value(")),
+        (
+            "two tombstones",
+            &[&[(1, false)], &[(1, false)]],
+            Err("key held twice as [Tombstone, Tombstone]"),
+        ),
+        ("three rows", &[&[(1, true)], &[(1, false)], &[(1, true)]], Err("key held 3 times")),
+    ];
+    let shape = Shape::of(&probed().deletes());
+    let slots = Slots::new(1, u64::MAX);
+    let cancel = AtomicBool::new(false);
+    for (case, inputs, expected) in cases {
+        let fs = SimFs::new();
+        let dir = Path::new("/removable");
+        fs.create_dir_all(dir).expect("dir");
+        let writer = SegmentWriter::open(fs.clone(), dir, shape);
+        let segments: Vec<_> = (0u32..)
+            .zip(inputs)
+            .map(|(id, rows)| {
+                let rows: Vec<_> = rows.iter().map(|&(n, live)| (probed_row(n), live)).collect();
+                let rows = rows
+                    .iter()
+                    .map(|((key, value), live)| (key.as_slice(), live.then_some(value.as_slice())));
+                writer.write(id, rows.collect()).expect("write").expect("rows")
+            })
+            .collect();
+        let slot = slots.acquire(0, &cancel).expect("free slot");
+        let merged = writer.merge(99, &segments, &cancel, &slot).map(|merged| {
+            let merged = merged.expect("never cancelled");
+            let rows: Vec<(Vec<u8>, Option<Vec<u8>>)> = merged.output.map_or(Vec::new(), |meta| {
+                let file = SegmentFile::open(fs.as_ref(), dir, &meta, shape, Access::Sequential)
+                    .expect("output");
+                (0..file.records())
+                    .map(|slot| match file.content(slot) {
+                        Row::Value(value) => (file.key(slot).to_vec(), Some(value.to_vec())),
+                        Row::Tombstone => (file.key(slot).to_vec(), None),
+                    })
+                    .collect()
+            });
+            (rows, merged.cancelled)
+        });
+        match (merged, expected) {
+            (Ok(answer), Ok((rows, cancelled))) => {
+                let mut rows: Vec<_> = rows
+                    .iter()
+                    .map(|&(n, live)| {
+                        let (key, value) = probed_row(n);
+                        (key, live.then_some(value))
+                    })
+                    .collect();
+                rows.sort();
+                assert_eq!(answer, (rows, cancelled), "{case}");
+            }
+            (Err(SegmentError::Contract { segment: 99, reason }), Err(named)) => {
+                assert!(reason.contains(named), "{case}: {reason}");
+            }
+            (answer, expected) => panic!("{case}: {answer:?}, expected {expected:?}"),
+        }
+    }
+}
+
+/// Value in one segment, its tombstone in a tombstone-only other, an unrelated third: whatever
+/// the list order, and after a merge of any two (adjacent or not), the key reads absent through
+/// `get`, `get_many` and `range`, and a range's limit counts live rows only
+#[test]
+fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
+    let fs = SimFs::new();
+    let dir = Path::new("/removable");
+    fs.create_dir_all(dir).expect("dir");
+    let shape = Shape::of(&probed().deletes());
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let (removed, kept, other) = (probed_row(1), probed_row(2), probed_row(3));
+    let held_rows = [removed.clone(), kept.clone()];
+    let held = writer.write(0, borrowed(&held_rows)).expect("write").expect("rows");
+    let unrelated =
+        writer.write(1, borrowed(std::slice::from_ref(&other))).expect("write").expect("rows");
+    let tombstone =
+        writer.write(2, vec![(removed.0.as_slice(), None)]).expect("write").expect("rows");
+    let slots = Slots::new(1, u64::MAX);
+    let cancel = AtomicBool::new(false);
+    let merge = |id, inputs: &[_]| {
+        let slot = slots.acquire(0, &cancel).expect("free slot");
+        let merged = writer.merge(id, inputs, &cancel, &slot).expect("merge").expect("finished");
+        merged.output.expect("rows left")
+    };
+    let held_unrelated = merge(3, &[held, unrelated]);
+    let unrelated_tombstone = merge(4, &[unrelated, tombstone]);
+    let held_tombstone = merge(5, &[held, tombstone]);
+    writer.sync_dir().expect("sync");
+
+    let mut live = vec![(kept.0.clone(), kept.1.clone()), (other.0.clone(), other.1.clone())];
+    live.sort();
+    let lists: [&[_]; 7] = [
+        &[held, unrelated, tombstone],
+        &[tombstone, unrelated, held],
+        &[unrelated, tombstone, held],
+        &[held_unrelated, tombstone],
+        &[tombstone, held_unrelated],
+        &[held, unrelated_tombstone],
+        &[held_tombstone, unrelated],
+    ];
+    // every segment kept on disk (`open` removes what its list leaves out), each list mapped next
+    let every = [held, unrelated, tombstone, held_unrelated, unrelated_tombstone, held_tombstone];
+    let mapped = Snapshot::open(fs.as_ref(), dir, shape, &every).expect("open");
+    for listed in lists {
+        let ids: Vec<u32> = listed.iter().map(|meta| meta.id).collect();
+        let snapshot = mapped.next(fs.as_ref(), dir, listed).expect("map");
+        assert_eq!(snapshot.get(&removed.0), None, "{ids:?}: get");
+        let asked = [removed.0.as_slice(), kept.0.as_slice(), removed.0.as_slice()];
+        let expected = vec![None, Some(Bytes::from(kept.1.clone())), None];
+        assert_eq!(snapshot.get_many(&asked), expected, "{ids:?}: get_many");
+        let range = |limit| {
+            let rows = snapshot.range(&[0; 16], &[0xff; 16], limit)?;
+            Some(rows.into_iter().map(|(k, v)| (k.to_vec(), v.to_vec())).collect::<Vec<_>>())
+        };
+        assert_eq!(range(2), Some(live.clone()), "{ids:?}: range at its live size");
+        assert_eq!(range(1), None, "{ids:?}: range under its live size");
+    }
 }

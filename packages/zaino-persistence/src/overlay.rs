@@ -2,6 +2,7 @@
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
 //! - [`OverlayView`] = rows [`Uncommitted`] the committed view they sit on: above first, then durable
+//! - a key removed above masks durable ([`Entry::Removed`], `docs/design/lsm-deletes.md`)
 
 use std::{
     fmt,
@@ -20,20 +21,30 @@ use crate::port::{
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
 ///
 /// - `deltas` = each `BlockChanges` absorbed, oldest first ([`rebase`](Self::rebase) drops by them)
+/// - map entry = `(block that last wrote it, entry)`: a removal by a later block owns the key, so
+///   rebasing past the inserting block keeps it masking durable
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Overlay {
     schema: Schema,
     deltas: Vector<Arc<Delta>>,
     sequences: Vec<Vector<Bytes>>,
-    maps: Vec<OrdMap<Bytes, Bytes>>,
+    maps: Vec<OrdMap<Bytes, (Height, Entry)>>,
 }
 
-/// `BlockChanges`' share: `(sequence, records)` per sequence it grew (sparse), keys per map
+/// `BlockChanges`' share: `(sequence, records)` per sequence it grew (sparse), keys it inserted or
+/// removed per map
 #[derive(Debug, PartialEq, Eq)]
 struct Delta {
     tip: BlockRef,
     appends: Vec<(usize, usize)>,
     keys: Vec<Vec<Bytes>>,
+}
+
+/// A key's state above durable: its value, or removed (masks any durable value)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Value(Bytes),
+    Removed,
 }
 
 impl Overlay {
@@ -84,8 +95,13 @@ impl Overlay {
             *held = held.skip(records);
         }
         for (at, held) in next.maps.iter_mut().enumerate() {
-            for key in dropped.iter().flat_map(|delta| &delta.keys[at]) {
-                held.remove(key);
+            for delta in &dropped {
+                for key in &delta.keys[at] {
+                    // a later block's removal of this key stays: durable still holds the value
+                    if held.get(key).is_some_and(|(owner, _)| *owner == delta.tip.height) {
+                        held.remove(key);
+                    }
+                }
             }
         }
         next
@@ -108,12 +124,17 @@ impl Overlay {
                 (held.len() > before).then(|| (at, held.len() - before))
             })
             .collect();
+        let height = tip.height;
         let keys = (self.schema.maps().iter())
             .zip(&mut self.maps)
             .map(|(&table, held)| {
-                let rows = changes.inserts(table).map(|(key, value)| {
+                let inserted = changes
+                    .inserts(table)
+                    .map(|(key, value)| (key, Entry::Value(Bytes::copy_from_slice(value))));
+                let removed = changes.removes(table).map(|key| (key, Entry::Removed));
+                let rows = inserted.chain(removed).map(|(key, entry)| {
                     let key = Bytes::copy_from_slice(key);
-                    held.insert(key.clone(), Bytes::copy_from_slice(value));
+                    held.insert(key.clone(), (height, entry));
                     key
                 });
                 rows.collect()
@@ -122,14 +143,17 @@ impl Overlay {
         self.deltas.push_back(Arc::new(Delta { tip, appends, keys }));
     }
 
-    /// Panics: key `changes` inserts twice or this layer holds (before any state moves)
+    /// Panics before any state moves: a key `changes` inserts twice, or this layer holds; a key it
+    /// removes twice, inserts too, or this layer already removed
     fn assert_new_keys(&self, changes: &BlockChanges) {
+        changes.assert_distinct_keys();
         for (&table, held) in self.schema.maps().iter().zip(&self.maps) {
-            let mut keys: Vec<&[u8]> = changes.inserts(table).map(|(key, _)| key).collect();
-            keys.sort_unstable();
-            let twice = keys.windows(2).any(|pair| pair[0] == pair[1])
-                || keys.iter().any(|key| held.contains_key(*key));
-            assert!(!twice, "{}: a map key held twice", table.name);
+            let name = table.name;
+            let held_twice = changes.inserts(table).any(|(key, _)| held.contains_key(key));
+            assert!(!held_twice, "{name}: a map key held twice");
+            let removed = |key: &[u8]| held.get(key).is_some_and(|(_, e)| *e == Entry::Removed);
+            let removed_twice = changes.removes(table).any(removed);
+            assert!(!removed_twice, "{name}: a map key removed twice");
         }
     }
 
@@ -139,8 +163,8 @@ impl Overlay {
         found.unwrap_or_else(|| panic!("{table:?} not in the schema"))
     }
 
-    /// `table`'s rows above durable, in key order
-    pub(crate) fn rows(&self, table: MapId) -> &OrdMap<Bytes, Bytes> {
+    /// `table`'s entries above durable (each with the block that wrote it), in key order
+    pub(crate) fn rows(&self, table: MapId) -> &OrdMap<Bytes, (Height, Entry)> {
         let found = self.maps.get(usize::from(table.0));
         found.unwrap_or_else(|| panic!("{table:?} not in the schema"))
     }
@@ -155,9 +179,17 @@ impl Overlay {
             assert_eq!(held.len(), records, "{label}: sequence {at} = its blocks' appends");
         }
         for (at, held) in self.maps.iter().enumerate() {
-            let keys: Vec<&Bytes> = self.deltas.iter().flat_map(|delta| &delta.keys[at]).collect();
+            let mut keys: Vec<&Bytes> =
+                self.deltas.iter().flat_map(|delta| &delta.keys[at]).collect();
+            keys.sort_unstable();
+            keys.dedup();
             let same = held.len() == keys.len() && keys.iter().all(|key| held.contains_key(*key));
             assert!(same, "{label}: map {at} = its blocks' keys");
+            let owned = held.iter().all(|(key, (owner, _))| {
+                let wrote = self.deltas.iter().filter(|delta| delta.keys[at].contains(key));
+                wrote.map(|delta| delta.tip.height).max() == Some(*owner)
+            });
+            assert!(owned, "{label}: map {at} each entry owned by the newest block writing it");
         }
     }
 }
@@ -185,10 +217,11 @@ pub trait Uncommitted: Clone {
 
     fn record(&self, table: SequenceId, at: u64) -> Option<Bytes>;
 
-    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes>;
+    /// `key`'s state here; `None` = not held here (durable decides)
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Entry>;
 
-    /// Up to `limit` rows in `start..end`, key order
-    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)>;
+    /// Every entry in `start..end`, key order (removals included: they mask durable)
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8]) -> Vec<(Bytes, Entry)>;
 }
 
 impl Uncommitted for Overlay {
@@ -212,14 +245,18 @@ impl Uncommitted for Overlay {
         self.records(table).get(at as usize).cloned()
     }
 
-    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
-        self.rows(table).get(key).cloned()
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Entry> {
+        self.rows(table).get(key).map(|(_, entry)| entry.clone())
     }
 
-    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)> {
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8]) -> Vec<(Bytes, Entry)> {
+        // inverted bounds panic `OrdMap::range`
+        if start >= end {
+            return Vec::new();
+        }
         let bounds = (Bound::Included(start), Bound::Excluded(end));
-        let rows = Overlay::rows(self, table).range::<_, [u8]>(bounds).take(limit);
-        rows.map(|(key, value)| (key.clone(), value.clone())).collect()
+        let rows = Overlay::rows(self, table).range::<_, [u8]>(bounds);
+        rows.map(|(key, (_, entry))| (key.clone(), entry.clone())).collect()
     }
 }
 
@@ -244,12 +281,12 @@ impl<A: Uncommitted> Uncommitted for &A {
         (**self).record(table, at)
     }
 
-    fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
+    fn value(&self, table: MapId, key: &[u8]) -> Option<Entry> {
         (**self).value(table, key)
     }
 
-    fn rows(&self, table: MapId, start: &[u8], end: &[u8], limit: usize) -> Vec<(Bytes, Bytes)> {
-        (**self).rows(table, start, end, limit)
+    fn rows(&self, table: MapId, start: &[u8], end: &[u8]) -> Vec<(Bytes, Entry)> {
+        (**self).rows(table, start, end)
     }
 }
 
@@ -326,20 +363,32 @@ impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView
 
 impl<V: MapRead, A: Uncommitted + Send + Sync> MapRead for OverlayView<V, A> {
     fn value(&self, table: MapId, key: &[u8]) -> Option<Bytes> {
-        self.above.value(table, key).or_else(|| self.durable.value(table, key))
+        match self.above.value(table, key) {
+            Some(Entry::Value(value)) => Some(value),
+            Some(Entry::Removed) => None,
+            None => self.durable.value(table, key),
+        }
     }
 
     fn values(&self, table: MapId, keys: &[&[u8]]) -> Vec<Option<Bytes>> {
-        let mut answers: Vec<Option<Bytes>> =
+        let above: Vec<Option<Entry>> =
             keys.iter().map(|key| self.above.value(table, key)).collect();
-        let misses: Vec<usize> = (0..keys.len()).filter(|&at| answers[at].is_none()).collect();
+        let misses: Vec<usize> = (0..keys.len()).filter(|&at| above[at].is_none()).collect();
         let asked: Vec<&[u8]> = misses.iter().map(|&at| keys[at]).collect();
+        let mut answers: Vec<Option<Bytes>> = above
+            .into_iter()
+            .map(|entry| match entry {
+                Some(Entry::Value(value)) => Some(value),
+                Some(Entry::Removed) | None => None,
+            })
+            .collect();
         for (at, found) in misses.into_iter().zip(self.durable.values(table, &asked)) {
             answers[at] = found;
         }
         answers
     }
 
+    /// Durable asked for `limit` + the removals above in range (each may hide one durable row)
     fn range(
         &self,
         table: MapId,
@@ -347,18 +396,20 @@ impl<V: MapRead, A: Uncommitted + Send + Sync> MapRead for OverlayView<V, A> {
         end: &[u8],
         limit: usize,
     ) -> Option<Vec<(Bytes, Bytes)>> {
-        let mut rows = self.durable.range(table, start, end, limit)?;
-        // inverted bounds panic `OrdMap::range`
-        if start >= end {
-            return Some(rows);
-        }
-        let left = limit - rows.len();
-        let above = self.above.rows(table, start, end, left.saturating_add(1));
-        if above.len() > left {
+        let above = self.above.rows(table, start, end);
+        let removed = above.iter().filter(|(_, entry)| *entry == Entry::Removed).count();
+        let durable = self.durable.range(table, start, end, limit.saturating_add(removed))?;
+        let masked = |key: &Bytes| above.binary_search_by(|(other, _)| other.cmp(key)).is_ok();
+        let mut rows: Vec<(Bytes, Bytes)> =
+            durable.into_iter().filter(|(key, _)| !masked(key)).collect();
+        rows.extend(above.into_iter().filter_map(|(key, entry)| match entry {
+            Entry::Value(value) => Some((key, value)),
+            Entry::Removed => None,
+        }));
+        if rows.len() > limit {
             return None;
         }
-        rows.extend(above);
-        // two sorted runs, no key in both → stable sort = one merge pass
+        // two sorted runs, no key in both (an above key masks durable's) → one merge pass
         rows.sort_by(|a, b| a.0.cmp(&b.0));
         Some(rows)
     }

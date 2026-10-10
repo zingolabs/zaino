@@ -1,7 +1,7 @@
 //! value_balance writer: the final stream → one [`fold_run`] per run → its store
 //!
-//! - one [`BlockFees`] per step into the [`FeeSink`], held heights re-folded (insert only: any
-//!   later state resolves them the same; compact-block may be behind this index)
+//! - one [`BlockFees`] per step into the [`FeeSink`], held heights' fees read back from `fees`
+//!   (compact-block may be behind this index)
 
 use std::{
     collections::{HashMap, HashSet},
@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use zaino_persistence::{BlockChanges, IndexKind, MapRead, Store};
+use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
 use zaino_primitives::types::{
     Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
 };
@@ -19,7 +19,7 @@ use zaino_sync::{
     Subscription,
 };
 
-use crate::{encode_value, ValueBalanceReader, OUTPUTS};
+use crate::{encode_fees, encode_value, ValueBalanceReader, FEES, OUTPUTS};
 
 const NAME: &str = IndexKind::ValueBalance.name();
 
@@ -29,7 +29,7 @@ pub struct ValueBalanceIndexWriter<S: Store> {
     publisher: IndexPublisher<S::View>,
 }
 
-impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
+impl<S: Store<View: SequenceRead + MapRead>> ValueBalanceIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
@@ -44,7 +44,7 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
     /// Follows `blocks` through `Shutdown`, then ends `sink`
     ///
     /// - one `fold_run` per run (every block the store lacks: one prevout probe), held blocks'
-    ///   fees re-derived
+    ///   fees read back
     /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
     /// - a failure panics (dropped `sink` = no `Shutdown`: compact-block panics too)
     pub async fn run(self, mut blocks: Subscription<Block>, sink: FeeSink) {
@@ -58,8 +58,10 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
                     run.blocks.iter().partition(|(height, _)| held(&store, *height));
                 let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
                 let fresh: Vec<&Block> = fresh.into_iter().map(|(_, block)| &**block).collect();
-                let refolded = fees(&ValueBalanceReader::new(store.staged()), &resent);
-                let mut paid = refolded.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
+                let held = ValueBalanceReader::new(store.staged());
+                let stored = resent.iter().map(|block| held.block_fees(block));
+                let stored = stored.collect::<Result<Vec<_>, _>>();
+                let mut paid = stored.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.at())).collect();
                 let folded = fold_run(&ValueBalanceReader::new(store.staged()), &fresh, &mut out);
@@ -92,10 +94,10 @@ impl<S: Store<View: MapRead>> ValueBalanceIndexWriter<S> {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum FoldError {
-    /// Spent outpoint this index never recorded (the chain is indexed from genesis: a bug or a
-    /// foreign directory, never a gap to tolerate)
+    /// Prevout not unspent here: never recorded, or spent already (indexed from genesis: a bug
+    /// or a foreign directory, never a gap to tolerate)
     #[error(
-        "block {height} tx {txid}: spends {spent}:{vout}, an output this index never recorded"
+        "block {height} tx {txid}: spends {spent}:{vout}, not an unspent output of this index"
     )]
     MissingPrevout { height: Height, txid: TransactionId, spent: TransactionId, vout: OutputIndex },
 
@@ -104,10 +106,17 @@ pub enum FoldError {
 
     #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
     NegativeFee { height: Height, txid: TransactionId },
+
+    #[error("block {height}: held, but no fees record")]
+    StoredFeesMissing { height: Height },
+
+    #[error("block {height}: fees record malformed or not one fee per transaction")]
+    StoredFeesUnreadable { height: Height },
 }
 
-/// `block` onto `parent`: its outputs' rows, its fees
-pub fn fold<V: MapRead>(
+/// `block` onto `parent`: its rows (outputs it leaves unspent in, prevouts it spends out), its
+/// fees record, its fees
+pub fn fold<V: SequenceRead + MapRead>(
     parent: &ValueBalanceReader<V>,
     block: &Block,
     out: &mut BlockChanges,
@@ -120,55 +129,64 @@ pub fn fold<V: MapRead>(
 /// into `out[i]`
 ///
 /// - prevouts from outside the run: one probe for the whole run (a sandblast tx spends thousands)
-pub(crate) fn fold_run<V: MapRead>(
+/// - per tx in chain order: inputs spent out of `unspent`, then its outputs in (a second spend,
+///   or a spend of a later tx's output = `MissingPrevout`)
+/// - output created + spent in one block = neither row (one delta never inserts and removes a key)
+pub(crate) fn fold_run<V: SequenceRead + MapRead>(
     parent: &ValueBalanceReader<V>,
     blocks: &[&Block],
     out: &mut [BlockChanges],
 ) -> Result<Vec<BlockFees>, FoldError> {
     assert_run(parent.view().tip(), blocks, out);
-    run_fees(parent, blocks, |at, outpoint, value| {
-        out[at].map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
-    })
-}
-
-/// `fold_run`'s fees alone, no rows: `parent` = any state at or past the first block's parent
-/// (insert only: a later state, even one holding `blocks`, resolves them the same)
-pub fn fees<V: MapRead>(
-    parent: &ValueBalanceReader<V>,
-    blocks: &[&Block],
-) -> Result<Vec<BlockFees>, FoldError> {
-    run_fees(parent, blocks, |_, _, _| {})
-}
-
-/// Each of `blocks`' fees, prevouts resolved through the run's earlier outputs, else `parent` (one
-/// probe); `output` sees each output as `(block index, outpoint, value)`
-fn run_fees<V: MapRead>(
-    parent: &ValueBalanceReader<V>,
-    blocks: &[&Block],
-    mut output: impl FnMut(usize, OutPoint, Zatoshis),
-) -> Result<Vec<BlockFees>, FoldError> {
     let in_run: HashSet<OutPoint> =
         blocks.iter().flat_map(|block| outputs(block)).map(|(at, _)| at).collect();
     let asked: Vec<OutPoint> = blocks
         .iter()
         .flat_map(|block| block.transactions())
+        .filter(|tx| !tx.transparent.coinbase)
         .flat_map(|tx| tx.transparent.inputs.iter().copied())
         .filter(|prevout| !in_run.contains(prevout))
         .collect();
     let found = asked.iter().zip(parent.values(&asked));
-    let mut known: HashMap<OutPoint, Zatoshis> =
+    let mut unspent: HashMap<OutPoint, Zatoshis> =
         found.filter_map(|(at, value)| Some((*at, value?))).collect();
 
     let mut folded = Vec::with_capacity(blocks.len());
-    for (at, block) in blocks.iter().enumerate() {
-        let header = block.header();
-        for (outpoint, value) in outputs(block) {
-            output(at, outpoint, value);
-            known.insert(outpoint, value);
+    for (block, out) in blocks.iter().zip(out) {
+        let height = block.header().height;
+        let mut created_here = HashSet::new();
+        let mut fees = Vec::with_capacity(block.transactions().len());
+        for tx in block.transactions() {
+            let mut spent = Zatoshis::ZERO;
+            if !tx.transparent.coinbase {
+                for prevout in &tx.transparent.inputs {
+                    let missing = FoldError::MissingPrevout {
+                        height,
+                        txid: tx.txid,
+                        spent: prevout.txid,
+                        vout: prevout.vout,
+                    };
+                    let value = unspent.remove(prevout).ok_or(missing)?;
+                    spent = spent
+                        .checked_add(value)
+                        .ok_or(FoldError::ValueOverflow { height, txid: tx.txid })?;
+                    if !created_here.remove(prevout) {
+                        out.map(OUTPUTS).remove(&prevout.encode());
+                    }
+                }
+            }
+            for (vout, output) in (0..).zip(&tx.transparent.outputs) {
+                let outpoint = OutPoint { txid: tx.txid, vout };
+                unspent.insert(outpoint, output.value);
+                created_here.insert(outpoint);
+            }
+            fees.push(fee(height, tx, spent)?);
         }
-        let fees = block.transactions().iter().map(|tx| fee(header.height, tx, &known));
-        let fees = fees.collect::<Result<_, _>>()?;
-        folded.push(BlockFees { height: header.height, hash: header.hash, fees });
+        for (outpoint, value) in outputs(block).filter(|(at, _)| created_here.contains(at)) {
+            out.map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
+        }
+        out.sequence(FEES).append(&encode_fees(&fees));
+        folded.push(BlockFees { height, hash: block.header().hash, fees });
     }
     Ok(folded)
 }
@@ -181,27 +199,15 @@ fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
     })
 }
 
-/// `tx`'s value left in the transparent transaction value pool (protocol.pdf#transactions §3.4)
+/// `tx`'s value left in the transparent transaction value pool (protocol.pdf#transactions §3.4),
+/// `spent` = Σ its prevouts' values
 ///
 /// - Σ transparent inputs − Σ transparent outputs + each shielded pool's value balance
-fn fee(
-    height: Height,
-    tx: &Transaction,
-    known: &HashMap<OutPoint, Zatoshis>,
-) -> Result<Fee, FoldError> {
+fn fee(height: Height, tx: &Transaction, spent: Zatoshis) -> Result<Fee, FoldError> {
     if tx.transparent.coinbase {
         return Ok(Fee::Coinbase);
     }
     let overflow = || FoldError::ValueOverflow { height, txid: tx.txid };
-    let spent = tx.transparent.inputs.iter().try_fold(Zatoshis::ZERO, |spent, prevout| {
-        let value = known.get(prevout).ok_or(FoldError::MissingPrevout {
-            height,
-            txid: tx.txid,
-            spent: prevout.txid,
-            vout: prevout.vout,
-        })?;
-        spent.checked_add(*value).ok_or_else(overflow)
-    })?;
     let paid = Zatoshis::sum_balances(tx.transparent.outputs.iter().map(|out| out.value))
         .ok_or_else(overflow)?;
 
@@ -248,8 +254,12 @@ mod tests {
     }
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
-    /// the parent, its own block or an earlier run block; fees = the stated ones; rows = golden
-    /// bytes; the run = the same blocks folded one at a time = their fees re-folded once held
+    /// the parent, its own block or an earlier run block; fees = the stated ones
+    ///
+    /// - rows = golden bytes: block 1 inserts what it leaves unspent (0x21:1 created + spent in
+    ///   it: neither row), removes genesis's 0x10:0; block 2 removes the run's 0x21:0
+    /// - the run = the same blocks folded one at a time (rows + fees records) = their fees read
+    ///   back once held
     #[test]
     fn fees_resolve_through_the_parent_and_the_run_and_a_run_folds_like_single_blocks() {
         let alice = p2pkh([0xaa; 20]);
@@ -301,12 +311,18 @@ mod tests {
         let golden = [
             row(0x11, 0, [0, 0, 0, 0, 0, 0, 0xc3, 0x50]),
             row(0x21, 0, [0, 0, 0, 0, 0, 0, 0xea, 0x60]),
-            row(0x21, 1, [0, 0, 0, 0, 0, 0, 0x98, 0x58]),
             row(0x22, 0, [0, 0, 0, 0, 0, 0, 0x75, 0x30]),
         ];
         let golden: Vec<(&[u8], &[u8])> =
             golden.iter().map(|(key, value)| (&key[..], &value[..])).collect();
         assert_eq!(rows, golden, "block 1: txid ‖ vout BE → value BE, block order");
+        let removed = |changes: &BlockChanges| -> Vec<Vec<u8>> {
+            changes.removes(OUTPUTS).map(<[u8]>::to_vec).collect()
+        };
+        let spent = [[[0x10; 32].as_slice(), &[0, 0, 0, 0]].concat()];
+        assert_eq!(removed(&out[0]), spent, "block 1 spends genesis's");
+        let spent = [[[0x21; 32].as_slice(), &[0, 0, 0, 0]].concat()];
+        assert_eq!(removed(&out[1]), spent, "block 2 spends block 1's");
 
         for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
             let mut changes = store.changes(block.at());
@@ -314,21 +330,26 @@ mod tests {
             let height = block.header().height;
             assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
             let rows = |changes: &BlockChanges| {
-                let rows = changes.inserts(OUTPUTS).map(|(key, value)| [key, value].concat());
-                rows.collect::<Vec<_>>()
+                let inserted = changes.inserts(OUTPUTS).map(|(key, value)| [key, value].concat());
+                let fees = changes.appends(FEES).map(<[u8]>::to_vec);
+                (inserted.collect::<Vec<_>>(), removed(changes), fees.collect())
             };
-            assert_eq!(rows(&changes), rows(run_changes), "{height:?}");
+            let (single, in_run): (_, (_, _, Vec<_>)) = (rows(&changes), rows(run_changes));
+            assert_eq!(single, in_run, "{height:?}: inserts, removes, fees record");
+            assert_eq!(in_run.2, [encode_fees(&run_fees.fees)], "{height:?}: one fees record");
             store.apply(changes);
         }
-        let refolded = fees(&ValueBalanceReader::new(store.staged()), &run);
-        assert_eq!(refolded, Ok(expected.to_vec()), "held: same fees off a later parent");
+        let held = ValueBalanceReader::new(store.staged());
+        let stored: Vec<_> = run.iter().map(|block| held.block_fees(block)).collect();
+        assert_eq!(stored, expected.map(Ok), "held: fees read back as folded");
     }
 
     /// Every rejection names its block and tx; a run never lets a block spend a later one's
-    /// output; a run off the parent tip panics, naming the index
+    /// output, nor an output twice; a run off the parent tip panics, naming the index
     ///
-    /// - lies (one field of a mined tx edited): a prevout never mined, a prevout three mints,
-    ///   outputs past the inputs, sapling past the inputs
+    /// - lies (one field of a mined tx edited): a prevout never mined, a prevout three mints, one
+    ///   prevout twice in a tx, two's prevout again in three, outputs past the inputs, sapling past
+    ///   the inputs
     #[test]
     fn an_unrecorded_prevout_a_forward_spend_or_a_negative_fee_is_a_named_error() {
         let alice = p2pkh([0xaa; 20]);
@@ -354,6 +375,8 @@ mod tests {
             Arc::new(Block::new(chain.block(at.hash).header().clone(), txs))
         };
         let spends = |spent: OutPoint| lie(two, &move |tx| tx.transparent.inputs[0] = spent);
+        let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
+        let respends = lie(three, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
         let overpaid = lie(two, &|tx| {
             tx.transparent.outputs[0].value = Zatoshis::new(100_001).expect("in supply");
         });
@@ -374,6 +397,17 @@ mod tests {
                 "spends a later run block's output",
                 vec![block(one), spends(outpoint([0x31; 32], 0)), block(three)],
                 missing(0x31, 0),
+            ),
+            ("one prevout twice in a tx", vec![block(one), spends_twice], missing(0x10, 0)),
+            (
+                "a prevout an earlier run block spent",
+                vec![block(one), block(two), respends],
+                FoldError::MissingPrevout {
+                    height: h(3),
+                    txid: id(0x30),
+                    spent: id(0x10),
+                    vout: 0,
+                },
             ),
             (
                 "transparent outputs > inputs",
@@ -406,6 +440,38 @@ mod tests {
         let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
         assert!(message.starts_with("value_balance: block"), "{message}");
         assert!(message.contains("does not extend the parent tip"), "{message}");
+    }
+
+    /// Fees read back for a held block: as folded; a height with no record or a record not one fee
+    /// per the block's transactions = named error
+    #[test]
+    fn stored_fees_read_back_and_a_missing_or_mismatched_record_is_a_named_error() {
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest()
+            .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
+        let one = chain.mine(|b| {
+            b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000)).tx(|t| {
+                t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 99_000).fee(1_000)
+            })
+        });
+        let two = chain.mine(|b| b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)));
+        let blocks = chain.blocks(one);
+        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        for block in &blocks {
+            let mut changes = store.changes(block.at());
+            fold(&ValueBalanceReader::new(store.staged()), block, &mut changes).expect("folds");
+            store.apply(changes);
+        }
+        let mut txs = blocks[1].transactions().to_vec();
+        txs.push(txs[1].clone());
+        let longer = Block::new(blocks[1].header().clone(), txs);
+
+        let held = ValueBalanceReader::new(store.staged());
+        assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "as folded");
+        let missing = held.block_fees(chain.block(two.hash));
+        assert_eq!(missing, Err(FoldError::StoredFeesMissing { height: h(2) }));
+        let mismatched = held.block_fees(&longer);
+        assert_eq!(mismatched, Err(FoldError::StoredFeesUnreadable { height: h(1) }));
     }
 
     /// Writer over `store`: its final stream (`queue` bytes = one run's), handle and fee stream

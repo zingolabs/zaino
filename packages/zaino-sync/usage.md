@@ -107,8 +107,9 @@ commit; `false` = writer gone).
 
 ## Fees: `FeeSink`
 
-`FeeSink` = `IndexerDataSink<BlockFees>`: value-balance publishes one per step (held heights
-re-folded), compact-block pops one per step, so the two stay in step with either one ahead.
+`FeeSink` = `IndexerDataSink<BlockFees>`: value-balance publishes one per step (held heights read
+back from its stored fees), compact-block pops one per step, so the two stay in step with either
+one ahead.
 
 ## Failure: panic, never `Err`
 

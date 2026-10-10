@@ -22,7 +22,7 @@ use super::{
     reader::Snapshot,
     report::{self, Landed},
     slots::Slots,
-    writer::SegmentWriter,
+    writer::{Merged, SegmentWriter},
     Result, SegmentMeta,
 };
 use crate::{fs::Fs, port::MapTable};
@@ -59,12 +59,12 @@ struct Staged {
     landed: Vec<Landed>,
 }
 
-/// Background merge; thread yields `(output, wall time)`, `None` = cancelled
+/// Background merge; thread yields `(merged, wall time)`, `None` = cancelled
 struct Merge {
     tier: u32,
     inputs: Vec<SegmentMeta>,
     cancel: Arc<AtomicBool>,
-    thread: JoinHandle<Result<Option<(SegmentMeta, Duration)>>>,
+    thread: JoinHandle<Result<Option<(Merged, Duration)>>>,
 }
 
 impl SegmentLog {
@@ -120,18 +120,22 @@ impl SegmentLog {
         &self.segments
     }
 
-    /// `rows` (`(key, value)`) as one segment (sealed, durably linked) + every finished merge
-    /// swapped in for its inputs = list for the owner's next manifest
+    /// `rows` (`(key, value)`, `None` = tombstone) as one segment (sealed, durably linked) + every
+    /// finished merge swapped in for its inputs = list for the owner's next manifest
     ///
     /// - merge panic resumes here, merge error returns here
     /// - waits only on a merging tier the staged list holds `STALL_WINDOWS` windows behind
     ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
-    pub(crate) fn batch(&mut self, rows: Vec<(&[u8], &[u8])>) -> Result<Vec<SegmentMeta>> {
+    pub(crate) fn batch(&mut self, rows: Vec<(&[u8], Option<&[u8]>)>) -> Result<Vec<SegmentMeta>> {
         assert!(self.staged.is_none(), "{}: batch before the last one was committed", self.name);
-        let (key_len, value_len) = (self.shape.key_len, self.shape.stride - self.shape.key_len);
         for (key, value) in &rows {
-            let widths = (key.len(), value.len());
-            assert_eq!(widths, (key_len, value_len), "LSM map {}: (key, value) widths", self.name);
+            assert_eq!(key.len(), self.shape.key_len, "LSM map {}: key width", self.name);
+            match value {
+                Some(value) => {
+                    assert_eq!(value.len(), self.shape.value_len, "LSM map {}: value", self.name)
+                }
+                None => assert!(self.shape.deletes, "LSM map {}: tombstone", self.name),
+            }
         }
         let mut staged =
             Staged { segments: self.segments.clone(), retired: Vec::new(), landed: Vec::new() };
@@ -221,13 +225,13 @@ impl SegmentLog {
                         return Ok(None);
                     };
                     let started = Instant::now();
-                    let Some(segment) = writer.merge(id, &inputs, &cancel, &slot)? else {
+                    let Some(merged) = writer.merge(id, &inputs, &cancel, &slot)? else {
                         return Ok(None);
                     };
                     writer.sync_dir()?;
                     let took = started.elapsed();
-                    emit::merged(&name, tier, &segment, took);
-                    Ok(Some((segment, took)))
+                    emit::merged(&name, tier, &merged, took);
+                    Ok(Some((merged, took)))
                 }
             })?;
         Ok(Merge { tier, inputs, cancel, thread })
@@ -245,15 +249,16 @@ impl SegmentLog {
         self.merges = running;
         let mut tiers = Vec::with_capacity(landed.len());
         for merge in landed {
-            let (output, took) = merge
+            let (merged, took) = merge
                 .thread
                 .join()
                 .unwrap_or_else(|payload| panic::resume_unwind(payload))?
                 .expect("merges cancel only on drop");
             let inputs: u64 = merge.inputs.iter().map(|input| input.records).sum();
-            assert_eq!(output.records, inputs, "{}: merge conserves rows", self.name);
+            let written = merged.output.map_or(0, |output| output.records);
+            assert_eq!(written + 2 * merged.cancelled, inputs, "{}: merge rows", self.name);
             tiers.push(merge.tier);
-            staged.swap(merge.tier, merge.inputs, output, took);
+            staged.swap(merge.tier, merge.inputs, merged, took);
         }
         Ok(tiers)
     }
@@ -291,8 +296,9 @@ fn stall_at(fanout: usize) -> usize {
 }
 
 impl Staged {
-    /// `output` listed where the oldest input was, every input retired
-    fn swap(&mut self, tier: u32, inputs: Vec<SegmentMeta>, output: SegmentMeta, took: Duration) {
+    /// `merged`'s output listed where the oldest input was (none: nothing in their place), every
+    /// input retired
+    fn swap(&mut self, tier: u32, inputs: Vec<SegmentMeta>, merged: Merged, took: Duration) {
         let at = self
             .segments
             .iter()
@@ -301,8 +307,10 @@ impl Staged {
         let listed = self.segments.len();
         self.segments.retain(|segment| !inputs.contains(segment));
         assert_eq!(listed - self.segments.len(), inputs.len(), "every input listed");
-        self.segments.insert(at, output);
-        self.landed.push(Landed { tier, output, took });
+        if let Some(output) = merged.output {
+            self.segments.insert(at, output);
+        }
+        self.landed.push(Landed { tier, merged, took });
         self.retired.extend(inputs);
     }
 }

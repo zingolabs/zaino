@@ -9,7 +9,7 @@
 //! - [`Model`] doubles as the expected state for an engine's own crash and fault tests
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::NonZeroUsize,
     panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
@@ -32,11 +32,12 @@ use crate::{
 pub const BLOCKS: SequenceTable = SequenceTable::new(0, "blocks", Width::Variable);
 pub const HEIGHTS: SequenceTable = SequenceTable::new(1, "heights", Width::fixed(8));
 pub const NODES: SequenceTable = SequenceTable::new(2, "pool/nodes", Width::fixed(4));
-pub const SCANNED: MapTable = MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8);
+pub const SCANNED: MapTable =
+    MapTable::new(0, "scanned", Width::fixed(12), Width::fixed(8), 8).deletes();
 pub const PROBED: MapTable = MapTable::new(1, "probed", Width::fixed(16), Width::fixed(4), 0);
 
 /// Every shape an index declares: variable sequence, fixed one, one in a sub-directory, scoped map
-/// (`account ‖ seq`, read per account), point-lookup map (hash-like ids)
+/// with removals (`account ‖ seq`, read per account), insert-only point-lookup map (hash-like ids)
 pub const TABLES: Tables = Tables::new(&[BLOCKS, HEIGHTS, NODES], &[SCANNED, PROBED]);
 
 pub const SCHEMA: Schema = Schema::new(IndexKind::CompactBlock, 1, NetworkType::Regtest, TABLES);
@@ -125,7 +126,8 @@ pub fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 
 /// Every table's contents through the last [`advance`](Self::advance)
 ///
-/// - `salt` = branch of the next advance's contents (0 outside [`history`]); `bytes` = item bytes
+/// - `salt` = branch of the next advance's contents (0 outside [`history`]); `bytes` = inserted
+///   item bytes (a lower bound on what a buffer holds: removals uncounted)
 #[derive(Debug, Clone, Default)]
 pub struct Model {
     advances: usize,
@@ -136,6 +138,7 @@ pub struct Model {
     heights: Vec<Vec<u8>>,
     nodes: Vec<Vec<u8>>,
     scanned: BTreeMap<Vec<u8>, Vec<u8>>,
+    removed: BTreeSet<Vec<u8>>,
     probed: BTreeMap<Vec<u8>, Vec<u8>>,
     seq: u32,
     ids: u32,
@@ -143,12 +146,30 @@ pub struct Model {
 
 impl Model {
     /// Next block, applied here, returned as `BlockChanges`: `records` blocks + twice as many nodes,
-    /// one height record, one `scanned` row per listed owner (fresh seqs), `ids` fresh `probed` ids
-    pub fn advance(&mut self, records: u8, owners: &[u8], ids: u16) -> BlockChanges {
+    /// one height record, `removals` picks of `scanned` rows held before it (`pick % rows`, a pick
+    /// repeated = removed once), one `scanned` row per listed owner (fresh seqs), `ids` fresh
+    /// `probed` ids
+    pub fn advance(
+        &mut self,
+        records: u8,
+        owners: &[u8],
+        ids: u16,
+        removals: &[u16],
+    ) -> BlockChanges {
         self.advances += 1;
         let tip = salted_ref(self.advances, self.salt);
         self.tip = Some(tip);
         let mut changes = BlockChanges::new(tip, SCHEMA);
+        let held: Vec<Vec<u8>> = self.scanned.keys().cloned().collect();
+        if !held.is_empty() {
+            let picked: BTreeSet<&Vec<u8>> =
+                removals.iter().map(|pick| &held[usize::from(*pick) % held.len()]).collect();
+            for key in picked {
+                changes.map(SCANNED).remove(key);
+                self.scanned.remove(key);
+                self.removed.insert(key.clone());
+            }
+        }
         for _ in 0..records {
             let record = block(self.blocks.len() as u32);
             self.append(&mut changes, BLOCKS, record);
@@ -239,6 +260,16 @@ impl Model {
             assert_eq!(scanned.value(key).as_deref(), Some(&value[..]), "{label}: {key:?}");
         }
         assert_eq!(scanned.value(&scanned_key(1, self.seq + 1)), None, "{label}: miss");
+        // every removed key + a sample of held ones, as one batch and one by one
+        let held = self.scanned.iter().step_by(3).map(|(key, value)| (key, Some(value)));
+        let asked: Vec<(&Vec<u8>, Option<&Vec<u8>>)> =
+            self.removed.iter().map(|key| (key, None)).chain(held).collect();
+        let keys: Vec<&[u8]> = asked.iter().map(|(key, _)| key.as_slice()).collect();
+        let answers: Vec<Option<Bytes>> =
+            asked.iter().map(|(_, value)| value.map(|value| Bytes::from(value.clone()))).collect();
+        assert_eq!(scanned.values(&keys), answers, "{label}: removed + held values");
+        let singles: Vec<_> = keys.iter().map(|key| scanned.value(key)).collect();
+        assert_eq!(singles, answers, "{label}: removed + held value");
 
         let probed = view.map(PROBED);
         let asked: Vec<Vec<u8>> =
@@ -303,13 +334,13 @@ impl Oracle {
     }
 
     /// Node on the current branch above the newest: parent's layer `.with` its changes
-    fn grow(&mut self, (records, owners, ids): (u8, &[u8], u16)) {
+    fn grow(&mut self, (records, owners, ids, removals): (u8, &[u8], u16, &[u16])) {
         let (mut model, layer) = match self.nodes.last() {
             Some(node) => (node.model.clone(), node.layer.clone()),
             None => (self.committed.clone(), Overlay::empty(&SCHEMA)),
         };
         model.salt = self.salt;
-        let changes = model.advance(records, owners, ids);
+        let changes = model.advance(records, owners, ids, removals);
         let layer = layer.with(&changes);
         self.nodes.push(Node { changes, model, layer });
     }
@@ -350,8 +381,8 @@ struct Pinned<V> {
     node: OverlayView<V>,
 }
 
-/// - `Grow`: node above the newest (`records` blocks + nodes, one height, `owners` scanned rows,
-///   `ids` probed ids)
+/// - `Grow`: node above the newest (`records` blocks + nodes, one height, `removals` of held
+///   scanned rows (committed, buffered or in a node), `owners` scanned rows, `ids` probed ids)
 /// - `Apply`: oldest unapplied nodes into the store, `count` reduced at run time
 /// - `Commit`: every buffered node durable, then every node rebased onto the new view
 /// - `Reorg`: unapplied nodes cut to `keep` (reduced), later nodes on a new branch
@@ -361,7 +392,7 @@ struct Pinned<V> {
 /// - `Scan`: raw bounds reduced at run time, every limit around the answer's size
 #[derive(Debug, Clone)]
 pub enum Step {
-    Grow { records: u8, owners: Vec<u8>, ids: u16 },
+    Grow { records: u8, owners: Vec<u8>, ids: u16, removals: Vec<u16> },
     Apply { count: u8 },
     Commit,
     Reorg { keep: u8 },
@@ -375,8 +406,8 @@ pub enum Step {
 /// Swarm testing (TigerBeetle `tree_fuzz`): whole step kinds off per case (a uniform mix dilutes
 /// rare interleavings: all reopens, no settles, only small blocks, no reorgs, …)
 pub fn steps() -> impl Strategy<Value = Vec<Step>> {
-    let on = prop::array::uniform7(prop::bool::ANY);
-    on.prop_flat_map(|[settle, reopen, power_loss, pin, scan, large, reorg]| {
+    let on = prop::array::uniform8(prop::bool::ANY);
+    on.prop_flat_map(|[settle, reopen, power_loss, pin, scan, large, reorg, removing]| {
         // small blocks; with `large`, sometimes past a 4 KiB block (205 scanned / 204 probed)
         let small = prop::collection::vec(0u8..4, 0..8);
         let (owners, ids) = match large {
@@ -386,8 +417,23 @@ pub fn steps() -> impl Strategy<Value = Vec<Step>> {
             ),
             false => (small.boxed(), (0u16..8).boxed()),
         };
-        let grow = (0u8..6, owners, ids)
-            .prop_map(|(records, owners, ids)| Step::Grow { records, owners, ids })
+        // `removing`: up to as many removals as inserts, sometimes most of what is held (whole
+        // segments cancel in merges)
+        let removals = match removing {
+            true => prop_oneof![
+                4 => prop::collection::vec(any::<u16>(), 0..8),
+                1 => prop::collection::vec(any::<u16>(), 100..600),
+            ]
+            .boxed(),
+            false => Just(Vec::new()).boxed(),
+        };
+        let grow = (0u8..6, owners, ids, removals)
+            .prop_map(|(records, owners, ids, removals)| Step::Grow {
+                records,
+                owners,
+                ids,
+                removals,
+            })
             .boxed();
         let bound = (0u8..6, any::<u32>());
         let query = (bound.clone(), bound, any::<u16>()).prop_map(|(from, to, limit)| Step::Scan {
@@ -430,7 +476,9 @@ pub fn history<S: Subject>(mut subject: S, steps: &[Step]) {
         let label = format!("step {at} {step:?}");
         let mut reopened = false;
         match step {
-            Step::Grow { records, owners, ids } => oracle.grow((*records, owners, *ids)),
+            Step::Grow { records, owners, ids, removals } => {
+                oracle.grow((*records, owners, *ids, removals))
+            }
             Step::Apply { count } => {
                 let unapplied = oracle.nodes.len() - oracle.applied;
                 let count = usize::from(*count) % (unapplied + 1);
@@ -529,8 +577,9 @@ pub fn contract<S: Subject>(subject: S) {
     assert_eq!(store.path(), subject.path(), "the store keeps its path");
 
     let empty = model.clone();
-    store.apply(model.advance(2, &[1, 2], 2));
-    store.apply(model.advance(0, &[], 1));
+    store.apply(model.advance(2, &[1, 2], 2, &[]));
+    // removes a row the buffer holds: cancelled there, never written
+    store.apply(model.advance(0, &[], 1, &[0]));
     empty.assert_view(&store.committed(), "applied, not committed: not in the view");
     model.assert_view(&store.staged(), "applied: staged");
     assert!(store.buffered_bytes() > model.bytes, "buffered bytes > applied items (+ overhead)");
@@ -570,6 +619,19 @@ pub fn contract<S: Subject>(subject: S) {
     twice.map(PROBED).insert(&probed_key(99), &[0; 4]);
     twice.map(PROBED).insert(&probed_key(99), &[1; 4]);
     refused("a key twice in one changes", || store.apply(twice));
+    let held_key = model.scanned.keys().next().cloned().expect("a scanned row committed");
+    let mut removed_twice = store.changes(block_ref(3));
+    removed_twice.map(SCANNED).remove(&held_key);
+    removed_twice.map(SCANNED).remove(&held_key);
+    refused("a key removed twice in one changes", || store.apply(removed_twice));
+    let fresh = scanned_key(7, model.seq + 1);
+    let mut inserted_removed = store.changes(block_ref(3));
+    inserted_removed.map(SCANNED).insert(&fresh, &[0; 8]);
+    inserted_removed.map(SCANNED).remove(&fresh);
+    refused("a key inserted and removed by one changes", || store.apply(inserted_removed));
+    refused("a removal from a table without `deletes()`", || {
+        store.changes(block_ref(3)).map(PROBED).remove(&probed_key(0));
+    });
     refused("a table of another schema", || {
         store.changes(block_ref(3)).sequence(foreign).append(&[0]);
     });
@@ -577,11 +639,15 @@ pub fn contract<S: Subject>(subject: S) {
         store.committed().sequence(foreign).record(0);
     });
     let mut buffered = model.clone();
-    store.apply(buffered.advance(1, &[3], 1));
+    // removes a committed row: a tombstone over it from the next segment
+    store.apply(buffered.advance(1, &[3], 1, &[0]));
     refused("a tip at the buffered one", || store.apply(store.changes(block_ref(3))));
     let mut held = store.changes(block_ref(4));
     held.map(PROBED).insert(&probed_key(buffered.ids - 1), &[0; 4]);
     refused("a key the buffer holds", || store.apply(held));
+    let mut removed_again = store.changes(block_ref(4));
+    removed_again.map(SCANNED).remove(&held_key);
+    refused("a key the buffer removed", || store.apply(removed_again));
     model.assert_view(&store.committed(), "after misuse: view");
     buffered.assert_view(&store.staged(), "after misuse: staged");
     store.commit().expect("commit after misuse");
@@ -589,12 +655,16 @@ pub fn contract<S: Subject>(subject: S) {
 
     // layer preconditions (pure: `with` and `rebase` leave the layer as it was)
     let mut nodes = buffered.clone();
-    let layer = Overlay::empty(&SCHEMA).with(&nodes.advance(1, &[4], 1));
+    let layer_removes = nodes.scanned.keys().next().cloned().expect("a scanned row committed");
+    let layer = Overlay::empty(&SCHEMA).with(&nodes.advance(1, &[4], 1, &[0]));
     let mut held = layer.changes(block_ref(5));
     held.map(PROBED).insert(&probed_key(nodes.ids - 1), &[0; 4]);
+    let mut removed_again = layer.changes(block_ref(5));
+    removed_again.map(SCANNED).remove(&layer_removes);
     refused("with a tip not above the layer's", || drop(layer.with(&layer.changes(block_ref(4)))));
     refused("with another schema's tables", || drop(layer.with(&other.changes(block_ref(5)))));
     refused("with a key the layer holds", || drop(layer.with(&held)));
+    refused("with a key the layer removed", || drop(layer.with(&removed_again)));
     refused("rebase onto another branch", || drop(layer.rebase(&Tip(Some(salted_ref(4, 1))))));
     refused("rebase past the layer", || drop(layer.rebase(&Tip(Some(block_ref(5))))));
     refused("a layer under durable", || {
@@ -610,7 +680,7 @@ pub fn contract<S: Subject>(subject: S) {
     drop(store);
 
     let mut store = engine.open(subject.path(), &SCHEMA, NonZeroUsize::MIN).expect("open");
-    store.apply(buffered.advance(1, &[4], 1));
+    store.apply(buffered.advance(1, &[4], 1, &[0]));
     buffered.assert_view(&store.committed(), "write_buffer reached: committed by apply");
     assert_eq!(store.buffered_bytes(), 0, "write_buffer reached: nothing left buffered");
 }

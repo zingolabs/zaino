@@ -2,6 +2,8 @@
 //!
 //! - [`Snapshot`] = one committed list, mapped; immutable (a commit builds the next one)
 //! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
+//! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
+//!   (insert-once / remove-once: at most one value + one tombstone exist; `lsm-deletes.md`)
 
 use std::{ops::Range, path::Path, sync::Arc};
 
@@ -10,7 +12,7 @@ use rayon::prelude::*;
 
 use super::{
     file::{Prefetch, SegmentFile},
-    layout::Shape,
+    layout::{Row, Shape},
     parse_file_name,
     spill::is_scratch,
     Result, SegmentMeta,
@@ -108,22 +110,19 @@ impl Snapshot {
     ///
     /// - stops scanning at row `limit + 1` (cost bounded by `limit`, not by the range)
     /// - `start` and `end` sharing the filtered prefix → only segments whose filter may hold it
+    /// - `deletes()` table: every row in range read (a tombstone may cancel a row of any other
+    ///   segment), keys with a tombstone dropped, then `limit` applied to what is left
     pub(crate) fn range(
         &self,
         start: &[u8],
         end: &[u8],
         limit: usize,
     ) -> Option<Vec<(Bytes, Bytes)>> {
-        let filtered = self.shape.filtered;
-        let prefix = (start.len() >= filtered && end.len() >= filtered)
-            .then(|| &start[..filtered])
-            .filter(|prefix| *prefix == &end[..filtered]);
+        if self.shape.deletes {
+            return self.live_range(start, end, limit);
+        }
         let mut found = Vec::new();
-
-        for file in &self.segments {
-            if prefix.is_some_and(|prefix| !file.may_contain(prefix)) {
-                continue;
-            }
+        for file in self.candidates(start, end) {
             for slot in file.seek(start)..file.records() {
                 if file.key(slot) >= end {
                     break;
@@ -140,6 +139,50 @@ impl Snapshot {
             assert!(pair[0].0 < pair[1].0, "a key listed in two committed segments");
         }
         Some(found)
+    }
+
+    /// [`range`](Self::range) of a `deletes()` table
+    fn live_range(&self, start: &[u8], end: &[u8], limit: usize) -> Option<Vec<(Bytes, Bytes)>> {
+        let mut rows: Vec<(Bytes, Option<Bytes>)> = Vec::new();
+        for file in self.candidates(start, end) {
+            for slot in file.seek(start)..file.records() {
+                if file.key(slot) >= end {
+                    break;
+                }
+                let (key, value) = file.entry(slot);
+                let live = matches!(file.content(slot), Row::Value(_));
+                rows.push((key, live.then_some(value)));
+            }
+        }
+        rows.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        let mut found = Vec::new();
+        let mut at = 0;
+        while at < rows.len() {
+            let same = rows[at..].iter().take_while(|(key, _)| *key == rows[at].0).count();
+            match &rows[at..at + same] {
+                [(key, Some(value))] => found.push((key.clone(), value.clone())),
+                [(_, None)] => {}
+                [(_, Some(_)), (_, None)] | [(_, None), (_, Some(_))] => {}
+                many => panic!("a key held {} times across committed segments", many.len()),
+            }
+            at += same;
+        }
+        (found.len() <= limit).then_some(found)
+    }
+
+    /// Segments a `start..end` scan reads: those whose filter may hold a shared filtered prefix
+    fn candidates<'a>(
+        &'a self,
+        start: &'a [u8],
+        end: &'a [u8],
+    ) -> impl Iterator<Item = &'a Arc<SegmentFile>> {
+        let filtered = self.shape.filtered;
+        let prefix = (start.len() >= filtered && end.len() >= filtered)
+            .then(|| &start[..filtered])
+            .filter(|prefix| *prefix == &end[..filtered]);
+        self.segments
+            .iter()
+            .filter(move |file| prefix.is_none_or(|prefix| file.may_contain(prefix)))
     }
 
     /// Value under `key` (each segment's filter first: a miss = a memory probe per segment)
@@ -213,15 +256,28 @@ impl Snapshot {
 
     /// Newest segment first: list ≈ data age (batches append, merge takes its oldest input's slot)
     /// + lookups skew recent; order never changes an answer (keys unique across segments)
+    ///
+    /// - `deletes()` table: every admitting segment checked, a tombstone in any = absent
     fn find(&self, key: &[u8]) -> Option<Bytes> {
         assert_eq!(key.len(), self.shape.key_len, "a point lookup names a whole key");
-        self.segments.iter().rev().find_map(|file| {
+        let mut held = self.segments.iter().rev().filter_map(|file| {
             if !file.may_contain(&key[..self.shape.filtered]) {
                 return None;
             }
             let slot = file.seek(key);
-            (slot < file.records() && file.key(slot) == key).then(|| file.entry(slot).1)
-        })
+            (slot < file.records() && file.key(slot) == key).then_some((file, slot))
+        });
+        if !self.shape.deletes {
+            return held.next().map(|(file, slot)| file.entry(slot).1);
+        }
+        let mut value = None;
+        for (file, slot) in held {
+            match file.content(slot) {
+                Row::Tombstone => return None,
+                Row::Value(_) => value = Some(file.entry(slot).1),
+            }
+        }
+        value
     }
 
     /// Every committed segment's file

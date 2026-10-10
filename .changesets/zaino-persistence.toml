@@ -149,3 +149,30 @@ folds' lookups. Commits are not paced.
 migration = """
 Add `merge_mib_per_sec` where an `LsmConfig` is built field by field (or use `..LsmConfig::default()`).
 """
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+Single deletes on map tables: a `MapTable` declaring `deletes()` takes `changes.map(T).remove(key)` \
+beside `insert` (insert once, remove at most once, never re-insert; a key inserted or removed per \
+block, never both). A removed key reads absent through every view, store, write buffer and \
+`Overlay` alike, and a range's `limit` counts live rows only. On disk a removal is a tombstone \
+row (flag byte per row of such a table only); a merge drops a value and its tombstone together, \
+keeps a lone tombstone, and reports any other duplicate as `SegmentError::Contract`. New counter \
+`zaino_lsm_merge_cancelled_total`. Other tables' layout is unchanged.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+section = "changed"
+description = """
+`BlockChanges::map(T)` returns `MapChanges` (was `MapInserts`), with `insert` and `remove`; \
+`BlockChanges::removes(T)` lists a delta's removals. `Uncommitted::value` / `rows` yield \
+`Entry` (`Value(Bytes)` or `Removed`) instead of a value.
+"""
+migration = """
+Rename `MapInserts` to `MapChanges`; an `Uncommitted` implementation returns `Entry::Value(..)` \
+where it returned the value, `Entry::Removed` for a removal it holds.
+"""

@@ -12,21 +12,23 @@ than a B-tree ([persistence-architecture.md](./persistence-architecture.md)).
 
 ## 1. What every index needs
 
-| Index               | Tables                                                                       | Writes                 | Reads                                               |
-| ------------------- | ---------------------------------------------------------------------------- | ---------------------- | --------------------------------------------------- |
-| compact-block       | one record per height, variable size                                         | appends                | by height; a run of heights, streamed               |
-| tree-state          | per-height records 48 B; per pool 32 node arrays 32 B + subtree roots 36 B   | appends                | by position, scattered; a run of subtree roots      |
-| header-chain        | per-height records 56 B                                                      | appends                | by height; the last few                             |
-| transparent-address | `receives` (address ‖ height ‖ outpoint → value), `spent` (outpoint → spend) | inserts, any key order | key range within one address; batched point lookups |
-| block-hash          | hash → height                                                                | inserts                | point lookup                                        |
-| value-balance       | outpoint → value                                                             | inserts                | batched point lookups (by its own writer)           |
+| Index               | Tables                                                                       | Writes                    | Reads                                                           |
+| ------------------- | ---------------------------------------------------------------------------- | ------------------------- | --------------------------------------------------------------- |
+| compact-block       | one record per height, variable size                                         | appends                   | by height; a run of heights, streamed                           |
+| tree-state          | per-height records 48 B; per pool 32 node arrays 32 B + subtree roots 36 B   | appends                   | by position, scattered; a run of subtree roots                  |
+| header-chain        | per-height records 56 B                                                      | appends                   | by height; the last few                                         |
+| transparent-address | `receives` (address ‖ height ‖ outpoint → value), `spent` (outpoint → spend) | inserts, any key order    | key range within one address; batched point lookups             |
+| block-hash          | hash → height                                                                | inserts                   | point lookup                                                    |
+| value-balance       | `outputs` (unspent outpoint → value), `fees` (height → block's fees)         | inserts, removes; appends | batched point lookups (by its own writer); a held height's fees |
 
 Five properties hold for all of them, and they are the contract:
 
 1. **Final data only.** Non-final data stays in memory above the store (`Overlay`, §5), and reorgs
    never reach storage. The LMDB store this replaced deleted and rewound on disk, which needed the
    whole block back to reverse every secondary index.
-1. **Insert only.** No update, no delete, no read-modify-write.
+1. **Insert only, plus single deletes.** No update, no read-modify-write. A map declaring
+   `deletes()` may remove a key, at most once, and never re-insert it (value-balance's spent
+   outputs; [lsm-deletes.md](./lsm-deletes.md)). Every other table is insert only.
 1. **One atomic commit per index, carrying the tip.** Every table of an index moves to the new tip
    together or not at all, however many blocks were buffered. The tip only advances, and it is the
    resume point.
@@ -39,8 +41,8 @@ And exactly two kinds of table:
 - **Sequence**: records at dense positions `0, 1, 2, ...`, appended in order (a height, a tree
   slot, a subtree index). SQLite: a rowid table. LMDB: integer keys written with `MDB_APPEND`. A
   file: offset arithmetic.
-- **Map**: values under unique keys, inserted in any order, read by key or key range. SQLite: a
-  `WITHOUT ROWID` table. LMDB: a database. An LSM: sorted segments.
+- **Map**: values under unique keys, inserted in any order (removed once, under `deletes()`), read
+  by key or key range. SQLite: a `WITHOUT ROWID` table. LMDB: a database. An LSM: sorted segments.
 
 ## 2. The port
 
@@ -146,20 +148,21 @@ let spend = store.committed().map(SPENT).value(&outpoint.encode());
 Invariants are enforced by whoever owns them, at the earliest point, as panics naming the table (a
 schema is a constant in the index's code, so a mismatch is a bug, not a runtime condition):
 
-| Where                          | Panics on                                                                                |
-| ------------------------------ | ---------------------------------------------------------------------------------------- |
-| `Tables::new`                  | an id != its position (a compile error when `const`)                                     |
-| `BlockChanges::sequence` / `map`    | a table of another schema                                                                |
-| `append` / `insert`            | a fixed-width item of the wrong size                                                     |
-| `View::sequence` / `map`       | a table of another schema                                                                |
-| `zaino_sync::assert_next` / `assert_run` | a delta opened for another block; a block off the parent tip (an index's fold)      |
-| the LSM (`Shape::of`, at open) | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes       |
-| the LSM (each batch)           | a row of the wrong widths; a duplicate key                                               |
-| sequence files (each append)   | a fixed-width record of the wrong size                                                   |
-| `Store::apply`                 | changes built for another schema; a tip not above the last applied; a buffered key twice |
-| `Store::commit`                | a commit after a failed one                                                              |
-| `Overlay::with`, `rebase`        | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks     |
-| `OverlayView::new`             | a layer not above the durable tip (not rebased); a layer of another schema               |
+| Where                                    | Panics on                                                                                                                                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Tables::new`                            | an id != its position (a compile error when `const`)                                                                                               |
+| `BlockChanges::sequence` / `map`         | a table of another schema                                                                                                                          |
+| `append` / `insert`                      | a fixed-width item of the wrong size                                                                                                               |
+| `remove`                                 | a map without `deletes()`                                                                                                                          |
+| `View::sequence` / `map`                 | a table of another schema                                                                                                                          |
+| `zaino_sync::assert_next` / `assert_run` | a delta opened for another block; a block off the parent tip (an index's fold)                                                                     |
+| the LSM (`Shape::of`, at open)           | a `Variable` key or value; a scope longer than the key; under 8 filtered key bytes                                                                 |
+| the LSM (each batch)                     | a row of the wrong widths; a duplicate key                                                                                                         |
+| sequence files (each append)             | a fixed-width record of the wrong size                                                                                                             |
+| `Store::apply`                           | changes built for another schema; a tip not above the last applied; a buffered key twice; a key removed twice or inserted and removed by one delta |
+| `Store::commit`                          | a commit after a failed one                                                                                                                        |
+| `Overlay::with`, `rebase`                | a tip not above the layer's; a key it holds; a durable tip past it or off its blocks                                                               |
+| `OverlayView::new`                       | a layer not above the durable tip (not rebased); a layer of another schema                                                                         |
 
 | Port      | `DiskEngine`                                                     | LMDB                                   | SQLite                                 |
 | --------- | ---------------------------------------------------------------- | -------------------------------------- | -------------------------------------- |

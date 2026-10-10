@@ -30,10 +30,10 @@ pub use disk::{DiskEngine, DiskStore, DiskView, TableFootprint};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use lsm::LsmConfig;
 pub use manifest::{IndexKind, ManifestError};
-pub use overlay::{Overlay, OverlayView, Uncommitted};
+pub use overlay::{Entry, Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;
 pub use port::{
-    BlockChanges, Checked, CommittedView, MapId, MapInserts, MapRead, MapTable, MapView,
+    BlockChanges, Checked, CommittedView, MapChanges, MapId, MapRead, MapTable, MapView,
     PersistenceEngine, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable,
     SequenceView, Store, Tables, Verification, View, Width,
 };

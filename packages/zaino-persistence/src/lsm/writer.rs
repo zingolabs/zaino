@@ -18,7 +18,7 @@ use super::{
     file::SegmentFile,
     file_name,
     filter::FilterError,
-    layout::{Navigation, Shape},
+    layout::{encode_row, Navigation, Row, Shape},
     slots::Slot,
     Result, SegmentError, SegmentMeta,
 };
@@ -37,6 +37,14 @@ const VERIFY: bool = cfg!(any(test, feature = "testing"));
 /// Merge input's next record: `(key, source, slot)`, min-first
 type Head<'a> = Reverse<(&'a [u8], usize, usize)>;
 
+/// What a finished merge wrote: its segment (`None` = every row cancelled) + the value/tombstone
+/// pairs it cancelled (output rows + 2 × cancelled = input rows)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Merged {
+    pub(crate) output: Option<SegmentMeta>,
+    pub(crate) cancelled: u64,
+}
+
 /// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentWriter {
@@ -51,7 +59,6 @@ pub(crate) struct SegmentWriter {
 struct SegmentOut {
     id: u32,
     file: PagedFile,
-    records: u64,
     navigation: Navigation,
     chunk: Vec<u8>,
     digest: crc32fast::Hasher,
@@ -74,11 +81,9 @@ impl SegmentOut {
     /// the file
     fn finish(mut self) -> Result<(SegmentMeta, u32, PagedFile)> {
         self.file.append(&self.chunk)?;
-        let id = self.id;
-        self.navigation
-            .finish(self.records, &mut self.file)
-            .map_err(|error| navigation_error(id, error))?;
-        let meta = SegmentMeta { id, records: self.records, sealed: self.file.seal()? };
+        let (id, records) = (self.id, self.navigation.records());
+        self.navigation.finish(&mut self.file).map_err(|error| navigation_error(id, error))?;
+        let meta = SegmentMeta { id, records, sealed: self.file.seal()? };
         Ok((meta, self.digest.finalize(), self.file))
     }
 }
@@ -95,15 +100,16 @@ impl SegmentWriter {
         Self { fs, dir: dir.to_path_buf(), shape }
     }
 
-    /// Sorts `rows` (`(key, value)`) and writes them as segment `id`, sealed; `None` for none
+    /// Sorts `rows` (`(key, value)`, `None` = tombstone) and writes them as segment `id`, sealed;
+    /// `None` for none
     ///
     /// - uncommitted until listed in a manifest, unlinked until [`sync_dir`](Self::sync_dir)
-    /// - duplicate keys panic (batch projects distinct rows by construction)
+    /// - duplicate keys panic (the buffer holds one row per key: a cancelled pair writes neither)
     /// - unique keys → unstable sort exact; parallel on the CPU pool
     pub(crate) fn write(
         &self,
         id: u32,
-        mut rows: Vec<(&[u8], &[u8])>,
+        mut rows: Vec<(&[u8], Option<&[u8]>)>,
     ) -> Result<Option<SegmentMeta>> {
         if rows.is_empty() {
             return Ok(None);
@@ -114,16 +120,19 @@ impl SegmentWriter {
         let mut row = Vec::with_capacity(self.shape.stride);
         for (key, value) in rows {
             row.clear();
-            row.extend_from_slice(key);
-            row.extend_from_slice(value);
+            encode_row(&self.shape, key, value.map_or(Row::Tombstone, Row::Value), &mut row);
             out.push(&row)?;
         }
         self.sealed(out).map(Some)
     }
 
-    /// K-way merge of `inputs` into segment `id`, sealed (record count = inputs' sum); `None` once
-    /// `cancel` is set (partial file unlisted → removed at open)
+    /// K-way merge of `inputs` into segment `id`, sealed; `None` once `cancel` is set (partial file
+    /// unlisted → removed at open)
     ///
+    /// - a key's value + its tombstone, both inputs → neither written (insert-once / remove-once:
+    ///   no other row of that key exists anywhere); a lone tombstone → written (its value is in a
+    ///   segment outside the merge); any other duplicate → [`SegmentError::Contract`]
+    /// - no row left → no file, `output: None` (the inputs retire with nothing in their place)
     /// - inputs read through their page checksums (corrupt input dies, never propagates)
     /// - caller then commits a manifest listing it in their place, then
     ///   [`remove`](Self::remove)s the inputs
@@ -135,7 +144,7 @@ impl SegmentWriter {
         inputs: &[SegmentMeta],
         cancel: &AtomicBool,
         slot: &Slot<'_>,
-    ) -> Result<Option<SegmentMeta>> {
+    ) -> Result<Option<Merged>> {
         assert!(inputs.len() >= 2, "merge of {} segments", inputs.len());
         let sources = inputs
             .iter()
@@ -152,24 +161,63 @@ impl SegmentWriter {
         let mut heads: BinaryHeap<Head<'_>> =
             (0..sources.len()).filter_map(|source| head(source, 0)).collect();
 
-        let mut out = self.create(id, total)?;
+        let mut out: Option<SegmentOut> = None;
+        let mut cancelled = 0;
         // read + written per row, charged to the engine's merge bandwidth a chunk at a time
         let mut uncharged = 0;
-        while let Some(Reverse((_, source, at))) = heads.pop() {
+        while let Some(Reverse((key, source, at))) = heads.pop() {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(None);
             }
-            let row = sources[source].row(at);
-            out.push(row)?;
-            uncharged += 2 * row.len();
+            heads.extend(head(source, at + 1));
+            let mut group = vec![(source, at)];
+            while let Some(&Reverse((next, source, at))) = heads.peek() {
+                if next != key {
+                    break;
+                }
+                heads.pop();
+                heads.extend(head(source, at + 1));
+                group.push((source, at));
+            }
+            uncharged += group.len() * self.shape.stride;
+            let rows: Vec<&[u8]> = match group.as_slice() {
+                [only] => vec![sources[only.0].row(only.1)],
+                [a, b] if self.shape.deletes => {
+                    let contents = [sources[a.0].content(a.1), sources[b.0].content(b.1)];
+                    let pair = matches!(contents, [Row::Value(_), Row::Tombstone])
+                        || matches!(contents, [Row::Tombstone, Row::Value(_)]);
+                    if !pair {
+                        let reason = format!("key held twice as {contents:?}");
+                        return Err(SegmentError::Contract { segment: id, reason });
+                    }
+                    cancelled += 1;
+                    Vec::new()
+                }
+                _ if self.shape.deletes => {
+                    let reason = format!("key held {} times", group.len());
+                    return Err(SegmentError::Contract { segment: id, reason });
+                }
+                // no deletes: a duplicate = a writer bug, `Navigation::push` panics on it
+                many => many.iter().map(|&(source, at)| sources[source].row(at)).collect(),
+            };
+            for row in rows {
+                let writing = match &mut out {
+                    Some(out) => out,
+                    None => out.insert(self.create(id, total)?),
+                };
+                writing.push(row)?;
+                uncharged += row.len();
+            }
             if uncharged >= CHUNK {
                 slot.charge(std::mem::take(&mut uncharged));
             }
-            heads.extend(head(source, at + 1));
         }
         slot.charge(uncharged);
-        // `finish` asserts every input record was emitted once
-        self.sealed(out).map(Some)
+        let output = out.map(|out| self.sealed(out)).transpose()?;
+        let written = output.map_or(0, |output| output.records);
+        let inputs: u64 = sources.iter().map(|file| file.records() as u64).sum();
+        assert_eq!(written + 2 * cancelled, inputs, "merge accounts for every input row");
+        Ok(Some(Merged { output, cancelled }))
     }
 
     /// `out` finished, then (under [`VERIFY`]) read back through its page checksums, then out of
@@ -201,6 +249,7 @@ impl SegmentWriter {
             }
             let filtered = &key[..file.filtered()];
             assert!(file.may_contain(filtered), "segment {} slot {slot}: filter finds it", meta.id);
+            file.content(slot);
             digest.update(file.row(slot));
         }
         assert_eq!(digest.finalize(), written, "segment {}: rows read back as written", meta.id);
@@ -230,7 +279,6 @@ impl SegmentWriter {
         Ok(SegmentOut {
             id,
             file,
-            records,
             navigation: Navigation::new(self.shape, records, &self.fs, &self.dir, id),
             chunk: Vec::with_capacity(CHUNK + self.shape.stride),
             digest: crc32fast::Hasher::new(),

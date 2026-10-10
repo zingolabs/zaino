@@ -41,7 +41,8 @@ pub enum FoldError {
 /// `block` folded by each index in `covers`: each into a delta its parent layer opens, each layer =
 /// parent's `.with(delta)`
 ///
-/// - compact-block's fees: value-balance's fold, else (value-balance durable at `block`) its view
+/// - compact-block's fees: value-balance's fold, else (value-balance durable at `block`) its
+///   stored fees record
 /// - panics: a covered index absent from `parent` (compact-block: value-balance too)
 pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     parent: &Views<V>,
@@ -68,8 +69,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
             None => {
                 let reader =
                     parent.value_balance().unwrap_or_else(|| absent(IndexKind::ValueBalance));
-                let mut fees = value_balance::fees(&reader, &[block])?;
-                fees.pop().expect("one block in, one fee set out")
+                reader.block_fees(block)?
             }
         };
         let reader = parent.compact_block().unwrap_or_else(|| absent(IndexKind::CompactBlock));

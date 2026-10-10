@@ -226,7 +226,9 @@ impl<V: MapRead> Views<V> {
         let view = self.view(IndexKind::TransparentAddress)?;
         Some(TransparentAddressReader::new(view))
     }
+}
 
+impl<V: SequenceRead + MapRead> Views<V> {
     /// Fold parent only (no route reads value-balance)
     pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<OverlayView<V>>> {
         Some(ValueBalanceReader::new(self.view(IndexKind::ValueBalance)?))

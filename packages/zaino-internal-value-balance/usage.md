@@ -7,15 +7,20 @@ compact-block's writer reads to fill `CompactTx.fee`; at the tip the NFS folds
 this index first and hands compact-block's fold the fees directly.
 
 The only term a block does not carry is what each transparent input spends, so
-the index keeps one map on the
+the index keeps the UTXO set and each block's fees on the
 [persistence port](../zaino-persistence/usage.md) (zainod: `DiskEngine`):
 
 ```text
-outputs   OutPoint::encode() = txid(32) ‖ vout u32   ->  value_zat u64      point lookups only
+outputs   OutPoint::encode() = txid(32) ‖ vout u32   ->  value_zat u64      unspent only, point lookups
+fees      record h = block h's fees: per tx, tag u8 (0 coinbase, 1 paid) ‖ value_zat u64
 ```
 
-Keys and values are big-endian. Every transparent output is kept, spent or not
-(Shape B, insert only), so any height re-resolves identically.
+Keys and values are big-endian. `outputs` declares `deletes()`: a block inserts
+the outputs it leaves unspent and removes the prevouts it spends, and an output
+created and spent in one block writes neither row
+([lsm-deletes.md](../../docs/design/lsm-deletes.md)). Since a spent prevout is
+gone, a block's fees cannot be re-derived later, so each block's fees are stored
+in `fees` and read back for a held height.
 `TABLES` + `FORMAT` declare the store; `zainod verify` checks the directory
 against `Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES)`
 (`PersistenceEngine::verify`).
@@ -38,8 +43,8 @@ tokio::spawn(writer.run(blocks, fee_sink));
 ```
 
 - Generic over the persistence port: `ValueBalanceIndexWriter<S: Store>` with
-  `S::View: MapRead`; zainod picks `DiskEngine`. zainod enables it with
-  `index.compact_block` (its directory beside compact-block's).
+  `S::View: SequenceRead + MapRead`; zainod picks `DiskEngine`. zainod enables it
+  with `index.compact_block` (its directory beside compact-block's).
 - `run` follows the final stream run by run
   ([the writer shape](../zaino-sync/usage.md#writer-loop)), then ends the fee
   sink. Fallible only at boot (the engine's `open` → `StoreError`); a failed
@@ -54,49 +59,52 @@ tokio::spawn(writer.run(blocks, fee_sink));
 ## Folding
 
 ```rust,ignore
-let parent = ValueBalanceReader::new(view);           // any V: MapRead
+let parent = ValueBalanceReader::new(view);           // any V: SequenceRead + MapRead
 let mut out = store.changes(block.at());              // or the parent layer's `changes`
 let fees = fold(&parent, &block, &mut out)?;          // Result<BlockFees, FoldError>
-let paid = fees(&parent, &[&block])?;                 // fees alone: no rows, any later parent
+let stored = parent.block_fees(&block)?;              // a held block's fees, read back
 ```
 
 - `fold(parent, block, out)` is the index's whole state transition (in
-  `writer.rs`, beside the writer loop): the block's outputs into `out` (one
-  `outputs` row each) and its `BlockFees` returned, every prevout resolved from
-  the block itself or through `parent`. `parent` must hold exactly the block's
-  parent (genesis: empty) and `out` must be opened for the block, else a panic
-  naming the index.
-- `fees(parent, blocks)` = a run's `BlockFees` alone, no rows: `parent` = any
-  state at or past the first block's parent (the map is insert only, so a later
-  state resolves the same blocks identically). The writer re-folds held heights
-  through it; the NFS tests price compact-block's fold with it.
-- `ValueBalanceReader<V>` is generic over any `V: MapRead`; its reads are
-  internal (fees are the only consumer).
+  `writer.rs`, beside the writer loop): into `out` go the outputs the block
+  leaves unspent, a removal of each prevout it spends, and its fees record; its
+  `BlockFees` is returned. Every prevout resolves from an earlier transaction of
+  the block or through `parent`. `parent` must hold exactly the block's parent
+  (genesis: empty) and `out` must be opened for the block, else a panic naming
+  the index.
+- `ValueBalanceReader::block_fees(block)` = the `BlockFees` stored when the
+  block was folded, for a block at or below the reader's tip. The writer reads
+  held heights through it, and so does the NFS when compact-block folds a block
+  value-balance already holds. A height with no record is
+  `StoredFeesMissing`, and a record that is malformed or not one fee per
+  transaction of `block` is `StoredFeesUnreadable`.
 - The writer folds a run's blocks at once (`fold_run`, crate-internal, one
-  delta per block, each then `zaino_sync::apply`d): block `k`
-  resolves against `parent` plus the outputs of blocks `0..=k`, and every
-  prevout from outside the run is asked in one `MapRead::values` call. A
-  sandblast transaction spends thousands of outputs, and one random lookup each
-  is one cold page fault each. A block spending an output that only a later
-  block of the run creates is `MissingPrevout`, as it would be alone.
-- `FoldError` names the block and transaction: `MissingPrevout` (an output the
-  index never recorded: it runs from genesis, so a foreign directory or a bug,
-  never a gap to work around), `NegativeFee`, `ValueOverflow` (below).
+  delta per block, each then `zaino_sync::apply`d), transaction by transaction
+  in chain order: each input is spent out of the run's unspent set, then the
+  transaction's outputs go in. Every prevout from outside the run is asked in
+  one `MapRead::values` call. A sandblast transaction spends thousands of
+  outputs, and one random lookup each is one cold page fault each. Spending an
+  output twice, or one that only a later transaction creates, is
+  `MissingPrevout`, as it would be alone.
+- `FoldError` names the block and transaction: `MissingPrevout` (not an
+  unspent output of the index: it runs from genesis, so a double spend, a
+  foreign directory or a bug, never a gap to work around), `NegativeFee`,
+  `ValueOverflow` (below); and the block for the two stored-fees errors.
 
 ## Resolved per run
 
 Each run (`Subscription::next_run`, queued steps to the queue's budget) folds
 the blocks it does not hold as one `fold_run` onto `staged()` on the blocking
-pool and applies them; held ones (a restart's resend) are priced by `fees` with
-no rows. Every
+pool and applies them. Held ones (a restart's resend) have their fees read back
+from `fees`, with no rows. Every
 step's fees go out, held ones first. Resolving at commit time instead would
 deadlock, since compact-block waits on fees step by step while a commit waits
 for a whole batch.
 
-| Step | Outputs | Fees on the sink |
-|---|---|---|
-| held (a restart, this index ahead) | already stored | yes (compact-block may be behind) |
-| new | applied | yes |
+| Step                               | Rows           | Fees on the sink                        |
+| ---------------------------------- | -------------- | --------------------------------------- |
+| held (a restart, this index ahead) | already stored | read back (compact-block may be behind) |
+| new                                | applied        | folded                                  |
 
 A fold error panics the writer (`value_balance index: ` + the `FoldError`).
 

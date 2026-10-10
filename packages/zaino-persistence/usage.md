@@ -60,6 +60,14 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   the filter covers that prefix, and a range whose bounds share it visits only
   the segments that may hold it. Scope 0 means point lookups, with whole keys
   filtered and segments mapped for random access.
+- **Removals:** a map declaring `MapTable::deletes()` accepts
+  `changes.map(T).remove(&key)` beside `insert`. The contract is insert once,
+  remove at most once, never re-insert, and per block a key is inserted or
+  removed, never both. A removed key reads absent everywhere (`value`, `values`,
+  `range`, whose `limit` counts live rows only). `remove` on a map without
+  `deletes()` panics, naming it. Such a map's rows carry one flag byte, and
+  every other map's layout is unchanged
+  ([lsm-deletes.md](../../docs/design/lsm-deletes.md)).
 - **`BlockChanges`** holds one buffer per table, shaped by the schema, and is opened
   only by `Store::changes(at)` or `Overlay::changes(at)`. Fixed-width tables cost
   only their bytes; variable ones add an end offset per item. A handle of
@@ -76,7 +84,10 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   a writer cannot hold one across `apply`),
   `committed()` and the disk do not until `commit`. It panics, buffering nothing,
   on changes built for another schema, a tip not above the last applied one,
-  or a map key the buffer already holds (or one `BlockChanges` inserts twice).
+  or a map key the buffer already holds (or one `BlockChanges` inserts twice),
+  and on a key removed twice or inserted and removed by one `BlockChanges`. A
+  removal of a key the buffer inserted cancels it there: neither row reaches a
+  segment.
   `buffered_bytes()` = the buffer's allocated capacity, within ±30% of the real
   heap for every table shape (`tests/buffer_heap.rs` measures it with a counting
   allocator). Once it reaches the `write_buffer` given to `open`, `apply`
@@ -194,6 +205,13 @@ report.is_clean();
   never evict the tables folds read.
 - **Duplicate keys** panic, whether within a batch or across segments (on a
   read or a merge).
+- **Tombstones** (`deletes()` maps): a removal written to a segment is a
+  tombstone row, in the filter like any key. A point read checks every segment
+  whose filter admits the key, and a tombstone in any of them means absent, so
+  no answer depends on segment order. A merge that holds a key's value and its
+  tombstone drops both, and keeps a lone tombstone. It may write fewer rows
+  than it read, or no segment at all. Any other duplicate of a key in a merge
+  is `SegmentError::Contract`, surfaced at the next commit.
 - **Read-back check:** under `cfg(test)` or feature `testing`, every sealed
   segment is read back: row count, ascending keys, no filter false negative, and
   a CRC of the rows.
@@ -226,13 +244,19 @@ view.durable();                              // the committed view alone (the se
 let child = child.rebase(&store.committed());     // after a commit: what durable holds dropped
 ```
 
-- `with` panics on a tip not above the layer's, another schema's tables, or a
-  map key the layer already holds; the layer itself never changes.
+- `with` panics on a tip not above the layer's, another schema's tables, a map
+  key the layer already holds, or a removal of one it already removed; the layer
+  itself never changes.
+- A layer's removal masks durable's value. Each map entry is owned by the
+  newest block that wrote it, so `rebase` drops only entries that durable now
+  holds and never brings back a value a later block removed.
 - `rebase` drops every block through durable's tip; it panics when that tip is
   past the layer or not one of its blocks (another branch).
 - `OverlayView::new` panics on a layer that is not above durable's tip (an
   un-rebased layer would read its blocks twice) or of another schema.
-- `range` merges both runs and keeps the `None` = over `limit` rule.
+- `range` merges both runs and keeps the `None` = over `limit` rule. Durable is
+  asked for `limit` plus the layer's removals in range, so removed rows never
+  turn a fitting answer into `None`.
 
 ## Who drives a store
 
