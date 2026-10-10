@@ -1,0 +1,14 @@
+# Machine-assigned changeset identity — do not edit.
+id = "01a12487-7163-7bb0-9cda-d0fa680f5ddf"
+
+[[changes]]
+crate       = "zaino-state"
+kind        = "fix"
+description = """
+`GetSubtreeRoots` answers from the local index instead of asking the validator \
+for each subtree in turn. It needed the completing block's hash, which the \
+subtree listing does not carry, and fetched a full verbose block per subtree: \
+over a thousand sequential round trips for a pool, which spent the stream's \
+whole deadline and returned a timeout to every client. A wallet could not \
+complete an initial sync against it.
+"""

@@ -8,7 +8,6 @@ pub(crate) mod node_backed_indexer;
 
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
-use tracing::warn;
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
@@ -23,9 +22,7 @@ use zaino_proto::proto::{
         TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
-use zebra_chain::{
-    block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
-};
+use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
 use zebra_rpc::methods::{
     GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
@@ -855,31 +852,27 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                 tonic::Status::deadline_exceeded("Error: get_subtree_roots gRPC request timed out"),
                 |channel_tx| async move {
                     for subtree in &subtrees.subtrees {
+                        let height = u32::from(subtree.end_height);
+                        // The completing block is named by hash as well as by
+                        // height, and the subtree listing carries only the
+                        // height. Ask the local index for that block rather
+                        // than the validator: one round trip per subtree is
+                        // thousands of them for a whole pool, which spends the
+                        // stream's whole deadline before the client has its
+                        // answer. The compact block is the cheapest shape that
+                        // carries the hash.
                         match service_clone
-                            .z_get_block(u32::from(subtree.end_height).to_string(), Some(1))
+                            .get_block(BlockId {
+                                height: u64::from(height),
+                                hash: Vec::new(),
+                            })
                             .await
                         {
-                            Ok(GetBlock::Object(block_object)) => {
-                                let checked_height = match block_object.height() {
-                                    Some(h) => h.0 as u64,
-                                    None => {
-                                        match channel_tx
-                                            .send(Err(tonic::Status::unknown(
-                                                "Error: No block height returned by node.",
-                                            )))
-                                            .await
-                                        {
-                                            Ok(_) => break,
-                                            Err(e) => {
-                                                warn!(
-                                                    %e,
-                                                    "GetSubtreeRoots channel closed unexpectedly"
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
+                            Ok(block) => {
+                                // `CompactBlock::hash` is internal byte order;
+                                // `completing_block_hash` is display order.
+                                let mut completing_block_hash = block.hash;
+                                completing_block_hash.reverse();
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
                                         // The domain carries the root as
@@ -888,11 +881,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                         // unreachable decode-failure arm — are
                                         // gone.
                                         root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
-                                        completing_block_hash: block_object
-                                            .hash()
-                                            .bytes_in_display_order()
-                                            .to_vec(),
-                                        completing_block_height: checked_height,
+                                        completing_block_hash,
+                                        completing_block_height: block.height,
                                     }))
                                     .await
                                     .is_err()
@@ -900,25 +890,11 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                     break;
                                 }
                             }
-                            Ok(GetBlock::Raw(_)) => {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                .send(Err(tonic::Status::unknown(
-                                    "Error: Received raw block type, this should not be possible.",
-                                )))
-                                .await
-                                .is_err()
-                            {
-                                break;
-                            }
-                            }
                             Err(e) => {
                                 // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                                 if channel_tx
                                     .send(Err(tonic::Status::unknown(format!(
-                                        "Error: Could not fetch block at height [{}] from node: {}",
-                                        u32::from(subtree.end_height),
-                                        e
+                                        "Error: Could not fetch block at height [{height}]: {e}"
                                     ))))
                                     .await
                                     .is_err()
