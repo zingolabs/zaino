@@ -39,6 +39,7 @@ use crate::indexes::transparent_spends::TransparentSpendsIndex;
 use crate::indexes::tree_state::TreeStateIndex;
 use crate::indexes::txid_location::TxidLocationIndex;
 use crate::indexes::txids::TxidsIndex;
+use crate::indexes::txout_set::TxOutSetIndex;
 
 index_set! {
     /// Transparent history serving plus the local commitment-tree (treestate)
@@ -61,5 +62,6 @@ index_set! {
         SaplingSubtreesIndex,
         OrchardSubtreesIndex,
         IronwoodSubtreesIndex,
+        TxOutSetIndex,
     }
 }

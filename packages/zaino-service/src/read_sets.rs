@@ -14,7 +14,7 @@ use crate::block_deltas::BlockDeltasRead;
 use crate::reads::{
     AddressRead, BlockHashRead, BlockRead, BlockVerboseRead, ChainInfoRead, ChainTipsRead,
     CompactBlockRead, CompactNullifierRead, RawTransactionRead, SpendRead, TransactionRead,
-    TransactionViewRead, TreestateRead,
+    TransactionViewRead, TreestateRead, TxOutSetRead,
 };
 
 /// Reads shared by every wallet-shaped consumer — scan compact blocks, build
@@ -70,6 +70,9 @@ impl<T> LightWalletReads for T where T: WalletReadCore + CompactNullifierRead {}
 /// [`ChainTipsRead`] is the `getchaintips` surface: a third indexer-only method
 /// (Zebra answers `-32601`), read from the non-finalised head's retained graph.
 ///
+/// [`TxOutSetRead`] is the `gettxoutsetinfo` surface, also indexer-only: the
+/// transparent UTXO-set summary, folded from the finalised store's deltas.
+///
 /// [`SpendRead`] is the `getspentinfo` surface: another indexer-only method
 /// (Zebra answers `-32601`) that locates where a transparent outpoint was spent.
 /// It is served **locally** from the tier spends index, which both the finalised
@@ -90,6 +93,7 @@ pub trait NodeRpcReads:
     + TreestateRead
     + ChainInfoRead
     + ChainTipsRead
+    + TxOutSetRead
 {
 }
 impl<T> NodeRpcReads for T where
@@ -105,5 +109,6 @@ impl<T> NodeRpcReads for T where
         + TreestateRead
         + ChainInfoRead
         + ChainTipsRead
+        + TxOutSetRead
 {
 }

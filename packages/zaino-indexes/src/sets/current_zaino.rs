@@ -28,6 +28,7 @@ use crate::indexes::transparent_spends::{SpendCtx, TransparentSpendsIndex};
 use crate::indexes::tree_state::TreeStateCtx;
 use crate::indexes::txid_location::{TxidLocationCtx, TxidLocationIndex};
 use crate::indexes::txids::{TxidsCtx, TxidsIndex};
+use crate::indexes::txout_set::TxOutSetCtx;
 
 /// Set-wide context for the full zaino index set.
 #[derive(Debug, Clone)]
@@ -292,6 +293,16 @@ impl ProvideContext<HashToHeightCtx> for CurrentZainoContext {
         HashToHeightCtx {
             hash: self.hash,
             height: self.height,
+        }
+    }
+}
+
+impl ProvideContext<TxOutSetCtx> for CurrentZainoContext {
+    fn context(&self) -> TxOutSetCtx {
+        TxOutSetCtx {
+            height: self.height,
+            txids: self.txids.clone(),
+            txs: self.transparent_txs.clone(),
         }
     }
 }

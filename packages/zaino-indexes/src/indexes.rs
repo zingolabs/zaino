@@ -16,6 +16,7 @@ pub mod transparent_spends;
 pub mod tree_state;
 pub mod txid_location;
 pub mod txids;
+pub mod txout_set;
 
 #[cfg(test)]
 mod key_order_tests {

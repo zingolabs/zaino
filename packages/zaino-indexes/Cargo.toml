@@ -9,6 +9,7 @@ license.workspace = true
 description = "Zcash index definitions for the zaino sync engine."
 
 [dependencies]
+blake2b_simd = "1"
 incrementalmerkletree = { workspace = true, features = ["legacy-api"] }
 orchard = { version = "0.15.3", default-features = false }
 rayon.workspace = true

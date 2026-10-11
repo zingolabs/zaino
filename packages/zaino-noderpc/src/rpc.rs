@@ -30,7 +30,8 @@ use crate::wire::response::{
     GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse, MempoolInfoResponse,
     MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry, RawMempoolResponse,
     SpentInfoResponse, SubtreeRootsResponse, TreestateResponse, TxOutResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ZValidateAddressResponse,
+    TxOutSetInfoResponse, UnifiedReceiversResponse, ValidateAddressResponse,
+    ZValidateAddressResponse,
 };
 use crate::NodeRpc;
 
@@ -99,6 +100,9 @@ pub(crate) trait NodeRpcApi {
 
     #[method(name = "getinfo")]
     async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned>;
+
+    #[method(name = "gettxoutsetinfo")]
+    async fn tx_out_set_info(&self) -> Result<TxOutSetInfoResponse, ErrorObjectOwned>;
 
     #[method(name = "getchaintips")]
     async fn chain_tips(&self) -> Result<Vec<ChainTipEntry>, ErrorObjectOwned>;
@@ -275,6 +279,9 @@ impl<S: NodeRpcService + 'static> NodeRpcApiServer for NodeRpc<S> {
     }
     async fn info(&self) -> Result<NodeInfoResponse, ErrorObjectOwned> {
         self.get_info().await.map_err(to_error_object)
+    }
+    async fn tx_out_set_info(&self) -> Result<TxOutSetInfoResponse, ErrorObjectOwned> {
+        self.get_tx_out_set_info().await.map_err(to_error_object)
     }
     async fn chain_tips(&self) -> Result<Vec<ChainTipEntry>, ErrorObjectOwned> {
         self.get_chain_tips().await.map_err(to_error_object)

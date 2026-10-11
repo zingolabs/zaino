@@ -18,13 +18,13 @@ use crate::chain_view::ChainViewSnapshot;
 use crate::routing::Routing;
 use zaino_primitives::types::{
     BlockRef, BlockSelector, BlockchainInfo, CompactBlock, HeightRange, RawTransaction,
-    TransactionId, rpc::ChainTip,
+    TransactionId, TxOutSetInfo, rpc::ChainTip,
 };
 use zaino_service::ServiceableRange;
 use zaino_service::error::{BlockReadError, ReadError, TxReadError};
 use zaino_service::{
     ChainInfoRead, ChainSegment, ChainTipsRead, CompactBlockRead, CompactNullifierRead,
-    RawTransactionRead, Snapshot,
+    RawTransactionRead, Snapshot, TxOutSetRead,
 };
 use zaino_source::{GetBlockchainInfo, GetTransaction};
 
@@ -202,6 +202,23 @@ where
             .compact_block(at)
             .await?
             .map(crate::nullifiers::strip_to_nullifiers))
+    }
+}
+
+/// Always local, and from the finalised store alone: the summary is the fold of
+/// the store's per-block deltas up to its watermark, and the answer names that
+/// height. The non-finalised window is not folded on top, so it trails the
+/// chain tip by the finalisation depth. No validator port backs this — Zebra has
+/// no `gettxoutsetinfo`.
+impl<F, N, Src, R> TxOutSetRead for EngineSnapshot<F, N, Src, R>
+where
+    F: ChainTier + TxOutSetRead,
+    N: ChainTier,
+    Src: Send + Sync + 'static,
+    R: Routing,
+{
+    async fn tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, ReadError> {
+        self.local.finalised().tx_out_set_info().await
     }
 }
 

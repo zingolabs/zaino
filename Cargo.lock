@@ -6119,6 +6119,7 @@ dependencies = [
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
+ "blake2b_simd",
  "hex",
  "incrementalmerkletree",
  "orchard",

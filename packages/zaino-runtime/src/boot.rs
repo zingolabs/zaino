@@ -190,6 +190,24 @@ where
     let (horizon, watermark) =
         Seam::new(config.indexer.reorg_depth, DEFAULT_RETENTION_MARGIN).split();
 
+    // An index that reads a scattered-key dependency while it extracts cannot be
+    // bulk-loaded with deferral: the deferred namespace is unreadable until the
+    // load finishes. Such a set syncs on the direct write path whatever the
+    // config asks, and says so.
+    let read_while_syncing = D::Indexes::pipelines().scattered_dependencies();
+    let deferral = if read_while_syncing.is_empty() {
+        config.store.deferred_writes
+    } else {
+        if config.store.deferred_writes.enabled() {
+            warn!(
+                dependencies = ?read_while_syncing,
+                "this index set reads scattered-key indexes while it syncs; deferred writes \
+                 are disabled for it, so the initial sync uses the direct write path"
+            );
+        }
+        zaino_indexer::DeferralPolicy::Off
+    };
+
     // The indexer builds the deployment's index set from what the validator
     // hands it per height, resuming from the backend watermark and bounded by
     // the horizon the volatile tier publishes through the seam. Which read it
@@ -206,7 +224,7 @@ where
                 SyncTarget::Seam(watermark),
             )
             .map_err(DeployError::Indexer)?
-            .with_deferral(config.store.deferred_writes);
+            .with_deferral(deferral);
             assemble::<D, A, C, _, _>(source, store_reader, driver, horizon, serve).await?
         }
         FetchStrategy::Full => {
@@ -219,7 +237,7 @@ where
                 SyncTarget::Seam(watermark),
             )
             .map_err(DeployError::Indexer)?
-            .with_deferral(config.store.deferred_writes);
+            .with_deferral(deferral);
             assemble::<D, A, C, _, _>(source, store_reader, driver, horizon, serve).await?
         }
     };

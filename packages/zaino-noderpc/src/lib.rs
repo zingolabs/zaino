@@ -31,6 +31,7 @@ use zaino_service::RawTransactionRead;
 use zaino_service::SpendRead;
 use zaino_service::TransactionViewRead;
 use zaino_service::TreestateRead;
+use zaino_service::TxOutSetRead;
 use zaino_service::{BlockRead, ChainInfoRead, ChainSegment, NodeRpcService};
 use zcash_protocol::consensus::Network;
 
@@ -45,8 +46,8 @@ use crate::wire::response::{
     GetBlockDeltasResponse, GetBlockHashesResponse, GetBlockResponse, GetRawTransactionResponse,
     MempoolInfoResponse, MiningInfoResponse, NetworkInfoResponse, NodeInfoResponse, PeerInfoEntry,
     RawMempoolResponse, RawTransactionResponse, SpentInfoResponse, SubtreeRootsResponse,
-    TreestateResponse, TxOutResponse, UnifiedReceiversResponse, ValidateAddressResponse,
-    ZValidateAddressResponse,
+    TreestateResponse, TxOutResponse, TxOutSetInfoResponse, UnifiedReceiversResponse,
+    ValidateAddressResponse, ZValidateAddressResponse,
 };
 use crate::wire::{
     address_balance_to_wire, block_deltas_to_wire, block_hash_to_display, block_hashes_to_wire,
@@ -54,8 +55,9 @@ use crate::wire::{
     blockchain_info_to_wire, blockhash_from_hex, bytes_from_hex, bytes_to_hex, chain_tips_to_wire,
     delta_to_wire, mempool_entry_to_wire, mining_info_to_wire, network_info_to_wire,
     node_info_to_wire, peer_info_to_wire, spent_info_to_wire, subtree_roots_to_wire,
-    transaction_view_to_wire, treestate_to_wire, tx_out_to_wire, txid_from_hex, txid_to_display,
-    unified_receivers_to_wire, utxo_to_wire, validated_to_wire, z_validated_to_wire,
+    transaction_view_to_wire, treestate_to_wire, tx_out_set_info_to_wire, tx_out_to_wire,
+    txid_from_hex, txid_to_display, unified_receivers_to_wire, utxo_to_wire, validated_to_wire,
+    z_validated_to_wire,
 };
 
 /// Zcash node JSON-RPC handler over a [`NodeRpcService`] engine.
@@ -457,6 +459,15 @@ impl<S: NodeRpcService> NodeRpc<S> {
     pub(crate) async fn get_ping(&self) -> Result<(), RpcError> {
         self.engine.ping().await?;
         Ok(())
+    }
+
+    /// `gettxoutsetinfo`: the transparent UTXO-set summary, served locally from
+    /// the finalised store. It describes the finalised tip, which the response
+    /// names in `height` and `bestblock`; before anything is finalised it is an
+    /// empty object.
+    pub(crate) async fn get_tx_out_set_info(&self) -> Result<TxOutSetInfoResponse, RpcError> {
+        let snapshot = self.engine.snapshot().await?;
+        Ok(tx_out_set_info_to_wire(snapshot.tx_out_set_info().await?))
     }
 
     /// `getchaintips`: every tip of the block tree the non-finalised head

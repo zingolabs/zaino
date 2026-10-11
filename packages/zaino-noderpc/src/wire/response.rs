@@ -1394,3 +1394,35 @@ pub struct BlockSubsidyResponse {
     #[serde(rename = "totalblocksubsidy")]
     pub total_block_subsidy: f64,
 }
+
+/// The `gettxoutsetinfo` response: the summary, or an empty object when
+/// nothing is finalised yet.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum TxOutSetInfoResponse {
+    /// The UTXO-set summary.
+    Info(TxOutSetInfoStats),
+    /// No summary is available.
+    Empty {},
+}
+
+/// The transparent UTXO-set summary, in zcashd's field names.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TxOutSetInfoStats {
+    /// The height the summary describes.
+    pub height: u32,
+    /// The block the summary describes, as hex (display order).
+    #[serde(rename = "bestblock")]
+    pub best_block: String,
+    /// Transactions holding at least one unspent transparent output.
+    pub transactions: u64,
+    /// Unspent transparent outputs.
+    #[serde(rename = "txouts")]
+    pub tx_outs: u64,
+    /// The commitment's entry length times the number of unspent outputs.
+    pub bytes_serialized: u64,
+    /// Zaino's commitment to the UTXO set, as hex. Not zcashd's hash.
+    pub hash_serialized: String,
+    /// Total unspent transparent value, in ZEC.
+    pub total_amount: f64,
+}

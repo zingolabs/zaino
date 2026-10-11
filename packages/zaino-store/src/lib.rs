@@ -40,6 +40,7 @@ mod index_coverage;
 mod spend;
 mod spend_resolve;
 mod tree_state;
+mod txout_set;
 mod watermark_repair;
 
 pub use index_coverage::{IndexCoverageError, UnstampedIndexes};
