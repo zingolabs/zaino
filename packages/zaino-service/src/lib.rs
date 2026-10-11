@@ -60,7 +60,7 @@ pub use reads::{
     ForkReconcile, HeaderRead, HeaderSummary, LocatedTransactionView, LocatedTxid,
     PoolActivationSource, RawTransactionRead, ReadBudget, ResolvedInput, SpendRead,
     TransactionLocationRead, TransactionRead, TransactionView, TransactionViewRead, TreestateRead,
-    TreestateRootsRead, TreestateWindowRead,
+    TreestateRootsRead, TreestateWindowRead, TxOutSetRead,
 };
 pub use status::{SpendStatus, TxStatus};
 pub use tx_out::TxOutRead;

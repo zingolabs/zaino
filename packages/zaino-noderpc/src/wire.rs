@@ -42,7 +42,8 @@ use crate::wire::response::{
     ShieldedOutput, ShieldedSpend, SpentInfoResponse, SubtreeRootEntry, SubtreeRootsResponse,
     TipConsensusResponse, TransactionDeltaEntry, TransactionInput, TransactionObject,
     TransactionOutput, TreePoolSize, TreesResponse, TreestateResponse, TxOutResponse,
-    UnifiedReceiversResponse, ValidateAddressResponse, ValuePoolResponse, ZValidateAddressResponse,
+    TxOutSetInfoResponse, TxOutSetInfoStats, UnifiedReceiversResponse, ValidateAddressResponse,
+    ValuePoolResponse, ZValidateAddressResponse,
 };
 
 fn hex_val(c: u8) -> Result<u8, RpcError> {
@@ -294,6 +295,25 @@ fn zatoshi_magnitude_to_zec(negative: bool, magnitude: u64) -> f64 {
 /// The shared renderer for zcashd's `chainValue` / transaction `value` family.
 fn zatoshis_to_zec(amount: Zatoshis) -> f64 {
     zatoshi_magnitude_to_zec(false, amount.as_u64())
+}
+
+/// Render the UTXO-set summary as the `gettxoutsetinfo` response (domain ->
+/// wire). `None` — nothing finalised yet — is an empty object.
+pub(crate) fn tx_out_set_info_to_wire(
+    info: Option<zaino_primitives::types::TxOutSetInfo>,
+) -> TxOutSetInfoResponse {
+    match info {
+        Some(info) => TxOutSetInfoResponse::Info(TxOutSetInfoStats {
+            height: info.height.into(),
+            best_block: block_hash_to_display(info.best_block),
+            transactions: info.transactions,
+            tx_outs: info.tx_outs,
+            bytes_serialized: info.bytes_serialized,
+            hash_serialized: info.hash_serialized,
+            total_amount: zatoshis_to_zec(info.total_amount),
+        }),
+        None => TxOutSetInfoResponse::Empty {},
+    }
 }
 
 /// Render the retained chain tips as the `getchaintips` response (domain ->
@@ -3026,6 +3046,43 @@ mod tests {
         assert_eq!(
             serde_json::to_value(block_subsidy_to_wire(founders_era)).expect("serialize"),
             oracle
+        );
+    }
+
+    /// `gettxoutsetinfo` renders zcashd's field names with the block hash in
+    /// display order and the total in ZEC; with nothing finalised it is an empty
+    /// object, not null and not an error.
+    #[test]
+    fn tx_out_set_info_renders_zcashd_field_names() {
+        use super::tx_out_set_info_to_wire;
+        use zaino_primitives::types::{BlockHash, Height, TxOutSetInfo, Zatoshis};
+
+        let mut hash = [0u8; 32];
+        hash[0] = 0xaa;
+        let info = TxOutSetInfo {
+            height: Height::try_from(100).expect("valid height"),
+            best_block: BlockHash::from(hash),
+            transactions: 3,
+            tx_outs: 5,
+            bytes_serialized: 325,
+            hash_serialized: "ab".repeat(32),
+            total_amount: Zatoshis::new(150_000_000).expect("valid amount"),
+        };
+        assert_eq!(
+            serde_json::to_value(tx_out_set_info_to_wire(Some(info))).expect("serialize"),
+            serde_json::json!({
+                "height": 100,
+                "bestblock": format!("{}aa", "00".repeat(31)),
+                "transactions": 3,
+                "txouts": 5,
+                "bytes_serialized": 325,
+                "hash_serialized": "ab".repeat(32),
+                "total_amount": 1.5
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(tx_out_set_info_to_wire(None)).expect("serialize"),
+            serde_json::json!({})
         );
     }
 }

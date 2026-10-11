@@ -12,7 +12,7 @@ use zaino_primitives::types::{
     BlockTime, BlockVerbose, BlockchainInfo, CommitmentTrees, CompactBlock, DecodedBlock, Height,
     HeightRange, Outpoint, PoolActivations, RawTransaction, ShieldedPool, SubtreeRoot, Transaction,
     TransactionDetail, TransactionId, TransactionLocation, TransparentAddress, TransparentInput,
-    TransparentOutput, TransparentReceive, TransparentSpend, Treestate, Utxo,
+    TransparentOutput, TransparentReceive, TransparentSpend, Treestate, TxOutSetInfo, Utxo,
 };
 
 use crate::error::{
@@ -659,6 +659,18 @@ pub trait CompactNullifierRead: Send + Sync {
 /// that could disagree about the height they describe.
 pub trait ChainInfoRead: Send + Sync {
     fn chain_info(&self) -> impl Future<Output = Result<BlockchainInfo, ReadError>> + Send;
+}
+
+/// The transparent UTXO-set summary — the domain behind `gettxoutsetinfo`.
+///
+/// Backed by: the finalised store's per-block UTXO-set deltas, folded up to its
+/// watermark. The answer names the height and block it describes, which is the
+/// finalised tip rather than the chain tip. `Ok(None)` when nothing is
+/// finalised yet.
+pub trait TxOutSetRead: Send + Sync {
+    fn tx_out_set_info(
+        &self,
+    ) -> impl Future<Output = Result<Option<TxOutSetInfo>, ReadError>> + Send;
 }
 
 /// The tips of the block tree — the domain behind `getchaintips`.

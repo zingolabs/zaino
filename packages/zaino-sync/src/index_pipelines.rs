@@ -4,9 +4,10 @@
 //! into an `IndexPipelines`, and hands the set to the engine. The set handles
 //! DAG construction and validation internally.
 
-use crate::backend::NamespaceSpec;
+use crate::backend::{KeyOrder, NamespaceSpec};
 use crate::dag::{DagError, DependencyDag};
 use crate::pipeline::{IndexPipeline, IntoIndexPipeline};
+use crate::primitives::IndexId;
 
 /// The dependency DAG and the boxed pipelines a built index set hands to the engine.
 type BuiltIndexSet<Ctx> = (DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>);
@@ -67,6 +68,32 @@ impl<Ctx: Send + Sync + 'static> IndexPipelines<Ctx> {
                 }
             })
             .collect()
+    }
+
+    /// The scattered-key indexes that another registered index reads as a
+    /// dependency while it extracts.
+    ///
+    /// A backend that defers scattered writes during a bulk load cannot answer
+    /// reads of a deferred namespace until the load finishes, so a set where this
+    /// is non-empty cannot be bulk-loaded with deferral: its cross index would
+    /// read namespaces that are not there yet.
+    pub fn scattered_dependencies(&self) -> Vec<IndexId> {
+        let scattered: Vec<IndexId> = self
+            .pipelines
+            .iter()
+            .map(|pipeline| pipeline.descriptor())
+            .filter(|descriptor| matches!(descriptor.key_order, KeyOrder::Scattered))
+            .map(|descriptor| descriptor.name)
+            .collect();
+        let mut read: Vec<IndexId> = self
+            .pipelines
+            .iter()
+            .flat_map(|pipeline| pipeline.descriptor().dependencies.iter().copied())
+            .filter(|dependency| scattered.contains(dependency))
+            .collect();
+        read.sort_unstable_by_key(|id| id.to_string());
+        read.dedup();
+        read
     }
 
     /// Return a description line for each registered index.

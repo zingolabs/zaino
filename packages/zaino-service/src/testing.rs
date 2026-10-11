@@ -48,9 +48,9 @@ use crate::{
     NodeStatusError, NodeStatusRead, PoolActivationSource, RawTransactionRead, ReadBudget,
     ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
     TransactionLocationRead, TransactionRead, TransactionViewRead, TreestateRead,
-    TreestateRootsRead, TreestateWindowRead, TxOutRead,
+    TreestateRootsRead, TreestateWindowRead, TxOutRead, TxOutSetRead,
 };
-use zaino_primitives::types::{rpc::TxOut, OutputIndex};
+use zaino_primitives::types::{rpc::TxOut, OutputIndex, TxOutSetInfo};
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
 /// enough to prove wiring and the pin semantics.
@@ -103,6 +103,9 @@ pub struct MockChain {
     /// pinned tip with neutral values for everything else. A test that needs to
     /// distinguish a rendered field from a defaulted one scripts this.
     pub blockchain_info: Option<BlockchainInfo>,
+    /// Scripted UTXO-set summary, returned verbatim by
+    /// [`TxOutSetRead::tx_out_set_info`]; `None` answers `Ok(None)`.
+    pub tx_out_set_info: Option<TxOutSetInfo>,
     /// Scripted chain tips, returned verbatim by [`ChainTipsRead::chain_tips`].
     pub chain_tips: Vec<ChainTip>,
     /// Scripted subsidy split. When `Some`,
@@ -682,6 +685,12 @@ impl TransactionLocationRead for MockSnapshot {
     ) -> Result<Option<zaino_primitives::types::TransactionLocation>, TxReadError> {
         // The mock holds no located transactions: as a tier it knows none.
         Ok(None)
+    }
+}
+
+impl TxOutSetRead for MockSnapshot {
+    async fn tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, ReadError> {
+        Ok(self.chain.tx_out_set_info.clone())
     }
 }
 
