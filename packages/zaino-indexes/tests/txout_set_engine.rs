@@ -152,7 +152,7 @@ fn model(chain: &[Vec<Tx>]) -> Vec<TxOutSetDelta> {
     let mut deltas = Vec::new();
     for txs in chain {
         let mut delta = TxOutSetDelta::EMPTY;
-        let mut xor = |delta: &mut TxOutSetDelta, d: [u8; 32]| {
+        let xor = |delta: &mut TxOutSetDelta, d: [u8; 32]| {
             for (byte, other) in delta.digest.iter_mut().zip(d) {
                 *byte ^= other;
             }
