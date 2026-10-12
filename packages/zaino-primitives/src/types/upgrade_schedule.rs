@@ -147,4 +147,22 @@ mod tests {
         no_nu5.upgrades.retain(|upgrade| upgrade.branch_id != nu5);
         assert_eq!(UpgradeSchedule::reported(&no_nu5).activation(Nu5), None, "unlisted = never");
     }
+
+    /// Mainnet around NU6.3 (3,428,143): active from its height on, the branch switches there, and
+    /// the next upgrade is strictly above (none past the last scheduled); below Overwinter = Sprout
+    #[test]
+    fn the_branch_and_next_upgrade_switch_exactly_at_an_activation_height() {
+        let mainnet = UpgradeSchedule::compiled(NetworkType::Main).expect("mainnet compiled in");
+        let branch =
+            |upgrade: NetworkUpgrade| ConsensusBranchId::new(u32::from(upgrade.branch_id()));
+        let read = |at: u32| {
+            let at = h(at);
+            (mainnet.active(Nu6_3, at), mainnet.branch_at(at), mainnet.next_after(at))
+        };
+        assert_eq!(read(3_428_142), (false, branch(Nu6_2), Some((Nu6_3, h(3_428_143)))));
+        assert_eq!(read(3_428_143), (true, branch(Nu6_3), None));
+        assert_eq!(read(3_500_000), (true, branch(Nu6_3), None));
+        assert_eq!(read(0), (false, ConsensusBranchId::new(0), Some((Overwinter, h(347_500)))));
+        assert_eq!(mainnet.next_after(h(347_500)), Some((Sapling, h(419_200))));
+    }
 }

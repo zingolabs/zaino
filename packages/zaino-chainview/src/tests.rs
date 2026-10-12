@@ -986,6 +986,69 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     cancel.cancel();
 }
 
+/// a at 40 (final 40 once best ≥ 50), the peer set's best path above it; each row = what the
+/// peers' path ends in, where the tip stops, whether the peers were blamed:
+/// - 2,100 good headers: the ceiling (final + depth + `HEADER_BATCH` = 2,050) exactly
+/// - block 45 from the future: 44, no blame (only the clock is behind)
+/// - block 45 with nBits the rules refuse: 44, each refusal a misanswer on the peer set
+#[tokio::test(start_paused = true)]
+async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_is_a_misanswer() {
+    use metrics_util::debugging::DebuggingRecorder;
+    use zaino_header_chain::{HeaderChain, Params};
+    use zaino_traffic::Peers;
+
+    let blamed_peers = |key: &metrics_util::CompositeKey| {
+        key.key().name() == "zaino_traffic_misanswers_total"
+            && key.key().labels().any(|l| l.key() == "member" && l.value() == "peers")
+    };
+
+    type PathEnd = fn(&mut MockChain) -> BlockRef;
+    let rows: [(&str, PathEnd, (u32, u32), bool); 3] = [
+        ("past the ceiling", |chain| chain.mine_empty(2_060), (2_050, 40), false),
+        ("from the future", |chain| chain.mine(|b| b.time(4_000_000_000)), (44, 34), false),
+        ("broken nBits", |chain| chain.mine(|b| b.bits(0x1d00_ffff)), (44, 34), true),
+    ];
+    for (row, path_end, (tip, final_tip), blamed) in rows {
+        let recorder = DebuggingRecorder::new();
+        let snapshotter = recorder.snapshotter();
+        let _recording = metrics::set_default_local_recorder(&recorder);
+        let mut chain = MockChain::regtest().varied_work();
+        let at_40 = chain.mine_empty(40);
+        let validator = Arc::new(MockValidator::following(&chain, at_40));
+        chain.mine_empty(4);
+        path_end(&mut chain);
+        let peers_tip = chain.mine_empty(1);
+        let blocks = chain.blocks(peers_tip);
+        let best: Vec<BlockRef> = blocks.iter().map(|block| block.at()).collect();
+        let headers = best.iter().map(|at| (at.hash, chain.header_bytes(at.hash))).collect();
+        let held = std::sync::Mutex::new(best.len() - 1);
+        let peer_set = Arc::new(PeerSet { best: best.clone(), held, headers, blocks });
+        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+        let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+        let peers = Peers { transport: peer_set as _, in_flight: 4 };
+        let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
+        let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+        let view = view.expect("a valid set");
+        let cancel = CancellationToken::new();
+        tokio::spawn(driver.run(cancel.clone()));
+        tokio::spawn(view.observation_fold().run(cancel.clone()));
+        let sync =
+            view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(h(1), None));
+        let verified = sync.subscribe();
+        tokio::spawn(sync.run(cancel.clone()));
+        let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+
+        let expected = Some((best[tip as usize], best[final_tip as usize]));
+        until(row, || published() == expected).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert_eq!(published(), expected, "{row}: stays (six peer polls later)");
+        let recorded = snapshotter.snapshot().into_vec();
+        let peers_blamed = recorded.iter().any(|(key, ..)| blamed_peers(key));
+        assert_eq!(peers_blamed, blamed, "{row}: peers blamed");
+        cancel.cancel();
+    }
+}
+
 /// The previous scenario's outage (a down at 40, peers on to 60, depth 10), now with peers' block
 /// `inv`s: final reaches best − depth = 50 on the peers' word once more than 5 netgroups carry it
 /// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, final stays 40

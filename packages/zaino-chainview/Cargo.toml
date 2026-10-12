@@ -30,6 +30,7 @@ zaino-source.workspace = true
 zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
 
 [dev-dependencies]
+metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "test-util"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }

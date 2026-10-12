@@ -553,15 +553,10 @@ impl HeaderChain {
     /// final tip, then the finals
     fn ancestors(&self, prev: BlockHash) -> Vec<Ancestor> {
         let ancestor = |record: &Record| Ancestor { bits: record.bits, time: record.time };
-        let mut held = Vec::with_capacity(CONTEXT);
-        let mut at = prev;
-        while let Some(node) = self.nodes.get(&at).filter(|_| held.len() < CONTEXT) {
-            held.push(ancestor(&node.record));
-            at = node.parent;
-        }
+        let tree =
+            std::iter::successors(self.nodes.get(&prev), |node| self.nodes.get(&node.parent));
         let finals = self.finals.iter().rev().map(|(_, record)| ancestor(record));
-        held.extend(finals.take(CONTEXT - held.len()));
-        held
+        tree.map(|node| ancestor(&node.record)).chain(finals).take(CONTEXT).collect()
     }
 }
 

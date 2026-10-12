@@ -127,6 +127,31 @@ mod tests {
         assert_eq!(chain.block(two.hash).at(), two);
     }
 
+    /// Body = what its header commits to: its own passes; a txid added or reordered moves the root;
+    /// a repeated last pair keeps the root (CVE-2012-2459) and is refused as mutated
+    #[test]
+    fn a_body_passes_only_when_its_txids_rebuild_its_headers_merkle_root() {
+        let mut chain = crate::testing::MockChain::regtest();
+        let mined = chain.mine(|b| b.tx(|t| t.txid([1; 32])).tx(|t| t.txid([2; 32])));
+        let block = chain.block(mined.hash);
+        let txs = block.transactions().to_vec();
+        let with = |txs: Vec<Transaction>| Block::new(block.header().clone(), txs);
+
+        let added = [txs.clone(), vec![txs[0].clone()]].concat();
+        let reordered = vec![txs[0].clone(), txs[2].clone(), txs[1].clone()];
+        let repeated = [txs.clone(), vec![txs[2].clone()]].concat();
+        let cases = [
+            (with(txs.clone()), Ok(())),
+            (with(added), Err(BodyMismatch::MerkleRoot)),
+            (with(reordered), Err(BodyMismatch::MerkleRoot)),
+            (with(txs[..2].to_vec()), Err(BodyMismatch::MerkleRoot)),
+            (with(repeated), Err(BodyMismatch::Mutated)),
+        ];
+        for (index, (body, expected)) in cases.into_iter().enumerate() {
+            assert_eq!(body.check_body(), expected, "case {index}");
+        }
+    }
+
     /// Every allocation counted once at its capacity: transactions, each pool's vector, scripts
     #[test]
     fn footprint_counts_every_allocation_at_capacity() {

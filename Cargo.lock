@@ -5026,6 +5026,7 @@ dependencies = [
  "futures",
  "imbl",
  "metrics",
+ "metrics-util",
  "proptest",
  "thiserror 2.0.18",
  "tokio",

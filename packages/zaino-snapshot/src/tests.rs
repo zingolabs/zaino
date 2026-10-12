@@ -305,9 +305,10 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         &[],
     );
     let snap = Snapshots::fixed(Some(indexed), Arc::new(unheld)).load();
-    let unheld = (snap.standing(now), snap.standing(stale));
-    let expected = (Standing::Degraded(Down::TipNotHeld), Standing::Down(Down::TipNotHeld));
-    assert_eq!(unheld, expected, "no holder of best: fresh, then stale");
+    let unheld = (snap.standing(now), snap.standing(stale - 1), snap.standing(stale));
+    let degraded = Standing::Degraded(Down::TipNotHeld);
+    let expected = (degraded, degraded, Standing::Down(Down::TipNotHeld));
+    assert_eq!(unheld, expected, "no holder of best: fresh through 30 min − 1 s, stale at 30 min");
 }
 
 /// Panic message of `run`, `None` = it returned
