@@ -126,7 +126,7 @@ listener) shows it:
 
 ```json
 {
-  "version": "0.10.1", "network": "main", "uptime_s": 5321,
+  "version": "0.11.0-alpha.1", "network": "main", "uptime_s": 5321,
   "ready": false, "state": "syncing", "detail": null,
   "progress": { "done": 3503023, "total": 3506659, "unit": "block", "rate": 412.5 },
   "notes": [],

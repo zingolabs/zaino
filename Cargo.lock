@@ -5356,7 +5356,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.10.1"
+version = "0.11.0-alpha.1"
 dependencies = [
  "bytes",
  "clap",
