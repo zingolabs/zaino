@@ -1,0 +1,44 @@
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+Namespaces are declared with a shape: a `NamespaceSpec` is a sequence \
+(records by position, keyed by `sequence_key`, fixed or variable `Width`, \
+append-only) or a map (fixed-width keys and values, each key inserted once, \
+optionally removable once). `InMemoryBackend::new` takes specs and refuses a \
+namespace declared twice (`OpenError::DuplicateNamespace`).
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`BackendWriter::commit` takes the block tip it commits at, and \
+`BackendReader::tip` returns the last committed tip. Every batch is checked by \
+the shared `check_commit` against the backend's `CommitState`: tips strictly \
+increase, sequences append at the next position, maps hold each key once, and \
+each broken rule fails with its own `CommitError` variant, applying nothing. \
+`WriteOp::Put` no longer overwrites.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "breaking"
+description = """
+`Backend` gains `verify`, an integrity check returning a per-unit \
+`Verification`, and `footprint`, bytes stored (and cached) per namespace. A \
+reader handle is a snapshot: every read through it, its tip included, sees the \
+state as of `Backend::reader`, and every `scan_range` chunk reads that \
+snapshot. A commit is visible to readers opened after it and durable after \
+`flush`. New errors: \
+`ReadError::Corrupted`, `FlushError::Write`, `VerifyError`, `FootprintError`.
+"""
+
+[[changes]]
+crate = "zaino-persistence"
+kind = "feature"
+description = """
+The `testing` feature ships `conformance`: the contract and proptest history \
+suite every backend runs through the port alone, run here against the \
+in-memory backend.
+"""

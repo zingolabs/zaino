@@ -1,0 +1,159 @@
+//! The commit rules every backend enforces, checked once here.
+
+use std::collections::{HashMap, HashSet};
+
+use zaino_primitives::types::BlockRef;
+
+use crate::backend::{sequence_position, Namespace, NamespaceKind, NamespaceSpec, Width, WriteOp};
+use crate::error::{CommitError, Part, ReadError};
+
+/// A map key's state before a commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyState {
+    /// Never inserted (or its removal is no longer recorded).
+    Absent,
+    /// Inserted and not removed.
+    Present,
+    /// Removed, and the backend still records the removal.
+    Removed,
+}
+
+/// The state a commit is checked against, as the backend holds it now
+/// (committed, buffered or durable alike).
+pub trait CommitState {
+    /// The last committed tip.
+    fn tip(&self) -> Option<BlockRef>;
+
+    /// Records a sequence namespace holds (= its next position).
+    fn sequence_len(&self, namespace: Namespace) -> Result<u64, ReadError>;
+
+    /// A map key's state.
+    fn key_state(&self, namespace: Namespace, key: &[u8]) -> Result<KeyState, ReadError>;
+}
+
+/// Whether `ops` may be committed at `tip` over `state`.
+///
+/// - `tip` above the last committed tip
+/// - every namespace declared in `specs`
+/// - sequence: `Put` at the next position, records of the declared width, no `Delete`
+/// - map: declared widths, each key once per batch; `Put` of an absent key;
+///   `Delete` of a present key, in a namespace declared with `deletes`
+pub fn check_commit(
+    specs: &[NamespaceSpec],
+    state: &impl CommitState,
+    tip: BlockRef,
+    ops: &[WriteOp],
+) -> Result<(), CommitError> {
+    if let Some(last) = state.tip().filter(|last| tip.height <= last.height) {
+        return Err(CommitError::TipNotAbove { tip, last });
+    }
+    let mut next: HashMap<Namespace, u64> = HashMap::new();
+    let mut written: HashSet<(Namespace, &[u8])> = HashSet::new();
+    for op in ops {
+        let (namespace, key) = match op {
+            WriteOp::Put { namespace, key, .. } | WriteOp::Delete { namespace, key } => {
+                (*namespace, key.as_slice())
+            }
+        };
+        let name = || namespace.to_string();
+        let spec = specs
+            .iter()
+            .find(|spec| spec.namespace == namespace)
+            .ok_or_else(|| CommitError::NamespaceNotFound(name()))?;
+        match (spec.kind, op) {
+            (NamespaceKind::Sequence { record }, WriteOp::Put { value, .. }) => {
+                let expected = match next.get(&namespace) {
+                    Some(&position) => position,
+                    None => state.sequence_len(namespace).map_err(CommitError::Check)?,
+                };
+                let got = sequence_position(key);
+                if got != Some(expected) {
+                    return Err(CommitError::NotNextPosition {
+                        namespace: name(),
+                        expected,
+                        got,
+                    });
+                }
+                check_width(namespace, Part::Record, record, value)?;
+                next.insert(namespace, expected.saturating_add(1));
+            }
+            (NamespaceKind::Sequence { .. }, WriteOp::Delete { .. }) => {
+                return Err(CommitError::DeleteNotAllowed { namespace: name() });
+            }
+            (
+                NamespaceKind::Map {
+                    key: key_width,
+                    value: value_width,
+                    deletes,
+                },
+                op,
+            ) => {
+                check_width(namespace, Part::Key, Width::Fixed(key_width), key)?;
+                if !written.insert((namespace, key)) {
+                    return Err(CommitError::DuplicateInBatch { namespace: name() });
+                }
+                let held = || state.key_state(namespace, key).map_err(CommitError::Check);
+                match op {
+                    WriteOp::Put { value, .. } => {
+                        check_width(namespace, Part::Value, Width::Fixed(value_width), value)?;
+                        match held()? {
+                            KeyState::Absent => {}
+                            KeyState::Present => {
+                                return Err(CommitError::KeyExists { namespace: name() })
+                            }
+                            KeyState::Removed => {
+                                return Err(CommitError::KeyRemoved { namespace: name() })
+                            }
+                        }
+                    }
+                    WriteOp::Delete { .. } => {
+                        if !deletes {
+                            return Err(CommitError::DeleteNotAllowed { namespace: name() });
+                        }
+                        match held()? {
+                            KeyState::Present => {}
+                            KeyState::Absent => {
+                                return Err(CommitError::KeyAbsent { namespace: name() })
+                            }
+                            KeyState::Removed => {
+                                return Err(CommitError::KeyRemoved { namespace: name() })
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `bytes` of `width`, or `WidthMismatch`.
+fn check_width(
+    namespace: Namespace,
+    part: Part,
+    width: Width,
+    bytes: &[u8],
+) -> Result<(), CommitError> {
+    match width {
+        Width::Fixed(expected) if usize::try_from(expected.get()) != Ok(bytes.len()) => {
+            Err(CommitError::WidthMismatch {
+                namespace: namespace.to_string(),
+                part,
+                expected,
+                actual: bytes.len(),
+            })
+        }
+        Width::Fixed(_) | Width::Variable => Ok(()),
+    }
+}
+
+/// Every namespace in `specs` declared once.
+pub fn check_specs(specs: &[NamespaceSpec]) -> Result<(), crate::OpenError> {
+    let mut seen = HashSet::new();
+    match specs.iter().find(|spec| !seen.insert(spec.namespace)) {
+        Some(spec) => Err(crate::OpenError::DuplicateNamespace(
+            spec.namespace.to_string(),
+        )),
+        None => Ok(()),
+    }
+}
