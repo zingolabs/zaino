@@ -1,0 +1,8 @@
+[[changes]]
+crate = "zaino-state"
+kind = "fix"
+issues = ["#1611"]
+description = """
+`GetTransaction` for a just-mined transaction no longer fails with "mempool is \
+not coherent with the requested snapshot" while zaino's mempool still lists it. \
+A transaction mined in the requested snapshot is now served from the chain."""

@@ -144,6 +144,9 @@ pub(crate) struct MockchainSource {
         >,
     >,
     active_chain_height: Arc<AtomicU32>,
+    /// The height the mempool ports serve at, when held behind the active
+    /// tip by [`Self::mine_blocks_ahead_of_mempool`]; `None` follows it.
+    held_mempool_height: Arc<std::sync::Mutex<Option<u32>>>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
     /// Announces "blocks received" — i.e. [`Self::mine_blocks`] advanced
     /// the active height — to every subscriber registered via
@@ -224,6 +227,7 @@ impl MockchainSource {
             hashes,
             txid_index,
             active_chain_height: Arc::new(AtomicU32::new(active_chain_height)),
+            held_mempool_height: Arc::new(std::sync::Mutex::new(None)),
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
@@ -278,6 +282,26 @@ impl MockchainSource {
     /// notices, notify or not.
     pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
         self.advance_active_height(blocks);
+    }
+
+    /// Like [`Self::mine_blocks`], but the mempool ports keep serving the
+    /// pre-mine tip and set, as a validator whose mempool has not yet
+    /// processed the new blocks.
+    pub(crate) fn mine_blocks_ahead_of_mempool(&self, blocks: u32) {
+        let active = self.active_height();
+        self.held_mempool_height
+            .lock()
+            .expect("held_mempool_height mutex poisoned")
+            .get_or_insert(active);
+        self.mine_blocks(blocks);
+    }
+
+    /// The height the mempool ports serve at.
+    fn mempool_height(&self) -> u32 {
+        self.held_mempool_height
+            .lock()
+            .expect("held_mempool_height mutex poisoned")
+            .unwrap_or_else(|| self.active_height())
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {
@@ -574,21 +598,25 @@ impl zaino_source::OneShotGetChainTip for MockchainSource {
         if let Some(failure) = self.forced_failure() {
             return Err(failure);
         }
-        let index = self.active_height() as usize;
-        if self.blocks.is_empty() || index > self.max_chain_height() as usize {
-            return Err(PortError::Domain(zaino_source::GetChainTipError::NotReady));
-        }
-        let block = &self.blocks[index];
-        let height = block.coinbase_height().ok_or_else(|| {
-            port_fault::<zaino_source::GetChainTipError>(format!(
-                "mock block at index {index} has no coinbase height"
-            ))
-        })?;
-        Ok((
+        self.tip_at(self.active_height())
+            .map_err(port_fault)?
+            .ok_or(PortError::Domain(zaino_source::GetChainTipError::NotReady))
+    }
+}
+
+impl MockchainSource {
+    /// The block at `height` as a tip, or `None` past the loaded chain.
+    fn tip_at(&self, height: u32) -> Result<Option<(domain::BlockHash, domain::Height)>, String> {
+        let Some(block) = self.blocks.get(height as usize) else {
+            return Ok(None);
+        };
+        let coinbase_height = block
+            .coinbase_height()
+            .ok_or_else(|| format!("mock block at index {height} has no coinbase height"))?;
+        Ok(Some((
             domain::BlockHash::from(block.hash().0),
-            domain::Height::try_from(height.0)
-                .map_err(|e| port_fault::<zaino_source::GetChainTipError>(e.to_string()))?,
-        ))
+            domain::Height::try_from(coinbase_height.0).map_err(|e| e.to_string())?,
+        )))
     }
 }
 
@@ -641,7 +669,7 @@ impl MockchainSource {
     fn mempool_transactions(
         &self,
     ) -> impl Iterator<Item = &Arc<zebra_chain::transaction::Transaction>> {
-        let mempool_index = self.active_height() as usize + 1;
+        let mempool_index = self.mempool_height() as usize + 1;
         self.blocks
             .get(mempool_index)
             .into_iter()
@@ -669,7 +697,7 @@ impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
         // Every mock mempool transaction entered at the current tip: the mock
         // has no arrival history, and the tip is the honest answer for a set
         // that is defined as "the block that would come next".
-        let entry_height = domain::Height::try_from(self.active_height())
+        let entry_height = domain::Height::try_from(self.mempool_height())
             .map_err(|e| port_fault::<zaino_source::GetMempoolMetadataError>(e.to_string()))?;
 
         Ok(self
@@ -710,22 +738,16 @@ impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {
-        // The mock serves its mempool and its tip from one place by
-        // construction — `mempool_transactions` is defined relative to
-        // `active_height` — so the single-source rule holds trivially here.
-        // Routed through `GetChainTip` rather than duplicated so it stays that
-        // way as the mock changes.
-        use zaino_source::OneShotGetChainTip as _;
-
-        // `GetChainTip` has a domain answer for "no tip yet"; this port has
-        // none, by design (see `GetMempoolSourceTip`). Reported as a fault,
-        // which is what it is here — a fixture that cannot answer.
-        self.get_chain_tip().await.map_err(|e| match e {
-            PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
-                port_fault("mockchain has no chain tip to serve the mempool")
-            }
-            PortError::NonDomain(fetch) => PortError::NonDomain(fetch),
-        })
+        // Served from `mempool_height`, as `mempool_transactions` is, so the
+        // single-source rule holds even while the mempool is held behind.
+        if let Some(failure) = self.forced_failure() {
+            return Err(failure);
+        }
+        // This port has no domain answer for "no tip yet" (see
+        // `GetMempoolSourceTip`), so a fixture that cannot answer is a fault.
+        self.tip_at(self.mempool_height())
+            .map_err(port_fault)?
+            .ok_or_else(|| port_fault("mockchain has no chain tip to serve the mempool"))
     }
 }
 
