@@ -8,7 +8,7 @@ First release. The final path: `FinalFollower::new(chain, balancer, lookahead)` 
 block up to the `VerifiedChain`'s final tip height, in order: a height the verified chain holds \
 a header for by hash from any member, peers included (`fetch` / `check_block`), below it by \
 height from trusted members (4 per batched `getblock` request; `fetch_at` / \
-`check_block_at`: coinbase height + `Block::check_body` vs its own header; a misanswer \
+`check_block_at`: coinbase height only, the trusted member's body taken as is; a misanswer \
 (`Misanswer::{WrongBlock, WrongHeight, Body}`) `report`ed and re-asked) onto one \
 `IndexerDataSink<Block>`, from the lowest durable tip (`subscribe(kind, durable, queue)`). Each \
 block must extend the block sent before it (`FollowError::Unlinked`) and each durable tip it \

@@ -15,7 +15,7 @@ paths, and the two paths never meet:
 runs no consensus rule on its data: the Validated Header tree anchors at a trusted validator's
 tip − depth (no history below it, no store), a header enters on its parent link and nBits work
 alone, and bulk sync fetches
-blocks by height checked only for integrity (parent link, merkle root). The consensus rules
+blocks by height checked only for order (coinbase height, parent link). The consensus rules
 (`zaino_header_chain::validate`) are for an untrusted source.
 
 ```text

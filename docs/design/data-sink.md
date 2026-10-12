@@ -33,7 +33,7 @@ loop:
   for h in start ..= chain.final_tip().height:   lookahead blocks in flight, delivered in order
       block = fetch_at(balancer, [h..h+4], Bulk) a trusted member's blocks, 4 per batched getblock
                                                  request; refetched until each one's coinbase
-                                                 height + merkle root = its own header's
+                                                 height = h (body trusted, not re-hashed)
       parent = each durable tip it extends?      else Diverged (that index: resync)
       parent = the block sent before it?         else Unlinked (validator history moved: stop)
       sink.send(Apply { h, block }).await        a full queue waits here (backpressure);

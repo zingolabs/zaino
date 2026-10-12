@@ -65,7 +65,7 @@ What each source is used for, and what makes it safe:
 | Need                    | Peers          | Trusted           | Check                                                 |
 | ----------------------- | -------------- | ----------------- | ----------------------------------------------------- |
 | Headers / best tip      | ✓ preferred    | ✓                 | trusted: linkage + work; untrusted: every rule        |
-| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle root against the header (bulk: linkage) |
+| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle root against the header (bulk: trusted) |
 | Mempool bytes           | ✓ first        | on miss           | txid recomputed from the bytes                        |
 | Mempool admission + fee | —              | ✓ **only source** | zebrad admitted it after full validation              |
 | Mined transaction by id | —              | ✓ **only source** | peers serve mempool transactions only                 |

@@ -60,9 +60,11 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
   moved). Either stops the follower; nothing is skipped.
 - Cancel → `Ok`; either way every queue ends with `Shutdown`.
-- `fetch_at(balancer, heights, urgency)` / `check_block_at`: one batch until every body's
-  coinbase height matches and its body matches its own header (`Block::check_body`: merkle
-  root, no mutated duplicate; a misanswer `report`ed, the batch asked again).
+- `fetch_at(balancer, heights, urgency)` / `check_block_at`: one batch from a trusted member
+  until every block's coinbase height matches its place in the batch (a misanswer `report`ed,
+  the batch asked again). The body is the trusted member's word, not re-hashed; regressions in
+  decoding are the job of the live sync test (`live-tests/sync`), which holds blocks, tree states
+  and a wallet's scan to zebra.
 - `fetch(balancer, at, record, urgency)` / `check_block`: by hash, held to a verified header
   (hash, coinbase height, `check_body`); the NFS's and the follower's.
 - `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch)}` names the check that failed.

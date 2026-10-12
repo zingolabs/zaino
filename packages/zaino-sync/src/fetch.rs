@@ -1,8 +1,8 @@
 //! One body per wanted block, from whichever member the balancer picks
 //!
-//! - By hash (NFS): hash + coinbase height + merkle root vs the verified header
-//! - By height (FinalFollower, trusted members only, batched): coinbase height + merkle root vs
-//!   its own header (linkage = the follower's, in delivery order)
+//! - By hash (NFS; peers or trusted): hash + merkle root vs the verified header + coinbase height
+//! - By height (FinalFollower, trusted members only, batched): coinbase height alone; body trusted
+//!   (linkage = the follower's, in delivery order)
 //! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again; who, hedges, retries =
 //!   `zaino-traffic`'s
 
@@ -13,7 +13,7 @@ use zaino_primitives::types::{Block, BlockHash, BlockRef, BodyMismatch, Height};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
 
-/// Block that passed [`check_block`] (no other constructor)
+/// Block that passed [`check_block`] or [`check_block_at`] (no other constructor)
 #[derive(Debug, Clone)]
 pub struct Checked(Arc<Block>);
 
@@ -46,17 +46,17 @@ pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Chec
     if header.hash != record.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
     }
+    block.check_body()?;
     check_block_at(block, height)
 }
 
-/// `block` = one at `height` whose body its own header commits to (a by-height answer: no
-/// verified header to hold it to)
+/// `block` = the one at `height` (a trusted member's by-height answer: its body trusted, not
+/// re-hashed; the batch is paired with `heights` by position, so the coinbase height is checked)
 pub fn check_block_at(block: Block, height: Height) -> Result<Checked, Misanswer> {
     let labelled = block.header().height;
     if labelled != height {
         return Err(Misanswer::WrongHeight { got: labelled });
     }
-    block.check_body()?;
     Ok(Checked(Arc::new(block)))
 }
 
@@ -107,8 +107,9 @@ mod tests {
 
     /// Chain 0..=3 (2 = coinbase + 2 txs) + a side 2': the asked block passes; a sibling, a block
     /// whose header lies about its height, a body with a txid added (root moves) and a body
-    /// repeating its last pair (root kept, CVE-2012-2459) are each refused by name; by height the
-    /// same, except the sibling passes (no verified hash: the follower's linkage refuses it)
+    /// repeating its last pair (root kept, CVE-2012-2459) are each refused by name; by height
+    /// (a trusted member's body, trusted) only the height lie is refused (the sibling = the
+    /// follower's linkage to refuse)
     #[test]
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
         let mut chain = MockChain::regtest();
@@ -131,7 +132,7 @@ mod tests {
         assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
         let passed = check_block_at(block(two.hash), h2).expect("its own header's body");
         assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
-        let side_at = BlockRef { hash: side.hash, height: h2 };
+        let (side_at, two_at) = (BlockRef { hash: side.hash, height: h2 }, two);
         let wrong_height = Misanswer::WrongHeight { got: Height::try_from(9u32).expect("h") };
         let merkle_root = Misanswer::Body(BodyMismatch::MerkleRoot);
         let mutated = Misanswer::Body(BodyMismatch::Mutated);
@@ -139,8 +140,8 @@ mod tests {
         let served = [
             (block(side.hash),   Err(Misanswer::WrongBlock { got: side.hash }), Ok(side_at)),
             (lying,              Err(wrong_height),                             Err(wrong_height)),
-            (with_txs(added),    Err(merkle_root),                              Err(merkle_root)),
-            (with_txs(repeated), Err(mutated),                                  Err(mutated)),
+            (with_txs(added),    Err(merkle_root),                              Ok(two_at)),
+            (with_txs(repeated), Err(mutated),                                  Ok(two_at)),
         ];
         for (block, by_hash, by_height) in served {
             let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.at());
@@ -153,8 +154,8 @@ mod tests {
     }
 
     /// M9: a `MockValidator` answers its best block honestly, by hash and by height, and each
-    /// `Lie` it is told to tell fails the body check by the rule that names it (by height: a
-    /// re-mined block passes, its successor's link refuses it)
+    /// `Lie` it is told to tell fails the body check by the rule that names it (by height, a
+    /// trusted member: only the height lie; a re-mined block = the successor's link to refuse)
     #[tokio::test]
     async fn every_lie_a_mock_validator_tells_fails_the_body_check() {
         let mut chain = MockChain::regtest();
@@ -174,9 +175,9 @@ mod tests {
             (Lie::WrongBlock,  |served| Some(Misanswer::WrongBlock { got: served.header().hash }),
                                |_| None),
             (Lie::Poisoned,    |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot)),
-                               |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot))),
+                               |_| None),
             (Lie::Mutated,     |_| Some(Misanswer::Body(BodyMismatch::Mutated)),
-                               |_| Some(Misanswer::Body(BodyMismatch::Mutated))),
+                               |_| None),
             (Lie::WrongHeight, |_| Some(Misanswer::WrongHeight { got: h(3) }),
                                |_| Some(Misanswer::WrongHeight { got: h(3) })),
         ];
