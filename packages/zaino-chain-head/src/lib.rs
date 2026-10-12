@@ -45,6 +45,7 @@ pub mod ports;
 pub mod snapshot;
 #[cfg(feature = "transparent_address_history_experimental")]
 pub mod transparent;
+pub mod txout;
 
 pub use block::ChainHeadBlock;
 pub use config::ChainHeadConfig;
@@ -52,8 +53,9 @@ pub use error::ChainHeadError;
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
 pub use snapshot::{
     ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
-    ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
+    ChainHeadTransactionService, ChainHeadTxOutSetService, ChainHeadTxPosition, SpenderLocation,
 };
+pub use txout::{ChainHeadTxOutDelta, CreatedTxOut};
 
 #[cfg(feature = "transparent_address_history_experimental")]
 pub use snapshot::ChainHeadTransparentHistoryService;

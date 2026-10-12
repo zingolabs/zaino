@@ -143,6 +143,11 @@ impl Script {
     pub fn new(bytes: Vec<u8>) -> Self {
         Self(bytes)
     }
+
+    /// The raw script bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
 impl From<Script> for Vec<u8> {

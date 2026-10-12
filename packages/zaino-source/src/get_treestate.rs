@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{Height, Treestate};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetTreestate`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -19,10 +19,10 @@ pub enum GetTreestateError {
 /// Maps to `z_gettreestate(height)` over JSON-RPC, or the equivalent
 /// ReadState query.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetTreestate: Send + Sync {
+pub trait OneShotGetTreestate: ValidatorSource + Send + Sync {
     /// Fetch treestate.
     fn get_treestate(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateError>>> + Send;
+    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateError, Self::NonDomain>>> + Send;
 }

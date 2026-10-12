@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::Height;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetBestBlockHeight`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -19,9 +19,9 @@ pub enum GetBestBlockHeightError {
 /// Maps to `getblockcount` over JSON-RPC, or the equivalent ReadState
 /// query. Lighter than [`super::GetChainTip`] when the hash isn't needed.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetBestBlockHeight: Send + Sync {
+pub trait OneShotGetBestBlockHeight: ValidatorSource + Send + Sync {
     /// Fetch current tip height.
     fn get_best_block_height(
         &self,
-    ) -> impl Future<Output = Result<Height, QueryError<GetBestBlockHeightError>>> + Send;
+    ) -> impl Future<Output = Result<Height, QueryError<GetBestBlockHeightError, Self::NonDomain>>> + Send;
 }

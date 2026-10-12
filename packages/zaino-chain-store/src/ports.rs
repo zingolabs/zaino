@@ -31,12 +31,12 @@ use core::future::Future;
 use futures::Stream;
 
 use tokio::sync::watch;
+use zaino_component::StatusSource;
 use zaino_primitives::types::{
     BlockHash, BlockTxPosition, CompactBlock, Height, Outpoint, TransactionId,
 };
-use zaino_status::StatusType;
 
-use crate::block::{PoolFilter, StoredBlock};
+use crate::block::{FrozenBlock, PoolFilter, StoredBlock};
 use crate::capability::{StoreCapabilities, StoreCapability, StoreSchema, StoreWatermark};
 use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::{SpenderRef, StoredTxOut};
@@ -94,15 +94,12 @@ impl<T> ChainStoreSource for T where
 /// store build, stop, or roll back: that is [`ChainStoreIngest`], which the
 /// owner holds and a reader never sees. Observing how a store is faring is not
 /// the same as sequencing it.
-pub trait ChainStoreService: Clone + Send + Sync + 'static {
+pub trait ChainStoreService: StatusSource + Clone + Send + Sync + 'static {
     /// The reader this handle produces.
     type Reader: ChainStoreReader;
 
     /// A read handle. Cheap: readers share the store rather than opening it.
     fn reader(&self) -> Self::Reader;
-
-    /// How the store is faring.
-    fn status(&self) -> StatusType;
 
     /// Watches the finalised watermark.
     ///
@@ -122,7 +119,9 @@ pub trait ChainStoreService: Clone + Send + Sync + 'static {
 /// discovers what range it covers and resolves a height to a block. Everything
 /// beyond this is an index a deployment may or may not build, and is a
 /// separate trait so that a bound names exactly what its holder uses.
-pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
+pub trait ChainStoreReader:
+    StatusSource + Clone + Send + Sync + core::fmt::Debug + 'static
+{
     /// The highest block this store can answer for.
     ///
     /// Infallible and synchronous: it is held in memory and updated on commit,
@@ -161,10 +160,6 @@ pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Option<Height>, ChainStoreError>> + Send;
-
-    /// How this store is faring, readable from a reader as well as the
-    /// service.
-    fn status(&self) -> StatusType;
 }
 
 /// Reading indexed blocks.
@@ -470,12 +465,12 @@ pub trait ChainStoreIngest: Send + Sync {
 /// remains the authority, and a store that never receives a frozen block must
 /// still reach the same state.
 ///
-/// Takes [`StoredBlock`], not the chain head's block type — this crate does
-/// not depend on the chain head, and must not. Converting is the composer's
-/// job, and it is not a formality: the chain head measures work from its own
-/// anchor, so a composer must rebase that to absolute chainwork before handing
-/// a block over. Writing an anchor-relative value would put wrong chainwork on
-/// disk.
+/// It is deliberately *not* [`StoredBlock`]: a frozen block carries no
+/// chainwork. Cumulative work needs an unbroken chain below a block, so the
+/// store is the only party that can know it, and it derives its own — folding
+/// each block's work onto its tip's, which it can always do because freezing
+/// appends at `tip + 1`. A caller has at best work measured from somewhere
+/// else, and handing that over would put a wrong absolute chainwork on disk.
 ///
 /// # The stream this consumes is not reliable
 ///
@@ -494,7 +489,7 @@ pub trait ChainStoreFreezeSink: Send + Sync {
     /// pays a transaction and a durability barrier for each.
     fn freeze(
         &self,
-        blocks: &[StoredBlock],
+        blocks: &[FrozenBlock],
     ) -> impl Future<Output = Result<(), ChainStoreError>> + Send;
 }
 

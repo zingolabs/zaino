@@ -13,6 +13,14 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.9.1] - 2026-10-09
+### Changed
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+- dependency `zaino-state` 0.10.0→0.11.0 crossed the requirement `^0.10.0`
+### Internal
+- Adapt to the renamed non-domain seam error (`FetchError` -> `NonDomainError`, `Fetch` -> `NonDomain`).
+
 ## [0.9.0] - 2026-09-26
 ### Added
 - Serve `IndexedTipService/SubscribeIndexedTips` on the gRPC server. A subscription first receives the current indexed tip, then each canonical tip change, including a same-height reorg. A slow client receives only the latest tip, and graceful shutdown ends open subscriptions.

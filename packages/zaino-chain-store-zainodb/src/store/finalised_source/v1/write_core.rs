@@ -1209,6 +1209,7 @@ impl DbV1 {
                         StoreError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                     })?;
                 }
+                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set(block_height.0 as f64);
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
                         hash = %block.context.index.hash,

@@ -1565,7 +1565,7 @@ pub fn compact_block_to_wire(
             .iter()
             .enumerate()
             .filter(|(_, tx)| has_pool_data(tx))
-            .map(|(index, tx)| compact_tx_to_proto(index, tx))
+            .map(|(index, tx)| compact_tx_to_wire(index, tx))
             .collect(),
         chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
             sapling_commitment_tree_size: u32::from(metadata.sapling_tree_size),
@@ -1575,7 +1575,9 @@ pub fn compact_block_to_wire(
     }
 }
 
-fn compact_tx_to_proto(
+/// A compact transaction in the light-wallet protocol's shape, at `index` in
+/// its block. Byte strings stay in protocol order; `fee` is always 0.
+pub fn compact_tx_to_wire(
     index: usize,
     tx: &zaino_primitives::types::PreIndexCompactTx,
 ) -> zaino_proto::proto::compact_formats::CompactTx {
@@ -1717,5 +1719,91 @@ fn includes_shielded(filter: &PoolTypeFilter, pool: ShieldedPool) -> bool {
         ShieldedPool::Sapling => filter.includes_sapling(),
         ShieldedPool::Orchard => filter.includes_orchard(),
         ShieldedPool::Ironwood => filter.includes_ironwood(),
+    }
+}
+
+#[cfg(test)]
+mod compact_tx_to_wire_tests {
+    use super::compact_tx_to_wire;
+    use zaino_primitives::types::{
+        CompactCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
+        TransparentInput, TransparentOutput, Zatoshis,
+    };
+
+    fn action(tag: u8) -> OrchardAction {
+        OrchardAction {
+            nullifier: [tag; 32].into(),
+            cmx: [tag.wrapping_add(1); 32].into(),
+            ephemeral_key: [tag.wrapping_add(2); 32].into(),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
+        }
+    }
+
+    fn sample() -> PreIndexCompactTx {
+        PreIndexCompactTx {
+            txid: TransactionId::from([0xaa; 32]),
+            transparent_inputs: vec![TransparentInput {
+                prev_txid: TransactionId::from([0xbb; 32]),
+                prev_index: 3,
+            }],
+            transparent_outputs: vec![TransparentOutput {
+                value: Zatoshis::new(50_000).expect("50_000 zatoshis is in range"),
+                script: Script::new(vec![0x76, 0xa9]),
+            }],
+            sapling_nullifiers: vec![[0xcc; 32].into()],
+            sapling_outputs: Vec::new(),
+            orchard_actions: vec![action(1)],
+            ironwood_actions: vec![action(2)],
+        }
+    }
+
+    /// Byte strings are protocol order: reversing them would hand wallets
+    /// txids that name nothing.
+    #[test]
+    fn identifiers_stay_in_protocol_order() {
+        let wire = compact_tx_to_wire(0, &sample());
+
+        assert_eq!(wire.txid, vec![0xaa; 32]);
+        assert_eq!(wire.vin[0].prevout_txid, vec![0xbb; 32]);
+        assert_eq!(wire.spends[0].nf, vec![0xcc; 32]);
+    }
+
+    #[test]
+    fn index_is_the_given_position_and_fee_is_zero() {
+        let wire = compact_tx_to_wire(7, &sample());
+
+        assert_eq!(wire.index, 7);
+        assert_eq!(wire.fee, 0);
+    }
+
+    /// Ironwood actions share `CompactOrchardAction`'s shape but not its field.
+    #[test]
+    fn ironwood_actions_stay_in_their_own_field() {
+        let wire = compact_tx_to_wire(0, &sample());
+
+        assert_eq!(wire.actions.len(), 1);
+        assert_eq!(wire.ironwood_actions.len(), 1);
+        assert_eq!(wire.actions[0].nullifier, vec![1u8; 32]);
+        assert_eq!(wire.ironwood_actions[0].nullifier, vec![2u8; 32]);
+    }
+
+    #[test]
+    fn transparent_outputs_carry_value_and_script() {
+        let wire = compact_tx_to_wire(0, &sample());
+
+        assert_eq!(wire.vout[0].value, 50_000);
+        assert_eq!(wire.vout[0].script_pub_key, vec![0x76, 0xa9]);
+    }
+
+    #[test]
+    fn a_transaction_with_no_spends_emits_empty_lists() {
+        let mut tx = sample();
+        tx.transparent_inputs.clear();
+        tx.sapling_nullifiers.clear();
+
+        let wire = compact_tx_to_wire(0, &tx);
+
+        assert!(wire.vin.is_empty());
+        assert!(wire.spends.is_empty());
     }
 }

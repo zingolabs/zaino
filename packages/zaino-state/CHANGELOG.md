@@ -13,6 +13,29 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.11.0] - 2026-10-09
+### Added
+- `WithChainViewSource` reaches ChainView from `ChainIndex`'s source vocabulary, and the mockchain source answers the remaining validator ports a chain view passes through. `ChainIndex` still reads through its existing path; this makes the view reachable, not yet load-bearing.
+### Changed
+- Removed unused public items: `chain_index::chain_head::indexed_block` and `ChainHeadConversionError`, `chain_index::wire_types::block_index_from_wire` and `WireBlockIdError`, and `chain_index::source::InvalidData`.
+- dependency `zaino-chain` 0.1.0→0.2.0 crossed the requirement `^0.1.0`
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-head-service` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-chain-store` 0.1.1→0.2.0 crossed the requirement `^0.1.1`
+- dependency `zaino-chain-store-zainodb` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Fixed
+- `ChainIndex::get_block_range` streams in descending order when `start` is above `end`, and yields an error when either bound is above the snapshot's tip instead of clamping `end` or returning `None`. A missing `end` is the tip.
+- `GetTaddressTransactions` reads every transaction from one snapshot rather than one per transaction, so a reorg mid-stream can no longer mix chains.
+- Indexer RPC fixes: `GetBlock`/`GetBlockNullifiers` no longer report the tip height itself as out of range; `GetBlockNullifiers` rejects heights *below* Sapling activation (the check was inverted) and names the activation height; `getrawtransaction` with `verbose = 0` returns raw hex; `RawTransaction.height` is `u64::MAX` for a transaction mined only on a non-best chain and 0 in the mempool, per the protocol, in `GetTransaction` and `GetTaddressTransactions`; `GetLatestTreeState` reads the tip's treestate by hash, so a moving tip cannot mix two blocks; timeout errors name the RPC that timed out. Block and transaction reads that fail now return the failure's own gRPC status (`unavailable`, `internal`, `not_found`, ...) instead of `unknown`.
+### Internal
+- Adapt to the renamed seam error; the legacy source delegators implement `ValidatorSource` (pass-through non-domain type).
+- The sync and coherence-freeze gauges and the 120 s freeze warning moved to `zaino-chain-head-service` and `zaino-mempool-service`. `metric_names` re-exports the constants; its `GAUGES` table is gone.
+- `NodeBackedChainIndex` is a thin adapter: it launches the chain store, chain head, ChainView (with its sync loop) and the mempool, and answers the `ChainIndex` traits through ChainView and the mempool. The legacy sync loop is gone; the chain head's retry ladder now drives the index's error status, and the mempool is woken by the chain head's tip changes.
+- `NodeBackedIndexerService` reads through ChainView directly where it used to rebuild legacy shapes: treestates and subtree roots come from one snapshot read, and the streaming RPCs share one spawn-and-timeout helper. RPC signatures, statuses and messages are unchanged, except that `GetTaddressBalanceStream` reports a single timeout message.
+
 ## [0.10.0] - 2026-09-26
 ### Added
 - Add a stream of indexed-tip changes, driven by the existing watch notifications instead of polling.

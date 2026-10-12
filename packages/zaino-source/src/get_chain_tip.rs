@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, Height};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetChainTip`].
 ///
@@ -23,9 +23,11 @@ pub enum GetChainTipError {
 /// Maps to `getbestblockhash()` + `getblock(hash, 0)` over JSON-RPC,
 /// or the equivalent ReadState query.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetChainTip: Send + Sync {
+pub trait OneShotGetChainTip: ValidatorSource + Send + Sync {
     /// Fetch current tip.
     fn get_chain_tip(
         &self,
-    ) -> impl Future<Output = Result<(BlockHash, Height), QueryError<GetChainTipError>>> + Send;
+    ) -> impl Future<
+        Output = Result<(BlockHash, Height), QueryError<GetChainTipError, Self::NonDomain>>,
+    > + Send;
 }

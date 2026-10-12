@@ -9,7 +9,7 @@ license = { workspace = true }
 readme = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
-version = "0.2.0"
+version = "0.3.0"
 
 [features]
 default = []
@@ -83,6 +83,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 zaino-status.workspace = true
+zaino-component.workspace = true
 arc-swap.workspace = true
 dashmap.workspace = true
 tonic.workspace = true

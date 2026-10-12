@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use zaino_primitives::types::{Block, BlockHash, Height, Treestate};
 
-use crate::error::{FailureMode, FetchError};
+use crate::error::{FailureMode, NonDomainError};
 use crate::{GetBlockByHashError, GetBlockError, GetChainTipError, GetTreestateError, QueryError};
 
 /// A pre-populated in-memory chain for testing.
@@ -71,7 +71,7 @@ impl MockChain {
                 }
             });
         match prev {
-            Ok(_) => Some(QueryError::Fetch(FetchError::new(
+            Ok(_) => Some(QueryError::NonDomain(NonDomainError::new(
                 self.failure_mode.clone(),
                 format!("mock injected {:?}", self.failure_mode),
             ))),
@@ -84,6 +84,10 @@ impl Default for MockChain {
     fn default() -> Self {
         Self::new()
     }
+}
+
+impl crate::ValidatorSource for MockChain {
+    type NonDomain = crate::NonDomainError;
 }
 
 impl crate::OneShotGetBlock for MockChain {
@@ -144,6 +148,18 @@ impl crate::OneShotGetTreestate for MockChain {
     }
 }
 
+/// A placeholder coinbase whose txid is the block hash's bytes, so a test block carries the one transaction consensus guarantees.
+#[cfg(test)]
+pub(crate) fn coinbase(hash: BlockHash) -> zaino_primitives::types::Transaction {
+    zaino_primitives::types::Transaction {
+        txid: zaino_primitives::types::TransactionId::from(<[u8; 32]>::from(hash)),
+        transparent: Default::default(),
+        sapling: Default::default(),
+        orchard: Default::default(),
+        ironwood: Default::default(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,23 +175,21 @@ mod tests {
 
     /// Build a minimal test block at a given height with a given hash.
     fn test_block(h: u32, hash_byte: u8) -> Block {
-        Block {
-            header: BlockHeader {
-                hash: hash(hash_byte),
-                version: 4,
-                prev_hash: BlockHash::ZERO,
-                height: height(h),
-                time: 0,
-                merkle_root: [0; 32].into(),
-                block_commitments: [0; 32].into(),
-                bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
-                    .expect("valid nBits"),
-                nonce: [0; 32],
-                solution: EquihashSolution::Regtest([0; 36]),
-            },
-            transactions: vec![],
-            chain_metadata: ChainMetadata::ZERO,
-        }
+        let header = BlockHeader {
+            hash: hash(hash_byte),
+            version: 4,
+            prev_hash: BlockHash::ZERO,
+            height: height(h),
+            time: 0,
+            merkle_root: [0; 32].into(),
+            block_commitments: [0; 32].into(),
+            bits: zaino_primitives::types::CompactDifficulty::try_from_bits(0x2007_ffff)
+                .expect("valid nBits"),
+            nonce: [0; 32],
+            solution: EquihashSolution::Regtest([0; 36]),
+        };
+        Block::try_new(header, vec![coinbase(hash(hash_byte))], ChainMetadata::ZERO)
+            .expect("a test block carries its coinbase")
     }
 
     #[tokio::test]
@@ -267,7 +281,7 @@ mod tests {
         let err = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .unwrap_err();
-        assert!(matches!(err, QueryError::Fetch(ref e) if e.mode == FailureMode::Timeout));
+        assert!(matches!(err, QueryError::NonDomain(ref e) if e.mode == FailureMode::Timeout));
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
@@ -285,7 +299,7 @@ mod tests {
             let err = crate::OneShotGetBlock::get_block(&mock, height(0))
                 .await
                 .unwrap_err();
-            assert!(matches!(err, QueryError::Fetch(_)));
+            assert!(matches!(err, QueryError::NonDomain(_)));
         }
 
         let block = crate::OneShotGetBlock::get_block(&mock, height(0))

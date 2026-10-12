@@ -176,7 +176,8 @@ is serving:
   at `debug` rather than `info` on purpose: every block freezes coherence
   briefly, so at the default level a healthy node would log one line per block.
   Turn them up when you want to know *why* a freeze happened; the escalation
-  `warn` (and the `zaino.mempool.coherence_frozen_seconds` gauge) is what tells
+  `warn`, logged once when a freeze passes 120 s (and the
+  `zaino.mempool.coherence_frozen_seconds` gauge, set every poll), is what tells
   you a freeze has outlasted normal thaw.
 
 Nothing is logged per poll or per reconcile. At a sub-second cadence that would

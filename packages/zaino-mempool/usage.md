@@ -7,7 +7,7 @@ consume recipes. This guide explains the model and the contracts a consumer or
 adapter author must honour.
 
 For *why* the subsystem is shaped this way, see
-[ADR-0010](../../docs/adr/zaino/0010-mempool-subsystem-separation.md); for the
+[ADR-0010](https://github.com/zingolabs/zingo-adrs/blob/dev/zaino/0010-mempool-subsystem-separation.md); for the
 state machine and lifecycle, see [`mempool_lifecycle.md`](./mempool_lifecycle.md).
 
 ## The two layers
@@ -217,7 +217,7 @@ re-blessed, on the order of a poll — so `Frozen` alone is not an alert.
 `CoherentSubscriber::frozen_for()` returns how long the view has been *continuously*
 frozen (`None` when serving); escalate on a freeze that outlasts normal thaw, which
 means tip-coherent reads have gone dark and stayed dark (validator unreachable, NS
-stuck). `zaino-state`'s sync loop wires this to the
+stuck). `zaino-mempool-service`'s coherence loop exports it as the
 `zaino.mempool.coherence_frozen_seconds` gauge.
 
 ## Feature flag

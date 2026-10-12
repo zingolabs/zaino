@@ -126,11 +126,9 @@ repository's subdirectory of zingo-adrs (`zaino/` for zaino).
 _Avoid_: local ADR, project ADR
 
 **Record citation**:
-Each scope of zingo-adrs numbers its records in its own sequence.
-A bare `ADR-NNNN` cites a record in the citing repository's own scope; a
-citation into another scope carries the path (`zaino/0016`, or the
-org-level `003`).
-_Avoid_: bare numbers across scopes, "zingolabs ADR" (stale form)
+A reference to a zingo-adrs record, in the form its medium requires. The
+[zingo-adrs README](https://github.com/zingolabs/zingo-adrs#citing-a-record) defines each form.
+_Avoid_: bare numbers across scopes, checkout paths, "zingolabs ADR" (stale form)
 
 **Record status**:
 The first line under a record's `## Status` heading, one of `proposed`,

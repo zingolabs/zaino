@@ -14,6 +14,12 @@ and this crate adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.10.2] - 2026-10-09
+### Changed
+- dependency `zaino-chain-head-service` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-rpc` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-state` 0.10.0→0.11.0 crossed the requirement `^0.10.0`
+
 ## [0.10.1] - 2026-09-26
 ### Added
 - The gRPC server offers `zaino.index.v1.IndexedTipService`, a Zaino extension that lets a client wait for a newly indexed block without polling. The lightwalletd protocol is unchanged.

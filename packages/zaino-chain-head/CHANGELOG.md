@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-10-09
+### Added
+- `ChainHeadTxOutSetService::txout_delta(start)` reports what the canonical window did to the transparent UTXO set from `start` to the tip: the outputs it created and did not spend, and the outpoints it spent that were created below `start`. Provided once on the trait, so every snapshot answers it identically. A `start` below the retained window is refused with the new `ChainHeadError::BelowWindow` rather than answered from a partial range.
+### Changed
+- `ChainHeadSnapshot::work_anchor` names the block `ChainHeadWork` is counted from: the parent of the window floor, so a block's work sums block work over `(anchor, B]` and a consumer can rebase it onto absolute chainwork.
+  _Migration:_ Implementors of `ChainHeadSnapshot` must add `work_anchor`, returning the parent of the lowest block their graph accumulates from, or `None` when that block is genesis.
+- Transparent-history effects are keyed by `TransparentAddressKey` rather than by the wallet-facing string, which is network-specific and cannot name a non-standard output. Still declared, not implemented.
+  _Migration:_ Behind the non-default `transparent_address_history_experimental` feature. `TransparentHistoryQuery::addresses`, `LocatedTransparentOutput::address` and `LocatedTransparentSpend::address` are now `zaino_primitives::types::TransparentAddressKey`. Build one with `TransparentAddressKey::from_script`, which shares `classify_script` with the finalised store's indexing so the two halves of an address's history cannot key differently.
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+
 ## [0.2.0] - 2026-09-26
 ### Added
 - `ChainHeadBlockSource` is a bound alias over six `zaino-source` ports, not five: it now also requires `OneShotGetCommitmentTreeRootsByHeight`. A source that implements the bound by hand must answer the new port.

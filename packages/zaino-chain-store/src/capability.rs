@@ -11,18 +11,25 @@ use zaino_primitives::types::BlockRef;
 /// migration adds. A capability being absent is a fact about this store, not
 /// about the chain.
 ///
-/// # Interim
+/// # Not a serving surface
 ///
-/// This is the storage-shaped view — one variant per index the finalised state
-/// maintains — surfaced so `ChainIndex` keeps working while the subsystem is
-/// extracted. It is **not** the capability vocabulary consumers should be
-/// written against: that is domain-shaped ("address history", "spend status")
-/// and answers *to what height*, and it arrives with ChainView. Treat this as
-/// wiring with a known end date, and do not build a serving surface on it.
+/// This is the storage-shaped view: one variant per index the finalised state
+/// maintains, and a runtime fact — a store on an older schema gains one
+/// mid-migration. It answers "does this database hold that index", and nothing
+/// else. It does not answer *to what height*, and it does not describe what a
+/// consumer can ask for.
 ///
-/// Named `StoreCapability` rather than `Capability` for the same reason: the
-/// domain-level enum that supersedes it will want the shorter name, and two
-/// types called `Capability` in one binary is a recurring confusion.
+/// That question is `zaino_chain::ChainCapability`, which is domain-shaped
+/// ("address history", "spend status"), answers to a height, and describes the
+/// *composed* view rather than one database. The two are not duplicates: this
+/// set is an input to that one, which a chain view derives by combining it with
+/// the store's watermark, the chain head's readiness and what the deployment
+/// offers.
+///
+/// So read this to route, and advertise the other. Two types spelled
+/// `Capability` in one binary is a real confusion, and the distinction that
+/// resolves it is the prefix: `Store*` is about one database's indexes,
+/// `Chain*` about the composed view consumers are written against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum StoreCapability {

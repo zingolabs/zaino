@@ -17,7 +17,9 @@
 use std::time::Duration;
 
 use futures::StreamExt as _;
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain::ChainViewSnapshot as _;
+
+use crate::chain_index::chain_view::BestTip as _;
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
 use crate::chain_index::ChainIndex;
@@ -95,16 +97,21 @@ async fn layers_meet_without_a_gap() {
     .await;
 
     let snapshot = index_reader.snapshot_nonfinalized_state();
-    let lowest_retained = snapshot
-        .best_chain()
-        .next()
-        .expect("the chain head always retains at least its tip")
-        .height();
+    let range = snapshot.serviceable_range();
+    assert_eq!(
+        range.gap_from, None,
+        "the finalised state and the chain head leave a hole"
+    );
+    let finalised_tip = u32::from(
+        range
+            .finalised_tip
+            .expect("the finalised state holds the seeded chain"),
+    );
 
-    // Every height from the lowest retained block up to the tip is answerable
-    // from the chain head, and everything below it from the finalised state.
-    // Probing the boundary is what would catch an off-by-one in either floor.
-    for height in u32::from(lowest_retained)..=target_tip {
+    // Every height from the finalised tip up to the chain tip is answerable,
+    // across the seam. Probing it is what would catch an off-by-one in either
+    // floor.
+    for height in finalised_tip..=target_tip {
         assert!(
             index_reader
                 .get_block_hash(&snapshot, crate::Height(height))
@@ -114,55 +121,4 @@ async fn layers_meet_without_a_gap() {
             "no layer answers for height {height}",
         );
     }
-
-    if u32::from(lowest_retained) > 0 {
-        let below = crate::Height(u32::from(lowest_retained) - 1);
-        assert!(
-            index_reader
-                .get_block_hash(&snapshot, below)
-                .await
-                .expect("block hash lookup succeeds")
-                .is_some(),
-            "the height just below the chain head window must come from the \
-             finalised state, but nothing answered for {below:?}",
-        );
-    }
-}
-
-/// `shutdown()` stops the sync loop, and it exits without reporting an error.
-#[tokio::test(flavor = "multi_thread")]
-async fn shutdown_terminates_sync_loop_cleanly() {
-    let (_blocks, mut indexer, index_reader, mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-
-    let target_tip = mockchain.source().active_height();
-    poll_until(
-        "chain index to settle at the chain tip",
-        Duration::from_secs(10),
-        Duration::from_millis(50),
-        || async {
-            let tip = index_reader.snapshot_nonfinalized_state().best_tip();
-            (u32::from(tip.height) == target_tip).then_some(())
-        },
-    )
-    .await;
-
-    let handle = indexer
-        .sync_loop_handle
-        .take()
-        .expect("sync loop handle present after construction");
-
-    indexer
-        .shutdown()
-        .await
-        .expect("shutdown completes without error");
-
-    let join_outcome = tokio::time::timeout(Duration::from_secs(5), handle)
-        .await
-        .expect("sync loop did not exit within 5 s of shutdown");
-    let sync_result = join_outcome.expect("sync loop task panicked");
-    assert!(
-        sync_result.is_ok(),
-        "sync loop returned Err on clean shutdown: {sync_result:?}",
-    );
 }

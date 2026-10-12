@@ -36,7 +36,7 @@ async fn main() {
         let mut s_spends = 0usize;
         let mut s_outputs = 0usize;
         let mut o_actions = 0usize;
-        for tx in &block.transactions {
+        for tx in block.transactions() {
             t_in += tx.transparent.inputs.len();
             t_out += tx.transparent.outputs.len();
             s_spends += tx.sapling.spends.len();
@@ -48,7 +48,7 @@ async fn main() {
         println!("  hash:       {}", block.header.hash);
         println!("  prev_hash:  {}", block.header.prev_hash);
         println!("  time:       {}", block.header.time);
-        println!("  txs:        {}", block.transactions.len());
+        println!("  txs:        {}", block.transactions().len());
         println!("  transparent: {t_in} inputs, {t_out} outputs");
         println!("  sapling:     {s_spends} spends, {s_outputs} outputs");
         println!("  orchard:     {o_actions} actions");

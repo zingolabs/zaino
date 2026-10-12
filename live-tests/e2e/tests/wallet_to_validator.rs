@@ -1505,6 +1505,16 @@ mod wallet {
             Some(u64::from(u32::from(tip))),
             "a mined transaction reports its block height"
         );
+
+        // `verbose = 0` is the raw hex form, as the validator serves it.
+        assert_rpc_parity(
+            "getrawtransaction",
+            &format!(r#"["{txid}", 0]"#),
+            &validator.json_rpc().await?,
+            &indexer.json_rpc().await?,
+            &[],
+        )
+        .await?;
         Ok(())
     }
 

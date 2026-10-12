@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::Height;
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetNetworkSolPs`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub enum GetNetworkSolPsError {
 /// invariant to protect and no other quantity it could be confused with at
 /// these call sites.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetNetworkSolPs: Send + Sync {
+pub trait OneShotGetNetworkSolPs: ValidatorSource + Send + Sync {
     /// Estimate the network solution rate.
     ///
     /// `blocks` is the averaging window; `height` the block to measure at.
@@ -31,5 +31,5 @@ pub trait OneShotGetNetworkSolPs: Send + Sync {
         &self,
         blocks: Option<u32>,
         height: Option<Height>,
-    ) -> impl Future<Output = Result<u64, QueryError<GetNetworkSolPsError>>> + Send;
+    ) -> impl Future<Output = Result<u64, QueryError<GetNetworkSolPsError, Self::NonDomain>>> + Send;
 }

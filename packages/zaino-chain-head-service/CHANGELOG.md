@@ -13,6 +13,19 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-10-09
+### Added
+- The map-backed snapshot records its work anchor, and keeps it across pruning and re-anchoring of the retention floor.
+- The chain head emits `CHAIN_TIP_HEIGHT`, `SYNC_CONSECUTIVE_FAILURES` and `SYNC_BACKOFF_SECONDS` from its own poll loop, listed in a new `metric_names::GAUGES`. Metric names are unchanged.
+### Changed
+- Both concrete handles report through `zaino_component::StatusSource` rather than `zaino_status::Status`, and answer a `ComponentStatus`.
+  _Migration:_ `ChainHeadService::status` and `ChainHeadSubscriber::status` return `ComponentStatus` instead of `StatusType`; read `.lifecycle` and `.health` where a `StatusType` was matched. The trait to import is `StatusSource`. The runtime still folds a tick outcome into one fused value internally and splits it at the reporting boundary, so no transition changes.
+- dependency `zaino-chain-head` 0.2.0→0.3.0 crossed the requirement `^0.2.0`
+- dependency `zaino-primitives` 0.3.0→0.4.0 crossed the requirement `^0.3.0`
+- dependency `zaino-source` 0.2.2→0.3.0 crossed the requirement `^0.2.2`
+### Internal
+- Adapt to the renamed non-domain seam error.
+
 ## [0.2.0] - 2026-09-26
 ### Added
 - The catch-up walk fetches each block and its tree roots concurrently, through the height-addressed `OneShotGetCommitmentTreeRootsByHeight` port. The two reads can straddle a reorg, so the walk compares the hash that the roots answer names against the block it fetched, and refetches the roots by hash on a mismatch.

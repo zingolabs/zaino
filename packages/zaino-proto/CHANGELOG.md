@@ -13,6 +13,10 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.6.2] - 2026-10-09
+### Internal
+- Declares `librocksdb-sys` with `bindgen-runtime`, which fixes a cold build of the workspace. Two bindgen major versions share one `clang-sys`: the newer enables its `runtime` feature for the whole graph, while rocksdb's older one re-enables neither of librocksdb-sys' `bindgen-*` features, so its `ensure_libclang_is_loaded` compiles to a no-op and the first stub reached panics. Remove once rocksdb enables one itself, or the two bindgen versions converge.
+
 ## [0.6.1] - 2026-09-26
 ### Added
 - Add the `zaino.index.v1.IndexedTipService` protocol with the `SubscribeIndexedTips` server-streaming call.

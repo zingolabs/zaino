@@ -25,6 +25,7 @@ pub mod metric_names {
     pub const MEMPOOL_UNADMITTED: &str = "zaino.mempool.unadmitted";
     // `_count` = poll rate = the mempool writer's heartbeat
     pub const MEMPOOL_POLL_SECONDS: &str = "zaino.mempool.poll_seconds";
+    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 
     /// Label on MEMPOOL_BYTES: `raw` (serialized) vs `cost` (ZIP-401, what the bound applies to)
     pub const MEMPOOL_BYTES_KIND: &str = "kind";
@@ -34,6 +35,7 @@ pub mod metric_names {
         (MEMPOOL_TRANSACTIONS, "Transactions in the published mempool set"),
         (MEMPOOL_BYTES, "Published mempool size: `raw` serialized bytes, `cost` ZIP-401 accounting"),
         (MEMPOOL_UNADMITTED, "Transactions known to the validator but refused by Zaino's capacity bound"),
+        (MEMPOOL_COHERENCE_FROZEN_SECONDS, "Seconds tip-coherent mempool reads have been frozen; 0 when live"),
     ];
 
     #[rustfmt::skip]

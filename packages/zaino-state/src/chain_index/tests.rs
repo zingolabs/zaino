@@ -1,6 +1,6 @@
 //! Zaino-State ChainIndex unit tests.
 
-use zaino_chain_head::ChainHeadSnapshot as _;
+use crate::chain_index::chain_view::BestTip as _;
 mod chain_head;
 mod mockchain_tests;
 mod poll;
@@ -35,10 +35,11 @@ use crate::{
             build_active_mockchain_source, build_mockchain_source, copy_dir_recursive,
             load_test_vectors,
         },
-        ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, SyncTimings,
+        ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
     },
     ChainIndexConfig,
 };
+use zaino_chain_head::ChainHeadConfig;
 
 /// Selects which factory the test setup uses to build its `MockSource`,
 /// which in turn determines the source's `active_chain_height` and so the
@@ -96,34 +97,29 @@ async fn load_test_vectors_and_sync_chain_index(
     NodeBackedChainIndexSubscriber<MockSource>,
     MockSource,
 ) {
-    // 25 ms setup-poll interval mirrors `_with_timings`. The previous 2 s
-    // value was load-bearing for the teardown race tracked in #1098: most
-    // callers (mockchain_tests, mempool, poll, proptest_blockgen) drop the
-    // indexer without calling `shutdown()`, and the old worker needed to
-    // be parked in its post-success interval-sleep before runtime teardown
-    // raced a mid-iter LMDB write. With `Drop for NodeBackedChainIndex`
-    // firing `cancel_token.cancel()` and the worker's iter body wrapped in
-    // `tokio::select!` against that token, the worker now exits at its
-    // next await checkpoint on drop — the harness no longer needs to
-    // bait the timing.
-    load_with_settings(mode, SyncTimings::default(), Duration::from_millis(25)).await
+    load_with_settings(
+        mode,
+        crate::chain_index::chain_head::config(),
+        Duration::from_millis(25),
+    )
+    .await
 }
 
-async fn load_test_vectors_and_sync_chain_index_with_timings(
+async fn load_test_vectors_and_sync_chain_index_with_chain_head_config(
     mode: MockchainMode,
-    sync_timings: SyncTimings,
+    chain_head_config: ChainHeadConfig,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
     NodeBackedChainIndex<MockSource>,
     NodeBackedChainIndexSubscriber<MockSource>,
     MockSource,
 ) {
-    load_with_settings(mode, sync_timings, Duration::from_millis(25)).await
+    load_with_settings(mode, chain_head_config, Duration::from_millis(25)).await
 }
 
 async fn load_with_settings(
     mode: MockchainMode,
-    sync_timings: SyncTimings,
+    chain_head_config: ChainHeadConfig,
     setup_poll_interval: Duration,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
@@ -163,9 +159,10 @@ async fn load_with_settings(
         network: ActivationHeights::default().to_regtest_network(),
     };
 
-    let indexer = NodeBackedChainIndex::new_with_sync_timings(source.clone(), config, sync_timings)
-        .await
-        .unwrap();
+    let indexer =
+        NodeBackedChainIndex::new_with_chain_head_config(source.clone(), config, chain_head_config)
+            .await
+            .unwrap();
     let index_reader = indexer.subscriber();
 
     // Wait until the indexer's non-finalised state has been built and its

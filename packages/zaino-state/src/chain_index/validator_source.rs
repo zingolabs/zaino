@@ -152,7 +152,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// formatted into the message. `zaino-serve` recovers legacy-compatible RPC
 /// error codes by downcast-walking [`std::error::Error::source`] (see
 /// `getblock_error_object_from_indexer_error` in
-/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
+/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`NonDomainError`] to
 /// a string would strip the [`FailureMode::RpcError`] code those clients key
 /// on.
 ///
@@ -163,11 +163,12 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// object from an unreachable node — the reclassification must not cost the
 /// served interface its error code.
 ///
-/// [`FetchError`]: zaino_source::FetchError
+/// [`NonDomainError`]: zaino_source::NonDomainError
 /// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
-fn err<E>(error: QueryError<E>) -> BlockchainSourceError
+fn err<E, N>(error: QueryError<E, N>) -> BlockchainSourceError
 where
     E: std::fmt::Debug + std::fmt::Display,
+    N: std::error::Error + Send + Sync + 'static,
 {
     match error {
         QueryError::Domain(e) => BlockchainSourceError::unrecoverable_context(
@@ -177,7 +178,7 @@ where
                 e.to_string(),
             ),
         ),
-        QueryError::Fetch(e) => {
+        QueryError::NonDomain(e) => {
             BlockchainSourceError::unrecoverable_context("validator unreachable", e)
         }
     }
@@ -202,7 +203,9 @@ where
 /// which is what the client would have seen had it asked the validator
 /// directly — and is deliberately *not* `-5`: "this node cannot answer" must
 /// not be read as "the output is unspent".
-fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> BlockchainSourceError {
+fn spent_info_err<N: std::error::Error + Send + Sync + 'static>(
+    error: QueryError<zaino_source::GetSpentInfoError, N>,
+) -> BlockchainSourceError {
     use zaino_source::GetSpentInfoError;
 
     let (code, message) = match error {
@@ -215,7 +218,7 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
         }
         // A transport fault is not an answer; `err` already carries it with the
         // typed cause the serving layer needs.
-        fetch @ QueryError::Fetch(_) => return err(fetch),
+        fetch @ QueryError::NonDomain(_) => return err(fetch),
     };
 
     BlockchainSourceError::unrecoverable_context(
@@ -432,12 +435,18 @@ fn value_pool_array(
 // routes them together, and the mempool's coherence check depends on it.
 // ---------------------------------------------------------------------------
 
+impl<V: ChainIndexSourcePorts> zaino_source::ValidatorSource for ValidatorSource<V> {
+    // Pass the inner validator's non-domain type straight through; this legacy
+    // wrapper only delegates.
+    type NonDomain = <V as zaino_source::ValidatorSource>::NonDomain;
+}
+
 impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolTxids for ValidatorSource<V> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
         Vec<zaino_primitives::types::TransactionId>,
-        zaino_source::QueryError<zaino_source::GetMempoolTxidsError>,
+        zaino_source::QueryError<zaino_source::GetMempoolTxidsError, Self::NonDomain>,
     > {
         self.validator.get_mempool_txids().await
     }
@@ -448,7 +457,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for Valid
         &self,
     ) -> Result<
         Vec<zaino_source::MempoolTxMeta>,
-        zaino_source::QueryError<zaino_source::GetMempoolMetadataError>,
+        zaino_source::QueryError<zaino_source::GetMempoolMetadataError, Self::NonDomain>,
     > {
         self.validator.get_mempool_metadata().await
     }
@@ -460,8 +469,10 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
-    ) -> Result<Vec<u8>, zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError>>
-    {
+    ) -> Result<
+        Vec<u8>,
+        zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError, Self::NonDomain>,
+    > {
         self.validator.get_raw_mempool_transaction(txid).await
     }
 }
@@ -474,7 +485,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolSourceTip for Vali
             zaino_primitives::types::BlockHash,
             zaino_primitives::types::Height,
         ),
-        zaino_source::QueryError<std::convert::Infallible>,
+        zaino_source::QueryError<std::convert::Infallible, Self::NonDomain>,
     > {
         self.validator.get_mempool_source_tip().await
     }
@@ -1329,8 +1340,8 @@ mod tests {
     fn error_flattening_keeps_the_failure_kind() {
         let domain: QueryError<zaino_source::GetChainTipError> =
             QueryError::Domain(zaino_source::GetChainTipError::NotReady);
-        let transport: QueryError<zaino_source::GetChainTipError> = QueryError::Fetch(
-            zaino_source::FetchError::new(zaino_source::FailureMode::Connection, "refused"),
+        let transport: QueryError<zaino_source::GetChainTipError> = QueryError::NonDomain(
+            zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "refused"),
         );
 
         assert!(err(domain).to_string().contains("rejected"));
@@ -1626,11 +1637,11 @@ mod error_source_chain {
     /// not-found response to a generic internal error.
     #[test]
     fn domain_rejection_carries_a_legacy_code_through_source() {
-        let flattened = err::<zaino_source::GetBlockError>(QueryError::Domain(
-            zaino_source::GetBlockError::HeightNotFound(
+        let flattened = err::<zaino_source::GetBlockError, zaino_source::NonDomainError>(
+            QueryError::Domain(zaino_source::GetBlockError::HeightNotFound(
                 zaino_primitives::types::Height::try_from(42u32).expect("valid height"),
-            ),
-        ));
+            )),
+        );
 
         let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&flattened);
         let mut code = None;
@@ -1669,7 +1680,7 @@ mod error_source_chain {
     /// served a generic internal error. Both lost the only part the client uses.
     #[test]
     fn an_unspent_output_reports_the_legacy_full_nodes_own_code() {
-        let rejected = spent_info_err(QueryError::Domain(
+        let rejected = spent_info_err::<zaino_source::NonDomainError>(QueryError::Domain(
             zaino_source::GetSpentInfoError::NotSpent,
         ));
 
@@ -1689,7 +1700,7 @@ mod error_source_chain {
     /// every output is unspent.
     #[test]
     fn an_unsupported_method_does_not_masquerade_as_unspent() {
-        let rejected = spent_info_err(QueryError::Domain(
+        let rejected = spent_info_err::<zaino_source::NonDomainError>(QueryError::Domain(
             zaino_source::GetSpentInfoError::Unsupported,
         ));
 
@@ -1701,11 +1712,11 @@ mod error_source_chain {
     }
 
     /// A transport fault is not an answer about the outpoint, so it must keep
-    /// the typed `FetchError` rather than acquiring a legacy code that would
+    /// the typed `NonDomainError` rather than acquiring a legacy code that would
     /// tell the client something about the output.
     #[test]
     fn a_transport_fault_on_spent_info_stays_a_fetch_failure() {
-        let rejected = spent_info_err(QueryError::Fetch(zaino_source::FetchError::new(
+        let rejected = spent_info_err(QueryError::NonDomain(zaino_source::NonDomainError::new(
             zaino_source::FailureMode::Connection,
             "refused",
         )));
@@ -1733,11 +1744,15 @@ mod error_source_chain {
             Some(&error as &(dyn std::error::Error + 'static)),
             |error| error.source(),
         )
-        .any(|error| error.downcast_ref::<zaino_source::FetchError>().is_some());
+        .any(|error| {
+            error
+                .downcast_ref::<zaino_source::NonDomainError>()
+                .is_some()
+        });
 
         assert!(
             reached,
-            "the typed FetchError must stay reachable via the source() chain; \
+            "the typed NonDomainError must stay reachable via the source() chain; \
              stringifying it strips the FailureMode the serve layer recovers"
         );
     }

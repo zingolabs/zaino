@@ -4,7 +4,7 @@ use std::future::Future;
 
 use zaino_primitives::types::{BlockHash, Height, TreeRoots};
 
-use super::QueryError;
+use super::{QueryError, ValidatorSource};
 
 /// Domain error for [`GetCommitmentTreeRootsByHeight`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -21,12 +21,15 @@ pub enum GetCommitmentTreeRootsByHeightError {
 /// pairing this query with another must compare the returned hash against the
 /// block it holds.
 #[zaino_source_macros::resilient_port]
-pub trait OneShotGetCommitmentTreeRootsByHeight: Send + Sync {
+pub trait OneShotGetCommitmentTreeRootsByHeight: ValidatorSource + Send + Sync {
     /// Fetch tree roots at the best-chain block at this height, reporting which block answered.
     fn get_commitment_tree_roots_by_height(
         &self,
         height: Height,
     ) -> impl Future<
-        Output = Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>>,
+        Output = Result<
+            (BlockHash, TreeRoots),
+            QueryError<GetCommitmentTreeRootsByHeightError, Self::NonDomain>,
+        >,
     > + Send;
 }

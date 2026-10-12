@@ -64,6 +64,22 @@ where
     }
 }
 
+/// Opens the finalised store `config` names, built from `source`.
+pub(super) async fn spawn<S: WithChainStoreSource>(
+    config: &crate::config::ChainIndexConfig,
+    source: &S,
+) -> Result<
+    zaino_chain_store_zainodb::store::FinalisedState<S::Store>,
+    crate::error::FinalisedStateError,
+> {
+    zaino_chain_store_zainodb::store::FinalisedState::spawn(
+        config.chain_store_config(),
+        config.zainodb_config(),
+        source.chain_store_source(),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::WithChainStoreSource;
@@ -79,23 +95,3 @@ mod tests {
         assert_satisfied::<crate::chain_index::validator_source::ZebraValidatorSource>();
     }
 }
-
-// ---------------------------------------------------------------------------
-// The store's two halves
-// ---------------------------------------------------------------------------
-//
-// Reading and driving are separated because they answer to different callers:
-// every RPC path reads, and only the sync worker drives. They also fail
-// differently — a read fails as the store's fault, while a build can fail as
-// the *validator's*, which is why `build_to` returns a source error and none of
-// the reads do.
-
-mod driving;
-mod reading;
-
-pub(crate) use driving::{build_to, shutdown};
-pub(crate) use reading::{
-    block_at, block_hash, block_height, compact_block, compact_blocks_ascending,
-    compact_blocks_descending, outpoint_spenders, previous_output, transparent_outputs,
-    tx_position, txout_set, WireCompactBlocks,
-};
