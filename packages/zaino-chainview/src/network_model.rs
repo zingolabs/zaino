@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zaino_source::testing::{MockValidator, Port};
+use zaino_source::testing::{within, MockValidator, Port};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
 use crate::{ChainView, EndpointSet};
@@ -187,7 +187,7 @@ async fn run(n: usize, moves: Vec<Move>) {
                 let node = node % n;
                 let under = reader.current().best();
                 balancer.pushed(member(node), Push::Changed);
-                observed[node].changed().await.expect("driver running");
+                within("the node polled", observed[node].changed()).await.expect("driver running");
                 observed[node].mark_changed();
                 // every fold of what landed (paused clock: runs before the timer fires)
                 tokio::time::sleep(Duration::from_millis(1)).await;

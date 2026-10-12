@@ -25,6 +25,7 @@ pub struct MockPeers {
     pushes: Mutex<Vec<SocketAddr>>,
     mempools: Mutex<BTreeMap<SocketAddr, Vec<PeerTxId>>>,
     bytes: Mutex<BTreeMap<PeerTxId, Bytes>>,
+    fetched: Mutex<Vec<PeerTxId>>,
     announce: broadcast::Sender<Heard>,
 }
 
@@ -39,6 +40,7 @@ impl MockPeers {
             pushes: Mutex::new(Vec::new()),
             mempools: Mutex::new(BTreeMap::new()),
             bytes: Mutex::new(BTreeMap::new()),
+            fetched: Mutex::new(Vec::new()),
             announce: broadcast::channel(64).0,
         }
     }
@@ -62,6 +64,11 @@ impl MockPeers {
     /// Entries pushed to, in order
     pub fn pushes(&self) -> Vec<SocketAddr> {
         self.pushes.lock().expect("MockPeers mutex poisoned").clone()
+    }
+
+    /// Ids whose bytes were asked for, each time, in order
+    pub fn fetched(&self) -> Vec<PeerTxId> {
+        self.fetched.lock().expect("MockPeers mutex poisoned").clone()
     }
 }
 
@@ -106,6 +113,7 @@ impl ValidatorP2pSource for MockPeers {
         &self,
         ids: Vec<PeerTxId>,
     ) -> BoxFuture<'static, Result<Vec<Option<Bytes>>, NonDomainError>> {
+        self.fetched.lock().expect("MockPeers mutex poisoned").extend(ids.iter().copied());
         let bytes = self.bytes.lock().expect("MockPeers mutex poisoned");
         let found = ids.iter().map(|id| bytes.get(id).cloned()).collect();
         Box::pin(std::future::ready(Ok(found)))

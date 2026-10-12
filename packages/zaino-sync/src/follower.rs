@@ -182,7 +182,7 @@ fn link(
 mod tests {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::{Lie, MockValidator};
+    use zaino_source::testing::{within, Lie, MockValidator};
     use zaino_traffic::{Limits, Trusted};
 
     use super::*;
@@ -228,7 +228,7 @@ mod tests {
         let sent = async |queue: &mut Subscription<Block>, count: usize| {
             let mut sent = Vec::new();
             for _ in 0..count {
-                let (height, data, finalized) = match queue.next().await {
+                let (height, data, finalized) = match within("a step", queue.next()).await {
                     Step::Apply { height, data } => (height, data, false),
                     Step::Finalized { height, data } => (height, data, true),
                     Step::Shutdown => panic!("Shutdown early"),
@@ -255,9 +255,11 @@ mod tests {
         assert_eq!((progress.handed(), progress.blocks()), (Some(h(8)), 9));
 
         cancel.cancel();
-        running.await.expect("follower task").expect("cancel = clean stop");
+        let stopped = within("the follower stopped", running).await;
+        stopped.expect("follower task").expect("cancel = clean stop");
         for queue in [&mut durable_at_a2, &mut fresh] {
-            assert!(matches!(queue.next().await, Step::Shutdown), "Shutdown last");
+            let last = within("Shutdown", queue.next()).await;
+            assert!(matches!(last, Step::Shutdown), "Shutdown last");
         }
         stop_balancing.cancel();
     }
@@ -286,8 +288,8 @@ mod tests {
         let durable_tip_a4 = Some(chain.blocks(a7)[4].at());
         let mut above = follower.subscribe(IndexKind::TreeState, durable_tip_a4, NonZeroUsize::MAX);
         let mut foreign = follower.subscribe(IndexKind::BlockHash, Some(x1), NonZeroUsize::MAX);
-        let stopped =
-            follower.run(CancellationToken::new()).await.expect_err("X1 off the validator's chain");
+        let stopped = within("the follower stopped", follower.run(CancellationToken::new())).await;
+        let stopped = stopped.expect_err("X1 off the validator's chain");
         let a1 = chain.blocks(a7)[1].header().hash;
         assert!(
             matches!(stopped, FollowError::Diverged { index: "block_hash", height, expected, got }
@@ -295,7 +297,8 @@ mod tests {
             "{stopped}"
         );
         for queue in [&mut foreign, &mut above] {
-            assert!(matches!(queue.next().await, Step::Shutdown), "no step before the stop");
+            let first = within("Shutdown", queue.next()).await;
+            assert!(matches!(first, Step::Shutdown), "no step before the stop");
         }
 
         let (verified, verified_rx) =
@@ -305,7 +308,7 @@ mod tests {
         let running = tokio::spawn(follower.run(CancellationToken::new()));
         let mut sent = Vec::new();
         for _ in 0..=5 {
-            let data = match fresh.next().await {
+            let data = match within("a step", fresh.next()).await {
                 Step::Apply { data, .. } | Step::Finalized { data, .. } => data,
                 Step::Shutdown => panic!("Shutdown early"),
             };
@@ -315,9 +318,11 @@ mod tests {
         assert_eq!(sent, trunk, "A0..=A5");
         validator.follow(&chain, b11);
         verified.send_replace(Some(Arc::new(chain.verified_final(b11, h(8)))));
-        let stopped = running.await.expect("follower task").expect_err("B6 does not extend A5");
+        let stopped = within("the follower stopped", running).await.expect("follower task");
+        let stopped = stopped.expect_err("B6 does not extend A5");
         assert!(matches!(stopped, FollowError::Unlinked { height } if height == h(6)), "{stopped}");
-        assert!(matches!(fresh.next().await, Step::Shutdown), "nothing past A5 sent");
+        let last = within("Shutdown", fresh.next()).await;
+        assert!(matches!(last, Step::Shutdown), "nothing past A5 sent");
         stop_balancing.cancel();
     }
 }

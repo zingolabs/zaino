@@ -14,7 +14,7 @@ use zaino_primitives::types::{
     BlockRef, EndOfService, NodeRelease, OutPoint, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
     Zatoshis,
 };
-use zaino_source::testing::{raw_transaction, raw_transparent, MockValidator, Port};
+use zaino_source::testing::{raw_transaction, raw_transparent, within, MockValidator, Port};
 use zaino_source::{GetMempoolListingError, SendRawTransactionError};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
@@ -53,7 +53,7 @@ async fn polled(balancer: &TrafficBalancer<MockValidator>) {
         watch.borrow_and_update();
     }
     for watch in &mut watches {
-        watch.changed().await.expect("driver running");
+        within("a member polled", watch.changed()).await.expect("driver running");
     }
     tokio::time::sleep(Duration::from_millis(1)).await;
 }
@@ -488,7 +488,7 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
     validators[1].mempool_insert(raw_transaction(2, 0).1, 1_000);
     round().await;
     polled(&balancer).await;
-    let answered = answer.await.expect("submission task");
+    let answered = within("the wallet answered", answer).await.expect("submission task");
     assert_eq!(answered.expect("listed by a trusted validator"), txid);
     assert_eq!(validator_pushes(), 0, "no trusted validator saw it first, or at all from us");
     let spread = view.subscriber().current().spread(&txid).expect("held");
@@ -505,7 +505,7 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
     let submitting = Arc::clone(&view);
     let answer = tokio::spawn(async move { submitting.submit(sent).await });
     tokio::time::sleep(Duration::from_secs(31)).await;
-    let answered = answer.await.expect("submission task");
+    let answered = within("the wallet answered", answer).await.expect("submission task");
     assert_eq!(answered.expect("the verdict accepts"), silent);
     let tried = peers.pushes().split_off(2);
     assert_eq!(tried.len(), 3, "max_attempts peers first: {tried:?}");
@@ -520,7 +520,8 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
 /// - `a` listed by the validator and every peer, then the validator down: still served, the same
 ///   sighting (handed over to the quorum, never dropped and re-added)
 /// - every peer lists `a`, `bad` (pays 6,000 of 5,000) and `child` (spends `a`'s output): `a`
-///   at its fee, `child` one round later (its parent admitted first), `bad` never (a negative fee)
+///   at its fee, `child` one round later (its parent admitted first), `bad` never (a negative fee:
+///   refused once, its bytes never fetched again while it stays listed)
 /// - `a` listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an
 ///   empty mempool served
 /// - a submission with no trusted validator: a peer entry, answered once 6 of 7 list it; no
@@ -594,6 +595,10 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     round().await;
     let both = sorted(vec![(a, Some(zats(1_000))), (child, Some(zats(500)))]);
     assert_eq!(sorted(served()), both, "funded ones at their fees; `bad` refused");
+    round().await;
+    round().await;
+    let bad_fetches = peers.fetched().into_iter().filter(|fetched| fetched.txid == bad).count();
+    assert_eq!(bad_fetches, 1, "refused once, never re-fetched while the quorum keeps listing it");
     let spread = reader.current().spread(&a).expect("held");
     assert_eq!(
         (spread.peers, spread.trusted),
@@ -620,7 +625,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
         seven.iter().copied().filter(|peer| *peer != entry[0]).collect();
     listing(&[sent], &others);
     round().await;
-    let answered = answer.await.expect("submission task");
+    let answered = within("the wallet answered", answer).await.expect("submission task");
     assert_eq!(answered.expect("a peer quorum admitted it"), sent);
     assert_eq!(served(), [(sent, Some(zats(500)))], "ours, priced from the UTXO set");
 
@@ -706,12 +711,12 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     validators[2].reorg_after_next_poll(&chain, at_101);
     let mut c = balancer.observe(v(2));
     c.borrow_and_update();
-    c.changed().await.expect("driver running");
+    within("c polled", c.changed()).await.expect("driver running");
     tokio::time::sleep(Duration::from_millis(1)).await;
     let raced = c.borrow().as_ref().map(|observation| observation.polled.is_ok());
     assert_eq!(raced, Some(true), "a race is not a failure");
     assert_eq!(tip(), Some((fork, held_by(&[2]))), "the raced poll: its claim, as read");
-    c.changed().await.expect("driver running");
+    within("c polled", c.changed()).await.expect("driver running");
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!(tip(), None, "re-asked: on the trunk, it holds nothing of the fork (never stale)");
     let pinned = reader.current();

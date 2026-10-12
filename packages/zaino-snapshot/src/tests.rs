@@ -18,7 +18,7 @@ use zaino_persistence::{
 };
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
-use zaino_source::testing::MockValidator;
+use zaino_source::testing::{within, MockValidator};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{
     Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
@@ -65,7 +65,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let running = tokio::spawn(publisher.run(cancel.clone()));
     let chain = builder.verified(a3);
     view.set_verified(Some(chain.clone()));
-    snapshots.changed().await.expect("publisher running");
+    within("a publish", snapshots.changed()).await.expect("publisher running");
     let snap = snapshots.load();
     assert_eq!((snap.seq(), snap.tips().best, snap.tips().served), (1, Some(a3), None));
 
@@ -74,16 +74,17 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
         let indexed = Indexed::fixed(Arc::new(chain.clone()), at(block), params, none.clone());
         nfs.send_replace(Some(Arc::new(indexed)));
     }
-    snapshots.changed().await.expect("publisher running");
+    within("a publish", snapshots.changed()).await.expect("publisher running");
     let snap = snapshots.load();
     let tips = snap.tips();
     assert_eq!((snap.seq(), tips.served, tips.synced), (2, Some(a3), true), "coalesced burst");
 
     cancel.cancel();
-    assert!(matches!(running.await.expect("task"), Ok(())), "cancel = clean stop");
+    let ended = within("the publisher stopped", running).await;
+    assert!(matches!(ended.expect("task"), Ok(())), "cancel = clean stop");
     let gone = Publisher::<DiskView>::new(nfs.subscribe(), view.subscriber(), DEPTH);
     drop(nfs);
-    let stopped = gone.run(CancellationToken::new()).await;
+    let stopped = within("the publisher stopped", gone.run(CancellationToken::new())).await;
     assert!(matches!(stopped, Err(SnapshotError::IndexedGone)), "{stopped:?}");
 }
 

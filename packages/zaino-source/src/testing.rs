@@ -21,6 +21,17 @@ use crate::{
     SendRawTransactionError, TransactionResponse,
 };
 
+/// `waited` within 60 s of tokio time, else the test fails naming `what`
+///
+/// - paused clock: 60 s virtual = instant, so a wait nothing will end (a broken driver, a fold
+///   never publishing) fails at once instead of hanging the runner
+pub async fn within<T>(what: &str, waited: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(60), waited).await {
+        Ok(done) => done,
+        Err(_) => panic!("never {what} (60 s)"),
+    }
+}
+
 /// How `get_block_by_hash` / `get_block_by_height` misanswer (each caught by a body check):
 /// - `WrongBlock` = the asked block re-mined under another nonce
 /// - `Poisoned` = asked header + one extra transaction; `Mutated` = last tx repeated (CVE-2012-2459)

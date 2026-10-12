@@ -9,7 +9,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockHash, TransactionId, Zatoshis};
-use zaino_source::testing::{raw_transaction, MockValidator, Port};
+use zaino_source::testing::{raw_transaction, within, MockValidator, Port};
 use zaino_source::{
     BlockLink, FailureMode, GetAtHeightError, GetRawMempoolTransactionError, GetTransactionError,
     MempoolListed, NonDomainError, QueryError, SendRawTransactionError,
@@ -54,37 +54,41 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
 
-    let found = balancer.transaction(txid).await.expect("partner holds it");
+    let found = within("a lookup", balancer.transaction(txid)).await.expect("partner holds it");
     assert_eq!((found.from, found.value.bytes), (MemberId::Trusted(v(1)), raw.clone()));
     let unknown = TransactionId::from([7; 32]);
-    let absent = balancer.transaction(unknown).await.expect_err("nobody holds it").last;
+    let absent =
+        within("a lookup", balancer.transaction(unknown)).await.expect_err("nobody holds it").last;
     let expected = GetTransactionError::NotFound(unknown);
     assert!(matches!(absent, Some(QueryError::Domain(said)) if said == expected));
 
     let pinned = HeaderAsk::Pinned { member: v(0), heights: vec![h(0), h(3), h(4)] };
-    let links = balancer.headers(pinned).await.expect("ours answers");
+    let links = within("headers", balancer.headers(pinned)).await.expect("ours answers");
     let link = |at: usize| Ok(BlockLink { header: chain.header_bytes(blocks[at].header().hash) });
     let expected = vec![link(0), link(3), Err(GetAtHeightError::HeightNotFound(h(4)))];
     assert_eq!((links.from, links.value), (MemberId::Trusted(v(0)), expected));
     let fee = Zatoshis::new(1_000).expect("in supply");
     let listed = MempoolListed { txid, fee, encoded_len: raw.len() as u32 };
-    let bytes =
-        balancer.bytes(vec![listed], vec![MemberId::Trusted(v(1))]).await.expect("answered");
+    let bytes = within("bytes", balancer.bytes(vec![listed], vec![MemberId::Trusted(v(1))]))
+        .await
+        .expect("answered");
     let not_listed = vec![Err(GetRawMempoolTransactionError::NotFound(txid))];
     assert_eq!((bytes.from, bytes.value), (MemberId::Trusted(v(0)), not_listed), "best tier first");
 
-    let accepted = balancer.submit(v(1), sent).await.expect("well-formed");
+    let accepted = within("a submit", balancer.submit(v(1), sent)).await.expect("well-formed");
     assert_eq!((accepted.from, accepted.value), (MemberId::Trusted(v(1)), sent_id));
-    let refused = balancer.submit(v(0), vec![9; 8]).await.expect_err("malformed").last;
+    let refused =
+        within("a submit", balancer.submit(v(0), vec![9; 8])).await.expect_err("malformed").last;
     assert!(matches!(refused, Some(QueryError::Domain(SendRawTransactionError::Malformed(_)))));
 
     let hash = blocks[2].header().hash;
-    let first = balancer.block(hash, Urgency::Tip).await;
+    let first = within("a block", balancer.block(hash, Urgency::Tip)).await;
     assert_eq!((first.from, first.value.header().hash), (MemberId::Trusted(v(0)), hash));
     balancer.report(first.ticket, &std::io::Error::other("merkle root mismatch"));
-    let again = balancer.block(hash, Urgency::Bulk).await;
+    let again = within("a block", balancer.block(hash, Urgency::Bulk)).await;
     assert_eq!(again.from, MemberId::Trusted(v(1)), "the reported member benched");
-    let by_height = balancer.blocks_at(Arc::from([h(2)]), Urgency::Bulk).await;
+    let by_height =
+        within("blocks by height", balancer.blocks_at(Arc::from([h(2)]), Urgency::Bulk)).await;
     let served = (by_height.from, by_height.value[0].header().hash);
     assert_eq!(served, (MemberId::Trusted(v(1)), hash), "by height: the benched member skipped");
     tokio::time::sleep(Duration::from_millis(1)).await;
@@ -118,7 +122,7 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     tokio::spawn(driver.run(cancel.clone()));
 
     let started = Instant::now();
-    let hedged = balancer.block(tip.hash, Urgency::Tip).await;
+    let hedged = within("a hedged block", balancer.block(tip.hash, Urgency::Tip)).await;
     let waited = started.elapsed();
     assert_eq!(hedged.from, MemberId::Trusted(v(1)));
     assert!((Duration::from_secs(2)..Duration::from_millis(2_100)).contains(&waited), "{waited:?}");
@@ -198,7 +202,7 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
     assert!(!asking.is_finished(), "never unanswered: still retrying");
 
     ours.reachable(&[Port::Block], true);
-    let served = asking.await.expect("ask task joins");
+    let served = within("the block served", asking).await.expect("ask task joins");
     assert_eq!((served.from, served.value.header().hash), (MemberId::Trusted(v(0)), tip.hash));
     let answered = lines(&captured).into_iter().filter(|l| l.contains("Stalled ask answered"));
     assert_eq!(answered.count(), 1, "one line once served");
@@ -222,23 +226,23 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     let mut observed = balancer.observe(v(0));
-    observed.changed().await.expect("driver running");
+    within("a poll", observed.changed()).await.expect("driver running");
 
     balancer.pushed(v(0), Push::Link(true));
-    observed.changed().await.expect("driver running");
+    within("a poll", observed.changed()).await.expect("driver running");
     let streaming = observed.borrow_and_update().as_ref().map(|o| o.streaming);
     assert_eq!(streaming, Some(true));
     let quiet = tokio::time::timeout(Duration::from_secs(10), observed.changed()).await;
     assert!(quiet.is_err(), "streaming: no poll for 10 s");
     let pushed = Instant::now();
     balancer.pushed(v(0), Push::Changed);
-    observed.changed().await.expect("driver running");
+    within("a poll", observed.changed()).await.expect("driver running");
     assert!(pushed.elapsed() <= Duration::from_millis(200), "{:?}", pushed.elapsed());
 
     balancer.poll_best(|| Some(h(2)));
     let unwoken = tokio::time::timeout(Duration::from_secs(10), observed.changed()).await;
     assert!(unwoken.is_err(), "a new best wakes no poll");
-    observed.changed().await.expect("driver running");
+    within("a poll", observed.changed()).await.expect("driver running");
     let observation = observed.borrow_and_update().clone().expect("polled");
     let held: Vec<Option<BlockHash>> = match &observation.polled {
         Ok(reading) => reading.held.iter().map(|held| held.as_ref().ok().copied()).collect(),
@@ -263,7 +267,7 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     assert_eq!(health(&balancer), Health::Down);
     assert_eq!(observed_health(&mut observed), Some((Some(FailureMode::Connection), Health::Down)));
     validator.reachable(&Port::ALL, true);
-    observed.changed().await.expect("driver running");
+    within("a poll", observed.changed()).await.expect("driver running");
     let back = observed.borrow_and_update().clone().expect("polled");
     let metadata = back.polled.as_ref().ok().map(|reading| reading.metadata.is_some());
     assert_eq!(metadata, Some(true), "failed polls leave metadata due: the answer back reads it");
@@ -317,16 +321,18 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     tokio::spawn(driver.run(cancel.clone()));
 
     let hash = chain.at(h(1)).hash;
-    let served = balancer.block(hash, Urgency::Tip).await;
+    let served = within("a block", balancer.block(hash, Urgency::Tip)).await;
     assert_eq!((served.from, served.value.header().hash), (MemberId::Peers, hash));
     balancer.report(served.ticket, &std::fmt::Error);
-    let after = balancer.block(chain.at(h(2)).hash, Urgency::Tip).await;
+    let after = within("a block", balancer.block(chain.at(h(2)).hash, Urgency::Tip)).await;
     assert_eq!(after.from, MemberId::Peers, "a report never benches the peer set");
     let ask = HeaderAsk::Peers { locator: vec![chain.genesis().hash], stop: None };
-    let headers = balancer.headers(ask).await.expect("the peer set answers");
+    let headers =
+        within("peer headers", balancer.headers(ask)).await.expect("the peer set answers");
     assert_eq!((headers.from, headers.value.len()), (MemberId::Peers, blocks.len()));
-    let lookup =
-        balancer.transaction(TransactionId::from([1; 32])).await.expect_err("trusted down");
+    let lookup = within("a lookup", balancer.transaction(TransactionId::from([1; 32])))
+        .await
+        .expect_err("trusted down");
     let mode = match lookup.last {
         Some(QueryError::NonDomain(cause)) => Some(cause.mode),
         _ => None,
@@ -343,9 +349,9 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     let none = tokio::time::timeout(Duration::from_secs(10), &mut pending).await;
     assert!(none.is_err(), "nobody holds it: pending, never unanswered");
     validator.reachable(&Port::ALL, true);
-    let back = pending.await;
+    let back = within("the block once reachable", pending).await;
     assert_eq!((back.from, back.value.header().hash), (MemberId::Trusted(v(0)), lacking));
-    let at_one = by_height.await;
+    let at_one = within("by height once reachable", by_height).await;
     assert_eq!((at_one.from, at_one.value[0].header().hash), (MemberId::Trusted(v(0)), hash));
     cancel.cancel();
 }
