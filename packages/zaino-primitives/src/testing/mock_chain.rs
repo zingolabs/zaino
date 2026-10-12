@@ -8,14 +8,13 @@ use std::sync::Arc;
 use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
-use super::upgrades::Upgrades;
 use super::{
     balances, encode_header, fee_left, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS,
 };
 use crate::types::{
     Block, BlockFees, BlockHash, BlockHeader, BlockRef, BlockchainInfo, CompactDifficulty,
     ConsensusBranchIds, EquihashSolution, Fee, Height, MerkleRoot, Nullifier, OutPoint,
-    ShieldedPool, Transaction, TransactionId, Zatoshis,
+    ShieldedPool, Transaction, TransactionId, UpgradeSchedule, Zatoshis,
 };
 
 /// zebra-state `check.rs`: a header's time must pass the median of this many ancestors' times
@@ -32,7 +31,7 @@ pub enum Work {
 /// What the views derive their parameters from (`network` = a label: schemas, addresses, params)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schedule {
-    pub upgrades: Upgrades,
+    pub upgrades: UpgradeSchedule,
     pub work: Work,
     pub network: NetworkType,
 }
@@ -60,13 +59,13 @@ struct Mined {
 impl MockChain {
     /// Every upgrade through NU6.3 at height 1, `Work::Limit`, a bare-coinbase genesis
     pub fn regtest() -> Self {
-        let upgrades = Upgrades::all_at(h(1));
+        let upgrades = UpgradeSchedule::all_at(h(1));
         let schedule = Schedule { upgrades, work: Work::Limit, network: NetworkType::Regtest };
         Self::over(schedule, BlockBuilder::new())
     }
 
     /// Before the first mine
-    pub fn upgrades(self, upgrades: Upgrades) -> Self {
+    pub fn upgrades(self, upgrades: UpgradeSchedule) -> Self {
         let schedule = Schedule { upgrades, ..self.schedule };
         self.reconfigured(schedule, None)
     }
@@ -425,7 +424,7 @@ impl Ledger {
         tx: &Transaction,
         stated: Option<u64>,
         at: Height,
-        upgrades: &Upgrades,
+        upgrades: &UpgradeSchedule,
     ) -> Fee {
         let txid = tx.txid;
         assert!(self.txids.insert(txid), "{txid} at {at}: txid repeated on this branch");

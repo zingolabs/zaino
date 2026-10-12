@@ -48,7 +48,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let mut builder = MockChain::regtest();
     let a3 = builder.mine_empty(3);
     let path = builder.blocks(a3);
-    let params = ChainParams::of(&builder, a3);
+    let params = ChainParams::of(&builder);
     let source = Arc::new(MockValidator::following(&builder, a3));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, _never_driven) =
@@ -120,7 +120,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     }
     store.commit().expect("SimFs commit");
     let durable = [(IndexKind::BlockHash, store.committed())];
-    let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder, a5), durable);
+    let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
 
     let (relayed, unlisted) = (TransactionId::from([1; 32]), TransactionId::from([2; 32]));
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
@@ -234,7 +234,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let none: [(IndexKind, DiskView); 0] = [];
     let served_at = |tip: &Block| {
         let chain = Arc::new(builder.verified(at(tip)));
-        let params = ChainParams::of(&builder, at(tip));
+        let params = ChainParams::of(&builder);
         let indexed = Indexed::fixed(Arc::clone(&chain), at(tip), params, none.clone());
         let view =
             ChainViewSnapshot::fixed(Some(chain), EndpointSet::at([0]), &addresses, &[], &[]);
@@ -316,7 +316,7 @@ fn every_check_fires_on_its_planted_bug() {
     let a = builder.blocks(a6);
     let s5 = builder.fork(h(4)).mine_empty(1).tip();
     let chain = Arc::new(builder.verified(a6));
-    let params = ChainParams::of(&builder, a6);
+    let params = ChainParams::of(&builder);
     let served = |block: BlockRef| {
         let none: [(IndexKind, DiskView); 0] = [];
         Some(Arc::new(Indexed::fixed(Arc::clone(&chain), block, params, none)))

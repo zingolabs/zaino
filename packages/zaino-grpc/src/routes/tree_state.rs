@@ -281,8 +281,8 @@ mod tests {
     use prost::Message as _;
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{h, MockChain, Upgrades};
-    use zaino_primitives::types::{BlockRef, SubtreeRoot};
+    use zaino_primitives::testing::{h, MockChain};
+    use zaino_primitives::types::{BlockRef, SubtreeRoot, UpgradeSchedule};
     use zaino_proto::frame::{split_frame, FRAME_HEADER};
     use zaino_proto::proto::service as proto;
     use zcash_protocol::consensus::NetworkUpgrade;
@@ -344,7 +344,7 @@ mod tests {
 
         let chain = MockChain::regtest()
             .network(MAINNET)
-            .upgrades(Upgrades::all_at(h(0)))
+            .upgrades(UpgradeSchedule::all_at(h(0)))
             .genesis_with(|b| b.coinbase(|c| c.sapling_output(1)));
         let genesis = chain.genesis();
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
@@ -387,7 +387,7 @@ mod tests {
         use tower::Service as _;
 
         // Sapling at 1, NU5 (orchard) at 2, NU6.3 (ironwood) at 3; one sapling output per block
-        let upgrades = Upgrades::all_at(h(1))
+        let upgrades = UpgradeSchedule::all_at(h(1))
             .onward(NetworkUpgrade::Nu5, h(2))
             .onward(NetworkUpgrade::Nu6_3, h(3));
         let mut chain = MockChain::regtest().network(MAINNET).upgrades(upgrades);
@@ -446,7 +446,7 @@ mod tests {
         let at_genesis = |leaf: u32| {
             MockChain::regtest()
                 .network(MAINNET)
-                .upgrades(Upgrades::all_at(h(0)))
+                .upgrades(UpgradeSchedule::all_at(h(0)))
                 .genesis_with(|b| b.coinbase(|c| c.sapling_output(leaf)))
         };
         let chain = at_genesis(7);

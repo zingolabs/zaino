@@ -162,7 +162,8 @@ One loop per trusted member, inside the balancer, replaces `EndpointPoller`, `Po
   `headers(Pinned(member), heights)`.
 - Poll failure → `Observation { polled: Err }`: that member holds nothing until it answers
   again; health and ladder are the balancer's. Only an answered poll consumes the metadata
-  refresh. Boot's upgrade schedule = the first *answered* poll, `CatchingUp` included.
+  refresh. A regtest boot's upgrade schedule = the first *answered* poll, `CatchingUp`
+  included (mainnet and testnet compile theirs in: `UpgradeSchedule::compiled`).
 
 ## 5. API
 

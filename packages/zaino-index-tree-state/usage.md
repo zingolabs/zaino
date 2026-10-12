@@ -33,10 +33,10 @@ tokio::spawn(writer.run(blocks));
   one record per committed height. `run` panics on a failed commit or an
   unfoldable block (`tree_state index: <FoldError>`,
   [Failure](../zaino-sync/usage.md#failure-panic-never-err)).
-- `PoolActivations` = each pool's first height, from the validator's
-  `getblockchaininfo` schedule keyed by branch id: Sapling, NU5 (Orchard),
-  NU6.3 (Ironwood); an unscheduled upgrade = `None`. zainod reads it once at
-  boot (no compiled-in schedule) into the NFS's `ChainParams`.
+- `PoolActivations::new(&UpgradeSchedule)` = each pool's first height: Sapling,
+  NU5 (Orchard), NU6.3 (Ironwood); an unscheduled upgrade = `None`. zainod builds
+  it once at boot (mainnet/testnet compiled in, regtest from its validator) into
+  the NFS's `ChainParams`.
 - zainod builds it only when `index.tree_state.enabled`; disabled = the three
   methods `UNIMPLEMENTED`.
 

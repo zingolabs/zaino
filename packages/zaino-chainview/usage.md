@@ -49,7 +49,7 @@ jsonrpc_address = "127.0.0.1:8232"
 jsonrpc_address = "10.0.0.7:8232"
 ```
 
-The daemon spawns the balancer's driver first (the upgrade schedule is a poll's),
+The daemon spawns the balancer's driver first (regtest's upgrade schedule is a poll's),
 then header sync, the observation fold, each push stream (when `indexer_address`
 is set: its callbacks → `TrafficBalancer::pushed`) and the peer watch (when
 `[p2p]` is on). `zaino-grpc`'s `Routes.submit` holds the view for `SendTransaction`;

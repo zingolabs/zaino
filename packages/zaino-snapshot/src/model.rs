@@ -124,7 +124,7 @@ impl Model {
 
     fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
         let served = self.served?;
-        let params = ChainParams::of(&self.builder, served);
+        let params = ChainParams::of(&self.builder);
         let none: [(IndexKind, DiskView); 0] = [];
         Some(Arc::new(Indexed::fixed(self.chain(), served, params, none)))
     }

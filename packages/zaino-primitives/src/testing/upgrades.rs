@@ -1,34 +1,18 @@
-//! Activation schedule a [`MockChain`](super::MockChain) mines under (zebrad regtest's config)
+//! [`UpgradeSchedule`] builders for a [`MockChain`](super::MockChain) (zebrad regtest's config)
 
 use zcash_protocol::consensus::NetworkUpgrade;
 
-use crate::types::{ConsensusBranchId, Height, NetworkUpgradeInfo, NetworkUpgradeStatus};
-
-/// Protocol order (`NetworkUpgrade` derives neither `Ord` nor `Hash`)
-const ORDER: [NetworkUpgrade; 11] = [
-    NetworkUpgrade::Overwinter,
-    NetworkUpgrade::Sapling,
-    NetworkUpgrade::Blossom,
-    NetworkUpgrade::Heartwood,
-    NetworkUpgrade::Canopy,
-    NetworkUpgrade::Nu5,
-    NetworkUpgrade::Nu6,
-    NetworkUpgrade::Nu6_1,
-    NetworkUpgrade::Nu6_2,
-    NetworkUpgrade::Nu6_3,
-    NetworkUpgrade::Nu7,
-];
+use crate::types::{
+    slot, ConsensusBranchId, Height, NetworkUpgradeInfo, NetworkUpgradeStatus, UpgradeSchedule,
+    ORDER,
+};
 
 const PRE_BLOSSOM_SPACING: u32 = 150;
 const POST_BLOSSOM_SPACING: u32 = 75;
 /// ZIP 218
 const POST_NU7_SPACING: u32 = 25;
 
-/// Activation height per upgrade (`None` = never), indexed by `ORDER`
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Upgrades([Option<Height>; ORDER.len()]);
-
-impl Upgrades {
+impl UpgradeSchedule {
     /// Overwinter ..= NU6.3 at `height`, NU7 off
     pub fn all_at(height: Height) -> Self {
         Self(ORDER.map(|upgrade| (upgrade != NetworkUpgrade::Nu7).then_some(height)))
@@ -51,10 +35,6 @@ impl Upgrades {
     pub fn without(mut self, upgrade: NetworkUpgrade) -> Self {
         self.0[slot(upgrade)] = None;
         self
-    }
-
-    pub fn activation(&self, upgrade: NetworkUpgrade) -> Option<Height> {
-        self.0[slot(upgrade)]
     }
 
     pub(super) fn active(&self, upgrade: NetworkUpgrade, at: Height) -> bool {
@@ -103,8 +83,4 @@ impl Upgrades {
             })
             .collect()
     }
-}
-
-fn slot(upgrade: NetworkUpgrade) -> usize {
-    ORDER.iter().position(|known| *known == upgrade).expect("ORDER lists every enabled upgrade")
 }

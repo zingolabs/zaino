@@ -62,3 +62,14 @@ description = """
 `Block::at()` (its `BlockRef`) and `BlockHeader::extends(parent: Option<BlockRef>)`: one height \
 above the parent and linked to it by `prev_hash`, genesis on `None`.
 """
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "added"
+description = """
+`types::UpgradeSchedule`: one table of network-upgrade activation heights. `compiled(network)` \
+= mainnet's or testnet's (`zcash_protocol`'s tables, `None` for regtest); `reported(&info)` = a \
+validator's `getblockchaininfo` (regtest). The `testing` feature's `Upgrades` builder is now \
+`UpgradeSchedule`'s test-only methods (`all_at`, `with`, `onward`, `without`).
+"""

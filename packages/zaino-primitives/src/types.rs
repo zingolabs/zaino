@@ -31,6 +31,7 @@ mod transaction_location;
 mod tree_root;
 mod tree_size;
 mod treestate;
+mod upgrade_schedule;
 mod zatoshis;
 
 pub use aliases::{BlockTime, EquihashNonce, OutputIndex};
@@ -69,4 +70,7 @@ pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};
 pub use treestate::{CommitmentTreeBytes, Treestate};
+pub use upgrade_schedule::UpgradeSchedule;
+#[cfg(any(test, feature = "testing"))]
+pub(crate) use upgrade_schedule::{slot, ORDER};
 pub use zatoshis::{SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisOverflow};

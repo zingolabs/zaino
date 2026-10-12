@@ -43,3 +43,12 @@ section = "changed"
 description = """
 Every table `cache_writes()`: its fold reads the tip's sizes and frontier nodes off them.
 """
+
+[[changes]]
+crate = "zaino-index-tree-state"
+kind = "breaking"
+section = "changed"
+description = """
+`PoolActivations::from_validator(&BlockchainInfo)` is replaced by \
+`PoolActivations::new(&UpgradeSchedule)`.
+"""

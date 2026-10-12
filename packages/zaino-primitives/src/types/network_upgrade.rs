@@ -1,6 +1,6 @@
-//! Network upgrade schedule as the validator reports it
+//! Network upgrade schedule as the validator reports it (regtest's [`UpgradeSchedule`] source)
 //!
-//! - No compiled-in schedule: adopted from the validator (indexer + validator never disagree)
+//! [`UpgradeSchedule`]: super::UpgradeSchedule
 
 use super::Height;
 

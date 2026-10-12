@@ -48,6 +48,11 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
   `TransactionLocation` and the network-upgrade types, plus the zatoshi family
   and `CompactDifficulty` below.
+- `UpgradeSchedule` — the one table of activation heights (`activation(upgrade)`,
+  `None` = never). `compiled(network)` = mainnet's or testnet's, from
+  `zcash_protocol` (`None` for regtest, whose heights are set per chain);
+  `reported(&BlockchainInfo)` = a validator's (regtest), keyed by branch id. Pool
+  activations and the header rules' Blossom / NU7 heights both read it.
 - `network` — `NetworkType`'s two spellings: `chain_name` (`main` / `test` /
   `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
   `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and
@@ -117,7 +122,8 @@ digits); that pair is the one display-order conversion.
 uses (`docs/design/mock-chain.md`). Enable it from `[dev-dependencies]` only.
 
 ```rust,ignore
-use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain, Upgrades};
+use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+use zaino_primitives::types::UpgradeSchedule;
 
 let alice = p2pkh([0xaa; 20]);
 let mut chain = MockChain::regtest();                // every upgrade through NU6.3 at 1, bare genesis
@@ -141,7 +147,8 @@ let mut varied = MockChain::regtest().varied_work(); // reorg-by-work tests opt 
 let twelve = varied.mine_empty(12);
 let retreat = varied.fork(h(10)).outweigh().mine_empty(1).tip(); // 12 → 11, now the best
 let revived = varied.branch(twelve).outweigh().mine_empty(1).tip();
-let later = MockChain::regtest().upgrades(Upgrades::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3)));
+let later = MockChain::regtest()
+    .upgrades(UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3)));
 ```
 
 - Builder-owned (never asserted): hashes, nonces, times, nBits, merkle roots, default

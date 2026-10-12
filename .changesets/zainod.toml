@@ -378,3 +378,13 @@ each validator's zebrad indexer gRPC (`indexer_address`, required for every vali
 with `GetBlockRange`) as stored bytes, no hex or JSON, and everything else over JSON-RPC. The \
 `hex` crate is replaced by `const-hex` (SIMD) workspace-wide.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "changed"
+description = """
+On mainnet and testnet zainod boots without a trusted validator answering: the upgrade schedule \
+(pool activations, header-rule heights) is compiled in. Regtest still reads it from the first \
+validator that answers.
+"""

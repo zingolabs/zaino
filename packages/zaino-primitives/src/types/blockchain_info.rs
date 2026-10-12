@@ -1,8 +1,8 @@
-//! Validator's chain state: its tip + the upgrade schedule Zaino adopts
+//! Validator's chain state: its tip + its upgrade schedule
 
 use super::{BlockHash, ConsensusBranchIds, Height, NetworkUpgradeInfo};
 
-/// - `upgrades` = consensus input (activation heights from the validator, never compiled in)
+/// - `upgrades` = regtest's schedule ([`UpgradeSchedule::reported`](super::UpgradeSchedule))
 /// - `estimated_height` = network tip estimate (even when synced)
 /// - `sapling_activation` = Sapling's `upgrades` entry (every network has one; required at parse)
 #[derive(Debug, Clone, PartialEq, Eq)]

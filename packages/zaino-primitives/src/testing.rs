@@ -9,7 +9,6 @@ use crate::sha256d;
 
 pub use build::{outpoint, p2pkh, BlockBuilder, TxBuilder};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
-pub use upgrades::Upgrades;
 
 use crate::types::{BlockHash, BlockHeader, EquihashSolution, Height, Transaction};
 

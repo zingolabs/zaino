@@ -1,7 +1,7 @@
 //! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
 
-use zaino_primitives::types::{BlockHash, Height};
-use zcash_protocol::consensus::NetworkType;
+use zaino_primitives::types::{BlockHash, Height, UpgradeSchedule};
+use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
 
 use crate::target::{expand, to_compact, U256};
 
@@ -45,11 +45,12 @@ const POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 18;
 
 impl Params {
     pub fn mainnet() -> Self {
+        let (blossom, nu7) = blossom_nu7(NetworkType::Main);
         Self {
             network: NetworkType::Main,
             genesis: display("00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08"),
-            blossom: height(653_600),
-            nu7: None,
+            blossom,
+            nu7,
             pow_limit: compact_rounded((U256::one() << 243) - 1),
             pow: true,
             difficulty: Difficulty::Adjusted,
@@ -62,11 +63,12 @@ impl Params {
 
     /// Default testnet (`network_upgrade.rs`: min difficulty from 299,188, max time from 653,606)
     pub fn testnet() -> Self {
+        let (blossom, nu7) = blossom_nu7(NetworkType::Test);
         Self {
             network: NetworkType::Test,
             genesis: display("05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38"),
-            blossom: height(584_000),
-            nu7: Some(height(4_465_026)),
+            blossom,
+            nu7,
             pow_limit: compact_rounded((U256::one() << 251) - 1),
             pow: true,
             difficulty: Difficulty::Adjusted,
@@ -154,6 +156,13 @@ impl Params {
 
 fn compact_rounded(limit: U256) -> U256 {
     expand(to_compact(limit)).expect("a network's limit is a valid target")
+}
+
+/// From the compiled schedule (`zcash_protocol`'s, = the pool activations')
+fn blossom_nu7(network: NetworkType) -> (Height, Option<Height>) {
+    let schedule = UpgradeSchedule::compiled(network).expect("mainnet + testnet compiled in");
+    let blossom = schedule.activation(NetworkUpgrade::Blossom);
+    (blossom.expect("Blossom active"), schedule.activation(NetworkUpgrade::Nu7))
 }
 
 fn height(height: u32) -> Height {

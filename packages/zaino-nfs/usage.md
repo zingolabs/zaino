@@ -9,7 +9,7 @@ snapshot). Final blocks reach the writers on the final path (`zaino-sync`), neve
 ```rust,ignore
 use zaino_nfs::{ChainParams, Nfs, NfsError};
 
-let params = ChainParams { network, activations: PoolActivations::from_validator(&info) };
+let params = ChainParams { network, activations: PoolActivations::new(&schedule) };
 let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth, lookahead);
 let mut follower = FinalFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 

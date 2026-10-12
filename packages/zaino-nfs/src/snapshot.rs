@@ -30,10 +30,10 @@ pub struct ChainParams {
 
 #[cfg(any(test, feature = "testing"))]
 impl ChainParams {
-    /// What a validator following `chain` at `tip` reports (`getblockchaininfo`)
-    pub fn of(chain: &zaino_primitives::testing::MockChain, tip: BlockRef) -> Self {
-        let activations = PoolActivations::from_validator(&chain.blockchain_info(tip));
-        Self { network: chain.schedule().network, activations }
+    /// `chain`'s schedule under its network label
+    pub fn of(chain: &zaino_primitives::testing::MockChain) -> Self {
+        let schedule = chain.schedule();
+        Self { network: schedule.network, activations: PoolActivations::new(&schedule.upgrades) }
     }
 }
 
@@ -258,21 +258,20 @@ impl<V: View> Indexed<V> {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::{h, MockChain, Upgrades};
+    use zaino_primitives::testing::{h, MockChain};
+    use zaino_primitives::types::UpgradeSchedule;
     use zcash_protocol::consensus::NetworkUpgrade;
 
     use super::*;
 
-    /// Activations = the chain's schedule as its validator reports it (pending ones included);
-    /// network = the chain's label
+    /// Activations = the chain's schedule (pending ones included); network = the chain's label
     #[test]
-    fn chain_params_are_what_a_validator_following_the_chain_reports() {
-        let upgrades = Upgrades::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
+    fn chain_params_are_the_chains_schedule_under_its_label() {
+        let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
         let schedule = upgrades.without(NetworkUpgrade::Nu6_3);
-        let mut chain = MockChain::regtest().upgrades(schedule).network(NetworkType::Main);
-        let tip = chain.mine_empty(2);
+        let chain = MockChain::regtest().upgrades(schedule).network(NetworkType::Main);
         let activations = PoolActivations { sapling: h(1), orchard: Some(h(3)), ironwood: None };
         let expected = ChainParams { network: NetworkType::Main, activations };
-        assert_eq!(ChainParams::of(&chain, tip), expected);
+        assert_eq!(ChainParams::of(&chain), expected);
     }
 }

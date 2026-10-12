@@ -43,11 +43,12 @@ use zaino_persistence::{
     DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine, Schema,
 };
 use zaino_primitives::network::network_name;
-use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
+use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth, UpgradeSchedule};
 use zaino_snapshot::Publisher;
 use zaino_source::ChainDataSource;
 use zaino_sync::{FeeSink, FinalFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
+use zcash_protocol::consensus::NetworkType;
 
 use crate::config::{
     DaemonConfig, IndexConfig, ShutdownConfig, TrustedValidatorConfig, ValidatorClient,
@@ -77,11 +78,20 @@ pub(crate) async fn spawn_indexer(
     boot(config).await
 }
 
-/// Upgrade schedule from the first poll any trusted validator answers (catching up counts: its
-/// schedule is the network's)
-///
-/// - the one boot-time validator read (tree-state pool activations; never a compiled-in table)
+/// Mainnet/testnet: compiled in (no validator needed to boot); regtest: its validator's
 async fn upgrade_schedule<S: ChainDataSource>(
+    network: NetworkType,
+    balancer: &TrafficBalancer<S>,
+    validators: usize,
+) -> UpgradeSchedule {
+    match UpgradeSchedule::compiled(network) {
+        Some(schedule) => schedule,
+        None => UpgradeSchedule::reported(&regtest_schedule(balancer, validators).await),
+    }
+}
+
+/// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
+async fn regtest_schedule<S: ChainDataSource>(
     balancer: &TrafficBalancer<S>,
     validators: usize,
 ) -> BlockchainInfo {
@@ -121,7 +131,7 @@ async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError
 /// Chain view over the trusted validators (one `client` each) → pipeline over it → every task
 /// spawned
 ///
-/// - One balancer over every validator; its driver first (the upgrade schedule is a poll's)
+/// - One balancer over every validator; its driver first (regtest's upgrade schedule is a poll's)
 async fn boot_over<S: ChainDataSource>(
     config: DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
@@ -135,13 +145,13 @@ async fn boot_over<S: ChainDataSource>(
     let balancing = chainview.balancing.run(cancel.child_token());
     spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
-    let schedule = upgrade_schedule(&chainview.balancer, validators);
+    let schedule = upgrade_schedule(config.network, &chainview.balancer, validators);
     let schedule = schedule.instrument(chainview_span.clone()).await;
     let inputs = Inputs {
         chain: chainview.header_sync.subscribe(),
         view: Arc::clone(&chainview.view),
         balancer: chainview.balancer.clone(),
-        activations: PoolActivations::from_validator(&schedule),
+        activations: PoolActivations::new(&schedule),
     };
     let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
 
@@ -614,7 +624,7 @@ mod tests {
         let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
         let validator = Arc::new(MockValidator::following(&blocks, a8));
-        let activations = PoolActivations::from_validator(&blocks.blockchain_info(a8));
+        let activations = PoolActivations::new(&blocks.schedule().upgrades);
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
             zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };

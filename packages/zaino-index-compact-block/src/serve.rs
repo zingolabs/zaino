@@ -172,7 +172,8 @@ mod tests {
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, Overlay, PersistenceEngine, Schema,
         Store,
     };
-    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain, Upgrades};
+    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
+    use zaino_primitives::types::UpgradeSchedule;
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
     use zcash_protocol::consensus::NetworkType;
@@ -203,8 +204,9 @@ mod tests {
                 })
             }
         };
-        let mut chain =
-            MockChain::regtest().upgrades(Upgrades::all_at(h(0))).genesis_with(every_pool(0));
+        let mut chain = MockChain::regtest()
+            .upgrades(UpgradeSchedule::all_at(h(0)))
+            .genesis_with(every_pool(0));
         for at in 1..count {
             chain.mine(every_pool(at));
         }

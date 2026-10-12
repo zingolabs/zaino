@@ -3,10 +3,10 @@
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
-use zaino_primitives::types::{BlockchainInfo, ConsensusBranchId, Height, ShieldedPool};
-use zcash_protocol::consensus::BranchId;
+use zaino_primitives::types::{Height, ShieldedPool, UpgradeSchedule};
+use zcash_protocol::consensus::NetworkUpgrade;
 
-/// Height each pool's tree begins, from the validator's schedule (`None` = unscheduled)
+/// Height each pool's tree begins (`None` = unscheduled)
 ///
 /// - zebra's `z_gettreestate` omits a pool below its upgrade, lightwalletd then answers `""`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,16 +17,14 @@ pub struct PoolActivations {
 }
 
 impl PoolActivations {
-    /// Keyed by branch id: Sapling, NU5 (orchard), NU6.3 (ironwood)
-    pub fn from_validator(info: &BlockchainInfo) -> Self {
-        let activation = |branch: BranchId| {
-            let id = ConsensusBranchId::new(u32::from(branch));
-            info.upgrades.iter().find(|upgrade| upgrade.branch_id == id)
-        };
+    /// Sapling, NU5 (orchard), NU6.3 (ironwood)
+    pub fn new(schedule: &UpgradeSchedule) -> Self {
         Self {
-            sapling: info.sapling_activation,
-            orchard: activation(BranchId::Nu5).map(|upgrade| upgrade.activation_height),
-            ironwood: activation(BranchId::Nu6_3).map(|upgrade| upgrade.activation_height),
+            sapling: schedule
+                .activation(NetworkUpgrade::Sapling)
+                .expect("every schedule activates Sapling (compiled tables, getblockchaininfo)"),
+            orchard: schedule.activation(NetworkUpgrade::Nu5),
+            ironwood: schedule.activation(NetworkUpgrade::Nu6_3),
         }
     }
 
@@ -57,53 +55,22 @@ pub enum ServeError {
 mod tests {
     use super::*;
 
-    /// Keyed by branch id, not list order or name: Sapling, NU5 (orchard), NU6.3 (ironwood);
-    /// absent upgrade = `None`; pending = still its scheduled height
+    /// Sapling, NU5 (orchard), NU6.3 (ironwood) from the schedule; an unscheduled pool = `None`
     #[test]
-    fn pool_activations_come_from_the_validators_upgrade_schedule() {
-        use zaino_primitives::types::{
-            BlockHash, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
-        };
+    fn pool_activations_are_the_schedules_pool_upgrades() {
+        use zaino_primitives::testing::h;
 
-        let h = |n: u32| Height::try_from(n).expect("h");
-        let upgrade = |branch: u32, height: u32, status| NetworkUpgradeInfo {
-            branch_id: ConsensusBranchId::new(branch),
-            name: "label only".to_owned(),
-            activation_height: h(height),
-            status,
-        };
-        let info = |upgrades| BlockchainInfo {
-            blocks: h(3_500_000),
-            estimated_height: h(3_500_000),
-            best_block_hash: BlockHash::from([0u8; 32]),
-            sapling_activation: h(419_200),
-            upgrades,
-            consensus: ConsensusBranchIds {
-                chain_tip: ConsensusBranchId::new(0x37a5_165b),
-                next_block: ConsensusBranchId::new(0x37a5_165b),
-            },
-        };
-        let active = NetworkUpgradeStatus::Active;
-
-        let mainnet = info(vec![
-            upgrade(0x37a5_165b, 3_428_143, active),
-            upgrade(0xc8e7_1055, 2_726_400, active),
-            upgrade(0x76b8_09bb, 419_200, active),
-            upgrade(0xc2d6_d0b4, 1_687_104, active),
-        ]);
+        let mainnet = UpgradeSchedule::compiled(zcash_protocol::consensus::NetworkType::Main)
+            .expect("mainnet compiled in");
         let expected = PoolActivations {
             sapling: h(419_200),
             orchard: Some(h(1_687_104)),
             ironwood: Some(h(3_428_143)),
         };
-        assert_eq!(PoolActivations::from_validator(&mainnet), expected);
+        assert_eq!(PoolActivations::new(&mainnet), expected);
 
-        let pending = info(vec![
-            upgrade(0x76b8_09bb, 419_200, active),
-            upgrade(0x37a5_165b, 4_000_000, NetworkUpgradeStatus::Pending),
-        ]);
-        let expected =
-            PoolActivations { sapling: h(419_200), orchard: None, ironwood: Some(h(4_000_000)) };
-        assert_eq!(PoolActivations::from_validator(&pending), expected, "no NU5 = never orchard");
+        let no_nu5 = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu5);
+        let expected = PoolActivations { sapling: h(1), orchard: None, ironwood: Some(h(1)) };
+        assert_eq!(PoolActivations::new(&no_nu5), expected, "no NU5 = never orchard");
     }
 }

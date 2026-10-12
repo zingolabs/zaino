@@ -73,7 +73,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     assert_eq!(coinbase.transparent.outputs, [output], "genesis_with: genesis as stated");
     assert_ne!(funded.genesis(), genesis);
 
-    let upgrades = Upgrades::all_at(h(3)).with(NetworkUpgrade::Overwinter, h(1));
+    let upgrades = UpgradeSchedule::all_at(h(3)).with(NetworkUpgrade::Overwinter, h(1));
     let upgrades = upgrades.with(NetworkUpgrade::Sapling, h(1)).with(NetworkUpgrade::Nu7, h(5));
     let mut scheduled = MockChain::regtest().upgrades(upgrades);
     let six = scheduled.mine_empty(6);
@@ -199,15 +199,15 @@ fn each_impossible_construction_panics_naming_its_rule() {
             funded().mine(|b| b.tx(|t| t.txid([0x10; 32])));
         })),
         ("pool data before Sapling", Box::new(|| {
-            let mut chain = MockChain::regtest().upgrades(Upgrades::all_at(h(5)));
+            let mut chain = MockChain::regtest().upgrades(UpgradeSchedule::all_at(h(5)));
             chain.mine(|b| b.tx(|t| t.sapling_output(1)));
         })),
         ("pool data before Nu5", Box::new(|| {
-            let upgrades = Upgrades::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
+            let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
             MockChain::regtest().upgrades(upgrades).mine(|b| b.coinbase(|c| c.orchard_action([1; 32], 1)));
         })),
         ("pool data before Nu6.3", Box::new(|| {
-            let upgrades = Upgrades::all_at(h(1)).without(NetworkUpgrade::Nu6_3);
+            let upgrades = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu6_3);
             MockChain::regtest().upgrades(upgrades).mine(|b| b.tx(|t| t.ironwood_action([1; 32], 1)));
         })),
         ("nullifier revealed twice", Box::new(|| {
@@ -248,7 +248,7 @@ fn each_impossible_construction_panics_naming_its_rule() {
             funded().varied_work();
         })),
         ("Sapling at 5 activates before Overwinter", Box::new(|| {
-            let upgrades = Upgrades::all_at(h(6)).with(NetworkUpgrade::Sapling, h(5));
+            let upgrades = UpgradeSchedule::all_at(h(6)).with(NetworkUpgrade::Sapling, h(5));
             MockChain::regtest().upgrades(upgrades);
         })),
         ("above the best tip", Box::new(|| {

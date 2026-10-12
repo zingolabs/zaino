@@ -79,7 +79,7 @@ pub(super) fn indexed_at(
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
 ) -> Indexed<DiskView> {
-    let params = ChainParams::of(chain, tip);
+    let params = ChainParams::of(chain);
     Indexed::fixed(Arc::new(chain.verified(tip)), tip, params, views)
 }
 
