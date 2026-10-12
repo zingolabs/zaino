@@ -150,6 +150,25 @@ async fn a_stream_spanning_all_three_providers_is_contiguous() {
     assert_eq!(heights, (98..=1102).collect::<Vec<_>>());
 }
 
+/// The store's writer a few blocks behind the window's floor, streamed from a
+/// wallet birthday. Splitting at the floor rather than the watermark once
+/// skipped the blocks between them, failing wallet sync with a rewind to 0
+/// (#1611).
+#[tokio::test]
+async fn a_store_lagging_below_the_window_floor_streams_contiguously() {
+    let chain = chain();
+    let snapshot = view(&chain, 5, 8, 107).snapshot();
+
+    let chunks: Vec<_> = snapshot
+        .stream_compact(height(1), height(107), PoolFilter::all())
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("serviceable");
+
+    let heights: Vec<u32> = chunks.into_iter().flatten().map(|b| b.height).collect();
+    assert_eq!(heights, (1..=107).collect::<Vec<_>>());
+}
+
 /// Every range read streams descending when `start > end`, contiguous across
 /// all three providers.
 #[tokio::test]
