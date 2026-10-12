@@ -16,8 +16,10 @@ mod chainview;
 pub mod cli;
 mod config;
 mod disk_monitor;
+mod egress;
 pub mod error;
 mod fd_limit;
+pub mod hold;
 mod indexer;
 pub mod logging;
 mod metrics;
@@ -47,8 +49,11 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     config.validate()?;
     // Before the snapshot bootstrap (`/statusz` lists the configured indexes from the start)
     crate::status::configure(
+        config.network,
         zaino_nfs::INDEXES.into_iter().filter(|kind| config.enabled(*kind).is_some()),
     );
+    // Before the snapshot bootstrap (a held node reads held from its first answer)
+    crate::hold::spawn(config.serve.state_dir.clone(), config.grpc.shutdown.delay());
     config.warn_about_metrics_listener();
     // Before the snapshot bootstrap (its progress extends systemd's start timeout)
     crate::notify::spawn();

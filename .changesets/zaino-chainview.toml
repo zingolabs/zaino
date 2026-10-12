@@ -110,3 +110,12 @@ migration = """
 Build the header chain with `HeaderChain::new(depth)` (no store, no `Params`) and spawn \
 `header_sync.run(cancel)` as an infallible task.
 """
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "feature"
+section = "added"
+description = """
+Feature `testing`: `ChainViewSnapshot::endpoint(at, health, behind)` sets one endpoint's health \
+and its clock estimate `behind` blocks past its tip, alarms re-derived as a fold would.
+"""

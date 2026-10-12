@@ -9,6 +9,12 @@
 # - declared, never read off the validator (Zebra on regtest reports "test")
 network = "testnet"
 
+# How zainod talks to every [[trusted_validators]] entry (default legacy_rpc)
+# - legacy_rpc = JSON-RPC for everything (zebrad or zcashd); blocks arrive as hex inside JSON
+# - grpc = blocks over zebrad's indexer gRPC as stored bytes (no hex, no JSON; needs each
+#   validator's indexer_address and a zebrad serving GetBlockRange), everything else over JSON-RPC
+# validator_client = "grpc"
+
 # Admin listener (/metrics, /livez, /readyz, /statusz). Omit listen_address to disable.
 # [metrics]
 # listen_address = "127.0.0.1:9999"
@@ -34,7 +40,8 @@ jsonrpc_address = "127.0.0.1:18232"
 # max_connections = 32
 # max_mib_per_sec = 8
 # zebrad's indexer gRPC (its `indexer_listen_addr`): tip + mempool push streams wake polling at
-# once; polling slows to a 15 s reconcile while they are up. Unset = poll every second
+# once; polling slows to a 15 s reconcile while they are up. Unset = poll every second.
+# validator_client = "grpc" fetches blocks here too (then required)
 # indexer_address = "127.0.0.1:8230"
 # Tier: every 0 asked before any 1 (a farther validator = 1: overflow + hedges only)
 # priority = 0
@@ -64,6 +71,9 @@ max_attempts = 4
 grpc_listen_address = "127.0.0.1:8137"
 # Max transparent receives one address request walks (all its addresses); over = RESOURCE_EXHAUSTED
 # max_address_rows = 100000
+# zainod's own state, kept across restarts (`zainod hold` writes its marker here);
+# default <data dir>/zaino/state
+# state_dir = "/var/lib/zainod"
 
 # TLS on the gRPC listener (rustls + ring); PEM files re-read on change (renewal = no restart)
 # [serve.tls]
@@ -80,6 +90,9 @@ max_connections_per_ip = 32
 max_streams_per_connection = 8
 # work streams across all connections; excess = UNAVAILABLE + retry hint
 max_streams = 2048
+# work streams admitted at once follow measured latency, max_streams the ceiling: a saturated
+# node refuses new work within seconds (UNAVAILABLE + retry hint); false = always max_streams
+adaptive_streams = true
 # GetMempoolStream subscriptions (idle until the next block), counted apart from max_streams
 max_subscriptions = 4096
 # index reads in flight on the blocking pool, per lane; excess waits in its own lane
@@ -91,6 +104,13 @@ max_scan_reads = 4
 # - data its client does not read for this long closes its connection
 # - nothing to send for this long ends it UNAVAILABLE (GetMempoolStream exempt)
 stall_timeout_secs = 300
+# GOAWAY after this long (±10% per connection): the client reconnects and re-resolves DNS, so a
+# load balancer or a replaced node moves long-held wallet connections; 0 = never
+max_connection_age_secs = 1800
+# in-flight streams of a GOAWAY'd connection get this long to finish (a whole GetBlockRange sync)
+max_connection_age_grace_secs = 600
+# GOAWAY a connection with no open stream for this long (frees its per-client slot); 0 = never
+max_connection_idle_secs = 1800
 # proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
 trusted_proxies = []
 

@@ -216,6 +216,8 @@ pub(crate) struct ServeConfig {
     /// TLS on the gRPC listener (absent = plaintext HTTP/2, for a TLS-terminating proxy)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tls: Option<TlsConfig>,
+    /// zainod's own state, kept across restarts (`zainod hold` writes its marker here)
+    pub(crate) state_dir: PathBuf,
 }
 
 /// PEM pair the gRPC listener terminates TLS with (rustls + ring)
@@ -236,6 +238,7 @@ impl Default for ServeConfig {
             grpc_listen_address: "127.0.0.1:8137".parse().expect("valid default addr"),
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
             tls: None,
+            state_dir: crate::paths::default_state(),
         }
     }
 }
@@ -273,6 +276,19 @@ pub(crate) struct GrpcConfig {
     /// send that long ends it `UNAVAILABLE` (`GetMempoolStream` exempt). The client's own
     /// `grpc-timeout` is honoured as its deadline.
     pub(crate) stall_timeout_secs: NonZeroU64,
+    /// Seconds a connection lives (±10% each) before a GOAWAY makes its client reconnect and
+    /// re-resolve DNS, so a load balancer or a replaced node moves long-held wallet connections
+    /// (gRPC A9). 0 = never.
+    pub(crate) max_connection_age_secs: u64,
+    /// Seconds a GOAWAY'd connection's in-flight streams get to finish before it closes
+    pub(crate) max_connection_age_grace_secs: u64,
+    /// Seconds a connection may hold no open stream before a GOAWAY closes it (frees its slot
+    /// in the per-client cap). 0 = never.
+    pub(crate) max_connection_idle_secs: u64,
+    /// Work streams admitted at once follow measured latency (Gradient2), `max_streams` the
+    /// ceiling: a saturated node refuses new work (`UNAVAILABLE` + retry hint) within seconds
+    /// while admitted work stays fast. `false` = always `max_streams`.
+    pub(crate) adaptive_streams: bool,
     /// Proxy CIDRs opening every connection with a PROXY header (v1/v2) naming the client
     ///
     /// - From one of them without a header = closed
@@ -334,6 +350,10 @@ impl Default for GrpcConfig {
             max_scan_reads: limits.max_scan_reads,
             stall_timeout_secs: NonZeroU64::new(limits.stall_timeout.as_secs())
                 .expect("the default stall timeout is whole, non-zero seconds"),
+            max_connection_age_secs: limits.max_connection_age.map_or(0, |age| age.as_secs()),
+            max_connection_age_grace_secs: limits.max_connection_age_grace.as_secs(),
+            max_connection_idle_secs: limits.max_connection_idle.map_or(0, |idle| idle.as_secs()),
+            adaptive_streams: limits.adaptive_streams,
             trusted_proxies: Vec::new(),
             shutdown: ShutdownConfig::default(),
         }
@@ -353,8 +373,19 @@ impl From<&GrpcConfig> for GrpcLimits {
             max_scan_reads: config.max_scan_reads,
             stall_timeout: std::time::Duration::from_secs(config.stall_timeout_secs.get()),
             drain_timeout: config.shutdown.timeout(),
+            max_connection_age: secs_or_never(config.max_connection_age_secs),
+            max_connection_age_grace: std::time::Duration::from_secs(
+                config.max_connection_age_grace_secs,
+            ),
+            max_connection_idle: secs_or_never(config.max_connection_idle_secs),
+            adaptive_streams: config.adaptive_streams,
         }
     }
+}
+
+/// 0 = `None` (never)
+fn secs_or_never(secs: u64) -> Option<std::time::Duration> {
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
 }
 
 /// `[sync]`: the one block-fetch pipeline + the budgets every index shares
@@ -511,6 +542,14 @@ impl SnapshotConfig {
     }
 }
 
+/// `ZcashLegacyRpcClient` or `ZcashGrpcClient`, one for every validator
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ValidatorClient {
+    LegacyRpc,
+    Grpc,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct DaemonConfig {
@@ -519,6 +558,10 @@ pub(crate) struct DaemonConfig {
     /// - Declared, never derived (regtest Zebra reports `"test"` over `getblockchaininfo`)
     #[serde(with = "NetworkDef")]
     pub(crate) network: NetworkType,
+    /// How Zaino talks to every `[[trusted_validators]]` entry: `legacy_rpc` (JSON-RPC for
+    /// everything; zebrad or zcashd) or `grpc` (blocks over zebrad's indexer gRPC at each
+    /// validator's `indexer_address`, as stored bytes with no hex or JSON; the rest over JSON-RPC)
+    pub(crate) validator_client: ValidatorClient,
     /// Admin listener (`/metrics` + probes)
     pub(crate) metrics: MetricsConfig,
     /// `[[trusted_validators]]`, >= 1
@@ -547,6 +590,8 @@ impl Default for DaemonConfig {
         Self {
             // Mainnet = the deployment target; testnet/regtest operators declare theirs
             network: NetworkType::Main,
+            // every validator speaks it (zcashd has no indexer gRPC)
+            validator_client: ValidatorClient::LegacyRpc,
             metrics: MetricsConfig::default(),
             trusted_validators: vec![TrustedValidatorConfig::default()],
             serve: ServeConfig::default(),
@@ -623,6 +668,14 @@ impl DaemonConfig {
             if !addresses.insert(&validator.jsonrpc_address) {
                 return Err(IndexerError::ConfigError(format!(
                     "[[trusted_validators]] lists {} twice: one validator counted as two",
+                    validator.jsonrpc_address
+                )));
+            }
+            if self.validator_client == ValidatorClient::Grpc && validator.indexer_address.is_none()
+            {
+                return Err(IndexerError::ConfigError(format!(
+                    "validator_client = \"grpc\" but [[trusted_validators]] {} has no \
+                     indexer_address (zebrad's indexer_listen_addr)",
                     validator.jsonrpc_address
                 )));
             }
@@ -887,6 +940,21 @@ path = "/tmp/zaino-compact-block"
             let parsed = toml::from_str::<DaemonConfig>(&format!("[grpc]\n{zeroed} = 0\n"));
             assert!(parsed.is_err(), "{zeroed} = 0 serves nothing");
         }
+
+        let lifetime: DaemonConfig = toml::from_str(
+            "[grpc]\nmax_connection_age_secs = 0\nmax_connection_age_grace_secs = 60\n\
+             max_connection_idle_secs = 120\nadaptive_streams = false\n",
+        )
+        .expect("deserialise");
+        let limits = GrpcLimits::from(&lifetime.grpc);
+        let secs = std::time::Duration::from_secs;
+        let parsed = (
+            limits.max_connection_age,
+            limits.max_connection_age_grace,
+            limits.max_connection_idle,
+            limits.adaptive_streams,
+        );
+        assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
     }
 
     /// - Off (default, or `enabled = false` beside durations) = no readiness window, no grace
@@ -1049,9 +1117,23 @@ path = "/tmp/zaino-compact-block"
         let twice = vec![entry("zebra-eu:8232"), entry("zebra-eu:8232")];
         let twice = DaemonConfig { trusted_validators: twice, ..config.clone() };
         assert!(refused(twice).contains("twice"));
-        let starved = vec![TrustedValidatorConfig { max_connections: n(4), ..eu }];
-        let starved = DaemonConfig { trusted_validators: starved, ..config };
+        let starved = vec![TrustedValidatorConfig { max_connections: n(4), ..eu.clone() }];
+        let starved = DaemonConfig { trusted_validators: starved, ..config.clone() };
         assert!(refused(starved).contains("max_connections = 4 is below 5"));
+
+        assert_eq!(config.validator_client, ValidatorClient::LegacyRpc, "the default");
+        let grpc =
+            load_config(&write(&dir, "grpc.toml", &format!("validator_client = \"grpc\"\n{toml}")));
+        let grpc = grpc.expect("load");
+        assert_eq!(grpc.validator_client, ValidatorClient::Grpc);
+        assert!(
+            refused(grpc.clone()).contains("127.0.0.1:18232 has no indexer_address"),
+            "grpc: every validator needs its indexer"
+        );
+        let indexed = DaemonConfig { trusted_validators: vec![eu], ..grpc };
+        assert!(indexed.validate().is_ok(), "grpc with every indexer_address set");
+        let unknown = format!("validator_client = \"rest\"\n{toml}");
+        assert!(load_config(&write(&dir, "unknown.toml", &unknown)).is_err(), "unknown client");
 
         for (name, removed) in [
             ("source.toml", "[source]\njsonrpc_address = \"127.0.0.1:8232\"\n"),

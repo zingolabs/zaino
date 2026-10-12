@@ -5,6 +5,7 @@
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
 //!   not synced
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` `disk`)
+//! - blocks/s over the last two intervals (`/statusz` `progress.rate`)
 
 use std::{
     collections::BTreeMap,
@@ -53,17 +54,19 @@ struct Sample {
     blocks: u64,
 }
 
-/// Until `cancel`; each walk lands in `disk`
+/// Until `cancel`; each walk lands in `disk`, each tick's blocks/s over the last two in `rate`
 pub(crate) async fn run(
     snapshots: Snapshots<DiskView>,
     progress: SyncProgress,
     indexes: Vec<Index>,
     disk: watch::Sender<Disk>,
+    rate: watch::Sender<Option<f64>>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), IndexerError> {
     let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_INTERVAL, REPORT_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last = Sample { at: Instant::now(), blocks: progress.blocks() };
+    let mut before_last = last;
     let mut walked: Option<Instant> = None;
     loop {
         tokio::select! {
@@ -81,6 +84,8 @@ pub(crate) async fn run(
         let views = crate::disk_monitor::views(&indexes);
         tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
         let now = Sample { at: Instant::now(), blocks: progress.blocks() };
+        let elapsed = (now.at - before_last.at).as_secs_f64();
+        rate.send_replace(Some((now.blocks - before_last.blocks) as f64 / elapsed));
         let snap = snapshots.load();
         let tips = snap.tips();
         if let (Some(best), handed) = (tips.best, progress.handed()) {
@@ -97,7 +102,7 @@ pub(crate) async fn run(
                 index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
             }
         }
-        last = now;
+        (before_last, last) = (last, now);
     }
 }
 

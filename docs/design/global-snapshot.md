@@ -59,11 +59,13 @@ impl<V: View> Snapshot<V> {
     pub fn lightd(&self) -> Result<(&BlockchainInfo, Height), Unavailable>;  // holder's + served
     pub fn view(&self) -> &ChainViewSnapshot;                        // validator facts, alarms
     pub fn indexed(&self) -> Option<&Arc<Indexed<V>>>;               // memo identity (§4)
-    pub fn unready(&self) -> impl Iterator<Item = Unready> + '_;
+    pub fn standing(&self) -> Standing;                              // first match, below
+    pub fn sync_target(&self) -> Option<Height>;                     // best, or a catching-up estimate
 }
 
 pub enum Unavailable { NoChain, NotHeld { height: u32, configured: usize }, NothingServed }
-pub enum Unready { HeadersSyncing, TipNotHeld, Syncing }             // today's reason strings
+pub enum Standing { Serving, Syncing, Down(Down) }                   // zainod's /statusz `state`
+pub enum Down { NoValidatorReachable, TipNotHeld }                   // `detail()` = its sentence
 ```
 
 The NFS's `Snapshot` becomes `Indexed`, published on a watch the publisher alone reads:
@@ -223,7 +225,6 @@ let snap = self.routes.snapshots.load();
 pub struct Report {
     seq: u64,
     tips: TipsReport,                   // best, final, served, held_by/configured, synced
-    unready: Vec<&'static str>,         // Unready::label, in order
     handed: Option<u32>,                // SyncProgress::handed
     indexes: Vec<IndexReport>,          // name, enabled (config's), durable (null until NFS publishes)
     validators: Vec<ValidatorReport>,   // view facts ⨝ MemberTable (state, latency_ms, failures)
@@ -240,8 +241,8 @@ pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>);     // syn
 
 | Surface | Reads | When |
 | ------------- | ------------------------------------------------------------------------------------- | ---------- |
-| `/readyz` | `snap.unready()` + draining + heartbeat (`starting` / `snapshot_*` before boot) | per probe |
-| `/statusz` | `Report::of` (`serde(flatten)`) + zainod's `version`, `network`, `uptime_s`, `ready`, `reasons`, `grpc.sent_bytes`, `disk` | per request |
+| `/readyz` | `state` + `detail`: draining, provisioning (before boot), heartbeat, then `snap.standing()` | per probe |
+| `/statusz` | `Report::of` (`serde(flatten)`) + zainod's `version`, `network`, `uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `grpc.sent_bytes`, `disk` | per request |
 | `/metrics` | `emit_gauges(snap, progress)` then `render()` (admin thread, `spawn_blocking`) | per scrape |
 | edge logs | publisher `transitions(prev, next)` | per publish |
 | progress logs | one zainod task: `Syncing` (handed, best, bps, eta, per-index durable); disk walk 120 s | 30 s |
@@ -342,7 +343,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
 - nfs: prune by `holds` (G8 in `Graph::check`); `At`, `Branch`, `Snapshot::{at, served, folded, durable}` (the phase-1 name of `Indexed`); republish per commit; `Nfs::indexed()`; `INDEXES`
 - chain view: `ChainViewSnapshot::{chain, arrivals}`, `ChainViewSubscriber::subscribe_published`,
   `ChainViewSnapshot::fixed` (testing)
-- `zaino-snapshot`: `Snapshot`, `Tips`, `Unavailable`, `Unready`, `ForkView`, the served-keyed
+- `zaino-snapshot`: `Snapshot`, `Tips`, `Unavailable`, `Standing`, `ForkView`, the served-keyed
   feed, `Publisher` / `Snapshots` (`compose`, `check`), `Report`, `emit_gauges`, `transitions`
 
 **Phase 2 (call sites; deletions; built 2026-10-07)**
@@ -366,7 +367,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
   `track_index` + `publish_*`, `INDEX_*` describes, `status.rs` `Sources` / `IndexSource` /
   per-field mapping and the `synced` watch gone; one `progress` task (sync + per-index lines,
   disk walk); `/statusz` = `Report::of` + process fields, `/readyz` = draining + heartbeat +
-  `unready()`, `/metrics` = `emit_gauges` then render; `snapshot.rs` → `bootstrap.rs`
+  `standing()`, `/metrics` = `emit_gauges` then render; `snapshot.rs` → `bootstrap.rs`
 - tests: golden `Report` + gauges (snapshot); `every_rpc_agrees_on_one_snapshot` (grpc); the
   pipeline reorg test opens a `GetMempoolStream` at A8, sees it end on the reorg, then a
   `GetLatestBlock` never A8, then a scrape holding every ztest family the process emits

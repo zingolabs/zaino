@@ -3,12 +3,14 @@
 use core::fmt;
 
 /// Machine-readable no-answer class (decisions match on this, never on messages)
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailureMode {
     Connection,
     Timeout,
     HttpStatus(u16),
     RpcError(i64),
+    /// The indexer gRPC's status code (`tonic::Code` as `i32`; transport losses = `Connection`)
+    GrpcStatus(i32),
     Parse,
     Auth,
 }

@@ -4,6 +4,7 @@
 //! - Close-out in the body's `Drop` (a client walking away mid-stream = measured like any end)
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -14,17 +15,20 @@ use zaino_proto::frame::{framed_len, FRAME_HEADER};
 
 use crate::admission::AtCapacity;
 use crate::emit::{self, Method};
+use crate::lifetime::{Activity, Open};
 use crate::report;
 
-/// Each request timed, its body's writes counted
+/// Each request timed, its body's writes counted, held open on its connection's `activity` until
+/// the body drops
 #[derive(Clone, Debug)]
 pub(crate) struct Measured<Inner> {
     inner: Inner,
+    activity: Arc<Activity>,
 }
 
 impl<Inner> Measured<Inner> {
-    pub(crate) fn new(inner: Inner) -> Self {
-        Self { inner }
+    pub(crate) fn new(inner: Inner, activity: Arc<Activity>) -> Self {
+        Self { inner, activity }
     }
 }
 
@@ -62,6 +66,7 @@ where
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let method = Method::of(request.uri().path());
         let started = Instant::now();
+        let open = self.activity.opened();
 
         // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
         let mut inner = self.inner.clone();
@@ -84,6 +89,7 @@ where
                 message: message.flatten(),
                 at_capacity,
                 ended: false,
+                _open: open,
             }))
         })
     }
@@ -104,6 +110,7 @@ pub(crate) struct Counted<Inner> {
     message: Option<String>,
     at_capacity: bool,
     ended: bool,
+    _open: Open,
 }
 
 impl<Inner: Body<Data = bytes::Bytes> + Unpin> Body for Counted<Inner> {

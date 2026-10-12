@@ -52,7 +52,6 @@ const AGREEMENTS: [Agreement; 5] = [
 pub struct Report {
     seq: u64,
     tips: TipsReport,
-    unready: Vec<&'static str>,
     handed: Option<u32>,
     indexes: Vec<IndexReport>,
     validators: Vec<ValidatorReport>,
@@ -250,7 +249,6 @@ impl Report {
                 configured: endpoints.len(),
                 synced: tips.synced,
             },
-            unready: snap.unready().map(|reason| reason.label()).collect(),
             handed: progress.handed().map(u32::from),
             indexes,
             validators,
@@ -271,6 +269,30 @@ impl Report {
             forks: forks.collect(),
         }
     }
+}
+
+/// One sentence per raised alarm (`/statusz` `notes`), in `AlarmsReport` order
+pub fn notes<V>(snap: &Snapshot<V>) -> Vec<String> {
+    let alarms = snap.view().alarms();
+    let counted = |count: usize, one: &str, many: &str| match count {
+        0 => None,
+        1 => Some(format!("1 {one}")),
+        count => Some(format!("{count} {many}")),
+    };
+    let flags = [
+        (alarms.partitioned(), "Two live validators share no outbound peer (possible partition)"),
+        (alarms.eclipsed(), "Live validators reach few distinct outbound peers (possible eclipse)"),
+        (alarms.finality_paused(), "Finality paused: no trusted validator holds the boundary"),
+    ];
+    let flags = flags.into_iter().filter(|(raised, _)| *raised).map(|(_, note)| note.to_owned());
+    let stale =
+        counted(alarms.stale().count(), "validator on a stale tip", "validators on a stale tip");
+    let ending = counted(
+        alarms.ending().count(),
+        "validator release reaches end of service within a week",
+        "validator releases reach end of service within a week",
+    );
+    flags.chain(stale).chain(ending).collect()
 }
 
 fn block(at: BlockRef) -> Block {

@@ -16,8 +16,11 @@ async fn main() {
 
     let cli = Cli::parse();
 
-    // logging → stdout by default (reserved for `verify`'s JSON)
-    if !matches!(cli.command, Command::Verify { .. }) {
+    // logging → stdout by default (reserved for `verify`'s JSON and `hold`/`resume`'s state)
+    if !matches!(
+        cli.command,
+        Command::Verify { .. } | Command::Hold { .. } | Command::Resume { .. }
+    ) {
         if let Err(error) = zainodlib::logging::init() {
             eprintln!("Error: logging: {error}");
             std::process::exit(2);
@@ -36,6 +39,16 @@ async fn main() {
         Command::Verify { config } => {
             let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
             std::process::exit(zainodlib::verify::run(&config_path));
+        }
+        Command::Hold { config } => {
+            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
+            let action = zainodlib::hold::Action::Hold;
+            std::process::exit(zainodlib::hold::command(&config_path, action));
+        }
+        Command::Resume { config } => {
+            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
+            let action = zainodlib::hold::Action::Resume;
+            std::process::exit(zainodlib::hold::command(&config_path, action));
         }
     }
 }

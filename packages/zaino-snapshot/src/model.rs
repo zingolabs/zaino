@@ -24,7 +24,7 @@ use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
 
 use crate::publisher::Core;
-use crate::{MempoolTail, Snapshot, Tips, Unready};
+use crate::{Down, MempoolTail, Standing, Tips};
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
@@ -68,8 +68,8 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// Every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6), unready
-    /// reasons; every tail = its epoch exactly, ended iff the served tip moved past it (G5)
+    /// Every publish: seq + 1, tips = the naive tips of the latest inputs (G2–G4, G6),
+    /// standing; every tail = its epoch exactly, ended iff the served tip moved past it (G5)
     #[test]
     fn every_publish_composes_the_latest_inputs_and_tails_follow_the_served_tip(moves in moves()) {
         run(moves);
@@ -246,7 +246,7 @@ fn run(moves: Vec<(Input, bool)>) {
             seq += 1;
             let snap = handle.load();
             assert_eq!((snap.seq(), snap.tips()), (seq, expected), "{context}: G2-G4 tips");
-            assert_eq!(unready(&snap), unready_of(&expected), "{context}: unready");
+            assert_eq!(snap.standing(), standing_of(&expected), "{context}: standing");
         }
         let snap = handle.load();
         if matches!(input, Input::Tail) {
@@ -285,18 +285,11 @@ fn run(moves: Vec<(Input, bool)>) {
     }
 }
 
-fn unready<V>(snap: &Snapshot<V>) -> Vec<Unready> {
-    snap.unready().collect()
-}
-
-/// `/readyz` reasons from tips alone (a chain always verified here)
-fn unready_of(tips: &Tips) -> Vec<Unready> {
-    let mut reasons = Vec::new();
-    if tips.held_by.is_empty() {
-        reasons.push(Unready::TipNotHeld);
+/// From tips alone (a chain always verified; holders `Live`, the rest `Pending`)
+fn standing_of(tips: &Tips) -> Standing {
+    match (tips.held_by.is_empty(), tips.synced) {
+        (true, _) => Standing::Down(Down::TipNotHeld),
+        (false, false) => Standing::Syncing,
+        (false, true) => Standing::Serving,
     }
-    if !tips.synced {
-        reasons.push(Unready::Syncing);
-    }
-    reasons
 }

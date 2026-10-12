@@ -114,7 +114,7 @@ or SIGTERM cancels them all and waits for each index to commit what it holds bef
 0. If the NFS, the publisher or the gRPC server stops on its own, it stops the rest the same
 way and zainod exits 1. While syncing, `GetLatestBlock` reports the served tip (`/statusz`
 `tips.served`, the lowest index tip), a request naming a height answers up to its own index's
-tip, and `/readyz` reports `syncing` until the served tip is the verified best. A
+tip, and `/readyz` reports state `syncing` until the served tip is the verified best. A
 trusted validator going away never stops zainod: its poller retries until it answers.
 
 ## Status
@@ -127,7 +127,10 @@ listener) shows it:
 ```json
 {
   "version": "0.10.1", "network": "main", "uptime_s": 5321,
-  "ready": false, "reasons": ["syncing"],
+  "ready": false, "state": "syncing", "detail": null,
+  "progress": { "done": 3503023, "total": 3506659, "unit": "block", "rate": 412.5 },
+  "notes": [],
+  "load": { "limit": 310, "in_flight": 290, "refused_per_s": 0.0, "overloaded": false },
   "grpc": { "sent_bytes": 1048576 },
   "disk": { "compact_block": { "size_bytes": 4100000000, "tables": { "<subdirectory>": 4099000000 } } },
   "seq": 18234,
@@ -135,7 +138,6 @@ listener) shows it:
     "best": { "height": 3506659, "hash": "0000…" }, "final": { "height": 3506559, "hash": "0000…" },
     "served": { "height": 3503023, "hash": "0000…" }, "held_by": 2, "configured": 2, "synced": false
   },
-  "unready": ["syncing"],
   "handed": 3503030,
   "indexes": [{ "name": "compact_block", "enabled": true, "durable": 3502900 }],
   "validators": [{
@@ -149,21 +151,27 @@ listener) shows it:
 }
 ```
 
+- `state` = `provisioning`, `syncing`, `serving`, `draining` or `down` (`ready` = `serving`,
+  the only state `/readyz` answers `200` for, with body `{"state", "detail"}`); `detail` = why,
+  only when `down`; `progress` = `{done, total, unit, rate}`, only while provisioning or
+  syncing; `notes` = one sentence per raised alarm. Rules:
+  [zainod: admin endpoints](../packages/zainod/usage.md)
 - `tips.best` = the header chain's most-work verified block; `served` = the block every
   request answers at (`GetLatestBlock`); `held_by` of `configured` = trusted validators
   holding `best` (0 = mempool and `GetLightdInfo` refused); `synced` = `served` reached
-  `best` (the `syncing` reason)
+  `best`
 - `handed` = the last block handed to the indexes (moves between their commits);
   `indexes[].durable` = each index's committed height
 - `validators[]`: `state`, `latency_ms`, `failures` = the traffic balancer's; the rest = the
   validator's last poll (`release.end_of_service` = `{"status": "at", height,
   estimated_unix, blocks_left}`, `not_enforced` or `unknown`)
 - `forks[]` = side branches of the verified chain (`cumulative_work` a decimal string)
-- Before boot: `{"ready": false, "reasons": ["starting"]}`, or a `snapshot_<phase>` reason
-  and a `snapshot` progress object while an index snapshot bootstraps
+- Before boot: `ready`, `state` `provisioning` (or `down` while waiting on the first validator
+  answer), `progress`, `detail`, `notes` and the configured `indexes`, plus a `snapshot` object
+  while an index snapshot bootstraps
 
 Behind a load balancer that routes by polling `/readyz`, turn on `[grpc.shutdown]`.
-From the signal on, `/readyz` fails with `draining` while zainod keeps serving for
+From the signal on, `/readyz` fails with state `draining` while zainod keeps serving for
 `delay_secs`, so the balancer stops sending clients before the listener closes. The
 listener then closes, every open connection is sent an HTTP/2 GOAWAY, and zainod waits
 up to `timeout_secs` for their in-flight streams before it exits. A second signal

@@ -1,4 +1,6 @@
-//! The ports over zebrad's JSON-RPC
+//! [`ZcashLegacyRpcClient`]: every question over the validator's JSON-RPC (zebrad or zcashd)
+//!
+//! - blocks = `getblock … 0` hex in JSON: one SIMD hex pass into an exact-size buffer
 
 use std::path::Path;
 
@@ -16,11 +18,14 @@ use crate::{
 };
 
 /// One validator's link; single attempt per call (retries, concurrency = the caller's balancer)
-pub struct ZebraRpcAdapter {
-    rpc: RpcClient,
+///
+/// - `rpc` `pub(crate)`: [`ZcashGrpcClient`](crate::ZcashGrpcClient) asks the rest through it and
+///   shares its metric label + byte pacing
+pub struct ZcashLegacyRpcClient {
+    pub(crate) rpc: RpcClient,
 }
 
-impl ZebraRpcAdapter {
+impl ZcashLegacyRpcClient {
     /// Validator at `address` (`host:port`), unprobed (down at boot = the first call's failure +
     /// the caller's retry, never a boot failure)
     pub fn at(
@@ -164,7 +169,7 @@ fn mempool_unavailable_or_fetch(error: RpcError) -> QueryError<GetMempoolListing
 /// Headers per `getblockheader` batch (~3 KB hex each: ~1.5 MB reply)
 const LINK_BATCH_CALLS: usize = 500;
 
-impl crate::ChainDataSource for ZebraRpcAdapter {
+impl crate::ChainDataSource for ZcashLegacyRpcClient {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -290,7 +295,7 @@ impl crate::ChainDataSource for ZebraRpcAdapter {
         &self,
         transaction: Vec<u8>,
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
-        let params = vec![hex::encode(transaction).into()];
+        let params = vec![const_hex::encode(transaction).into()];
         self.call_parsed("sendrawtransaction", params, parse::as_txid, |error| {
             let error: NonDomainError = error.into();
             match submission_rejection(&error) {

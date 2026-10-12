@@ -15,17 +15,17 @@ use crate::{NonDomainError, QueryError};
 
 /// One trusted validator's RPC, as every Zaino consumer asks it
 ///
-/// - production = `ZebraRpcAdapter`; a test fake answers what its test asks (`unimplemented!()`
-///   the rest)
+/// - production = `ZcashLegacyRpcClient` or `ZcashGrpcClient` (`zainod`'s `validator_client`); a
+///   test fake answers what its test asks (`unimplemented!()` the rest)
 pub trait ChainDataSource: Send + Sync + 'static {
-    /// `getblock <hash> 0`, decoded from consensus bytes
+    /// The block with `hash` on the validator's best chain, decoded from consensus bytes
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 
-    /// `getblock "<height>" 0` per height in one batched request: best-chain blocks, decoded from
-    /// consensus bytes, `heights` order
+    /// The validator's best-chain block at each height, decoded from consensus bytes, `heights`
+    /// order
     ///
     /// - any height absent = `HeightNotFound` for it (the batch is all or nothing)
     fn get_blocks_by_height(

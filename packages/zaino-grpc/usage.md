@@ -108,8 +108,19 @@ hyper-util's HTTP/2 server around the path dispatch, not
 `tonic::transport::Server`, so the accept loop is zaino's:
 
 ```text
-accept ─ total cap ─ client identity ─ per-client cap ─ h2 conn ─ admission ─ dispatch
+accept ─ total cap ─ client identity ─ per-client cap ─ h2 / HTTP/1.1 conn ─ health ─ admission ─ dispatch
 ```
+
+- **Health** (`with_health(Arc<dyn Health>)`): `GET /readyz` (`Health::readyz` → `200` / `503`)
+  and `GET /status` (`Health::status`, always `200`) are answered on this listener over
+  HTTP/1.1 or h2, before admission, so they never take a work permit.
+  - TLS offers ALPN `h2` then `http/1.1`, so load-balancer monitors connect over HTTPS/1.1.
+  - Each connection may send 10 at once and regains one per second; past that the answer is `429`.
+  - A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`.
+  - Without `with_health`, those paths go to the gRPC stack like any other.
+- `load()` → `Load::report()` also carries `overloaded`: ≥ 10% of work refused (at ≥ 1/s,
+  averaged over 60 s) for 5 minutes straight, cleared after 5 minutes under 2%.
+- `lightd_info(snap, network)` = `GetLightdInfo`'s answer off a snapshot (`None` = `UNAVAILABLE`).
 
 Every cap refuses; none queues except the read lanes:
 
@@ -118,14 +129,41 @@ Every cap refuses; none queues except the read lanes:
 | `max_connections` | 4096 | accept | socket closed |
 | `max_connections_per_ip` | 32 | once the client is named | socket closed |
 | `max_streams_per_connection` | 8 | h2 `SETTINGS` | peer cannot open one |
-| `max_streams` | 2048 | admission, every method but `GetMempoolStream` | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
+| `max_streams` | 2048 | admission, every method but `GetMempoolStream` (the adaptive limit's ceiling) | `UNAVAILABLE` + `grpc-retry-pushback-ms: 250` |
+| `adaptive_streams` | on | admission, same methods: the latency-adaptive limit (below) | same |
 | `max_subscriptions` | 4096 | admission, `GetMempoolStream` | same |
 | `max_point_reads` | 64 | one block / tree state / root list off the files | bounded wait |
 | `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
 | `max_scan_reads` | 4 | one address-history scan | bounded wait |
 | `stall_timeout` | 300 s | per stream: unread data / nothing to send | connection closed / stream `UNAVAILABLE` |
 | `drain_timeout` | 0 s | `run`, after `cancel` | still-open connections dropped |
+| `max_connection_age` | 30 min ±10% | per connection | GOAWAY, then the grace |
+| `max_connection_idle` | 30 min | per connection, no open stream | GOAWAY |
+| `max_connection_age_grace` | 600 s | a GOAWAY'd connection's in-flight streams | connection dropped |
 
+- **Connection age and idleness** (gRPC A9). Wallets hold one connection for
+  hours, so without an age limit they never re-resolve DNS: neither a load
+  balancer nor a replaced node moves them. At its age (drawn per connection
+  within ±10%, so connections opened together do not cycle together) or after
+  `max_connection_idle` with no open stream, a connection gets an HTTP/2 GOAWAY.
+  Its in-flight streams then have `max_connection_age_grace` to finish before it
+  closes. `zaino_grpc_retired_connections_total{reason="age"|"idle"}` counts
+  them. `None` turns either off.
+- **Adaptive limit.** Work streams admitted at once follow measured latency,
+  using Netflix concurrency-limits' Gradient2:
+  - A sample is the time the server spent producing one message: from admission
+    to the first DATA frame, then from each poll to the next. A client's
+    backpressure never counts.
+  - Each window (≥ 500 ms and ≥ 10 samples) compares its mean against a
+    long-term baseline averaged over 600 windows:
+    `limit × clamp(1.5 × baseline / mean, 0.5, 1) + √limit`, smoothed at 0.2.
+  - The limit stays between 32 and `max_streams`, starting at 256.
+  - A window that peaked below half the limit is app-limited and changes nothing.
+  - Refusal is the same `UNAVAILABLE` + pushback. `adaptive_streams = false`
+    keeps the limit at `max_streams`.
+  - `GrpcService::load()` → `Load::report()` gives `{limit, in_flight,
+    refused_per_s}` (refusals decay over ~10 s); `zaino_grpc_adaptive_stream_limit`
+    exports the limit.
 - A stream permit is owned by the response body, so it returns when the stream
   ends or the client disconnects.
 - A mempool subscription idles until the next block, one per connected wallet,

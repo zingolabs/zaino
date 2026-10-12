@@ -29,6 +29,8 @@ const DISK_READ_WAIT_SECONDS: &str = "zaino.grpc.disk_read_wait_seconds";
 const CONNECTIONS_ACTIVE: &str = "zaino.grpc.connections_active";
 const CONNECTIONS_REJECTED_TOTAL: &str = "zaino.grpc.connections_rejected_total";
 const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
+const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
+const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 
 /// Every `CompactTxStreamer` method, then `unknown` (any other path): the `method` label set
 pub(crate) const METHODS: [&str; 19] = [
@@ -179,6 +181,24 @@ pub fn describe_metrics() {
         "Connections closed for holding data their client did not read past the stall timeout"
     );
     describe_counter!(CONNECTIONS_REJECTED_TOTAL, "Connections refused by the accept-time caps");
+    describe_counter!(
+        RETIRED_CONNECTIONS_TOTAL,
+        "Connections sent GOAWAY for their age, idleness (gRPC A9) or an operator hold, by reason"
+    );
+    describe_gauge!(
+        ADAPTIVE_STREAM_LIMIT,
+        "Work streams admitted at once now (latency-adaptive; max_streams when off)"
+    );
+}
+
+/// A connection sent GOAWAY at `max_connection_age` or `max_connection_idle`
+pub(crate) fn connection_retired(reason: &'static str) {
+    metrics::counter!(RETIRED_CONNECTIONS_TOTAL, "reason" => reason).increment(1);
+}
+
+/// Set at each serving summary
+pub(crate) fn adaptive_stream_limit(limit: usize) {
+    metrics::gauge!(ADAPTIVE_STREAM_LIMIT).set(limit as f64);
 }
 
 pub(crate) fn connection_opened() {

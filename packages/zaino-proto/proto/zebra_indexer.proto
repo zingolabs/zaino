@@ -1,5 +1,6 @@
-// zebrad's indexer service, verbatim from zebra v6.4.2 `zebra-rpc/proto/indexer.proto`
-// (MIT OR Apache-2.0). Zaino is a client (its chain view's push streams); tests serve it.
+// zebrad's indexer service: zebra main + `GetBlockRange` (elicbarbieri/zebra
+// `perf/indexer-block-range`), `zebra-rpc/proto/indexer.proto` (MIT OR Apache-2.0). Zaino is a
+// client (push streams, block fetch); tests serve it.
 syntax = "proto3";
 package zebra.indexer.rpc;
 
@@ -22,6 +23,15 @@ message BlockAndHash {
   
   // The encoded block data.
   bytes data = 2;
+};
+
+// An inclusive range of best-chain block heights.
+message BlockRangeRequest {
+  // The first height to stream.
+  uint32 start = 1;
+
+  // The last height to stream (inclusive).
+  uint32 end = 2;
 };
 
 // A request for a single block by hash or height from the best chain.
@@ -87,4 +97,13 @@ service Indexer {
   // Used by a syncer to fetch finalized blocks that bridge the gap between its
   // local finalized tip and the start of the streamed non-finalized chain.
   rpc GetBlock(BlockRequest) returns (BlockAndHash);
+
+  // Streams the best-chain blocks at heights `start..=end`, in height order, as their stored
+  // consensus bytes.
+  //
+  // Used by a syncer to fetch finalized blocks in bulk. Each height is resolved against the best
+  // chain when it is read, so a range that spans a chain reorganization can mix blocks from both
+  // chains: callers must check that each block links to the one before it. The stream ends with
+  // `NOT_FOUND` at the first height above the best tip.
+  rpc GetBlockRange(BlockRangeRequest) returns (stream BlockAndHash);
 }

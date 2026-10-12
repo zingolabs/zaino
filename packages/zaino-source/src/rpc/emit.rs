@@ -1,8 +1,9 @@
-//! Validator JSON-RPC metrics (`validator` = configured address: a bounded label set)
+//! Validator RPC metrics, JSON-RPC and indexer gRPC alike (`validator` = configured address: a
+//! bounded label set)
 
 use std::time::Duration;
 
-use super::error::RpcError;
+use crate::FailureMode;
 
 const DURATION_SECONDS: &str = "zaino.validator_rpc.duration_seconds";
 const IN_FLIGHT: &str = "zaino.validator_rpc.in_flight";
@@ -35,10 +36,10 @@ pub fn describe_metrics() {
 }
 
 /// One call in flight (gauge down on drop, whatever ends the call)
-pub(super) struct InFlight(metrics::Gauge);
+pub(crate) struct InFlight(metrics::Gauge);
 
 impl InFlight {
-    pub(super) fn start(validator: &str) -> Self {
+    pub(crate) fn start(validator: &str) -> Self {
         let gauge = metrics::gauge!(IN_FLIGHT, "validator" => validator.to_owned());
         gauge.increment(1.0);
         Self(gauge)
@@ -51,15 +52,16 @@ impl Drop for InFlight {
     }
 }
 
-pub(super) fn received(validator: &str, bytes: usize) {
+pub(crate) fn received(validator: &str, bytes: usize) {
     metrics::counter!(RECEIVED_BYTES, "validator" => validator.to_owned()).increment(bytes as u64);
 }
 
-pub(super) fn call_settled(
+/// One settled call, JSON-RPC or indexer gRPC (`method` = the RPC's own name)
+pub(crate) fn call_settled(
     validator: &str,
     method: &str,
     elapsed: Duration,
-    failure: Option<&RpcError>,
+    failure: Option<FailureMode>,
 ) {
     metrics::histogram!(
         DURATION_SECONDS,
@@ -67,27 +69,26 @@ pub(super) fn call_settled(
         "method" => method.to_owned(),
     )
     .record(elapsed.as_secs_f64());
-    if let Some(error) = failure {
+    if let Some(mode) = failure {
         metrics::counter!(
             FAILURES_TOTAL,
             "validator" => validator.to_owned(),
             "method" => method.to_owned(),
-            "failure" => failure_label(error),
+            "failure" => failure_label(mode),
         )
         .increment(1);
     }
 }
 
-/// Bounded label set (zebra's error codes + HTTP statuses = small fixed sets)
-fn failure_label(error: &RpcError) -> String {
-    use crate::FailureMode;
-
-    match error.failure_mode() {
+/// Bounded label set (zebra's error codes, HTTP statuses, gRPC codes = small fixed sets)
+fn failure_label(mode: FailureMode) -> String {
+    match mode {
         FailureMode::Connection => "connection".to_owned(),
         FailureMode::Timeout => "timeout".to_owned(),
         FailureMode::Auth => "auth".to_owned(),
         FailureMode::Parse => "parse".to_owned(),
         FailureMode::HttpStatus(status) => format!("http_{status}"),
         FailureMode::RpcError(code) => format!("rpc_{code}"),
+        FailureMode::GrpcStatus(code) => format!("grpc_{code}"),
     }
 }

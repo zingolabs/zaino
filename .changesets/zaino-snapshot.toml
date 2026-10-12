@@ -36,3 +36,18 @@ reports `finality_paused`; `emit_gauges(snap, &NfsProgress)` also sets every \
 clear (stale tip, end of service, partition, eclipse, finality paused). `Unready::label` = the \
 `/readyz` text. Feature `testing`: `Snapshots::fixed(indexed, view)`.
 """
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "breaking"
+section = "changed"
+description = """
+`Snapshot::standing()` (`Serving`, `Syncing`, `Down(Down)`) replaces `unready()` / `Unready`: \
+`Down::NoValidatorReachable` (every validator down), `Down::TipNotHeld`, and `Syncing` also while \
+every holder of best is catching up. `Snapshot::sync_target()` = best, or a catching-up \
+validator's clock estimate when higher. `notes(&snap)` = one sentence per raised alarm. `Report` \
+drops `unready`.
+"""
+migration = """
+`snap.unready()` → `snap.standing()`; `Down::detail()` for the sentence.
+"""

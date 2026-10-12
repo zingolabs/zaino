@@ -213,7 +213,7 @@ where
 fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
     let tree =
         |pool, tree: &CommitmentTreeBytes| match params.activations.active(pool, state.height) {
-            true => hex::encode(tree.as_bytes()),
+            true => const_hex::encode(tree.as_bytes()),
             false => String::new(),
         };
     wire::frame(&proto::TreeState {

@@ -1,21 +1,24 @@
-//! Zaino's validator source: the questions Zaino asks a validator, answered over JSON-RPC
+//! Zaino's validator source: the questions Zaino asks a validator
 //!
-//! - [`ChainDataSource`]: one port, each question with its own domain error
-//! - [`ZebraRpcAdapter`]: the one implementation (blocks decoded once, from consensus bytes)
-//! - Which validator answers = `zaino-traffic`'s
+//! - [`ChainDataSource`]: one port, each question with its own domain error, transport-agnostic
+//! - [`ZcashLegacyRpcClient`]: every question over JSON-RPC (zebrad or zcashd)
+//! - [`ZcashGrpcClient`]: blocks over zebrad's indexer gRPC, the rest over JSON-RPC
+//! - Both decode blocks once, from consensus bytes; which validator answers = `zaino-traffic`'s
 
-mod adapter;
 mod decode;
 mod error;
+mod grpc_client;
 mod indexer;
+mod legacy_rpc;
 mod parse;
 mod queries;
 mod rpc;
 
-pub use adapter::ZebraRpcAdapter;
 pub use decode::{decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
+pub use grpc_client::ZcashGrpcClient;
 pub use indexer::{Change, IndexerWatch};
+pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
     GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,

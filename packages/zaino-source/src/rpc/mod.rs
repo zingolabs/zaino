@@ -3,7 +3,8 @@
 //! - Returns raw `serde_json::Value` or a `DeserializeOwned` (parsing = `parse.rs`)
 
 mod client;
-mod emit;
+// `pub(crate)`: the indexer block transport reports into the same families
+pub(crate) mod emit;
 mod endpoint;
 mod envelope;
 mod error;

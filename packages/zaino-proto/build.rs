@@ -94,8 +94,12 @@ fn build() -> io::Result<()> {
         )
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
-    // zebrad's push streams: Zaino is a client; the server half = tests' fake zebrad
-    configure().build_server(true).compile_protos(&[ZEBRA_INDEXER_PROTO], &["proto/"])?;
+    // zebrad's push streams + block fetch: Zaino is a client; the server half = tests' fake zebrad
+    // - `Bytes`: a block's payload = a slice of the received frame, never copied out of it
+    configure()
+        .build_server(true)
+        .bytes(".zebra.indexer.rpc.BlockAndHash.data")
+        .compile_protos(&[ZEBRA_INDEXER_PROTO], &["proto/"])?;
     copy_generated(&out.join("zebra.indexer.rpc.rs"), "src/proto/zebra_indexer.rs")?;
 
     // Same package name as compact formats → same file name; holds the service types only

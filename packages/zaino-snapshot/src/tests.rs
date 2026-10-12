@@ -29,7 +29,8 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, Publisher, Report, Snapshot, SnapshotError, Snapshots, Tips,
+    describe_metrics, emit_gauges, notes, Down, Publisher, Report, Snapshot, SnapshotError,
+    Snapshots, Standing, Tips,
 };
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -165,7 +166,6 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             "best": block(&a[5]), "final": block(&a[2]), "served": block(&a[5]),
             "held_by": 1, "configured": 2, "synced": true,
         },
-        "unready": [],
         "handed": 5,
         "indexes": [
             disabled("value_balance"),
@@ -219,6 +219,84 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     ] {
         assert!(rendered.lines().any(|at| at == line), "{line:?} not in:\n{rendered}");
     }
+}
+
+/// Validator back from an outage, catching up 1,200 blocks behind the network, its tip moving in
+/// jumps the NFS catches between: every publish serves best yet stays `Syncing` toward the
+/// validator's estimate (0.10.1 flapped ready ↔ syncing here); then each standing the holder's
+/// health and the endpoints' give, with the notes their alarms raise
+#[test]
+fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
+    let mut builder = MockChain::regtest();
+    let a12 = builder.mine_empty(12);
+    let a = builder.blocks(a12);
+    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+    let none: [(IndexKind, DiskView); 0] = [];
+    let served_at = |tip: &Block| {
+        let chain = Arc::new(builder.verified(at(tip)));
+        let params = ChainParams::of(&builder, at(tip));
+        let indexed = Indexed::fixed(Arc::clone(&chain), at(tip), params, none.clone());
+        let view =
+            ChainViewSnapshot::fixed(Some(chain), EndpointSet::at([0]), &addresses, &[], &[]);
+        (Arc::new(indexed), view)
+    };
+
+    let (indexed, view) = served_at(&a[4]);
+    let core =
+        Core::new(Some(indexed), Arc::new(view.endpoint(0, Health::CatchingUp, 1_200)), DEPTH);
+    let snapshots = core.handle();
+    for tip in [&a[4], &a[8], &a[12]] {
+        let (indexed, view) = served_at(tip);
+        core.publish(Some(indexed), Arc::new(view.endpoint(0, Health::CatchingUp, 1_200)));
+        let snap = snapshots.load();
+        let height = u32::from(tip.header().height);
+        assert_eq!(snap.tips().served, snap.tips().best, "at {height}: served = best");
+        let target = snap.sync_target().map(u32::from);
+        assert_eq!(
+            (snap.standing(), target),
+            (Standing::Syncing, Some(height + 1_200)),
+            "{height}"
+        );
+    }
+
+    let cases = [
+        ("caught up", Health::Live, 0, Health::Pending, Standing::Serving, vec![]),
+        ("one failed poll", Health::Degraded, 0, Health::Pending, Standing::Serving, vec![]),
+        (
+            "holder stale",
+            Health::Live,
+            30,
+            Health::Pending,
+            Standing::Serving,
+            vec!["1 validator on a stale tip"],
+        ),
+        (
+            "every validator down",
+            Health::Down,
+            0,
+            Health::Down,
+            Standing::Down(Down::NoValidatorReachable),
+            vec![],
+        ),
+    ];
+    for (case, holder, behind, other, standing, expected_notes) in cases {
+        let (indexed, view) = served_at(&a[12]);
+        let view = view.endpoint(0, holder, behind).endpoint(1, other, 0);
+        let snap = Snapshots::fixed(Some(indexed), Arc::new(view)).load();
+        assert_eq!(snap.standing(), standing, "{case}");
+        assert_eq!(notes(&snap), expected_notes, "{case}");
+    }
+
+    let (indexed, _) = served_at(&a[12]);
+    let unheld = ChainViewSnapshot::fixed(
+        Some(Arc::new(builder.verified(at(&a[12])))),
+        EndpointSet::default(),
+        &addresses,
+        &[],
+        &[],
+    );
+    let snap = Snapshots::fixed(Some(indexed), Arc::new(unheld)).load();
+    assert_eq!(snap.standing(), Standing::Down(Down::TipNotHeld), "no holder of best");
 }
 
 /// Panic message of `run`, `None` = it returned

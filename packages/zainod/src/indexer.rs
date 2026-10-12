@@ -49,7 +49,9 @@ use zaino_source::ChainDataSource;
 use zaino_sync::{FeeSink, FinalFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
 
-use crate::config::{DaemonConfig, IndexConfig, ShutdownConfig};
+use crate::config::{
+    DaemonConfig, IndexConfig, ShutdownConfig, TrustedValidatorConfig, ValidatorClient,
+};
 use crate::error::IndexerError;
 use crate::logging::component;
 use crate::stores;
@@ -90,9 +92,13 @@ async fn upgrade_schedule<S: ChainDataSource>(
         for observation in &mut observed {
             let observation = observation.borrow_and_update().clone();
             match observation.as_ref().map(|observation| &observation.polled) {
-                Some(Ok(reading)) => return reading.info.clone(),
+                Some(Ok(reading)) => {
+                    crate::status::awaiting_validator(false);
+                    return reading.info.clone();
+                }
                 Some(Err(cause)) if !warned => {
                     warn!(%cause, "No trusted validator answering yet, waiting to read the upgrade schedule");
+                    crate::status::awaiting_validator(true);
                     warned = true;
                 }
                 Some(Err(_)) | None => {}
@@ -104,14 +110,26 @@ async fn upgrade_schedule<S: ChainDataSource>(
     }
 }
 
-/// Chain view over the trusted validators → pipeline over it → every task spawned
+/// [`boot_over`] the configured `validator_client`
+async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+    match config.validator_client {
+        ValidatorClient::LegacyRpc => boot_over(config, crate::chainview::legacy_client).await,
+        ValidatorClient::Grpc => boot_over(config, crate::chainview::grpc_client).await,
+    }
+}
+
+/// Chain view over the trusted validators (one `client` each) → pipeline over it → every task
+/// spawned
 ///
 /// - One balancer over every validator; its driver first (the upgrade schedule is a poll's)
-async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
+async fn boot_over<S: ChainDataSource>(
+    config: DaemonConfig,
+    client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
+) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
     let chainview_span = component("ChainView");
-    let chainview = chainview_span.in_scope(|| crate::chainview::connect(&config))?;
+    let chainview = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
     let balancing = chainview.balancing.run(cancel.child_token());
@@ -240,11 +258,14 @@ async fn pipeline<S: ChainDataSource>(
     };
     let limits = GrpcLimits::from(&config.grpc);
     let mut server = GrpcService::new(routes, config.serve.grpc_listen_address, limits)
-        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()));
+        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
+        .with_health(Arc::new(crate::status::PublicHealth));
     if let Some(tls) = &config.serve.tls {
         let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
         server = server.with_tls(Tls::load(files)?);
     }
+    let grpc_load = server.load();
+    crate::hold::serving(server.retire());
     let server = server.bind().await?;
     let grpc_span = component("Grpc");
     let endpoint = config.serve.grpc_listen_address;
@@ -258,14 +279,19 @@ async fn pipeline<S: ChainDataSource>(
     spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
     let (disk, walked) = watch::channel(crate::progress::Disk::new());
+    let (rate, block_rate) = watch::channel(None);
     let reporting = crate::progress::run(
         snapshots.clone(),
         progress.clone(),
         opened,
         disk,
+        rate,
         cancel.child_token(),
     );
     spawn(&mut tasks, "progress", component("ZainoNFS"), reporting);
+    let (egress, egress_windows) = watch::channel(None);
+    let measuring = crate::egress::run(egress, cancel.child_token());
+    spawn(&mut tasks, "egress", component("Grpc"), measuring);
     crate::status::publish(crate::status::Sources {
         network: network_name(network),
         started,
@@ -273,6 +299,9 @@ async fn pipeline<S: ChainDataSource>(
         progress,
         members,
         disk: walked,
+        block_rate,
+        grpc_load,
+        egress: egress_windows,
     });
     Ok(tasks)
 }

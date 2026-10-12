@@ -96,7 +96,8 @@ crc32fast = "1.4"
 xorf = { version = "0.13", default-features = false, features = ["binary-fuse"] }
 thiserror = "2.0"
 which = "8"
-hex = "0.4"
+# SIMD (AVX2 / SSSE3 / NEON, runtime-detected) hex: the `hex` crate decodes byte by byte
+const-hex = "1.19"
 toml = "1.1"
 dirs = "6"
 

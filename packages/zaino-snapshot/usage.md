@@ -46,7 +46,8 @@ snapshots.changed().await?;                            // next publish
 | `lightd()`              | the first holder's `BlockchainInfo` + the served height (`NoChain` / `NotHeld` / `NothingServed`) |
 | `view()`                | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `unready()`             | `HeadersSyncing`, `TipNotHeld`, `Syncing`, in that order (`label()` = `/readyz` text) |
+| `standing()`            | first match: `Down(NoValidatorReachable)` (every validator down), `Down(TipNotHeld)`, `Syncing` (not synced, or best held only by validators catching up), `Serving`; `Down::detail()` = zainod's `/statusz` `detail` |
+| `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,
   `no trusted validator holds the verified tip {h} (of {n} configured)`, `the indexes are syncing:
@@ -84,7 +85,8 @@ describe_metrics();                                     // once, at boot
 emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then render
 ```
 
-- `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`), unready reasons,
+- `notes(&snap)`: one sentence per raised alarm (zainod's `/statusz` `notes`).
+- `Report`: seq, tips (heights + hashes, `held_by` / `configured`, `synced`),
   `handed` (`SyncProgress::handed`), every index the NFS folds (`enabled` = the caller's
   configured set, so listed before the NFS's first publish; `durable` = `null` until then), each
   validator's facts (agreement, own height, staleness, push streams, release, peers) joined with

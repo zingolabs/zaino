@@ -62,7 +62,7 @@ fn is_fresh(heartbeat: Option<Instant>) -> bool {
     heartbeat.is_none_or(|at| at.elapsed() < HEARTBEAT_MAX_AGE)
 }
 
-/// Serving runtime still scheduling (`/livez`, and the `heartbeat_stale` readiness reason)
+/// Serving runtime still scheduling (`/livez`; stale = `down`, "Runtime stalled")
 pub(crate) fn live() -> bool {
     is_fresh(last_heartbeat())
 }
@@ -238,10 +238,10 @@ mod tests {
         // no indexer booted in this test = sources unpublished
         let readyz = get("/readyz").await;
         assert!(readyz.starts_with("HTTP/1.1 503"), "{readyz}");
-        assert!(readyz.ends_with(r#"{"ready":false,"reasons":["starting"]}"#), "{readyz}");
+        assert!(readyz.ends_with(r#"{"detail":null,"state":"provisioning"}"#), "{readyz}");
         let statusz = get("/statusz").await;
         assert!(statusz.starts_with("HTTP/1.1 200"), "{statusz}");
-        assert!(statusz.contains(r#""reasons":["starting"]"#), "{statusz}");
+        assert!(statusz.contains(r#""state":"provisioning""#), "{statusz}");
         assert!(get("/nope").await.starts_with("HTTP/1.1 404"));
     }
 

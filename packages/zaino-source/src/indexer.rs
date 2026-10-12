@@ -128,7 +128,7 @@ mod tests {
     use tonic::{Request, Response, Status};
     use zaino_proto::proto::zebra_indexer::indexer_server::{Indexer, IndexerServer};
     use zaino_proto::proto::zebra_indexer::{
-        BlockAndHash, BlockHashAndHeight, BlockRequest, MempoolChangeMessage,
+        BlockAndHash, BlockHashAndHeight, BlockRangeRequest, BlockRequest, MempoolChangeMessage,
         NonFinalizedStateChangeRequest,
     };
 
@@ -156,6 +156,7 @@ mod tests {
         type ChainTipChangeStream = Events<BlockHashAndHeight>;
         type NonFinalizedStateChangeStream = Events<BlockAndHash>;
         type MempoolChangeStream = Events<MempoolChangeMessage>;
+        type GetBlockRangeStream = Events<BlockAndHash>;
 
         async fn chain_tip_change(
             &self,
@@ -182,6 +183,13 @@ mod tests {
             &self,
             _: Request<BlockRequest>,
         ) -> Result<Response<BlockAndHash>, Status> {
+            Err(Status::unimplemented("not watched"))
+        }
+
+        async fn get_block_range(
+            &self,
+            _: Request<BlockRangeRequest>,
+        ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
             Err(Status::unimplemented("not watched"))
         }
     }

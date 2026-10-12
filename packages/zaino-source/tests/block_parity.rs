@@ -1,14 +1,28 @@
-//! Canned zebrad `getblock` replies through the adapter → decoded block = block-explorer data
+//! Canned zebrad blocks through both clients → decoded block = block-explorer data
 //!
 //! - `tests/fixtures/block_<height>.hex` = `examples/capture_fixtures.rs` output
+//! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC; `ZcashGrpcClient` = the same
+//!   bytes over the indexer's `GetBlock` / `GetBlockRange`
 
 use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
+use futures::Stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tonic::{Request, Response, Status};
 
 use zaino_primitives::types::{BlockHash, Height};
-use zaino_source::{ChainDataSource, LinkLimits, Timeouts, ZebraRpcAdapter};
+use zaino_proto::proto::zebra_indexer::indexer_server::{Indexer, IndexerServer};
+use zaino_proto::proto::zebra_indexer::{
+    BlockAndHash, BlockHashAndHeight, BlockRangeRequest, BlockRequest, Empty, MempoolChangeMessage,
+    NonFinalizedStateChangeRequest,
+};
+use zaino_source::{
+    ChainDataSource, FailureMode, GetAtHeightError, LinkLimits, QueryError, Timeouts,
+    ZcashGrpcClient, ZcashLegacyRpcClient,
+};
 
 struct Expected {
     height: u32,
@@ -158,31 +172,98 @@ fn answer(call: &serde_json::Value, fixtures: &HashMap<String, String>) -> serde
     }
 }
 
-#[tokio::test]
-async fn block_parity_with_explorer_offline() {
-    let fixtures = load_fixtures();
+type Blocks = Pin<Box<dyn Stream<Item = Result<BlockAndHash, Status>> + Send>>;
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
-    let port = listener.local_addr().expect("local addr").port();
-    tokio::spawn(mock_zebra_rpc(listener, fixtures));
+/// zebrad's indexer over the fixtures: `GetBlock` by hash, `GetBlockRange` by height (each range
+/// recorded); a height past the fixtures = `NOT_FOUND` mid-stream, as zebrad ends a range at its
+/// tip
+struct FakeIndexer {
+    by_height: HashMap<u32, Vec<u8>>,
+    by_hash: HashMap<[u8; 32], Vec<u8>>,
+    ranges: Mutex<Vec<(u32, u32)>>,
+}
 
-    let address = format!("127.0.0.1:{port}");
-    let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
-    let adapter = ZebraRpcAdapter::at(&address, None, None, None, timeouts, limits);
-    let adapter = adapter.expect("host:port");
+#[tonic::async_trait]
+impl Indexer for FakeIndexer {
+    type ChainTipChangeStream =
+        Pin<Box<dyn Stream<Item = Result<BlockHashAndHeight, Status>> + Send>>;
+    type NonFinalizedStateChangeStream = Blocks;
+    type MempoolChangeStream =
+        Pin<Box<dyn Stream<Item = Result<MempoolChangeMessage, Status>> + Send>>;
+    type GetBlockRangeStream = Blocks;
 
+    async fn chain_tip_change(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::ChainTipChangeStream>, Status> {
+        Err(Status::unimplemented("blocks only"))
+    }
+
+    async fn non_finalized_state_change(
+        &self,
+        _: Request<NonFinalizedStateChangeRequest>,
+    ) -> Result<Response<Self::NonFinalizedStateChangeStream>, Status> {
+        Err(Status::unimplemented("blocks only"))
+    }
+
+    async fn mempool_change(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<Self::MempoolChangeStream>, Status> {
+        Err(Status::unimplemented("blocks only"))
+    }
+
+    async fn get_block(
+        &self,
+        request: Request<BlockRequest>,
+    ) -> Result<Response<BlockAndHash>, Status> {
+        let display: [u8; 32] = request
+            .into_inner()
+            .hash_or_height
+            .try_into()
+            .map_err(|_| Status::invalid_argument("hashes only here"))?;
+        let data =
+            self.by_hash.get(&display).ok_or_else(|| Status::not_found("block not found"))?;
+        let block = BlockAndHash { hash: display.to_vec(), data: data.clone().into() };
+        Ok(Response::new(block))
+    }
+
+    async fn get_block_range(
+        &self,
+        request: Request<BlockRangeRequest>,
+    ) -> Result<Response<Self::GetBlockRangeStream>, Status> {
+        let BlockRangeRequest { start, end } = request.into_inner();
+        self.ranges.lock().expect("ranges").push((start, end));
+        let mut served = Vec::new();
+        for height in start..=end {
+            match self.by_height.get(&height) {
+                Some(data) => {
+                    served.push(Ok(BlockAndHash { hash: Vec::new(), data: data.clone().into() }))
+                }
+                None => {
+                    served.push(Err(Status::not_found(format!("no block at height {height}"))));
+                    break;
+                }
+            }
+        }
+        Ok(Response::new(Box::pin(futures::stream::iter(served))))
+    }
+}
+
+/// Each fixture through `client` = the explorer's facts; by height = by hash
+async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
     for expected in FIXTURES {
         let height = Height::try_from(expected.height).expect("fixture height");
         let hash: BlockHash = expected.hash.parse().expect("display hex");
-        let block = adapter
+        let block = client
             .get_block_by_hash(hash)
             .await
-            .unwrap_or_else(|e| panic!("getblock {} failed: {e}", expected.hash));
-        assert_eq!(block.header().height, height, "coinbase height");
-        let by_height = adapter
+            .unwrap_or_else(|e| panic!("{label}: block {} failed: {e}", expected.hash));
+        assert_eq!(block.header().height, height, "{label}: coinbase height");
+        let by_height = client
             .get_blocks_by_height(&[height])
             .await
-            .unwrap_or_else(|e| panic!("getblock \"{height}\" failed: {e}"))
+            .unwrap_or_else(|e| panic!("{label}: block at {height} failed: {e}"))
             .remove(0);
         let txids = |block: &zaino_primitives::types::Block| {
             block.transactions().iter().map(|tx| tx.txid).collect::<Vec<_>>()
@@ -190,14 +271,14 @@ async fn block_parity_with_explorer_offline() {
         assert_eq!(
             (by_height.header(), txids(&by_height)),
             (block.header(), txids(&block)),
-            "getblock by height = by hash at {height}"
+            "{label}: by height = by hash at {height}"
         );
 
         let header = block.header();
         let (hash, prev_hash) = (header.hash.to_string(), header.prev_hash.to_string());
         let got = (hash.as_str(), prev_hash.as_str(), header.time, block.transactions().len());
         let want = (expected.hash, expected.prev_hash, expected.time, expected.tx_count);
-        assert_eq!(got, want, "(hash, prev_hash, time, tx count) at {height}");
+        assert_eq!(got, want, "{label}: (hash, prev_hash, time, tx count) at {height}");
 
         let mut t_in = 0usize;
         let mut t_out = 0usize;
@@ -220,6 +301,67 @@ async fn block_parity_with_explorer_offline() {
             expected.sapling_outputs,
             expected.orchard_actions,
         );
-        assert_eq!(got, want, "(t in, t out, s spends, s outputs, o actions) at {height}");
+        assert_eq!(got, want, "{label}: (t in, t out, s spends, s outputs, o actions) at {height}");
     }
+}
+
+/// - Both clients: every fixture = the explorer's facts (one decoder, two transports)
+/// - gRPC: heights cut into one `GetBlockRange` per consecutive run, blocks in asked order; a
+///   height past the indexer's tip = `HeightNotFound` for it; undecodable bytes = `Parse`
+#[tokio::test]
+async fn both_clients_decode_every_block_to_the_explorers_facts() {
+    let fixtures = load_fixtures();
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
+    let rpc_address = listener.local_addr().expect("local addr").to_string();
+    tokio::spawn(mock_zebra_rpc(listener, fixtures.clone()));
+
+    let raw = |hex: &String| const_hex::decode(hex).expect("fixture hex");
+    let mut by_height: HashMap<u32, Vec<u8>> =
+        FIXTURES.iter().map(|f| (f.height, raw(&fixtures[&f.height.to_string()]))).collect();
+    let by_hash = FIXTURES
+        .iter()
+        .map(|f| {
+            let display: [u8; 32] = const_hex::decode_to_array(f.hash).expect("display hex");
+            (display, raw(&fixtures[f.hash]))
+        })
+        .collect();
+    // three consecutive heights + a corrupt one, for the range cases below
+    let first = raw(&fixtures[&FIXTURES[0].height.to_string()]);
+    by_height.extend([(10, first.clone()), (11, first.clone()), (12, first), (30, vec![0xff; 8])]);
+    let indexer = Arc::new(FakeIndexer { by_height, by_hash, ranges: Mutex::default() });
+    let socket = TcpListener::bind("127.0.0.1:0").await.expect("bind fake indexer");
+    let indexer_address = socket.local_addr().expect("local addr").to_string();
+    let server = tonic::transport::Server::builder()
+        .add_service(IndexerServer::from_arc(Arc::clone(&indexer)))
+        .serve_with_incoming(tonic::transport::server::TcpIncoming::from(socket));
+    tokio::spawn(server);
+
+    let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
+    let legacy = || ZcashLegacyRpcClient::at(&rpc_address, None, None, None, timeouts, limits);
+    let legacy_client = legacy().expect("host:port");
+    let grpc =
+        ZcashGrpcClient::at(legacy().expect("host:port"), &indexer_address, timeouts, limits)
+            .expect("host:port");
+    assert_explorer_parity(&legacy_client, "legacy").await;
+    assert_explorer_parity(&grpc, "grpc").await;
+
+    let h = |height: u32| Height::try_from(height).expect("height");
+    indexer.ranges.lock().expect("ranges").clear();
+    let blocks = grpc.get_blocks_by_height(&[h(10), h(11), h(12), h(419_200)]).await;
+    let heights: Vec<_> =
+        blocks.expect("all served").iter().map(|block| u32::from(block.header().height)).collect();
+    assert_eq!(heights, [419_200; 4], "every block, asked order (all four = the first fixture)");
+    let ranges = indexer.ranges.lock().expect("ranges").clone();
+    assert_eq!(ranges, [(10, 12), (419_200, 419_200)], "one range per consecutive run");
+
+    let past_tip = grpc.get_blocks_by_height(&[h(12), h(13)]).await;
+    assert!(
+        matches!(past_tip, Err(QueryError::Domain(GetAtHeightError::HeightNotFound(at))) if at == h(13)),
+        "{past_tip:?}"
+    );
+    let corrupt = grpc.get_blocks_by_height(&[h(30)]).await;
+    assert!(
+        matches!(&corrupt, Err(QueryError::NonDomain(error)) if error.mode == FailureMode::Parse),
+        "{corrupt:?}"
+    );
 }

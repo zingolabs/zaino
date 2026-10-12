@@ -895,6 +895,6 @@ mod tests {
         assert_eq!(left, ["block_hash", "compact_block", "value_balance"], "no staging left");
         let requested = requested.lock().expect("log").clone();
         assert!(!requested.iter().any(|path| path.contains("block_hash")), "{requested:?}");
-        assert_eq!(status::not_booted(), (vec!["starting".to_owned()], None), "progress cleared");
+        assert_eq!(status::bootstrap_report(), None, "progress cleared");
     }
 }

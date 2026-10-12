@@ -17,6 +17,9 @@ use crate::emit;
 ///   connection closed (else a never-reading peer keeps its permits); nothing to send this long
 ///   while the client waits → stream ended `UNAVAILABLE` (`GetMempoolStream` exempt)
 /// - `drain_timeout`: open connections' grace after `run`'s cancel + GOAWAY (zero = at once)
+/// - `max_connection_age` (±10% per connection) / `max_connection_idle` (no open stream that
+///   long): GOAWAY, then `max_connection_age_grace` for in-flight streams (`None` = never)
+/// - `adaptive_streams`: work streams capped by measured latency, `max_streams` the ceiling
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrpcLimits {
     pub max_connections: NonZeroUsize,
@@ -29,6 +32,10 @@ pub struct GrpcLimits {
     pub max_scan_reads: NonZeroUsize,
     pub stall_timeout: Duration,
     pub drain_timeout: Duration,
+    pub max_connection_age: Option<Duration>,
+    pub max_connection_age_grace: Duration,
+    pub max_connection_idle: Option<Duration>,
+    pub adaptive_streams: bool,
 }
 
 impl Default for GrpcLimits {
@@ -52,6 +59,12 @@ impl Default for GrpcLimits {
             stall_timeout: Duration::from_secs(300),
             // opt-in (zainod `[grpc.shutdown]`)
             drain_timeout: Duration::ZERO,
+            // long-held wallet connections re-resolve DNS (gRPC A9)
+            max_connection_age: Some(Duration::from_secs(30 * 60)),
+            // a whole `GetBlockRange` sync
+            max_connection_age_grace: Duration::from_secs(600),
+            max_connection_idle: Some(Duration::from_secs(30 * 60)),
+            adaptive_streams: true,
         }
     }
 }

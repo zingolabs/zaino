@@ -29,7 +29,7 @@ zaino-index-transparent-address = { workspace = true }
 # Domain values rendered onto the wire (index dispatches, `LightdInfo`'s upgrade schedule)
 zaino-primitives = { workspace = true }
 # TreeState carries its trees as hex strings.
-hex = { workspace = true }
+const-hex.workspace = true
 # t-address string -> `TransparentAddress` -> its locking script
 zcash_address = { workspace = true }
 zcash_transparent.workspace = true
@@ -68,6 +68,7 @@ zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-nfs = { workspace = true, features = ["testing"] }
 zaino-internal-block-hash-to-height.workspace = true
 zaino-snapshot = { path = "../zaino-snapshot", features = ["testing"] }
+h2 = "0.4"
 
 [lints.rust]
 unreachable_pub = "warn"

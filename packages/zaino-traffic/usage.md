@@ -13,7 +13,7 @@ use zaino_traffic::{Limits, TrafficBalancer, Trusted};
 let trusted = validators
     .iter()
     .map(|v| Trusted {
-        source: Arc::new(ZebraRpcAdapter::at(&v.address, cookie, user, password, timeouts, link)?),
+        source: Arc::new(ZcashLegacyRpcClient::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
         limits: Limits::new(v.max_connections, None)?,         // None below 5
     })
@@ -23,7 +23,7 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 ```
 
 - `trusted[i]` is `ValidatorId(i)`: configured order, at most `ValidatorId::MAX` (64).
-- `S: ChainDataSource` (`zaino-source`): `ZebraRpcAdapter` in production, `zaino_source::testing::MockValidator` in tests.
+- `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZcashGrpcClient` in production (one type per balancer: zainod's `validator_client`), `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
   `None` = trusted only.
 - `Limits::new(max_connections)`; `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved

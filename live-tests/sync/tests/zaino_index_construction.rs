@@ -1,7 +1,9 @@
 //! Mainnet light-wallet index: built from empty, then synced through by a real wallet.
 //!
-//! - zebra = lazy-point-decompression fork, restored at `IRONWOOD_MAINNET`, following mainnet
-//! - `index`: every index built over JSON-RPC; at completion each held to zebra + `zainod verify`
+//! - zebra = optimized fork (`perf/indexer-block-range`: lazy point decompression, stored-bytes
+//!   `GetBlockRange`), restored at `IRONWOOD_MAINNET`, following mainnet
+//! - `index`: blocks over zebrad's indexer gRPC (`validator_client = "grpc"`), the rest over
+//!   JSON-RPC; at completion each index held to zebra + `zainod verify`
 //! - `wallet`: pepper-sync scans [`WALLET`] birthday → tip under live blocks; roots, balances, notes
 //!   vs the truth
 //! - Both phases: every 5 s the durable tip's block + trees vs zebra; durable extents never shrink
@@ -55,12 +57,13 @@ const INDEX_DISK_GIB: u64 = 160;
 /// Set on zaino, not mirrored from its default
 const FINALISED_DEPTH: u32 = 1_000;
 /// Ordered stream → throughput = in-flight / tail latency
-/// - blocks, 4 per getblock batch → 64 batches = connections in flight
+/// - blocks, 4 per `GetBlockRange` → 64 streams in flight
 const FETCH_CONCURRENCY: NonZeroU32 = NonZeroU32::new(256).expect("non-zero");
 /// Merges' read + written MiB/s (zainod default 200: the sync pool's NVMe takes more)
 const MERGE_MIB_PER_SEC: NonZeroU32 = NonZeroU32::new(300).expect("non-zero");
-/// Batches carried <= this − the poll's 1 − 2 other lanes' reserves (69 >= 64)
-/// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (not configurable)
+/// Block streams carried <= this − the poll's 1 − 2 other lanes' reserves (69 >= 64)
+/// - gRPC: ceil(72 / 20) = 4 HTTP/2 connections (zebrad admits 20 streams per connection)
+/// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (JSON-RPC: the rest)
 const VALIDATOR_CONNECTIONS: NonZeroU32 = NonZeroU32::new(72).expect("non-zero");
 /// zebrad's catch-up past the pin: 1 verify thread of its 4 cores (rest = zaino's getblocks)
 const ZEBRA_SYNC_BUDGET: SyncBudget = SyncBudget {
@@ -125,16 +128,17 @@ const FETCHED_OPS: [Op; 6] = [
 async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
     let topology = run.topology(|t| {
         t.set_ready_timeout(READY_WINDOW);
-        // TODO: git form (`git = …, rev = …`) once perf/lazy-point-decompression and its
-        // librustzcash are pushed; local sibling until then
+        // TODO: git form (`git = …, rev = …`) once perf/indexer-block-range is pushed; local
+        // worktree until then
         let zebra = t.add_validator(
             dev!(
                 Validator::Zebrad,
-                "../../../zebra/docker/Dockerfile",
-                context = "../../../zebra",
+                "../../../zebra-indexer-blocks/docker/Dockerfile",
+                context = "../../../zebra-indexer-blocks",
                 version = "6.3.0"
             )
             .sync_budget(ZEBRA_SYNC_BUDGET)
+            .indexer()
             .follow_from(IRONWOOD_MAINNET, TRUSTED_MAINNET_P2P)
             .disk(Disk::gib(CHAIN_DISK_GIB))
             .resources(Cpu::cores(4), Mem::gib(10)),
@@ -146,6 +150,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 .fetch_concurrency(FETCH_CONCURRENCY)
                 .lsm_merge_mib_per_sec(MERGE_MIB_PER_SEC)
                 .validator_max_connections(VALIDATOR_CONNECTIONS)
+                .validator_client(ValidatorClient::Grpc)
                 .max_address_rows(MAX_ADDRESS_ROWS)
                 .disk(Disk::gib(INDEX_DISK_GIB))
                 .resources(Cpu::cores(10), Mem::gib(10)),

@@ -69,8 +69,8 @@ impl Tls {
             .map_err(TlsError::Config)?
             .with_no_client_auth()
             .with_cert_resolver(Arc::clone(&certs) as Arc<dyn ResolvesServerCert>);
-        // gRPC = HTTP/2 only
-        config.alpn_protocols = vec![b"h2".to_vec()];
+        // gRPC = h2 (preferred); HTTP/1.1 = load-balancer health monitors (`health.rs`)
+        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
         Ok(Self { acceptor: TlsAcceptor::from(Arc::new(config)), certs })
     }
 

@@ -23,3 +23,13 @@ length-prefix framing; `LIGHTWALLET_PROTOCOL_VERSION`, the vendored lightwallet-
 (`v0.5.0`); `proto::zebra_indexer`, zebrad's indexer service (`zebra.indexer.rpc`), client and \
 server.
 """
+
+[[changes]]
+crate = "zaino-proto"
+kind = "feature"
+section = "added"
+description = """
+The vendored zebrad indexer proto gains `GetBlockRange(BlockRangeRequest { start, end }) returns \
+(stream BlockAndHash)` (elicbarbieri/zebra `perf/indexer-block-range`); `BlockAndHash.data` is \
+`Bytes` (a block = a slice of the received frame, never copied out).
+"""

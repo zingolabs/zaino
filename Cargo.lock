@@ -693,6 +693,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "const-hex"
+version = "1.19.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e59eef12462b0f9b0a3620219be5d639afd79fe39dff0a42c3997061f9298b4"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "proptest",
+ "serde_core",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2901,7 +2913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -2922,7 +2934,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -5033,8 +5045,9 @@ version = "0.1.0"
 dependencies = [
  "arc-swap",
  "bytes",
+ "const-hex",
  "futures",
- "hex",
+ "h2",
  "http",
  "http-body",
  "http-body-util",
@@ -5078,8 +5091,8 @@ dependencies = [
 name = "zaino-header-chain"
 version = "0.1.0"
 dependencies = [
+ "const-hex",
  "equihash",
- "hex",
  "imbl",
  "proptest",
  "reqwest",
@@ -5234,7 +5247,6 @@ dependencies = [
 name = "zaino-primitives"
 version = "0.3.0"
 dependencies = [
- "hex",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "zcash_protocol",
@@ -5283,9 +5295,9 @@ dependencies = [
 name = "zaino-source"
 version = "0.2.2"
 dependencies = [
+ "const-hex",
  "futures",
  "governor",
- "hex",
  "metrics",
  "orchard",
  "proptest",

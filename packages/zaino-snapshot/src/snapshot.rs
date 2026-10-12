@@ -7,6 +7,7 @@ use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
 use zaino_primitives::types::{BlockHash, BlockRef, BlockchainInfo, Height};
+use zaino_traffic::Health;
 
 use crate::feed::{Feed, MempoolTail};
 
@@ -39,21 +40,28 @@ pub enum Unavailable {
     NothingServed,
 }
 
-/// `/readyz` reasons, in order
+/// Serving judged from one snapshot (zainod adds draining, a stalled runtime, provisioning)
+///
+/// - `Syncing` also while every holder of best is catching up (best trails the network)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unready {
-    HeadersSyncing,
-    TipNotHeld,
+pub enum Standing {
+    Serving,
     Syncing,
+    Down(Down),
 }
 
-impl Unready {
-    /// `/readyz` + `/statusz` text
-    pub const fn label(self) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Down {
+    NoValidatorReachable,
+    TipNotHeld,
+}
+
+impl Down {
+    /// `/statusz` + `/readyz` `detail`
+    pub const fn detail(self) -> &'static str {
         match self {
-            Self::HeadersSyncing => "headers_syncing",
-            Self::TipNotHeld => "tip_not_held",
-            Self::Syncing => "syncing",
+            Self::NoValidatorReachable => "No trusted validator reachable",
+            Self::TipNotHeld => "No trusted validator holds the verified tip",
         }
     }
 }
@@ -125,14 +133,34 @@ impl<V> Snapshot<V> {
         self.indexed.as_ref()
     }
 
-    pub fn unready(&self) -> impl Iterator<Item = Unready> + '_ {
-        let chain = self.tips.best.is_some();
-        let reasons = [
-            (!chain, Unready::HeadersSyncing),
-            (chain && self.tips.held_by.is_empty(), Unready::TipNotHeld),
-            (!self.tips.synced, Unready::Syncing),
-        ];
-        reasons.into_iter().filter(|(raised, _)| *raised).map(|(_, reason)| reason)
+    /// First match: every validator down; best unheld; not synced or best held only by
+    /// validators catching up; else serving
+    pub fn standing(&self) -> Standing {
+        let endpoints = self.view.endpoints();
+        let health = |at: usize| endpoints.get(at).map(|meta| meta.health);
+        if !endpoints.is_empty() && endpoints.iter().all(|meta| meta.health == Health::Down) {
+            return Standing::Down(Down::NoValidatorReachable);
+        }
+        if self.tips.best.is_some() && self.tips.held_by.is_empty() {
+            return Standing::Down(Down::TipNotHeld);
+        }
+        let holders = || self.tips.held_by.positions().filter_map(health);
+        let catching_up = holders().any(|health| health == Health::CatchingUp)
+            && !holders().any(|health| health == Health::Live);
+        match self.tips.synced && !catching_up {
+            true => Standing::Serving,
+            false => Standing::Syncing,
+        }
+    }
+
+    /// Best's height, or above it the clock estimate of a validator still catching up
+    pub fn sync_target(&self) -> Option<Height> {
+        let best = self.tips.best.map(|best| best.height);
+        let catching_up =
+            self.view.endpoints().iter().filter(|meta| meta.health == Health::CatchingUp);
+        let estimates =
+            catching_up.filter_map(|meta| meta.tip()?.height.checked_add(meta.stale_blocks()?));
+        best.into_iter().chain(estimates).max()
     }
 
     /// Each fork of `chain()`, most work first, with the deepest block of it folded

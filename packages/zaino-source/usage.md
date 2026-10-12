@@ -1,35 +1,57 @@
 # `zaino-source` — usage
 
-`ChainDataSource`: every question Zaino asks one trusted validator's RPC, one
-trait, declared in `zaino-primitives` vocabulary, each method with its own domain
-error. `ZebraRpcAdapter` answers all of it over zebrad's JSON-RPC; blocks come from
-`getblock <id> 0` and are decoded once, from consensus bytes, into
-`zaino_primitives::types::Block`. A test fake answers what its test asks and
-`unimplemented!()`s the rest.
+`ChainDataSource`: every question Zaino asks one trusted validator, one trait,
+declared in `zaino-primitives` vocabulary, each method with its own domain error,
+nothing about the transport. Blocks come back decoded once, from consensus bytes,
+into `zaino_primitives::types::Block`. Two implementations; a test fake answers
+what its test asks and `unimplemented!()`s the rest.
 
-| Method | RPC | Answer |
-|---|---|---|
-| `get_block_by_hash(hash)` | `getblock <hash> 0` | `Block`, or `GetBlockByHashError::NotFound` |
-| `get_block_links(heights)` | `getblockheader <h> false`, batched | `BlockLink` per height, or `GetAtHeightError::HeightNotFound` |
-| `get_poll_reading(metadata, holds)` | one poll batch (below) | `PollReading` |
-| `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | bytes per entry |
-| `get_transaction(txid)` | `getrawtransaction <txid> 1` | bytes + `TransactionLocation` |
-| `send_raw_transaction(bytes)` | `sendrawtransaction` | the txid, or the rejection |
+| Method | `ZcashLegacyRpcClient` | `ZcashGrpcClient` | Answer |
+|---|---|---|---|
+| `get_block_by_hash(hash)` | `getblock <hash> 0` | indexer `GetBlock` | `Block`, or `GetBlockByHashError::NotFound` |
+| `get_blocks_by_height(heights)` | `getblock "<h>" 0`, batched | indexer `GetBlockRange`, one per consecutive run | `Block` per height, or `GetAtHeightError::HeightNotFound` |
+| `get_block_links(heights)` | `getblockheader <h> false`, batched | JSON-RPC, as legacy | `BlockLink` per height, or `HeightNotFound` |
+| `get_poll_reading(metadata, holds)` | one poll batch (below) | JSON-RPC, as legacy | `PollReading` |
+| `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | JSON-RPC, as legacy | bytes per entry |
+| `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
+| `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
 
-## Building an adapter: one link per validator
+## Building a client: one per validator
 
 ```rust,ignore
-use zaino_source::{LinkLimits, Timeouts, ZebraRpcAdapter};
+use zaino_source::{LinkLimits, Timeouts, ZcashGrpcClient, ZcashLegacyRpcClient};
 
 let link = LinkLimits { max_connections, max_bytes_per_sec };
-let adapter = ZebraRpcAdapter::at(address, cookie, user, password, Timeouts::default(), link)?;
+let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
+// or blocks over zebrad's indexer gRPC, the rest through `legacy`:
+let grpc = ZcashGrpcClient::at(legacy, indexer_address, Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `Trusted` member
 ```
 
-`at` builds the adapter from config without contacting the validator. An
+`at` builds the client from config without contacting the validator. An
 unreachable validator is the caller's retry, never a construction failure;
 `EndpointError` means a bad address, an unreadable cookie, or a client that
-cannot be built.
+cannot be built. zainod picks one for every validator (`validator_client`).
+
+- `ZcashLegacyRpcClient`: JSON-RPC over HTTP/1.1 (zebrad or zcashd). A block
+  arrives as hex inside JSON: the body buffer is sized once from `Content-Length`,
+  and the hex string is handed over as raw bytes (no UTF-8 pass) and decoded by
+  `const-hex` (SIMD) into an exact-size buffer.
+- `ZcashGrpcClient`: blocks over zebrad's indexer gRPC (HTTP/2), the rest through
+  the `ZcashLegacyRpcClient` it holds.
+  - A block arrives as its stored consensus bytes in a protobuf `bytes` field, a
+    `Bytes` slice of the received frame: no hex, no JSON.
+  - `get_blocks_by_height` cuts its heights into consecutive runs, one
+    `GetBlockRange` stream each.
+  - It needs zebrad's `GetBlockRange` (`elicbarbieri/zebra perf/indexer-block-range`).
+  - Streams are multiplexed over `ceil(max_connections / 20)` connections (zebrad
+    admits 20 streams per connection), requests rotated across them.
+  - Receive windows: 4 MiB per stream (a whole block in flight), every stream's at
+    once per connection.
+  - `read` timeout = silence per message, never a total.
+  - `max_bytes_per_sec` paces each block as received, so HTTP/2 flow control
+    slows the sender.
+  - Metrics (`GetBlock`, `GetBlockRange`) land in the same families as JSON-RPC.
 
 - One attempt per call. Which validator, how many requests in flight, the request
   rate, retries and hedges are the balancer's (`zaino-traffic`): this crate never
@@ -56,7 +78,7 @@ as an outage. If the validator replied at all, it is almost certainly `Domain`.
 
 `NonDomainError { mode: FailureMode, .. }` keeps the concrete cause as its
 `source()`; `mode` classifies it (`Connection`, `Timeout`, `HttpStatus`,
-`RpcError(code)`, `Parse`, `Auth`).
+`RpcError(code)`, `GrpcStatus(code)`, `Parse`, `Auth`).
 
 ## `IndexerWatch`: push streams as wake hints
 

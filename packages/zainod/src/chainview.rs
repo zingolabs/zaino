@@ -12,7 +12,7 @@ use tracing::info;
 use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
-use zaino_source::{IndexerWatch, ZebraRpcAdapter};
+use zaino_source::{ChainDataSource, IndexerWatch, ZcashGrpcClient, ZcashLegacyRpcClient};
 use zaino_traffic::{TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
@@ -23,23 +23,27 @@ use crate::error::IndexerError;
 /// - `balancing` = the balancer's driver (every poll included); `fold` = polls into the view
 /// - `watches`: push streams of each validator naming an `indexer_address`
 /// - `peers`: `[p2p]` on = network start + the view's announcement fold
-pub(crate) struct Wiring {
-    pub(crate) view: Arc<ChainView<ZebraRpcAdapter>>,
-    pub(crate) balancer: TrafficBalancer<ZebraRpcAdapter>,
-    pub(crate) balancing: TrafficDriver<ZebraRpcAdapter>,
-    pub(crate) fold: ObservationFold<ZebraRpcAdapter>,
+pub(crate) struct Wiring<S: ChainDataSource> {
+    pub(crate) view: Arc<ChainView<S>>,
+    pub(crate) balancer: TrafficBalancer<S>,
+    pub(crate) balancing: TrafficDriver<S>,
+    pub(crate) fold: ObservationFold<S>,
     pub(crate) watches: Vec<(ValidatorId, IndexerWatch)>,
-    pub(crate) header_sync: HeaderSync<ZebraRpcAdapter>,
+    pub(crate) header_sync: HeaderSync<S>,
     pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
 }
 
-/// One unprobed adapter per trusted validator, the balancer over them, the view over it (down at
-/// boot = the balancer's retry, never a boot failure)
-pub(crate) fn connect(config: &DaemonConfig) -> Result<Wiring, IndexerError> {
+/// One unprobed `client` per trusted validator ([`legacy_client`] / [`grpc_client`]), the
+/// balancer over them, the view over it (down at boot = the balancer's retry, never a boot
+/// failure)
+pub(crate) fn connect<S: ChainDataSource>(
+    config: &DaemonConfig,
+    client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
+) -> Result<Wiring<S>, IndexerError> {
     let validators = &config.trusted_validators;
     let trusted = validators.iter().map(|validator| {
         let limits = validator.limits().ok_or_else(|| too_few_connections(validator))?;
-        let source = Arc::new(adapter(validator)?);
+        let source = Arc::new(client(validator)?);
         Ok(Trusted { source, priority: validator.priority, limits })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
@@ -76,8 +80,11 @@ fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
     IndexerError::ConfigError(format!("{}: max_connections too low", validator.jsonrpc_address))
 }
 
-fn adapter(validator: &TrustedValidatorConfig) -> Result<ZebraRpcAdapter, IndexerError> {
-    ZebraRpcAdapter::at(
+/// `validator_client = "legacy_rpc"`: every question over its JSON-RPC
+pub(crate) fn legacy_client(
+    validator: &TrustedValidatorConfig,
+) -> Result<ZcashLegacyRpcClient, IndexerError> {
+    ZcashLegacyRpcClient::at(
         &validator.jsonrpc_address,
         validator.cookie_path.as_deref(),
         validator.user.clone(),
@@ -86,4 +93,18 @@ fn adapter(validator: &TrustedValidatorConfig) -> Result<ZebraRpcAdapter, Indexe
         validator.link(),
     )
     .map_err(IndexerError::from)
+}
+
+/// `validator_client = "grpc"`: blocks over its indexer gRPC, the rest over its JSON-RPC
+///
+/// - [`DaemonConfig::validate`] refuses a validator without `indexer_address` first
+pub(crate) fn grpc_client(
+    validator: &TrustedValidatorConfig,
+) -> Result<ZcashGrpcClient, IndexerError> {
+    let indexer = validator.indexer_address.as_deref().ok_or_else(|| {
+        IndexerError::ConfigError(format!("{}: no indexer_address", validator.jsonrpc_address))
+    })?;
+    let legacy = legacy_client(validator)?;
+    ZcashGrpcClient::at(legacy, indexer, validator.into(), validator.link())
+        .map_err(IndexerError::from)
 }

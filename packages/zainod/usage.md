@@ -13,26 +13,59 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 | ---------- | -------------------------------------- | ------------------------------ |
 | `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
 | `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
-| `/readyz`  | `{"ready", "reasons"}`                 | any reason below (`503`)       |
+| `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` (`503`) |
 | `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
 `/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
 (`zaino-snapshot`): none of them can mix two moments.
 
-`/readyz` reasons: `draining` (a shutdown signal arrived; listed first, see
-[systemd](#systemd)), `starting` (indexer not booted), `heartbeat_stale`, then the snapshot's
-own, in order: `headers_syncing` (no verified header chain tip yet), `tip_not_held` (no trusted
-validator holds the verified tip), `syncing` (the served tip is not at the verified best: on
-once it is, off once it leaves the best chain or trails it by more than `finalised_depth`;
-requests are never refused for it).
+`state` is one of five, and the first rule that matches wins:
+
+| `state`        | When                                                                                     |
+| -------------- | ---------------------------------------------------------------------------------------- |
+| `draining`     | a shutdown signal arrived (see [systemd](#systemd))                                      |
+| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold)); above every rule below |
+| `provisioning` | not booted yet: a snapshot bootstrap, or plain startup                                   |
+| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), every trusted validator down, or none holding the verified tip |
+| `syncing`      | booted, but the served tip is not the verified best yet, or every validator holding the best is still catching up to the network |
+| `serving`      | otherwise                                                                                |
+
+- `ready` is true exactly when `state` is `serving`, and only then does `/readyz` answer `200`.
+- `syncing` turns on until the served tip reaches the verified best. After that it turns back on
+  only when the served tip leaves the best chain or trails it by more than `finalised_depth`.
+  Requests are never refused for it.
+- A validator still catching up (its mempool inactive) holds the verified best while trailing
+  the network itself, so zainod reports `syncing` until a holder lists its mempool.
+- `detail` is a short sentence saying why, set only when `down`: `No trusted validator
+  reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or `Overloaded`.
+- `Overloaded` is a backstop for a node persistently over capacity. Admission already sheds load
+  within seconds; this only takes the node out of a load balancer:
+  - It turns on once ≥ 10% of gRPC work requests have been refused, at ≥ 1 refusal/s, for
+    5 minutes straight. The share is averaged over 60 s, so a brief dip does not reset the clock.
+  - It turns off once the share stays under 2% for 5 minutes.
+  - Below 10%, refusals are the adaptive limit trimming bursts, and the node is still serving.
+    The 1/s floor keeps a near-idle node from flipping on a handful of refusals. The gap between
+    10% and 2%, each held for 5 minutes, stops it flapping as traffic returns.
+- `progress` is set only while `provisioning` or `syncing`, as `{done, total, unit, rate}`:
+  - A bootstrap reports `unit` `byte`, with `rate` in bytes/s while downloading.
+  - Syncing reports `unit` `block`:
+    - `done` is the served height, or the handed one before anything is served.
+    - `total` is the verified best height, or a catching-up validator's network estimate when
+      that is higher.
+    - `rate` is blocks handed per second over the last ~60 s.
+  - `progress` is `null` before the first verified header.
+- `notes` holds one sentence per raised alarm (partition, eclipse, finality paused, validators
+  on a stale tip, releases reaching end of service within a week), or `[]` when none.
 
 `/statusz` = zainod's process fields beside the snapshot's report (`zaino_snapshot::Report`,
 flattened; shape in [`docs/running.md`](../../docs/running.md#status)): `version`, `network`,
-`uptime_s`, `ready`, `reasons` (as `/readyz`), `grpc.sent_bytes` (response body bytes served,
+`uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `load` (the gRPC work pool:
+`limit` = work streams admitted at once now, latency-adaptive with `[grpc] adaptive_streams`,
+`in_flight`, `refused_per_s` decaying over ~10 s, `overloaded`), `grpc.sent_bytes` (response body bytes served,
 all methods), `disk` (per enabled index: `size_bytes` + `tables` = bytes per subdirectory, from
 the progress task's last walk, so absent until the first, 30 s after boot, then every 2
 minutes), then `seq`, `tips` (`best`, `final`, `served` as `{height, hash}`, `held_by` of
-`configured`, `synced`), `unready`, `handed` (the last block handed to the indexes: sync progress
+`configured`, `synced`), `handed` (the last block handed to the indexes: sync progress
 between their commits), `indexes` (every index the NFS can fold: `name`, `enabled` = configured,
 `durable` = its committed height, `null` until the NFS reports it; listed from startup, snapshot
 bootstrap included), `validators` (each configured one:
@@ -45,6 +78,83 @@ protocol and `end_of_service` as `{"status": "at", height, estimated_unix, block
 `fully_spread`, `trusted_readers`), `forks` (each side branch: `from`, `tip`, `cumulative_work`
 as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip, each final block
 moves it by one. Traffic data: keep the listener private.
+
+## Operator hold
+
+`zainod hold [--config FILE]` takes a node out of rotation until `zainod resume [--config FILE]`.
+It persists across restarts, deploys and reboots.
+
+- `hold` writes the marker `<[serve] state_dir>/held` (default `<data dir>/zaino/state`),
+  synced to disk with its directory. `resume` removes it. There is no network endpoint, so
+  holding a node requires write access to its state directory.
+- The running zainod checks the marker every second. Held:
+  - `state` becomes `held`: `/readyz` answers `503` and `detail` is `null`.
+  - Only `draining` outranks it, so a held node that is also overloaded or has lost its
+    validators still reports `held`.
+  - After `[grpc.shutdown] delay_secs` (zero when shutdown draining is off), every open gRPC
+    connection gets a GOAWAY, and its in-flight streams get `max_connection_age_grace`.
+  - The process keeps running and answering `/readyz`, `/status` and the admin listener. New
+    connections are still served.
+- On resume, the state returns to normal evaluation, so a node that fell behind while held
+  reports `syncing` first.
+- A stopped or killed zainod is never reported `held`, only absent. A dashboard can therefore
+  tell a planned removal (last report `held`) from a crash.
+- Under systemd, a node that starts held finishes its start job (`READY=1`) instead of waiting
+  on a readiness the operator is withholding.
+- Output:
+  - stdout: `held` or `resumed`.
+  - stderr: what changed (`hold marker written`, `already held`, `hold marker removed`,
+    `was not held`).
+  - stderr, when `[metrics] listen_address` is set: the state the running zainod reports
+    within 5 s, or that none answered (the marker applies when it next starts).
+  - Exit 0 once the marker matches the command (both commands are idempotent), 1 when the
+    config or state directory could not be read or written.
+
+## Public health on the gRPC listener
+
+The gRPC listener also answers two plain `GET`s, over HTTPS/1.1 or h2. TLS offers ALPN `h2` and
+`http/1.1`, with the same certificate and the same per-client connection cap. These paths are
+for load-balancer monitors and public dashboards, and a `200` from them also proves TLS and the
+listener are up:
+
+| Path | Answers |
+|---|---|
+| `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving`, else `503` |
+| `/status` | the public projection below, always `200` |
+
+- They are answered before admission, so they never take a gRPC work permit.
+- Each connection may send 10 at once and regains one per second; past that the answer is
+  `429`. A client is therefore bounded by `max_connections_per_ip` × that.
+- A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`, because gRPC
+  needs h2.
+
+`/status` is safe for the open internet. It carries no validator address, peer, disk, mempool
+or tailnet name:
+
+```json
+{
+  "state": "serving", "detail": null, "progress": null, "notes": [],
+  "version": "0.10.1", "network": "mainnet",
+  "tip": { "height": 3515406, "hash": "0000…" },
+  "served": 3515400,
+  "validators": { "configured": 2, "connected": 1 },
+  "indexes": { "enabled": ["value_balance", "compact_block"], "total": 5 },
+  "egress": { "start": 1790000400, "mbps": 12.5 },
+  "info": { "version": "…", "blockHeight": 3515400, "…": "every GetLightdInfo field" }
+}
+```
+
+- `state`, `detail`, `progress` and `notes` are exactly as on `/statusz`.
+- `tip` is the verified best block and `served` is the served height.
+- In `validators`, `connected` counts the answering ones (live or catching up).
+- `egress` is gRPC bytes sent in the last *closed* UTC 10-minute window, in Mbit/s:
+  - It is rounded to 3 significant figures, and under 0.1 is published as 0.
+  - `start` is the window's start time (unix seconds).
+  - The counter is read at each window boundary. The first window after boot is measured from
+    boot.
+- `info` holds the `GetLightdInfo` fields under lightwalletd's camelCase names, as numbers and
+  strings, or `null` while that RPC would be `UNAVAILABLE`.
+- Before boot, `tip`, `served`, `validators`, `egress` and `info` are `null`.
 
 `/metrics` sets every state gauge from the snapshot first (`zaino_best_tip`,
 `zaino_fetch_height`, `zaino_index_synced{index}`, the `zaino_chainview_*` gauges:
@@ -97,7 +207,7 @@ TimeoutStartSec=15min
 |---|---|
 | `READY=1` | the first time `/readyz` passes: serving at the verified tip |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height, the served height or an index height moved |
-| `STATUS=` | the readiness reasons (`ready` once ready), whenever they change |
+| `STATUS=` | the `/statusz` `state` (`down: <detail>` when down), whenever it changes |
 | `STOPPING=1` + `EXTEND_TIMEOUT_USEC` | on the shutdown signal, covering `[grpc.shutdown]`'s delay and timeout plus 30 s for the index flush |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
@@ -161,11 +271,12 @@ with; `index.compact_block` may be disabled, and then neither is installed).
 - A manifest for another network, a hash mismatch or a permanent download error stops startup
   (a failed archive's staging is deleted).
 
-While it runs, `/readyz` answers `snapshot_downloading` / `snapshot_verifying` /
-`snapshot_unpacking`, and `/statusz` carries the progress beside the configured `indexes`:
+While it runs, the state is `provisioning`. `/statusz` carries the bytes as `progress`, and the
+bootstrap itself as `snapshot`, beside the configured `indexes`:
 
 ```json
-{"ready": false, "reasons": ["snapshot_downloading"],
+{"ready": false, "state": "provisioning", "detail": null, "notes": [],
+ "progress": {"done": 27000000000, "total": 44500000000, "unit": "byte", "rate": 103000000.0},
  "indexes": [{"name": "value_balance", "enabled": true, "durable": null}, …],
  "snapshot": {"phase": "downloading", "source": "snapshots.zingolabs.dev", "height": 3501802,
               "indexes": 5, "done": 27000000000, "total": 44500000000, "rate": 103000000}}

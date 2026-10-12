@@ -253,8 +253,8 @@ impl State {
             return Ok(());
         }
         self.failures -= 1;
-        let mode = self.failure_mode.clone();
-        Err(NonDomainError::new(mode.clone(), format!("MockValidator injected {mode:?}")))
+        let mode = self.failure_mode;
+        Err(NonDomainError::new(mode, format!("MockValidator injected {mode:?}")))
     }
 
     fn best_at(&self, height: Height) -> Option<&Arc<Block>> {

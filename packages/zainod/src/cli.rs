@@ -47,6 +47,31 @@ pub enum Command {
         #[arg(short, long, value_name = "FILE")]
         config: Option<PathBuf>,
     },
+    /// Take this node out of rotation until `zainod resume`, across restarts and reboots.
+    ///
+    /// Writes a marker in `[serve] state_dir`. The running zainod picks it up within a second:
+    /// its state becomes `held` (`/readyz` 503), and after `[grpc.shutdown]`'s delay every open
+    /// gRPC connection is sent GOAWAY. It keeps answering health and admin requests. A stopped
+    /// zainod is never reported held.
+    ///
+    /// Prints `held`, then on stderr what changed and, when `[metrics] listen_address` is set,
+    /// the state the running zainod reports. Exits 0 once the marker is in place (holding twice
+    /// is a no-op), 1 when the config or state directory could not be read or written.
+    Hold {
+        /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
+    /// Undo `zainod hold`: back to syncing or serving as the indexes dictate.
+    ///
+    /// Removes the marker in `[serve] state_dir`; the running zainod picks it up within a
+    /// second. Prints `resumed`, then on stderr what changed and the running zainod's state.
+    /// Exits 0 once the marker is gone (resuming when not held is a no-op), 1 on an error.
+    Resume {
+        /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
+        #[arg(short, long, value_name = "FILE")]
+        config: Option<PathBuf>,
+    },
 }
 
 impl Command {

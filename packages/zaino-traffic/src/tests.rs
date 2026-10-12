@@ -193,7 +193,7 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     type Observed = tokio::sync::watch::Receiver<Option<Arc<crate::Observation>>>;
     let observed_health = |observed: &mut Observed| {
         let observation = observed.borrow_and_update().clone();
-        observation.map(|o| (o.polled.as_ref().err().map(|e| e.mode.clone()), o.health))
+        observation.map(|o| (o.polled.as_ref().err().map(|e| e.mode), o.health))
     };
     let failed = Some((Some(FailureMode::Connection), Health::Degraded));
     assert_eq!(observed_health(&mut observed), failed, "the health it left the member in");

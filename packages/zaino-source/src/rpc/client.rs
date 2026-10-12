@@ -106,6 +106,19 @@ impl RpcClient {
         })
     }
 
+    /// Metric label (the configured address)
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// `n` received bytes against `max_bytes_per_sec` (unset = at once): waiting = reading stops,
+    /// the transport's flow control slows the sender
+    pub(crate) async fn pace(&self, n: usize) {
+        if let Some(bytes) = &self.bytes {
+            charge(bytes, n).await;
+        }
+    }
+
     /// `result` as a raw `Value`
     pub async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
         self.call_as(method, params).await
@@ -124,7 +137,8 @@ impl RpcClient {
         let body = envelope::build_request(method, &params, id);
         let settled =
             self.send_http(&body).await.and_then(|reply| envelope::parse_response(&reply));
-        emit::call_settled(&self.name, method, started.elapsed(), settled.as_ref().err());
+        let failure = settled.as_ref().err().map(RpcError::failure_mode);
+        emit::call_settled(&self.name, method, started.elapsed(), failure);
         settled
     }
 
@@ -147,7 +161,8 @@ impl RpcClient {
         let body = envelope::build_batch(calls.iter(), first);
         let settled = self.send_http(&body).await;
         let settled = settled.and_then(|reply| envelope::parse_batch(&reply, first, calls.len()));
-        emit::call_settled(&self.name, label, started.elapsed(), settled.as_ref().err());
+        let failure = settled.as_ref().err().map(RpcError::failure_mode);
+        emit::call_settled(&self.name, label, started.elapsed(), failure);
         settled
     }
 
@@ -182,11 +197,13 @@ async fn read_body_capped(
     max: usize,
     bytes: Option<&DefaultDirectRateLimiter>,
 ) -> Result<Vec<u8>, RpcError> {
-    if response.content_length().is_some_and(|len| len > max as u64) {
+    let announced = response.content_length();
+    if announced.is_some_and(|len| len > max as u64) {
         return Err(RpcError::ResponseBodyTooLarge { max });
     }
 
-    let mut body = Vec::new();
+    // sized once from `Content-Length` (≤ `max`): no regrowth copies of a multi-MB body
+    let mut body = Vec::with_capacity(announced.map_or(0, |len| len as usize));
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > max {
             return Err(RpcError::ResponseBodyTooLarge { max });

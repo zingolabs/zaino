@@ -310,3 +310,71 @@ Disk monitor, sampled every 30 s: `zaino_disk_committed_bytes` / `zaino_disk_cac
 `zaino_io_stall_seconds_total{kind}` (own cgroup's I/O pressure). `rustix` is no longer \
 feature-gated.
 """
+
+[[changes]]
+crate = "zainod"
+kind = "breaking"
+section = "changed"
+description = """
+`/statusz` and `/readyz` report one closed `state`: `provisioning`, `syncing`, `serving`, \
+`draining` or `down` (first match). `/statusz` adds `progress` (`{done, total, unit, rate}`, \
+blocks or bootstrap bytes, only while provisioning or syncing), `detail` (why, only when down) \
+and `notes` (one sentence per raised alarm); `ready` = `state` is `serving`. `/readyz` answers \
+`{"state", "detail"}`, `200` only when serving. A tip held only by validators still catching up \
+is `syncing`, never `serving`; boot waiting on its first validator answer is `down`. systemd \
+`STATUS=` carries the state. `reasons` (both endpoints) and `unready` (`/statusz`) are gone.
+"""
+migration = """
+Read `state` (and `detail` when `down`) instead of `reasons` / `unready`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "added"
+description = """
+`[grpc]` `max_connection_age_secs` (default 1800, 0 = never), `max_connection_age_grace_secs` \
+(600), `max_connection_idle_secs` (1800, 0 = never) and `adaptive_streams` (default true): \
+long-held connections are GOAWAY'd so clients re-resolve DNS, and a saturated node refuses new \
+work within seconds. `/statusz` adds `load` = `{limit, in_flight, refused_per_s}` for the work \
+pool.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "added"
+description = """
+The gRPC listener serves public health: `GET /readyz` (`{"state", "detail"}`, `200` only when \
+serving) and `GET /status` (state, detail, progress, notes, version, network, tip, served, \
+validator counts, enabled indexes, egress Mbit/s per closed UTC 10-min window, `GetLightdInfo` \
+fields; no addresses, peers, disk or mempool), over HTTPS/1.1 or h2 on the gRPC port. A node \
+refusing ≥ 10% of gRPC work for 5 min reports `down` / `Overloaded` until 5 min under 2%; \
+`/statusz` `load` adds `overloaded`.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "added"
+description = """
+`zainod hold` / `zainod resume [--config FILE]`: an operator hold that survives restarts, \
+deploys and reboots. The marker lives in the new `[serve] state_dir` (default \
+`<data dir>/zaino/state`); the running zainod reads it every second. Held = state `held` on \
+`/statusz`, `/readyz` (503) and `/status`, above every rule but `draining`; after \
+`[grpc.shutdown]`'s delay every open gRPC connection is sent GOAWAY, while health and admin keep \
+answering. A stopped zainod is never reported held. Under systemd a node started held completes \
+its start. Both commands are idempotent, print the resulting state and exit 0 (1 on a config or \
+state-dir error).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "feature"
+section = "added"
+description = """
+`validator_client = "legacy_rpc" | "grpc"` (default `legacy_rpc`): `grpc` fetches blocks over \
+each validator's zebrad indexer gRPC (`indexer_address`, required for every validator; zebrad \
+with `GetBlockRange`) as stored bytes, no hex or JSON, and everything else over JSON-RPC. The \
+`hex` crate is replaced by `const-hex` (SIMD) workspace-wide.
+"""

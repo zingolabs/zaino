@@ -26,7 +26,7 @@ unsafe_code = "forbid"
 unreachable_pub = "warn"
 
 [dev-dependencies]
-hex.workspace = true
+const-hex.workspace = true
 proptest.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 serde_json.workspace = true

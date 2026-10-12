@@ -324,7 +324,11 @@ mod tests {
         let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
         let mut display = tip_hash;
         display.reverse();
-        assert_eq!((state.height, state.hash), (2, hex::encode(display)), "same tip, same block");
+        assert_eq!(
+            (state.height, state.hash),
+            (2, const_hex::encode(display)),
+            "same tip, same block"
+        );
         let three = chain.at(h(3)).hash;
         let mut three_display = <[u8; 32]>::from(three).to_vec();
         three_display.reverse();
@@ -332,7 +336,7 @@ mod tests {
         let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
         let answered = (code, state.height, state.hash);
         let ok = Some(tonic::Code::Ok);
-        assert_eq!(answered, (ok, 3, hex::encode(three_display)), "3 durable, past the tip");
+        assert_eq!(answered, (ok, 3, const_hex::encode(three_display)), "3 durable, past the tip");
         let (code, block, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
         let block = cf::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
         let three = <[u8; 32]>::from(three).to_vec();

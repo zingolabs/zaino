@@ -29,7 +29,7 @@ governor = { version = "0.10.4", default-features = false, features = ["std"] }
 zaino-proto.workspace = true
 tonic.workspace = true
 tokio-util.workspace = true
-hex.workspace = true
+const-hex.workspace = true
 zcash_transparent = { workspace = true, optional = true }
 
 [features]

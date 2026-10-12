@@ -6,12 +6,15 @@
 //! - Domain → wire owned by the byte-producing crate (no domain crate depends on the schema)
 #![forbid(unsafe_code)]
 
+mod adaptive;
 mod admission;
 mod client;
 mod coalesce;
 mod connections;
 mod deadline;
 mod emit;
+mod health;
+mod lifetime;
 mod limits;
 mod memo;
 mod observe;
@@ -25,7 +28,19 @@ mod tls;
 mod transport;
 mod wire;
 
+pub use admission::{Load, LoadReport};
 pub use client::TrustedProxies;
+pub use health::Health;
+pub use lifetime::Retire;
+pub use zaino_proto::proto::service::LightdInfo;
+
+/// `GetLightdInfo`'s answer from `snap` (`None` = the RPC answers `UNAVAILABLE`)
+pub fn lightd_info<V>(
+    snap: &zaino_snapshot::Snapshot<V>,
+    network: zcash_protocol::consensus::NetworkType,
+) -> Option<LightdInfo> {
+    routes::chain::lightd_info(snap, network).ok()
+}
 pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use limits::GrpcLimits;
 pub use service::Routes;

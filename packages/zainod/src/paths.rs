@@ -14,6 +14,11 @@ pub(crate) fn default_index(kind: IndexKind) -> PathBuf {
     under(dirs::cache_dir(), ".cache").join("zaino/indexes").join(kind.name())
 }
 
+/// `<data dir>/zaino/state`: zainod's own state (the operator hold marker), never a cache
+pub(crate) fn default_state() -> PathBuf {
+    under(dirs::data_dir(), ".local/share").join("zaino/state")
+}
+
 /// `<cache dir>/zaino/peers`: zebra-network's peer address cache
 pub(crate) fn default_peer_cache() -> PathBuf {
     under(dirs::cache_dir(), ".cache").join("zaino/peers")

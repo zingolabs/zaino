@@ -4,6 +4,7 @@
 //!   hyper drops the body either way; released at handler return = unbounded streams)
 //! - Two pools by [`Class`]: a subscription idles for a block, so it never holds a work permit
 //!   (one mempool stream per wallet would otherwise fill `max_streams` with idlers)
+//! - Work also refused at the adaptive limit (`adaptive.rs`), fed each message's production time
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -12,8 +13,10 @@ use std::task::{Context, Poll};
 use http::{HeaderValue, Request, Response};
 use http_body::{Body, Frame, SizeHint};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::time::Instant;
 use tonic::Status;
 
+use crate::adaptive::{Limiter, Overload, RefusalRate};
 use crate::emit;
 
 /// Refusal retry hint, ms (held streams = wallet syncs: a permit frees well under a second)
@@ -39,23 +42,59 @@ impl Class {
     }
 }
 
-/// The two admission pools, shared by every connection
-#[derive(Clone, Debug)]
-pub(crate) struct Permits {
+/// The two admission pools + the adaptive work limit, shared by every connection
+/// ([`GrpcService::load`](crate::GrpcService::load) = its `/statusz` view)
+#[derive(Debug)]
+pub struct Load {
     work: Arc<Semaphore>,
     subscriptions: Arc<Semaphore>,
+    max_streams: usize,
+    max_subscriptions: usize,
+    limiter: Limiter,
+    refusals: RefusalRate,
+    overload: Overload,
 }
 
-impl Permits {
+/// The work pool now: `limit` = the adaptive one (`max_streams` when off), `refused_per_s` decays
+/// over ~10 s, `overloaded` = ≥ 10 % of work refused for 5 min (`adaptive.rs` [`Overload`])
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoadReport {
+    pub limit: usize,
+    pub in_flight: usize,
+    pub refused_per_s: f64,
+    pub overloaded: bool,
+}
+
+impl Load {
     pub(crate) fn new(limits: &crate::GrpcLimits) -> Self {
+        let (max_streams, max_subscriptions) =
+            (limits.max_streams.get(), limits.max_subscriptions.get());
         Self {
-            work: Arc::new(Semaphore::new(limits.max_streams.get())),
-            subscriptions: Arc::new(Semaphore::new(limits.max_subscriptions.get())),
+            work: Arc::new(Semaphore::new(max_streams)),
+            subscriptions: Arc::new(Semaphore::new(max_subscriptions)),
+            max_streams,
+            max_subscriptions,
+            limiter: Limiter::new(max_streams, limits.adaptive_streams),
+            refusals: RefusalRate::default(),
+            overload: Overload::default(),
         }
     }
 
-    /// Permits of `class` held now, of `cap` (the pool's size)
-    pub(crate) fn held(&self, class: Class, cap: usize) -> (usize, usize) {
+    pub fn report(&self) -> LoadReport {
+        LoadReport {
+            limit: self.limiter.limit(),
+            in_flight: self.held(Class::Work).0,
+            refused_per_s: self.refusals.per_second(),
+            overloaded: self.overload.overloaded(),
+        }
+    }
+
+    /// Permits of `class` held now, of the pool's size
+    pub(crate) fn held(&self, class: Class) -> (usize, usize) {
+        let cap = match class {
+            Class::Work => self.max_streams,
+            Class::Subscription => self.max_subscriptions,
+        };
         (cap.saturating_sub(self.pool(class).available_permits()), cap)
     }
 
@@ -65,19 +104,37 @@ impl Permits {
             Class::Subscription => &self.subscriptions,
         }
     }
+
+    /// `try_acquire`, never `acquire` (excess load refused at once); work also at the adaptive
+    /// limit
+    fn admit(&self, class: Class) -> Option<OwnedSemaphorePermit> {
+        let under_limit = class == Class::Subscription || self.held(class).0 < self.limiter.limit();
+        let permit = under_limit.then(|| Arc::clone(self.pool(class)).try_acquire_owned().ok());
+        let permit = permit.flatten();
+        if class == Class::Work {
+            match permit.is_some() {
+                true => self.overload.admitted(),
+                false => {
+                    self.refusals.refused();
+                    self.overload.refused();
+                }
+            }
+        }
+        permit
+    }
 }
 
 /// Permit of the request's class, or refusal; one per connection (`stalls` = its watch)
 #[derive(Clone, Debug)]
 pub(crate) struct Admission<Inner> {
     inner: Inner,
-    permits: Permits,
+    load: Arc<Load>,
     stalls: Arc<crate::stall::Watch>,
 }
 
 impl<Inner> Admission<Inner> {
-    pub(crate) fn new(inner: Inner, permits: Permits, stalls: Arc<crate::stall::Watch>) -> Self {
-        Self { inner, permits, stalls }
+    pub(crate) fn new(inner: Inner, load: Arc<Load>, stalls: Arc<crate::stall::Watch>) -> Self {
+        Self { inner, load, stalls }
     }
 }
 
@@ -120,14 +177,18 @@ where
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let class = Class::of(request.uri().path());
-        // `try_acquire_owned`, never `acquire` (excess load refused at once)
-        let Ok(permit) = Arc::clone(self.permits.pool(class)).try_acquire_owned() else {
+        let Some(permit) = self.load.admit(class) else {
             emit::stream_rejected(class);
             return Box::pin(std::future::ready(Ok(
                 refused(class).map(|body| Admitted { inner: body, held: None })
             )));
         };
-        let held = Held { _permit: StreamPermit::new(permit, class), ticket: self.stalls.ticket() };
+        let held = Held {
+            permit: StreamPermit::new(permit, class),
+            ticket: self.stalls.ticket(),
+            load: Arc::clone(&self.load),
+            busy_since: Some(Instant::now()),
+        };
 
         // Clone-then-swap = tower's readiness contract (the instance polled ready is called)
         let mut inner = self.inner.clone();
@@ -159,11 +220,30 @@ impl Drop for StreamPermit {
     }
 }
 
-/// What an admitted stream holds until it ends: its permit and its standing with the stall watch
+/// What an admitted stream holds until it ends: its permit, its standing with the stall watch, and
+/// since when it has been producing its next message (`None` = handed one, not polled since)
 #[derive(Debug)]
 struct Held {
-    _permit: StreamPermit,
+    permit: StreamPermit,
     ticket: crate::stall::Ticket,
+    load: Arc<Load>,
+    busy_since: Option<Instant>,
+}
+
+impl Held {
+    fn polled(&mut self) {
+        self.ticket.pulled();
+        self.busy_since.get_or_insert_with(Instant::now);
+    }
+
+    /// A data frame out: one work message's production time to the limiter
+    fn handed(&mut self) {
+        self.ticket.handed();
+        let since = self.busy_since.take();
+        if let (Class::Work, Some(since)) = (self.permit.class, since) {
+            self.load.limiter.sample(since.elapsed(), self.load.held(Class::Work).0);
+        }
+    }
 }
 
 /// Response body owning its stream permit (`held` = `None` only on a refusal or once ended)
@@ -182,14 +262,14 @@ impl<Inner: Body + Unpin> Body for Admitted<Inner> {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         if let Some(held) = self.held.as_mut() {
-            held.ticket.pulled();
+            held.polled();
         }
         let polled = Pin::new(&mut self.inner).poll_frame(cx);
         match &polled {
             Poll::Ready(None) => self.held = None,
             Poll::Ready(Some(Ok(frame))) if frame.is_data() => {
                 if let Some(held) = self.held.as_mut() {
-                    held.ticket.handed();
+                    held.handed();
                 }
             }
             _ => {}
@@ -269,7 +349,8 @@ mod tests {
         let timeout = Duration::from_secs(300);
         let stalls = Arc::new(crate::stall::Watch::default());
         let limits = crate::GrpcLimits::default();
-        let mut admission = Admission::new(Answers, Permits::new(&limits), Arc::clone(&stalls));
+        let load = Arc::new(Load::new(&limits));
+        let mut admission = Admission::new(Answers, load, Arc::clone(&stalls));
         let watching = |stalls: &Arc<crate::stall::Watch>| {
             let stalls = Arc::clone(stalls);
             tokio::spawn(async move { stalls.stalled(timeout).await })
@@ -310,9 +391,9 @@ mod tests {
         let one = std::num::NonZeroUsize::MIN;
         let limits =
             crate::GrpcLimits { max_streams: one, max_subscriptions: one, ..Default::default() };
-        let permits = Permits::new(&limits);
-        let (streams, subscriptions) = (&permits.work, &permits.subscriptions);
-        let mut admission = Admission::new(Answers, permits.clone(), Arc::default());
+        let load = Arc::new(Load::new(&limits));
+        let (streams, subscriptions) = (&load.work, &load.subscriptions);
+        let mut admission = Admission::new(Answers, Arc::clone(&load), Arc::default());
 
         // Admitted: handler returned, stream still open
         let open = admission.call(request("/open")).await.expect("infallible");
@@ -353,5 +434,35 @@ mod tests {
         assert_eq!(streams.available_permits(), 0);
         while body.frame().await.is_some() {}
         assert_eq!(streams.available_permits(), 1, "returned at end of stream");
+    }
+
+    /// Default limits (`max_streams` 2048, adaptive from 256): the 257th open work stream is
+    /// refused with the pool still holding permits, the same `UNAVAILABLE` + pushback; the load
+    /// report says so; a subscription is never held to the work limit
+    #[tokio::test]
+    async fn work_past_the_adaptive_limit_is_refused_below_the_ceiling() {
+        use tower::Service as _;
+
+        let load = Arc::new(Load::new(&crate::GrpcLimits::default()));
+        let mut admission = Admission::new(Answers, Arc::clone(&load), Arc::default());
+        let mut open = Vec::new();
+        for _ in 0..256 {
+            open.push(admission.call(request("/open")).await.expect("infallible"));
+        }
+        let refused = admission.call(request("/open")).await.expect("infallible");
+        let status = Status::from_header_map(refused.headers()).expect("a status");
+        let pushback = refused.headers().get(PUSHBACK_HEADER);
+        let refusal = (status.code(), status.message(), pushback);
+        let retry_after = HeaderValue::from_static(PUSHBACK_MS);
+        let expected = (tonic::Code::Unavailable, "stream limit reached", Some(&retry_after));
+        assert_eq!(refusal, expected);
+        assert_eq!(load.work.available_permits(), 2048 - 256, "refused below the ceiling");
+        let report = load.report();
+        assert_eq!((report.limit, report.in_flight, report.overloaded), (256, 256, false));
+        assert!(report.refused_per_s > 0.0, "{report:?}");
+
+        let mempool = crate::wire::path::GET_MEMPOOL_STREAM;
+        let subscribed = admission.call(request(mempool)).await.expect("infallible");
+        assert_eq!(subscribed.headers().get("grpc-status"), None, "subscriptions: own pool");
     }
 }

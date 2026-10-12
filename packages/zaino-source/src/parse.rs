@@ -87,7 +87,7 @@ fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
 }
 
 fn hex(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
-    hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
+    const_hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
 }
 
 pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseError> {
@@ -98,7 +98,10 @@ pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, Pars
     Ok(as_str(value)?.parse()?)
 }
 
-/// Hex-string `result` decoded straight off the body (borrowed `&str`, one hex pass)
+/// Hex-string `result` decoded straight off the body: one SIMD pass into an exact-size buffer
+///
+/// - `deserialize_bytes`: serde_json hands the string's raw bytes (no UTF-8 pass; a non-hex byte
+///   = a hex error)
 pub(crate) struct HexBytes(pub(crate) Vec<u8>);
 
 impl<'de> serde::Deserialize<'de> for HexBytes {
@@ -112,12 +115,16 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
                 f.write_str("a hex string")
             }
 
+            fn visit_bytes<E: serde::de::Error>(self, hex: &[u8]) -> Result<HexBytes, E> {
+                const_hex::decode(hex).map(HexBytes).map_err(E::custom)
+            }
+
             fn visit_str<E: serde::de::Error>(self, hex: &str) -> Result<HexBytes, E> {
-                hex::decode(hex).map(HexBytes).map_err(E::custom)
+                self.visit_bytes(hex.as_bytes())
             }
         }
 
-        deserializer.deserialize_str(Visitor)
+        deserializer.deserialize_bytes(Visitor)
     }
 }
 
@@ -290,7 +297,7 @@ mod tests {
     #[test]
     fn mempool_listing_reads_each_txid_and_its_exact_fee() {
         let mut reversed_bytes = [0u8; 32];
-        hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
         let listed = |fee: serde_json::Value| {
             parse_mempool_listing(&json!({ ASYMMETRIC_HEX: { "size": 250, "fee": fee } }))
@@ -347,7 +354,7 @@ mod tests {
             "consensus": { "chaintip": "c2d6d0b4", "nextblock": "c2d6d0b4" },
         });
         let mut reversed_bytes = [0u8; 32];
-        hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
+        const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
         let height = |h: u32| Height::try_from(h).expect("h");
         let nu5 = ConsensusBranchId::new(0xc2d6_d0b4);

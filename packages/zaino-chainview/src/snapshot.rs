@@ -303,6 +303,21 @@ impl ChainViewSnapshot {
         view
     }
 
+    /// Consumers' tests: endpoint `at`'s health, and its clock estimate `behind` blocks past
+    /// its tip (a [`fixed`](Self::fixed) holder's tip = best); alarms re-derived as a fold would
+    #[cfg(any(test, feature = "testing"))]
+    pub fn endpoint(mut self, at: usize, health: Health, behind: u32) -> Self {
+        if let Some(meta) = self.endpoints.get_mut(at) {
+            meta.health = health;
+            if let Some(info) = meta.info.as_mut() {
+                info.estimated_height =
+                    info.blocks.checked_add(behind).expect("estimate below u32::MAX");
+            }
+        }
+        self.alarms = crate::telemetry::alarms(&self.endpoints, self.alarms.finality_paused());
+        self
+    }
+
     /// Peers that announced `txid`, held or only overheard (submission's watch)
     pub(crate) fn announcers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
         match (self.mempool.get(txid), self.overheard.get(txid)) {

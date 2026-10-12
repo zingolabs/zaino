@@ -295,7 +295,7 @@ pub struct Observation {
 
 1. `zaino-traffic`: `Observation`, `MemberTable`; `EndpointPoller` emits `Observation`.
 1. `TrafficCore` + model + fire drills, no users.
-1. Driver over trusted `ZebraRpcAdapter` members; `Lookup`: gRPC `GetTransaction` + address txs.
+1. Driver over trusted `ChainDataSource` members (`ZcashLegacyRpcClient` / `ZcashGrpcClient`); `Lookup`: gRPC `GetTransaction` + address txs.
 1. NFS on `block(..)`; `report` on `check_block` failure.
 1. Lanes replace the transport's semaphores; transport resends deleted.
 1. Polling moves in: pollers, push streams, `poll_best`, `bytes`.

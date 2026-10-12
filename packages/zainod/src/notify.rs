@@ -1,9 +1,10 @@
 //! systemd service notifications (`Type=notify`); no-ops unless systemd set `NOTIFY_SOCKET`
 //!
-//! - `READY=1` the first time `/readyz` passes: the start job lasts until serving at the tip
+//! - `READY=1` the first time `/readyz` passes (or the node is held): the start job lasts until
+//!   serving at the tip
 //! - not ready yet: `EXTEND_TIMEOUT_USEC` per tick that saw progress (past `TimeoutStartSec`,
 //!   [`STALL_WINDOW`] without progress = failed start; a slow but moving one never fails)
-//! - `STATUS=` = the readiness reasons, on change
+//! - `STATUS=` = the `/statusz` state (`: detail` when down), on change
 //! - shutdown signal: `STOPPING=1` + an extension covering the drain
 
 use std::time::Duration;
@@ -54,7 +55,7 @@ pub(crate) fn stopping(drain: Duration) {
 
 #[derive(Default)]
 struct Reporter {
-    ready: bool,
+    started: bool,
     status: String,
     progress: Option<Vec<Option<u64>>>,
 }
@@ -62,16 +63,15 @@ struct Reporter {
 impl Reporter {
     fn observe(&mut self, now: Startup) -> Vec<Message> {
         let mut messages = Vec::new();
-        let status = if now.ready { "ready".to_owned() } else { now.reasons.join(", ") };
-        if status != self.status {
-            messages.push(Message::Status(status.clone()));
-            self.status = status;
+        if now.status != self.status {
+            messages.push(Message::Status(now.status.clone()));
+            self.status = now.status;
         }
-        if self.ready {
+        if self.started {
             return messages;
         }
-        if now.ready {
-            self.ready = true;
+        if now.started {
+            self.started = true;
             messages.push(Message::Ready);
             return messages;
         }
@@ -117,32 +117,37 @@ mod tests {
     /// tick that moved, `READY=1` once, then status changes alone (a later lag is no new start)
     #[test]
     fn startup_extends_only_on_progress_reports_ready_once_then_only_status() {
-        let at = |ready: bool, reasons: &[&str], progress: &[u64]| Startup {
-            ready,
-            reasons: reasons.iter().map(|reason| (*reason).to_owned()).collect(),
+        let at = |started: bool, status: &str, progress: &[u64]| Startup {
+            started,
+            status: status.to_owned(),
             progress: progress.iter().copied().map(Some).collect(),
         };
         let status = |text: &str| Message::Status(text.to_owned());
         let extend = Message::ExtendTimeout(STALL_WINDOW);
         let mut reporter = Reporter::default();
+        let stalled = "down: Runtime stalled";
 
         let steps = [
-            (at(false, &["snapshot_downloading"], &[0, 10]), vec![status("snapshot_downloading")]),
-            (at(false, &["snapshot_downloading"], &[0, 90]), vec![extend.clone()]),
-            (at(false, &["snapshot_downloading"], &[0, 90]), vec![]),
-            (at(false, &["starting"], &[]), vec![status("starting"), extend.clone()]),
-            (at(false, &["starting"], &[]), vec![]),
-            (
-                at(false, &["tree_state_syncing"], &[7, 5, 5]),
-                vec![status("tree_state_syncing"), extend.clone()],
-            ),
-            (at(true, &[], &[9, 9, 9]), vec![status("ready"), Message::Ready]),
-            (at(false, &["heartbeat_stale"], &[9, 9, 9]), vec![status("heartbeat_stale")]),
-            (at(false, &["heartbeat_stale"], &[12, 9, 9]), vec![]),
-            (at(true, &[], &[12, 12, 12]), vec![status("ready")]),
+            (at(false, "provisioning", &[0, 10]), vec![status("provisioning")]),
+            (at(false, "provisioning", &[0, 90]), vec![extend.clone()]),
+            (at(false, "provisioning", &[0, 90]), vec![]),
+            (at(false, "provisioning", &[]), vec![extend.clone()]),
+            (at(false, "provisioning", &[]), vec![]),
+            (at(false, "syncing", &[7, 5, 5]), vec![status("syncing"), extend.clone()]),
+            (at(true, "serving", &[9, 9, 9]), vec![status("serving"), Message::Ready]),
+            (at(false, stalled, &[9, 9, 9]), vec![status(stalled)]),
+            (at(false, stalled, &[12, 9, 9]), vec![]),
+            (at(true, "serving", &[12, 12, 12]), vec![status("serving")]),
         ];
         for (step, (now, expected)) in steps.into_iter().enumerate() {
             assert_eq!(reporter.observe(now), expected, "step {step}");
         }
+
+        // started held, mid-sync: the start job ends there (the hold withholds readiness)
+        let mut held = Reporter::default();
+        assert_eq!(held.observe(at(false, "syncing", &[3])), vec![status("syncing")]);
+        let expected = vec![status("held"), Message::Ready];
+        assert_eq!(held.observe(at(true, "held", &[3])), expected, "held = started");
+        assert_eq!(held.observe(at(false, "syncing", &[4])), vec![status("syncing")], "resumed");
     }
 }
