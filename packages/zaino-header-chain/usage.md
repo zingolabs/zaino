@@ -24,6 +24,11 @@ chain.vouch(last_of_the_run);                         // a trusted validator's b
 if let Some(boundary) = chain.finalizable() {         // min(highest vouched, best − depth)
     chain.finalize(boundary);
 }
+if let Some(boundary) = chain.peer_finalizable() {    // best − depth, no difficulty collapse
+    if enough_netgroups_carry(boundary) {             // the driver's half (zaino-chainview)
+        chain.finalize_by_peers(boundary);
+    }
+}
 let published = chain.verified();                     // Option<VerifiedChain> (None = no anchor)
 let ceiling = chain.ceiling(batch);                   // fetch no higher (bounds the tree)
 ```
@@ -61,6 +66,12 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   into the finals and prunes every branch not descending from it. Finalizing a block off the best
   branch, shallower than `depth` (H2) or above the highest vouched (H6) is a caller bug: it
   panics naming the invariant.
+- Finality on peers' word: with no vouch that deep, `peer_finalizable()` names best − depth
+  unless an unfinal best-chain block holds under half the work of the highest vouched block (or
+  the anchor): a difficulty collapse, the mark of a minority miner's private chain. The caller
+  adds its own evidence (zainod: live peers in more than 5 netgroups carrying the chain) and calls
+  `finalize_by_peers(block)`, which panics on any other block. Peer-finalized blocks never move
+  the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
 - Memory only: the newest `2 · depth` final headers stay, answering by height; older finals are
   final by definition (`on_best` = true) and a header whose parent is one of them = `Orphan`.
 

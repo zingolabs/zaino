@@ -13,7 +13,7 @@ let headers = peers.find_headers(&locator, None).await?;                 // raw 
 let blocks = peers.blocks_by_hash(&hashes).await?;                       // (hash, Option<bytes>)
 let listed = peers.mempool_ids().await?;                                 // one peer's mempool
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
-let mut heard = peers.announcements();                                   // Announced { peer, ids }
+let mut heard = peers.announcements();                                   // Announced::{Transactions, Block}
 
 let entries = peers.entries(Some(tip));                                  // submission candidates
 let txid = peers.push_isolated(entries[0], &raw).await?;                 // the bytes' own txid
@@ -72,12 +72,18 @@ ready peers).
 - `PeerError::Timeout` / `Network` = the request failed (no ready peer, a transport
   error).
 
-## Announcements: `peers: x/y`
+## Announcements: `peers: x/y` and the chain each peer carries
 
-`announcements()` subscribes to every transaction `inv` a connected peer sends:
-`Announced { peer, ids }`, the sender's address attached by zebra (the chain view's
-per-peer sightings). A subscriber that falls 4,096 announcements behind gets
-`RecvError::Lagged` and knows it missed some.
+`announcements()` subscribes to every transaction and block `inv` a connected peer
+sends, the sender's address attached by zebra:
+
+- `Announced::Transactions { peer, ids }`: the chain view's per-peer sightings
+- `Announced::Block { peer, hash }`: the peer's new tip (one block per `inv`; zebra
+  drops multi-block ones), which the chain view counts by netgroup toward finality on
+  peers' word
+
+A subscriber that falls 4,096 announcements behind gets `RecvError::Lagged` and
+knows it missed some.
 
 ## Submission entries and the isolated push
 

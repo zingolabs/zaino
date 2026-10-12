@@ -103,6 +103,11 @@ header enters on its parent link and nBits work alone.
   the claim, inserted in order, its last header vouched, then finality.
 - **Final** = `min(highest vouched, best − depth)`; at or below it = final by
   definition. 60 s owed with the final tip unmoved raises `finality_paused`.
+- **Final on peers' word** (`with_peers` on): no vouch that deep, best − depth still
+  goes final once live peers in more than 5 netgroups last announced a block on our
+  best chain at or above it, and no difficulty collapsed since the last vouch
+  (`HeaderChain::peer_finalizable`). Block `inv`s arrive as `Heard::Block` through
+  `PeerWatch`.
 - A stall (fetch failed, retreated, malformed) backs off that validator alone for
   5 s. A chain leaving ours below the final tip: that claim is not fetched again
   until it moves (`Diverged`).
@@ -287,7 +292,7 @@ with or without it), given by `ChainView::with_peers`:
 
 | Method | Answer |
 |---|---|
-| `heard()` | a fresh stream of every `Heard { peer, txids }` (`inv`) from now on |
+| `heard()` | a fresh stream of every `Heard::Transactions { peer, txids }` and `Heard::Block { peer, hash }` (`inv`) from now on |
 | `live()` | connected peers (`peers: x/y`'s `y`) |
 | `entries(tip)` | submission entry candidates: live, on a protocol accepted at `tip` |
 | `push(entry, raw)` | one isolated push; `Ok` = delivered (a peer answers nothing) |
@@ -329,4 +334,5 @@ one WARN when one rises, one INFO when it clears:
 - eclipse: live endpoints reach 1 to 2 distinct outbound peers in total (none at
   all, as on regtest, raises nothing)
 - finality paused: a block `depth` deep has been owed finality for 60 s with the
-  final tip unmoved, no trusted validator vouching for it (`Alarms::finality_paused`)
+  final tip unmoved, no trusted validator vouching for it and peers unable to
+  finalize it (`Alarms::finality_paused`)

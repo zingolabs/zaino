@@ -28,11 +28,12 @@ validators it trusts for exactly that, and nothing more.
 | Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                  |
 | `peers/trusted` on the extension service                                                         | planned                                |
 | Push streams                                                                                     | built                                  |
-| Validated Header tree: most-work tip, holders, vouched finality                                  | built; headers from trusted validators |
+| Validated Header tree: most-work tip, holders, vouched finality                                  | built; headers from trusted + peers    |
+| Finality on peers' word: > 5 netgroups carrying it, no difficulty collapse                       | built                                  |
 | Submission: random entry, watched, resubmitted                                                   | built, peer + trusted entries          |
 | `zaino-peers`: zebra-network, attributed `inv`, isolated push                                    | built                                  |
 | Peers in the view: mempool sightings, submission entries, via zainod `[p2p]`                     | built                                  |
-| Peers as a header and block source                                                               | planned                                |
+| Peers as a header and block source                                                               | built                                  |
 
 ## 1. Sources
 
@@ -148,20 +149,42 @@ holds above it; the indexes see final blocks only ([pipeline.md](./pipeline.md))
                                              │◀────────── 1000 blocks ──────────▶│
                                      final boundary
                                              ▲
-        a block crosses only once a trusted validator vouched for it (or a descendant)
+        a block crosses once a trusted validator vouched for it (or a descendant),
+        or, with none vouching that deep, once enough independent peers carry it
 ```
 
 A header proves work, not that its block's transactions are valid. Someone who spends a whole
 block's mining on an invalid block can make it the best tip briefly; honest validators reject it,
-the network outmines it, and Zaino reorgs away. To keep such a block out of the durable indexes,
-**a block is written as final only once a trusted validator has had it (or a descendant) on its
-own best chain**: vouched, a permanent fact (zebra commits only valid blocks). Every trusted
-header run vouches itself, as do validators' claims and `getblockhash` answers on our chain, so
-final = `min(highest vouched, best − depth)`.
+the network outmines it, and Zaino reorgs away. A final block is never reorged (the durable
+indexes hold it), so finality is where Zaino stops being able to change its mind.
 
-This costs no latency: the boundary is 1,000 blocks behind the tip, and a trusted validator
-vouched for it long before. With every trusted validator gone while peers alone extend the
-chain, finality waits; after 60 s owed it alarms; serving continues from the non-final window.
+**Vouched.** A block is final once a trusted validator has had it (or a descendant) on its own
+best chain: a permanent fact, since zebra commits only valid blocks. Every trusted header run
+vouches itself, as do validators' claims and `getblockhash` answers on our chain, so final =
+`min(highest vouched, best − depth)`. This costs no latency: the boundary is 1,000 blocks behind
+the tip, and a trusted validator vouched for it long before.
+
+**On the peers' word.** With every trusted validator gone while peers alone extend the chain, the
+best − depth block still goes final when both of these hold (`HeaderChain::peer_finalizable` +
+`HeaderSync`):
+
+- **Independent peers carry it.** Live outbound peers in more than 5 netgroups (/16 IPv4, /32
+  IPv6) last announced a block on our best chain at or above it. Peers announce each new tip with
+  an `inv`, attributed by zebra-network; a peer announcing a block below the boundary proves
+  nothing, its chain may leave ours after that block. Inbound peers never count: anyone can dial
+  us. With the default 8 outbound peers, 6 must sit in distinct netgroups.
+- **No difficulty collapse.** No unfinal best-chain block holds under half the work of the
+  highest block a trusted validator vouched for (the anchor, before any vouch). Peer-finalized
+  blocks never move that reference, so a slow decline cannot ratchet it down.
+
+Why both: depth is strong evidence only while we see the network's chain. An attacker who
+controls our connections (an eclipse) can feed us a private chain; its difficulty retargets to
+the attacker's hashrate within a few dozen blocks, so a minority miner's 1,000 blocks show up as
+a collapse. Spreading the carriers over 6 netgroups makes holding every connection expensive.
+Both checks fail safe: a real hashrate drop or a narrow peer set only delays finality.
+
+Neither holding, finality waits; after 60 s owed it alarms; serving continues from the non-final
+window. A trusted validator's return vouches the chain and finality resumes on its own.
 
 ## 5. The mempool view
 
@@ -385,7 +408,8 @@ events (spread histograms, submission outcomes).
   node is broken, or the network is feeding a chain the validators reject.
 
 - **Finality paused** (`finality_paused`): a block `depth` deep has been owed finality for 60 s
-  with the final tip unmoved: no trusted validator vouched for it.
+  with the final tip unmoved: no trusted validator vouched for it, and peers could not finalize
+  it (too few netgroups, or a difficulty collapse).
 
 - **Thin network:** few distinct peers, or trusted validators sharing no outbound peer.
 
@@ -435,9 +459,8 @@ shim; routing replaces `fetch.primary_validator`.
 1. Push streams: **done**
 1. Validated Header tree: trusted anchor at tip − depth, most-work tip driving the NFS, block
    checks, finality gate: **done**; submission's trusted-only form: **done**
-1. Peers: headers, blocks, mempool sightings, submission entries, the unverified stream:
-   the `zaino-peers` crate, mempool sightings and submission entries **done**; headers and
-   blocks from peers next
+1. Peers: headers, blocks, mempool sightings, submission entries, finality on their word, the
+   unverified stream: all **done** but the unverified stream
 
 ## Measurements behind this design
 

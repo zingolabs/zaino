@@ -1,8 +1,8 @@
 # TrafficBalancer: one way Zaino talks to validators and peers
 
-Status: **phase 2 built** (2026-10-07), **simplified** (2026-10-08): every trusted-validator
-request goes through `zaino-traffic` (migration steps 1–7, 9); peers as members (step 8) wait for the
-WorkPool. Builds on [chainview.md](chainview.md), [pipeline.md](pipeline.md). Boundary
+Status: **phase 2 built** (2026-10-07), **simplified** (2026-10-08), **peers in** (2026-10-12):
+every request to a trusted validator, and every header or block asked of the p2p network, goes
+through `zaino-traffic`. Builds on [chainview.md](chainview.md), [pipeline.md](pipeline.md). Boundary
 with `global-snapshot.md` in "Interface with the global snapshot".
 
 ## 1. Before: five schedulers over the same validators
@@ -41,7 +41,7 @@ its sender (blame), and every hedge needs "anyone but him".
   HeaderSync ── headers(..) ─────┤                         │
   mempool fold ── bytes(..) ─────┤   TrafficBalancer       ├── Trusted P1 (partner) RPC
   gRPC ── transaction(txid) ─────┼─▶ TrafficCore (pure) ───┤
-  submission ── submit(entry) ───┤   members · lanes ·     └── Peers P2 (WorkPool, attributed)
+  submission ── submit(entry) ───┤   members · lanes ·     └── Peers (zebra's peer set: one member)
   view ── poll_best(f) ──────────┤   hedge · failover · blame
                                  │
   ◀── Answered<T>{value, from, ticket} ── report(ticket, why) ──▶ bench, alarm
@@ -53,10 +53,16 @@ its sender (blame), and every hedge needs "anyone but him".
 | Kind | Source | Priority | May answer |
 | --------- | ------------------------------------- | -------------------------------------------------- | ---------------------------------------------- |
 | `Trusted` | `[[trusted_validators]]`, fixed | `priority` key (0 default; 0 before 1 before …) | every class |
-| `Peer` | WorkPool connection, joins / leaves | below every trusted | checkable only: headers, block bodies, mempool bytes |
+| `Peers` | `[p2p]` on: zebra's whole peer set, one member | below every trusted | checkable only: headers, block bodies |
 
 Trusted-only (chainview "only source" rows): `Poll` (listing, fees, holding), `Lookup` (mined tx
-by id), the verdict `Submit`. A class never reaches a member kind not in its row (T2).
+by id), the verdict `Submit`, and `Bytes` (a peer serves a transaction by wtxid, never by a
+listing's txid). A class never reaches a member kind not in its row (T2).
+
+The peer set is one member, not one per peer: zebra already picks the peer per request (P2C over
+its ready peers) and names the one that sent a block, so `zainod` blames that peer to zebra (its
+address book bans past the threshold). One member per connection would collide with zebra's own:
+a remote zebrad admits one connection per IP.
 
 ### Per-member state
 
@@ -75,8 +81,10 @@ struct Member {
 - `Health` (`Pending | Live | CatchingUp | Degraded | Down`): the poll is the active check
   (Pending → Live / CatchingUp), every request outcome the passive one (`failures`). 10
   consecutive → `Down`: only its poll probe goes, at the ladder's ceiling.
-- `Bench` is orthogonal to health: a fast liar is `Live` and benched. Peers also carry a
-  misbehaviour score (zcashd's); 100 → WorkPool drops it (`Left`).
+- `Bench` is orthogonal to health: a fast liar is `Live` and benched.
+- The peer set is never benched (one peer's lie would starve every honest one: the lying peer is
+  blamed to zebra instead) and never `Down` (it has no poll to come back up by). It is always
+  `Live`.
 - `Agreement` stays out: it is derived against the verified chain (snapshot's).
 
 ### Lanes and classes
@@ -102,7 +110,7 @@ poll is no class: the core's own, never asked):
 | `Headers` | `getblockheader` runs, `FindHeaders` | trusted: pinned to the claim's member; peers: any | pinned / least loaded | — | pinned: unanswered; peers: next |
 | `TipBlock` | `getblock <hash> 0`, `BlocksByHash` | trusted by tier, then peers | least loaded within tier | 2 s | next member; all out → 1 s |
 | `Lookup` | `getrawtransaction <txid> 1` | trusted by tier | least loaded, absent → next | 1 s | next member, then unanswered |
-| `Bytes` | `getrawtransaction 0` batch, `TransactionsById` | listers first within tier, then least loaded | `Prefer` | — | next member |
+| `Bytes` | `getrawtransaction 0` batch | listers first within tier, then least loaded | `Prefer` | — | next member |
 | `BulkBlock` | `getblock <hash> 0` | trusted by tier, then peers | least loaded within tier | 15 s | next member; all out → 1 s |
 
 - **Pick** (T6): eligible members with room → best tier → the route's preferred member, else the
@@ -115,7 +123,8 @@ poll is no class: the core's own, never asked):
   completion that frees a control-reserve or shared permit there (its lane is dispatched first).
 - **Polls never wait** (T10): a due poll goes out at once on its own permit, whatever the lanes
   hold.
-- Peers: one request in flight each (a zebra peer connection serves one).
+- The peer set: `Peers { in_flight }` requests at once (zainod: `p2p.peer_target`), one reserved
+  per lane, no poll permit. `in_flight` ≥ `Peers::MIN_IN_FLIGHT` (3).
 - Load on zebrad is bounded by `max_connections` (here) and `max_mib_per_sec` (byte pacing in
   the transport, `LinkLimits`). There is no request-rate limit.
 
@@ -169,13 +178,13 @@ One loop per trusted member, inside the balancer, replaces `EndpointPoller`, `Po
 
 ```rust
 pub struct TrafficBalancer<S> { /* Arc<Shared>: Mutex<TrafficCore + ask mailboxes>, sources, watches */ }
-pub struct TrafficDriver<S> { /* the core's clock, every poll, peer join/leave: one task */ }
+pub struct TrafficDriver<S> { /* the core's clock, every poll: one task */ }
 
-pub enum MemberId { Trusted(ValidatorId), Peer(PeerId) }
+pub enum MemberId { Trusted(ValidatorId), Peers }
 pub struct ValidatorId(u8);          // < ValidatorId::MAX (64), configured order
-pub struct PeerId(pub u64);          // WorkPool connection, never reused
 pub struct Limits { .. }             // Limits::new(max_connections ≥ 5)
 pub struct Trusted<S> { pub source: Arc<S>, pub priority: u8, pub limits: Limits }
+pub struct Peers { pub transport: Arc<dyn PeerTransport>, pub in_flight: u32 }  // ≥ MIN_IN_FLIGHT
 
 pub struct Answered<T> { pub value: T, pub from: MemberId, pub ticket: Ticket }
 pub struct Ticket { ask: AskId, member: MemberId, class: Class }
@@ -188,17 +197,14 @@ pub struct Unanswered<E> { pub last: Option<QueryError<E>> }   // None = nobody 
 pub enum Push { Changed, Link(bool) }
 
 pub trait PeerTransport: Send + Sync + 'static {  // zainod implements over zaino-peers
-    fn headers(&self, peer: PeerId, locator: Vec<BlockHash>, stop: Option<BlockHash>)
+    fn headers(&self, locator: Vec<BlockHash>, stop: Option<BlockHash>)
         -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>>;
-    fn block(&self, peer: PeerId, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>>;
-    fn transactions(&self, peer: PeerId, ids: Vec<TransactionId>)
-        -> BoxFuture<'static, Result<Vec<Option<Vec<u8>>>, NonDomainError>>;
-    fn joined_left(&self) -> BoxStream<'static, Membership>;  // Joined(PeerId) | Left(PeerId)
+    // body checked against its header there (`Block::check_body`); a mismatch blames the sender
+    fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>>;
 }
 
 impl<S: ChainDataSource> TrafficBalancer<S> {
-    pub fn new(trusted: Vec<Trusted<S>>, peers: Option<Arc<dyn PeerTransport>>)
-        -> (Self, TrafficDriver<S>);
+    pub fn new(trusted: Vec<Trusted<S>>, peers: Option<Peers>) -> (Self, TrafficDriver<S>);
     pub async fn block(&self, hash: BlockHash, urgency: Urgency) -> Answered<Block>;  // pending until served
     pub async fn headers(&self, ask: HeaderAsk)
         -> Result<Answered<BlockLinks>, Unanswered<GetAtHeightError>>;
@@ -226,7 +232,9 @@ pub struct Observation {
 - `headers(HeaderAsk)`: a peer is asked by locator, not by height (the balancer holds no chain).
 - `bytes`: one batch from one member; `prefer` orders members *within* the best tier with room.
 - `submit(member, raw)`: the verdict class only, trusted only. A peer push goes to an *address*
-  (`push_isolated`, never a WorkPool member), so it stays with `Job` and `zaino-peers`.
+  (`push_isolated`, outside the peer set), so it stays with `Job` and `zaino-peers`.
+- `block(..)` never gives up: a block no member serves is asked again each round, with a warning
+  every minute it stays unserved.
 - `pushed(member, Push)`: zainod wires `IndexerWatch::run`'s callbacks to it, keeping gRPC
   connects out of this crate.
 - `Observation.health` = the member's health right after that poll (the view folds `Degraded`
@@ -277,7 +285,8 @@ pub struct Observation {
   Vec<Output>`, time as input, `check()` after every step in tests and debug builds;
   preconditions as named `assert!`s.
 - **Model** (`core/model.rs`, proptest): members `Honest`, `Slow`, `Lying` (wrong value),
-  `Lagging` (absent), `Flapping`, `Down`, `Silent`; peers joining and leaving; random asks of
+  `Lagging` (absent), `Flapping`, `Down`, `Silent`; the peer set present or not, any kind but
+  `Lying` (its transport drops a lie before the core sees it); random asks of
   every class and route, abandons, reports, clock advances. The oracle keeps its own lanes,
   permits and rounds: exact pick per send (T6), lane priority per send and work conservation
   after every step (T7); at quiescence T9, T10, every lying member benched. Swarm-style: whole
@@ -292,7 +301,7 @@ pub struct Observation {
   benched and its block served by another, a hedge beats a 20 s stall, a push stream wakes the
   poll within 200 ms.
 
-## 9. Migration (1–7 and 9 done, 8 open)
+## 9. Migration (done)
 
 1. `zaino-traffic`: `Observation`, `MemberTable`; `EndpointPoller` emits `Observation`.
 1. `TrafficCore` + model + fire drills, no users.
@@ -301,8 +310,7 @@ pub struct Observation {
 1. Lanes replace the transport's semaphores; transport resends deleted.
 1. Polling moves in: pollers, push streams, `poll_best`, `bytes`.
 1. `HeaderSync` and submission on `headers(..)` / `submit(..)`.
-1. Peers as members via `PeerTransport` over the WorkPool: headers, blocks,
-   bytes.
+1. The peer set as one member via `PeerTransport`: headers, blocks.
 1. Docs, changesets.
 
 ## 10. Decisions

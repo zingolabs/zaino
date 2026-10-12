@@ -73,3 +73,14 @@ description = """
 validator's `getblockchaininfo` (regtest). The `testing` feature's `Upgrades` builder is now \
 `UpgradeSchedule`'s test-only methods (`all_at`, `with`, `onward`, `without`).
 """
+
+[[changes]]
+crate = "zaino-primitives"
+kind = "feature"
+section = "added"
+description = """
+`Block::check_body()`: its transactions are the ones its header commits to \
+(`BodyMismatch::MerkleRoot`, or `Mutated` for a repeated txid pair, CVE-2012-2459). \
+`UpgradeSchedule::{active, branch_at, next_after}`: the upgrade in force and the next scheduled \
+one at a height.
+"""

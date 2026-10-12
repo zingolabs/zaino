@@ -53,6 +53,13 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   `zcash_protocol` (`None` for regtest, whose heights are set per chain);
   `reported(&BlockchainInfo)` = a validator's (regtest), keyed by branch id. Pool
   activations and the header rules' Blossom / NU7 heights both read it.
+  `active(upgrade, at)`, `branch_at(at)` (the consensus branch in force, Sprout =
+  0) and `next_after(at)` (the next scheduled upgrade) answer `GetLightdInfo`
+  with no validator.
+- `Block::check_body()` — its transactions are the ones its header commits to:
+  `BodyMismatch::MerkleRoot` (txids rebuild another root) or `Mutated` (a repeated
+  txid pair, CVE-2012-2459). With the hash matched, a body passing it is the one
+  asked for, whoever sent it.
 - `network` — `NetworkType`'s two spellings: `chain_name` (`main` / `test` /
   `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
   `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and

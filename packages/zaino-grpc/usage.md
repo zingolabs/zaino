@@ -33,7 +33,7 @@ tokio::spawn(bound.run(cancel.child_token()));
 | `GetTaddressTransactions` (+ deprecated `GetTaddressTxids`) | `transparent_address` names them, `validators` supply the bytes |
 | `GetMempoolTx` | `mempool()?` (the servable mempool) |
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
-| `GetLightdInfo` | `lightd()?`: a holder's `getblockchaininfo` + the served height; `network` as configured |
+| `GetLightdInfo` | `lightd()?`: the served height, the verified best as `estimatedHeight`, the branch and next upgrade from the upgrade schedule at the served height; `network` as configured |
 | `SendTransaction` | `submit` (chain view submission; no snapshot) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
@@ -53,7 +53,7 @@ tokio::spawn(bound.run(cancel.child_token()));
   [`docs/rpc_api.md`](../../docs/rpc_api.md).
 - `Unavailable` = `UNAVAILABLE` with its message: nothing served yet (a booting
   NFS), no verified chain, or no trusted validator holding the best block (the
-  mempool methods and `GetLightdInfo`).
+  mempool methods).
 - `GetMempoolStream` ends once the **served** tip moves (after the NFS folds the
   new block), so the `GetLatestBlock` a wallet sends after the end already
   answers the new tip.
@@ -75,8 +75,9 @@ tokio::spawn(bound.run(cancel.child_token()));
 - Route tests build a snapshot with `zaino_snapshot::Snapshots::fixed` over
   `Indexed::fixed` + `ChainViewSnapshot::fixed` (features `testing`), or a live
   `Publisher` over a test-fed NFS watch.
-- `GetLightdInfo` never calls a validator: one snapshot load (`lightd()`); no
-  holder or nothing served = `UNAVAILABLE`.
+- `GetLightdInfo` never calls a validator: one snapshot load (`lightd()`), so it
+  answers while no trusted validator vouches (degraded) too; nothing served =
+  `UNAVAILABLE`.
 - `GetMempoolTx` parses each mempool transaction once (`decode_transaction` +
   `compact_tx`, cached on the entry's `Projection`); each request only renumbers
   slots and prunes pools.
@@ -180,8 +181,6 @@ Every cap refuses; none queues except the read lanes:
 - Request bodies are capped before decode: 64 KiB, or 2 MB + 1 KiB for
   `SendTransaction`. Over the cap is `RESOURCE_EXHAUSTED`. A body not complete
   within 30 s is `DEADLINE_EXCEEDED`.
-- `GetLightdInfo` never waits on a validator: its validator half is the chain
-  view's last poll tick (≈1 s old at most while polling succeeds).
 - **No total cap.** A stream lives as long as it makes progress. Its bounds are
   the client's `grpc-timeout` and `stall_timeout` without progress on either
   side, below.

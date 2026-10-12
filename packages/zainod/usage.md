@@ -19,25 +19,33 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 `/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
 (`zaino-snapshot`): none of them can mix two moments.
 
-`state` is one of five, and the first rule that matches wins:
+`state` is one of seven, and the first rule that matches wins:
 
 | `state`        | When                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
 | `draining`     | a shutdown signal arrived (see [systemd](#systemd))                                      |
 | `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold)); above every rule below |
 | `provisioning` | not booted yet: a snapshot bootstrap, or plain startup                                   |
-| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), every trusted validator down, or none holding the verified tip |
+| `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or no trusted validator vouching (every one down, or none holding the verified tip) while not `degraded` |
+| `degraded`     | no trusted validator vouching, but synced to a fresh verified best (its block time within 30 min of the clock: p2p peers carried the tip) |
 | `syncing`      | booted, but the served tip is not the verified best yet, or every validator holding the best is still catching up to the network |
 | `serving`      | otherwise                                                                                |
 
-- `ready` is true exactly when `state` is `serving`, and only then does `/readyz` answer `200`.
+- `ready` is true exactly when `state` is `serving` or `degraded`, and only then does `/readyz`
+  answer `200`. A degraded node keeps serving so a load balancer keeps routing to it during an
+  outage of every trusted validator; alert on the state, not on `/readyz`.
+- While degraded, the mempool methods answer `UNAVAILABLE` (no validator admits transactions),
+  and `GetLightdInfo` still answers from the served tip and the upgrade schedule. Finality keeps
+  moving on the peers' word once outbound peers in more than 5 netgroups carry the chain and its
+  difficulty has not collapsed; otherwise it waits for a trusted validator to return.
 - `syncing` turns on until the served tip reaches the verified best. After that it turns back on
   only when the served tip leaves the best chain or trails it by more than `finalised_depth`.
   Requests are never refused for it.
 - A validator still catching up (its mempool inactive) holds the verified best while trailing
   the network itself, so zainod reports `syncing` until a holder lists its mempool.
-- `detail` is a short sentence saying why, set only when `down`: `No trusted validator
-  reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or `Overloaded`.
+- `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
+  validator reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or
+  `Overloaded` (a degraded node only ever shows one of the first two).
 - `Overloaded` is a backstop for a node persistently over capacity. Admission already sheds load
   within seconds; this only takes the node out of a load balancer:
   - It turns on once ≥ 10% of gRPC work requests have been refused, at ≥ 1 refusal/s, for
@@ -119,7 +127,7 @@ listener are up:
 
 | Path | Answers |
 |---|---|
-| `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving`, else `503` |
+| `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving` or `degraded`, else `503` |
 | `/status` | the public projection below, always `200` |
 
 - They are answered before admission, so they never take a gRPC work permit.
@@ -207,7 +215,7 @@ TimeoutStartSec=15min
 |---|---|
 | `READY=1` | the first time `/readyz` passes: serving at the verified tip |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height, the served height or an index height moved |
-| `STATUS=` | the `/statusz` `state` (`down: <detail>` when down), whenever it changes |
+| `STATUS=` | the `/statusz` `state` (`<state>: <detail>` when down or degraded), whenever it changes |
 | `STOPPING=1` + `EXTEND_TIMEOUT_USEC` | on the shutdown signal, covering `[grpc.shutdown]`'s delay and timeout plus 30 s for the index flush |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy

@@ -50,19 +50,22 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
   `progress()`; `run(cancel)`.
-- Streams `lowest durable + 1 ..= final tip`, by height from trusted members
-  (`fetch_at` → `TrafficBalancer::blocks_at`, 4 per batched `getblock` request), `lookahead`
-  blocks in flight, delivered in order; waits
-  for the next chain past the final tip. Reads only `final_tip().height`: no header history.
+- Streams `lowest durable + 1 ..= final tip`, `lookahead` blocks in flight, delivered in order;
+  waits for the next chain past the final tip.
+- A height the verified chain holds a header for (the final window and above) is fetched by
+  hash from any member, peers included (`fetch`), checked against that header. Below it (bulk
+  sync) it goes by height to trusted members only (`fetch_at` → `TrafficBalancer::blocks_at`,
+  4 per batched `getblock` request): no header there to hold a peer to.
 - Each block's parent must be each durable tip it extends (`FollowError::Diverged`, naming the
   index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
   moved). Either stops the follower; nothing is skipped.
 - Cancel → `Ok`; either way every queue ends with `Shutdown`.
 - `fetch_at(balancer, heights, urgency)` / `check_block_at`: one batch until every body's
-  coinbase height and merkle root match its own header (a misanswer `report`ed, the batch asked
-  again).
+  coinbase height matches and its body matches its own header (`Block::check_body`: merkle
+  root, no mutated duplicate; a misanswer `report`ed, the batch asked again).
 - `fetch(balancer, at, record, urgency)` / `check_block`: by hash, held to a verified header
-  (hash, coinbase height, merkle root); the NFS's.
+  (hash, coinbase height, `check_body`); the NFS's and the follower's.
+- `Misanswer::{WrongBlock, WrongHeight, Body(BodyMismatch)}` names the check that failed.
 - `SyncProgress`: `handed()` = last height sent, `blocks()` = blocks sent since boot (atomics).
 
 ## `IndexHandle`

@@ -48,8 +48,10 @@ stream; `submit` = the chain view, `SendTransaction` only). `GetLatestBlock`, `G
 `GetTreeState`, `GetLightdInfo` and the mempool methods answer from the same snapshot. \
 `GetMempoolStream` now ends when the **served** tip moves (after the NFS folds the new block), \
 so the `GetLatestBlock` that follows serves it; before, it ended on the best block, possibly \
-before the block was servable. `GetLightdInfo`'s height and branch come from one load (they \
-can no longer disagree) and it answers `UNAVAILABLE` until something is served (was \
+before the block was servable. `GetLightdInfo` reads no validator: the served height, the \
+verified best as `estimatedHeight`, and the consensus branch and next upgrade from the upgrade \
+schedule at the served height, all from one load (they can no longer disagree). It answers \
+while no trusted validator vouches, and `UNAVAILABLE` until something is served (was \
 `blockHeight: 0`). Tree-state memos are keyed per NFS publish.
 """
 migration = """

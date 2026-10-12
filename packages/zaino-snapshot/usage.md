@@ -29,7 +29,7 @@ let snap = snapshots.load();                           // one atomic load, never
 let at = snap.served()?;                               // Err(Unavailable): UNAVAILABLE + its message
 let blocks = at.views().compact_block();
 let mempool = snap.mempool()?;                         // gate: a trusted validator holds best
-let (info, height) = snap.lightd()?;                   // GetLightdInfo: one load
+let lightd = snap.lightd()?;                           // GetLightdInfo: one load, no validator
 snapshots.changed().await?;                            // next publish
 ```
 
@@ -43,10 +43,10 @@ snapshots.changed().await?;                            // next publish
 | `forks()`               | each side branch of `chain()` (`ForkView { fork, folded }`, `folded` = its deepest folded block) |
 | `mempool()`             | the servable mempool; `NoChain` / `NotHeld` while no trusted validator holds best |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
-| `lightd()`              | the first holder's `BlockchainInfo` + the served height (`NoChain` / `NotHeld` / `NothingServed`) |
+| `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `At`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `view()`                | the chain view's snapshot: validator facts, alarms, spreads                   |
 | `indexed()`             | the NFS publish (`Arc` identity = a memo key: new per NFS publish)            |
-| `standing()`            | first match: `Down(NoValidatorReachable)` (every validator down), `Down(TipNotHeld)`, `Syncing` (not synced, or best held only by validators catching up), `Serving`; `Down::detail()` = zainod's `/statusz` `detail` |
+| `standing(now_unix)`    | first match: no validator vouching (every validator down: `NoValidatorReachable`; best unheld: `TipNotHeld`) → `Degraded(why)` while synced to a fresh best (its block time within 30 min of `now_unix`: peers carried the tip), else `Down(why)`; `Syncing` (not synced, or best held only by validators catching up); `Serving`. `Down::detail()` = zainod's `/statusz` `detail` |
 | `sync_target()`         | best's height, or a catching-up validator's clock estimate when higher        |
 
 - `Unavailable`'s `Display` = the gRPC `UNAVAILABLE` message: `no verified header chain tip yet`,

@@ -18,14 +18,20 @@ let trusted = validators
         limits: Limits::new(v.max_connections, None)?,         // None below 5
     })
     .collect();
-let (balancer, driver) = TrafficBalancer::new(trusted, Some(peer_transport));
+let peers = Peers { transport: Arc::new(peer_transport), in_flight: peer_target };
+let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
 tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is polled
 ```
 
 - `trusted[i]` is `ValidatorId(i)`: configured order, at most `ValidatorId::MAX` (64).
 - `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZcashGrpcClient` in production (one type per balancer: zainod's `validator_client`), `zaino_source::testing::MockValidator` in tests.
-- `peers`: `Option<Arc<dyn PeerTransport>>`. `joined_left()` adds and removes peers as members;
-  `None` = trusted only.
+- `peers`: `Option<Peers>`, the p2p network's whole peer set as one member (`MemberId::Peers`,
+  below every trusted tier); `None` = trusted only. Its transport (`PeerTransport`: `headers`,
+  `block`) picks the peer itself and must check a block body against its header, blaming the
+  peer that sent a mismatch. `in_flight` = requests it carries at once, at least
+  `Peers::MIN_IN_FLIGHT` (3: one reserved per lane; it has no poll).
+- The peer set answers headers and blocks only, is never benched (`report` on its ticket is a
+  no-op: one peer's lie must not starve the honest ones) and never goes `Down`.
 - `Limits::new(max_connections)`; `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved
   per lane + one shared.
 - Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
@@ -38,10 +44,10 @@ Every answer is `Answered { value, from, ticket }`: `from` names the member that
 
 | Method | Class (lane) | Reaches | Ends |
 | --- | --- | --- | --- |
-| `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then peers | never unanswered: every member tried → next round after 1 s |
+| `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then the peer set | never unanswered: every member tried → next round after 1 s, a warning each minute it stays unserved |
 | `headers(HeaderAsk::Pinned { member, heights })` | `Headers` (control) | that trusted member only | unanswered if it fails or is out |
-| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | any peer | unanswered when every peer is tried |
-| `bytes(listed, prefer)` | `Bytes` (interactive) | best tier, `prefer` first within it | one batch from one member |
+| `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
+| `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
 | `submit(member, raw)` | `Submit` (control) | that trusted member only | one attempt |
 
@@ -96,7 +102,8 @@ let checked = loop {
 - `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an
   event polls within 200 ms.
 - `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, last reply's
-  latency, in flight; trusted first, configured order) for `/statusz` and metrics, refreshed by
+  latency, in flight; trusted first in configured order, then the peer set) for `/statusz` and
+  metrics, refreshed by
   the driver. `entries()`: trusted members a submission may enter by (live, not benched).
 
 ## Health
