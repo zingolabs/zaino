@@ -80,8 +80,22 @@ pub(super) fn shape(set: &str, shape: &[(usize, bool)]) {
     }
 }
 
-pub(super) fn stall_at(set: &str, segments: usize) {
-    metrics::gauge!(names::STALL_AT, "set" => set.to_owned()).set(segments as f64);
+/// Every per-set series registered at open (absent on /metrics = not built, never "nothing yet")
+///
+/// - merge histogram registered at tier 0 (first tier to merge)
+pub(super) fn opened(set: &str, stall_at: usize) {
+    let set = set.to_owned();
+    metrics::gauge!(names::STALL_AT, "set" => set.clone()).set(stall_at as f64);
+    for counter in [
+        names::BATCH_ROWS_TOTAL,
+        names::MERGE_ROWS_TOTAL,
+        names::MERGE_BYTES_TOTAL,
+        names::MERGE_CANCELLED_TOTAL,
+    ] {
+        metrics::counter!(counter, "set" => set.clone()).increment(0);
+    }
+    let _ = metrics::histogram!(names::MERGE_DURATION_SECONDS, "set" => set.clone(), "tier" => "0");
+    let _ = metrics::histogram!(names::STALL_DURATION_SECONDS, "set" => set);
 }
 
 pub(super) fn batched(set: &str, segment: &SegmentMeta) {

@@ -104,6 +104,33 @@ fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
     }
 }
 
+/// - open publishes every `zaino_lsm_*` series of the map at zero (absent ≠ nothing happened yet)
+#[test]
+fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recording = metrics::set_default_local_recorder(&recorder);
+
+    let fs = SimFs::new();
+    fs.create_dir_all(Path::new("/m")).expect("dir");
+    SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, Arc::new(Slots::new(4, u64::MAX)))
+        .expect("open");
+
+    let scrape = rendered.render();
+    let expected = [
+        "zaino_lsm_stall_at{set=\"scanned\"} 6",
+        "zaino_lsm_batch_rows_total{set=\"scanned\"} 0",
+        "zaino_lsm_merge_rows_total{set=\"scanned\"} 0",
+        "zaino_lsm_merge_bytes_total{set=\"scanned\"} 0",
+        "zaino_lsm_merge_cancelled_total{set=\"scanned\"} 0",
+        "zaino_lsm_merge_duration_seconds_count{set=\"scanned\",tier=\"0\"} 0",
+        "zaino_lsm_stall_duration_seconds_count{set=\"scanned\"} 0",
+    ];
+    for line in expected {
+        assert!(scrape.lines().any(|scraped| scraped == line), "{line:?} not in:\n{scrape}");
+    }
+}
+
 /// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
 /// - flipped committed byte passes open (lengths only), dies on the first read / merge touching
 ///   its page

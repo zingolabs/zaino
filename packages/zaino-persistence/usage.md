@@ -217,7 +217,8 @@ report.is_clean();
   a CRC of the rows.
 - **Metrics:** `zaino_lsm_*`, labelled `set` = the map's name, and per store
   `zaino_store_commit_seconds` / `zaino_store_commit_bytes_total` (`index`).
-  Register them with the crate's `describe_metrics`, `METRIC_BUCKETS` and
+  Every `zaino_lsm_*` series of a map is published from open, at zero until its
+  first batch, merge or stall (the merge histogram at `tier="0"`). Register them with the crate's `describe_metrics`, `METRIC_BUCKETS` and
   `lsm::METRIC_BUCKETS`.
 - **`DiskView::footprint()`:** per table, committed bytes and how many of them
   are in page cache (`TableFootprint`; `cached: None` on `SimFs`). One

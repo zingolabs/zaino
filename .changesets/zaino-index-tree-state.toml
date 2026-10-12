@@ -32,7 +32,7 @@ Open the delta with `store.changes(block.at())` (or a layer's), open the store w
 crate = "zaino-index-tree-state"
 kind = "feature"
 description = """
-`WRITE_BUFFER` (8 MiB): this index's buffered heap before a bulk commit (the `write_buffer` \
+`WRITE_BUFFER` (64 MiB): this index's buffered heap before a bulk commit (the `write_buffer` \
 `zainod` opens its store with).
 """
 

@@ -104,7 +104,7 @@ impl SegmentLog {
             merges: Vec::new(),
             shape_tiers: 0,
         };
-        emit::stall_at(&log.name, stall_at(fanout));
+        emit::opened(&log.name, stall_at(fanout));
         log.launch_merges()?;
         Ok(log)
     }

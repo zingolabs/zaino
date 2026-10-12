@@ -5217,6 +5217,7 @@ dependencies = [
  "libc",
  "memmap2",
  "metrics",
+ "metrics-exporter-prometheus",
  "proptest",
  "rayon",
  "rustix",
