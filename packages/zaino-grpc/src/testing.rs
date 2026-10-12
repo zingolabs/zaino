@@ -92,7 +92,7 @@ pub(super) fn snapshot_held(
     ours: &[(TransactionId, bytes::Bytes)],
 ) -> Snapshots<DiskView> {
     let verified = Some(Arc::new(chain.verified(tip)));
-    let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours, &[]);
+    let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);
     Snapshots::fixed(Some(Arc::new(indexed_at(chain, tip, views))), Arc::new(view))
 }
 

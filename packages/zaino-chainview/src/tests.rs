@@ -85,11 +85,11 @@ fn regtest() -> zaino_primitives::types::UpgradeSchedule {
 ///
 /// - mempool refused until a polled validator holds the verified best; then its listings, each
 ///   at its validator's fee
-/// - `arrivals` since a pinned view = each crossing into servable once (a flap out and back,
-///   or a drop: nothing); ours servable before any listing
+/// - `arrivals` since a pinned view = each transaction held now and absent then, once (a flap
+///   out and back, or a drop: nothing); ours served before any listing
 /// - a mined block: the mempool as it now stands (ours listed)
 #[tokio::test(start_paused = true)]
-async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_crossing_into_servable() {
+async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_new_transaction_once() {
     let mut chain = MockChain::regtest();
     let tip_10 = chain.mine_empty(10);
     let validator = Arc::new(MockValidator::following(&chain, tip_10));
@@ -121,8 +121,8 @@ async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_crossing_in
     listed.sort_by_key(|entry| entry.txid);
     assert_eq!(entries, listed, "each entry: its validator's fee");
 
-    // - tx 2 flaps out and back (servable in `pinned` → no arrival)
-    // - tx 1 dropped (propagation churn: no arrival); tx 3 arrives; ours (tx 9) servable before
+    // - tx 2 flaps out and back (held in `pinned` → no arrival)
+    // - tx 1 dropped (propagation churn: no arrival); tx 3 arrives; ours (tx 9) served before
     //   any listing
     validator.mempool_remove(two);
     polled(&balancer).await;
@@ -323,7 +323,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
 
     let pinned = reader.current();
     let spread = pinned.spread(&txid).expect("the submission recorded it");
-    assert!(spread.ours && spread.servable);
+    assert!(spread.ours);
     assert_eq!(spread.trusted, Count { seen: 0, of: 3 }, "not polled since");
     assert_eq!(spread.timeline.first_trusted, None);
     let servable = |view: &crate::ChainViewSnapshot| {
@@ -492,7 +492,7 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
     assert_eq!(answered.expect("listed by a trusted validator"), txid);
     assert_eq!(validator_pushes(), 0, "no trusted validator saw it first, or at all from us");
     let spread = view.subscriber().current().spread(&txid).expect("held");
-    assert!(spread.ours && spread.servable);
+    assert!(spread.ours);
     assert_eq!(
         (spread.peers, spread.trusted),
         (Count { seen: 1, of: 4 }, Count { seen: 1, of: 2 })
@@ -519,11 +519,11 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
 ///
 /// - `a` listed by the validator and every peer, then the validator down: still served, the same
 ///   sighting (handed over to the quorum, never dropped and re-added)
-/// - every peer lists `a`, `bad` (pays 6,000 of 5,000) and `child` (spends `a`'s output): `a`
-///   at its fee, `child` one round later (its parent admitted first), `bad` never (a negative fee:
-///   refused once, its bytes never fetched again while it stays listed)
-/// - `a` listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an
-///   empty mempool served
+/// - every peer lists `a`, `parent`, `child` (spends `parent`'s output) and `bad` (pays 6,000 of
+///   5,000): `parent` at its fee, `child` one round later (unknown prevout: retried, not refused),
+///   `bad` never (a negative fee: refused once, never re-fetched while it stays listed)
+/// - listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an empty
+///   mempool served
 /// - a submission with no trusted validator: a peer entry, answered once 6 of 7 list it; no
 ///   longer listed = still served (ours) until the next block, then gone
 #[tokio::test(start_paused = true)]
@@ -542,7 +542,11 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let view = Arc::new(view.with_submit_policy(policy).with_peers(peers.clone()));
     let alice = p2pkh([0xaa; 20]);
     let funding = |n: u8| OutPoint { txid: TransactionId::from([n; 32]), vout: 0 };
-    let utxos = MockUtxos::of([(funding(1), zats(10_000)), (funding(2), zats(5_000))]);
+    let utxos = MockUtxos::of([
+        (funding(1), zats(10_000)),
+        (funding(2), zats(5_000)),
+        (funding(3), zats(10_000)),
+    ]);
     let polling = view.peer_mempool(Arc::new(utxos)).expect("peers configured");
     tokio::spawn(polling.run(cancel.clone()));
     let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
@@ -550,8 +554,11 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let reader = view.subscriber();
     let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
     let (bad, bad_raw) = raw_transparent(&[funding(2)], &[(&alice, 6_000)]);
-    let (child, child_raw) = raw_transparent(&[OutPoint { txid: a, vout: 0 }], &[(&alice, 8_500)]);
-    for (txid, raw) in [(a, &a_raw), (bad, &bad_raw), (child, &child_raw)] {
+    let (parent, parent_raw) = raw_transparent(&[funding(3)], &[(&alice, 9_000)]);
+    let (child, child_raw) =
+        raw_transparent(&[OutPoint { txid: parent, vout: 0 }], &[(&alice, 8_500)]);
+    let pending = [(a, &a_raw), (parent, &parent_raw), (child, &child_raw), (bad, &bad_raw)];
+    for (txid, raw) in pending {
         peers.hold(id(txid), Bytes::from(raw.clone()));
     }
     let listing = |ids: &[TransactionId], on: &[std::net::SocketAddr]| {
@@ -590,11 +597,14 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     assert_eq!(served(), [(a, Some(zats(1_000)))], "the quorum keeps it");
     assert_eq!(first_seen(&a), Some(listed), "the same sighting throughout");
 
-    listing(&[a, bad, child], &seven);
+    listing(&[a, parent, child, bad], &seven);
     round().await;
+    let parents = sorted(vec![(a, Some(zats(1_000))), (parent, Some(zats(1_000)))]);
+    assert_eq!(sorted(served()), parents, "`child` waits on its parent; `bad` refused");
     round().await;
-    let both = sorted(vec![(a, Some(zats(1_000))), (child, Some(zats(500)))]);
-    assert_eq!(sorted(served()), both, "funded ones at their fees; `bad` refused");
+    let all =
+        sorted(vec![(a, Some(zats(1_000))), (parent, Some(zats(1_000))), (child, Some(zats(500)))]);
+    assert_eq!(sorted(served()), all, "`child` retried, admitted once its parent is held");
     round().await;
     round().await;
     let bad_fetches = peers.fetched().into_iter().filter(|fetched| fetched.txid == bad).count();
@@ -605,13 +615,14 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
         (Count { seen: 7, of: 7 }, Count { seen: 0, of: 0 })
     );
 
-    listing(&[a, child], &seven[..3]);
+    listing(&[a, parent, child], &seven[..3]);
     round().await;
-    assert_eq!(sorted(served()), both, "3 of 7 still list them: kept");
-    listing(&[a, child], &seven[..2]);
+    assert_eq!(sorted(served()), all, "3 of 7 still list them: kept");
+    listing(&[a, parent, child], &seven[..2]);
     round().await;
     assert_eq!(served(), [], "2 of 7: no longer kept; the quorum still reads, an empty mempool");
-    assert_eq!((first_seen(&a), first_seen(&child)), (None, None), "gone from the view");
+    let gone = [a, parent, child].map(|txid| first_seen(&txid));
+    assert_eq!(gone, [None, None, None], "gone from the view");
 
     // a send with no trusted validator: a peer first; the quorum listing it = the answer
     let (sent, sent_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_500)]);

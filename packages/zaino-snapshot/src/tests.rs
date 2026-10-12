@@ -90,9 +90,8 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
 
 /// A 0..=5 final through 2, side S4..=S5 off A3; one of two validators holds A5 (the balancer:
 /// one live at 12 ms, one degraded after 3 failures); block-hash durable through A5, tree-state
-/// configured but absent from the NFS (enabled, no durable), served A5, handed 5; one relayed tx,
-/// one unlisted: the `/statusz` body field by field, then the gauges a scrape renders from the
-/// same snapshot
+/// configured but absent from the NFS (enabled, no durable), served A5, handed 5; one relayed tx:
+/// the `/statusz` body field by field, then the gauges a scrape renders from the same snapshot
 #[test]
 fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let mut builder = MockChain::regtest();
@@ -124,14 +123,13 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let durable = [(IndexKind::BlockHash, store.committed())];
     let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
 
-    let (relayed, unlisted) = (TransactionId::from([1; 32]), TransactionId::from([2; 32]));
+    let relayed = TransactionId::from([1; 32]);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let view = ChainViewSnapshot::fixed(
         Some(Arc::clone(&chain)),
         EndpointSet::at([0]),
         &addresses,
         &[(relayed, Bytes::from_static(b"relayed"))],
-        &[(unlisted, Bytes::from_static(b"unlisted"))],
     );
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(Height::try_from(5u32).expect("h")));
@@ -185,7 +183,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
             "stale": [], "ending": [],
         },
         "mempool": {
-            "transactions": 2, "verified": 0, "ours_unverified": 1, "fully_spread": 0,
+            "transactions": 1, "verified": 0, "quorum": 0, "ours_unverified": 1, "fully_spread": 0,
             "trusted_readers": 1,
         },
         "forks": [
@@ -213,7 +211,8 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         "zaino_chainview_tip_holders 1".to_owned(),
         "zaino_chainview_finality_paused 0".to_owned(),
         "zaino_chainview_mempool_transactions{state=\"verified\"} 0".to_owned(),
-        "zaino_chainview_mempool_transactions{state=\"ours_unverified\"} 2".to_owned(),
+        "zaino_chainview_mempool_transactions{state=\"quorum\"} 0".to_owned(),
+        "zaino_chainview_mempool_transactions{state=\"ours_unverified\"} 1".to_owned(),
         format!("zaino_chainview_endpoint_state{{endpoint=\"{first}\",state=\"live\"}} 1"),
         format!("zaino_chainview_agreement{{endpoint=\"{first}\",agreement=\"unknown\"}} 1"),
         format!("zaino_chainview_push_stream{{endpoint=\"{first}\"}} 0"),
@@ -242,8 +241,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         let chain = Arc::new(builder.verified(at(tip)));
         let params = ChainParams::of(&builder);
         let indexed = Indexed::fixed(Arc::clone(&chain), at(tip), params, none.clone());
-        let view =
-            ChainViewSnapshot::fixed(Some(chain), EndpointSet::at([0]), &addresses, &[], &[]);
+        let view = ChainViewSnapshot::fixed(Some(chain), EndpointSet::at([0]), &addresses, &[]);
         (Arc::new(indexed), view)
     };
 
@@ -304,7 +302,6 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         EndpointSet::default(),
         &addresses,
         &[],
-        &[],
     );
     let snap = Snapshots::fixed(Some(indexed), Arc::new(unheld)).load();
     let unheld = (snap.standing(now), snap.standing(stale - 1), snap.standing(stale));
@@ -339,7 +336,6 @@ fn every_check_fires_on_its_planted_bug() {
         Some(Arc::clone(&chain)),
         EndpointSet::at([0, 1]),
         &["10.0.0.1:8232", "10.0.0.2:8232"],
-        &[],
         &[],
     ));
     let core = Core::new(served(at(&a[3])), Arc::clone(&view), DEPTH);

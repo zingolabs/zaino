@@ -99,7 +99,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
   `endpoint_state{endpoint,state}`, `agreement{endpoint,agreement}`, `tip_height{endpoint}`,
   `stale_blocks{endpoint}`, `peers{endpoint,direction}`, `push_stream{endpoint}`,
   `release{endpoint,build,user_agent}`, `end_of_service_height{endpoint}`, `tip_holders`,
-  `best_height`, `finality_paused`, `shared_outbound_min`, `mempool_transactions{state}`.
+  `best_height`, `finality_paused`, `shared_outbound_min`, `mempool_transactions{state}` (`verified`, `quorum`, `ours_unverified`).
 - Edge logs per publish (`transitions`): INFO `Serving the verified tip` / `Behind the verified
   tip, syncing` when `synced` flips; WARN on a rise, INFO on a clear, for each chain view alarm
   (stale validator tip, end of service, partition, eclipse, finality paused).

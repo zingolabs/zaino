@@ -149,5 +149,7 @@ best; transparent prevouts unspent in `UnspentOutputs` or a held transaction's o
 served as the entry's fee). It stays while > 1/3 list it. `mempool()` also opens when the \
 listings span > 5 netgroups (`ChainViewSnapshot::peers_quorate`), so the mempool and \
 `SendTransaction` (accepted once the quorum lists it) work with every trusted validator down. \
-`spread().peers` counts the peers listing it. Transaction `inv`s are no longer read.
+`spread().peers` counts the peers listing it, `spread().quorum` = the quorum holds it. Every \
+held transaction is served (a trusted listing, the quorum, or ours): `Spread.servable` and \
+`ChainViewSnapshot::fixed`'s `unlisted` are gone. Transaction `inv`s are no longer read.
 """

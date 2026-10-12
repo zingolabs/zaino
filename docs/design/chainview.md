@@ -221,8 +221,10 @@ Every transaction the view knows is a **sighting**:
     zakura's differ): consensus rules that need only the bytes, the next block and the UTXO set.
   - Announcements are not used: zebrad and zakura announce each admitted transaction to a third
     of their peers, once, so ">2/3 announced it" is met by ~2% of valid transactions on 8 peers.
-  - Two conflicting transactions cannot both pass: each needs > 2/3 of the same listings, and
-    one node's mempool holds at most one of them.
+  - Honest peers never get two conflicting transactions both held: admitting one needs > 2/3 of
+    the listings while the other is kept by > 1/3, so some listing holds both, and one node's
+    mempool holds at most one of them. A peer that lists both can get the pair admitted, and an
+    honest split can then keep both until one mines (`mempool_model.rs`).
   - What it costs an attacker: control of more than 2/3 of our outbound peers across 6
     netgroups. What it gets them: a pending transaction served that never mines.
 - **`peers: x/y, trusted: x/y`** is tracked for every sighting and exposed through the planned
@@ -253,7 +255,7 @@ when the mempool empties: an empty mempool with no new block is a live, silent s
 end therefore means the next `GetLatestBlock` already serves the new tip.
 
 **Written once, read by cursors.** Each served tip gets one append-only log: the mempool when it
-opened, then every transaction that becomes servable (the view's `arrivals` between two of its
+opened, then every transaction it newly holds (the view's `arrivals` between two of its
 publishes), each encoded once and shared by refcount. A subscriber is a pointer to that log and a
 cursor into it, so per-transaction work never scales with subscribers and per-subscriber state
 never grows with arrivals. The log is the global snapshot's (`zaino-snapshot/src/feed.rs`): the

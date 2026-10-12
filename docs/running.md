@@ -146,7 +146,7 @@ listener) shows it:
     "release": null, "peers": []
   }],
   "alarms": { "partitioned": false, "eclipsed": false, "finality_paused": false, "stale": [], "ending": [] },
-  "mempool": { "transactions": 12, "verified": 12, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
+  "mempool": { "transactions": 12, "verified": 12, "quorum": 0, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
   "forks": []
 }
 ```

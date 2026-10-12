@@ -90,14 +90,15 @@ pub(crate) struct Timeline {
 pub struct Spread {
     pub peers: Count,
     pub trusted: Count,
+    pub quorum: bool,
     pub ours: bool,
-    pub servable: bool,
     pub(crate) timeline: Timeline,
 }
 
-/// One transaction and where it has been seen
+/// One transaction the view serves, and where it has been seen
 ///
 /// - `quorum` = a peer quorum admitted it (`listings.rs`) and it passed our checks
+/// - always listed (trusted or quorum) or ours: a fold drops one that is neither before publishing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sighting {
     trusted: EndpointSet,
@@ -148,8 +149,8 @@ impl Sighting {
         Spread {
             peers: Count { seen: listers, of: polled },
             trusted: Count { seen: self.trusted.count(), of: readers.count() },
+            quorum: self.quorum,
             ours: self.ours,
-            servable: self.servable(),
             timeline: self.timeline,
         }
     }
@@ -164,7 +165,7 @@ impl Sighting {
         }
     }
 
-    fn entry(&self, txid: TransactionId) -> MempoolEntry {
+    pub(crate) fn entry(&self, txid: TransactionId) -> MempoolEntry {
         let projection = self.projection.clone();
         MempoolEntry { txid, raw: self.raw.clone(), fee: self.fee, projection }
     }
@@ -183,11 +184,6 @@ impl Sighting {
     /// peer quorum
     pub(crate) fn listed(&self) -> bool {
         !self.trusted.is_empty() || self.quorum
-    }
-
-    /// Listed, or ours
-    pub(crate) fn servable(&self) -> bool {
-        self.ours || self.listed()
     }
 
     pub(crate) fn quorum(&self) -> bool {
@@ -277,7 +273,7 @@ impl ChainViewSnapshot {
     }
 
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
-    /// endpoint per address; `ours` servable (our relay), `unlisted` held, not servable
+    /// endpoint per address; `ours` served (our relay)
     ///
     /// - each holder `Live`, its `getblockchaininfo` = the best block, no upgrade, branch id 0
     #[cfg(any(test, feature = "testing"))]
@@ -286,7 +282,6 @@ impl ChainViewSnapshot {
         held_by: EndpointSet,
         addresses: &[&str],
         ours: &[(TransactionId, Bytes)],
-        unlisted: &[(TransactionId, Bytes)],
     ) -> Self {
         use zaino_primitives::types::{ConsensusBranchId, ConsensusBranchIds, Height};
 
@@ -311,10 +306,8 @@ impl ChainViewSnapshot {
                 }
             }
         }
-        for (sightings, servable) in [(ours, true), (unlisted, false)] {
-            for (txid, raw) in sightings {
-                view.mempool.insert(*txid, Sighting::new(raw.clone(), None, servable));
-            }
+        for (txid, raw) in ours {
+            view.mempool.insert(*txid, Sighting::new(raw.clone(), None, true));
         }
         view
     }
@@ -360,21 +353,17 @@ impl ChainViewSnapshot {
         self.chain.as_ref()
     }
 
-    /// Servable here, not servable (or absent) in `since`, txid order (`None` = every servable)
+    /// Held here, absent in `since`, txid order (`None` = every one held)
     ///
     /// - `imbl` diff: shared subtrees skipped (O(changes) between consecutive publishes)
     pub fn arrivals(&self, since: Option<&ChainViewSnapshot>) -> Vec<MempoolEntry> {
         let empty = OrdMap::new();
         let before = since.map_or(&empty, |since| &since.mempool);
         let added = before.diff(&self.mempool).filter_map(|change| match change {
-            DiffItem::Add(txid, now) => Some((*txid, now)),
-            DiffItem::Update { old: (_, was), new: (txid, now) } => {
-                (!was.servable()).then_some((*txid, now))
-            }
-            DiffItem::Remove(..) => None,
+            DiffItem::Add(txid, now) => Some(now.entry(*txid)),
+            DiffItem::Update { .. } | DiffItem::Remove(..) => None,
         });
-        let servable = added.filter(|(_, sighting)| sighting.servable());
-        servable.map(|(txid, sighting)| sighting.entry(txid)).collect()
+        added.collect()
     }
 
     /// Partition / eclipse / stale-tip conditions as of the last fold (telemetry only, never gates)
@@ -400,10 +389,8 @@ impl ChainViewSnapshot {
         telemetry::shared_outbound_min(&telemetry::outbound(&self.endpoints))
     }
 
-    /// Where one transaction has been seen, regardless of whether it is servable.
-    ///
-    /// Telemetry and the action stream read this; the mempool RPCs go through
-    /// [`mempool`](Self::mempool).
+    /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch;
+    /// the mempool RPCs go through [`mempool`](Self::mempool))
     pub(crate) fn sighting(&self, txid: &TransactionId) -> Option<&Sighting> {
         self.mempool.get(txid)
     }
@@ -418,7 +405,7 @@ impl ChainViewSnapshot {
             .collect()
     }
 
-    /// One transaction's spread, servable or not (telemetry; never gates serving)
+    /// One held transaction's spread (telemetry; never gates serving)
     pub fn spread(&self, txid: &TransactionId) -> Option<Spread> {
         let polled = self.listings.polled().len();
         let listers = self.listings.listers(txid).len();
@@ -433,7 +420,7 @@ impl ChainViewSnapshot {
         })
     }
 
-    /// The servable mempool; `None` while neither a `Live` trusted validator (its mempool
+    /// The served mempool; `None` while neither a `Live` trusted validator (its mempool
     /// listing) holds the best block nor [`peers_quorate`](Self::peers_quorate) (fail closed: no
     /// empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
@@ -448,21 +435,15 @@ impl ChainViewSnapshot {
     }
 }
 
-/// The servable mempool of a snapshot a trusted validator or a peer quorum reads
-///
-/// - every method applies the per-transaction rule (listed by a trusted validator, admitted by
-///   a peer quorum, or ours): nothing below it leaks out
+/// The mempool of a snapshot a trusted validator or a peer quorum reads
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolView<'a>(&'a ChainViewSnapshot);
 
 impl MempoolView<'_> {
-    /// Every servable unconfirmed transaction, in txid order.
+    /// Every unconfirmed transaction held (listed by a trusted validator, admitted by a peer
+    /// quorum, or ours), in txid order
     pub fn entries(&self) -> impl Iterator<Item = MempoolEntry> + '_ {
-        self.0
-            .mempool
-            .iter()
-            .filter(|(_, sighting)| sighting.servable())
-            .map(|(txid, sighting)| sighting.entry(*txid))
+        self.0.mempool.iter().map(|(txid, sighting)| sighting.entry(*txid))
     }
 
     /// `GetMempoolTx`'s filter: everything except the transactions a suffix identifies.

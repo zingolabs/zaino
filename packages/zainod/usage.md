@@ -87,7 +87,7 @@ bootstrap included), `validators` (each configured one:
 protocol and `end_of_service` as `{"status": "at", height, estimated_unix, blocks_left}` /
 `{"status": "not_enforced"}` / `{"status": "unknown"}` (zebrad < 6.3), and the p2p `peers` its
 `getpeerinfo` reports), `alarms` (`partitioned`, `eclipsed`, `finality_paused`, `stale`, `ending`
-= releases halting within a week), `mempool` (`transactions`, `verified`, `ours_unverified`,
+= releases halting within a week), `mempool` (`transactions`, `verified`, `quorum`, `ours_unverified`,
 `fully_spread`, `trusted_readers`), `forks` (each side branch: `from`, `tip`, `cumulative_work`
 as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip, each final block
 moves it by one. Traffic data: keep the listener private.

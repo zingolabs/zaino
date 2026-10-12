@@ -2,13 +2,13 @@
 //! after every publish (inside it), every snapshot against a naive model
 //!
 //! - Chain view: header moves (extend, reorg above final, finalize), holders, mempool (relays,
-//!   unlisted sightings turning servable, drops)
+//!   drops)
 //! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet
 //! - Each move published or coalesced with the next (the run loop's `watch`es keep the latest)
 //! - Tails opened at random, drained after every publish: each tx once per epoch, every one the
 //!   epoch carried, end iff the served tip moved and only once the new snapshot is stored
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
 /// - `Reorg`: top `depth` (above final) replaced by `len` blocks, the first outweighing them
-/// - `Sight` = held, unlisted; `List` = a held one turned servable; `Relay` = ours (servable)
+/// - `Relay` = ours (held, served)
 /// - `ServeBest` = NFS `lag` below the best; `ServeOld` = an earlier best tip (reorg in flight)
 /// - paired `bool` = published now (else coalesced with the next)
 #[derive(Debug, Clone)]
@@ -40,8 +40,6 @@ enum Input {
     Finalize,
     Hold(u8),
     Relay(u8),
-    Sight(u8),
-    List(u8),
     Drop(u8),
     ServeBest { lag: u32 },
     ServeOld { pick: u8 },
@@ -54,9 +52,7 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
         2 => (1u32..=5, 1u32..=4).prop_map(|(depth, len)| Input::Reorg { depth, len }),
         1 => Just(Input::Finalize),
         2 => (0u8..4).prop_map(Input::Hold),
-        2 => any::<u8>().prop_map(Input::Relay),
-        2 => any::<u8>().prop_map(Input::Sight),
-        2 => any::<u8>().prop_map(Input::List),
+        4 => any::<u8>().prop_map(Input::Relay),
         1 => any::<u8>().prop_map(Input::Drop),
         4 => (0u32..=5).prop_map(|lag| Input::ServeBest { lag }),
         1 => any::<u8>().prop_map(|pick| Input::ServeOld { pick }),
@@ -76,7 +72,7 @@ proptest! {
     }
 }
 
-/// One epoch as the model sees it: `txs` = servable at its opening ∪ every later arrival
+/// One epoch as the model sees it: `txs` = held at its opening ∪ every later arrival
 struct Epoch {
     key: Option<BlockRef>,
     txs: BTreeSet<TransactionId>,
@@ -90,13 +86,13 @@ struct Tailed {
     ended: bool,
 }
 
-/// `held` = bitmask over `ADDRESSES`; `mempool` = txid → servable
+/// `held` = bitmask over `ADDRESSES`; `mempool` = our relays still held
 struct Model {
     builder: MockChain,
     headers: HeaderChain,
     old_tips: Vec<BlockRef>,
     held: u8,
-    mempool: BTreeMap<TransactionId, bool>,
+    mempool: BTreeSet<TransactionId>,
     served: Option<BlockRef>,
     synced: bool,
     epochs: Vec<Epoch>,
@@ -113,13 +109,9 @@ impl Model {
 
     fn view(&self) -> Arc<ChainViewSnapshot> {
         let raw = |txid: &TransactionId| (*txid, Bytes::copy_from_slice(&<[u8; 32]>::from(*txid)));
-        let of = |servable: bool| -> Vec<(TransactionId, Bytes)> {
-            let picked = self.mempool.iter().filter(|(_, s)| **s == servable);
-            picked.map(|(txid, _)| raw(txid)).collect()
-        };
-        let (ours, unlisted) = (of(true), of(false));
+        let ours: Vec<(TransactionId, Bytes)> = self.mempool.iter().map(raw).collect();
         let chain = Some(self.chain());
-        Arc::new(ChainViewSnapshot::fixed(chain, self.held_by(), &ADDRESSES, &ours, &unlisted))
+        Arc::new(ChainViewSnapshot::fixed(chain, self.held_by(), &ADDRESSES, &ours))
     }
 
     fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
@@ -127,10 +119,6 @@ impl Model {
         let params = ChainParams::of(&self.builder);
         let none: [(IndexKind, DiskView); 0] = [];
         Some(Arc::new(Indexed::fixed(self.chain(), served, params, none)))
-    }
-
-    fn servable(&self) -> BTreeSet<TransactionId> {
-        self.mempool.iter().filter(|(_, servable)| **servable).map(|(txid, _)| *txid).collect()
     }
 
     /// Path membership by the builder, not `hash_at`
@@ -166,13 +154,7 @@ impl Model {
                 }
             }
             Input::Hold(mask) => self.held = mask,
-            Input::Relay(pick) => drop(self.mempool.insert(txid(pick), true)),
-            Input::Sight(pick) => drop(self.mempool.entry(txid(pick)).or_insert(false)),
-            Input::List(pick) => {
-                if let Some(servable) = self.mempool.get_mut(&txid(pick)) {
-                    *servable = true;
-                }
-            }
+            Input::Relay(pick) => drop(self.mempool.insert(txid(pick))),
             Input::Drop(pick) => drop(self.mempool.remove(&txid(pick))),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
@@ -199,14 +181,14 @@ impl Model {
             }
         };
         let served_moved = self.epochs.last().is_none_or(|epoch| epoch.key != self.served);
-        let servable = self.servable();
+        let held = self.mempool.clone();
         if served_moved {
             if let Some(epoch) = self.epochs.last_mut() {
                 epoch.closed = true;
             }
-            self.epochs.push(Epoch { key: self.served, txs: servable, closed: false });
+            self.epochs.push(Epoch { key: self.served, txs: held, closed: false });
         } else if let Some(epoch) = self.epochs.last_mut() {
-            epoch.txs.extend(servable);
+            epoch.txs.extend(held);
         }
         self.synced = synced;
         Tips {
@@ -227,7 +209,7 @@ fn run(moves: Vec<(Input, bool)>) {
         headers,
         old_tips: Vec::new(),
         held: 0,
-        mempool: BTreeMap::new(),
+        mempool: BTreeSet::new(),
         served: None,
         synced: false,
         epochs: vec![Epoch { key: None, txs: BTreeSet::new(), closed: false }],

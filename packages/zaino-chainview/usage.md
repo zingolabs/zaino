@@ -139,8 +139,8 @@ Cheap to clone; cannot drive polling or submit.
   stored in fold order): `zaino-snapshot`'s publisher reads `current()` on each
 
 `ChainViewSnapshot` exposes `chain()` (the `VerifiedChain` every standing was judged under),
-`best()` (verified, held or not), `held_by()`, `arrivals(since)` (transactions servable in it
-but not in `since`, `None` = every servable one; an `imbl` diff, so consecutive publishes cost
+`best()` (verified, held or not), `held_by()`, `arrivals(since)` (transactions held in it
+but not in `since`, `None` = every held one; an `imbl` diff, so consecutive publishes cost
 what changed), `mempool()` (below), `validator_info()` (the first holder's `BlockchainInfo`,
 `None` without a holder; `GetLightdInfo` serves it with no validator call), `alarms()`,
 `shared_outbound_min()`, `spreads()` and `endpoints()`: per-endpoint `ValidatorMetadata` in
@@ -158,7 +158,7 @@ and never an error), or `Unknown` (nothing verified yet, or its last poll failed
 Tests standing in for header sync (feature `testing`) hand the view a chain with
 `ChainView::set_verified(Some(chain.verified(tip)))` (`zaino-header-chain`'s
 `testing::HeaderViews` verifies a `MockChain` path's real headers).
-`ChainViewSnapshot::fixed(chain, held_by, addresses, ours, unlisted)` builds one view without a
+`ChainViewSnapshot::fixed(chain, held_by, addresses, ours)` builds one view without a
 `ChainView`: consumers' tests of what reads it.
 
 Feature `testing` also carries `testing::MockPeers`, the p2p layer as a script
@@ -265,14 +265,14 @@ feed of its own.
 
 Each held transaction's trusted listings are an `EndpointSet` bitset, not a
 count, so the view knows *which* validators list it: propagation, which no single
-node can report. `ChainViewSnapshot::spread(txid)` (or `spreads()` for all)
-answers, servable or not:
+node can report. `ChainViewSnapshot::spread(txid)` (or `spreads()` for all) answers, behind no
+gate:
 
 - `peers: Count { seen, of }`: peers whose counted mempool listing holds it, of
   the peers counted
 - `trusted: Count { seen, of }`: `of` = `mempool_readers()`, the `Live`
   validators (a catching-up or down one lists nothing, so it is not counted)
-- `ours`, `servable`
+- `quorum` (a peer quorum admitted it), `ours` (our relay)
 - `timeline`: `first_seen` (its first trusted listing, quorum admission or our submission),
   `first_trusted`,
   `all_trusted` (the first moment every reader listed it at once)

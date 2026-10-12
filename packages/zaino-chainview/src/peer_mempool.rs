@@ -21,7 +21,7 @@ use tracing::{debug, warn};
 use zaino_primitives::types::{OutPoint, PeerTxId, UpgradeSchedule, Zatoshis};
 use zaino_source::decode_transaction;
 
-use crate::admission::{admissible, NextBlock};
+use crate::admission::{admissible, NextBlock, Refused};
 use crate::fold::{Candidate, ChainViewCore};
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::ports::{UnspentOutputs, ValidatorP2pSource};
@@ -81,9 +81,11 @@ impl PeerMempool {
         }
         let next = NextBlock::above(best.height, &self.schedule);
         let mut admitted = Vec::new();
-        for (id, raw) in self.bytes(candidates).await {
-            match admissible(&raw, next, |at| self.prevout(&view, at)) {
-                Ok((_, fee)) => admitted.push((id, raw, fee)),
+        for (id, raw, judged) in
+            judge(&view, self.utxos.as_ref(), next, self.bytes(candidates).await)
+        {
+            match judged {
+                Ok(fee) => admitted.push((id, raw, fee)),
                 Err(why) if why.retried() => {
                     debug!(txid = %id.txid, %why, "Quorum transaction waits")
                 }
@@ -114,20 +116,30 @@ impl PeerMempool {
         }
         found
     }
-
-    /// Unspent value: the served UTXO set, else a servable held transaction's output
-    fn prevout(&self, view: &ChainViewSnapshot, at: &OutPoint) -> Option<Zatoshis> {
-        let served = self.utxos.values(std::slice::from_ref(at));
-        match served.and_then(|values| values.into_iter().next().flatten()) {
-            Some(value) => Some(value),
-            None => held_output(view, at),
-        }
-    }
 }
 
-/// `at` among the servable held transactions' outputs (a parent still unmined)
-fn held_output(view: &ChainViewSnapshot, at: &OutPoint) -> Option<Zatoshis> {
-    let parent = view.mempool.get(&at.txid).filter(|sighting| sighting.servable())?;
+/// Each candidate's bytes against `next`, `utxos` and `view`'s held transactions → its fee, or why
+/// not (`Refused::retried` = maybe a later round)
+pub(crate) fn judge(
+    view: &ChainViewSnapshot,
+    utxos: &dyn UnspentOutputs,
+    next: NextBlock,
+    fetched: Vec<(PeerTxId, Bytes)>,
+) -> Vec<(PeerTxId, Bytes, Result<Zatoshis, Refused>)> {
+    let prevout = |at: &OutPoint| {
+        let served = utxos.values(std::slice::from_ref(at));
+        served.and_then(|values| values.into_iter().next().flatten()).or_else(|| held(view, at))
+    };
+    let judged = |(id, raw): (PeerTxId, Bytes)| {
+        let fee = admissible(&raw, next, prevout).map(|(_, fee)| fee);
+        (id, raw, fee)
+    };
+    fetched.into_iter().map(judged).collect()
+}
+
+/// `at` among the held transactions' outputs (a parent still unmined)
+fn held(view: &ChainViewSnapshot, at: &OutPoint) -> Option<Zatoshis> {
+    let parent = view.mempool.get(&at.txid)?;
     let tx = decode_transaction(parent.raw()).ok()?;
     let index = usize::try_from(at.vout).ok()?;
     tx.transparent.outputs.get(index).map(|output| output.value)

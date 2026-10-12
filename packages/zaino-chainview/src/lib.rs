@@ -8,6 +8,8 @@ mod error;
 mod fold;
 mod headers;
 mod listings;
+#[cfg(test)]
+mod mempool_model;
 mod netgroup;
 mod observe;
 mod peer_mempool;

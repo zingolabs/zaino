@@ -151,14 +151,42 @@ struct AlarmsReport {
     ending: Vec<String>,
 }
 
-/// `transactions` = held (servable or not); `trusted_readers` = the `y` of `trusted: x/y`
+/// `transactions` = held = `verified` + `quorum` + `ours_unverified` ([`MempoolState`]);
+/// `trusted_readers` = the `y` of `trusted: x/y`
 #[derive(Debug, Serialize, PartialEq)]
 struct MempoolCounts {
     transactions: usize,
     verified: usize,
+    quorum: usize,
     ours_unverified: usize,
     fully_spread: usize,
     trusted_readers: usize,
+}
+
+/// Why one held transaction is held, first match: a trusted listing, a peer quorum, our relay
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MempoolState {
+    Verified,
+    Quorum,
+    Ours,
+}
+
+impl MempoolState {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Quorum => "quorum",
+            Self::Ours => "ours_unverified",
+        }
+    }
+}
+
+fn mempool_state(spread: &Spread) -> MempoolState {
+    match (spread.trusted.seen > 0, spread.quorum) {
+        (true, _) => MempoolState::Verified,
+        (false, true) => MempoolState::Quorum,
+        (false, false) => MempoolState::Ours,
+    }
 }
 
 /// `cumulative_work` decimal (past 2^53: a JSON number loses it)
@@ -261,8 +289,9 @@ impl Report {
             },
             mempool: MempoolCounts {
                 transactions: spreads.len(),
-                verified: count(&|spread| spread.trusted.seen > 0),
-                ours_unverified: count(&|spread| spread.ours && spread.trusted.seen == 0),
+                verified: count(&|spread| mempool_state(spread) == MempoolState::Verified),
+                quorum: count(&|spread| mempool_state(spread) == MempoolState::Quorum),
+                ours_unverified: count(&|spread| mempool_state(spread) == MempoolState::Ours),
                 fully_spread: count(&|spread| readers > 0 && spread.trusted.seen == readers),
                 trusted_readers: readers,
             },
@@ -350,8 +379,8 @@ pub fn describe_metrics() {
     );
     describe_gauge!(
         names::MEMPOOL_TRANSACTIONS,
-        "Held mempool transactions, by state (verified = a trusted listing; ours_unverified = our \
-         relay, unlisted)"
+        "Held mempool transactions, by state (verified = a trusted listing; quorum = a peer \
+         quorum's, no trusted listing; ours_unverified = our relay, neither)"
     );
 }
 
@@ -372,12 +401,15 @@ pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &SyncProgress) {
 
 /// `zaino.chainview.*`: per endpoint, then the view's
 fn chain_view_gauges(view: &ChainViewSnapshot) {
-    let spreads = view.spreads();
-    let verified = spreads.filter(|(_, spread)| spread.trusted.seen > 0).count();
-    let held = view.spreads().count();
-    metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => "verified").set(verified as f64);
-    metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => "ours_unverified")
-        .set((held - verified) as f64);
+    let mut states = [0usize; 3];
+    for (_, spread) in view.spreads() {
+        states[mempool_state(&spread) as usize] += 1;
+    }
+    for (state, held) in
+        [MempoolState::Verified, MempoolState::Quorum, MempoolState::Ours].into_iter().zip(states)
+    {
+        metrics::gauge!(names::MEMPOOL_TRANSACTIONS, "state" => state.label()).set(held as f64);
+    }
 
     for meta in view.endpoints().iter() {
         let endpoint = meta.address.clone();
