@@ -14,10 +14,10 @@ of repairing anything in place. Every index follows the same six rules.
 
 1. **One commit point per index.** Each index directory holds a `MANIFEST`, and the manifest is
    the committed state: how many heights are durable, the hash of the last one, and the seal
-   (length and tail checksum, §3) of every file the index reads. Bytes the manifest does not claim
+   (length and tail checksum) of every file the index reads. Bytes the manifest does not claim
    are uncommitted, whatever they contain.
 1. **One direction.** Every data file is append-only. A commit appends, seals the files it grew,
-   then writes the new manifest into the manifest slot the previous commit did not use (§2).
+   then writes the new manifest into the manifest slot the previous commit did not use.
    Nothing the current manifest claims is ever rewritten or deleted, except that a segment merge
    deletes its inputs once a later manifest stops listing them.
 1. **Validate before durable, never after.** What the bytes mean is settled while the index is
@@ -28,9 +28,9 @@ of repairing anything in place. Every index follows the same six rules.
    index sees it.
 1. **One disk check, the same everywhere.** Once data is durable, the only question left is
    whether the bytes on disk are the bytes that were sealed. Every file of every index answers it
-   with page checksums (§3).
+   with page checksums.
 1. **Recovery never guesses.** Opening an index truncates every file to its sealed length (a
-   reserve of zeros past it included, §3) and deletes every segment the manifest does not list. A
+   reserve of zeros past it included) and deletes every segment the manifest does not list. A
    file shorter than its seal means committed bytes were lost, which is fatal.
 1. **Die, don't repair.** An I/O error on a commit path, a checksum mismatch, a chain that does not
    link, or a violated assert ends the process. zainod never retries a failed `fsync`, never
@@ -50,12 +50,12 @@ offset  bytes  field
 11      1      network     0 main, 1 test, 2 regtest
 12      8      seq         u64 LE, the commit's sequence number (1, 2, 3, ...)
 20      4      body_len    u32 LE
-24      n      body        the engine's layout (§4), shaped by the index's schema
+24      n      body        the engine's layout, shaped by the index's schema
 24+n    4      crc         CRC-32 (IEEE) over bytes 0 inclusive to 24+n exclusive
 ```
 
 Every body starts with the committed tip, as the block count from genesis and the tip hash,
-followed by the seal of every sequence file and the segment list of every map (§4).
+followed by the seal of every sequence file and the segment list of every map.
 
 A commit (`IndexDir::commit`) writes commit `seq` over slot `seq % 2`, the slot the previous commit
 did not use, then fsyncs the file. The other slot always holds the commit before it, so a crash
@@ -89,12 +89,12 @@ an empty manifest before its first data write, so data without a committed manif
 result of a crash.
 
 Because a commit no longer fsyncs the directory, a data file's own name must be made durable
-before any manifest names it. The file that creates it does that (§3).
+before any manifest names it. The file that creates it does that.
 
 Each index directory also holds a `LOCK` file under an exclusive `File::try_lock` for the life of
 the process. Two zainods can never open one directory, because the second one's open-time
 truncation would run under the first one's live mappings (SIGBUS,
-[persistence-architecture.md §5.2](./persistence-architecture.md)).
+[persistence-architecture.md](./persistence-architecture.md)).
 
 ## 3. The file layer and page checksums
 
@@ -102,7 +102,7 @@ All index I/O goes through the `zaino_persistence::fs::Fs` trait. Writes are pos
 partial write can never move where the next one lands, and a new file, rename or removal is durable
 only once its parent directory is fsynced (Linux semantics). `RealFs` is `std::fs` plus `memmap2`.
 `SimFs` keeps a volatile and a durable image of every file and directory, and enumerates every
-state a power loss could leave (§7).
+state a power loss could leave.
 
 Every index file is written through `zaino_persistence::pages`:
 
@@ -127,7 +127,7 @@ A `PagedFile` is opened as one of two kinds (`pages::FileKind`):
   before any manifest names it. The file then grows into a **reserve**: room past its end,
   written with zeros and fsynced, each step the file's size again (64 KiB to 64 MiB). Appends
   overwrite that room in place, so a seal's `fdatasync` finds no size change and no new block to
-  allocate, and never waits on the journal (§2). `fallocate` cannot make that room: it leaves
+  allocate, and never waits on the journal. `fallocate` cannot make that room: it leaves
   unwritten extents, and the first write into one is a metadata change again. The cost is
   writing the file's bytes twice, once as zeros. Open truncates the file to its seal, so the
   reserve is dropped at every boot and rebuilt by the next append.
@@ -148,7 +148,7 @@ Open checks each file is at least as long as its seal (then truncated to it), re
 back against the manifest, and reads the whole `.crc` back against the `sums` digest. The `.crc`
 file is 1/1024 of the data, so that is about 30 MB for a 30 GB `blocks.dat`. A read checks each page the first time it touches it
 and records it in a per-file bitset that carries across commits. A mismatch panics with the file,
-the page and the remedy, and zainod aborts (§6).
+the page and the remedy, and zainod aborts.
 
 `zainod verify` is the offline check. For each enabled index it runs `DiskEngine::verify` with the
 index's schema: every committed byte of every file the manifest seals, read sequentially against
@@ -215,7 +215,7 @@ something that keeps serving. Every stage runs in one `JoinSet`, and any task en
 shutdown signal ends the process with an error.
 
 There is no in-process restart. Re-opening under live mappings breaks the truncation rule of
-[persistence-architecture.md §5.2](./persistence-architecture.md), and an `fsync` error must never
+[persistence-architecture.md](./persistence-architecture.md), and an `fsync` error must never
 be retried: after a failed writeback the kernel marks the pages clean, and a retried `fsync` can
 report success for data that never reached the disk (see
 <https://wiki.postgresql.org/wiki/Fsync_Errors>). The LSM store enforces this itself: after a
@@ -231,7 +231,7 @@ durable manifest.
   every row of a later one is absent (LevelDB `fault_injection_test`). Every index, value-balance
   included, has such a test. The manifest's own test runs three commits, so a commit overwrites a
   slot an earlier one used, under every crash state. A slot damaged by hand (the live one, then
-  both) pins the rollback-by-one and the refusal of §2.
+  both) pins the rollback-by-one and the refusal in "The manifest".
 - **Not measured by `SimFs`.** Whether a sync commits the journal is a property of the real
   filesystem. `SimFs` checks that the reserve and in-place manifest keep every crash state
   correct, not that they save time; that is measured on a live sync.
@@ -249,7 +249,7 @@ durable manifest.
   and a restart must recover an acknowledged commit or the attempted one. `fail_reads_from` does
   the same for positional reads while reopening: each failure is the open's error, and the open
   that succeeds finds every commit. Mapped reads are not injectable in-process; on a real disk
-  they fail as `SIGBUS`, which kills zainod, in line with §6.
+  they fail as `SIGBUS`, which kills zainod, in line with the failure policy.
 - **Planted bugs.** Each LSM invariant check is fed the bug it guards against (a duplicate key,
   including one surfacing inside a merge, a key in two segments, a tip that does not advance) and
   must fire. A check never seen firing is not known to work (RocksDB).

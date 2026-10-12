@@ -36,7 +36,7 @@ impl AddressKind {
 /// Fixed-width address tag `[hash160][kind]` (the whole identity a row is keyed by)
 ///
 /// - 21 B = the addr id (interning into a `u64` breaks even at ~2.9 rows per address; TEX /
-///   ephemeral receivers single-use by construction, `docs/design/index-data-structures.md` §7)
+///   ephemeral receivers single-use by construction, `docs/design/index-data-structures.md`)
 /// - hash first: its uniform bytes lead the key (an engine may shard on them)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AddressKey {

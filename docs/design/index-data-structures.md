@@ -22,7 +22,7 @@ ironwood      same shape as orchard
 ```
 
 A transparent input carries only the outpoint it spends, never the address or the value. That one
-gap is what §5 is about.
+gap is what "Shape C, and why it does not exist" is about.
 
 Everything we serve from an index is a fold over this stream, so the design question for each
 index is only what the fold keeps, and what a read has to reconstruct from it. The mempool, the
@@ -40,7 +40,8 @@ blocks, so they are not indexes.
 Shape A stores no keys at all, because arithmetic finds the record. Shape B stores its keys but only
 needs a sparse index over them. Shape C needs deletes, and deletes bring compaction, space
 amplification and an undo path for reorgs. The move that matters is turning every would-be Shape C
-index into Shape B, which §5 does for the one case that looks mutable.
+index into Shape B, which "Shape C, and why it does not exist" does for the one case that looks
+mutable.
 
 ## 3. Shape A: positional
 
@@ -65,7 +66,7 @@ is exactly the set of nodes any past frontier is built from, and it costs about 
 commitment (32 for the leaf, about 16 for internal nodes). A historical `GetTreeState` is then at
 most 33 mmap reads, the leaf plus one per set bit of its position, with no hashing. Rebuilding it
 instead would cost 100.2 µs per Orchard `combine`
-([persistence-architecture.md §3](./persistence-architecture.md#3-hcombine-measured)).
+([persistence-architecture.md](./persistence-architecture.md#3-hcombine-measured)).
 
 Subtree roots fall out of the same fold. Each time a pool completes a 2^16-leaf subtree, we append
 its root and completing height at that subtree's slot.
@@ -75,7 +76,7 @@ its root and completing height at that subtree's slot.
 Writes arrive in block order, but reads are by address or by outpoint. Each commit writes one
 immutable segment per set: the rows of the blocks it covers, sorted by key, packed at a fixed
 stride, then fences (the first key of every 4 KiB block of rows) and, for sets read by point
-lookups, a membership filter (§7). Sorting costs nothing extra because the batch is in memory
+lookups, a membership filter. Sorting costs nothing extra because the batch is in memory
 anyway. `zaino_persistence::lsm` owns the format and the merge policy.
 
 Each segment also stores a summary of its fences, the first key of every page of fences, which a
@@ -109,7 +110,7 @@ never restart time.
 A segment written once, sorted, is exactly as big as its rows. A B-tree must leave room for inserts
 it cannot predict, and random-order inserts leave its pages part-full and, on a copy-on-write
 filesystem, fragment the file
-([persistence-architecture.md §4](./persistence-architecture.md#4-direct-addressing-beats-a-keyed-store-on-every-axis-measured)).
+([persistence-architecture.md](./persistence-architecture.md#4-direct-addressing-beats-a-keyed-store-on-every-axis-measured)).
 
 ## 5. Shape C, and why it does not exist
 
@@ -142,7 +143,7 @@ those outpoints gives the spending txids and their heights.
 | Storage engines   | two                                          | one                          |
 
 We accept `O(received)` over `O(unspent)` because the gap only shows for a heavily reused address,
-such as an exchange hot wallet, and not for a light wallet's mostly single-use receivers (§7). If it
+such as an exchange hot wallet, and not for a light wallet's mostly single-use receivers. If it
 ever matters, a maintained set can be added as an accelerator over the same segments without
 changing the source of truth.
 

@@ -76,7 +76,7 @@ impl<S: ChainDataSource> ChainView<S> {
         Self { policy, ..self }
     }
 
-    /// Peers as submission entries + announcers (§5, §6); spawn [`peer_watch`](Self::peer_watch)
+    /// Peers as submission entries + announcers; spawn [`peer_watch`](Self::peer_watch)
     pub fn with_peers(self, peers: Arc<dyn ValidatorP2pSource>) -> Self {
         Self { peers: Some(peers), ..self }
     }
@@ -110,7 +110,7 @@ impl<S: ChainDataSource> ChainView<S> {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
 
-    /// Submit one transaction (§6): precheck, then one random entry per attempt, watched
+    /// Submit one transaction: precheck, then one random entry per attempt, watched
     ///
     /// - answers at the first acceptance (the transaction is `ours` from then); a rejection or
     ///   a failure only once every attempt is spent

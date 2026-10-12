@@ -14,25 +14,25 @@ validators it trusts for exactly that, and nothing more.
 
 ## Status
 
-| Part                                                                                           | State                                  |
-| ---------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Mempool view, telemetry (§5, §11)                                                              | built                                  |
-| `GetMempoolStream` on a write-once log, keyed by the served tip (§5; `zaino-snapshot`)         | built                                  |
-| `GetLightdInfo` from one global snapshot (§12)                                                 | built                                  |
-| `[[trusted_validators]]`, any-trusted admission, non-fatal validator failure (§5, §7, §10)     | built                                  |
-| Trusted-validator links: lanes, budgets, batched mempool bytes (§7)                            | built                                  |
-| `GetMempoolTx` projection rendered once per transaction (§5)                                   | built                                  |
-| `trusted: x/y` + spread timeline per transaction, tracked and on `/statusz` (§5, §11)          | built (`peers: x/y` with `[p2p]` on)   |
-| Validator release + end-of-service height, alarm a week ahead (§11)                            | built                                  |
-| Batched poll tick (holding asked by `getblockhash`), routing for mined txs (§7, §9)           | built                                  |
-| Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                |
-| `peers/trusted` on the extension service (§5)                                                  | planned                                |
-| Push streams (§7)                                                                              | built                                  |
-| Validated Header tree: most-work tip, holders, vouched finality (§2–§4)                        | built; headers from trusted validators |
-| Submission: random entry, watched, resubmitted (§6)                                            | built, peer + trusted entries          |
-| `zaino-peers`: zebra-network, attributed `inv`, isolated push (§8)                             | built                                  |
-| Peers in the view: mempool sightings, submission entries (§5, §6), via zainod `[p2p]`         | built                                  |
-| Peers as a header and block source (§2, §8)                                                    | planned                                |
+| Part                                                                                             | State                                  |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------- |
+| Mempool view, telemetry                                                                          | built                                  |
+| `GetMempoolStream` on a write-once log, keyed by the served tip (`zaino-snapshot`)               | built                                  |
+| `GetLightdInfo` from one global snapshot                                                         | built                                  |
+| `[[trusted_validators]]`, any-trusted admission, non-fatal validator failure                     | built                                  |
+| Trusted-validator links: lanes, budgets, batched mempool bytes                                   | built                                  |
+| `GetMempoolTx` projection rendered once per transaction                                          | built                                  |
+| `trusted: x/y` + spread timeline per transaction, tracked and on `/statusz`                      | built (`peers: x/y` with `[p2p]` on)   |
+| Validator release + end-of-service height, alarm a week ahead                                    | built                                  |
+| Batched poll tick (holding asked by `getblockhash`), routing for mined txs                       | built                                  |
+| Block fetch: the NFS's checked, least-loaded fetch over every validator (`zaino-nfs` `fetch.rs`) | built                                  |
+| `peers/trusted` on the extension service                                                         | planned                                |
+| Push streams                                                                                     | built                                  |
+| Validated Header tree: most-work tip, holders, vouched finality                                  | built; headers from trusted validators |
+| Submission: random entry, watched, resubmitted                                                   | built, peer + trusted entries          |
+| `zaino-peers`: zebra-network, attributed `inv`, isolated push                                    | built                                  |
+| Peers in the view: mempool sightings, submission entries, via zainod `[p2p]`                     | built                                  |
+| Peers as a header and block source                                                               | planned                                |
 
 ## 1. Sources
 
@@ -61,16 +61,16 @@ zebrad the operator configured: ours, or a partner's with their consent and cred
 
 What each source is used for, and what makes it safe:
 
-| Need                    | Peers          | Trusted           | Check                                                      |
-| ----------------------- | -------------- | ----------------- | ---------------------------------------------------------- |
-| Headers / best tip      | ✓ preferred    | ✓                 | trusted: linkage + work; untrusted: every rule (§2)        |
-| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle root against the header (bulk: linkage)      |
-| Mempool bytes           | ✓ first        | on miss           | txid recomputed from the bytes                             |
-| Mempool admission + fee | —              | ✓ **only source** | zebrad admitted it after full validation                   |
-| Mined transaction by id | —              | ✓ **only source** | peers serve mempool transactions only                      |
-| Finality confirmation   | —              | ✓ **only source** | §4                                                         |
-| Submission (§6)         | ✓ random entry | verdict, last     | success = a trusted validator lists it                     |
-| Propagation             | ✓ count        | ✓ count           | telemetry, never a vote                                    |
+| Need                    | Peers          | Trusted           | Check                                                 |
+| ----------------------- | -------------- | ----------------- | ----------------------------------------------------- |
+| Headers / best tip      | ✓ preferred    | ✓                 | trusted: linkage + work; untrusted: every rule        |
+| Blocks                  | ✓ near the tip | ✓ bulk throughput | hash + merkle root against the header (bulk: linkage) |
+| Mempool bytes           | ✓ first        | on miss           | txid recomputed from the bytes                        |
+| Mempool admission + fee | —              | ✓ **only source** | zebrad admitted it after full validation              |
+| Mined transaction by id | —              | ✓ **only source** | peers serve mempool transactions only                 |
+| Finality confirmation   | —              | ✓ **only source** | —                                                     |
+| Submission              | ✓ random entry | verdict, last     | success = a trusted validator lists it                |
+| Propagation             | ✓ count        | ✓ count           | telemetry, never a vote                               |
 
 The trusted validators' responsibility is the right-hand column's "only source" rows, and the
 design keeps shrinking it: anything a peer can supply verifiably comes from peers.
@@ -206,7 +206,7 @@ The protocol defines it this way ("a stream of current Mempool transactions … 
 stream when a new block is mined", `service.proto`), and lightwalletd does the same. Sending the
 current transactions first is what lets a wallet that resubscribes after each block see a
 transaction that arrived while it was reconnecting. The stream closes when the **served** tip
-moves (after the NFS folds the new block, [global-snapshot.md](global-snapshot.md) §4), never
+moves (after the NFS folds the new block, [global-snapshot.md](global-snapshot.md)), never
 when the mempool empties: an empty mempool with no new block is a live, silent stream. A stream's
 end therefore means the next `GetLatestBlock` already serves the new tip.
 
@@ -249,13 +249,13 @@ validators, so any observer of the network knows which transactions came through
 validator that drops or delays them silently censors every wallet behind it. A random entry per
 transaction spreads first appearance across the network. A watched resubmission routes around a
 dead, slow or censoring entry with no operator in the loop. It also takes the trusted validators
-off the submission path, which is the point of this design (§1: shrink what they are trusted for).
+off the submission path, which is the point of this design (shrink what they are trusted for).
 The rule is Dandelion++'s originator with its fail-safe timer (Fanti et al., 2018): one stem hop
 chosen by the sender, and a timer that resubmits when the transaction does not diffuse.
 
 **Mechanics.**
 
-- **Entry candidates:** the address book (§8), not only connected peers: recently live, on the
+- **Entry candidates:** the address book, not only connected peers: recently live, on the
   current network upgrade's protocol version, a different netgroup (/16, /32 for IPv6) from every
   earlier attempt's entry. The sample space is the address book, so it grows with crawling and
   costs no standing connections.
@@ -338,12 +338,12 @@ set exposed as a load-balanced tower service. Zaino embeds it with an inbound se
 nothing, and binds its listener to loopback: Zaino serves no peer. It brings `zebra-chain`, whose
 crypto crates match the forks Zaino already patches in.
 
-| Request                                      | Used for                                        |
-| -------------------------------------------- | ----------------------------------------------- |
-| `FindHeaders`                                | headers past our best tip, from many peers (§2) |
-| `BlocksByHash`                               | blocks near the tip and on failover             |
-| `MempoolTransactionIds`, `TransactionsById`  | mempool sightings and bytes (§5)                |
-| `AdvertiseTransactionIds`, `PushTransaction` | broadcast (§6)                                  |
+| Request                                      | Used for                                   |
+| -------------------------------------------- | ------------------------------------------ |
+| `FindHeaders`                                | headers past our best tip, from many peers |
+| `BlocksByHash`                               | blocks near the tip and on failover        |
+| `MempoolTransactionIds`, `TransactionsById`  | mempool sightings and bytes                |
+| `AdvertiseTransactionIds`, `PushTransaction` | broadcast                                  |
 
 Not bulk sync: zebrad answers one block per request with one request in flight per peer, so p2p
 block fetch is latency-bound; bulk throughput comes from trusted validators, or from bootstrapping the indexes off a published
@@ -355,10 +355,10 @@ every peer.
 
 ## 9. Routing
 
-One balancer routes every request: [traffic-balancer.md](./traffic-balancer.md) §3 (members,
+One balancer routes every request: [traffic-balancer.md](./traffic-balancer.md) (members,
 lanes, tiers, hedge / failover / blame) replaces this section's earlier table. Within the best
 tier with room, the member with the fewest requests in flight (ties: configured order); trusted
-`priority` tiers first, then peers. Submission's entry choice stays §6's (`entries()` →
+`priority` tiers first, then peers. Submission's entry choice stays its own (`entries()` →
 `submit(member, raw)`).
 
 ## 10. When things fail
@@ -375,7 +375,7 @@ tier with room, the member with the fewest requests in flight (ties: configured 
 Observation only: none of it changes a tip, a sighting's servability, or what is served. The view
 raises each condition per fold (`Alarms`); the global snapshot's publisher logs it once when it
 rises and once when it clears, and its raw inputs are `zaino.chainview.*` gauges set from the
-snapshot at scrape ([global-snapshot.md](global-snapshot.md) §5). The view itself emits only
+snapshot at scrape ([global-snapshot.md](global-snapshot.md)). The view itself emits only
 events (spread histograms, submission outcomes).
 
 - **Stale tip:** the best tip's time trails the clock by ≥ 24 blocks' worth (the chance of a
@@ -427,16 +427,16 @@ shim; routing replaces `fetch.primary_validator`.
 
 ## Phases
 
-1. `GetLightdInfo` from the view (§12): **done**
+1. `GetLightdInfo` from the view: **done**
 1. Per-validator `RpcClient` lanes, `[[trusted_validators]]`, non-fatal failure, any-trusted admission,
-   `peers/trusted` counts and the extension service (§5, §7, §10): **done** but the extension
+   `peers/trusted` counts and the extension service: **done** but the extension
    service
-1. Batched ticks, routing (§7, §9): **done**
-1. Push streams (§7): **done**
+1. Batched ticks, routing: **done**
+1. Push streams: **done**
 1. Validated Header tree: trusted anchor at tip − depth, most-work tip driving the NFS, block
-   checks, finality gate (§2–§4): **done**; submission's trusted-only form (§6): **done**
-1. Peers: headers, blocks, mempool sightings, submission entries, the unverified stream (§5, §6,
-   §8): the `zaino-peers` crate, mempool sightings and submission entries **done**; headers and
+   checks, finality gate: **done**; submission's trusted-only form: **done**
+1. Peers: headers, blocks, mempool sightings, submission entries, the unverified stream:
+   the `zaino-peers` crate, mempool sightings and submission entries **done**; headers and
    blocks from peers next
 
 ## Measurements behind this design
@@ -446,7 +446,7 @@ tailnet.
 
 | Signal                                    | Value                                                 |
 | ----------------------------------------- | ----------------------------------------------------- |
-| `GetLightdInfo` mean / p99 before §12     | 146–354 ms / 1.0–4.9 s (`GetLatestBlock`: 0.5 ms p50) |
+| `GetLightdInfo` mean / p99, proxied       | 146–354 ms / 1.0–4.9 s (`GetLatestBlock`: 0.5 ms p50) |
 | trivial validator call mean / p99         | 157–364 ms / 0.9–2.6 s                                |
 | `getblock` p99, timeouts                  | 20–25 s, 86–221 per node per day                      |
 | `GetTransaction` p50 / p99                | 0.57 s / 8 s                                          |

@@ -7,7 +7,7 @@
 //!   every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
 //! - `bytes(..)`: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
 //! - `headers(Pinned)`: `getblockheader <h> false` batches (its headers)
-//! - `submit(..)`: `sendrawtransaction`, one submission attempt or the verdict (§6)
+//! - `submit(..)`: `sendrawtransaction`, one submission attempt or the verdict
 
 use std::net::SocketAddr;
 
@@ -24,7 +24,7 @@ pub struct Heard {
     pub txids: Vec<TransactionId>,
 }
 
-/// Zcash p2p network as the view uses it (§5, §6): sightings + submission entries, never the tip
+/// Zcash p2p network as the view uses it: sightings + submission entries, never the tip
 /// or finality; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers

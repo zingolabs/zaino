@@ -7,7 +7,7 @@ use zainodlib::cli::{Cli, Command};
 #[tokio::main]
 async fn main() {
     // a panic anywhere = a violated invariant: print it, then die (never unwound into a task
-    // boundary that keeps serving; docs/design/durability.md §6)
+    // boundary that keeps serving; docs/design/durability.md)
     let report = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         report(info);

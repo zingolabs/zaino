@@ -34,7 +34,7 @@ tokio::spawn(bound.run(cancel.child_token()));
 | `GetMempoolTx` | `mempool()?` (the servable mempool) |
 | `GetMempoolStream` | `mempool_stream()?`: the epoch at the served tip, ended when it moves |
 | `GetLightdInfo` | `lightd()?`: a holder's `getblockchaininfo` + the served height; `network` as configured |
-| `SendTransaction` | `submit` (chain view submission §6; no snapshot) |
+| `SendTransaction` | `submit` (chain view submission; no snapshot) |
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
 - **One snapshot per request** (`snapshots.load()`, pinned for the request or

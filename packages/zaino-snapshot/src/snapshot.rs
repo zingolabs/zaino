@@ -1,4 +1,4 @@
-//! [`Snapshot`]: every answer Zaino serves, from one value (`global-snapshot.md` §2)
+//! [`Snapshot`]: every answer Zaino serves, from one value (`global-snapshot.md`)
 
 use std::sync::Arc;
 

@@ -1,4 +1,4 @@
-//! [`TrafficBalancer`]: the async face of the core (`traffic-balancer.md` §5)
+//! [`TrafficBalancer`]: the async face of the core (`traffic-balancer.md`)
 //!
 //! - One ask = one future: registered, runs the sends the core names, feeds each reply back
 //! - Dropping it abandons the ask (its sends dropped with it, permits back)

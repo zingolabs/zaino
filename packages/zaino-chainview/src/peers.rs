@@ -1,4 +1,4 @@
-//! Peers' transaction announcements into the view (§5): `peers: x/y`, and submission's watch (§6)
+//! Peers' transaction announcements into the view: `peers: x/y`, and submission's watch
 //!
 //! ```text
 //!   ValidatorP2pSource::heard ─▶ batch ─(each PEER_FOLD)─▶ fold: held txid → sighting's announcers

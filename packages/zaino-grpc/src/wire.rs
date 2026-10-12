@@ -50,7 +50,7 @@ pub(crate) mod path {
     pub(crate) const GET_TADDRESS_TXIDS: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxids";
 
-    /// One random entry per attempt, watched until it spreads (`chainview.md` §6); marked ours on
+    /// One random entry per attempt, watched until it spreads (`chainview.md`); marked ours on
     /// acceptance (a wallet sees its own send before any listing)
     pub(crate) const SEND_TRANSACTION: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction";

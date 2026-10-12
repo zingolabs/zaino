@@ -3,7 +3,7 @@
 //! - Diff = its listing vs its own last one (`O(change)` per poll, never a whole mempool)
 //! - Reading (claim, `getblockhash`) folded first, then the listing (holder facts never wait on
 //!   bytes)
-//! - Bytes = only what the view lacks, through `bytes(..)` with this member preferred (§5)
+//! - Bytes = only what the view lacks, through `bytes(..)` with this member preferred
 //! - A transaction leaves a member's listing one way: unlisted (mined or evicted); a new tip
 //!   clears nothing (an unmined transaction survives a block)
 

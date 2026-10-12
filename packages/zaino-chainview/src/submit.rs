@@ -1,4 +1,4 @@
-//! Submission: one random entry per attempt, watched until it spreads (`chainview.md` §6)
+//! Submission: one random entry per attempt, watched until it spreads (`chainview.md`)
 //!
 //! ```text
 //!   step ─▶ Push(peer: untried, netgroup unused, random)   while budget left + not spread
@@ -162,7 +162,7 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    /// `peers` = entry candidates (none = trusted entries only, §6's form before peers)
+    /// `peers` = entry candidates (none = trusted entries only, the pre-peers form)
     pub(crate) fn new(
         peers: Vec<SocketAddr>,
         trusted: Vec<ValidatorId>,
@@ -592,7 +592,7 @@ mod tests {
     }
 
     /// - No peers → first entry uniform over the trusted validators
-    /// - Peers → uniform over the peers, never a trusted validator (none singled out: §6's point)
+    /// - Peers → uniform over the peers, never a trusted validator (none singled out)
     #[test]
     fn the_first_entry_is_uniform_and_a_peer_whenever_one_exists() {
         let index = |i: usize| ValidatorId::new(i).expect("< MAX");

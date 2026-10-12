@@ -11,7 +11,7 @@ pub enum ConfigError {
     TooManyEndpoints { count: usize },
 }
 
-/// Submission no trusted validator accepted or listed (§6)
+/// Submission no trusted validator accepted or listed
 ///
 /// - one rejecting, another accepting = success (a refusal = usually local policy)
 /// - `Rejected` = precheck's refusal or the first trusted rejection; `Unreachable` = neither

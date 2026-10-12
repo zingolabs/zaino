@@ -59,7 +59,7 @@ fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
     Ok(bytes::Bytes::from(prost::Message::encode_to_vec(&tx)))
 }
 
-/// Submitted (§6); rejection = domain answer, only unreachable = a status (wallet tells "no"
+/// Submitted; rejection = domain answer, only unreachable = a status (wallet tells "no"
 /// from "unreachable")
 pub(crate) async fn send<S: ChainDataSource, B>(
     view: &ChainView<S>,

@@ -1,6 +1,6 @@
 # `zaino-peers` — usage
 
-Zaino's p2p layer (`docs/design/chainview.md` §5, §6, §8): zebra-network's peer set,
+Zaino's p2p layer (`docs/design/chainview.md`): zebra-network's peer set,
 embedded. Peers are discovered and unauthenticated, so nothing here votes: every
 header, block and transaction handed out is identified by what zebra recomputes
 from its bytes, never by what a peer claimed.
@@ -15,7 +15,7 @@ let listed = peers.mempool_ids().await?;                                 // one 
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
 let mut heard = peers.announcements();                                   // Announced { peer, ids }
 
-let entries = peers.entries(Some(tip));                                  // §6 candidates
+let entries = peers.entries(Some(tip));                                  // submission candidates
 let txid = peers.push_isolated(entries[0], &raw).await?;                 // the bytes' own txid
 ```
 
@@ -74,11 +74,11 @@ ready peers).
 ## Announcements: `peers: x/y`
 
 `announcements()` subscribes to every transaction `inv` a connected peer sends:
-`Announced { peer, ids }`, the sender's address attached by zebra (§5's per-peer
-sightings). A subscriber that falls 4,096 announcements behind gets
+`Announced { peer, ids }`, the sender's address attached by zebra (the chain view's
+per-peer sightings). A subscriber that falls 4,096 announcements behind gets
 `RecvError::Lagged` and knows it missed some.
 
-## Submission entries and the isolated push (§6)
+## Submission entries and the isolated push
 
 - `live()`: outbound peers live in the last few minutes (the ones whose `inv` arrives)
 - `entries(tip)`: the live ones whose negotiated protocol version zebra accepts at

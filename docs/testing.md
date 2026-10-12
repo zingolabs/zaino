@@ -20,7 +20,7 @@ nested inside it, each with its own lock. The rules for writing live tests are i
 ## Durability and model tests
 
 Beyond per-function unit tests, these tests prove what the on-disk indexes and the
-sync pipeline guarantee (see [durability.md](./design/durability.md) §7). Each is
+sync pipeline guarantee (see [durability.md](./design/durability.md)). Each is
 checked against an independent oracle.
 
 | Test | Oracle |

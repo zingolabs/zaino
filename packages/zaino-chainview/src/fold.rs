@@ -39,7 +39,7 @@ fn held(state: &ChainViewSnapshot) -> Option<BlockRef> {
 }
 
 /// One txid a member listed; `raw` = `None` when the view already held it (bytes fetched once,
-/// never per member: §5)
+/// never per member)
 #[derive(Debug, Clone)]
 pub(crate) struct Sighted {
     pub(crate) txid: TransactionId,
@@ -287,7 +287,7 @@ impl ChainViewCore {
         self.publish(guard);
     }
 
-    /// Mark a transaction as relayed by us, admitting it before it has propagated (§6).
+    /// Mark a transaction as relayed by us, admitting it before it has propagated.
     pub(crate) fn mark_ours(&self, txid: TransactionId, raw: Bytes) {
         let mut state = self.state.lock().expect("chainview fold mutex poisoned");
 

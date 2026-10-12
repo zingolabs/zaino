@@ -149,7 +149,7 @@ impl ValidatorMetadata {
         self.answering() && self.tip().is_some_and(above)
     }
 
-    /// §7, in order: claim = best; claims higher, `held` verified; claim verified, below; else
+    /// In order: claim = best; claims higher, `held` verified; claim verified, below; else
     pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {
             return Agreement::Unknown;

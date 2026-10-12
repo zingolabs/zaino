@@ -101,7 +101,7 @@ spent.range(&start, &end, limit);                         // [start, end); None 
     is the commit point, and `committed()` moves. Nothing buffered = `Ok`, nothing
     written.
   - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
-    never retried; `durability.md` §6). Drop the store and reopen it: the
+    never retried; `durability.md`). Drop the store and reopen it: the
     buffer is gone with it.
   - `StoreError::commit_failed(index, path)` turns the `Err` into a panic
     naming the index and directory (`apply`'s own commit and `zaino_sync::commit` call it):
@@ -268,7 +268,7 @@ let child = child.rebase(&store.committed());     // after a commit: what durabl
   a bulk fold reads its parent through `staged()`.
 - Non-final blocks never reach a store: `zaino-nfs` holds one `Overlay` per index
   per block and serves `OverlayView::new(view(), layer)` from its snapshots
-  ([`persistence-engine.md` §5](../../docs/design/persistence-engine.md#5-layers-and-writers)).
+  ([`persistence-engine.md`](../../docs/design/persistence-engine.md#5-layers-and-writers)).
 
 ## Conformance suite (feature `testing`)
 
@@ -280,7 +280,7 @@ plus three optional hooks: `power_loss`, `settle` and `check`. It then runs
 includes `apply`'s own commit at `write_buffer`).
 `PROPTEST_CASES=1000` is its heavy run. `conformance::Model` is the expected state for an
 engine's own crash tests. Design:
-[`persistence-engine.md` §4](../../docs/design/persistence-engine.md#4-tests).
+[`persistence-engine.md`](../../docs/design/persistence-engine.md#4-tests).
 
 ## File layer (`fs`) and crash simulation
 

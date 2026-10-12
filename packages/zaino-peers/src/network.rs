@@ -1,4 +1,4 @@
-//! zebra-network embedded as Zaino's p2p layer (`chainview.md` §8)
+//! zebra-network embedded as Zaino's p2p layer (`chainview.md`)
 //!
 //! ```text
 //!   requests ──▶ peer set (zebra's p2c over ready peers) ──▶ FindHeaders · BlocksByHash
@@ -66,7 +66,7 @@ impl PeerConfig {
     }
 }
 
-/// Txids one peer announced (`inv`): the `peers: x/y` sightings (`chainview.md` §5)
+/// Txids one peer announced (`inv`): the `peers: x/y` sightings (`chainview.md`)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Announced {
     pub peer: SocketAddr,
@@ -241,7 +241,7 @@ impl PeerNetwork {
         Ok(ids.iter().map(|id| (*id, found.remove(id))).collect())
     }
 
-    /// §6's per-attempt push: fresh connection to `addr` (no state shared with this peer set),
+    /// Per-attempt push: fresh connection to `addr` (no state shared with this peer set),
     /// `PushTransaction`, closed; txid = the bytes' own (a peer answers a push with nothing)
     pub async fn push_isolated(
         &self,

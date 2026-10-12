@@ -7,7 +7,7 @@ records the measurements behind that choice and the mmap hazards that come with 
 [index-data-structures.md](./index-data-structures.md) covers what each index retains, and
 [durability.md](./durability.md) covers how it is committed and recovered.
 
-**[measured]** means run on the machine in §1, **[estimated]** means arithmetic over measured
+**[measured]** means run on the machine below, **[estimated]** means arithmetic over measured
 inputs, and **[assumed]** means taken from upstream or another document without an independent
 check.
 
@@ -147,7 +147,7 @@ cache does not care how many mappings reference it.
 Torn writes are solved by the layout. A node's address is a pure function of its position, so a
 crash between the node fsync and the manifest leaves surplus bytes past the seal, which the next
 open drops and the next commit rewrites byte for byte. Integrity is checked per 4 KiB page, not per
-node ([durability.md](./durability.md) §3), which costs 0.1% of space instead of 12.5%.
+node ([durability.md](./durability.md)), which costs 0.1% of space instead of 12.5%.
 
 The one real cost is fsync fan-out, below.
 
@@ -238,7 +238,7 @@ process dies with no unwind and no error. Two rules close this off.
 Because nothing is ever written through a mapping, `msync` never enters the picture. Durability is
 `sync_data` on the write descriptor, and the mapping is a read view replaced after the commit. That
 reduces durability to ordinary file I/O with one ordering rule: data and checksums are fsynced
-before the manifest that seals them (durability.md §3).
+before the manifest that seals them (durability.md).
 
 The remaining hazard is the opposite of a stale read. A mapping captures the file length when it
 is created, so it can be longer than what was committed if a commit was interrupted. Reads are
@@ -250,7 +250,7 @@ index by slicing each mapping to its seal, so a new index gets it by reading thr
 `MAP_POPULATE` pre-faults a whole mapping. For compact blocks we never want it: `blocks.dat` is
 tens of GiB, and populating it would read the whole chain at start-up. For tree state it is not
 needed: 412 MiB across three pools, the 296 µs cold path is paid once per page, and the working set
-then stays resident (§2). Populating in code shared with publication would also re-read 412 MiB per
+then stays resident. Populating in code shared with publication would also re-read 412 MiB per
 batch, since every commit remaps.
 
 Each mapping carries readahead advice instead. Segment sets probed by key are mapped
@@ -269,9 +269,9 @@ Serving a window with `Bytes::copy_from_slice` out of the mapping costs 92 to 26
 [measured], plus a 1 MiB allocation, purely so the mapping stays droppable. `Bytes::from_owner` over
 an `Arc<Mmap>` removes both: a served slice carries its own handle on the mapping and outlives the
 snapshot it came from. The compact-block index serves this way, and it is sound only under the
-§5.2 rule that mapped files are never truncated after publication. Breaking that rule would
+SIGBUS rule that mapped files are never truncated after publication. Breaking that rule would
 corrupt served responses, not merely crash.
 
-The advice in §5.1 still precedes each window read. A page's first read verifies its checksum and
+`MADV_WILLNEED` still precedes each window read. A page's first read verifies its checksum and
 so faults it in on the blocking step, but a verified page is never read there again. Once evicted,
 it would fault wherever the socket reads the slice, on a runtime worker.

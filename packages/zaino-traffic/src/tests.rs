@@ -1,4 +1,4 @@
-//! Driver over `MockValidator` members, paused clock (`traffic-balancer.md` §8)
+//! Driver over `MockValidator` members, paused clock (`traffic-balancer.md`)
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -196,7 +196,7 @@ feed of its own.
 
 ## Submission
 
-`ChainView::submit(raw)` (§6 of the design):
+`ChainView::submit(raw)`:
 
 1. Precheck from the bytes: decodes, expiry height not below the next block
    (ZIP-203; `tx-expiring-soon`), and a v5+ transaction's branch id = the next

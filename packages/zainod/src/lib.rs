@@ -34,7 +34,7 @@ pub mod verify;
 /// Until a shutdown signal (`Ok`) or the first failure (`Err`)
 ///
 /// - no in-process restart: failure ends the process, the service manager restarts it, next boot
-///   proves its state from disk (`docs/design/durability.md` §6)
+///   proves its state from disk (`docs/design/durability.md`)
 /// - logging initialised by the caller
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     crate::logging::try_init()

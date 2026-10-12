@@ -123,7 +123,7 @@ fn check() -> Result<usize, Vec<String>> {
         return Ok(scanned_files);
     }
     let mut msg = vec![
-        "duplicate Rust logic found — deduplicate it (prefer a plain fn; see CLAUDE.md §DRY):"
+        "duplicate Rust logic found — deduplicate it (prefer a plain fn; see CLAUDE.md, DRY section):"
             .to_string(),
     ];
     msg.extend(offenders);

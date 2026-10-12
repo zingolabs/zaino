@@ -1,4 +1,4 @@
-//! `MANIFEST`: index's one commit point (`docs/design/durability.md` §2)
+//! `MANIFEST`: index's one commit point (`docs/design/durability.md`)
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created

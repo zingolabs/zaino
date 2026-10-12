@@ -1,6 +1,6 @@
 name: Trigger Integration Tests
 
-# Paused: upstream integration tests still send the old config (docs/design/integration-test-plan.md §13)
+# Paused: upstream integration tests still send the old config (docs/design/integration-test-plan.md)
 on:
   workflow_dispatch:
 

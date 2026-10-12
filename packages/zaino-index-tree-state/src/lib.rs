@@ -42,7 +42,7 @@
 //! ```
 //!
 //! Storage: `zaino_persistence` port (`docs/design/persistence-engine.md`),
-//! `docs/design/index-data-structures.md` §3
+//! `docs/design/index-data-structures.md`
 
 use zaino_persistence::{SequenceTable, Tables, Width};
 use zaino_primitives::types::ShieldedPool;

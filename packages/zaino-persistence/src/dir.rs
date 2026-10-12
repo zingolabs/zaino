@@ -17,7 +17,7 @@ pub(crate) const MANIFEST: &str = "MANIFEST";
 /// Manifest mid-creation: zeroed + synced here, then renamed to [`MANIFEST`] whole
 const CREATING: &str = "MANIFEST.creating";
 
-/// Locked for the life of this value; see `docs/design/durability.md` §2
+/// Locked for the life of this value; see `docs/design/durability.md`
 ///
 /// - `seq` = last committed manifest's sequence number (0 = nothing committed yet)
 #[derive(Debug)]

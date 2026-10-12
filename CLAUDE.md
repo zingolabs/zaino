@@ -160,7 +160,7 @@ cargo test -p zaino-internal-block-hash-to-height -p zaino-internal-value-balanc
   runs 1000 fresh random histories per round.
 - The model test is `conformance::history`, generic over `PersistenceEngine`. A
   new engine implements `conformance::Subject` and runs `history` + `contract`
-  (`docs/design/persistence-engine.md` §4). The same loop is its heavy run.
+  (`docs/design/persistence-engine.md`). The same loop is its heavy run.
 - Env overrides (proptest 1.6): `PROPTEST_CASES` (cases per proptest; overrides
   the in-code 64), `PROPTEST_MAX_SHRINK_ITERS` (shrink harder on a failure),
   `PROPTEST_VERBOSE=1` (print each case). Lengthen the run by raising the `180`

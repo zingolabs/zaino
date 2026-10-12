@@ -169,7 +169,7 @@ impl AsRef<[u8]> for Shared {
 }
 
 /// - sound: mapped bytes below a committed length are never rewritten or truncated after
-///   publication (`docs/design/persistence-architecture.md` §5.2)
+///   publication (`docs/design/persistence-architecture.md`)
 #[allow(unsafe_code)]
 fn map_read_only(file: &File) -> io::Result<Mmap> {
     unsafe { Mmap::map(file) }

@@ -1,6 +1,6 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! - invariants M1–M7 (`docs/design/mock-chain.md` §4): every block handed out passes them
+//! - invariants M1–M7 (`docs/design/mock-chain.md`): every block handed out passes them
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

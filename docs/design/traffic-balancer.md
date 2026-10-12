@@ -1,9 +1,9 @@
 # TrafficBalancer: one way Zaino talks to validators and peers
 
 Status: **phase 2 built** (2026-10-07), **simplified** (2026-10-08): every trusted-validator
-request goes through `zaino-traffic` (§9 steps 1–7 and 9); peers as members (step 8) wait for the
-WorkPool. Builds on [chainview.md](chainview.md) §7–§9, [pipeline.md](pipeline.md). Boundary
-with `global-snapshot.md` in §6.
+request goes through `zaino-traffic` (migration steps 1–7, 9); peers as members (step 8) wait for the
+WorkPool. Builds on [chainview.md](chainview.md), [pipeline.md](pipeline.md). Boundary
+with `global-snapshot.md` in "Interface with the global snapshot".
 
 ## 1. Before: five schedulers over the same validators
 
@@ -29,7 +29,7 @@ up to 18 sends per member). No caller knew another's load.
 | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
 | zebra-network `PeerSet` (`peer_set/set.rs`) | own module doc: readiness ≠ request data is a mismatch; proposed fix = "one entity holds the peer set and metadata, each backpressure category a separate `Service`" | the shape of this design; `PeerSet` kept for crawl, `inv`, broadcast |
 | Envoy priority levels / gRFC A50 outlier detection (external, not vendored) | lower priority gets traffic only when higher's healthy capacity runs out; ejection = base × times ejected | trusted tiers above peers; bench doubling |
-| tower `balance::p2c` + `load::PeakEwma`, `hedge` percentiles, `retry::budget::TpsBudget`; `governor` GCRA | built in phase 1, deleted in the simplification | not used: a handful of trusted members, permits + transport byte pacing already bound zebrad's load (§10) |
+| tower `balance::p2c` + `load::PeakEwma`, `hedge` percentiles, `retry::budget::TpsBudget`; `governor` GCRA | built in phase 1, deleted in the simplification | not used: a handful of trusted members, permits + transport byte pacing already bound zebrad's load       |
 
 Build: one pure core (`TrafficCore`) + one driver. Reuse no `tower::Service`: every answer needs
 its sender (blame), and every hedge needs "anyone but him".
@@ -55,7 +55,7 @@ its sender (blame), and every hedge needs "anyone but him".
 | `Trusted` | `[[trusted_validators]]`, fixed | `priority` key (0 default; 0 before 1 before …) | every class |
 | `Peer` | WorkPool connection, joins / leaves | below every trusted | checkable only: headers, block bodies, mempool bytes |
 
-Trusted-only (chainview §1 "only source" rows): `Poll` (listing, fees, holding), `Lookup` (mined tx
+Trusted-only (chainview "only source" rows): `Poll` (listing, fees, holding), `Lookup` (mined tx
 by id), the verdict `Submit`. A class never reaches a member kind not in its row (T2).
 
 ### Per-member state
@@ -77,7 +77,7 @@ struct Member {
   consecutive → `Down`: only its poll probe goes, at the ladder's ceiling.
 - `Bench` is orthogonal to health: a fast liar is `Live` and benched. Peers also carry a
   misbehaviour score (zcashd's); 100 → WorkPool drops it (`Left`).
-- `Agreement` stays out: it is derived against the verified chain (snapshot's, §6).
+- `Agreement` stays out: it is derived against the verified chain (snapshot's).
 
 ### Lanes and classes
 
@@ -94,7 +94,7 @@ permit goes to the first waiting lane, FIFO within it). `MIN_CONNECTIONS` = poll
 | `Bulk` | `BulkBlock` | throughput; takes every idle shared permit, never a reserve |
 
 A lane is admission and priority only. What differs per class is a property of the class (the
-poll, §4, is no class: the core's own, never asked):
+poll is no class: the core's own, never asked):
 
 | Class | Asks | Members, order | Route | Hedge floor | On failure |
 | ----------- | ------------------------------------------- | --------------------------------- | --------------------- | ---------- | ------------------------------ |
@@ -327,6 +327,6 @@ pub struct Observation {
    in the model) is a regression.
 1. **Benching the last trusted member.** Bench anyway, alarm: a trusted member serving a block
    that fails its merkle root is broken or intercepted; finality pausing is the correct answer.
-1. **Observation delivery.** `watch` (latest), §6.
+1. **Observation delivery.** `watch` (latest).
 1. **Abandon.** Dropping an ask's future abandons it: NFS drops wants off the best chain by
    dropping futures, no cancel API.

@@ -69,7 +69,7 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
 /// `block` onto `parent`: its `receives` and `spent` rows
 ///
 /// - projection, no lookups: a spend keyed by its outpoint (already in the block), never resolved
-///   to an address (`docs/design/index-data-structures.md` §5)
+///   to an address (`docs/design/index-data-structures.md`)
 pub fn fold<V: MapRead>(
     parent: &TransparentAddressReader<V>,
     block: &Block,

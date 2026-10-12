@@ -1,11 +1,11 @@
 # MockChain: one chain builder for every test
 
-Status: **phase 2 built** (2026-10-08: §3's migration done, every old helper deleted; phase 1
-2026-10-07: builder, views and their tests; §5 decisions taken as recommended). Every in-repo
+Status: **phase 2 built** (2026-10-08: migration done, every old helper deleted; phase 1
+2026-10-07: builder, views and their tests; decisions taken as recommended). Every in-repo
 test gets blocks, headers, a verified chain and a validator from one builder,
 `zaino_primitives::testing::MockChain`, and the views its owning crates put on it. Every block
-it hands out passes our own checks; nothing else builds a block. §1 = the inventory before the
-migration (history); §3 "Changed while migrating" = what phase 2 added.
+it hands out passes our own checks; nothing else builds a block. "Inventory" = the state before the
+migration (history); "Changed while migrating" = what phase 2 added.
 
 ## 1. Inventory (today)
 
@@ -22,7 +22,7 @@ migration (history); §3 "Changed while migrating" = what phase 2 added.
 | `zaino-grpc/src/testing.rs` | `indexed` (fold one index from genesis), `snapshot` (activations hard-coded at genesis), `routes_over`, request framing | grpc routes | activations not derived from the chain |
 | zainod `indexer.rs`, `verify.rs` | pipeline over `MockChain` + `HeaderChain`; `mine_bits(.., 0x1f0f_0f0f)` by hand | zainod | heavier branch spelled as raw nBits |
 | header capture (`header-chain/tests/fixtures/*.headers`, `examples/capture_headers.rs`); block capture (`source/tests/fixtures/block_*.hex`, `examples/capture_fixtures.rs`, `tests/block_parity.rs`) | real mainnet/testnet bytes | header-chain rules, source decode, grpc send tests | none: real data, stays |
-| `zaino-source` `rpc/client.rs`, `indexer.rs` (`FakeIndexer`), `zaino-peers` tests | JSON-RPC wire fake, zebrad indexer gRPC push streams, scripted zebra-network peer | their crate | wire-level; stays (§5 decision 4) |
+| `zaino-source` `rpc/client.rs`, `indexer.rs` (`FakeIndexer`), `zaino-peers` tests | JSON-RPC wire fake, zebrad indexer gRPC push streams, scripted zebra-network peer | their crate | wire-level; stays (decision 4) |
 | `persistence::conformance::block_ref`; `live-tests/` (`zaino-testutils`) | `BlockRef` from an integer; nothing (live validators = oracle) | persistence; live suite (separate workspace) | none; both stay, out of scope |
 
 ## 2. The builder
@@ -108,7 +108,7 @@ impl TxBuilder {
 pub fn h(height: u32) -> Height; // chain.fork(h(9))
 pub fn p2pkh(hash: [u8; 20]) -> Script;
 pub fn outpoint(txid: [u8; 32], vout: u32) -> OutPoint;
-pub fn fee_left(tx: &Transaction, spent: i64) -> i64; // §3.4 conservation, shared with MockValidator
+pub fn fee_left(tx: &Transaction, spent: i64) -> i64; // protocol.pdf §3.4 conservation, shared with MockValidator
 ```
 
 - `u64`/`i64` zats at the call site (literals stay short); out-of-supply = panic naming the tx
@@ -281,7 +281,7 @@ deleted in the step that removes its last caller):
 
 1. `zaino-primitives`: add `MockChain`, `Upgrades`, `Branch`, `BlockBuilder`, `TxBuilder`, builder
    tests; migrate `block.rs`, `per_pool.rs` tests
-1. `zaino-header-chain`: `HeaderViews`, `insert`, cross-check test (§4); migrate `tests.rs`,
+1. `zaino-header-chain`: `HeaderViews`, `insert`, cross-check test; migrate `tests.rs`,
    `model.rs`, `chain/fire_drills.rs`
 1. `zaino-source`: `MockValidator` (absorbing `FakeValidator`'s features), `raw_transaction`,
    `fixtures`; migrate `decode.rs` and the mock's own test

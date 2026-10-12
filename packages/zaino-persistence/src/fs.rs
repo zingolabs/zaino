@@ -17,7 +17,7 @@ pub(crate) use real::{background_priority, resident_bytes};
 #[cfg(any(test, feature = "testing"))]
 pub use sim::{CrashState, SimFs};
 
-/// Directory operations (Linux semantics; `docs/design/durability.md` §3)
+/// Directory operations (Linux semantics; `docs/design/durability.md`)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {
     fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
 

@@ -1,4 +1,4 @@
-//! Publisher model (`global-snapshot.md` §6): random inputs through [`Core::publish`], `check()`
+//! Publisher model (`global-snapshot.md`): random inputs through [`Core::publish`], `check()`
 //! after every publish (inside it), every snapshot against a naive model
 //!
 //! - Chain view: header moves (extend, reorg above final, finalize), holders, mempool (relays,

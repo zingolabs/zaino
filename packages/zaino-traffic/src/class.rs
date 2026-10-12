@@ -1,4 +1,4 @@
-//! Request classes, the lane each rides, per-member permits (`traffic-balancer.md` §3)
+//! Request classes, the lane each rides, per-member permits (`traffic-balancer.md`)
 
 use std::time::Duration;
 
@@ -50,7 +50,8 @@ impl Class {
         }
     }
 
-    /// Checkable answers only (trusted-only = the "only source" rows, `chainview.md` §1)
+    /// Headers + block bodies (checkable); trusted-only = the "only source" rows
+    /// (`chainview.md`) + mempool bytes (peers serve them by wtxid, never a listing's txid)
     pub(crate) fn peers(self) -> bool {
         !matches!(self, Self::Submit | Self::Lookup)
     }

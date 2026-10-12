@@ -130,5 +130,5 @@ after:  … F ─ b1 ─ b2        (b1, b2 fetched + folded from F)
   served tip back, every index readable throughout), a writer gone.
 
 The persistence types the overlay builds on (`Overlay`, `OverlayView`, `Store::staged`) are in
-[persistence-engine.md §5](persistence-engine.md#5-layers-and-writers). How requests read
+[persistence-engine.md](persistence-engine.md#5-layers-and-writers). How requests read
 snapshots is in [global-snapshot.md](global-snapshot.md).

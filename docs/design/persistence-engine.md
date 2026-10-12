@@ -23,7 +23,7 @@ than a B-tree ([persistence-architecture.md](./persistence-architecture.md)).
 
 Five properties hold for all of them, and they are the contract:
 
-1. **Final data only.** Non-final data stays in memory above the store (`Overlay`, §5), and reorgs
+1. **Final data only.** Non-final data stays in memory above the store (`Overlay`), and reorgs
    never reach storage. The LMDB store this replaced deleted and rewound on disk, which needed the
    whole block back to reverse every secondary index.
 1. **Insert only, plus single deletes.** No update, no read-modify-write. A map declaring
@@ -191,7 +191,7 @@ What the port deliberately does not have:
 ```text
 zaino-persistence/src/
   port.rs       the traits, Schema, BlockChanges, Verification
-  layer.rs      Overlay / OverlayView: non-final data over a committed view (§5)
+  layer.rs      Overlay / OverlayView: non-final data over a committed view
   disk.rs       DiskEngine / DiskStore / DiskView: one manifest over both table kinds
   sequence.rs   sequence tables as positional files
   lsm/          map tables as size-tiered sorted segments

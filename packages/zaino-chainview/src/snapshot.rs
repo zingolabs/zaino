@@ -83,7 +83,7 @@ pub(crate) struct Timeline {
     pub(crate) all_trusted: Option<Instant>,
 }
 
-/// How far one transaction has spread (§5 `peers: x/y, trusted: x/y`), and how it got there
+/// How far one transaction has spread (`peers: x/y, trusted: x/y`), and how it got there
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Spread {
     pub peers: Count,
@@ -415,7 +415,7 @@ impl ChainViewSnapshot {
     }
 
     /// The servable mempool; `None` while no `Live` trusted validator (its mempool listing) holds
-    /// the best block (§5, fail closed: no empty stand-in)
+    /// the best block (fail closed: no empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
         let live = |at: usize| self.endpoints.get(at).is_some_and(|m| m.health == Health::Live);
         self.held_by.positions().any(live).then_some(MempoolView(self))

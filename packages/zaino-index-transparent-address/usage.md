@@ -95,7 +95,7 @@ extend it, the delta must be opened for the block, else a panic naming the
 index) and the durable side never deletes. Queries compose the maps through a
 `TransparentAddressReader`: scan `receives` for the address, probe `spent` per
 outpoint; unspent = the probes that miss. Cost is `O(received)` per address.
-See [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §5.
+See [`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md).
 
 `transactions(start, end)` (both inclusive) scans all of history (an in-range
 spend consumes an output received at any height) and reports both receipts and

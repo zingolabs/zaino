@@ -9,7 +9,7 @@
 //!
 //! - apply → [`WriteBuffer`] (RAM, unsorted)
 //! - commit → every table written + sealed in parallel → manifest (commit point) → readable
-//! - failed commit poisons the store (`docs/design/durability.md` §6): recovery = reopen
+//! - failed commit poisons the store (`docs/design/durability.md`): recovery = reopen
 
 use std::{
     io,

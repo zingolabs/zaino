@@ -4,7 +4,7 @@ The commitment-tree index for all three shielded pools (Sapling, Orchard,
 Ironwood). Backs `GetTreeState`, `GetLatestTreeState` and `GetSubtreeRoots`
 from one fold over the domain `Block`s the NFS hands it. The positional shape it instantiates
 is described in
-[`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md) §3.
+[`docs/design/index-data-structures.md`](../../docs/design/index-data-structures.md).
 
 ## Wiring
 

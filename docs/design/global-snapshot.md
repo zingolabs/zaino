@@ -1,7 +1,7 @@
 # One global snapshot: what Zaino serves, in one value
 
-Status: **implemented** (phases 1 + 2, §9; 2026-10-07). §1 = the shape before. Builds on [nfs.md](nfs.md) (served tip, views),
-[chainview.md](chainview.md) (mempool, validators, best, final, side branches). Runs beside [traffic-balancer.md](traffic-balancer.md) (§7: the seam).
+Status: **implemented** (phases 1 + 2; 2026-10-07). "Today: three tips, four publishers" = the shape before. Builds on [nfs.md](nfs.md) (served tip, views),
+[chainview.md](chainview.md) (mempool, validators, best, final, side branches). Runs beside [traffic-balancer.md](traffic-balancer.md) (the seam).
 
 **Rule:** every read of chain, index, mempool or validator state, by a route, a probe, a scrape
 or a log line, comes from one `Arc<Snapshot>` loaded once. Nothing else answers "what do we serve".
@@ -52,13 +52,13 @@ impl<V: View> Snapshot<V> {
     pub fn tips(&self) -> Tips;
     pub fn chain(&self) -> Option<&Arc<VerifiedChain>>;
     pub fn served(&self) -> Result<&At<V>, Unavailable>;             // default: best chain
-    pub fn at(&self, hash: &BlockHash) -> Option<At<V>>;             // §3
-    pub fn forks(&self) -> Vec<ForkView>;                            // §3
+    pub fn at(&self, hash: &BlockHash) -> Option<At<V>>;
+    pub fn forks(&self) -> Vec<ForkView>;
     pub fn mempool(&self) -> Result<MempoolView<'_>, Unavailable>;   // gate: held_by != ∅
     pub fn mempool_stream(&self) -> Result<MempoolTail, Unavailable>;
     pub fn lightd(&self) -> Result<(&BlockchainInfo, Height), Unavailable>;  // holder's + served
     pub fn view(&self) -> &ChainViewSnapshot;                        // validator facts, alarms
-    pub fn indexed(&self) -> Option<&Arc<Indexed<V>>>;               // memo identity (§4)
+    pub fn indexed(&self) -> Option<&Arc<Indexed<V>>>;               // memo identity
     pub fn standing(&self) -> Standing;                              // first match, below
     pub fn sync_target(&self) -> Option<Height>;                     // best, or a catching-up estimate
 }
@@ -128,7 +128,7 @@ fn compose<V>(was_synced: bool, indexed: Option<&Indexed<V>>, view: &ChainViewSn
  view published ────┼─▶ compose(prev, both) ─┤                : prev.feed.append(view.arrivals(prev.view))
  cancel ────────────┘                        ├─▶ ArcSwap::store(Snapshot { seq + 1, feed, .. })
                                              ├─▶ prev.feed.seal() if rotated  (after the store: G5)
-                                             └─▶ transitions(prev, next)      (state edges, §5)
+                                             └─▶ transitions(prev, next)      (state edges)
 ```
 
 - No tearing: each input = an immutable `Arc`; snapshot = two `Arc`s + `Copy` tips
@@ -300,11 +300,11 @@ histograms and `zaino_build_info` unchanged:
 | 2 | nfs: prune via `holds` (G8); `Indexed`, `At`, `at()`; republish per commit; `SyncProgress`; grpc + zainod read `Indexed` directly | yes (no `fetch.rs`) |
 | 3 | `zaino-snapshot`: `Snapshot`, `Publisher`, `compose` + model; `Routes.snapshots`; `serving.rs` gone | yes |
 | 4 | chain view: own epochs + `feed.rs` + `tail()` gone (feed = `zaino-snapshot`'s); `ChainTip` / `Unserved` / tip watch gone | after TB step 1 |
-| 5 | `Report`, gauges at scrape, `transitions`, one progress task, §5 deletions (name test first) | yes |
+| 5 | `Report`, gauges at scrape, `transitions`, one progress task, Reporting deletions (name test first) | yes |
 | 6 | forks on `/statusz`; decision 4 if taken | yes |
-| 7 | docs: nfs.md §6–§7, chainview.md §5/§11/§12, `usage.md` (nfs, chainview, header-chain, snapshot), README index | yes |
+| 7 | docs: nfs.md, chainview.md, `usage.md` (nfs, chainview, header-chain, snapshot), README index | yes |
 
-TB's "snapshot" side ([traffic-balancer.md](traffic-balancer.md) §6) = the chain-view fold that
+TB's "snapshot" side ([traffic-balancer.md](traffic-balancer.md)) = the chain-view fold that
 turns `Observation`s into `ChainViewSnapshot`; this design starts at that fold's output.
 
 - **I1 NFS**: this owns `snapshot.rs`, `graph.rs` pruning, publish sites; TB owns fetch
@@ -352,7 +352,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
   shorthands gone; `SyncProgress` (atomics: `handed`, `blocks`) replaces `subscribe_handed` +
   `report.rs`; `emit::best` and the `zaino_fetch_height` set gone; `Nfs::new`'s unread `depth`
   dropped
-- chain view: the §5 deletions (`tip.rs`, `feed.rs`, epoch cell, tails watch, `tail()`,
+- chain view: the Reporting deletions (`tip.rs`, `feed.rs`, epoch cell, tails watch, `tail()`,
   `subscribe_tip`, `tip()` / `unserved()`, `telemetry::emit`); `held_by()` (set per fold) feeds
   `compose`; `mempool()` / `validator_info()` → `Option` (the `Unavailable` reason is the
   snapshot's); publishes stored under the fold lock (consecutive publishes = fold order, what
@@ -371,9 +371,9 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
 - tests: golden `Report` + gauges (snapshot); `every_rpc_agrees_on_one_snapshot` (grpc); the
   pipeline reorg test opens a `GetMempoolStream` at A8, sees it end on the reorg, then a
   `GetLatestBlock` never A8, then a scrape holding every ztest family the process emits
-- docs: nfs.md §6–§7, chainview.md §5/§11/§12, usage guides, running.md
+- docs: nfs.md, chainview.md, usage guides, running.md
 
-**Deviations from §2–§5 as written**
+**Deviations from the design as written**
 
 - `Routes` keeps two write-side handles: `submit` (`ChainView::submit`: the submission job marks
   `ours` and watches the spread) and `validators` (`GetTransaction`, address tx bytes)
