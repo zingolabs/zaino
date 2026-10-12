@@ -47,9 +47,9 @@ struct FundedWallet {
 
 /// Over tailscale (office IP = no public peers)
 /// - zingo-infra `golden-mainnet` via tekau NodePort
-/// - `elicb-home-server` zebrad
+/// - `elicb-home-server` zebrad's reserved tailnet listener (public 8233 inbound full)
 const TRUSTED_MAINNET_P2P: [&str; 2] =
-    ["tekau.vaquita-altair.ts.net:30233", "elicb-home-server-zebra.vaquita-altair.ts.net:8233"];
+    ["tekau.vaquita-altair.ts.net:30233", "elicb-home-server-zebra.vaquita-altair.ts.net:8234"];
 /// Snapshot restores 277 GiB; zebrad appends past the pin
 const CHAIN_DISK_GIB: u64 = 320;
 /// UNMEASURED: compact-block + tree-state + transparent files for the whole chain
