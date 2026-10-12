@@ -456,7 +456,8 @@ pub(crate) struct SubmissionConfig {
 }
 
 /// Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their word
-/// (> 5 netgroups, no difficulty collapse), submission entries, `peers: x/y` sightings
+/// (> 5 netgroups, no difficulty collapse), the mempool quorum (each peer's listing polled),
+/// submission entries
 ///
 /// - Serves no peer (listener on loopback, no services advertised)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

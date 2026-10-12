@@ -29,6 +29,7 @@ mod peers;
 mod progress;
 mod status;
 mod stores;
+mod utxos;
 pub mod verify;
 
 /// Until a shutdown signal (`Ok`) or the first failure (`Err`)

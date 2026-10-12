@@ -9,15 +9,17 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
-use zaino_primitives::testing::{h, MockChain};
+use zaino_primitives::testing::{h, p2pkh, MockChain};
 use zaino_primitives::types::{
-    BlockRef, EndOfService, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
+    BlockRef, EndOfService, NodeRelease, OutPoint, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
+    Zatoshis,
 };
-use zaino_source::testing::{raw_transaction, MockValidator, Port};
+use zaino_source::testing::{raw_transaction, raw_transparent, MockValidator, Port};
 use zaino_source::{GetMempoolListingError, SendRawTransactionError};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
-use crate::testing::MockPeers;
+use crate::listings::PEER_MEMPOOL_POLL;
+use crate::testing::{MockPeers, MockUtxos};
 use crate::{Agreement, ChainView, Count, EndpointSet, MempoolEntry, Projection, SubmitError};
 
 /// The view over `validators` (`addresses` in order), its balancer + poll fold spawned (they run
@@ -34,7 +36,8 @@ fn running(
     });
     let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
     let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
-    let view = ChainView::new(addresses, balancer.clone(), depth()).expect("a valid set");
+    let view =
+        ChainView::new(addresses, balancer.clone(), depth(), regtest()).expect("a valid set");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));
@@ -71,6 +74,11 @@ const DEPTH: u32 = 10;
 
 fn depth() -> ReorgDepth {
     ReorgDepth::new(std::num::NonZeroU32::new(DEPTH).expect("nz"))
+}
+
+/// `MockChain::regtest()`'s: every upgrade through NU6.3 at 1
+fn regtest() -> zaino_primitives::types::UpgradeSchedule {
+    MockChain::regtest().schedule().upgrades
 }
 
 /// N=1, its window holding the verified tip
@@ -418,13 +426,13 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
 
 /// Paused clock, two trusted validators, four live peers in four netgroups + one dead
 ///
-/// - announcements before any trusted listing: overheard, then join the sighting (`peers: 2/4,
-///   trusted: 1/2`, first seen = the first announcement)
+/// - each peer's mempool polled: `peers: x/4` = its listers; four netgroups = no quorum, so a
+///   peer listing alone holds nothing (a trusted listing does: `peers: 2/4, trusted: 1/2`)
 /// - submission → a peer first, never a trusted validator; black hole waited out, next entry in
-///   another netgroup; outside announcer + trusted listing = the wallet's answer, no trusted push
+///   another netgroup; outside lister + trusted listing = the wallet's answer, no trusted push
 /// - every peer a black hole (or dead): budget spent on peers, then one trusted verdict
 #[tokio::test(start_paused = true)]
-async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_verdict() {
+async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdict() {
     let chain = MockChain::regtest();
     let validators: Vec<Arc<MockValidator>> =
         (0..2).map(|_| Arc::new(MockValidator::following(&chain, chain.genesis()))).collect();
@@ -436,20 +444,19 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
         max_attempts: std::num::NonZeroU8::new(3).expect("nz"),
     };
     let view = Arc::new(view.with_submit_policy(policy).with_peers(peers.clone()));
-    tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
-    tokio::task::yield_now().await; // the watch subscribes before the first announcement
-    let fold = || tokio::time::sleep(crate::peers::PEER_FOLD * 2);
+    let polling = view.peer_mempool(Arc::new(MockUtxos::default())).expect("peers configured");
+    tokio::spawn(polling.run(cancel.clone()));
+    let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
+    let id = |txid: TransactionId| PeerTxId { txid, auth_digest: None };
     let validator_pushes = || validators.iter().map(|v| v.calls().sends).sum::<usize>();
     polled(&balancer).await;
 
-    // heard first: overheard until a trusted validator lists it
+    // two peers list it: no quorum, not held until a trusted validator lists it
     let (gossiped, raw) = raw_transaction(1, 0);
-    let first_heard = tokio::time::Instant::now();
-    peers.announce(peer(1), vec![gossiped]);
-    peers.announce(peer(2), vec![gossiped]);
-    fold().await;
-    assert_eq!(view.subscriber().current().spread(&gossiped), None, "peer-only = not held");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    peers.list(peer(1), vec![id(gossiped)]);
+    peers.list(peer(2), vec![id(gossiped)]);
+    round().await;
+    assert_eq!(view.subscriber().current().spread(&gossiped), None, "peer-listed only = not held");
     validators[0].mempool_insert(raw, 1_000);
     polled(&balancer).await;
     let spread = view.subscriber().current().spread(&gossiped).expect("held once listed");
@@ -457,9 +464,6 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
         (spread.peers, spread.trusted),
         (Count { seen: 2, of: 4 }, Count { seen: 1, of: 2 })
     );
-    assert_eq!(spread.timeline.first_seen, first_heard, "first seen = the first announcement");
-    assert!(spread.timeline.first_trusted > Some(first_heard));
-    assert_eq!(view.subscriber().current().peers_live.len(), 4);
 
     // submitted through peers: a black hole waited out, a relay answers the wallet
     let (txid, sent) = raw_transaction(2, 0);
@@ -480,9 +484,9 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
     let group = crate::netgroup::Netgroup::of;
     assert_ne!(group(second[0]), group(second[1]), "another netgroup");
     let outsider = (0..4).map(peer).find(|p| !second.contains(p)).expect("two untried");
-    peers.announce(outsider, vec![txid]);
+    peers.list(outsider, vec![id(txid)]);
     validators[1].mempool_insert(raw_transaction(2, 0).1, 1_000);
-    fold().await;
+    round().await;
     polled(&balancer).await;
     let answered = answer.await.expect("submission task");
     assert_eq!(answered.expect("listed by a trusted validator"), txid);
@@ -507,6 +511,126 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
     assert_eq!(tried.len(), 3, "max_attempts peers first: {tried:?}");
     assert_eq!(tried.iter().map(|p| group(*p)).collect::<BTreeSet<_>>().len(), 3, "3 netgroups");
     assert_eq!(validator_pushes(), 1, "then exactly one trusted verdict");
+    cancel.cancel();
+}
+
+/// Paused clock, one trusted validator, seven live peers in seven netgroups, a UTXO set funding
+/// `a` (10,000) and `bad` (5,000)
+///
+/// - `a` listed by the validator and every peer, then the validator down: still served, the same
+///   sighting (handed over to the quorum, never dropped and re-added)
+/// - every peer lists `a`, `bad` (pays 6,000 of 5,000) and `child` (spends `a`'s output): `a`
+///   at its fee, `child` one round later (its parent admitted first), `bad` never (a negative fee)
+/// - `a` listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an
+///   empty mempool served
+/// - a submission with no trusted validator: a peer entry, answered once 6 of 7 list it; no
+///   longer listed = still served (ours) until the next block, then gone
+#[tokio::test(start_paused = true)]
+async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_takes_sends() {
+    let mut chain = MockChain::regtest();
+    let tip = chain.mine_empty(5);
+    let validator = Arc::new(MockValidator::following(&chain, tip));
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
+    let peer = |b: u8| std::net::SocketAddr::from(([10, b, 0, 1], 8233));
+    let seven: Vec<std::net::SocketAddr> = (1..=7).map(peer).collect();
+    let peers = Arc::new(MockPeers::new(seven.clone(), []));
+    let policy = crate::SubmitPolicy {
+        propagation_threshold: Duration::from_secs(10),
+        max_attempts: std::num::NonZeroU8::new(3).expect("nz"),
+    };
+    let view = Arc::new(view.with_submit_policy(policy).with_peers(peers.clone()));
+    let alice = p2pkh([0xaa; 20]);
+    let funding = |n: u8| OutPoint { txid: TransactionId::from([n; 32]), vout: 0 };
+    let utxos = MockUtxos::of([(funding(1), zats(10_000)), (funding(2), zats(5_000))]);
+    let polling = view.peer_mempool(Arc::new(utxos)).expect("peers configured");
+    tokio::spawn(polling.run(cancel.clone()));
+    let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
+    let id = |txid: TransactionId| PeerTxId { txid, auth_digest: None };
+    let reader = view.subscriber();
+    let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
+    let (bad, bad_raw) = raw_transparent(&[funding(2)], &[(&alice, 6_000)]);
+    let (child, child_raw) = raw_transparent(&[OutPoint { txid: a, vout: 0 }], &[(&alice, 8_500)]);
+    for (txid, raw) in [(a, &a_raw), (bad, &bad_raw), (child, &child_raw)] {
+        peers.hold(id(txid), Bytes::from(raw.clone()));
+    }
+    let listing = |ids: &[TransactionId], on: &[std::net::SocketAddr]| {
+        for peer in &seven {
+            let listed =
+                if on.contains(peer) { ids.iter().copied().map(id).collect() } else { vec![] };
+            peers.list(*peer, listed);
+        }
+    };
+    let served = || -> Vec<(TransactionId, Option<Zatoshis>)> {
+        let view = reader.current();
+        let mempool = view.mempool().expect("a quorum reads");
+        mempool.entries().map(|entry| (entry.txid, entry.fee)).collect()
+    };
+    let sorted = |mut entries: Vec<(TransactionId, Option<Zatoshis>)>| {
+        entries.sort();
+        entries
+    };
+    let first_seen =
+        |txid: &TransactionId| reader.current().spread(txid).map(|s| s.timeline.first_seen);
+
+    // listed by the validator and the quorum, then the validator gone: handed over, never dropped
+    view.set_verified(Some(chain.verified(tip)));
+    validator.mempool_insert(a_raw.clone(), 1_000);
+    listing(&[a], &seven);
+    polled(&balancer).await;
+    round().await;
+    let listed = first_seen(&a).expect("listed by the validator");
+    assert_eq!(served(), [(a, Some(zats(1_000)))]);
+    validator.reachable(&Port::ALL, false);
+    // `Down` (its listing retracted) after 10 failures on the 0.5 → 30 s ladder
+    tokio::time::sleep(Duration::from_secs(300)).await;
+    let down = reader.current().endpoints()[0].health;
+    assert_eq!(down, Health::Down, "its listing retracted, not kept as `Degraded`");
+    assert!(reader.current().held_by().is_empty(), "no trusted validator vouches");
+    assert_eq!(served(), [(a, Some(zats(1_000)))], "the quorum keeps it");
+    assert_eq!(first_seen(&a), Some(listed), "the same sighting throughout");
+
+    listing(&[a, bad, child], &seven);
+    round().await;
+    round().await;
+    let both = sorted(vec![(a, Some(zats(1_000))), (child, Some(zats(500)))]);
+    assert_eq!(sorted(served()), both, "funded ones at their fees; `bad` refused");
+    let spread = reader.current().spread(&a).expect("held");
+    assert_eq!(
+        (spread.peers, spread.trusted),
+        (Count { seen: 7, of: 7 }, Count { seen: 0, of: 0 })
+    );
+
+    listing(&[a, child], &seven[..3]);
+    round().await;
+    assert_eq!(sorted(served()), both, "3 of 7 still list them: kept");
+    listing(&[a, child], &seven[..2]);
+    round().await;
+    assert_eq!(served(), [], "2 of 7: no longer kept; the quorum still reads, an empty mempool");
+    assert_eq!((first_seen(&a), first_seen(&child)), (None, None), "gone from the view");
+
+    // a send with no trusted validator: a peer first; the quorum listing it = the answer
+    let (sent, sent_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_500)]);
+    peers.hold(id(sent), Bytes::from(sent_raw.clone()));
+    let submitting = Arc::clone(&view);
+    let answer = tokio::spawn(async move { submitting.submit(sent_raw).await });
+    tokio::task::yield_now().await;
+    let entry = peers.pushes();
+    assert_eq!((entry.len(), validator.calls().sends), (1, 0), "one peer entry: {entry:?}");
+    let others: Vec<std::net::SocketAddr> =
+        seven.iter().copied().filter(|peer| *peer != entry[0]).collect();
+    listing(&[sent], &others);
+    round().await;
+    let answered = answer.await.expect("submission task");
+    assert_eq!(answered.expect("a peer quorum admitted it"), sent);
+    assert_eq!(served(), [(sent, Some(zats(500)))], "ours, priced from the UTXO set");
+
+    // nobody lists it: ours keeps it served until the next block
+    listing(&[], &seven);
+    round().await;
+    assert_eq!(served(), [(sent, Some(zats(500)))], "unlisted, ours: kept");
+    let next = chain.mine_empty(1);
+    view.set_verified(Some(chain.verified(next)));
+    assert_eq!((served(), first_seen(&sent)), (vec![], None), "a block later: mined or gone");
     cancel.cancel();
 }
 
@@ -959,7 +1083,7 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
     let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
     let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
-    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
     let view = view.expect("a valid set");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
@@ -1027,7 +1151,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
         let peers = Peers { transport: peer_set as _, in_flight: 4 };
         let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
-        let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+        let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
         let view = view.expect("a valid set");
         let cancel = CancellationToken::new();
         tokio::spawn(driver.run(cancel.clone()));
@@ -1078,7 +1202,7 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     let peer = |b: u8, host: u8| std::net::SocketAddr::from(([10, b, 0, host], 8233));
     let live = [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (5, 2), (6, 1), (7, 1)];
     let announcing = Arc::new(MockPeers::new(live.map(|(b, host)| peer(b, host)), []));
-    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
     let view = view.expect("a valid set").with_peers(announcing.clone());
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));

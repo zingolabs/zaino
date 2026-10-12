@@ -480,15 +480,38 @@ pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (Transac
     v4(0, 0, Some(bundle))
 }
 
+/// Real, empty v5 transaction signed for `branch` (embedded in its bytes), distinct per
+/// `lock_time`
+pub fn raw_v5(
+    branch: zcash_protocol::consensus::BranchId,
+    lock_time: u32,
+    expiry: u32,
+) -> (TransactionId, Vec<u8>) {
+    use zcash_primitives::transaction::TxVersion;
+    unshielded(TxVersion::V5, branch, lock_time, expiry, None)
+}
+
 fn v4(
     lock_time: u32,
     expiry: u32,
     transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
 ) -> (TransactionId, Vec<u8>) {
-    use zcash_primitives::transaction::{Authorized, TransactionData, TxVersion};
+    use zcash_primitives::transaction::TxVersion;
+    let canopy = zcash_protocol::consensus::BranchId::Canopy;
+    unshielded(TxVersion::V4, canopy, lock_time, expiry, transparent)
+}
+
+fn unshielded(
+    version: zcash_primitives::transaction::TxVersion,
+    branch: zcash_protocol::consensus::BranchId,
+    lock_time: u32,
+    expiry: u32,
+    transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
+) -> (TransactionId, Vec<u8>) {
+    use zcash_primitives::transaction::{Authorized, TransactionData};
     let tx = TransactionData::<Authorized>::from_parts(
-        TxVersion::V4,
-        zcash_protocol::consensus::BranchId::Canopy,
+        version,
+        branch,
         lock_time,
         expiry.into(),
         transparent,
@@ -497,7 +520,7 @@ fn v4(
         None,
     )
     .freeze()
-    .expect("a v4 transaction without shielded bundles freezes");
+    .expect("a transaction without shielded bundles freezes");
     let mut raw = Vec::new();
     tx.write(&mut raw).expect("writes to a Vec");
     (TransactionId::from(*tx.txid().as_ref()), raw)

@@ -21,13 +21,13 @@ use zaino_traffic::{Health, ValidatorId};
 
 use crate::config::FINALITY_STALL;
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
-use crate::peers::{Overheard, Pending};
+use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
 
 /// One unconfirmed transaction, as served
 ///
-/// - `fee` = a validator's listing (it resolved the prevouts); `None` = our own broadcast, not
-///   yet listed by any validator
+/// - `fee` = a validator's listing, or ours from the served UTXO set (a peer quorum's); `None` =
+///   our own broadcast, not yet listed or admitted
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolEntry {
     pub txid: TransactionId,
@@ -95,12 +95,13 @@ pub struct Spread {
     pub(crate) timeline: Timeline,
 }
 
-/// One transaction and where it has been seen.
+/// One transaction and where it has been seen
+///
+/// - `quorum` = a peer quorum admitted it (`listings.rs`) and it passed our checks
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sighting {
     trusted: EndpointSet,
-    /// Every peer that announced it (live or not: `spread` counts the live ones)
-    peers: OrdSet<SocketAddr>,
+    quorum: bool,
     ours: bool,
     raw: Bytes,
     fee: Option<Zatoshis>,
@@ -109,28 +110,23 @@ pub(crate) struct Sighting {
 }
 
 impl Sighting {
-    /// `overheard` = peers' announcements from before the view held it
-    pub(crate) fn new(
-        raw: Bytes,
-        fee: Option<Zatoshis>,
-        ours: bool,
-        overheard: Option<Pending>,
-    ) -> Self {
+    pub(crate) fn new(raw: Bytes, fee: Option<Zatoshis>, ours: bool) -> Self {
         let projection = Projection::default();
-        let now = Instant::now();
-        let first_seen = overheard.as_ref().map_or(now, |pending| pending.first.min(now));
-        let timeline = Timeline { first_seen, first_trusted: None, all_trusted: None };
-        let peers = overheard.map(|pending| pending.peers).unwrap_or_default();
-        Self { trusted: EndpointSet::default(), peers, ours, raw, fee, projection, timeline }
+        let timeline =
+            Timeline { first_seen: Instant::now(), first_trusted: None, all_trusted: None };
+        Self {
+            trusted: EndpointSet::default(),
+            quorum: false,
+            ours,
+            raw,
+            fee,
+            projection,
+            timeline,
+        }
     }
 
-    /// `true` = a new announcer
-    pub(crate) fn hear(&mut self, peer: SocketAddr) -> bool {
-        self.peers.insert(peer).is_none()
-    }
-
-    pub(crate) fn announcers(&self) -> &OrdSet<SocketAddr> {
-        &self.peers
+    pub(crate) fn raw(&self) -> &Bytes {
+        &self.raw
     }
 
     pub(crate) fn timeline(&self) -> Timeline {
@@ -147,10 +143,10 @@ impl Sighting {
         first
     }
 
-    fn spread(&self, readers: EndpointSet, live: &OrdSet<SocketAddr>) -> Spread {
-        let heard = self.peers.iter().filter(|peer| live.contains(*peer)).count();
+    /// `listers` = fresh peers listing it, of `polled`
+    fn spread(&self, readers: EndpointSet, listers: usize, polled: usize) -> Spread {
         Spread {
-            peers: Count { seen: heard, of: live.len() },
+            peers: Count { seen: listers, of: polled },
             trusted: Count { seen: self.trusted.count(), of: readers.count() },
             ours: self.ours,
             servable: self.servable(),
@@ -158,7 +154,7 @@ impl Sighting {
         }
     }
 
-    /// First listed fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
+    /// First known fee kept (a fee = f(tx, its prevouts): every validator lists the same one)
     ///
     /// - priced at last → fresh projection (the old one rendered `fee: None`)
     pub(crate) fn listed_fee(&mut self, fee: Zatoshis) {
@@ -183,9 +179,24 @@ impl Sighting {
         self.ours
     }
 
-    /// Listed by any trusted validator (each admits only after full validation), or ours
+    /// Listed by a trusted validator (each admits only after full validation), or admitted by a
+    /// peer quorum
+    pub(crate) fn listed(&self) -> bool {
+        !self.trusted.is_empty() || self.quorum
+    }
+
+    /// Listed, or ours
     pub(crate) fn servable(&self) -> bool {
-        self.ours || !self.trusted.is_empty()
+        self.ours || self.listed()
+    }
+
+    pub(crate) fn quorum(&self) -> bool {
+        self.quorum
+    }
+
+    /// Admitted by a peer quorum (`true`) or no longer retained by one (`false`); `true` = changed
+    pub(crate) fn set_quorum(&mut self, quorum: bool) -> bool {
+        std::mem::replace(&mut self.quorum, quorum) != quorum
     }
 
     pub(crate) fn sight(&mut self, endpoint: ValidatorId) {
@@ -205,13 +216,14 @@ impl Sighting {
 /// One coherent answer: the verified chain, its holders, the mempool, every trusted validator's
 /// metadata
 ///
-/// - [`mempool`](Self::mempool) + [`validator_info`](Self::validator_info) `None` while no
-///   trusted validator holds the verified best block (no answer rather than a weak one)
+/// - [`mempool`](Self::mempool) `None` while no live trusted validator holds the verified best
+///   and no peer quorum reads (no answer rather than a weak one)
 /// - `held_by` = `Live` validators whose last poll holds the best block, as of the last fold
 /// - `owed_since` = since when a block `depth` deep waits, final tip unmoved (stall alarm)
 /// - `mempool` ordered: two readers of one view walk it identically
-/// - `peers_live` = connected peers as of the last peer fold (`peers: x/y`'s `y`)
+/// - `peers_live` = connected peers as of the last block-`inv` fold
 /// - `peers_carrying` = each live peer's latest announced block (peer finality's netgroup count)
+/// - `listings` = each live peer's last mempool listing (the quorum; `peers: x/y`)
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
     pub(crate) chain: Option<Arc<VerifiedChain>>,
@@ -223,7 +235,7 @@ pub struct ChainViewSnapshot {
     pub(crate) alarms: Alarms,
     pub(crate) peers_live: OrdSet<SocketAddr>,
     pub(crate) peers_carrying: OrdMap<SocketAddr, BlockHash>,
-    pub(crate) overheard: Overheard,
+    pub(crate) listings: Listings,
 }
 
 impl ChainViewSnapshot {
@@ -238,7 +250,7 @@ impl ChainViewSnapshot {
             alarms: Alarms::default(),
             peers_live: OrdSet::new(),
             peers_carrying: OrdMap::new(),
-            overheard: Overheard::default(),
+            listings: Listings::default(),
         }
     }
 
@@ -301,8 +313,7 @@ impl ChainViewSnapshot {
         }
         for (sightings, servable) in [(ours, true), (unlisted, false)] {
             for (txid, raw) in sightings {
-                let sighting = Sighting::new(raw.clone(), None, servable, None);
-                view.mempool.insert(*txid, sighting);
+                view.mempool.insert(*txid, Sighting::new(raw.clone(), None, servable));
             }
         }
         view
@@ -323,13 +334,14 @@ impl ChainViewSnapshot {
         self
     }
 
-    /// Peers that announced `txid`, held or only overheard (submission's watch)
-    pub(crate) fn announcers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
-        match (self.mempool.get(txid), self.overheard.get(txid)) {
-            (Some(sighting), _) => sighting.announcers().clone(),
-            (None, Some(pending)) => pending.peers.clone(),
-            (None, None) => OrdSet::new(),
-        }
+    /// Fresh peers listing `txid` in their mempool, held here or not (submission's watch)
+    pub(crate) fn listers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
+        self.listings.listers(txid)
+    }
+
+    /// Peers whose mempool listing counts now
+    pub(crate) fn polled(&self) -> OrdSet<SocketAddr> {
+        self.listings.polled()
     }
 
     /// `Live` trusted validators whose last poll holds the verified best block (V1; empty = no
@@ -408,29 +420,38 @@ impl ChainViewSnapshot {
 
     /// One transaction's spread, servable or not (telemetry; never gates serving)
     pub fn spread(&self, txid: &TransactionId) -> Option<Spread> {
-        Some(self.mempool.get(txid)?.spread(self.mempool_readers(), &self.peers_live))
+        let polled = self.listings.polled().len();
+        let listers = self.listings.listers(txid).len();
+        Some(self.mempool.get(txid)?.spread(self.mempool_readers(), listers, polled))
     }
 
     /// Every held transaction's spread, in txid order
     pub fn spreads(&self) -> impl Iterator<Item = (TransactionId, Spread)> + '_ {
-        let readers = self.mempool_readers();
-        self.mempool
-            .iter()
-            .map(move |(txid, sighting)| (*txid, sighting.spread(readers, &self.peers_live)))
+        let (readers, polled) = (self.mempool_readers(), self.listings.polled().len());
+        self.mempool.iter().map(move |(txid, sighting)| {
+            (*txid, sighting.spread(readers, self.listings.listers(txid).len(), polled))
+        })
     }
 
-    /// The servable mempool; `None` while no `Live` trusted validator (its mempool listing) holds
-    /// the best block (fail closed: no empty stand-in)
+    /// The servable mempool; `None` while neither a `Live` trusted validator (its mempool
+    /// listing) holds the best block nor [`peers_quorate`](Self::peers_quorate) (fail closed: no
+    /// empty stand-in)
     pub fn mempool(&self) -> Option<MempoolView<'_>> {
         let live = |at: usize| self.endpoints.get(at).is_some_and(|m| m.health == Health::Live);
-        self.held_by.positions().any(live).then_some(MempoolView(self))
+        let trusted = self.held_by.positions().any(live);
+        (trusted || self.peers_quorate()).then_some(MempoolView(self))
+    }
+
+    /// Fresh peer mempool listings span enough netgroups for a quorum (`listings.rs`)
+    pub fn peers_quorate(&self) -> bool {
+        self.listings.quorate()
     }
 }
 
-/// The servable mempool of a snapshot whose best block a trusted validator holds
+/// The servable mempool of a snapshot a trusted validator or a peer quorum reads
 ///
-/// Every method here applies the per-transaction rule — listed by any validator, or `ours` —
-/// so nothing below it can leak out.
+/// - every method applies the per-transaction rule (listed by a trusted validator, admitted by
+///   a peer quorum, or ours): nothing below it leaks out
 #[derive(Debug, Clone, Copy)]
 pub struct MempoolView<'a>(&'a ChainViewSnapshot);
 

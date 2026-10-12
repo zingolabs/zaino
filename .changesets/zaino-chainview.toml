@@ -11,11 +11,12 @@ served tip is `ChainTip { block, held_by }`, failing closed with `Unserved` when
 validator holds it, and finality moves only past a vouched block or, with no trusted validator \
 vouching that deep, past best − depth once live peers in more than 5 netgroups carry it and no \
 difficulty collapsed. A mempool transaction is servable \
-once any validator lists it, with its fee, its spread across validators and peers, and a shared \
-per-tip `MempoolTail` feed for `GetMempoolStream`. `submit` prechecks a transaction and sends it \
+once any validator lists it or a peer quorum admits it (below), with its fee, its spread across \
+validators and peers, and a shared per-tip `MempoolTail` feed for `GetMempoolStream`. `submit` \
+prechecks a transaction against the upgrade schedule `ChainView::new` takes and sends it \
 to one random entry per attempt, resubmitting until it is seen spreading (`SubmitPolicy`). \
-Peers join through `ValidatorP2pSource` (`with_peers`, `PeerWatch`), whose `heard()` streams \
-`Heard::Transactions` and `Heard::Block`. A published \
+Peers join through `ValidatorP2pSource` (`with_peers`): `PeerWatch` folds its block `inv`s \
+(`Heard { peer, hash }`), `PeerMempool` its per-peer mempool listings. A published \
 `ChainViewSnapshot` names the `VerifiedChain` it was judged under (`chain`) and the transactions \
 turned servable since another (`arrivals`); `ChainViewSubscriber::subscribe_published` wakes on \
 every publish. Telemetry: `describe_metrics` gauges and `Alarms` (stale, ending, partitioned, \
@@ -133,4 +134,20 @@ header rule against the chain's own context), capped at the ceiling. Peer header
 tip past a down validator but are never vouched (finality on peers' word is its own rule, \
 above). A header failing a rule is `report`ed. Anchoring keeps the difficulty context below the final \
 tip (`anchor_below()`).
+"""
+
+[[changes]]
+crate = "zaino-chainview"
+kind = "feature"
+description = """
+Peer-quorum mempool: `ChainView::peer_mempool(utxos)` returns the `PeerMempool` to spawn. Every \
+5 s it asks each live outbound peer for its whole mempool (`ValidatorP2pSource::mempool`, that \
+peer alone answering) and keeps each listing 15 s. A transaction is admitted when > 2/3 of the \
+counted listings hold its exact id, from > 5 netgroups, and our consensus checks pass (bytes by \
+id from the peers via `transactions`; expiry and v5+ branch against the block above the verified \
+best; transparent prevouts unspent in `UnspentOutputs` or a held transaction's outputs; fee ≥ 0, \
+served as the entry's fee). It stays while > 1/3 list it. `mempool()` also opens when the \
+listings span > 5 netgroups (`ChainViewSnapshot::peers_quorate`), so the mempool and \
+`SendTransaction` (accepted once the quorum lists it) work with every trusted validator down. \
+`spread().peers` counts the peers listing it. Transaction `inv`s are no longer read.
 """

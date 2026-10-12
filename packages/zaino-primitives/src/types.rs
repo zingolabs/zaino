@@ -45,7 +45,7 @@ pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
 pub use display_order::ParseHashError;
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
-pub use fee::{BlockFees, Fee};
+pub use fee::{BlockFees, Fee, FeeError};
 pub use header_bytes::{HeaderBytes, HeaderError, REGTEST_SOLUTION, STANDARD_SOLUTION};
 pub use height::{Height, HeightOverflow};
 pub use merkle_root::MerkleRoot;
@@ -65,7 +65,7 @@ pub use transaction::{
     OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput, SaplingSpend, SproutData,
     Transaction, TransparentData, TransparentOutput,
 };
-pub use transaction_hash::TransactionId;
+pub use transaction_hash::{PeerTxId, TransactionId};
 pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};

@@ -54,7 +54,8 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
     let address = vec!["10.0.0.1:8232".to_owned()];
-    let view = ChainView::new(address, balancer, DEPTH).expect("one validator");
+    let schedule = builder.schedule().upgrades;
+    let view = ChainView::new(address, balancer, DEPTH, schedule).expect("one validator");
     let (nfs, indexed) = watch::channel(None);
     let publisher = Publisher::<DiskView>::new(indexed, view.subscriber(), DEPTH);
     let mut snapshots = publisher.handle();

@@ -11,7 +11,7 @@ use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
+use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId, UpgradeSchedule};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_snapshot::{Publisher, Snapshots};
 use zaino_source::testing::MockValidator;
@@ -114,8 +114,9 @@ pub(super) fn routes_over(
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = Trusted { source: Arc::clone(node), priority: 0, limits };
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
-    let view =
-        ChainView::new(vec!["node:8232".to_owned()], validators.clone(), ReorgDepth::CONSENSUS);
+    let schedule = UpgradeSchedule::compiled(MAINNET).expect("mainnet compiled in");
+    let address = vec!["node:8232".to_owned()];
+    let view = ChainView::new(address, validators.clone(), ReorgDepth::CONSENSUS, schedule);
     let view = view.expect("one endpoint");
     let fold = view.observation_fold();
     let routes = Routes {

@@ -63,7 +63,7 @@ pub(crate) enum Pushed {
 
 /// What the view shows of the transaction now
 ///
-/// - `listed` = any trusted validator lists it (each verified it)
+/// - `listed` = a trusted validator lists it, or a peer quorum admitted it (each verified it)
 /// - `spread` = some source never an entry has it
 /// - `observable` = some source never an entry is being read (else spread = unknowable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,15 +74,17 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    /// `listing` ⊆ `readers`; `announcers` = peers that announced it; `live` = peers heard now
+    /// `listing` ⊆ `readers`; `quorum` = a peer quorum admitted it; `listers` = peers whose
+    /// mempool lists it, of `polled`
     ///
-    /// - a peer entry's own announcement = nothing (a black hole can echo it to us alone)
-    /// - trusted entry's p2p address unknown: once one tried, peers need two announcers
+    /// - a peer entry's own listing = nothing (a black hole can keep it to itself)
+    /// - trusted entry's p2p address unknown: once one tried, peers need two listers
     pub(crate) fn of(
         listing: EndpointSet,
+        quorum: bool,
         readers: EndpointSet,
-        announcers: &OrdSet<SocketAddr>,
-        live: &OrdSet<SocketAddr>,
+        listers: &OrdSet<SocketAddr>,
+        polled: &OrdSet<SocketAddr>,
         tried: &[Entry],
     ) -> Self {
         let mut tried_trusted = EndpointSet::default();
@@ -94,12 +96,12 @@ impl Seen {
             }
         }
         let needed = if tried_trusted.is_empty() { 1 } else { 2 };
-        let outsiders = announcers.iter().filter(|peer| !tried_peers.contains(*peer)).count();
+        let outsiders = listers.iter().filter(|peer| !tried_peers.contains(*peer)).count();
         Self {
-            listed: !listing.is_empty(),
+            listed: !listing.is_empty() || quorum,
             spread: !listing.without(tried_trusted).is_empty() || outsiders >= needed,
             observable: !readers.without(tried_trusted).is_empty()
-                || live.iter().any(|peer| !tried_peers.contains(peer)),
+                || polled.iter().any(|peer| !tried_peers.contains(peer)),
         }
     }
 }
@@ -260,8 +262,8 @@ mod tests {
 
     /// One simulated node's behaviour toward the transaction
     ///
-    /// - `Relays` = gossips to every honest node after `delay_ms` (a peer also announces it)
-    /// - `BlackHoles` = never gossips; `Echoes` (peer) = never gossips, announces to us alone
+    /// - `Relays` = gossips to every honest node after `delay_ms`
+    /// - `BlackHoles` = never gossips; `Echoes` (peer) = never gossips, lists it to us alone
     /// - `Rejects` (trusted) = domain rejection (stricter local policy, or a bad tx for it)
     /// - `Unread` (trusted) = running, mempool not read (catching up, down)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -342,20 +344,19 @@ mod tests {
                 .filter(|&i| self.holds(Entry::Trusted(index(i)), self.trusted[i], at))
                 .map(index)
                 .collect();
-            let live: OrdSet<SocketAddr> = self
+            let polled: OrdSet<SocketAddr> = self
                 .peers
                 .iter()
                 .filter(|(_, node)| **node != Node::Unreachable)
                 .map(|(addr, _)| *addr)
                 .collect();
-            let announcers: OrdSet<SocketAddr> = self
-                .peers
+            let listers: OrdSet<SocketAddr> = polled
                 .iter()
-                .filter(|(_, node)| matches!(node, Node::Relays { .. } | Node::Echoes))
-                .filter(|(addr, node)| self.holds(Entry::Peer(**addr), **node, at))
-                .map(|(addr, _)| *addr)
+                .filter(|addr| self.holds(Entry::Peer(**addr), self.peers[*addr], at))
+                .copied()
                 .collect();
-            Seen::of(listing, readers, &announcers, &live, tried)
+            // peers span 3 /16s: never a quorum (> 5 netgroups), the trusted verdict stands
+            Seen::of(listing, false, readers, &listers, &polled, tried)
         }
     }
 
@@ -485,8 +486,9 @@ mod tests {
 
     /// `Seen::of` case by case
     ///
-    /// - entries never count as spread; a peer entry's echo = nothing
-    /// - tried trusted entry (p2p address unknown) → two outside announcers needed
+    /// - entries never count as spread; a peer entry's own listing = nothing
+    /// - tried trusted entry (p2p address unknown) → two outside listers needed
+    /// - a peer quorum's admission = listed, no trusted validator needed
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
         let t = |i: usize| ValidatorId::new(i).expect("< MAX");
@@ -497,8 +499,9 @@ mod tests {
         struct Case {
             name: &'static str,
             listing: EndpointSet,
-            announcers: OrdSet<SocketAddr>,
-            live: OrdSet<SocketAddr>,
+            quorum: bool,
+            listers: OrdSet<SocketAddr>,
+            polled: OrdSet<SocketAddr>,
             tried: Vec<Entry>,
             want: Seen,
         }
@@ -507,62 +510,79 @@ mod tests {
             Case {
                 name: "nothing yet",
                 listing: set(&[]),
-                announcers: peers(&[]),
-                live: peers(&[1, 2]),
+                quorum: false,
+                listers: peers(&[]),
+                polled: peers(&[1, 2]),
                 tried: vec![Entry::Peer(p(1))],
                 want: seen(false, false, true),
             },
             Case {
-                name: "entry echo only",
+                name: "entry lists it only",
                 listing: set(&[]),
-                announcers: peers(&[1]),
-                live: peers(&[1, 2]),
+                quorum: false,
+                listers: peers(&[1]),
+                polled: peers(&[1, 2]),
                 tried: vec![Entry::Peer(p(1))],
                 want: seen(false, false, true),
             },
             Case {
-                name: "outside peer announces",
+                name: "outside peer lists it",
                 listing: set(&[]),
-                announcers: peers(&[1, 2]),
-                live: peers(&[1, 2]),
+                quorum: false,
+                listers: peers(&[1, 2]),
+                polled: peers(&[1, 2]),
                 tried: vec![Entry::Peer(p(1))],
                 want: seen(false, true, true),
             },
             Case {
+                name: "peer quorum admits, every trusted validator down",
+                listing: set(&[]),
+                quorum: true,
+                listers: peers(&[2, 3, 4, 5, 6, 7]),
+                polled: peers(&[1, 2, 3, 4, 5, 6, 7]),
+                tried: vec![Entry::Peer(p(1))],
+                want: seen(true, true, true),
+            },
+            Case {
                 name: "trusted entry lists, alone",
                 listing: set(&[0]),
-                announcers: peers(&[]),
-                live: peers(&[]),
+                quorum: false,
+                listers: peers(&[]),
+                polled: peers(&[]),
                 tried: vec![Entry::Trusted(t(0))],
                 want: seen(true, false, true),
             },
             Case {
                 name: "outside trusted lists",
                 listing: set(&[0, 1]),
-                announcers: peers(&[]),
-                live: peers(&[]),
+                quorum: false,
+                listers: peers(&[]),
+                polled: peers(&[]),
                 tried: vec![Entry::Trusted(t(0))],
                 want: seen(true, true, true),
             },
             Case {
-                name: "trusted entry + one announcer",
+                name: "trusted entry + one lister",
                 listing: set(&[0]),
-                announcers: peers(&[2]),
-                live: peers(&[2]),
+                quorum: false,
+                listers: peers(&[2]),
+                polled: peers(&[2]),
                 tried: vec![Entry::Trusted(t(0)), Entry::Trusted(t(1))],
                 want: seen(true, false, true),
             },
             Case {
                 name: "every source an entry",
                 listing: set(&[0]),
-                announcers: peers(&[3, 4]),
-                live: peers(&[1]),
+                quorum: false,
+                listers: peers(&[3, 4]),
+                polled: peers(&[1]),
                 tried: vec![Entry::Peer(p(1)), Entry::Trusted(t(0)), Entry::Trusted(t(1))],
                 want: seen(true, true, false),
             },
         ];
         for case in cases {
-            let got = Seen::of(case.listing, readers, &case.announcers, &case.live, &case.tried);
+            let (listers, polled) = (&case.listers, &case.polled);
+            let got = Seen::of(case.listing, case.quorum, readers, listers, polled, &case.tried);
             assert_eq!(got, case.want, "{}", case.name);
         }
     }

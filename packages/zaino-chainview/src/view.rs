@@ -7,20 +7,22 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::{ReorgDepth, TransactionId};
+use zaino_primitives::types::{ReorgDepth, TransactionId, UpgradeSchedule};
 use zaino_source::{
     prepare_transaction, ChainDataSource, FailureMode, NonDomainError, Prepared, QueryError,
     SendRawTransactionError,
 };
 use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
 
+use crate::admission::{valid_in, NextBlock};
 use crate::endpoints::ValidatorMetadata;
 use crate::error::{ConfigError, SubmitError};
 use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
 use crate::observe::ObservationFold;
+use crate::peer_mempool::PeerMempool;
 use crate::peers::PeerWatch;
-use crate::ports::ValidatorP2pSource;
+use crate::ports::{UnspentOutputs, ValidatorP2pSource};
 use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
@@ -33,6 +35,7 @@ pub struct ChainView<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
     addresses: Vec<String>,
+    schedule: UpgradeSchedule,
     policy: SubmitPolicy,
     peers: Option<Arc<dyn ValidatorP2pSource>>,
 }
@@ -49,11 +52,13 @@ impl<S: ChainDataSource> ChainView<S> {
     /// [`observation_fold`](Self::observation_fold)
     ///
     /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
+    /// - `schedule` = the network's: the branch a transaction must be signed for at the next block
     /// - each poll asks `getblockhash` at this view's best ([`TrafficBalancer::poll_best`])
     pub fn new(
         addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
         depth: ReorgDepth,
+        schedule: UpgradeSchedule,
     ) -> Result<Self, ConfigError> {
         if addresses.is_empty() {
             return Err(ConfigError::NoEndpoints);
@@ -68,7 +73,8 @@ impl<S: ChainDataSource> ChainView<S> {
         let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth));
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
-        Ok(Self { core, balancer, addresses, policy: SubmitPolicy::default(), peers: None })
+        let policy = SubmitPolicy::default();
+        Ok(Self { core, balancer, addresses, schedule, policy, peers: None })
     }
 
     /// How hard each submission pushes (default: 15 s threshold, 4 attempts)
@@ -76,15 +82,23 @@ impl<S: ChainDataSource> ChainView<S> {
         Self { policy, ..self }
     }
 
-    /// Peers as submission entries + announcers; spawn [`peer_watch`](Self::peer_watch)
+    /// Peers as submission entries, mempool listers and chain carriers; spawn
+    /// [`peer_watch`](Self::peer_watch) and [`peer_mempool`](Self::peer_mempool)
     pub fn with_peers(self, peers: Arc<dyn ValidatorP2pSource>) -> Self {
         Self { peers: Some(peers), ..self }
     }
 
-    /// The runnable folding peers' announcements into the view (`None` = no peers)
+    /// The runnable folding peers' block announcements into the view (`None` = no peers)
     pub fn peer_watch(&self) -> Option<PeerWatch> {
         let peers = Arc::clone(self.peers.as_ref()?);
         Some(PeerWatch::new(Arc::clone(&self.core), peers))
+    }
+
+    /// The runnable polling the peers' mempools into the view, admitting what a quorum holds
+    /// and `utxos` funds (`None` = no peers)
+    pub fn peer_mempool(&self, utxos: Arc<dyn UnspentOutputs>) -> Option<PeerMempool> {
+        let peers = Arc::clone(self.peers.as_ref()?);
+        Some(PeerMempool::new(Arc::clone(&self.core), peers, utxos, self.schedule))
     }
 
     /// Stands in for header sync in tests: `verified` as its word
@@ -119,7 +133,7 @@ impl<S: ChainDataSource> ChainView<S> {
         let prepared = prepare_transaction(&raw).map_err(|malformed| {
             SubmitError::Rejected(SendRawTransactionError::Malformed(malformed.to_string()))
         })?;
-        precheck(&self.core.current(), &prepared).map_err(SubmitError::Rejected)?;
+        precheck(&self.core.current(), &self.schedule, &prepared).map_err(SubmitError::Rejected)?;
 
         let (answer, answered) = oneshot::channel();
         let job = Submission {
@@ -137,30 +151,20 @@ impl<S: ChainDataSource> ChainView<S> {
     }
 }
 
-/// Refusals the bytes and the tip decide alone (no push: a peer would drop it silently)
+/// Refusals the bytes and the verified best decide alone (no push: a peer would drop it
+/// silently), against the block above the best (`admission.rs`)
 ///
-/// - expired: ZIP-203, invalid in any block above its expiry height (next block = tip + 1)
-/// - wrong branch: v5+ embeds the branch it was signed for; the next block's must match
-///
-/// - code `-25` = zebrad's own for both (consensus-invalid)
-fn precheck(view: &ChainViewSnapshot, prepared: &Prepared) -> Result<(), SendRawTransactionError> {
-    let invalid = |message: String| SendRawTransactionError::Rejected { code: -25, message };
-    let Some(info) = view.validator_info() else { return Ok(()) };
-    let next = info.blocks.next();
-    if let Some(expiry) = prepared.expiry_height.filter(|&expiry| next > expiry) {
-        return Err(invalid(format!(
-            "tx-expiring-soon: expiry height {} is below the next block {}",
-            u32::from(expiry),
-            u32::from(next)
-        )));
-    }
-    if let Some(branch) = prepared.branch.filter(|&branch| branch != info.consensus.next_block) {
-        return Err(invalid(format!(
-            "built for consensus branch {branch}, the next block's is {}",
-            info.consensus.next_block
-        )));
-    }
-    Ok(())
+/// - nothing verified yet = nothing to judge against: pushed as is
+/// - code `-25` = zebrad's own for both rules (consensus-invalid)
+fn precheck(
+    view: &ChainViewSnapshot,
+    schedule: &UpgradeSchedule,
+    prepared: &Prepared,
+) -> Result<(), SendRawTransactionError> {
+    let Some(best) = view.best() else { return Ok(()) };
+    valid_in(prepared, NextBlock::above(best.height, schedule)).map_err(|refused| {
+        SendRawTransactionError::Rejected { code: -25, message: refused.to_string() }
+    })
 }
 
 /// What the wallet hears back from one submission
@@ -215,7 +219,8 @@ impl<S: ChainDataSource> Submission<S> {
             Ended::Unreachable(cause) => SubmitError::Unreachable {
                 attempted: attempts,
                 cause: cause.unwrap_or_else(|| {
-                    NonDomainError::new(FailureMode::Connection, "no validator to push to")
+                    let unadmitted = "no trusted validator answered and no peer quorum listed it";
+                    NonDomainError::new(FailureMode::Connection, unadmitted)
                 }),
             },
         };
@@ -264,9 +269,11 @@ impl<S: ChainDataSource> Submission<S> {
     /// The transaction as the view shows it, against the entries tried so far
     fn seen(&self, tried: &[Entry]) -> Seen {
         let view = self.core.current();
-        let listing = view.sighting(&self.txid).map(|s| s.trusted()).unwrap_or_default();
-        let announcers = view.announcers(&self.txid);
-        Seen::of(listing, view.mempool_readers(), &announcers, &view.peers_live, tried)
+        let sighting = view.sighting(&self.txid);
+        let listing = sighting.map(|s| s.trusted()).unwrap_or_default();
+        let quorum = sighting.is_some_and(|s| s.quorum());
+        let (listers, polled) = (view.listers(&self.txid), view.polled());
+        Seen::of(listing, quorum, view.mempool_readers(), &listers, &polled, tried)
     }
 }
 

@@ -9,7 +9,7 @@ use std::time::Duration;
 use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
-use zaino_primitives::types::BlockHash;
+use zaino_primitives::types::{BlockHash, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::block::{Block, CountedHeader};
 use zebra_chain::chain_tip::NoChainTip;
@@ -22,7 +22,7 @@ use zebra_network::{BoxError, InventoryResponse, Request, Response};
 use zaino_source::testing::raw_transaction;
 
 use crate::wire;
-use crate::{Announced, PeerConfig, PeerNetwork, PeerTxId, PushError, Supplied};
+use crate::{Announced, PeerConfig, PeerNetwork, PushError, Supplied};
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
 type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;
@@ -72,9 +72,10 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 ///
 /// - Zaino admitted while advertising no services
 /// - headers + blocks byte-identical, unknown hash → `None`
-/// - mempool listing = its three ids; lie = an answer, not a failure (A = `None`, B never
-///   labelled A); honest answer passes
-/// - its `inv` attributed to its address; peer = submission entry candidate
+/// - its mempool asked by address = its three ids; a peer not in the set = a failure, never
+///   another's listing; lie = an answer, not a failure (A = `None`, B never labelled A)
+/// - its block `inv` attributed to its address (a transaction `inv` = nothing); peer =
+///   submission entry candidate
 // multi_thread required: zebra-network's codec parses blocks and txs in `block_in_place`
 #[tokio::test(flavor = "multi_thread")]
 async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_inv_is_attributed() {
@@ -156,9 +157,11 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     assert_eq!(fetched, [(hash(&blocks[1]), Some(supplied)), (unknown, None)], "sender named");
 
     let listed: HashSet<PeerTxId> =
-        peers.mempool_ids().await.expect("mempool").into_iter().collect();
+        peers.mempool_of(fake).await.expect("its mempool").into_iter().collect();
     let ids: HashSet<PeerTxId> = txs.iter().map(|tx| wire::peer_tx_id(tx.id)).collect();
     assert_eq!(listed, ids);
+    let stranger = SocketAddr::from(([127, 0, 0, 9], 1));
+    assert!(peers.mempool_of(stranger).await.is_err(), "no other peer answers for it");
 
     let (id_a, id_c) = (wire::peer_tx_id(a.id), wire::peer_tx_id(c.id));
     let lied = peers.transactions_by_id(&[id_a]).await.expect("an answer, not a failure");
@@ -170,28 +173,17 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     assert_eq!(both[0], (id_a, None));
     assert!(both[1].1.as_ref().is_none_or(|raw| *raw == raws[2]), "{both:?}");
 
+    // a transaction inv first: ignored, so the block inv is the first announcement
     let advertised: HashSet<_> = [a.id, b.id].into_iter().collect();
     let advertise = Request::AdvertiseTransactionIds(advertised, None);
     fake_peers.ready().await.expect("ready").call(advertise).await.expect("inv sent");
-    let heard = tokio::time::timeout(Duration::from_secs(10), announcements.recv())
-        .await
-        .expect("an inv within 10 s")
-        .expect("announcement");
-    let Announced::Transactions { peer, ids: mut heard_ids } = heard else {
-        panic!("a transaction inv, got {heard:?}")
-    };
-    heard_ids.sort();
-    let mut sent_ids = vec![wire::peer_tx_id(a.id), wire::peer_tx_id(b.id)];
-    sent_ids.sort();
-    assert_eq!((peer, heard_ids), (fake, sent_ids), "txids, sender named");
-
     let advertise = Request::AdvertiseBlock(blocks[1].hash(), None);
     fake_peers.ready().await.expect("ready").call(advertise).await.expect("inv sent");
     let heard = tokio::time::timeout(Duration::from_secs(10), announcements.recv())
         .await
         .expect("a block inv within 10 s")
         .expect("announcement");
-    let block = Announced::Block { peer: fake, hash: hash(&blocks[1]) };
+    let block = Announced { peer: fake, hash: hash(&blocks[1]) };
     assert_eq!(heard, block, "the block's hash, sender named");
 }
 

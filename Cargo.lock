@@ -1113,7 +1113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2913,7 +2913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "log",
  "multimap",
  "petgraph",
@@ -2934,7 +2934,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -3391,7 +3391,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3977,7 +3977,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5565,7 +5565,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -5624,7 +5624,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -5662,7 +5662,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
 dependencies = [
  "color-eyre",
  "futures",

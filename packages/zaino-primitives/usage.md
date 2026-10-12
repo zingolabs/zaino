@@ -39,10 +39,12 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   it by `prev_hash`, genesis on `None`: every fold's precondition), `Transaction` and its parts
   (`TransparentData`, `SaplingData`, `OrchardData`, `SproutData`, …; Sprout's
   value balance included; `TransparentData::coinbase` marks the coinbase), `Fee`
-  (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool)
-  and `BlockFees` (one `Fee` per transaction, named by block hash), `OutPoint`
-  (`txid` + `vout`: a transparent input is the outpoint it spends, and the key
-  both transparent indexes store under), `BlockHash`, `TransactionId`, `Height`,
+  (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool:
+  `Transaction::fee(spent)`, `spent` = Σ its prevouts' values; `FeeError::Negative`
+  or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
+  `OutPoint` (`txid` + `vout`: a transparent input is the outpoint it spends, and
+  the key both transparent indexes store under), `BlockHash`, `TransactionId`,
+  `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Height`,
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `ShieldedPool`, `MerkleRoot`,
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,

@@ -1,5 +1,6 @@
-//! Binds `[p2p]`: zaino-peers' [`PeerNetwork`] as chainview's [`ValidatorP2pSource`] and the
-//! balancer's [`PeerTransport`] (the peer set = one member: headers + block bodies)
+//! Binds `[p2p]`: zaino-peers' [`PeerNetwork`] as chainview's [`ValidatorP2pSource`] (mempool
+//! listings, block `inv`s, pushes) and the balancer's [`PeerTransport`] (the peer set = one
+//! member: headers + block bodies)
 //!
 //! - started in the background (seeds dialled + crawled: seconds); boot never waits on it, and
 //!   until it is up the view hears no peer, every submission entry is a trusted validator and
@@ -18,7 +19,7 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use zaino_chainview::{Heard, ValidatorP2pSource};
 use zaino_peers::{Announced, PeerConfig, PeerError, PeerNetwork, PushError};
-use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockHash, Height, PeerTxId};
 use zaino_source::{decode_block, FailureMode, NonDomainError};
 use zaino_traffic::PeerTransport;
 
@@ -128,26 +129,37 @@ impl ValidatorP2pSource for ZebraPeers {
         entry: SocketAddr,
         raw: Bytes,
     ) -> BoxFuture<'static, Result<(), NonDomainError>> {
-        let network = self.up();
+        let network = self.up_or_fail();
         Box::pin(async move {
-            let network = network.ok_or_else(|| {
-                NonDomainError::new(FailureMode::Connection, "peer network not up yet")
-            })?;
-            match network.push_isolated(entry, &raw).await {
+            match network?.push_isolated(entry, &raw).await {
                 Ok(_) => Ok(()),
                 Err(failed) => Err(NonDomainError::from_cause(mode(&failed), failed)),
             }
         })
     }
+
+    fn mempool(
+        &self,
+        peer: SocketAddr,
+    ) -> BoxFuture<'static, Result<Vec<PeerTxId>, NonDomainError>> {
+        let network = self.up_or_fail();
+        Box::pin(async move { network?.mempool_of(peer).await.map_err(failed) })
+    }
+
+    fn transactions(
+        &self,
+        ids: Vec<PeerTxId>,
+    ) -> BoxFuture<'static, Result<Vec<Option<Bytes>>, NonDomainError>> {
+        let network = self.up_or_fail();
+        Box::pin(async move {
+            let found = network?.transactions_by_id(&ids).await.map_err(failed)?;
+            Ok(found.into_iter().map(|(_, raw)| raw.map(Bytes::from)).collect())
+        })
+    }
 }
 
 fn heard(announced: Announced) -> Heard {
-    match announced {
-        Announced::Transactions { peer, ids } => {
-            Heard::Transactions { peer, txids: ids.into_iter().map(|id| id.txid).collect() }
-        }
-        Announced::Block { peer, hash } => Heard::Block { peer, hash },
-    }
+    Heard { peer: announced.peer, hash: announced.hash }
 }
 
 fn mode(failed: &PushError) -> FailureMode {

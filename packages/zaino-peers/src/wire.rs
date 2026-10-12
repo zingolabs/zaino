@@ -6,18 +6,11 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::{BlockHash, TransactionId};
+use zaino_primitives::types::{BlockHash, PeerTxId, TransactionId};
 use zcash_primitives::transaction::{CompressedTransaction, DecompressionError};
 use zebra_chain::block::{self, Block, CountedHeader};
 use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::{self, AuthDigest, UnminedTx, UnminedTxId, WtxId};
-
-/// Transaction as peers name it: txid + (v5+) auth digest (`MSG_WTX` inventory)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct PeerTxId {
-    pub txid: TransactionId,
-    pub auth_digest: Option<[u8; 32]>,
-}
 
 /// Bytes zebra would not accept off the wire as one transaction
 #[derive(Debug, thiserror::Error)]

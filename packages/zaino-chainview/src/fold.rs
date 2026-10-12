@@ -12,7 +12,7 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, ReorgDepth, TransactionId, Zatoshis,
+    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId, Zatoshis,
 };
 use zaino_traffic::{Health, ValidatorId};
 
@@ -23,20 +23,18 @@ use crate::telemetry;
 
 /// What a fold compares against once it has changed the state
 struct Before {
-    held: Option<BlockRef>,
+    best: Option<BlockRef>,
     readers: EndpointSet,
 }
 
 impl Before {
     fn of(state: &ChainViewSnapshot) -> Self {
-        Self { held: held(state), readers: state.mempool_readers() }
+        Self { best: state.best(), readers: state.mempool_readers() }
     }
 }
 
-/// Best block, once a trusted validator holds it
-fn held(state: &ChainViewSnapshot) -> Option<BlockRef> {
-    state.best().filter(|_| !state.held_by.is_empty())
-}
+/// One id the peer quorum admits, not yet admitted here; `raw` = its bytes when held already
+pub(crate) type Candidate = (PeerTxId, Option<Bytes>);
 
 /// One txid a member listed; `raw` = `None` when the view already held it (bytes fetched once,
 /// never per member)
@@ -155,9 +153,7 @@ impl ChainViewCore {
                             }
                         }
                         (None, Some(raw)) => {
-                            let overheard = state.overheard.take(&sighted.txid);
-                            let mut sighting =
-                                Sighting::new(raw, Some(sighted.fee), false, overheard);
+                            let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
                             sighting.sight(endpoint);
                             telemetry::first_trusted(&sighting);
                             state.mempool.insert(sighted.txid, sighting);
@@ -189,53 +185,86 @@ impl ChainViewCore {
         unadmitted
     }
 
-    /// One batch of peer announcements (each stamped on arrival) + the live peer set; publishes
-    /// only on a change
+    /// One batch of block `inv`s + the live peer set; publishes only on a change
     ///
-    /// - held txid → its sighting's announcers; else overheard (bounded: `peers.rs`)
-    pub(crate) fn apply_heard(
-        &self,
-        batch: Vec<(Instant, Heard)>,
-        live: Vec<SocketAddr>,
-        now: Instant,
-    ) {
+    /// - only live (outbound) peers carry the chain: an inbound one is anyone who dialed us
+    pub(crate) fn apply_heard(&self, batch: Vec<Heard>, live: Vec<SocketAddr>) {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let before = Before::of(&guard);
         let state = &mut *guard;
         let live: OrdSet<SocketAddr> = live.into_iter().collect();
         let mut changed = live != state.peers_live;
-        // only live (outbound) peers carry the chain: an inbound one is anyone who dialed us
         let carrying = std::mem::take(&mut state.peers_carrying);
         let carriers = carrying.len();
         state.peers_carrying =
             carrying.into_iter().filter(|(peer, _)| live.contains(peer)).collect();
         changed |= state.peers_carrying.len() != carriers;
         state.peers_live = live;
-        let overheard = state.overheard.len();
-        let mut touched = Vec::new();
-        for (at, heard) in batch {
-            match heard {
-                Heard::Transactions { peer, txids } => {
-                    for txid in txids {
-                        match state.mempool.get_mut(&txid) {
-                            Some(sighting) => {
-                                if sighting.hear(peer) {
-                                    touched.push(txid);
-                                }
-                            }
-                            None => changed |= state.overheard.hear(txid, peer, at),
-                        }
-                    }
-                }
-                Heard::Block { peer, hash } if state.peers_live.contains(&peer) => {
-                    changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
-                }
-                Heard::Block { .. } => {}
+        for Heard { peer, hash } in batch {
+            if state.peers_live.contains(&peer) {
+                changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
             }
         }
-        state.overheard.expire(now);
-        changed |= !touched.is_empty() || state.overheard.len() != overheard;
         if changed {
+            self.settle(guard, before, Vec::new());
+        }
+    }
+
+    /// One mempool poll round (each live peer's answer, `None` = failed) folded, published:
+    /// retention re-judged → what the quorum admits that is not admitted here yet
+    pub(crate) fn apply_listings(
+        &self,
+        answers: Vec<(SocketAddr, Option<Vec<PeerTxId>>)>,
+        now: Instant,
+    ) -> Vec<Candidate> {
+        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
+        let before = Before::of(&guard);
+        let state = &mut *guard;
+        state.listings.round(answers, now);
+        let lost: Vec<TransactionId> = state
+            .mempool
+            .iter()
+            .filter(|(txid, sighting)| sighting.quorum() && !state.listings.retains(txid))
+            .map(|(txid, _)| *txid)
+            .collect();
+        for txid in &lost {
+            if let Some(sighting) = state.mempool.get_mut(txid) {
+                sighting.set_quorum(false);
+            }
+        }
+        let candidates = state.listings.admitted().into_iter().filter_map(|id| {
+            match state.mempool.get(&id.txid) {
+                Some(sighting) if sighting.quorum() => None,
+                Some(sighting) => Some((id, Some(sighting.raw().clone()))),
+                None => Some((id, None)),
+            }
+        });
+        let candidates = candidates.collect();
+        self.settle(guard, before, lost);
+        candidates
+    }
+
+    /// Candidates that passed our checks (`admission.rs`), each still admitted by the quorum now
+    pub(crate) fn admit_by_quorum(&self, admitted: Vec<(PeerTxId, Bytes, Zatoshis)>) {
+        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
+        let before = Before::of(&guard);
+        let state = &mut *guard;
+        let mut touched = Vec::new();
+        for (id, raw, fee) in admitted {
+            if !state.listings.admits(&id) {
+                continue;
+            }
+            if !state.mempool.contains_key(&id.txid) {
+                state.mempool.insert(id.txid, Sighting::new(raw, Some(fee), false));
+            }
+            if let Some(sighting) = state.mempool.get_mut(&id.txid) {
+                sighting.listed_fee(fee);
+                if sighting.set_quorum(true) {
+                    touched.push(id.txid);
+                }
+            }
+        }
+        if !touched.is_empty() {
             self.settle(guard, before, touched);
         }
     }
@@ -283,13 +312,13 @@ impl ChainViewCore {
             }
         }
 
-        // unsighted entries do not survive a held-tip move (an `ours` nobody lists after a block =
-        // mined or gone)
-        let moved = held(state) != before.held;
+        // unlisted entries do not survive a new best block (an `ours` nobody lists after a block
+        // = mined or gone)
+        let moved = state.best() != before.best;
         let dropped: Vec<TransactionId> = state
             .mempool
             .iter()
-            .filter(|(_, sighting)| sighting.trusted().is_empty() && (moved || !sighting.ours()))
+            .filter(|(_, sighting)| !sighting.listed() && (moved || !sighting.ours()))
             .map(|(txid, _)| *txid)
             .collect();
         for txid in &dropped {
@@ -307,10 +336,7 @@ impl ChainViewCore {
 
         match state.mempool.get_mut(&txid) {
             Some(sighting) => sighting.mark_ours(),
-            None => {
-                let overheard = state.overheard.take(&txid);
-                state.mempool.insert(txid, Sighting::new(raw, None, true, overheard));
-            }
+            None => drop(state.mempool.insert(txid, Sighting::new(raw, None, true))),
         }
 
         self.publish(state);

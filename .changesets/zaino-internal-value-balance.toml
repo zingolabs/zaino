@@ -64,3 +64,12 @@ migration = """
 Read a held block's fees with `ValueBalanceReader::block_fees(&block)` instead of `fees(&parent, \
 &[&block])`.
 """
+
+[[changes]]
+crate = "zaino-internal-value-balance"
+kind = "feature"
+section = "added"
+description = """
+`ValueBalanceReader::values(outpoints)` is public: each outpoint's unspent value at the view's \
+tip, one probe.
+"""

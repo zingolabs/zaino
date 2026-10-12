@@ -11,9 +11,9 @@ use zaino_peers::{PeerConfig, PeerNetwork};
 let peers = PeerNetwork::start(PeerConfig::new(NetworkType::Main)).await; // seeds dialed + crawled
 let headers = peers.find_headers(&locator, None).await?;                 // raw header bytes
 let blocks = peers.blocks_by_hash(&hashes).await?;                       // (hash, Option<bytes>)
-let listed = peers.mempool_ids().await?;                                 // one peer's mempool
+let listed = peers.mempool_of(peers.live()[0]).await?;                   // that peer's whole mempool
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
-let mut heard = peers.announcements();                                   // Announced::{Transactions, Block}
+let mut heard = peers.announcements();                                   // Announced { peer, hash }
 
 let entries = peers.entries(Some(tip));                                  // submission candidates
 let txid = peers.push_isolated(entries[0], &raw).await?;                 // the bytes' own txid
@@ -21,9 +21,10 @@ let txid = peers.push_isolated(entries[0], &raw).await?;                 // the 
 
 ## Dependency
 
-zebra-network and zebra-chain come from the `elicbarbieri/zebra` fork (v6.4.2 on the
-same librustzcash, orchard and sapling-crypto forks the workspace patches), pinned in
-the root `Cargo.toml`. zebra-network is built on tower 0.4, so this crate uses tower
+zebra-network and zebra-chain come from the `elicbarbieri/zebra` fork
+(`lazy-network-main-ff14`: zebra main on the same librustzcash, orchard and
+sapling-crypto forks the workspace patches, plus `init`'s advertised services and
+`Request::MempoolTransactionIdsFrom`), pinned by rev in the root `Cargo.toml`. zebra-network is built on tower 0.4, so this crate uses tower
 0.4 for its peer set (`tower::buffer::Buffer`); nothing tower-typed is public.
 
 zebra-network's codec parses in `block_in_place`: `PeerNetwork` needs a
@@ -52,14 +53,20 @@ they require `NODE_NETWORK` only from peers they dial themselves, and only while
 ## Requests
 
 All go through zebra's peer set, which picks the peer (power of two choices over its
-ready peers).
+ready peers), except `mempool_of`, which names it.
 
 | Method | Request | Returns |
 |---|---|---|
 | `find_headers(known, stop)` | `FindHeaders` | consensus bytes per header, best-chain order |
 | `blocks_by_hash(hashes)` | `BlocksByHash` | `(hash, Some(bytes) / None)` in request order |
-| `mempool_ids()` | `MempoolTransactionIds` | `PeerTxId`s (txid + v5 auth digest) |
+| `mempool_of(peer)` | `MempoolTransactionIdsFrom(peer)` | that peer's whole mempool: `PeerTxId`s (txid + v5 auth digest) |
 | `transactions_by_id(ids)` | `TransactionsById` | `(id, Some(bytes) / None)` in request order |
+
+- `mempool_of(peer)`: that peer alone answers (`mempool` → `inv`); a peer not ready
+  (busy, gone, never connected) = `PeerError::Network`, never another peer's listing.
+  An `inv` announcement landing before the reply is taken as the reply (the protocol
+  cannot tell them apart): one short listing, the next poll's whole. zebrad answers
+  an empty mempool with nothing: an empty listing.
 
 - A block or transaction whose recomputed id was not asked for is dropped and its
   sender scored through zebra's misbehaviour channel (its address book bans past the
@@ -72,22 +79,23 @@ ready peers).
 - `PeerError::Timeout` / `Network` = the request failed (no ready peer, a transport
   error).
 
-## Announcements: `peers: x/y` and the chain each peer carries
+## Announcements: the chain each peer carries
 
-`announcements()` subscribes to every transaction and block `inv` a connected peer
-sends, the sender's address attached by zebra:
+`announcements()` subscribes to every block `inv` a connected peer sends, the
+sender's address attached by zebra: `Announced { peer, hash }`, the peer's new tip
+(one block per `inv`; zebra drops multi-block ones), which the chain view counts by
+netgroup toward finality on peers' word.
 
-- `Announced::Transactions { peer, ids }`: the chain view's per-peer sightings
-- `Announced::Block { peer, hash }`: the peer's new tip (one block per `inv`; zebra
-  drops multi-block ones), which the chain view counts by netgroup toward finality on
-  peers' word
+Transaction `inv`s are ignored: zebrad and zakura announce each admitted
+transaction to a third of their peers, once, so a peer's silence says nothing.
+Mempool membership is each peer's own listing (`mempool_of`).
 
 A subscriber that falls 4,096 announcements behind gets `RecvError::Lagged` and
 knows it missed some.
 
 ## Submission entries and the isolated push
 
-- `live()`: outbound peers live in the last few minutes (the ones whose `inv` arrives)
+- `live()`: outbound peers live in the last few minutes (the ones the chain view polls)
 - `entries(tip)`: the live ones whose negotiated protocol version zebra accepts at
   `tip` (`Version::min_remote_for_height`). Which one an attempt goes to, and the
   one-netgroup-per-attempt rule, is `zaino-chainview`'s submission job
@@ -103,6 +111,8 @@ knows it missed some.
   isolated connections advertise no services and the peer set refuses those as
   outbound peers) serves real mainnet blocks 1–3 and three real transactions, lying
   for one of them. It admits Zaino and records it with no services. Headers and blocks
-  arrive byte-identical, the lie never labels the asked id, an `inv` arrives attributed to the sender, and a push lands byte-identical
-  at exactly the chosen address
+  arrive byte-identical, its mempool asked by address lists its three ids (a stranger's
+  = a failure), the lie never labels the asked id, a transaction `inv` is ignored and a
+  block `inv` arrives attributed to the sender, and a push lands byte-identical at
+  exactly the chosen address
 - Real mainnet blocks 1 and 1,687,107 round-trip through every wire conversion

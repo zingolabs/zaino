@@ -2,8 +2,9 @@
 //!
 //! ```text
 //!   requests ──▶ peer set (zebra's p2c over ready peers) ──▶ FindHeaders · BlocksByHash
-//!                                                  MempoolTransactionIds · TransactionsById
-//!   peers ──▶ inbound service ──▶ AdvertiseTransactionIds(ids, peer) ──▶ announcements (broadcast)
+//!                                                            TransactionsById
+//!   mempool_of(peer) ──▶ that peer alone ──▶ its whole mempool listing
+//!   peers ──▶ inbound service ──▶ AdvertiseBlock(hash, peer) ──▶ announcements (broadcast)
 //!                                  everything else ──▶ Nil (Zaino serves no peer)
 //!   push_isolated(addr) ──▶ fresh connection, no node state ──▶ PushTransaction ──▶ closed
 //! ```
@@ -22,7 +23,7 @@ use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use tracing::debug;
-use zaino_primitives::types::{BlockHash, Height, TransactionId};
+use zaino_primitives::types::{BlockHash, Height, PeerTxId, TransactionId};
 use zcash_protocol::consensus::NetworkType;
 use zebra_chain::block;
 use zebra_chain::chain_tip::NoChainTip;
@@ -33,7 +34,7 @@ use zebra_network::{
     SharedPeerError, Version,
 };
 
-use crate::wire::{self, PeerTxId, WireError};
+use crate::wire::{self, WireError};
 
 /// Score for one answer that was not what was asked (zebra bans past its threshold)
 const LIED: u32 = 50;
@@ -77,14 +78,15 @@ pub struct Supplied {
     pub peer: Option<SocketAddr>,
 }
 
-/// One peer `inv`, its sender attached by zebra (`chainview.md`)
+/// One peer's block `inv`, its sender attached by zebra: the peer's new tip (which chain it
+/// carries: peer finality's netgroup count)
 ///
-/// - `Transactions` = the `peers: x/y` sightings; `Block` = the peer's new tip (which chain it
-///   carries: peer finality's netgroup count)
+/// - transaction `inv`s ignored: a node announces each to a third of its peers, once (mempool
+///   membership = [`PeerNetwork::mempool_of`] instead)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Announced {
-    Transactions { peer: SocketAddr, ids: Vec<PeerTxId> },
-    Block { peer: SocketAddr, hash: BlockHash },
+pub struct Announced {
+    pub peer: SocketAddr,
+    pub hash: BlockHash,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,7 +161,7 @@ impl PeerNetwork {
         Self { network, peers, address_book, misbehaved, announced, timeout, user_agent }
     }
 
-    /// Every transaction or block `inv` a connected peer sends from now on
+    /// Every block `inv` a connected peer sends from now on
     pub fn announcements(&self) -> broadcast::Receiver<Announced> {
         self.announced.subscribe()
     }
@@ -238,11 +240,17 @@ impl PeerNetwork {
         self.lied(Some(PeerSocketAddr::from(peer)), what);
     }
 
-    /// One peer's mempool listing (zebra picks the peer)
-    pub async fn mempool_ids(&self) -> Result<Vec<PeerTxId>, PeerError> {
-        match self.call(Request::MempoolTransactionIds).await? {
+    /// `peer`'s whole mempool (`mempool` → `inv`): every transaction it admitted, attributable
+    ///
+    /// - `peer` busy or gone = `Network` (asked again next round), never another peer's listing
+    /// - an `inv` announcement landing first is taken as the reply (the protocol cannot tell
+    ///   them apart): one short listing, the next poll's whole
+    pub async fn mempool_of(&self, peer: SocketAddr) -> Result<Vec<PeerTxId>, PeerError> {
+        match self.call(Request::MempoolTransactionIdsFrom(peer.into())).await? {
             Response::TransactionIds(ids) => Ok(ids.into_iter().map(wire::peer_tx_id).collect()),
-            other => Err(unexpected("MempoolTransactionIds", &other)),
+            // zebrad's empty mempool
+            Response::Nil => Ok(Vec::new()),
+            other => Err(unexpected("MempoolTransactionIdsFrom", &other)),
         }
     }
 
@@ -329,7 +337,7 @@ impl PeerNetwork {
     }
 }
 
-/// Answers every peer with nothing; reports each transaction and block `inv` with its sender
+/// Answers every peer with nothing; reports each block `inv` with its sender
 fn inbound(
     announced: broadcast::Sender<Announced>,
 ) -> impl Service<
@@ -342,18 +350,8 @@ fn inbound(
        + Sync
        + 'static {
     tower::service_fn(move |request: Request| {
-        let heard = match request {
-            Request::AdvertiseTransactionIds(ids, Some(peer)) => {
-                let ids = ids.into_iter().map(wire::peer_tx_id).collect();
-                Some(Announced::Transactions { peer: *peer, ids })
-            }
-            Request::AdvertiseBlock(hash, Some(peer)) => {
-                Some(Announced::Block { peer: *peer, hash: wire::block_hash(hash) })
-            }
-            _ => None,
-        };
-        if let Some(heard) = heard {
-            let _ = announced.send(heard);
+        if let Request::AdvertiseBlock(hash, Some(peer)) = request {
+            let _ = announced.send(Announced { peer: *peer, hash: wire::block_hash(hash) });
         }
         std::future::ready(Ok(Response::Nil))
     })

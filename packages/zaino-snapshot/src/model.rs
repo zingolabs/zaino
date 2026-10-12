@@ -257,8 +257,8 @@ fn run(moves: Vec<(Input, bool)>) {
                     tails.push(Tailed { tail, epoch, received, ended: false });
                 }
                 Err(refused) => {
-                    let held = crate::compose::live_holder(&snap);
-                    assert!(!held, "{context}: G6 a live-held tip refused a stream: {refused}");
+                    let read = crate::compose::mempool_read(&snap);
+                    assert!(!read, "{context}: G6 a read mempool refused a stream: {refused}");
                 }
             }
         }

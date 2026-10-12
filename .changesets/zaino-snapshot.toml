@@ -55,3 +55,12 @@ migration = """
 `snap.unready()` → `snap.standing(now_unix)`; `Down::detail()` for the sentence; render \
 `GetLightdInfo` from `Lightd` (branch and next upgrade from `schedule` at `served`).
 """
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "feature"
+description = """
+`Snapshot::mempool()` and `mempool_stream()` also answer while a peer quorum reads the mempool \
+(`ChainViewSnapshot::peers_quorate`) with no trusted validator holding the tip; G6 checks the \
+gate against both.
+"""

@@ -34,10 +34,15 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 - `ready` is true exactly when `state` is `serving` or `degraded`, and only then does `/readyz`
   answer `200`. A degraded node keeps serving so a load balancer keeps routing to it during an
   outage of every trusted validator; alert on the state, not on `/readyz`.
-- While degraded, the mempool methods answer `UNAVAILABLE` (no validator admits transactions),
-  and `GetLightdInfo` still answers from the served tip and the upgrade schedule. Finality keeps
-  moving on the peers' word once outbound peers in more than 5 netgroups carry the chain and its
-  difficulty has not collapsed; otherwise it waits for a trusted validator to return.
+- While degraded, `GetLightdInfo` still answers from the served tip and the upgrade schedule.
+  Finality keeps moving on the peers' word once outbound peers in more than 5 netgroups carry
+  the chain and its difficulty has not collapsed; otherwise it waits for a trusted validator to
+  return.
+- While degraded, the mempool methods answer from a peer quorum: each outbound peer's mempool is
+  polled every 5 s, and a transaction is served once > 2/3 of them list it, from > 5
+  netgroups, and Zaino's own consensus checks pass against the served UTXO set (it needs
+  `index.compact_block`). `SendTransaction` goes to peers and answers once that quorum lists the
+  transaction. With fewer than 6 netgroups polled, the mempool methods answer `UNAVAILABLE`.
 - `syncing` turns on until the served tip reaches the verified best. After that it turns back on
   only when the served tip leaves the best chain or trails it by more than `finalised_depth`.
   Requests are never refused for it.

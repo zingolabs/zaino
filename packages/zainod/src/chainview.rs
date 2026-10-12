@@ -9,33 +9,41 @@ use std::sync::Arc;
 use futures::future::BoxFuture;
 use futures::FutureExt as _;
 use tracing::info;
-use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch};
+use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch, ValidatorP2pSource};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::ReorgDepth;
+use zaino_primitives::types::{ReorgDepth, UpgradeSchedule};
 use zaino_source::{ChainDataSource, IndexerWatch, ZcashGrpcClient, ZcashLegacyRpcClient};
 use zaino_traffic::{PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
+use crate::peers::ZebraPeers;
 
-/// View + the tasks driving it (spawn every one)
+/// Balancer + the tasks driving it (spawn every one); the view comes once the upgrade schedule
+/// is known ([`view`]: regtest's is a poll's)
 ///
-/// - `balancing` = the balancer's driver (every poll included); `fold` = polls into the view
+/// - `balancing` = the balancer's driver (every poll included)
 /// - `watches`: push streams of each validator naming an `indexer_address`
-/// - `peers`: `[p2p]` on = network start + the view's announcement fold
+/// - `p2p`: `[p2p]` on = the port + the future starting the network behind it
 pub(crate) struct Wiring<S: ChainDataSource> {
-    pub(crate) view: Arc<ChainView<S>>,
     pub(crate) balancer: TrafficBalancer<S>,
     pub(crate) balancing: TrafficDriver<S>,
-    pub(crate) fold: ObservationFold<S>,
     pub(crate) watches: Vec<(ValidatorId, IndexerWatch)>,
+    pub(crate) p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
+}
+
+/// View + the tasks feeding it (spawn every one)
+///
+/// - `fold` = polls into the view; `peers`: `[p2p]` on = network start + block `inv` fold
+pub(crate) struct Viewed<S: ChainDataSource> {
+    pub(crate) view: Arc<ChainView<S>>,
+    pub(crate) fold: ObservationFold<S>,
     pub(crate) header_sync: HeaderSync<S>,
     pub(crate) peers: Option<(BoxFuture<'static, ()>, PeerWatch)>,
 }
 
-/// One unprobed `client` per trusted validator ([`legacy_client`] / [`grpc_client`]), the
-/// balancer over them, the view over it (down at boot = the balancer's retry, never a boot
-/// failure)
+/// One unprobed `client` per trusted validator ([`legacy_client`] / [`grpc_client`]) and the
+/// balancer over them (down at boot = the balancer's retry, never a boot failure)
 pub(crate) fn connect<S: ChainDataSource>(
     config: &DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
@@ -59,14 +67,26 @@ pub(crate) fn connect<S: ChainDataSource>(
         Some(IndexerWatch::at(address, validator.into()).map(|watch| (member, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
+    let p2p = p2p.map(|(port, start)| (port, start.boxed()));
+    Ok(Wiring { balancer, balancing, watches, p2p })
+}
+
+/// The view over `balancer` for `schedule`, and the tasks feeding it
+pub(crate) fn view<S: ChainDataSource>(
+    config: &DaemonConfig,
+    balancer: &TrafficBalancer<S>,
+    p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
+    schedule: UpgradeSchedule,
+) -> Result<Viewed<S>, IndexerError> {
+    let validators = &config.trusted_validators;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
-    let view = ChainView::new(addresses.collect(), balancer.clone(), depth)?;
+    let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule)?;
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;
     if let Some((port, start)) = p2p {
-        view = view.with_peers(port);
-        starting = Some(start.boxed());
+        view = view.with_peers(port as Arc<dyn ValidatorP2pSource>);
+        starting = Some(start);
     }
     let peers = starting.zip(view.peer_watch());
 
@@ -75,8 +95,7 @@ pub(crate) fn connect<S: ChainDataSource>(
     let p2p = config.p2p.enabled;
     info!(validators = validators.len(), p2p, "Chain view configured");
 
-    let view = Arc::new(view);
-    Ok(Wiring { view, balancer, balancing, fold, watches, header_sync, peers })
+    Ok(Viewed { view: Arc::new(view), fold, header_sync, peers })
 }
 
 /// [`DaemonConfig::validate`] refuses it first

@@ -21,7 +21,7 @@ impl<V: SequenceRead + MapRead> ValueBalanceReader<V> {
 
     /// One answer per outpoint, in order (`None` = never created or spent): one `values` probe
     /// (cold page faults overlap instead of queueing)
-    pub(crate) fn values(&self, outpoints: &[OutPoint]) -> Vec<Option<Zatoshis>> {
+    pub fn values(&self, outpoints: &[OutPoint]) -> Vec<Option<Zatoshis>> {
         let keys: Vec<[u8; OutPoint::LEN]> = outpoints.iter().map(OutPoint::encode).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
         let found = self.view.map(OUTPUTS).values(&keys).into_iter();

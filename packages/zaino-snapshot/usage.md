@@ -108,7 +108,8 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 
 `compose::check(prev, next, depth)` runs after every publish in debug builds: G2 (seq + 1), G3
 (tips = this publish's inputs), G4 (synced hysteresis), G5 (epoch key = served, rotates iff it
-moved, old sealed, stored open), G6 (`mempool()` gate = `held_by`).
+moved, old sealed, stored open), G6 (`mempool()` gate = a `Live` holder in `held_by`, or a peer
+quorum reading: `ChainViewSnapshot::peers_quorate`).
 
 - `model.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails

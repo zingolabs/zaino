@@ -150,29 +150,31 @@ async fn boot_over<S: ChainDataSource>(
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
     let chainview_span = component("ChainView");
-    let chainview = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
+    let wiring = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
     let cancel = CancellationToken::new();
     let mut tasks = JoinSet::new();
-    let balancing = chainview.balancing.run(cancel.child_token());
+    let balancing = wiring.balancing.run(cancel.child_token());
     spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
-    let schedule = upgrade_schedule(config.network, &chainview.balancer, validators);
+    let schedule = upgrade_schedule(config.network, &wiring.balancer, validators);
     let schedule = schedule.instrument(chainview_span.clone()).await;
+    let viewed = chainview_span
+        .in_scope(|| crate::chainview::view(&config, &wiring.balancer, wiring.p2p, schedule))?;
     let inputs = Inputs {
-        chain: chainview.header_sync.subscribe(),
-        view: Arc::clone(&chainview.view),
-        balancer: chainview.balancer.clone(),
+        chain: viewed.header_sync.subscribe(),
+        view: Arc::clone(&viewed.view),
+        balancer: wiring.balancer.clone(),
         schedule,
     };
     let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
 
     let header_sync = match config.p2p.enabled {
-        true => chainview.header_sync.with_peers(header_rules(config.network, &schedule)?),
-        false => chainview.header_sync,
+        true => viewed.header_sync.with_peers(header_rules(config.network, &schedule)?),
+        false => viewed.header_sync,
     };
     let run = header_sync.run(cancel.child_token());
     spawn_infallible(&mut tasks, "header-sync", chainview_span.clone(), run);
-    if let Some((starting, watch)) = chainview.peers {
+    if let Some((starting, watch)) = viewed.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
         let token = cancel.child_token();
         let run = async move {
@@ -180,10 +182,10 @@ async fn boot_over<S: ChainDataSource>(
         };
         spawn_infallible(&mut tasks, "peers", chainview_span.clone(), run);
     }
-    let fold = chainview.fold.run(cancel.child_token());
+    let fold = viewed.fold.run(cancel.child_token());
     spawn_infallible(&mut tasks, "chainview", chainview_span.clone(), fold);
-    for (member, watch) in chainview.watches {
-        let (changed, linked) = (chainview.balancer.clone(), chainview.balancer.clone());
+    for (member, watch) in wiring.watches {
+        let (changed, linked) = (wiring.balancer.clone(), wiring.balancer.clone());
         let on_change = move |_| changed.pushed(member, Push::Changed);
         let on_link = move |up| linked.pushed(member, Push::Link(up));
         let run = watch.run(cancel.child_token(), on_change, on_link);
@@ -303,6 +305,16 @@ async fn pipeline<S: ChainDataSource>(
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
     spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
     spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+    let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
+    if let Some(polling) = inputs.view.peer_mempool(utxos) {
+        if config.compact_block()?.is_none() {
+            warn!(
+                "p2p.enabled without index.compact_block: no UTXO set, peers admit no transaction"
+            );
+        }
+        let run = polling.run(cancel.child_token());
+        spawn_infallible(&mut tasks, "peer-mempool", component("ChainView"), run);
+    }
     let (disk, walked) = watch::channel(crate::progress::Disk::new());
     let (rate, block_rate) = watch::channel(None);
     let reporting = crate::progress::run(
@@ -644,7 +656,7 @@ mod tests {
         let trusted =
             zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
-        let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth);
+        let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth, schedule);
         let view = Arc::new(view.expect("one endpoint"));
         let fold = view.observation_fold();
         let inputs = Inputs { chain, view: Arc::clone(&view), balancer, schedule };

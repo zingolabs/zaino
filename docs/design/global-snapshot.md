@@ -279,7 +279,7 @@ histograms and `zaino_build_info` unchanged:
 | G3 | `best`, `final_tip`, `held_by` = `snap.chain()`'s; `served` = the NFS's (on it, or a reorg in flight) | `compose::check`; model |
 | G4 | `synced` opens only at served == best; stays only on best and ≤ depth behind | `compose::check`; model |
 | G5 | epoch key = `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model tails |
-| G6 | `mempool()` Ok ⇔ `held_by` ≠ ∅; each servable tx streamed once per epoch (V3) | `compose::check`; model tails |
+| G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch (V3) | `compose::check`; model tails |
 | G7 | `at(h)` Some ⇔ h ∈ graph ∪ {root}; `at(h)` = folding genesis..h along h's branch (N6 + side) | NFS model, driver test |
 | G8 | every graph node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check`; header model |
 | G9 | `/statusz`, `/readyz`, gauges = f(one snapshot, counters, owners' live tables) | types; golden `Report` test |

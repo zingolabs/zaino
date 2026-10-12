@@ -236,8 +236,8 @@ impl<V: MapRead> Views<V> {
 }
 
 impl<V: SequenceRead + MapRead> Views<V> {
-    /// Fold parent only (no route reads value-balance)
-    pub(crate) fn value_balance(&self) -> Option<ValueBalanceReader<OverlayView<V>>> {
+    /// Fold parents + a peer quorum's prevouts (no route reads value-balance)
+    pub fn value_balance(&self) -> Option<ValueBalanceReader<OverlayView<V>>> {
         Some(ValueBalanceReader::new(self.view(IndexKind::ValueBalance)?))
     }
 }

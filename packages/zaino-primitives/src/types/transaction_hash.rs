@@ -10,6 +10,15 @@ use super::display_order::{self, ParseHashError};
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TransactionId([u8; 32]);
 
+/// Unmined transaction as peers name it (`MSG_WTX` inventory): txid + (v5+) auth digest
+///
+/// - `auth_digest` `None` = pre-v5 (its txid commits to every byte)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PeerTxId {
+    pub txid: TransactionId,
+    pub auth_digest: Option<[u8; 32]>,
+}
+
 impl From<[u8; 32]> for TransactionId {
     fn from(bytes: [u8; 32]) -> Self {
         Self(bytes)

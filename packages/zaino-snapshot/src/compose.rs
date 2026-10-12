@@ -71,12 +71,14 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
     assert!(!next.feed.sealed(), "G5: the stored epoch open");
 
     let gate = next.mempool().is_ok();
-    assert_eq!(gate, live_holder(next), "G6: mempool() Ok iff a `Live` validator holds the tip");
+    let reads = mempool_read(next);
+    assert_eq!(gate, reads, "G6: mempool() Ok iff a `Live` holder of the tip or a peer quorum");
 }
 
-/// A `Live` validator (its mempool listed) among the tip's holders
-pub(crate) fn live_holder<V>(snap: &Snapshot<V>) -> bool {
+/// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the
+/// peers' listings spanning a quorum's netgroups
+pub(crate) fn mempool_read<V>(snap: &Snapshot<V>) -> bool {
     let endpoints = snap.view().endpoints();
     let live = |at: usize| endpoints.get(at).is_some_and(|meta| meta.health == Health::Live);
-    snap.tips().held_by.positions().any(live)
+    snap.tips().held_by.positions().any(live) || snap.view().peers_quorate()
 }

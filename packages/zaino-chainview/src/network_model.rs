@@ -149,7 +149,9 @@ async fn run(n: usize, moves: Vec<Move>) {
     });
     let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
     let addresses = (0..n).map(|index| format!("v{index}")).collect();
-    let view = ChainView::new(addresses, balancer.clone(), depth).expect("1..=5 endpoints");
+    let schedule = sim.chain.schedule().upgrades;
+    let view = ChainView::new(addresses, balancer.clone(), depth, schedule);
+    let view = view.expect("1..=5 endpoints");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));

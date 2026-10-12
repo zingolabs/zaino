@@ -12,7 +12,7 @@ use std::{
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
 use zaino_primitives::types::{
-    Block, BlockFees, Fee, Height, OutPoint, OutputIndex, Transaction, TransactionId, Zatoshis,
+    Block, BlockFees, FeeError, Height, OutPoint, OutputIndex, TransactionId, Zatoshis,
 };
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
@@ -180,7 +180,10 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
                 unspent.insert(outpoint, output.value);
                 created_here.insert(outpoint);
             }
-            fees.push(fee(height, tx, spent)?);
+            fees.push(tx.fee(spent).map_err(|refused| match refused {
+                FeeError::Negative => FoldError::NegativeFee { height, txid: tx.txid },
+                FeeError::Overflow => FoldError::ValueOverflow { height, txid: tx.txid },
+            })?);
         }
         for (outpoint, value) in outputs(block).filter(|(at, _)| created_here.contains(at)) {
             out.map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
@@ -199,30 +202,6 @@ fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
     })
 }
 
-/// `tx`'s value left in the transparent transaction value pool (protocol.pdf#transactions §3.4),
-/// `spent` = Σ its prevouts' values
-///
-/// - Σ transparent inputs − Σ transparent outputs + each shielded pool's value balance
-fn fee(height: Height, tx: &Transaction, spent: Zatoshis) -> Result<Fee, FoldError> {
-    if tx.transparent.coinbase {
-        return Ok(Fee::Coinbase);
-    }
-    let overflow = || FoldError::ValueOverflow { height, txid: tx.txid };
-    let paid = Zatoshis::sum_balances(tx.transparent.outputs.iter().map(|out| out.value))
-        .ok_or_else(overflow)?;
-
-    // every term within ±MAX_MONEY (zip-0209) → Σ of six fits i64
-    let remaining = spent.as_i64() - paid.as_i64()
-        + i64::from(tx.sprout.value_balance)
-        + i64::from(tx.sapling.value_balance)
-        + i64::from(tx.orchard.value_balance)
-        + i64::from(tx.ironwood.value_balance);
-    // MUST be nonnegative (protocol.pdf#transactions §3.4 consensus rule)
-    let remaining =
-        u64::try_from(remaining).map_err(|_| FoldError::NegativeFee { height, txid: tx.txid })?;
-    Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| overflow())?))
-}
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -235,7 +214,7 @@ mod tests {
         fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, View,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockRef, ShieldedPool, SignedZatoshis};
+    use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, SignedZatoshis, Transaction};
     use zaino_sync::{IndexerDataSink, Subscription};
     use zcash_protocol::consensus::NetworkType;
 

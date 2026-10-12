@@ -10,4 +10,4 @@ mod tests;
 pub use network::{
     Announced, PeerConfig, PeerError, PeerNetwork, PushError, Supplied, DEFAULT_PEER_TARGET,
 };
-pub use wire::{PeerTxId, WireError};
+pub use wire::WireError;

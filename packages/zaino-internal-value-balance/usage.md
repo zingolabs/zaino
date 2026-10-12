@@ -54,7 +54,8 @@ tokio::spawn(writer.run(blocks, fee_sink));
   panic the fee sink drops without `Shutdown`, so compact-block panics on its
   next pop.
 - `handle()` = the `IndexHandle` the NFS reads (no route reads this index; the
-  NFS's folds read it through `ValueBalanceReader`).
+  NFS's folds read it through `ValueBalanceReader`, and zainod's `ServedUtxos`
+  reads `values(outpoints)` at the served tip for the chain view's peer quorum).
 
 ## Folding
 
