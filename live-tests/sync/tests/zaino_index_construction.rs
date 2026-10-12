@@ -43,8 +43,11 @@ struct FundedWallet {
 
 // ── topology ──────────────────────────────────────────────────────────────────────────────────
 
-/// zingo-infra `golden-mainnet` via tekau NodePort (direct tailscale; office IP = no public peers)
-const GOLDEN_MAINNET_P2P: &str = "tekau.vaquita-altair.ts.net:30233";
+/// Over tailscale (office IP = no public peers)
+/// - zingo-infra `golden-mainnet` via tekau NodePort
+/// - `elicb-home-server` zebrad
+const TRUSTED_MAINNET_P2P: [&str; 2] =
+    ["tekau.vaquita-altair.ts.net:30233", "elicb-home-server-zebra.vaquita-altair.ts.net:8233"];
 /// Snapshot restores 277 GiB; zebrad appends past the pin
 const CHAIN_DISK_GIB: u64 = 320;
 /// UNMEASURED: compact-block + tree-state + transparent files for the whole chain
@@ -132,7 +135,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
                 version = "6.3.0"
             )
             .sync_budget(ZEBRA_SYNC_BUDGET)
-            .follow_from(IRONWOOD_MAINNET, [GOLDEN_MAINNET_P2P])
+            .follow_from(IRONWOOD_MAINNET, TRUSTED_MAINNET_P2P)
             .disk(Disk::gib(CHAIN_DISK_GIB))
             .resources(Cpu::cores(4), Mem::gib(10)),
         );
