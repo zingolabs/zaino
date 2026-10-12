@@ -8,6 +8,8 @@ use std::{fmt, io, ops::Range, path::Path, sync::Arc};
 
 use bytes::Bytes;
 
+#[cfg(target_os = "linux")]
+mod probe;
 mod real;
 #[cfg(any(test, feature = "testing"))]
 mod sim;
@@ -41,6 +43,20 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
 
     /// Exclusive for the guard's life; held elsewhere = `ErrorKind::WouldBlock`
     fn lock(&self, path: &Path) -> io::Result<LockGuard>;
+
+    /// How a commit may make `dir`'s files durable (decided once, at open)
+    fn durability(&self, dir: &Path) -> io::Result<Durability>;
+}
+
+/// How a commit makes the files it grew durable before its manifest
+///
+/// - `PerFile` = `sync_data` each (any POSIX filesystem)
+/// - `Barrier` = [`FileHandle::write_back`] each, then one `sync_data` = one device cache flush
+///   covering them all (in-place-update filesystems only: `docs/design/durability.md`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Durability {
+    PerFile,
+    Barrier,
 }
 
 /// Open file
@@ -59,6 +75,10 @@ pub trait FileHandle: Send + Sync + fmt::Debug {
 
     /// Content and length durable on return
     fn sync_data(&self) -> io::Result<()>;
+
+    /// Every dirty page written to the device and waited on, no cache flush (durable only after a
+    /// later flush: [`Durability::Barrier`])
+    fn write_back(&self) -> io::Result<()>;
 
     /// Writeback of `range` started: no wait, no durability (bounds dirty pages ahead of
     /// `sync_data`; RocksDB `bytes_per_sync`)

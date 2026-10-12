@@ -26,7 +26,7 @@ use zaino_primitives::types::BlockRef;
 
 use crate::{
     dir::IndexDir,
-    fs::Fs,
+    fs::{Durability, Fs},
     lsm::{
         decode_list, encode_list, file_name, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
     },
@@ -67,6 +67,8 @@ impl DiskEngine {
 }
 
 /// Index directory's writer (holds its `LOCK`)
+///
+/// - `durability` = how its commits make sequences durable, probed once at open
 #[derive(Debug)]
 pub struct DiskStore {
     dir: IndexDir,
@@ -76,6 +78,7 @@ pub struct DiskStore {
     view: DiskView,
     buffer: WriteBuffer,
     write_buffer: NonZeroUsize,
+    durability: Durability,
     failed: bool,
 }
 
@@ -197,6 +200,9 @@ impl PersistenceEngine for DiskEngine {
             .zip(&body.sequences)
             .map(|(table, seals)| SequenceFile::open(self.fs.as_ref(), dir.path(), table, *seals))
             .collect::<Result<Vec<_>, _>>()?;
+        // every sequence file exists now: the probe sees each one a `Barrier` commit would write
+        let durability = self.fs.durability(dir.path())?;
+        tracing::info!(index = schema.kind.name(), path = %path.display(), ?durability, "Commits");
         let map_dirs: Vec<PathBuf> =
             schema.maps().iter().map(|table| dir.subdir(table.name)).collect::<io::Result<_>>()?;
         if opened.body.is_none() {
@@ -223,6 +229,7 @@ impl PersistenceEngine for DiskEngine {
             view: DiskView { state: Arc::new(state) },
             buffer: WriteBuffer::empty(schema),
             write_buffer,
+            durability,
             failed: false,
         })
     }
@@ -275,16 +282,23 @@ impl DiskStore {
         }
     }
 
-    /// WriteBuffer written + sealed, every table in parallel → manifest at `tip` → new view
+    /// WriteBuffer written + sealed, every table in parallel → (`Barrier`) one device flush →
+    /// manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
-        let (schema, buffer) = (&self.schema, &self.buffer);
+        let (schema, buffer, durability) = (&self.schema, &self.buffer, self.durability);
         let (sequences, maps) = rayon::join(
-            || write_sequences(&mut self.sequences, schema, buffer),
+            || write_sequences(&mut self.sequences, schema, buffer, durability),
             || write_maps(&mut self.maps, schema, buffer),
         );
+        let (sequences, grown): (Vec<Seals>, Vec<bool>) = sequences?.into_iter().unzip();
+        let maps = maps?;
+        // written back, not durable: flushed through a file this commit wrote, before the
+        // manifest names any of them
+        if let (Durability::Barrier, Some(at)) = (durability, grown.iter().position(|&g| g)) {
+            self.sequences[at].flush()?;
+        }
 
-        let body =
-            Body { committed: Committed { tip: Some(tip) }, sequences: sequences?, maps: maps? };
+        let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps };
         self.dir.commit(&body.encode(&self.schema))?;
         for log in &mut self.maps {
             log.committed()?;
@@ -307,18 +321,21 @@ impl DiskStore {
     }
 }
 
-/// Each sequence's buffered records appended, then sealed (one table per thread)
+/// Each sequence's buffered records appended, then sealed per `durability` (one table per
+/// thread) → its seals + whether it grew
 fn write_sequences(
     files: &mut [SequenceFile],
     schema: &Schema,
     buffer: &WriteBuffer,
-) -> Result<Vec<Seals>, StoreError> {
+    durability: Durability,
+) -> Result<Vec<(Seals, bool)>, StoreError> {
     let tables = files.par_iter_mut().zip(schema.sequences());
     let sealed = tables.map(|(file, &table)| {
         for record in buffer.records(table) {
             file.append(record)?;
         }
-        Ok(file.seal()?)
+        let grown = file.grown();
+        Ok((file.seal(durability)?, grown))
     });
     sealed.collect()
 }

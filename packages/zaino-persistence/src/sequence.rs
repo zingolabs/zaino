@@ -12,7 +12,7 @@ use std::{io, ops::Range, path::Path};
 use bytes::Bytes;
 
 use crate::{
-    fs::Fs,
+    fs::{Durability, Fs},
     manifest::{BodyReader, ManifestError},
     pages::{FileKind, PageError, PagedFile, Pages, Sealed},
     port::{SequenceTable, Width},
@@ -124,15 +124,23 @@ impl SequenceFile {
         Ok(())
     }
 
-    /// Files fsynced if grown (fsync cost ∝ files: tree-state holds ~100) → seals for the next
-    /// manifest
-    pub(crate) fn seal(&mut self) -> io::Result<Seals> {
+    /// Appended to since the last seal
+    pub(crate) fn grown(&self) -> bool {
+        self.grown
+    }
+
+    /// Files made durable per `durability` if grown → seals for the next manifest
+    ///
+    /// - `PerFile`: an fsync per file (∝ files: tree-state holds ~100); `Barrier`: written back,
+    ///   durable at the store's one [`flush`](Self::flush)
+    pub(crate) fn seal(&mut self, durability: Durability) -> io::Result<Seals> {
         if self.grown {
-            self.sealed.data = self.data.seal()?;
+            self.sealed.data = self.data.seal(durability)?;
             if let Some(ends) = &mut self.ends {
-                self.sealed.ends = ends.seal()?;
+                self.sealed.ends = ends.seal(durability)?;
             }
-            // synced = clean: dropping costs nothing now, one 4 KiB re-read of the tail page later
+            // written back = clean: dropping costs nothing now, one 4 KiB re-read of the tail
+            // page later
             if !self.cache_writes {
                 self.data.drop_cache()?;
                 if let Some(ends) = &self.ends {
@@ -142,6 +150,12 @@ impl SequenceFile {
             self.grown = false;
         }
         Ok(self.sealed)
+    }
+
+    /// The device flush that makes every file a `Barrier` seal wrote back durable (`sync_data` on
+    /// this table's data: a file the commit wrote, on the index's device)
+    pub(crate) fn flush(&self) -> io::Result<()> {
+        self.data.flush()
     }
 
     /// Read view at the last seal; `previous` reused whole when at the same seals, else its

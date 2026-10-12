@@ -23,7 +23,7 @@ use super::{
     Result, SegmentError, SegmentMeta,
 };
 use crate::{
-    fs::{Access, Fs},
+    fs::{Access, Durability, Fs},
     pages::{sums_path, FileKind, PagedFile, Sealed},
 };
 
@@ -83,7 +83,8 @@ impl SegmentOut {
         self.file.append(&self.chunk)?;
         let (id, records) = (self.id, self.navigation.records());
         self.navigation.finish(&mut self.file).map_err(|error| navigation_error(id, error))?;
-        let meta = SegmentMeta { id, records, sealed: self.file.seal()? };
+        // a new file: its blocks + length = metadata no other file's flush commits
+        let meta = SegmentMeta { id, records, sealed: self.file.seal(Durability::PerFile)? };
         Ok((meta, self.digest.finalize(), self.file))
     }
 }

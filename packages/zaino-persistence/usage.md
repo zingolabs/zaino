@@ -95,11 +95,15 @@ spent.range(&start, &end, limit);                         // [start, end); None 
   is RAM, not bytes on disk.
 - **`commit`:**
   - Every buffered change goes to disk in one commit at the last applied tip:
-    appends are sealed (only tables that grew are fsynced) and each map's rows
-    are written as one sorted segment, every table on its own thread; then the
-    manifest slot is written, which
-    is the commit point, and `committed()` moves. Nothing buffered = `Ok`, nothing
-    written.
+    appends are sealed (only tables that grew) and each map's rows are written
+    as one sorted segment, every table on its own thread; then the manifest slot
+    is written, which is the commit point, and `committed()` moves. Nothing
+    buffered = `Ok`, nothing written.
+  - How sequences are sealed is decided once at `open` by `Fs::durability`:
+    `PerFile` fsyncs each grown file, while `Barrier` (ext4 / XFS, cleared by
+    the probe) writes each back and then flushes the device once before the
+    manifest (`durability.md` "Barrier commit"). Segments are new files and are
+    always fsynced.
   - An `Err` poisons the store, so any later `commit` panics (an `fsync` error is
     never retried; `durability.md`). Drop the store and reopen it: the
     buffer is gone with it.
@@ -297,6 +301,9 @@ tests run on:
   and `restarted()` is the same image after a process exit.
 - **`fail_reads_from(n)`:** the same, for reads.
 - **`power_loss()`:** the image a crash right now would leave.
+- **`flush_device()`:** from now on any `sync_data` also makes every file's
+  written-back writes durable, and `durability()` answers `Barrier` (ext4 /
+  XFS). Without it, a flush covers only its own file.
 - **`contents(path)` and `corrupt(path, edit)`:** inspect and damage files.
 - **`DiskEngine::with_fanout(fs, n)` and `DiskStore::settle()`:** small fanouts
   and deterministic merge landing, for tests.

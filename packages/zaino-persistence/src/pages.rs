@@ -27,7 +27,7 @@ use std::{
 use bytes::Bytes;
 
 use crate::{
-    fs::{Access, FileHandle, Fs, Mapping},
+    fs::{Access, Durability, FileHandle, Fs, Mapping},
     manifest::{BodyReader, ManifestError},
     port::Checked,
 };
@@ -267,22 +267,34 @@ impl PagedFile {
         Ok(())
     }
 
-    /// Data fsync → completed pages' CRCs written + fsynced → seal for the owner's next manifest
-    /// (committed only once that manifest is durable)
     /// Synced data out of page cache (advisory)
     pub(crate) fn drop_cache(&self) -> io::Result<()> {
         self.data.drop_cache()
     }
 
-    pub(crate) fn seal(&mut self) -> io::Result<Sealed> {
-        self.data.sync_data()?;
+    /// `sync_data` on the data file (a device flush on a `Barrier` filesystem)
+    pub(crate) fn flush(&self) -> io::Result<()> {
+        self.data.sync_data()
+    }
+
+    /// Data durable → completed pages' CRCs written + durable → seal for the owner's next
+    /// manifest (committed only once that manifest is durable)
+    ///
+    /// - [`Durability::Barrier`] = written back only: durable at the owner's one flush, before its
+    ///   manifest
+    pub(crate) fn seal(&mut self, durability: Durability) -> io::Result<Sealed> {
+        let durable = |file: &dyn FileHandle| match durability {
+            Durability::PerFile => file.sync_data(),
+            Durability::Barrier => file.write_back(),
+        };
+        durable(self.data.as_ref())?;
         if !self.unsealed_sums.is_empty() {
             let at = self.sealed_pages * SUM as u64;
             if let Some([_, sums]) = &mut self.reserves {
                 sums.cover(self.sums.as_ref(), at + self.unsealed_sums.len() as u64)?;
             }
             self.sums.write_all_at(&self.unsealed_sums, at)?;
-            self.sums.sync_data()?;
+            durable(self.sums.as_ref())?;
             self.sealed_pages += (self.unsealed_sums.len() / SUM) as u64;
             self.sums_digest = extend_digest(self.sums_digest, &self.unsealed_sums);
             self.unsealed_sums.clear();
@@ -563,7 +575,7 @@ mod tests {
         let mut file =
             PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&bytes[..PAGE - 3]).expect("append");
-        let first = file.seal().expect("seal");
+        let first = file.seal(Durability::PerFile).expect("seal");
         let first_tail = page_sum(0, &bytes[..PAGE - 3]);
         assert_eq!(first, Sealed { len: (PAGE - 3) as u64, tail: first_tail, sums: 0 });
         drop(file);
@@ -571,7 +583,7 @@ mod tests {
         let mut file =
             PagedFile::open(fs.as_ref(), path, first, FileKind::Segment).expect("reopen");
         file.append(&bytes[PAGE - 3..]).expect("append");
-        let sealed = file.seal().expect("seal");
+        let sealed = file.seal(Durability::PerFile).expect("seal");
         let sums: Vec<u8> = (0u64..)
             .zip(bytes.chunks(PAGE).take(3))
             .flat_map(|(index, page)| page_sum(index, page).to_le_bytes())
@@ -656,7 +668,7 @@ mod tests {
         let mut file =
             PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&vec![7; 2 * PAGE + 5]).expect("append");
-        let sealed = file.seal().expect("seal");
+        let sealed = file.seal(Durability::PerFile).expect("seal");
         drop(file);
 
         for fail_at in 0..2 {
@@ -706,8 +718,12 @@ mod tests {
             log.append(piece).expect("append log");
             assert_eq!(len(log_path), MIN_RESERVE, "the first step's room, written in place");
         }
-        let sealed = segment.seal().expect("seal segment");
-        assert_eq!(log.seal().expect("seal log"), sealed, "the reserve is never sealed");
+        let sealed = segment.seal(Durability::PerFile).expect("seal segment");
+        assert_eq!(
+            log.seal(Durability::PerFile).expect("seal log"),
+            sealed,
+            "the reserve is never sealed"
+        );
         assert_eq!(len(&sums_path(log_path)), MIN_RESERVE, "the checksums grow the same way");
         let stored = fs.contents(log_path).expect("log");
         assert_eq!(&stored[..bytes.len()], &bytes[..]);
@@ -739,7 +755,7 @@ mod tests {
         let mut file =
             PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment).expect("open");
         file.append(&bytes).expect("append");
-        let sealed = file.seal().expect("seal");
+        let sealed = file.seal(Durability::PerFile).expect("seal");
 
         let clean = scrub(fs.as_ref(), dir.path(), "data", sealed).expect("scrub");
         assert!(clean.is_clean(), "{clean:?}");

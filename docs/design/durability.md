@@ -142,7 +142,42 @@ in from elsewhere, therefore fail at open or scrub instead of passing as consist
 Sealing a file fsyncs its data, then writes and fsyncs the checksums of the pages completed since
 the last seal. Every file is sealed before the manifest that carries its seal. Appends start
 writeback (`sync_file_range`) every 1 MiB so the seal's fsync finds little left dirty (RocksDB's
-`bytes_per_sync`).
+`bytes_per_sync`). On a filesystem the probe below clears, a commit seals its sequence files with
+one device flush instead of an fsync each.
+
+### Barrier commit
+
+A sequence commit on ext4 or XFS overwrites reserve blocks in place, so each file's fsync is only
+a device cache flush, and a flush makes durable every write that completed before it (on any
+file: `Documentation/block/writeback_cache_control.rst`). A barrier commit therefore seals each
+grown file with `sync_file_range(WAIT_BEFORE | WRITE | WAIT_AFTER)`: every dirty page written and
+its bio completed, no flush. It then fsyncs one file the commit wrote, a single flush that covers
+them all, and only then writes the manifest. Tree-state grows about 45 files a commit, so this
+replaces about 90 flushes with 2. LSM segments are new files (new blocks, a new length, a new name)
+and keep their own fsyncs either way.
+
+The probe (`zaino-persistence` `fs/probe.rs`) decides once per store at open and allows it only
+on positive evidence; any unknown or unreadable fact means one fsync per file:
+
+- **Mount.** ext4 with `barrier` on, no `journal_async_commit`, no DAX, read from
+  `/proc/fs/ext4/<dev>/options` (mountinfo hides options that are superblock defaults, such as
+  a `tune2fs -o nobarrier`). XFS on one device (no `logdev` or `rtdev`) and no DAX. Any `data=`
+  mode is fine: under `data=journal`, the writeback itself forces the journal commit. Copy-on-write
+  and log-structured filesystems (btrfs, ZFS, bcachefs, f2fs), network and FUSE filesystems,
+  overlayfs and tmpfs never qualify, since an overwrite there is new metadata that a flush of
+  another file does not commit.
+- **Files.** Every entry under the index directory is on its device and not DAX, and on XFS no
+  file shares an extent (a `cp --reflink` copy, the coreutils default, would turn an overwrite
+  into a copy-on-write remap). A file reflinked after open is not caught.
+- **Block stack.** Not probed. A flush passes through dm-linear and md to every member, and dm-thin
+  commits its block mappings before completing a flush that reaches the thin volume. That is why
+  the flush goes through a file the commit wrote. A device that drops flushes breaks per-file
+  fsync just the same.
+
+A failed `sync_file_range` fails the commit: the writeback error is reported once per file
+descriptor, and a later fsync would not see it again. Re-check on a kernel upgrade that
+`ext4_sync_file` and `xfs_file_fsync` still flush the device for a file with nothing to journal,
+and that the option names above are unchanged.
 
 Open checks each file is at least as long as its seal (then truncated to it), reads the tail page
 back against the manifest, and reads the whole `.crc` back against the `sums` digest. The `.crc`
@@ -170,7 +205,8 @@ body = tip ‖ per sequence: Sealed(<name>.dat) [‖ Sealed(<name>.idx) if Varia
 - **Sequence** (compact-block `blocks`, tree-state `heights` and per pool `l00`..`l31` +
   `subtrees`, header-chain `headers`): `<name>.dat` holds records back to back; a `Variable` one
   adds `<name>.idx`, a u64 end offset per record. A commit appends, then seals only the files that
-  grew (fsync cost grows with the file count, and tree-state has about 100), before the manifest.
+  grew, before the manifest. With one fsync per file the cost grows with the file count (tree-state
+  has about 100); a barrier commit pays one flush however many grew.
 - **Map** (transparent-address `receives` and `spent`, block-hash `by_hash`, value-balance
   `outputs`): a directory of immutable sorted segments, `<map>/<id>.seg` plus `.crc`. A segment
   holds fixed-width rows, one fence key per 4 KiB block and a binary fuse filter over each key's
@@ -234,13 +270,15 @@ durable manifest.
   both) pins the rollback-by-one and the refusal in "The manifest".
 - **Not measured by `SimFs`.** Whether a sync commits the journal is a property of the real
   filesystem. `SimFs` checks that the reserve and in-place manifest keep every crash state
-  correct, not that they save time; that is measured on a live sync.
+  correct, not that they save time; that is measured on a live sync. Likewise, that one fsync
+  flushes the whole device is the probe's claim about ext4 and XFS. `SimFs::flush_device` models
+  it, and the crash and failed-I/O tests run both with and without it.
 - **The crash model.** A crash drops, keeps, reorders or tears any write since the last fsync. We
   tear writes in half, on 512-byte sector boundaries (only the first sector, all but the last),
   and with every other sector landing, since a device promises sector atomicity only and may
   persist a write's sectors in any order. We also lose one file's unsynced writes while every
   other file keeps its own, which is the case where the data and the manifest reach the disk but
-  the checksums do not. Tests write with a 4 KiB spill threshold, so every enumerated workload
+  the checksums do not. A write that was written back but not yet flushed counts as unsynced. Tests write with a 4 KiB spill threshold, so every enumerated workload
   also runs through the merge scratch files.
 - **Failed I/O.** `SimFs::fail_from` returns `EIO` from the nth mutating call on (Pebble
   `errorfs`), and the LSM store workload reruns failing at the 0th, 1st, 2nd call and so on until it

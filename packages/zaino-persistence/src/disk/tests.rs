@@ -38,9 +38,18 @@ struct SimDisk {
 }
 
 impl SimDisk {
-    fn new(fanout: usize) -> Self {
-        Self { fs: SimFs::new(), fanout, path: PathBuf::from(ROOT) }
+    /// `flush_device` = an ext4 / XFS-like device: commits take the `Barrier` path
+    fn new(fanout: usize, flush_device: bool) -> Self {
+        Self { fs: sim_fs(SimFs::new(), flush_device), fanout, path: PathBuf::from(ROOT) }
     }
+}
+
+/// `fs`, flushing the whole device on any `sync_data` when `flush_device`
+fn sim_fs(fs: Arc<SimFs>, flush_device: bool) -> Arc<SimFs> {
+    if flush_device {
+        fs.flush_device();
+    }
+    fs
 }
 
 impl Subject for SimDisk {
@@ -98,27 +107,38 @@ proptest! {
     // 64 cases ≈ seconds; heavy run after any change: root CLAUDE.md
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
-    /// Conformance history at fanouts merging every few commits and rarely
+    /// Conformance history at fanouts merging every few commits and rarely, per-file fsync and
+    /// one-flush (`Barrier`) commits
     #[test]
     fn random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss(
         fanout in prop_oneof![Just(2usize), Just(3), Just(8)],
+        flush_device in any::<bool>(),
         steps in conformance::steps(),
     ) {
-        conformance::history(SimDisk::new(fanout), &steps);
+        conformance::history(SimDisk::new(fanout, flush_device), &steps);
     }
 }
 
 #[test]
 fn the_disk_engine_keeps_the_port_contract() {
-    conformance::contract(SimDisk::new(2));
+    for flush_device in [false, true] {
+        conformance::contract(SimDisk::new(2, flush_device));
+    }
 }
 
 /// Fanout 2, merges launched + landed mid-history, some cancelling value + tombstone pairs; per
 /// crash state: recovered = an acked or the attempted commit, every table = the model at that
-/// commit (a removed row never back), only listed files, commits continue
+/// commit (a removed row never back), only listed files, commits continue; per-file fsync and
+/// one-flush (`Barrier`) commits
 #[test]
 fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit() {
-    let fs = SimFs::recording();
+    for flush_device in [false, true] {
+        crash_states_reopen_to_a_commit(flush_device);
+    }
+}
+
+fn crash_states_reopen_to_a_commit(flush_device: bool) {
+    let fs = sim_fs(SimFs::recording(), flush_device);
     let batches: [(u8, &[u8], u16, &[u16]); 4] =
         [(2, &[1, 2, 1], 2, &[]), (1, &[1, 3], 1, &[0]), (0, &[], 1, &[0, 1]), (3, &[4], 0, &[])];
     let mut models = vec![Model::default()];
@@ -140,7 +160,7 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
     let states = fs.crash_states();
     assert!(states.len() > 50, "enumerated {} crash states", states.len());
     for state in states {
-        let label = &state.label;
+        let label = &format!("flush_device {flush_device}: {}", state.label);
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
@@ -161,9 +181,16 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
 }
 
 /// Op 0, 1, 2, … failed until the workload succeeds (Pebble `errorfs`); each = the injected `Err`
-/// (never a panic, never swallowed), later commits refused, restart = acked or attempted commit
+/// (never a panic, never swallowed), later commits refused, restart = acked or attempted commit;
+/// per-file fsync and one-flush (`Barrier`) commits (a failed `write_back` included)
 #[test]
 fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_state() {
+    for flush_device in [false, true] {
+        failed_io_poisons_and_recovers(flush_device);
+    }
+}
+
+fn failed_io_poisons_and_recovers(flush_device: bool) {
     let batches: [(u8, &[u8], u16, &[u16]); 3] =
         [(2, &[1, 2], 1, &[]), (1, &[1], 1, &[0]), (1, &[3], 2, &[1])];
     let mut models = vec![Model::default()];
@@ -176,7 +203,7 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
     let mut failures = 0;
     for fail_at in 0.. {
         assert!(fail_at < 10_000, "workload never succeeded");
-        let fs = SimFs::new();
+        let fs = sim_fs(SimFs::new(), flush_device);
         fs.fail_from(fail_at);
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
         let mut acked = 0;
@@ -211,23 +238,32 @@ fn every_failed_io_call_surfaces_poisons_the_store_and_recovers_to_a_committed_s
                 };
                 let retried = catch_unwind(AssertUnwindSafe(|| store.commit()));
                 let message = panic_message(retried.expect_err("commit after a failed one"));
-                assert!(message.contains("commit after a failed one"), "op {fail_at}: {message}");
+                assert!(
+                    message.contains("commit after a failed one"),
+                    "flush_device {flush_device} op {fail_at}: {message}"
+                );
                 error
             }
         };
         failures += 1;
-        assert!(error.to_string().contains("injected EIO"), "op {fail_at}: {error}");
+        assert!(
+            error.to_string().contains("injected EIO"),
+            "flush_device {flush_device} op {fail_at}: {error}"
+        );
 
         let fs = fs.restarted();
         let mut store = DiskEngine::with_fanout(fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
-            .unwrap_or_else(|error| panic!("op {fail_at}: reopen: {error}"));
+            .unwrap_or_else(|error| {
+                panic!("flush_device {flush_device} op {fail_at}: reopen: {error}")
+            });
         let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         assert!(
             recovered == acked || recovered == acked + 1,
-            "op {fail_at}: recovered {recovered}"
+            "flush_device {flush_device} op {fail_at}: recovered {recovered}"
         );
-        models[recovered].assert_view(&store.committed(), &format!("op {fail_at}"));
+        models[recovered]
+            .assert_view(&store.committed(), &format!("flush_device {flush_device} op {fail_at}"));
         store.apply(models[recovered].clone().advance(1, &[9], 1, &[]));
         store.commit().expect("commit after restart");
     }

@@ -1,6 +1,8 @@
 //! In-memory [`Fs`] that knows what a power loss would keep
 //!
 //! - file content: durable bytes + writes pending since the last `sync_data`
+//! - device flush ([`SimFs::flush_device`]): any `sync_data` also makes every file's written-back
+//!   writes durable (ext4 / XFS: `Durability::Barrier`); written back + unflushed = still volatile
 //! - namespace: durable entries + changes pending since the parent's last `sync_dir`
 //! - crash points recorded around persistence points only (just before and after each
 //!   `sync_data` / `sync_dir`, after each `rename` / `remove`; CrashMonkey: bugs surface there)
@@ -22,7 +24,7 @@ use std::{
 
 use bytes::Bytes;
 
-use super::{FileHandle, Fs, LockGuard, Mapping};
+use super::{Durability, FileHandle, Fs, LockGuard, Mapping};
 
 type FileId = usize;
 
@@ -52,18 +54,20 @@ impl Op {
     }
 }
 
-/// `current` = `durable` with every `pending` op applied (kept materialized: reads are hot)
+/// - `current` = `durable` with every `pending` op applied (kept materialized: reads are hot)
+/// - `written_back` = how many of `pending` reached the device (durable at its next flush)
 #[derive(Debug, Clone, Default)]
 struct Content {
     durable: Vec<u8>,
     pending: Vec<Op>,
     current: Vec<u8>,
+    written_back: usize,
 }
 
 impl Content {
     /// Nothing pending: what a crashed image holds
     fn settled(bytes: Vec<u8>) -> Self {
-        Self { durable: bytes.clone(), pending: Vec::new(), current: bytes }
+        Self { durable: bytes.clone(), pending: Vec::new(), current: bytes, written_back: 0 }
     }
 
     fn push(&mut self, op: Op) {
@@ -74,6 +78,15 @@ impl Content {
     fn sync(&mut self) {
         self.durable.clone_from(&self.current);
         self.pending.clear();
+        self.written_back = 0;
+    }
+
+    /// Written-back ops durable (a device flush); later ones still pending
+    fn flush_written_back(&mut self) {
+        for op in self.pending.drain(..self.written_back) {
+            op.apply(&mut self.durable);
+        }
+        self.written_back = 0;
     }
 
     fn with(&self, ops: &[Op]) -> Vec<u8> {
@@ -322,6 +335,7 @@ impl Image {
 #[derive(Debug, Default)]
 struct Inner {
     image: Image,
+    flush_device: bool,
     locks: HashSet<PathBuf>,
     tag: u64,
     recorded: Option<Vec<CrashPoint>>,
@@ -397,12 +411,21 @@ impl SimFs {
         Arc::new(fs)
     }
 
-    fn from_image(image: Image) -> Arc<Self> {
-        Arc::new(Self { inner: Arc::new(Mutex::new(Inner { image, ..Inner::default() })) })
+    /// Same device after a crash or restart: `image`, this filesystem's flush model
+    fn reopened(&self, image: Image) -> Arc<Self> {
+        let flush_device = self.lock_inner().flush_device;
+        let inner = Inner { image, flush_device, ..Inner::default() };
+        Arc::new(Self { inner: Arc::new(Mutex::new(inner)) })
     }
 
     fn lock_inner(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().expect("sim fs mutex poisoned")
+    }
+
+    /// From now on: every `sync_data` flushes the device (each file's written-back writes durable
+    /// too) and [`Fs::durability`] = [`Durability::Barrier`] (ext4 / XFS)
+    pub fn flush_device(&self) {
+        self.lock_inner().flush_device = true;
     }
 
     /// Stamped onto every later `CrashPoint` (tests: commits acknowledged so far)
@@ -423,7 +446,7 @@ impl SimFs {
                     states.push(CrashState {
                         tag: point.tag,
                         label: format!("after `{}`: {label}", point.op),
-                        fs: SimFs::from_image(image),
+                        fs: self.reopened(image),
                     });
                 }
             }
@@ -453,14 +476,16 @@ impl SimFs {
 
     /// Same image after a process exit (volatile state kept, no power loss), healthy again
     pub fn restarted(&self) -> Arc<SimFs> {
-        SimFs::from_image(self.lock_inner().image.clone())
+        let image = self.lock_inner().image.clone();
+        self.reopened(image)
     }
 
     /// Image after a power loss right now (only synced entries + bytes; background threads
     /// mid-write included), healthy
     #[cfg(test)]
     pub(crate) fn power_loss(&self) -> Arc<SimFs> {
-        SimFs::from_image(self.lock_inner().image.power_loss())
+        let image = self.lock_inner().image.power_loss();
+        self.reopened(image)
     }
 
     /// Current volatile content, `None` when absent
@@ -592,6 +617,13 @@ impl Fs for SimFs {
         Ok(())
     }
 
+    fn durability(&self, _: &Path) -> io::Result<Durability> {
+        Ok(match self.lock_inner().flush_device {
+            true => Durability::Barrier,
+            false => Durability::PerFile,
+        })
+    }
+
     fn lock(&self, path: &Path) -> io::Result<LockGuard> {
         self.open(path)?;
         let mut inner = self.lock_inner();
@@ -678,15 +710,31 @@ impl FileHandle for SimFile {
         self.push(Op::SetLen(len))
     }
 
+    /// This file durable; [`SimFs::flush_device`] on = every file's written-back writes too
     fn sync_data(&self) -> io::Result<()> {
         let mut inner = self.lock_inner();
         inner.mutate(|| format!("sync_data {}", self.path.display()))?;
-        if inner.image.files[self.id].pending.is_empty() {
+        let flushes_others = inner.flush_device;
+        let files = &inner.image.files;
+        let others_waiting = flushes_others && files.iter().any(|file| file.written_back > 0);
+        if files[self.id].pending.is_empty() && !others_waiting {
             return Ok(());
         }
         inner.record(|| format!("before sync_data {}", self.path.display()));
+        if flushes_others {
+            inner.image.files.iter_mut().for_each(Content::flush_written_back);
+        }
         inner.image.files[self.id].sync();
         inner.record(|| format!("sync_data {}", self.path.display()));
+        Ok(())
+    }
+
+    /// Pending writes on the device, not durable (a crash may still drop or tear them)
+    fn write_back(&self) -> io::Result<()> {
+        let mut inner = self.lock_inner();
+        inner.mutate(|| format!("write_back {}", self.path.display()))?;
+        let content = &mut inner.image.files[self.id];
+        content.written_back = content.pending.len();
         Ok(())
     }
 
@@ -756,6 +804,49 @@ mod tests {
             !torn.is_empty(),
             "zero-filled / garbage variants of the unsynced writes: {seen:?}"
         );
+    }
+
+    /// `a` + `b` written back, then `b` rewritten: a crash keeps neither (written back = on the
+    /// device's volatile cache); `a`'s `sync_data` then makes `a` durable, and on a flushing device
+    /// `b`'s written-back bytes too, never its later rewrite
+    #[test]
+    fn a_device_flush_makes_written_back_writes_durable_and_nothing_later() {
+        for flush_device in [false, true] {
+            let fs = SimFs::new();
+            if flush_device {
+                fs.flush_device();
+            }
+            let dir = Path::new("/d");
+            fs.create_dir_all(dir).expect("mkdir");
+            let (a, b) = (fs.open(&dir.join("a")).expect("a"), fs.open(&dir.join("b")).expect("b"));
+            fs.sync_dir(dir).expect("sync dir");
+            fs.sync_dir(Path::new("/")).expect("sync root");
+            a.write_all_at(b"aa", 0).expect("write a");
+            b.write_all_at(b"bb", 0).expect("write b");
+            a.write_back().expect("write back a");
+            b.write_back().expect("write back b");
+            b.write_all_at(b"BB", 0).expect("rewrite b, not written back");
+
+            let crashed = fs.power_loss();
+            let unflushed = (crashed.contents(&dir.join("a")), crashed.contents(&dir.join("b")));
+            assert_eq!(unflushed, (Some(vec![]), Some(vec![])), "flush_device {flush_device}");
+
+            a.sync_data().expect("sync a");
+            let crashed = fs.power_loss();
+            let b_kept = match flush_device {
+                true => b"bb".to_vec(),
+                false => Vec::new(),
+            };
+            let flushed = (crashed.contents(&dir.join("a")), crashed.contents(&dir.join("b")));
+            assert_eq!(
+                flushed,
+                (Some(b"aa".to_vec()), Some(b_kept)),
+                "flush_device {flush_device}"
+            );
+            let mode = fs.durability(dir).expect("durability");
+            let expected = if flush_device { Durability::Barrier } else { Durability::PerFile };
+            assert_eq!(mode, expected, "the filesystem reports how commits may flush");
+        }
     }
 
     /// `fail_from(2)`: calls 0-1 apply, 2 on = named `EIO` + nothing applied; `restarted()` = same

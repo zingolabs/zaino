@@ -12,7 +12,7 @@ use std::{
 use bytes::Bytes;
 use memmap2::Mmap;
 
-use super::{FileHandle, Fs, LockGuard, Mapping};
+use super::{Durability, FileHandle, Fs, LockGuard, Mapping};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealFs;
@@ -77,6 +77,17 @@ impl Fs for RealFs {
         File::open(dir)?.sync_all()
     }
 
+    #[cfg(target_os = "linux")]
+    fn durability(&self, dir: &Path) -> io::Result<Durability> {
+        Ok(super::probe::durability(dir))
+    }
+
+    /// No probe off Linux (no `sync_file_range`)
+    #[cfg(not(target_os = "linux"))]
+    fn durability(&self, _: &Path) -> io::Result<Durability> {
+        Ok(Durability::PerFile)
+    }
+
     fn lock(&self, path: &Path) -> io::Result<LockGuard> {
         let file =
             OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
@@ -113,6 +124,10 @@ impl FileHandle for RealFile {
 
     fn sync_data(&self) -> io::Result<()> {
         self.0.sync_data()
+    }
+
+    fn write_back(&self) -> io::Result<()> {
+        write_back(&self.0)
     }
 
     fn write_behind(&self, range: Range<u64>) -> io::Result<()> {
@@ -195,6 +210,31 @@ fn start_writeback(file: &File, range: Range<u64>) -> io::Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn start_writeback(_: &File, _: Range<u64>) -> io::Result<()> {
     Ok(())
+}
+
+/// `sync_file_range(WAIT_BEFORE | WRITE | WAIT_AFTER)` over the whole file: every dirty page
+/// written + its bio completed, no cache flush, no metadata (sound: fd borrowed from a live
+/// `File`, no memory passed)
+///
+/// - an `Err` = the commit's: the writeback error is consumed here, never reported again
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+fn write_back(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd as _;
+
+    let flags = libc::SYNC_FILE_RANGE_WAIT_BEFORE
+        | libc::SYNC_FILE_RANGE_WRITE
+        | libc::SYNC_FILE_RANGE_WAIT_AFTER;
+    match unsafe { libc::sync_file_range(file.as_raw_fd(), 0, 0, flags) } {
+        0 => Ok(()),
+        _ => Err(io::Error::last_os_error()),
+    }
+}
+
+/// Off Linux: `sync_data` (never reached: `durability` = `PerFile` there)
+#[cfg(not(target_os = "linux"))]
+fn write_back(file: &File) -> io::Result<()> {
+    file.sync_data()
 }
 
 /// Calling thread → background priority: CPU nice 10, I/O best-effort level 7 (merges yield disk
