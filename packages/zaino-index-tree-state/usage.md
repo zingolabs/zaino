@@ -27,7 +27,7 @@ tokio::spawn(writer.run(blocks));
   run ([the writer shape](../zaino-sync/usage.md#writer-loop)): the blocks not
   held are folded as one [`fold_run`](#fold) onto `staged()` into one delta per
   block, each then `zaino_sync::apply`d. Commits: a `Finalized` block, a full
-  buffer (`WRITE_BUFFER` = 64 MiB), `Shutdown`. `handle()` = the `IndexHandle`
+  buffer (`WRITE_BUFFER` = 16 MiB), `Shutdown`. `handle()` = the `IndexHandle`
   the NFS reads (committed view, durable tip).
 - Fallible only at boot, in the engine's `open` (`StoreError`). `new` asserts
   one record per committed height. `run` panics on a failed commit or an

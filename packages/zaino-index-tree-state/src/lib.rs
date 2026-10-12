@@ -68,9 +68,10 @@ pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
 
 /// Buffered heap that commits a bulk run (a `Finalized` block commits at once)
 ///
-/// - every commit syncs each level's file (~50) → small buffer = commit-bound in sandblast
+/// - every commit syncs each level's file (~50) → 8 MiB = commit-bound in sandblast
+/// - 64 MiB = durable tip too far behind between commits
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
-    std::num::NonZeroUsize::new(64 << 20).expect("64 MiB is non-zero");
+    std::num::NonZeroUsize::new(16 << 20).expect("16 MiB is non-zero");
 
 /// Every table `cache_writes`: the fold reads the tip's sizes + frontier nodes off them
 const HEIGHTS: SequenceTable =
