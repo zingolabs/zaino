@@ -7,7 +7,8 @@
 //! ```
 //!
 //! - trusted: a header enters on its parent link + its nBits work alone (zebra validated it);
-//!   consensus rules = [`validate`](crate::validate), for an untrusted source
+//!   untrusted ([`HeaderChain::insert_untrusted`]): every consensus rule first, over the
+//!   ancestors held
 //! - anchored, never from genesis: [`HeaderChain::anchor`] = one trusted header as the final tip,
 //!   work counted from it
 //! - pure core: no clock, no lock, no I/O; one owner (`HeaderSync`) drives it
@@ -21,7 +22,8 @@ use std::collections::HashMap;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, MerkleRoot, ReorgDepth};
 
 use crate::header::Header;
-use crate::rules::Rejected;
+use crate::params::Params;
+use crate::rules::{validate, Ancestor, Rejected, CONTEXT};
 use crate::target::{expand, work};
 use crate::verified::VerifiedChain;
 
@@ -160,22 +162,49 @@ impl HeaderChain {
         self.nodes.len()
     }
 
+    /// Final headers kept: what the NFS reads below the best (`2 · depth`), at least what the
+    /// rules read below an untrusted header ([`CONTEXT`])
+    pub fn finals_kept(&self) -> usize {
+        (FINALS_PER_DEPTH * self.depth.get() as usize).max(CONTEXT)
+    }
+
+    /// How far below a trusted claim a fresh anchor sits: the final depth, at least [`CONTEXT`]
+    /// (the claim's run then holds every ancestor the rules read)
+    pub fn anchor_below(&self) -> u32 {
+        self.depth.get().max(CONTEXT as u32)
+    }
+
+    /// Height `header` takes on its parent (`None` = parent not held at or above the final tip)
+    pub fn height_of(&self, header: &Header) -> Option<Height> {
+        self.parent(header.prev_hash()).ok().map(|(height, _)| height)
+    }
+
+    /// An untrusted header: every consensus rule ([`validate`]) over the ancestors held, then
+    /// [`insert`](Self::insert)
+    ///
+    /// - `now_unix` = the local clock (the 2 h future bound)
+    pub fn insert_untrusted(
+        &mut self,
+        header: &Header,
+        params: &Params,
+        now_unix: i64,
+    ) -> Result<Inserted, Rejected> {
+        if self.known(header.hash()) {
+            return Ok(Inserted::Known);
+        }
+        let (height, _) = self.parent(header.prev_hash())?;
+        validate(params, header, height, &self.ancestors(header.prev_hash()), now_unix)?;
+        self.insert(header)
+    }
+
     /// A trusted header: attach to a held parent, its work, best, bounds
     pub fn insert(&mut self, header: &Header) -> Result<Inserted, Rejected> {
         let hash = header.hash();
-        if self.nodes.contains_key(&hash) || self.is_final(hash) {
+        if self.known(hash) {
             return Ok(Inserted::Known);
         }
         let prev = header.prev_hash();
-        let (height, parent_work) = if let Some(parent) = self.nodes.get(&prev) {
-            (parent.height.next(), parent.record.cumulative_work)
-        } else if let Some((height, record)) = self.finals.back().filter(|(_, r)| r.hash == prev) {
-            (height.next(), record.cumulative_work)
-        } else if self.is_final(prev) {
-            return Err(Rejected::BelowFinal);
-        } else {
-            return Err(Rejected::Orphan);
-        };
+        let (height, parent_work) = self.parent(prev)?;
 
         let bits = header.bits();
         let own = expand(bits).and_then(work).ok_or(Rejected::Bits { bits })?;
@@ -242,7 +271,7 @@ impl HeaderChain {
     }
 
     /// Every best-chain header up to `through` becomes final, every branch not descending from
-    /// it pruned; the newest `2 · depth` finals kept
+    /// it pruned; the newest [`finals_kept`](Self::finals_kept) finals kept
     pub fn finalize(&mut self, through: BlockRef) {
         assert!(self.on_best(through), "H2: only a best-branch block becomes final");
         let best = self.best().expect("a best-branch block has a best tip");
@@ -265,7 +294,7 @@ impl HeaderChain {
                 }
             }
         }
-        let kept = FINALS_PER_DEPTH * self.depth.get() as usize;
+        let kept = self.finals_kept();
         for (height, record) in newly {
             self.nodes.remove(&record.hash);
             self.finals.push_back((height, record));
@@ -282,8 +311,8 @@ impl HeaderChain {
     pub fn check(&self) {
         let final_tip = self.final_tip();
         assert!(final_tip.is_some() || self.nodes.is_empty(), "H2: nothing held before an anchor");
-        let kept = FINALS_PER_DEPTH * self.depth.get() as usize;
-        assert!(self.finals.len() <= kept.max(1), "H2: at most 2 · depth finals kept");
+        let kept = self.finals_kept();
+        assert!(self.finals.len() <= kept, "H2: at most max(2 · depth, CONTEXT) finals kept");
         let mut pairs = self.finals.iter().zip(self.finals.iter().skip(1));
         let contiguous = pairs.all(|((below, _), (above, _))| below.next() == *above);
         assert!(contiguous, "H2: finals one height apart");
@@ -445,6 +474,38 @@ impl HeaderChain {
 
     fn is_final(&self, hash: BlockHash) -> bool {
         self.finals.iter().any(|(_, record)| record.hash == hash)
+    }
+
+    fn known(&self, hash: BlockHash) -> bool {
+        self.nodes.contains_key(&hash) || self.is_final(hash)
+    }
+
+    /// A child of `prev` = (its height, the work up to `prev`): a tree node or the final tip
+    fn parent(&self, prev: BlockHash) -> Result<(Height, u128), Rejected> {
+        if let Some(parent) = self.nodes.get(&prev) {
+            Ok((parent.height.next(), parent.record.cumulative_work))
+        } else if let Some((height, record)) = self.finals.back().filter(|(_, r)| r.hash == prev) {
+            Ok((height.next(), record.cumulative_work))
+        } else if self.is_final(prev) {
+            Err(Rejected::BelowFinal)
+        } else {
+            Err(Rejected::Orphan)
+        }
+    }
+
+    /// `prev` and its ancestors held, newest first, up to [`CONTEXT`]: tree nodes down to the
+    /// final tip, then the finals
+    fn ancestors(&self, prev: BlockHash) -> Vec<Ancestor> {
+        let ancestor = |record: &Record| Ancestor { bits: record.bits, time: record.time };
+        let mut held = Vec::with_capacity(CONTEXT);
+        let mut at = prev;
+        while let Some(node) = self.nodes.get(&at).filter(|_| held.len() < CONTEXT) {
+            held.push(ancestor(&node.record));
+            at = node.parent;
+        }
+        let finals = self.finals.iter().rev().map(|(_, record)| ancestor(record));
+        held.extend(finals.take(CONTEXT - held.len()));
+        held
     }
 }
 

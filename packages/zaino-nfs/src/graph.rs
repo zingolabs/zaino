@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
-use zaino_sync::merkle_root;
 
 use crate::snapshot::Branch;
 
@@ -139,8 +138,8 @@ impl<F> Graph<F> {
             let at = BlockRef { hash: header.hash, height: header.height };
             assert_eq!(at, node.at, "N1: every node's block = its own header");
             assert_eq!(header.prev_hash, node.parent, "N1: every node's block = its own header");
-            let body = merkle_root(&node.block) == Some(header.merkle_root);
-            assert!(body, "N1: every node's body = its header's merkle root");
+            let body = node.block.check_body();
+            assert_eq!(body, Ok(()), "N1: every node's body = its header's merkle root");
             let above = Some(node.at.height) > root.map(|root| root.height);
             assert!(above, "N2: nodes only above the root");
             let held = self.holds_parent(root, node.parent, node.at.height);

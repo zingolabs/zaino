@@ -21,14 +21,11 @@ impl ValidatorId {
     }
 }
 
-/// WorkPool connection (never reused)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PeerId(pub u64);
-
+/// `Peers` = the p2p network's peer set, one member (zebra picks the peer per request)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemberId {
     Trusted(ValidatorId),
-    Peer(PeerId),
+    Peers,
 }
 
 /// One trusted validator's connection budget
@@ -86,7 +83,7 @@ pub struct MemberRow {
     pub in_flight: u32,
 }
 
-/// Last answered poll (peers: `Live` from joining)
+/// Last answered poll (peers: `Live` always)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Synced {
     Live,
@@ -128,8 +125,9 @@ impl Member {
         member
     }
 
-    pub(crate) fn peer() -> Self {
-        let mut member = Self::new(PEER_TIER, Permits::peer());
+    /// `in_flight` = requests the peer set carries at once (one lane reserve each)
+    pub(crate) fn peers(in_flight: u32) -> Self {
+        let mut member = Self::new(PEER_TIER, Permits::peers(in_flight));
         member.synced = Some(Synced::Live);
         member
     }
@@ -151,7 +149,7 @@ impl Member {
 
     pub(crate) fn health(&self) -> Health {
         match (self.failures, self.synced) {
-            (failures, _) if failures >= DOWN_AFTER => Health::Down,
+            _ if self.down_since.is_some() => Health::Down,
             (failures, _) if failures > 0 => Health::Degraded,
             (_, None) => Health::Pending,
             (_, Some(Synced::Live)) => Health::Live,
@@ -171,12 +169,14 @@ impl Member {
     }
 
     /// Passive (any reply) or active (poll) check
+    ///
+    /// - `Down` only with a poller (its probe = the way back up; the peer set has none)
     pub(crate) fn outcome(&mut self, answered: bool, stamp: u64) {
         match answered {
             true => (self.failures, self.down_since) = (0, None),
             false => {
                 self.failures += 1;
-                if self.failures == DOWN_AFTER {
+                if self.failures == DOWN_AFTER && self.poller.is_some() {
                     self.down_since = Some(stamp);
                 }
             }

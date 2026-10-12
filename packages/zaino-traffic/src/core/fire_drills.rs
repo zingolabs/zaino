@@ -3,27 +3,26 @@
 
 use std::time::{Duration, Instant};
 
-use super::{Ask, AskId, Input, Output, Reply, Route, Ticket, TrafficCore};
+use super::{Ask, AskId, Input, Reply, Route, Ticket, TrafficCore};
 use crate::class::{Class, Lane, Permits};
 use crate::fired;
-use crate::member::{Bench, Limits, Member, MemberId, PeerId, Synced, ValidatorId};
+use crate::member::{Bench, Limits, Member, MemberId, Synced, ValidatorId};
 
 fn trusted(index: usize) -> MemberId {
     MemberId::Trusted(ValidatorId::new(index).expect("small"))
 }
 
-/// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; peer 7 joined
+/// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; the peer set (3 in flight)
 /// - in flight: A0 tip block, A1 lookup, A3 bulk block on trusted 0 (its 4 lane permits); A2
-///   headers on peer 7
+///   headers on the peer set
 fn valid(t0: Instant) -> TrafficCore {
     let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
-    let mut core = TrafficCore::new(&[(0, limits), (1, limits)], t0);
+    let mut core = TrafficCore::new(&[(0, limits), (1, limits)], Some(3), t0);
     core.step(Input::Tick, t0);
     let t = t0 + Duration::from_millis(50);
     for member in [0, 1].map(|index| ValidatorId::new(index).expect("small")) {
         core.step(Input::Polled { member, read: Some(Synced::Live) }, t);
     }
-    core.step(Input::Joined(PeerId(7)), t);
     let asks = [
         (Class::TipBlock, Route::Any),
         (Class::Lookup, Route::Any),
@@ -43,7 +42,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
     core.check();
     let sent: Vec<(AskId, MemberId)> =
         core.asks.iter().flat_map(|(id, ask)| ask.sends.iter().map(|s| (*id, s.member))).collect();
-    let peer = MemberId::Peer(PeerId(7));
+    let peer = MemberId::Peers;
     let expected = [(0, trusted(0)), (1, trusted(0)), (2, peer), (3, trusted(0))];
     assert_eq!(sent, expected.map(|(ask, member)| (AskId(ask), member)), "the planted state");
 
@@ -63,7 +62,7 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             "T4: in flight = open asks' sends",
             Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] = 1),
         ),
-        ("T4: no send to a departed member", Box::new(move |c| _ = c.members.remove(&peer))),
+        ("a send's member", Box::new(move |c| _ = c.members.remove(&peer))),
         (
             "T3: no send to a benched member",
             Box::new(move |c| {
@@ -111,15 +110,16 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
     let ticket = Ticket { ask: AskId(0), member: trusted(1), class: Class::TipBlock };
     let v = |index| ValidatorId::new(index).expect("small");
     let preconditions = [
-        ("a trusted validator to ask", fired(|| drop(TrafficCore::new(&[], t0)))),
+        ("a trusted validator to ask", fired(|| drop(TrafficCore::new(&[], None, t0)))),
         (
             "at most ValidatorId::MAX trusted validators",
-            fired(|| drop(TrafficCore::new(&[(0, limits); 65], t0))),
+            fired(|| drop(TrafficCore::new(&[(0, limits); 65], None, t0))),
         ),
         (
             "max_connections covers the poll, every lane reserve + one shared",
             fired(|| _ = Permits::trusted(4)),
         ),
+        ("the peer set's in flight covers every lane reserve", fired(|| _ = Permits::peers(2))),
         ("time never runs back", step(Input::Tick, t0)),
         (
             "a fresh ask id",
@@ -132,17 +132,15 @@ fn every_check_and_precondition_fires_on_its_planted_bug() {
             "a configured validator",
             step(Input::Push { member: v(5), push: super::Push::Changed }, t),
         ),
-        ("a peer joins once", step(Input::Joined(PeerId(7)), t)),
-        ("a peer leaves once, after joining", step(Input::Left(PeerId(8)), t)),
     ];
     for (expected, message) in preconditions {
         let message = message.unwrap_or_default();
         assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
     }
 
-    // not a bug: a peer leaving mid-send cancels it, its ask moves on (a lookup never reached it)
+    // not a bug: a report on the peer set benches nothing (its transport blames the peer)
     let mut core = valid(t0);
-    let out = core.step(Input::Left(PeerId(7)), t);
-    let cancelled = Ticket { ask: AskId(2), member: peer, class: Class::Headers };
-    assert_eq!(out, [Output::Cancel(cancelled), Output::Unanswered(AskId(2))]);
+    let headers = Ticket { ask: AskId(2), member: peer, class: Class::Headers };
+    core.step(Input::Report(headers), t);
+    assert!(core.members.values().all(|member| member.bench.is_none()), "nobody benched");
 }

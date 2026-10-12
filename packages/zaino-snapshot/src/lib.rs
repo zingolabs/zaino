@@ -15,4 +15,4 @@ mod tests;
 pub use feed::{Logged, MempoolTail};
 pub use publisher::{Publisher, SnapshotError, Snapshots};
 pub use report::{describe_metrics, emit_gauges, indexes, notes, Report};
-pub use snapshot::{Down, ForkView, Snapshot, Standing, Tips, Unavailable};
+pub use snapshot::{Down, ForkView, Lightd, Snapshot, Standing, Tips, Unavailable};

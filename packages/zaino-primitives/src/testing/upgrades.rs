@@ -37,10 +37,6 @@ impl UpgradeSchedule {
         self
     }
 
-    pub(super) fn active(&self, upgrade: NetworkUpgrade, at: Height) -> bool {
-        self.activation(upgrade).is_some_and(|from| from <= at)
-    }
-
     /// Scheduled heights non-decreasing in protocol order (zebrad refuses any other config)
     pub(super) fn assert_ordered(&self) {
         let scheduled = ORDER.iter().zip(self.0).filter_map(|(nu, at)| Some((nu, at?)));
@@ -60,12 +56,6 @@ impl UpgradeSchedule {
             (false, true) => POST_BLOSSOM_SPACING,
             (false, false) => PRE_BLOSSOM_SPACING,
         }
-    }
-
-    /// Branch in force at `at` (Sprout = 0)
-    pub(super) fn branch_at(&self, at: Height) -> ConsensusBranchId {
-        let latest = ORDER.iter().rev().find(|upgrade| self.active(**upgrade, at));
-        ConsensusBranchId::new(latest.map_or(0, |upgrade| u32::from(upgrade.branch_id())))
     }
 
     /// `getblockchaininfo` `upgrades` at `tip`: every scheduled upgrade, active or pending

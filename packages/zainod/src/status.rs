@@ -3,7 +3,8 @@
 //! - Sources filled once by `indexer::boot` (admin thread starts first → `provisioning` until then)
 //! - `/statusz` = [`Readiness`] + process fields + `zaino_snapshot::Report`; owners' live tables
 //!   read at request
-//! - `ready` ⇔ `state = serving` ⇔ `/readyz` 200
+//! - `ready` ⇔ `state` = serving or degraded ⇔ `/readyz` 200 (degraded = a fresh peer-verified
+//!   tip served, no trusted validator vouching for it)
 
 use std::{
     sync::{
@@ -96,6 +97,7 @@ pub(crate) enum State {
     Provisioning,
     Syncing,
     Serving,
+    Degraded,
     Draining,
     Held,
     Down,
@@ -107,6 +109,7 @@ impl State {
             Self::Provisioning => "provisioning",
             Self::Syncing => "syncing",
             Self::Serving => "serving",
+            Self::Degraded => "degraded",
             Self::Draining => "draining",
             Self::Held => "held",
             Self::Down => "down",
@@ -133,8 +136,8 @@ enum Unit {
 
 /// Head of `/statusz` (`/readyz` = `state` + `detail`)
 ///
-/// - `detail` only when `down`, `progress` only while provisioning or syncing, `notes` = raised
-///   alarms
+/// - `detail` only when `down` or `degraded`, `progress` only while provisioning or syncing,
+///   `notes` = raised alarms
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub(crate) struct Readiness {
     state: State,
@@ -144,11 +147,12 @@ pub(crate) struct Readiness {
 }
 
 impl Readiness {
+    /// Serving, or degraded (serving a peer-verified tip no trusted validator vouches for)
     pub(crate) fn ready(&self) -> bool {
-        self.state == State::Serving
+        matches!(self.state, State::Serving | State::Degraded)
     }
 
-    /// systemd `STATUS=`: the state, `: detail` when down
+    /// systemd `STATUS=`: the state, `: detail` when down or degraded
     pub(crate) fn summary(&self) -> String {
         match self.detail {
             Some(detail) => format!("{}: {detail}", self.state.label()),
@@ -182,8 +186,10 @@ impl Booted {
     fn of(sources: &Sources, snap: &Snapshot<DiskView>) -> Self {
         let served = snap.tips().served.map(|tip| tip.height);
         let (progress, rate) = (&sources.progress, *sources.block_rate.borrow());
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+        let now = now.map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(i64::MAX));
         Self {
-            standing: snap.standing(),
+            standing: snap.standing(now),
             overloaded: sources.grpc_load.report().overloaded,
             done: served.or(progress.handed()).map(u32::from),
             target: snap.sync_target().map(u32::from),
@@ -220,6 +226,7 @@ fn readiness(draining: bool, held: bool, live: bool, stage: Stage) -> Readiness 
         }
         (false, true, Stage::Booted(booted)) => match booted.standing {
             Standing::Down(down) => at(State::Down, None, Some(down.detail()), booted.notes),
+            Standing::Degraded(why) => at(State::Degraded, None, Some(why.detail()), booted.notes),
             Standing::Serving => at(State::Serving, None, None, booted.notes),
             Standing::Syncing => {
                 let progress = booted.target.map(|total| Progress {
@@ -589,7 +596,8 @@ mod tests {
     use super::*;
 
     /// Every state rule, first match wins, as `/statusz` serializes it; across all of them
-    /// `ready` ⇔ `serving`, `detail` only when down, `progress` only provisioning or syncing
+    /// `ready` ⇔ serving or degraded, `detail` only when down or degraded, `progress` only
+    /// provisioning or syncing
     #[test]
     fn the_state_is_the_first_matching_rule_with_its_progress_detail_and_notes() {
         let stage = |standing, overloaded, target: Option<u32>, rate: Option<f64>| {
@@ -665,6 +673,40 @@ mod tests {
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
+                "overloaded beats degraded",
+                false,
+                true,
+                overloaded(Standing::Degraded(Down::NoValidatorReachable)),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
+            ),
+            (
+                "runtime stalled beats degraded",
+                false,
+                false,
+                booted(Standing::Degraded(Down::TipNotHeld), None, None),
+                serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
+            ),
+            (
+                "every validator down, a fresh peer-verified tip served",
+                false,
+                true,
+                booted(Standing::Degraded(Down::NoValidatorReachable), Some(3_514_194), None),
+                serde_json::json!({
+                    "state": "degraded", "progress": null,
+                    "detail": "No trusted validator reachable", "notes": stale,
+                }),
+            ),
+            (
+                "best unheld, a fresh peer-verified tip served",
+                false,
+                true,
+                booted(Standing::Degraded(Down::TipNotHeld), Some(3_514_194), None),
+                serde_json::json!({
+                    "state": "degraded", "progress": null,
+                    "detail": "No trusted validator holds the verified tip", "notes": stale,
+                }),
+            ),
+            (
                 "every validator down",
                 false,
                 true,
@@ -727,8 +769,10 @@ mod tests {
             let readiness = readiness(draining, false, live, stage);
             let state = readiness.state;
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
-            assert_eq!(readiness.ready(), state == State::Serving, "{case}: ready ⇔ serving");
-            assert_eq!(readiness.detail.is_some(), state == State::Down, "{case}: detail ⇔ down");
+            let serving = matches!(state, State::Serving | State::Degraded);
+            assert_eq!(readiness.ready(), serving, "{case}: ready ⇔ serving or degraded");
+            let detailed = matches!(state, State::Down | State::Degraded);
+            assert_eq!(readiness.detail.is_some(), detailed, "{case}: detail ⇔ down or degraded");
             let progressing = matches!(state, State::Provisioning | State::Syncing);
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
@@ -744,6 +788,13 @@ mod tests {
                 held(stale.clone()),
             ),
             ("held while overloaded", false, true, overloaded(unreachable), held(stale.clone())),
+            (
+                "held while degraded",
+                false,
+                true,
+                booted(Standing::Degraded(Down::NoValidatorReachable), None, None),
+                held(stale.clone()),
+            ),
             (
                 "held with a stalled runtime",
                 false,

@@ -37,16 +37,17 @@ multi-thread tokio runtime.
   serves no peer. The inbound service answers every request with nothing (`Nil`)
 - `initial_peers = None` uses the network's DNS seeders; `Some(list)` replaces them
   (regtest keeps loopback addresses only, as zebrad does)
-- `peer_target` (16) is zebra's initial outbound target; `request_timeout` (20 s)
-  bounds every request and every push
+- `peer_target` (`DEFAULT_PEER_TARGET`, 8) is zebra's initial outbound target. Each
+  peer holds one inbound slot on a public node, so keep it modest; `request_timeout`
+  (20 s) bounds every request and every push
 - `cache_dir = None` disables zebra's peer address cache
 
 It returns once the seeds are dialed and crawled once (`init` awaits one `getaddr`:
 seconds, up to zebra's crawl timeout for a seed that never answers).
 
-zebra advertises `NODE_NETWORK` on outbound connections, and Zaino answers peers'
-requests with nothing. A peer asking Zaino for blocks times its request out; zebra
-offers no knob to advertise fewer services.
+Zaino advertises no services (`PeerServices::empty()` to `init`), so it never claims to
+serve blocks, and answers peers' requests with nothing. Zebra and Zakura still admit it:
+they require `NODE_NETWORK` only from peers they dial themselves, and only while syncing.
 
 ## Requests
 
@@ -95,7 +96,7 @@ per-peer sightings). A subscriber that falls 4,096 announcements behind gets
 - Loopback, no DNS: a scripted zebra-network regtest node (a full `init`, since
   isolated connections advertise no services and the peer set refuses those as
   outbound peers) serves real mainnet blocks 1–3 and three real transactions, lying
-  for one of them. Headers and blocks arrive byte-identical, the lie never labels the
-  asked id, an `inv` arrives attributed to the sender, and a push lands byte-identical
+  for one of them. It admits Zaino and records it with no services. Headers and blocks
+  arrive byte-identical, the lie never labels the asked id, an `inv` arrives attributed to the sender, and a push lands byte-identical
   at exactly the chosen address
 - Real mainnet blocks 1 and 1,687,107 round-trip through every wire conversion

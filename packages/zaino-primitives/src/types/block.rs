@@ -32,6 +32,15 @@ impl BlockHeader {
     }
 }
 
+/// A body its own header does not commit to
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BodyMismatch {
+    #[error("txids do not rebuild the header's merkle root")]
+    MerkleRoot,
+    #[error("body repeats a txid pair (CVE-2012-2459)")]
+    Mutated,
+}
+
 /// Decoded from its consensus bytes: the one parse every index consumes
 ///
 /// - Each index keeps what it needs and drops the rest (no per-consumer re-parse)
@@ -60,6 +69,16 @@ impl Block {
     /// Coinbase first, never empty
     pub fn transactions(&self) -> &[Transaction] {
         &self.transactions
+    }
+
+    /// Its transactions = the ones its header commits to (hash matched = the body asked for)
+    pub fn check_body(&self) -> Result<(), BodyMismatch> {
+        let txids: Vec<_> = self.transactions.iter().map(|tx| tx.txid).collect();
+        match MerkleRoot::of_txids(&txids) {
+            None => Err(BodyMismatch::Mutated),
+            Some(root) if root != self.header.merkle_root => Err(BodyMismatch::MerkleRoot),
+            Some(_) => Ok(()),
+        }
     }
 
     /// Bytes held in memory: inline + every allocation's capacity (allocator overhead excluded)

@@ -44,6 +44,18 @@ const MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 6;
 const POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 18;
 
 impl Params {
+    /// `network`'s rules; regtest's heights from `schedule` (`None` = a regtest without Blossom)
+    pub fn for_network(network: NetworkType, schedule: &UpgradeSchedule) -> Option<Self> {
+        match network {
+            NetworkType::Main => Some(Self::mainnet()),
+            NetworkType::Test => Some(Self::testnet()),
+            NetworkType::Regtest => {
+                let blossom = schedule.activation(NetworkUpgrade::Blossom)?;
+                Some(Self::regtest(blossom, schedule.activation(NetworkUpgrade::Nu7)))
+            }
+        }
+    }
+
     pub fn mainnet() -> Self {
         let (blossom, nu7) = blossom_nu7(NetworkType::Main);
         Self {

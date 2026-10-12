@@ -1,10 +1,10 @@
 //! [`TrafficCore`] against simulated members and a naive oracle (`traffic-balancer.md`)
 //!
-//! - Trusted 1..=4 (priorities 0..=2, 5 connections) + peers joining / leaving, one [`Kind`] each
+//! - Trusted 1..=4 (priorities 0..=2, 5 connections) + maybe the peer set, one [`Kind`] each
 //! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent; polls catching
 //!   up), flapping (fails in odd 20 s phases, lagging's polls too), silent (transport timeout)
 //! - Swarm: whole kinds off per case (an off one plays honest)
-//! - Model = the caller: a lie answered → `report` (+ a block re-asked)
+//! - Model = the caller: a lie answered → `report` (+ a block re-asked); the peer set's never benched
 //! - Own lanes, permits (poll's own outside them) and rounds: the oracle's ground truth
 //! - Per send: T2 kind + route, T3 bench + down, synced, T5 once per round, T6 pick, T7 priority
 //! - After every step: T7 no ready ask waits beside room; at quiescence (10 min): T9, liars
@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use super::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
 use crate::class::Class;
 use crate::member::{
-    Limits, MemberId, PeerId, Synced, ValidatorId, DOWN_AFTER, LADDER_CEILING, MIN_POLL_SPACING,
+    Limits, MemberId, Synced, ValidatorId, DOWN_AFTER, LADDER_CEILING, MIN_POLL_SPACING,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +48,9 @@ const SETTLE: Duration = Duration::from_secs(600);
 const ROUND_RETRY: Duration = Duration::from_secs(1);
 /// Poll's 1 + lanes' 4
 const CONNECTIONS: u32 = 5;
+/// The peer set's in flight (no poll)
+const PEER_IN_FLIGHT: u32 = 4;
+const PEER_TIER: u16 = u8::MAX as u16 + 1;
 const ASKED: [Class; 6] =
     [Class::Submit, Class::TipBlock, Class::Headers, Class::Lookup, Class::Bytes, Class::BulkBlock];
 
@@ -65,8 +68,6 @@ enum Move {
     Ask { class: u8, pick: u8 },
     Abandon(u8),
     Advance(u16),
-    Join(Kind),
-    Leave(u8),
     Push { member: u8, push: Push },
 }
 
@@ -80,8 +81,6 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
         8 => (any::<u8>(), any::<u8>()).prop_map(|(class, pick)| Move::Ask { class, pick }),
         2 => any::<u8>().prop_map(Move::Abandon),
         8 => (0u16..=20_000).prop_map(Move::Advance),
-        2 => kind().prop_map(Move::Join),
-        1 => any::<u8>().prop_map(Move::Leave),
         1 => (any::<u8>(), push).prop_map(|(member, push)| Move::Push { member, push }),
     ];
     prop::collection::vec(one, 1..64)
@@ -95,14 +94,16 @@ proptest! {
     #[test]
     fn every_ask_an_honest_member_may_serve_is_served_and_no_send_breaks_the_rules(
         trusted in prop::collection::vec((kind(), 0u8..=2), 1..=4),
+        // never lying: its transport drops what fails a check (`PeerTransport`)
+        peers in prop::option::of(kind().prop_filter("checked", |kind| *kind != Kind::Lying)),
         moves in moves(),
         swarm in prop::array::uniform7(prop::bool::weighted(0.8)),
     ) {
         let on = |kind: Kind| if swarm[kind as usize] { kind } else { Kind::Honest };
         let trusted: Vec<(Kind, u8)> = trusted.into_iter().map(|(kind, p)| (on(kind), p)).collect();
-        let mut world = World::new(&trusted);
+        let mut world = World::new(&trusted, peers.map(on));
         for one in &moves {
-            world.play(one, &on);
+            world.play(one);
         }
         world.settle();
     }
@@ -124,7 +125,7 @@ fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
         (Kind::Down, Class::Submit, Route::Only(v0), FAST, None),
     ];
     for (kind, class, route, after, by) in cases {
-        let mut world = World::new(&[(kind, 0), (Kind::Honest, 1)]);
+        let mut world = World::new(&[(kind, 0), (Kind::Honest, 1)], None);
         let asked_at = world.now;
         let ask = world.ask(class, route.clone());
         world.advance(asked_at + Duration::from_secs(60));
@@ -138,7 +139,7 @@ fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
 #[test]
 fn a_due_poll_never_waits_behind_other_asks() {
     let v0 = MemberId::Trusted(ValidatorId::new(0).expect("small"));
-    let mut world = World::new(&[(Kind::Silent, 0)]);
+    let mut world = World::new(&[(Kind::Silent, 0)], None);
     let t0 = world.now;
     for (class, route) in [
         (Class::Headers, Route::Only(v0)),
@@ -160,7 +161,6 @@ struct World {
     now: Instant,
     kinds: BTreeMap<MemberId, Kind>,
     tiers: BTreeMap<MemberId, u16>,
-    next_peer: u64,
     next_ask: u64,
     asks: BTreeMap<AskId, Asked>,
     ends: BTreeMap<AskId, (Instant, Option<MemberId>)>,
@@ -187,18 +187,27 @@ struct Asked {
 }
 
 impl World {
-    fn new(trusted: &[(Kind, u8)]) -> Self {
+    fn new(trusted: &[(Kind, u8)], peers: Option<Kind>) -> Self {
         let limits = Limits::new(CONNECTIONS).expect("MIN_CONNECTIONS");
         let config: Vec<(u8, Limits)> = trusted.iter().map(|(_, p)| (*p, limits)).collect();
         let t0 = Instant::now();
         let ids = (0..trusted.len()).map(|i| MemberId::Trusted(ValidatorId::new(i).expect("≤ 4")));
+        let mut kinds: BTreeMap<MemberId, Kind> =
+            ids.clone().zip(trusted.iter().map(|(kind, _)| *kind)).collect();
+        let mut tiers: BTreeMap<MemberId, u16> =
+            ids.zip(trusted.iter().map(|(_, p)| u16::from(*p))).collect();
+        let mut synced = BTreeMap::new();
+        if let Some(kind) = peers {
+            kinds.insert(MemberId::Peers, kind);
+            tiers.insert(MemberId::Peers, PEER_TIER);
+            synced.insert(MemberId::Peers, Synced::Live);
+        }
         let mut world = Self {
-            core: TrafficCore::new(&config, t0),
+            core: TrafficCore::new(&config, peers.map(|_| PEER_IN_FLIGHT), t0),
             t0,
             now: t0,
-            kinds: ids.clone().zip(trusted.iter().map(|(kind, _)| *kind)).collect(),
-            tiers: ids.zip(trusted.iter().map(|(_, p)| u16::from(*p))).collect(),
-            next_peer: 0,
+            kinds,
+            tiers,
             next_ask: 0,
             asks: BTreeMap::new(),
             ends: BTreeMap::new(),
@@ -207,7 +216,7 @@ impl World {
             polling: BTreeSet::new(),
             benched: BTreeMap::new(),
             failures: BTreeMap::new(),
-            synced: BTreeMap::new(),
+            synced,
             polls: BTreeMap::new(),
             answered_lies: BTreeSet::new(),
             lies: Vec::new(),
@@ -227,7 +236,7 @@ impl World {
         trusted[usize::from(pick) % trusted.len()]
     }
 
-    fn play(&mut self, one: &Move, on: &dyn Fn(Kind) -> Kind) {
+    fn play(&mut self, one: &Move) {
         match *one {
             Move::Ask { class, pick } => {
                 let class = ASKED[usize::from(class) % ASKED.len()];
@@ -252,29 +261,6 @@ impl World {
                 }
             }
             Move::Advance(ms) => self.advance(self.now + Duration::from_millis(u64::from(ms))),
-            Move::Join(kind) => {
-                let peer = MemberId::Peer(PeerId(self.next_peer));
-                self.next_peer += 1;
-                self.kinds.insert(peer, on(kind));
-                self.tiers.insert(peer, u16::from(u8::MAX) + 1);
-                self.synced.insert(peer, Synced::Live);
-                let MemberId::Peer(id) = peer else { unreachable!("a peer") };
-                self.step(Input::Joined(id));
-            }
-            Move::Leave(pick) => {
-                let peers: Vec<PeerId> = self
-                    .members()
-                    .into_iter()
-                    .filter_map(|m| match m {
-                        MemberId::Peer(id) => Some(id),
-                        MemberId::Trusted(_) => None,
-                    })
-                    .collect();
-                if let Some(peer) = peers.get(usize::from(pick) % peers.len().max(1)).copied() {
-                    self.kinds.remove(&MemberId::Peer(peer));
-                    self.step(Input::Left(peer));
-                }
-            }
             Move::Push { member, push } => {
                 let MemberId::Trusted(member) = self.trusted(member) else {
                     unreachable!("trusted")
@@ -411,15 +397,6 @@ impl World {
                 };
                 self.pending.push((now + after, Input::Reply { ticket, reply }));
             }
-            Output::Cancel(ticket) => {
-                let at = self.pending.iter().position(|(_, input)| {
-                    matches!(input, Input::Reply { ticket: pending, .. } if *pending == ticket)
-                });
-                self.pending.remove(at.expect("a cancel for a pending send"));
-                self.fly(ticket.member, ticket.class, false);
-                let asked = self.asks.get_mut(&ticket.ask).expect("a cancel of an open ask");
-                asked.flying.remove(&ticket.member);
-            }
             Output::Answered(ticket) => {
                 assert_eq!(
                     self.value_from.take(),
@@ -466,16 +443,18 @@ impl World {
         ((self.now - self.t0).as_secs() / 20).is_multiple_of(2)
     }
 
-    /// T8: `ticket.member` benched once more, nobody else
+    /// T8: a trusted `ticket.member` benched once more, nobody else (the peer set: nobody)
     fn report(&mut self, ticket: Ticket) {
         let times = |core: &TrafficCore| -> BTreeMap<MemberId, u32> {
             core.members.iter().map(|(id, m)| (*id, m.bench.map_or(0, |b| b.times))).collect()
         };
         let mut expected = times(&self.core);
-        *expected.get_mut(&ticket.member).expect("a present liar") += 1;
-        let count = self.benched.get(&ticket.member).map_or(0, |(_, count)| *count);
-        let span = Duration::from_secs(60 << count.min(6)).min(Duration::from_secs(3600));
-        self.benched.insert(ticket.member, (self.now + span, count + 1));
+        if let MemberId::Trusted(_) = ticket.member {
+            *expected.get_mut(&ticket.member).expect("a present liar") += 1;
+            let count = self.benched.get(&ticket.member).map_or(0, |(_, count)| *count);
+            let span = Duration::from_secs(60 << count.min(6)).min(Duration::from_secs(3600));
+            self.benched.insert(ticket.member, (self.now + span, count + 1));
+        }
         self.step(Input::Report(ticket));
         assert_eq!(times(&self.core), expected, "T8: a misanswer charged to its sender alone");
     }
@@ -484,24 +463,24 @@ impl World {
     fn eligible(&self, asked: &Asked, member: MemberId) -> bool {
         let kind = matches!(member, MemberId::Trusted(_)) || asked.class.peers();
         let benched = self.benched.get(&member).is_some_and(|(until, _)| *until > self.now);
-        let down = self.failures.get(&member).is_some_and(|f| *f >= DOWN_AFTER);
+        // down needs a poll probe back up: the peer set never goes down
+        let polled = matches!(member, MemberId::Trusted(_));
+        let down = polled && self.failures.get(&member).is_some_and(|f| *f >= DOWN_AFTER);
         let lagging =
             asked.class.needs_synced() && self.synced.get(&member) == Some(&Synced::CatchingUp);
         let untried = !asked.round.contains(&member);
         kind && asked.route.admits(member) && !benched && !down && !lagging && untried
     }
 
-    /// First in flight of a lane = its reserve, the rest from the shared connections (poll's
-    /// one never counted)
+    /// First in flight of a lane = its reserve, the rest from the shared connections (a trusted
+    /// poll's one never counted)
     fn room(&self, member: MemberId, lane: usize) -> bool {
         let flying = self.flying.get(&member).copied().unwrap_or([0; 3]);
-        match member {
-            MemberId::Trusted(_) => {
-                let claimed = flying.iter().map(|n| (*n).max(1)).sum::<u32>();
-                flying[lane] == 0 || claimed < CONNECTIONS - 1
-            }
-            MemberId::Peer(_) => flying.iter().sum::<u32>() == 0,
-        }
+        let max = match member {
+            MemberId::Trusted(_) => CONNECTIONS - 1,
+            MemberId::Peers => PEER_IN_FLIGHT,
+        };
+        flying[lane] == 0 || flying.iter().map(|n| (*n).max(1)).sum::<u32>() < max
     }
 
     /// Round not waiting, and nothing in flight or every send past its hedge floor
@@ -543,8 +522,7 @@ impl World {
             preferred.or(least),
             "T6: pick = best tier with room, preferred, least in flight ({ticket:?})"
         );
-        let reserved = matches!(member, MemberId::Trusted(_))
-            && self.flying.get(&member).is_none_or(|f| f[own] == 0);
+        let reserved = self.flying.get(&member).is_none_or(|f| f[own] == 0);
         if reserved {
             return;
         }
@@ -600,11 +578,12 @@ impl World {
                 "T9: an ask an honest member may serve still open: {asked:?}"
             );
         }
-        for liar in &self.answered_lies {
-            if let Some(member) = self.core.members.get(liar) {
-                assert!(member.bench.is_some(), "every liar that answered benched");
-            }
+        for liar in self.answered_lies.iter().filter(|m| matches!(m, MemberId::Trusted(_))) {
+            let member = self.core.members.get(liar).expect("a configured liar");
+            assert!(member.bench.is_some(), "every trusted liar that answered benched");
         }
+        let peers = self.core.members.get(&MemberId::Peers);
+        assert!(peers.is_none_or(|peers| peers.bench.is_none()), "the peer set never benched");
         for (member, starts) in &self.polls {
             for gap in starts.windows(2).map(|w| w[1] - w[0]) {
                 assert!(gap >= MIN_POLL_SPACING, "T10: {member:?} polled {gap:?} apart");

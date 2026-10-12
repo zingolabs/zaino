@@ -73,8 +73,8 @@ fn every_captured_header_passes_and_its_nbits_is_reproduced() {
 /// Anchored mid-chain at mainnet 3,508,500 (no history below), the next 200 real headers inserted
 /// as a trusted validator's (no rule run), each the new best, vouched as it lands, finalized
 /// behind a 10-block bound:
-/// - work counted from the anchor; only the newest 2 · depth = 20 finals answer by height, older
-///   ones = on the best chain by definition (final), a header below them = an orphan
+/// - work counted from the anchor; only the newest max(2 · depth, CONTEXT) = 113 finals answer by
+///   height, older ones = on the best chain by definition (final), a header below them = an orphan
 /// - the locator ends at the final tip; a re-anchor drops everything held before it
 #[test]
 fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() {
@@ -104,6 +104,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     assert_eq!(chain.tree_len(), 10, "only the non-final window in the tree");
     assert_eq!(chain.insert(&headers[185]), Ok(Inserted::Known), "a kept final");
     assert_eq!(chain.insert(&headers[50]), Err(Rejected::Orphan), "below the finals kept");
+    assert_eq!(chain.finals_kept(), crate::rules::CONTEXT, "depth 10: the rules' context wins");
     let best = chain.best().expect("anchored");
     let work: u128 = headers[1..=200]
         .iter()
@@ -114,13 +115,13 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     assert_eq!((best.block, best.cumulative_work), (at(200), work), "work from the anchor");
 
     let verified = chain.verified().expect("anchored");
-    for index in [171, 189, 190, 191, 200] {
+    for index in [78, 189, 190, 191, 200] {
         let header = verified.header_at(at(index).height).expect("held");
         let real = &headers[index];
         assert_eq!((header.hash, header.merkle_root), (real.hash(), real.merkle_root()), "{index}");
     }
-    assert_eq!(verified.header_at(at(170).height), None, "past the 20 finals kept");
-    assert!(verified.on_best(at(5)) && verified.on_best(at(170)), "final by definition");
+    assert_eq!(verified.header_at(at(77).height), None, "past the 113 finals kept");
+    assert!(verified.on_best(at(5)) && verified.on_best(at(77)), "final by definition");
     let stranger = BlockRef { hash: BlockHash::from([7; 32]), height: at(195).height };
     assert!(!verified.on_best(stranger) && !verified.holds(stranger), "not ours above final");
     assert_eq!(verified.hash_at(at(201).height), None, "above the best");
@@ -130,6 +131,66 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     chain.anchor(&headers[250], at(250).height);
     assert_eq!((chain.final_tip(), chain.tree_len()), (Some(at(250)), 0), "re-anchored");
     assert_eq!(chain.insert(&headers[251]), Ok(Inserted::Best { reorg: false }));
+    chain.check();
+}
+
+/// Anchored at mainnet 3,508,500, trusted 1..=27, then untrusted (every rule over the ancestors the
+/// chain holds), finalized behind a 10-block bound so the ancestors read cross into the finals:
+/// - right after the anchor: too few held to judge (`ShortContext`: the caller's, not the header's)
+/// - 28..=200: real headers, each the new best
+/// - at 201: a wrong nBits, a broken solution (both: hash above target), a local clock 2 h + 1 s
+///   behind each refused with nothing inserted; its real self accepted after; a missing parent =
+///   orphan (difficulty and time rules mutation by mutation: the test below)
+#[test]
+fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
+    let mainnet = Params::mainnet();
+    let headers = headers(RECENT_RANGE);
+    let at = |index: usize| BlockRef {
+        hash: headers[index].hash(),
+        height: height(3_508_500 + index as u32),
+    };
+    let now = i64::from(headers.last().expect("non-empty").time());
+    let mut chain = HeaderChain::new(ReorgDepth::new(NonZeroU32::new(10).expect("nz")));
+    chain.anchor(&headers[0], at(0).height);
+    let short = chain.insert_untrusted(&headers[1], &mainnet, now);
+    assert_eq!(short, Err(Rejected::ShortContext { held: 1, needed: 17 + MEDIAN_SPAN }));
+    for header in &headers[1..28] {
+        assert_eq!(chain.insert(header), Ok(Inserted::Best { reorg: false }));
+    }
+    for (index, header) in headers.iter().enumerate().take(201).skip(28) {
+        let inserted = chain.insert_untrusted(header, &mainnet, now);
+        assert_eq!(inserted, Ok(Inserted::Best { reorg: false }), "{index}");
+        chain.vouch(at(index));
+        if let Some(boundary) = chain.finalizable() {
+            chain.finalize(boundary);
+        }
+        chain.check();
+    }
+    assert_eq!(chain.final_tip(), Some(at(190)), "ancestors read across the finals + 10 nodes");
+
+    let real = &headers[201];
+    let mutated = |edit: &dyn Fn(&mut Vec<u8>)| {
+        let mut raw = real.bytes().to_vec();
+        edit(&mut raw);
+        decode_header(&raw).expect("same shape")
+    };
+    // any edit moves the hash: proof of work refuses it before the context rules run
+    let bits = real.bits() + 1;
+    let wrong_bits = mutated(&|raw| raw[104..108].copy_from_slice(&bits.to_le_bytes()));
+    let flipped = mutated(&|raw| *raw.last_mut().expect("solution") ^= 1);
+    let skewed = i64::from(real.time()) - 2 * 3600 - 1;
+    let future = Rejected::FromTheFuture { time: real.time(), max: skewed + 2 * 3600 };
+    let refused = [
+        chain.insert_untrusted(&wrong_bits, &mainnet, now),
+        chain.insert_untrusted(&flipped, &mainnet, now),
+        chain.insert_untrusted(real, &mainnet, skewed),
+    ];
+    let above = |bits| Err(Rejected::AboveTarget { bits });
+    assert_eq!(refused, [above(bits), above(real.bits()), Err(future)]);
+    assert_eq!(chain.best().map(|best| best.block), Some(at(200)), "nothing refused inserted");
+    let accepted = chain.insert_untrusted(real, &mainnet, now);
+    assert_eq!(accepted, Ok(Inserted::Best { reorg: false }));
+    assert_eq!(chain.insert_untrusted(&headers[203], &mainnet, now), Err(Rejected::Orphan));
     chain.check();
 }
 

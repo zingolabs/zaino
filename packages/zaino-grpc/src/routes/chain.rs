@@ -12,14 +12,13 @@ use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
-use zaino_primitives::types::{
-    BlockchainInfo, NetworkUpgradeStatus, TransactionId, TransactionLocation, Zatoshis,
-};
+use zaino_primitives::types::{TransactionId, TransactionLocation, Zatoshis};
 use zaino_proto::proto::service::{self as proto, LightdInfo, RawTransaction};
-use zaino_snapshot::Snapshot;
+use zaino_snapshot::{Lightd, Snapshot};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::consensus::NetworkUpgrade;
 
 use crate::wire::{self, decode_request, frame, status_response, trailers};
 
@@ -179,50 +178,39 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
     Ok(RawTransaction { data: found.bytes.into(), height })
 }
 
-/// Serving metadata + served height + validators' view of the network, from one snapshot
+/// Serving metadata from one snapshot: no validator read (served degraded too)
 ///
-/// - `blockHeight` = the served tip `GetLatestBlock` serves; branch + schedule = a holder's (one
-///   load: the two never disagree)
+/// - `blockHeight` = the served tip `GetLatestBlock` serves; `estimatedHeight` = the verified
+///   best (the network's tip as far as the header chain knows)
+/// - branch at the served tip + Sapling + the next upgrade = the schedule (mainnet/testnet
+///   compiled, regtest its validator's at boot)
 /// - `network` = declared, never read off the validator (zebra on regtest reports `"test"`)
-/// - no validator call (validator half = as of its last poll tick)
-/// - no holder or nothing served = `UNAVAILABLE` (no stand-in branch, schedule or tip)
+/// - nothing served = `UNAVAILABLE`
 /// - `lightwalletProtocolVersion` = vendored protos' release (pepper-sync refuses < v0.5.0)
 pub(crate) fn lightd_info<V>(
     snap: &Snapshot<V>,
     network: NetworkType,
 ) -> Result<LightdInfo, Status> {
-    let (chain, served) = snap.lightd().map_err(wire::unavailable)?;
-    let block_height = u64::from(served);
-
-    Ok(with_validator_view(
-        LightdInfo {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            vendor: "zaino".to_string(),
-            taddr_support: true,
-            chain_name: chain_name(network).to_string(),
-            block_height,
-            lightwallet_protocol_version: zaino_proto::LIGHTWALLET_PROTOCOL_VERSION.to_string(),
-            ..Default::default()
-        },
-        chain,
-    ))
+    snap.lightd().map(|lightd| render_lightd(lightd, network)).map_err(wire::unavailable)
 }
 
-/// Upgrade schedule + branch = validator's (consensus data, see `docs/design/boundaries.md`)
-fn with_validator_view(info: LightdInfo, chain: &BlockchainInfo) -> LightdInfo {
-    let next_pending = chain
-        .upgrades
-        .iter()
-        .filter(|upgrade| upgrade.status == NetworkUpgradeStatus::Pending)
-        .min_by_key(|upgrade| upgrade.activation_height);
-
+fn render_lightd(lightd: Lightd, network: NetworkType) -> LightdInfo {
+    let schedule = lightd.schedule;
+    let next = schedule.next_after(lightd.served);
+    let sapling = schedule.activation(NetworkUpgrade::Sapling);
     LightdInfo {
-        sapling_activation_height: chain.sapling_activation.into(),
-        consensus_branch_id: chain.consensus.chain_tip.to_string(),
-        estimated_height: chain.estimated_height.into(),
-        upgrade_name: next_pending.map_or_else(String::new, |upgrade| upgrade.name.clone()),
-        upgrade_height: next_pending.map_or(0, |upgrade| upgrade.activation_height.into()),
-        ..info
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        vendor: "zaino".to_string(),
+        taddr_support: true,
+        chain_name: chain_name(network).to_string(),
+        sapling_activation_height: sapling.map_or(0, u64::from),
+        consensus_branch_id: schedule.branch_at(lightd.served).to_string(),
+        block_height: u64::from(lightd.served),
+        estimated_height: u64::from(lightd.best),
+        upgrade_name: next.map_or_else(String::new, |(upgrade, _)| upgrade.to_string()),
+        upgrade_height: next.map_or(0, |(_, at)| u64::from(at)),
+        lightwallet_protocol_version: zaino_proto::LIGHTWALLET_PROTOCOL_VERSION.to_string(),
+        ..Default::default()
     }
 }
 
@@ -232,9 +220,7 @@ mod tests {
 
     use super::*;
     use zaino_index_compact_block::Pools;
-    use zaino_primitives::types::{
-        ConsensusBranchId, ConsensusBranchIds, Height, NetworkUpgradeInfo,
-    };
+    use zaino_primitives::types::{Height, UpgradeSchedule};
     use zaino_proto::frame::split_frame;
     use zaino_proto::proto::service::PoolType;
 
@@ -329,75 +315,52 @@ mod tests {
         assert_eq!(status.code(), tonic::Code::Unavailable);
     }
 
-    /// Next pending = lowest pending height (validator order is not a schedule); none → empty/0
+    /// Mainnet's compiled schedule: branch at the served height (NU6.2 from 3,364,600 below
+    /// NU6.3, NU6.3 from it), the next upgrade above it (none once NU6.3 is in: NU7
+    /// unscheduled), the best as the estimate, the chain from config
     #[test]
-    fn lightd_info_takes_the_schedule_and_branch_from_the_validator_and_the_chain_from_config() {
+    fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
         let at = |h: u32| Height::try_from(h).expect("in range");
-        let upgrade = |name: &str, branch: u32, h: u32, status| NetworkUpgradeInfo {
-            branch_id: ConsensusBranchId::new(branch),
-            name: name.to_owned(),
-            activation_height: at(h),
-            status,
+        let schedule = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
+        let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
+        let rendered = |served: u32| {
+            let info = render_lightd(lightd(served), NetworkType::Main);
+            (
+                info.chain_name,
+                info.sapling_activation_height,
+                info.consensus_branch_id,
+                (info.block_height, info.estimated_height),
+                (info.upgrade_name, info.upgrade_height),
+            )
         };
-        let schedule = vec![
-            upgrade("Overwinter", 0x5ba8_1b19, 347_500, NetworkUpgradeStatus::Active),
-            upgrade("Sapling", 0x76b8_09bb, 419_200, NetworkUpgradeStatus::Active),
-            upgrade("NU5", 0xc2d6_d0b4, 1_687_104, NetworkUpgradeStatus::Active),
-            upgrade("NU7", 0x7777_7777, 4_000_000, NetworkUpgradeStatus::Pending),
-            upgrade("NU6.3", 0x6363_6363, 3_428_143, NetworkUpgradeStatus::Pending),
-        ];
-        let nu5 = ConsensusBranchId::new(0xc2d6_d0b4);
-        let chain = BlockchainInfo {
-            blocks: at(3_426_990),
-            estimated_height: at(3_427_000),
-            best_block_hash: [7u8; 32].into(),
-            sapling_activation: at(419_200),
-            upgrades: schedule,
-            consensus: ConsensusBranchIds { chain_tip: nu5, next_block: nu5 },
-        };
-        let served = LightdInfo {
-            vendor: "zaino".to_owned(),
-            chain_name: chain_name(NetworkType::Main).to_owned(),
-            block_height: 3_400_000,
-            estimated_height: 3_400_000,
-            ..Default::default()
-        };
-
-        let expected = LightdInfo {
-            sapling_activation_height: 419_200,
-            consensus_branch_id: "c2d6d0b4".to_owned(),
-            estimated_height: 3_427_000,
-            upgrade_name: "NU6.3".to_owned(),
-            upgrade_height: 3_428_143,
-            ..served.clone()
-        };
-        assert_eq!(with_validator_view(served.clone(), &chain), expected);
-
-        let settled = BlockchainInfo {
-            estimated_height: at(4_100_000),
-            upgrades: chain
-                .upgrades
-                .iter()
-                .cloned()
-                .map(|u| NetworkUpgradeInfo { status: NetworkUpgradeStatus::Active, ..u })
-                .collect(),
-            ..chain
-        };
-        let settled = with_validator_view(served, &settled);
-        let upgrade = (settled.upgrade_name.as_str(), settled.upgrade_height);
-        assert_eq!(upgrade, ("", 0), "none scheduled");
+        let main = || "main".to_owned();
+        assert_eq!(
+            rendered(3_400_000),
+            (
+                main(),
+                419_200,
+                "5437f330".to_owned(),
+                (3_400_000, 3_500_000),
+                ("Nu6.3".to_owned(), 3_428_143)
+            )
+        );
+        assert_eq!(
+            rendered(3_428_143),
+            (main(), 419_200, "37a5165b".to_owned(), (3_428_143, 3_500_000), (String::new(), 0)),
+            "NU6.3 in force, nothing scheduled after"
+        );
     }
 
-    /// Over a live publisher, `UNAVAILABLE` naming why until all three hold:
-    /// - no verified tip; then verified, no polled validator holding it; then held, nothing served
-    /// - served at 5 → the holder's `getblockchaininfo` (every upgrade through NU6.3 active from
-    ///   1) + the served height (one load, no validator call)
+    /// Over a live publisher, its validator never polled (no holder, ever):
+    /// - `UNAVAILABLE` until something is served (no chain yet, then verified but unserved)
+    /// - served at 5 under the chain's schedule (every upgrade through NU6.3 from 1): NU6.3's
+    ///   branch, the verified best 7 as the estimate, 5 served (one load, no validator)
     #[tokio::test(start_paused = true)]
-    async fn lightd_info_refuses_until_a_held_tip_and_a_served_one_then_answers_from_one_load() {
+    async fn lightd_info_answers_once_served_with_no_validator_holding_the_tip() {
         let mut chain = MockChain::regtest();
         let tip_7 = chain.mine_empty(7);
         let node = Arc::new(MockValidator::following(&chain, tip_7));
-        let (mut routes, balancing, fold) = routes_over(&node);
+        let (mut routes, _balancing, _fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let snapshots = routes.snapshots.clone();
         let info = || lightd_info(&snapshots.load(), NetworkType::Main);
@@ -408,14 +371,10 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(publisher.run(cancel.clone()));
 
-        assert!(refused("no verified header chain tip yet"));
+        let unserved = "the indexes are syncing: nothing served yet";
+        assert!(refused(unserved), "no chain yet");
         routes.submit.set_verified(Some(chain.verified(tip_7)));
-        let unheld = "no trusted validator holds the verified tip 7 (of 1 configured)";
-        rounds("verified, unheld", || refused(unheld)).await;
-        tokio::spawn(balancing.run(cancel.clone()));
-        let folding = tokio::spawn(fold.run(cancel.clone()));
-        rounds("held, nothing served", || refused("the indexes are syncing: nothing served yet"))
-            .await;
+        rounds("verified, nothing served", || refused(unserved)).await;
 
         nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));
         rounds("served", || info().is_ok()).await;
@@ -431,10 +390,9 @@ mod tests {
             lightwallet_protocol_version: "v0.5.0".to_owned(),
             ..Default::default()
         };
-        assert_eq!(info().expect("served"), expected, "tip 7 held (NU6.3's branch), 5 served");
-
+        assert_eq!(info().expect("served"), expected, "best 7, NU6.3's branch at 5, 5 served");
+        assert!(snapshots.load().tips().held_by.is_empty(), "no validator ever held the tip");
         cancel.cancel();
-        folding.await.expect("the fold ran to its cancel");
     }
 
     /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:

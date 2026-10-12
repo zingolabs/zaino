@@ -2,20 +2,20 @@
 //!
 //! - One ask = one future: registered, runs the sends the core names, feeds each reply back
 //! - Dropping it abandons the ask (its sends dropped with it, permits back)
-//! - [`TrafficDriver`]: the core's clock (hedges, retries, poll cadence), polls, peers joining
+//! - [`TrafficDriver`]: the core's clock (hedges, retries, poll cadence), polls
 
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use futures::future::{abortable, AbortHandle, BoxFuture};
-use futures::stream::{self, BoxStream, FuturesUnordered};
+use futures::future::BoxFuture;
+use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
+use tracing::{info, warn};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
@@ -25,7 +25,10 @@ use zaino_source::{
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
-use crate::member::{Health, Limits, MemberId, MemberTable, PeerId, Synced, ValidatorId};
+use crate::member::{Health, Limits, MemberId, MemberTable, Synced, ValidatorId};
+
+/// Block ask open this long without an answer → warn, and again each period after
+const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// One `[[trusted_validators]]` entry (`priority`: 0 before 1 before …)
 pub struct Trusted<S> {
@@ -63,40 +66,38 @@ pub enum Urgency {
     Bulk,
 }
 
-/// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, any peer
+/// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, the peer set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
     Pinned { member: ValidatorId, heights: Vec<Height> },
     Peers { locator: Vec<BlockHash>, stop: Option<BlockHash> },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Membership {
-    Joined(PeerId),
-    Left(PeerId),
-}
-
-/// Peers as members (zainod implements it over `zaino-peers`)
+/// The p2p peer set as one member (zainod implements it over `zaino-peers`)
 ///
 /// - no answer and "not found" alike = `Err` (a peer's absence proves nothing)
+/// - a block or transaction not matching what was asked never comes back (the transport drops
+///   it and blames the peer that sent it)
 pub trait PeerTransport: Send + Sync + 'static {
     fn headers(
         &self,
-        peer: PeerId,
         locator: Vec<BlockHash>,
         stop: Option<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>>;
-    fn block(
-        &self,
-        peer: PeerId,
-        hash: BlockHash,
-    ) -> BoxFuture<'static, Result<Block, NonDomainError>>;
-    fn transactions(
-        &self,
-        peer: PeerId,
-        ids: Vec<TransactionId>,
-    ) -> BoxFuture<'static, Result<Vec<Option<Vec<u8>>>, NonDomainError>>;
-    fn joined_left(&self) -> BoxStream<'static, Membership>;
+    fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>>;
+}
+
+/// The peer set's member: `in_flight` = requests it carries at once (≥ [`MIN_IN_FLIGHT`])
+///
+/// [`MIN_IN_FLIGHT`]: Self::MIN_IN_FLIGHT
+pub struct Peers {
+    pub transport: Arc<dyn PeerTransport>,
+    pub in_flight: u32,
+}
+
+impl Peers {
+    /// One reserved per lane (control: headers, interactive: tip blocks, bulk: bulk blocks)
+    pub const MIN_IN_FLIGHT: u32 = crate::class::LANES as u32;
 }
 
 /// One trusted member's latest poll (raw reading, latest only); `health` = right after it
@@ -153,19 +154,16 @@ struct State {
 /// Core output for one ask's future
 enum Event {
     Send(Ticket),
-    Cancel(Ticket),
     Answered(Ticket),
     Unanswered,
 }
 
 impl<S: ChainDataSource> TrafficBalancer<S> {
     /// `trusted[i]` = `ValidatorId(i)` (non-empty, ≤ `ValidatorId::MAX`)
-    pub fn new(
-        trusted: Vec<Trusted<S>>,
-        peers: Option<Arc<dyn PeerTransport>>,
-    ) -> (Self, TrafficDriver<S>) {
+    pub fn new(trusted: Vec<Trusted<S>>, peers: Option<Peers>) -> (Self, TrafficDriver<S>) {
         let config: Vec<(u8, Limits)> = trusted.iter().map(|t| (t.priority, t.limits)).collect();
-        let core = TrafficCore::new(&config, Instant::now().into_std());
+        let in_flight = peers.as_ref().map(|peers| peers.in_flight);
+        let core = TrafficCore::new(&config, in_flight, Instant::now().into_std());
         let table = watch::Sender::new(Arc::new(core.table()));
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
@@ -176,7 +174,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             }),
             observations: trusted.iter().map(|_| watch::Sender::new(None)).collect(),
             trusted: trusted.into_iter().map(|t| t.source).collect(),
-            peers,
+            peers: peers.map(|peers| peers.transport),
             best: Mutex::new(Box::new(|| None)),
             changed: Notify::new(),
             table,
@@ -191,7 +189,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             shared.send(
                 member,
                 move |source| async move { source.get_block_by_hash(hash).await },
-                move |peers, peer| peers.block(peer, hash),
+                move |peers| peers.block(hash),
             )
         };
         self.block_by(urgency, Route::Any, send).await
@@ -247,13 +245,11 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             }
             HeaderAsk::Peers { locator, stop } => {
                 let send = move |to| {
-                    let MemberId::Peer(peer) = to else {
-                        unreachable!("Route::Peers reaches peers only");
-                    };
+                    assert_eq!(to, MemberId::Peers, "Route::Peers reaches the peer set only");
                     let links = |headers: Vec<Vec<u8>>| {
                         headers.into_iter().map(|header| Ok(BlockLink { header })).collect()
                     };
-                    let headers = shared.peers().headers(peer, locator.clone(), stop);
+                    let headers = shared.peers().headers(locator.clone(), stop);
                     headers.map_ok(links).map_err(QueryError::NonDomain).boxed()
                 };
                 self.ask(Class::Headers, Route::Peers, send).await
@@ -269,22 +265,9 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     ) -> Result<Answered<RawMempoolTransactions>, Unanswered<GetRawMempoolTransactionError>> {
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
-            let listed = listed.clone();
-            let ids: Vec<TransactionId> = listed.iter().map(|entry| entry.txid).collect();
-            let found = move |raws: Vec<Option<Vec<u8>>>| {
-                let raws = ids.iter().zip(raws);
-                raws.map(|(id, raw)| raw.ok_or(GetRawMempoolTransactionError::NotFound(*id)))
-                    .collect()
-            };
-            let asked = listed.iter().map(|entry| entry.txid).collect();
-            shared.send(
-                member,
-                move |source| async move {
-                    let raws = source.get_raw_mempool_transactions(&listed).await;
-                    raws.map_err(QueryError::NonDomain)
-                },
-                move |peers, peer| peers.transactions(peer, asked).map_ok(found).boxed(),
-            )
+            let (source, listed) = (shared.trusted_only(member), listed.clone());
+            let raws = async move { source.get_raw_mempool_transactions(&listed).await };
+            raws.map_err(QueryError::NonDomain).boxed()
         };
         self.ask(Class::Bytes, Route::Prefer(prefer), send).await
     }
@@ -342,13 +325,14 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         self.shared.table.subscribe()
     }
 
-    /// `ticket`'s value failed the caller's check: its sender benched, and only it
+    /// `ticket`'s value failed the caller's check: a trusted sender benched, and only it (the peer
+    /// set never: its transport already dropped what it could check)
     pub fn report(&self, ticket: Ticket, why: &(dyn std::error::Error + 'static)) {
         let member = match ticket.member {
             MemberId::Trusted(validator) => validator.get().to_string(),
-            MemberId::Peer(_) => "peer".to_owned(),
+            MemberId::Peers => "peers".to_owned(),
         };
-        warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer, member benched");
+        warn!(?ticket.member, class = ticket.class.label(), %why, "Misanswer");
         let class = ticket.class.label();
         let labels = [("member", member), ("class", class.to_owned())];
         metrics::counter!("zaino_traffic_misanswers_total", &labels).increment(1);
@@ -372,23 +356,32 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             ended: false,
         };
         let mut sends = FuturesUnordered::new();
-        let mut aborts: HashMap<MemberId, AbortHandle> = HashMap::new();
         let (mut value, mut failed, mut domain) = (None, None, None);
+        let opened = Instant::now();
+        // rounds retry forever (no block skipped): a block no member serves = a silent stall unwarned
+        let mut stall_warn_at = class.retries_rounds().then(|| opened + STALL_WARN_EVERY);
+        let mut latest_failure: Option<(MemberId, String)> = None;
+        let mut warned = false;
         loop {
+            let stall_warning = async {
+                match stall_warn_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 biased;
                 event = events.recv() => match event.expect("mailbox open while its ask runs") {
                     Event::Send(ticket) => {
-                        let (reply, abort) = abortable(send(ticket.member));
-                        aborts.insert(ticket.member, abort);
-                        sends.push(reply.map(move |reply| (ticket, reply)));
-                    }
-                    Event::Cancel(ticket) => {
-                        aborts.remove(&ticket.member).iter().for_each(AbortHandle::abort);
+                        sends.push(send(ticket.member).map(move |reply| (ticket, reply)));
                     }
                     Event::Answered(ticket) => {
                         open.ended = true;
                         let value = value.take().expect("Answered follows the value just replied");
+                        if warned {
+                            let (class, open_for) = (class.label(), opened.elapsed());
+                            info!(class, ?open_for, from = ?ticket.member, "Stalled ask answered");
+                        }
                         return Ok(Answered { value, from: ticket.member, ticket });
                     }
                     Event::Unanswered => {
@@ -398,22 +391,34 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                         return Err(Unanswered { last });
                     }
                 },
-                Some((ticket, Ok(reply))) = sends.next() => {
+                Some((ticket, reply)) = sends.next() => {
                     let reply = match reply {
                         Ok(answer) => {
                             value = Some(answer);
                             Reply::Value
                         }
                         Err(QueryError::Domain(said)) => {
+                            latest_failure = Some((ticket.member, said.to_string()));
                             domain = Some(said);
                             Reply::Domain
                         }
                         Err(QueryError::NonDomain(cause)) => {
+                            latest_failure = Some((ticket.member, cause.to_string()));
                             failed.get_or_insert(cause);
                             Reply::NonDomain
                         }
                     };
                     self.shared.step(Input::Reply { ticket, reply });
+                }
+                () = stall_warning => {
+                    let (class, open_for) = (class.label(), opened.elapsed());
+                    let (member, cause) = match &latest_failure {
+                        Some((member, cause)) => (Some(member), cause.as_str()),
+                        None => (None, "no reply yet"),
+                    };
+                    warn!(class, ?open_for, ?member, cause, "Ask unanswered, still retrying");
+                    stall_warn_at = stall_warn_at.map(|at| at + STALL_WARN_EVERY);
+                    warned = true;
                 }
             }
         }
@@ -460,7 +465,6 @@ impl<S> Shared<S> {
                     continue;
                 }
                 Output::Send(ticket) => (ticket.ask, Event::Send(ticket)),
-                Output::Cancel(ticket) => (ticket.ask, Event::Cancel(ticket)),
                 Output::Answered(ticket) => (ticket.ask, Event::Answered(ticket)),
                 Output::Unanswered(ask) => (ask, Event::Unanswered),
             };
@@ -489,12 +493,12 @@ impl<S> Shared<S> {
         Arc::clone(&self.trusted[validator.get()])
     }
 
-    /// One send's future: the trusted source's, or the peer's (its `Err` = `NonDomain`)
+    /// One send's future: the trusted source's, or the peer set's (its `Err` = `NonDomain`)
     fn send<T, E, F>(
         &self,
         member: MemberId,
         trusted: impl FnOnce(Arc<S>) -> F,
-        peer: impl FnOnce(&dyn PeerTransport, PeerId) -> BoxFuture<'static, Result<T, NonDomainError>>,
+        peers: impl FnOnce(&dyn PeerTransport) -> BoxFuture<'static, Result<T, NonDomainError>>,
     ) -> BoxFuture<'static, Result<T, QueryError<E>>>
     where
         T: 'static,
@@ -505,23 +509,19 @@ impl<S> Shared<S> {
             MemberId::Trusted(validator) => {
                 trusted(Arc::clone(&self.trusted[validator.get()])).boxed()
             }
-            MemberId::Peer(id) => peer(self.peers(), id).map_err(QueryError::NonDomain).boxed(),
+            MemberId::Peers => peers(self.peers()).map_err(QueryError::NonDomain).boxed(),
         }
     }
 
     fn peers(&self) -> &dyn PeerTransport {
-        self.peers.as_deref().expect("peer members join through PeerTransport")
+        self.peers.as_deref().expect("the peer set member exists only with its transport")
     }
 }
 
 impl<S: ChainDataSource> TrafficDriver<S> {
-    /// Until `cancel`: steps the core at its wake time, runs its polls, follows peers
+    /// Until `cancel`: steps the core at its wake time, runs its polls
     pub async fn run(self, cancel: CancellationToken) {
         let shared = &self.shared;
-        let mut membership = match &shared.peers {
-            Some(peers) => peers.joined_left(),
-            None => stream::pending().boxed(),
-        };
         let mut polls = FuturesUnordered::new();
         shared.step(Input::Tick);
         loop {
@@ -542,10 +542,6 @@ impl<S: ChainDataSource> TrafficDriver<S> {
                 () = shared.changed.notified() => {}
                 () = timer => shared.step(Input::Tick),
                 Some(polled) = polls.next() => shared.polled(polled),
-                Some(change) = membership.next() => shared.step(match change {
-                    Membership::Joined(peer) => Input::Joined(peer),
-                    Membership::Left(peer) => Input::Left(peer),
-                }),
             }
         }
     }

@@ -16,21 +16,23 @@ use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::UnminedTx;
+use zebra_network::types::PeerServices;
 use zebra_network::{BoxError, InventoryResponse, Request, Response};
 
 use zaino_source::testing::raw_transaction;
 
 use crate::wire;
-use crate::{Announced, PeerConfig, PeerNetwork, PeerTxId, PushError};
+use crate::{Announced, PeerConfig, PeerNetwork, PeerTxId, PushError, Supplied};
 
 type FakePeers = Buffer<BoxService<Request, Response, BoxError>, Request>;
+type FakeBook = Arc<Mutex<zebra_network::AddressBook>>;
 
 /// Full zebra-network regtest node on a fresh loopback port, answering peers with `inbound`
 /// (no seeds: accepts only); its peer set reaches whoever connected
 ///
 /// - full node, not an isolated connection (those advertise no services: a peer set refuses
 ///   an outbound peer serving nothing)
-async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers)
+async fn fake_node<S>(inbound: S) -> (SocketAddr, FakePeers, FakeBook)
 where
     S: Service<Request, Response = Response, Error = BoxError> + Clone + Send + Sync + 'static,
     S::Future: Send + 'static,
@@ -45,9 +47,15 @@ where
         cache_dir: zebra_network::CacheDir::disabled(),
         ..zebra_network::Config::default()
     };
-    let (peers, _, _) =
-        zebra_network::init(config, inbound, NoChainTip, "/FakePeer:0/".to_owned()).await;
-    (listen_addr, peers)
+    let (peers, book, _) = zebra_network::init(
+        config,
+        inbound,
+        NoChainTip,
+        "/FakePeer:0/".to_owned(),
+        PeerServices::NODE_NETWORK,
+    )
+    .await;
+    (listen_addr, peers, book)
 }
 
 async fn until(what: &str, done: impl Fn() -> bool) {
@@ -62,6 +70,7 @@ async fn until(what: &str, done: impl Fn() -> bool) {
 
 /// Fake peer: mainnet blocks 1–3 + three mempool txs, lying when asked for tx A (answers B)
 ///
+/// - Zaino admitted while advertising no services
 /// - headers + blocks byte-identical, unknown hash → `None`
 /// - mempool listing = its three ids; lie = an answer, not a failure (A = `None`, B never
 ///   labelled A); honest answer passes
@@ -120,7 +129,7 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
         };
         std::future::ready(Ok::<_, BoxError>(response))
     });
-    let (fake, mut fake_peers) = fake_node(inbound).await;
+    let (fake, mut fake_peers, fake_book) = fake_node(inbound).await;
 
     let mut config = PeerConfig::new(NetworkType::Regtest);
     config.initial_peers = Some(vec![fake.to_string()]);
@@ -128,6 +137,11 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     let peers = PeerNetwork::start(config).await;
     let mut announcements = peers.announcements();
     until("handshaken (an entry candidate)", || peers.entries(None).contains(&fake)).await;
+    let seen: Vec<_> = {
+        let book = fake_book.lock().expect("fake address book");
+        book.peers().filter(|meta| meta.is_inbound()).map(|meta| meta.services()).collect()
+    };
+    assert_eq!(seen, [Some(PeerServices::empty())], "Zaino advertises no services, still admitted");
 
     let hash = |block: &Arc<Block>| wire::block_hash(block.hash());
     let headers = peers.find_headers(&[hash(&blocks[0])], None).await.expect("headers");
@@ -138,7 +152,8 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
     let unknown = BlockHash::from([7; 32]);
     let fetched = peers.blocks_by_hash(&[hash(&blocks[1]), unknown]).await.expect("blocks");
     let vector = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.to_vec();
-    assert_eq!(fetched, [(hash(&blocks[1]), Some(vector)), (unknown, None)]);
+    let supplied = Supplied { bytes: vector, peer: Some(fake) };
+    assert_eq!(fetched, [(hash(&blocks[1]), Some(supplied)), (unknown, None)], "sender named");
 
     let listed: HashSet<PeerTxId> =
         peers.mempool_ids().await.expect("mempool").into_iter().collect();
@@ -185,7 +200,7 @@ async fn an_isolated_push_delivers_the_exact_bytes_to_the_chosen_address() {
         }
         std::future::ready(Ok::<_, BoxError>(Response::Nil))
     });
-    let (entry, _) = fake_node(inbound).await;
+    let (entry, _, _) = fake_node(inbound).await;
 
     let mut config = PeerConfig::new(NetworkType::Regtest);
     config.initial_peers = Some(Vec::new());

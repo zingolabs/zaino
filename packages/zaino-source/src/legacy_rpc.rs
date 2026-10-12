@@ -47,7 +47,7 @@ impl ZcashLegacyRpcClient {
         Ok(Self { rpc })
     }
 
-    /// `getblock <id> 0` → bytes → [`decode::block`]
+    /// `getblock <id> 0` → bytes → [`decode::decode_block`]
     async fn raw_block<E>(
         &self,
         id: String,
@@ -62,7 +62,8 @@ impl ZcashLegacyRpcClient {
             .call_as("getblock", params)
             .await
             .map_err(|error| absent_or_fetch(error, absent))?;
-        decode::block(&raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+        decode::decode_block(&raw)
+            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
     }
 
     /// Call + parse; `classify` decides which transport failures are the port's answer
@@ -190,7 +191,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         let decoded = heights.iter().zip(replies).map(|(height, reply)| {
             let absent = || GetAtHeightError::HeightNotFound(*height);
             let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
-            decode::block(&raw)
+            decode::decode_block(&raw)
                 .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
         });
         decoded.collect()

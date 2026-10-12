@@ -61,6 +61,8 @@ pub enum Rejected {
     BelowFinal,
     #[error("cumulative work past 128 bits")]
     WorkOverflow,
+    #[error("{held} ancestors held, the rules read {needed}")]
+    ShortContext { held: usize, needed: usize },
 }
 
 impl Rejected {
@@ -110,6 +112,8 @@ pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
 /// `header` at `height` after `context` (ancestors, newest first; empty for genesis) and the clock
 ///
 /// - returns the header's own work (`2^256 / (target + 1)`)
+/// - `context` = every ancestor near genesis, else the window + one median span
+///   ([`Rejected::ShortContext`]: the caller holds too few, never the header's fault)
 pub(crate) fn in_context(
     params: &Params,
     header: &Header,
@@ -120,6 +124,10 @@ pub(crate) fn in_context(
     let bits = header.bits();
     let own = expand(bits).and_then(work).expect("`alone` checked nBits");
     let time = header.time();
+    let needed = (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_SPAN);
+    if context.len() < needed {
+        return Err(Rejected::ShortContext { held: context.len(), needed });
+    }
 
     if let Some(parent) = context.first() {
         let median_time_past = median_time(context.iter().take(MEDIAN_SPAN).map(|a| a.time));
@@ -171,7 +179,7 @@ pub(crate) fn expected_bits(
     // zcashd `pow.cpp`: the window walk off genesis (`pindexFirst == NULL`) = the limit outright;
     // zebra 6.x damps a limit mean instead, which mints the wrong nBits at mainnet height 1
     let window = params.averaging_window(height);
-    if context.len() <= window {
+    if u32::from(height) as usize <= window {
         return Some(params.limit_bits());
     }
     let targets: Vec<U256> = context[..window]

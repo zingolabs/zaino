@@ -5348,6 +5348,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "zaino-primitives",
  "zaino-source",
 ]
@@ -5563,7 +5564,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=aba1125a604db77c560714e8cfd6db4b5e8d5039#aba1125a604db77c560714e8cfd6db4b5e8d5039"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -5622,7 +5623,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=aba1125a604db77c560714e8cfd6db4b5e8d5039#aba1125a604db77c560714e8cfd6db4b5e8d5039"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -5660,7 +5661,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=aba1125a604db77c560714e8cfd6db4b5e8d5039#aba1125a604db77c560714e8cfd6db4b5e8d5039"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=bcf92d8268e4c480fc4ff5d1130da8445bf46916#bcf92d8268e4c480fc4ff5d1130da8445bf46916"
 dependencies = [
  "color-eyre",
  "futures",

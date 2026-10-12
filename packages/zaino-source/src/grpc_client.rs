@@ -1,7 +1,7 @@
 //! [`ZcashGrpcClient`]: blocks over zebrad's indexer gRPC, every other question over its JSON-RPC
 //!
 //! - `GetBlockRange` / `GetBlock` = stored consensus bytes as protobuf `bytes` (no hex, no JSON;
-//!   `Bytes` = a slice of the received frame), decoded by the same [`decode::block`] as JSON-RPC
+//!   `Bytes` = a slice of the received frame), decoded by the same [`decode::decode_block`] as JSON-RPC
 //! - HTTP/2: streams multiplexed over a few connections (zebrad admits 20 streams per one),
 //!   requests rotated across them
 //! - the rest (poll, headers, mempool, transactions) = [`ZcashLegacyRpcClient`]'s (no indexer
@@ -162,7 +162,7 @@ fn decoded<E>(raw: &[u8]) -> Result<Block, QueryError<E>>
 where
     E: std::fmt::Debug + std::fmt::Display,
 {
-    decode::block(raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+    decode::decode_block(raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
 }
 
 /// A status other than the port's own answers (`NOT_FOUND` is handled by each caller)

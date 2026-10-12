@@ -115,9 +115,9 @@ zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
 zaino-peers = { path = "packages/zaino-peers", version = "0.1.0" }
 # p2p layer (zaino-peers): zebra main on the same librustzcash/orchard/sapling forks patched below
-zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
-zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "14.0.0" }
-zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "aba1125a604db77c560714e8cfd6db4b5e8d5039", version = "4.0.0" }
+zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "bcf92d8268e4c480fc4ff5d1130da8445bf46916", version = "14.0.0" }
+zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "bcf92d8268e4c480fc4ff5d1130da8445bf46916", version = "14.0.0" }
+zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "bcf92d8268e4c480fc4ff5d1130da8445bf46916", version = "4.0.0" }
 # Height → gRPC-framed compact block, served as contiguous mmap spans
 zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
 # Block hash <-> height: the locator every by-hash request resolves through.

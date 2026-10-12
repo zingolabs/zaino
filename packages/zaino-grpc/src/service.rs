@@ -219,10 +219,10 @@ mod tests {
         let cases = [
             (path::GET_LATEST_BLOCK, (Unavailable, syncing.clone())),
             (path::GET_TREE_STATE, (Unavailable, syncing.clone())),
-            (path::GET_ADDRESS_UTXOS, (Unavailable, syncing)),
+            (path::GET_ADDRESS_UTXOS, (Unavailable, syncing.clone())),
             (unknown, (Unimplemented, format!("{unknown}: no such method"))),
             (health, (Unimplemented, format!("{health}: no such method"))),
-            (path::GET_LIGHTD_INFO, (Unavailable, "no verified header chain tip yet".to_owned())),
+            (path::GET_LIGHTD_INFO, (Unavailable, syncing)),
         ];
         for (path, want) in cases {
             let response = booting.call(request(path)).await.expect("infallible");
@@ -349,7 +349,7 @@ mod tests {
         let (_, info, _) = call(path::GET_LIGHTD_INFO, Vec::new()).await;
         let info = proto::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
         let lightd = (info.block_height, info.estimated_height, info.consensus_branch_id.as_str());
-        assert_eq!(lightd, (2, 2, "00000000"), "served height + the holder's view, one load");
+        assert_eq!(lightd, (2, 2, "37a5165b"), "served height, best, the schedule's branch at 2");
 
         let every = vec![1, 2, 3, 4];
         let request = proto::GetMempoolTxRequest { pool_types: every, ..Default::default() };

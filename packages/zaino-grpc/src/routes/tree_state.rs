@@ -211,11 +211,11 @@ where
 /// - Pool below its upgrade = `""` (zebra's `z_gettreestate` omits it; lightwalletd copies that)
 /// - from its upgrade on = its tree, `000000` while empty (pepper-sync rejects `""` there)
 fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
-    let tree =
-        |pool, tree: &CommitmentTreeBytes| match params.activations.active(pool, state.height) {
-            true => const_hex::encode(tree.as_bytes()),
-            false => String::new(),
-        };
+    let activations = params.activations();
+    let tree = |pool, tree: &CommitmentTreeBytes| match activations.active(pool, state.height) {
+        true => const_hex::encode(tree.as_bytes()),
+        false => String::new(),
+    };
     wire::frame(&proto::TreeState {
         network: chain_name(params.network).to_owned(),
         height: u64::from(state.height),

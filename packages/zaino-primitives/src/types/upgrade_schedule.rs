@@ -4,7 +4,7 @@ use zcash_protocol::consensus::{
     MainNetwork, NetworkType, NetworkUpgrade, Parameters, TestNetwork,
 };
 
-use super::{BlockchainInfo, Height};
+use super::{BlockchainInfo, ConsensusBranchId, Height};
 
 /// Protocol order (`NetworkUpgrade` derives neither `Ord` nor `Hash`)
 pub(crate) const ORDER: [NetworkUpgrade; 11] = [
@@ -48,6 +48,22 @@ impl UpgradeSchedule {
 
     pub fn activation(&self, upgrade: NetworkUpgrade) -> Option<Height> {
         self.0[slot(upgrade)]
+    }
+
+    pub fn active(&self, upgrade: NetworkUpgrade, at: Height) -> bool {
+        self.activation(upgrade).is_some_and(|from| from <= at)
+    }
+
+    /// Branch in force at `at` (Sprout = 0)
+    pub fn branch_at(&self, at: Height) -> ConsensusBranchId {
+        let latest = ORDER.iter().rev().find(|upgrade| self.active(**upgrade, at));
+        ConsensusBranchId::new(latest.map_or(0, |upgrade| u32::from(upgrade.branch_id())))
+    }
+
+    /// First upgrade scheduled above `at`
+    pub fn next_after(&self, at: Height) -> Option<(NetworkUpgrade, Height)> {
+        let scheduled = ORDER.iter().zip(self.0).filter_map(|(nu, from)| Some((*nu, from?)));
+        scheduled.filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
     }
 
     fn of(params: &impl Parameters) -> Self {

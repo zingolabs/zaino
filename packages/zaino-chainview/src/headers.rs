@@ -4,30 +4,36 @@
 //! ```text
 //!   view changed ─▶ answering validators' claims + getblockhash answers held ─▶ vouch, finalize
 //!               ─▶ first validator whose claim we lack (not backing off, not forked below final):
-//!                  no chain, or its claim − depth past our ceiling ─▶ anchor at claim − depth
+//!                  no chain, or its claim − below past our ceiling ─▶ anchor at claim − below
+//!                  (below = max(depth, CONTEXT): `HeaderChain::anchor_below`)
 //!                  else one batch ≤ ceiling ─▶ insert in order (link + work: trusted, no rule
 //!                  run) ─▶ vouch the run's last header ─▶ finalize ─▶ VerifiedChain → view + watch
 //! ```
 //!
 //! - one owner, no lock, no pool: a trusted insert = a hash lookup + nBits work
-//! - anchored at a trusted validator's claim − depth, never synced from genesis (zebra validated
+//! - anchored below a trusted validator's claim, never synced from genesis (zebra validated
 //!   every block below it; bulk sync reads blocks by height, not this chain)
 //! - final = min(vouched, best − depth) after every run (H6): a trusted run vouches itself
 //! - backpressure: no fetch above `ceiling(HEADER_BATCH)` (tree ≤ depth + batch above final, H9)
 //! - per validator: a stall (fetch failed, retreated, malformed) backs off only it (`RETRY`); a
 //!   chain forked below our final tip is not fetched again until its claim moves
+//! - peers ([`HeaderSync::with_peers`]): no trusted run due → the peer set asked past our best
+//!   (locator) every `PEER_POLL`, at once again after progress; every rule run per header
+//!   (untrusted), never vouched (finality stays the trusted validators')
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_header_chain::{decode_header, Header, HeaderChain, Rejected, VerifiedChain};
+use zaino_header_chain::{
+    decode_header, Header, HeaderChain, Inserted, Params, Rejected, VerifiedChain,
+};
 use zaino_primitives::types::{BlockRef, Height};
-use zaino_source::{ChainDataSource, GetAtHeightError};
-use zaino_traffic::{HeaderAsk, TrafficBalancer, ValidatorId};
+use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
+use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, ValidatorId};
 
 use crate::fold::ChainViewCore;
 use crate::snapshot::ChainViewSnapshot;
@@ -38,13 +44,23 @@ pub(crate) const HEADER_BATCH: u32 = 2_000;
 /// One validator's back-off after a stalled run
 const RETRY: Duration = Duration::from_secs(5);
 
-/// Feeds one header chain from every trusted validator; owns it
+/// Peer set asked past our best this often (nothing newer = an empty answer; a block ≈ 75 s)
+const PEER_POLL: Duration = Duration::from_secs(5);
+
+/// Feeds one header chain from every trusted validator (and the peer set, if any); owns it
 pub struct HeaderSync<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
     chain: HeaderChain,
     verified: watch::Sender<Option<Arc<VerifiedChain>>>,
     members: Vec<Member>,
+    peers: Option<Peers>,
+}
+
+/// The peer path: the rules its headers meet, when it is next asked
+struct Peers {
+    params: Params,
+    due: Instant,
 }
 
 /// One validator's fetch state
@@ -81,7 +97,12 @@ impl<S: ChainDataSource> HeaderSync<S> {
     ) -> Self {
         let verified = watch::Sender::new(chain.verified().map(Arc::new));
         let members = vec![Member::default(); core.current().endpoints().len()];
-        Self { core, balancer, chain, verified, members }
+        Self { core, balancer, chain, verified, members, peers: None }
+    }
+
+    /// Headers from the peer set too, each held to `params` (the balancer's peer member)
+    pub fn with_peers(self, params: Params) -> Self {
+        Self { peers: Some(Peers { params, due: Instant::now() }), ..self }
     }
 
     /// The verified chain, republished whenever its best or final tip moves (`None` = no anchor
@@ -100,9 +121,13 @@ impl<S: ChainDataSource> HeaderSync<S> {
             let step = async {
                 let view = self.core.current();
                 self.vouch(&view);
-                match self.next_run(&view, Instant::now()) {
+                let now = Instant::now();
+                match self.next_run(&view, now) {
                     Ok(run) => self.fetch(run).await,
+                    Err(_) if self.peers_due(now) => self.extend_from_peers().await,
                     Err(retry) => {
+                        let peers = self.peers.as_ref().map(|peers| peers.due);
+                        let retry = retry.into_iter().chain(peers).min();
                         let backoff = async {
                             match retry {
                                 Some(at) => tokio::time::sleep_until(at).await,
@@ -168,9 +193,9 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 continue;
             }
             let id = ValidatorId::new(at).expect("configured below ValidatorId::MAX");
-            let trusted_final = claim.height.saturating_sub(chain.depth().get());
-            if chain.final_tip().is_none() || trusted_final > ceiling {
-                return Ok(Run::Anchor { member: id, at: trusted_final });
+            let anchor = claim.height.saturating_sub(chain.anchor_below());
+            if chain.final_tip().is_none() || anchor > ceiling {
+                return Ok(Run::Anchor { member: id, at: anchor });
             }
             let above_best = verified.as_ref().map_or(Height::GENESIS, |v| v.best().height.next());
             let next = member.next.filter(|next| *next <= claim.height);
@@ -281,6 +306,80 @@ impl<S: ChainDataSource> HeaderSync<S> {
                 Member::stalled()
             }
         }
+    }
+
+    /// Peer path on and due, the chain anchored (a locator to ask from)
+    fn peers_due(&self, now: Instant) -> bool {
+        let anchored = self.chain.final_tip().is_some();
+        anchored && self.peers.as_ref().is_some_and(|peers| peers.due <= now)
+    }
+
+    /// One peer-set answer past our best, inserted under every rule; asked again at once after
+    /// progress, else after `PEER_POLL`
+    async fn extend_from_peers(&mut self) {
+        let verified = self.verified.borrow().clone();
+        let locator = verified.map(|verified| verified.locator()).unwrap_or_default();
+        let asked = self.balancer.headers(HeaderAsk::Peers { locator, stop: None }).await;
+        let progressed = match asked {
+            Ok(answered) => self.insert_from_peers(answered),
+            Err(unanswered) => {
+                debug!(%unanswered, "Peer header fetch failed");
+                false
+            }
+        };
+        let wait = if progressed { Duration::ZERO } else { PEER_POLL };
+        if let Some(peers) = &mut self.peers {
+            peers.due = Instant::now() + wait;
+        }
+    }
+
+    /// In order, each under every rule; `true` = one became new (stops at the first refused or
+    /// above the ceiling)
+    fn insert_from_peers(&mut self, answered: Answered<BlockLinks>) -> bool {
+        let params = self.peers.as_ref().expect("the peer path is on").params;
+        let ceiling = self.chain.ceiling(HEADER_BATCH);
+        let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let now_unix = i64::try_from(now_unix).unwrap_or(i64::MAX);
+        let mut progressed = false;
+        for link in answered.value {
+            let header = match link.map(|link| decode_header(&link.header)) {
+                Ok(Ok(header)) => header,
+                Ok(Err(malformed)) => {
+                    self.balancer.report(answered.ticket, &malformed);
+                    break;
+                }
+                Err(_) => break,
+            };
+            if self.chain.height_of(&header).is_some_and(|at| at > ceiling) {
+                break;
+            }
+            match self.chain.insert_untrusted(&header, &params, now_unix) {
+                Ok(Inserted::Known) => {}
+                Ok(Inserted::Side | Inserted::Best { .. }) => progressed = true,
+                // not the peer's fault: a clock behind, a fork we cannot place, too little held
+                Err(refused)
+                    if refused.is_deferred()
+                        || matches!(
+                            refused,
+                            Rejected::Orphan | Rejected::BelowFinal | Rejected::ShortContext { .. }
+                        ) =>
+                {
+                    break
+                }
+                Err(refused) => {
+                    self.balancer.report(answered.ticket, &refused);
+                    break;
+                }
+            }
+        }
+        if progressed {
+            finalize(&mut self.chain);
+            if cfg!(debug_assertions) {
+                self.chain.check();
+            }
+            self.publish();
+        }
+        progressed
     }
 
     /// `VerifiedChain` → watch + view when its best or final tip moved

@@ -1,7 +1,7 @@
 //! Every request to trusted validators and peers, one scheduler (`docs/design/traffic-balancer.md`)
 //!
 //! - [`TrafficBalancer`]: asks by class, each answer naming its sender ([`Answered::ticket`])
-//! - [`TrafficDriver`]: one task (the core's clock, every trusted member's poll, peers joining)
+//! - [`TrafficDriver`]: one task (the core's clock, every trusted member's poll)
 //! - Core: pure members + lanes + one hedge / failover / blame policy, invariants T1–T10
 
 mod balancer;
@@ -10,11 +10,11 @@ mod core;
 mod member;
 
 pub use balancer::{
-    Answered, HeaderAsk, Membership, Observation, PeerTransport, TrafficBalancer, TrafficDriver,
+    Answered, HeaderAsk, Observation, PeerTransport, Peers, TrafficBalancer, TrafficDriver,
     Trusted, Unanswered, Urgency,
 };
 pub use core::{Push, Ticket};
-pub use member::{Health, Limits, MemberId, MemberRow, MemberTable, PeerId, ValidatorId};
+pub use member::{Health, Limits, MemberId, MemberRow, MemberTable, ValidatorId};
 
 /// Panic message of `run`, `None` = no panic (fire drills)
 #[cfg(test)]

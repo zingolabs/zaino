@@ -743,9 +743,9 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_final_mov
 
 /// Real regtest header bytes through header sync, two trusted validators, depth 10
 ///
-/// - a at 5,000: the chain anchors at its claim − depth (4,990), never reading history below,
-///   then follows a's 10 headers; final = 4,990, held by a (b's claim 3,000 = below final, held
-///   by definition, nothing fetched)
+/// - a at 5,000: the chain anchors at its claim − max(depth, CONTEXT) (4,887), never reading
+///   history below, then follows a's 113 headers; final = 4,990, held by a (b's claim 3,000 =
+///   below final, held by definition, nothing fetched)
 /// - b moves to a fork of a's at 4,999 with more work → the tip follows the work to b, held by b
 /// - a published chain never changes; cancel ends header sync
 #[tokio::test(start_paused = true)]
@@ -755,7 +755,8 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let mut chain = MockChain::regtest();
     let a = chain.mine_empty(5_000);
     let at = |height: u32| chain.at(h(height));
-    let (at_3_000, at_4_989, at_4_990, at_4_998) = (at(3_000), at(4_989), at(4_990), at(4_998));
+    let (at_3_000, at_4_886, at_4_887) = (at(3_000), at(4_886), at(4_887));
+    let (at_4_990, at_4_998) = (at(4_990), at(4_998));
     let b = chain.branch(at_4_998).mine_empty(22).tip();
 
     let validators = [a, at_3_000].map(|tip| Arc::new(MockValidator::following(&chain, tip)));
@@ -766,18 +767,16 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let syncing = tokio::spawn(sync.run(cancel.clone()));
     let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
 
-    until("anchored at a's claim − depth, a's tip followed", || {
-        published() == Some((a, at_4_990))
-    })
-    .await;
+    until("anchored below a's claim, a's tip followed", || published() == Some((a, at_4_990)))
+        .await;
     let held = (reader.current().best(), reader.current().held_by());
     assert_eq!(held, (Some(a), EndpointSet::at([0])), "a holds the tip, b behind it");
     let first = verified.borrow().clone().expect("a VerifiedChain");
-    let anchored = (first.hash_at(at_4_990.height), first.hash_at(at_4_989.height));
-    assert_eq!(anchored, (Some(at_4_990.hash), None), "no history below the anchor");
+    let anchored = (first.hash_at(at_4_887.height), first.hash_at(at_4_886.height));
+    assert_eq!(anchored, (Some(at_4_887.hash), None), "no history below the anchor");
     assert!(first.on_best(at_3_000), "b's claim: below final, final by definition");
     let fetched: Vec<usize> = validators.iter().map(|validator| validator.calls().links).collect();
-    assert_eq!(fetched, [11, 0], "the anchor + 10 headers from a, nothing from b");
+    assert_eq!(fetched, [114, 0], "the anchor + 113 headers from a, nothing from b");
     assert!(!reader.current().alarms().finality_paused());
 
     validators[1].follow(&chain, b);
@@ -795,9 +794,10 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
 /// A validator far ahead, a poll forced after every publish: the chain re-anchors at its claim
 /// − depth instead of syncing headers toward it
 ///
-/// - a at 20: anchored at 10, followed to 20
+/// - a at 20: anchored at genesis (20 − max(depth, CONTEXT), saturated), followed to 20, final 10
 /// - a jumps to 20,500 (past the ceiling: depth + `HEADER_BATCH` above final) → re-anchored at
-///   20,490, followed to 20,500: 22 headers fetched in all, none of the 20,470 between
+///   20,387, followed to 20,500, final 20,490: 135 headers fetched in all, none of the 20,366
+///   between
 /// - every published chain: best − final ≤ depth + `HEADER_BATCH` (H9), finality alarm down; the
 ///   view's tip held by a
 #[tokio::test(start_paused = true)]
@@ -807,7 +807,8 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
     let mut chain = MockChain::regtest();
     let at_20 = chain.mine_empty(20);
     let tip = chain.mine_empty(20_480);
-    let (at_10, at_20_490) = (chain.at(h(10)), chain.at(h(20_490)));
+    let (genesis, at_10) = (chain.genesis(), chain.at(h(10)));
+    let (at_20_387, at_20_490) = (chain.at(h(20_387)), chain.at(h(20_490)));
     let validator = Arc::new(MockValidator::following(&chain, at_20));
     let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
     let reader = view.subscriber();
@@ -838,9 +839,11 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
         }
     }
     let finals: Vec<BlockRef> = followed.iter().map(|(_, final_tip)| *final_tip).collect();
-    let jumped = finals.iter().all(|final_tip| [at_10, at_20_490].contains(final_tip));
-    assert!(jumped, "final only ever the two anchors: {finals:?}");
-    assert_eq!(validator.calls().links, 22, "two anchors + 10 headers each, nothing between");
+    let anchors_and_finals = [genesis, at_10, at_20_387, at_20_490];
+    let jumped = finals.iter().all(|final_tip| anchors_and_finals.contains(final_tip));
+    assert!(jumped, "final only ever the two anchors or their runs' finals: {finals:?}");
+    let links = validator.calls().links;
+    assert_eq!(links, 1 + 20 + 1 + 113, "two anchors + their runs, nothing between");
     until("the view's tip, held", || reader.current().held_by() == EndpointSet::at([0])).await;
     cancel.cancel();
 }
@@ -890,5 +893,95 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     let pinned = reader.current();
     let standing = (pinned.best(), pinned.endpoints()[0].agreement);
     assert_eq!(standing, (Some(at_32), Agreement::Diverged), "below final: never followed");
+    cancel.cancel();
+}
+
+/// The peer set over one `MockChain`'s best path up to `held`: headers after the first locator
+/// hash it holds (zebra's `FindHeaders`: up to 160), blocks by hash
+struct PeerSet {
+    best: Vec<BlockRef>,
+    held: std::sync::Mutex<usize>,
+    headers: std::collections::HashMap<zaino_primitives::types::BlockHash, Vec<u8>>,
+    blocks: Vec<Arc<zaino_primitives::types::Block>>,
+}
+
+impl zaino_traffic::PeerTransport for PeerSet {
+    fn headers(
+        &self,
+        locator: Vec<zaino_primitives::types::BlockHash>,
+        _: Option<zaino_primitives::types::BlockHash>,
+    ) -> futures::future::BoxFuture<'static, Result<Vec<Vec<u8>>, zaino_source::NonDomainError>>
+    {
+        let held = &self.best[..=*self.held.lock().expect("peer set mutex")];
+        let known = locator.iter().find_map(|hash| held.iter().position(|b| b.hash == *hash));
+        let after = known.map_or(&[][..], |at| &held[at + 1..]);
+        let headers = after.iter().take(160).map(|block| self.headers[&block.hash].clone());
+        Box::pin(std::future::ready(Ok(headers.collect())))
+    }
+
+    fn block(
+        &self,
+        hash: zaino_primitives::types::BlockHash,
+    ) -> futures::future::BoxFuture<
+        'static,
+        Result<zaino_primitives::types::Block, zaino_source::NonDomainError>,
+    > {
+        let block = self.blocks.iter().find(|block| block.header().hash == hash);
+        let block =
+            block.map(|block| zaino_primitives::types::Block::clone(block)).ok_or_else(|| {
+                zaino_source::NonDomainError::new(zaino_source::FailureMode::Connection, "absent")
+            });
+        Box::pin(std::future::ready(block))
+    }
+}
+
+/// One trusted validator + the peer set, both at 40, depth 10, real regtest headers:
+/// - a anchors and leads to 40, final 30
+/// - a down, the network moves on to 60: the peer set's 41..=60 each pass every rule; best = 60,
+///   never vouched, so final stops at 40 = a's last vouch (best − depth would be 50), best held
+///   by no one
+/// - a back at 60: it vouches the peers' chain, final = 50, held by a
+#[tokio::test(start_paused = true)]
+async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_return() {
+    use zaino_header_chain::{HeaderChain, Params};
+    use zaino_traffic::Peers;
+
+    let mut chain = MockChain::regtest();
+    let at_40 = chain.mine_empty(40);
+    let at_60 = chain.mine_empty(20);
+    let (at_30, at_50) = (chain.at(h(30)), chain.at(h(50)));
+    let best: Vec<BlockRef> = (0..=60).map(|height| chain.at(h(height))).collect();
+    let headers = best.iter().map(|block| (block.hash, chain.header_bytes(block.hash))).collect();
+    let held = std::sync::Mutex::new(40);
+    let peer_set = Arc::new(PeerSet { best, held, headers, blocks: chain.blocks(at_60) });
+    let validator = Arc::new(MockValidator::following(&chain, at_40));
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+    let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
+    let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
+    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+    let view = view.expect("a valid set");
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    let reader = view.subscriber();
+    let rules = Params::regtest(h(1), None);
+    let sync = view.header_sync(HeaderChain::new(depth())).with_peers(rules);
+    let verified = sync.subscribe();
+    tokio::spawn(sync.run(cancel.clone()));
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+
+    until("anchored, a followed", || published() == Some((at_40, at_30))).await;
+
+    validator.reachable(&Port::ALL, false);
+    *peer_set.held.lock().expect("peer set mutex") = 60;
+    until("the peers' tip, unvouched", || published() == Some((at_60, at_40))).await;
+    until("best held by no one", || reader.current().held_by() == EndpointSet::default()).await;
+    assert_eq!(reader.current().best(), Some(at_60));
+
+    validator.follow(&chain, at_60);
+    validator.reachable(&Port::ALL, true);
+    until("a vouches the peers' chain", || published() == Some((at_60, at_50))).await;
+    until("held by a", || reader.current().held_by() == EndpointSet::at([0])).await;
     cancel.cancel();
 }

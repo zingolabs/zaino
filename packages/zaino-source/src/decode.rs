@@ -53,8 +53,9 @@ pub enum DecodeError {
 /// ZIP-203: `nExpiryHeight` ≤ this, or the transaction is invalid on its own
 const MAX_EXPIRY_HEIGHT: u32 = 499_999_999;
 
-/// `getblock <h> 0` bytes → [`Block`] (the one block parse; every index projects from it)
-pub(crate) fn block(raw: &[u8]) -> Result<Block, DecodeError> {
+/// `getblock <h> 0` / p2p block bytes → [`Block`] (the one block parse; every index projects
+/// from it)
+pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
     let (header, body) = HeaderBytes::split(raw)?;
     let mut cursor = Cursor::new(body);
     let count = CompactSize::read(&mut cursor)?;
@@ -295,7 +296,7 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
 mod tests {
     use super::*;
     use crate::testing::fixtures::block as fixture;
-    use zaino_primitives::types::{EquihashSolution, MerkleRoot};
+    use zaino_primitives::types::EquihashSolution;
     use zcash_primitives::block::BlockHeader as RawHeader;
 
     /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard)
@@ -304,7 +305,7 @@ mod tests {
     #[test]
     fn a_mainnet_block_decodes_and_each_tx_decodes_alone_identically() {
         let raw = fixture(2_000_000);
-        let block = block(&raw).expect("block decodes");
+        let block = decode_block(&raw).expect("block decodes");
 
         assert_eq!(u32::from(block.header().height), 2_000_000);
         assert!(matches!(block.header().solution, EquihashSolution::Standard(_)));
@@ -336,7 +337,7 @@ mod tests {
         assert!(matches!(decode_transaction(&padded), Err(DecodeError::Trailing(1))));
         let mut padded_block = raw.clone();
         padded_block.push(0);
-        assert!(matches!(super::block(&padded_block), Err(DecodeError::Trailing(1))));
+        assert!(matches!(decode_block(&padded_block), Err(DecodeError::Trailing(1))));
     }
 
     /// - Header prefix of each fixture → the full-block decode's hash + parent
@@ -351,7 +352,7 @@ mod tests {
             RawHeader::read(&mut cursor).expect("header");
             let header = &raw[..cursor.position() as usize];
 
-            let decoded = block(&raw).expect("block decodes");
+            let decoded = decode_block(&raw).expect("block decodes");
             let prev: [u8; 32] = header[4..36].try_into().expect("32");
             assert_eq!(
                 (decoded.header().hash, decoded.header().prev_hash),
@@ -364,14 +365,12 @@ mod tests {
     }
 
     /// Header merkle root = Bitcoin merkle tree over txids (every tx version) → pins each txid,
-    /// v4 (byte hash) and v5 (ZIP 244 digest) alike, and `MerkleRoot::of_txids` on real blocks
+    /// v4 (byte hash) and v5 (ZIP 244 digest) alike, and `Block::check_body` on real blocks
     #[test]
     fn every_fixture_txid_rebuilds_its_header_merkle_root() {
         for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
-            let block = block(&fixture(height)).expect("block decodes");
-            let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
-            let rebuilt = MerkleRoot::of_txids(&txids);
-            assert_eq!(rebuilt, Some(block.header().merkle_root), "merkle root at {height}");
+            let block = decode_block(&fixture(height)).expect("block decodes");
+            assert_eq!(block.check_body(), Ok(()), "merkle root at {height}");
         }
     }
 

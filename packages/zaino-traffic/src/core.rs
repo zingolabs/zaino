@@ -11,9 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::class::{Class, Lane, LANES};
-use crate::member::{
-    Health, Limits, Member, MemberId, PeerId, Synced, ValidatorId, MIN_POLL_SPACING,
-};
+use crate::member::{Health, Limits, Member, MemberId, Synced, ValidatorId, MIN_POLL_SPACING};
 
 /// Block ask's round over → next round after this
 const RETRY: Duration = Duration::from_secs(1);
@@ -21,7 +19,8 @@ const RETRY: Duration = Duration::from_secs(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct AskId(pub(crate) u64);
 
-/// One send of one ask: a misanswer report charges `member` and only it (T8)
+/// One send of one ask: a misanswer report charges `member` and only it (T8; the peer set: no
+/// one, its transport blames the peer)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ticket {
     pub(crate) ask: AskId,
@@ -46,7 +45,7 @@ impl Route {
         match self {
             Self::Any | Self::Prefer(_) => true,
             Self::Only(only) => *only == member,
-            Self::Peers => matches!(member, MemberId::Peer(_)),
+            Self::Peers => member == MemberId::Peers,
             Self::Trusted => matches!(member, MemberId::Trusted(_)),
         }
     }
@@ -89,16 +88,12 @@ pub(crate) enum Input {
         member: ValidatorId,
         push: Push,
     },
-    Joined(PeerId),
-    Left(PeerId),
     Tick,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Output {
     Send(Ticket),
-    /// Its peer left: drop that send (the ask moves on)
-    Cancel(Ticket),
     /// Ends the ask: `ticket`'s value delivered, every other send dropped
     Answered(Ticket),
     Unanswered(AskId),
@@ -146,15 +141,17 @@ enum Next {
 }
 
 impl TrafficCore {
-    /// `trusted[i]` = `ValidatorId(i)`: (priority, limits)
-    pub(crate) fn new(trusted: &[(u8, Limits)], now: Instant) -> Self {
+    /// `trusted[i]` = `ValidatorId(i)`: (priority, limits); `peers` = the peer set's in flight
+    pub(crate) fn new(trusted: &[(u8, Limits)], peers: Option<u32>, now: Instant) -> Self {
         assert!(!trusted.is_empty(), "a trusted validator to ask");
         assert!(trusted.len() <= ValidatorId::MAX, "at most ValidatorId::MAX trusted validators");
-        let members = trusted.iter().enumerate().filter_map(|(index, (priority, limits))| {
+        let trusted = trusted.iter().enumerate().filter_map(|(index, (priority, limits))| {
             let id = MemberId::Trusted(ValidatorId::new(index)?);
             Some((id, Member::trusted(*priority, *limits)))
         });
-        Self { members: members.collect(), asks: BTreeMap::new(), stamp: 0, now, wake: None }
+        let peers = peers.map(|in_flight| (MemberId::Peers, Member::peers(in_flight)));
+        let members = trusted.chain(peers).collect();
+        Self { members, asks: BTreeMap::new(), stamp: 0, now, wake: None }
     }
 
     /// Next instant a `Tick` acts (hedge, round retry, poll due)
@@ -177,10 +174,12 @@ impl TrafficCore {
                 assert!(self.asks.contains_key(&ask), "abandon: an open ask");
                 self.close(ask);
             }
+            // the peer set never benched: one peer's lie would starve every honest one
             Input::Report(ticket) => {
                 let stamp = self.next_stamp();
-                if let Some(member) = self.members.get_mut(&ticket.member) {
-                    member.bench(now, stamp);
+                if let MemberId::Trusted(_) = ticket.member {
+                    let member = self.members.get_mut(&ticket.member);
+                    member.expect("a configured validator").bench(now, stamp);
                 }
             }
             Input::Polled { member, read } => self.polled(member, read),
@@ -193,11 +192,6 @@ impl TrafficCore {
                 }
                 poller.wake = true;
             }
-            Input::Joined(peer) => {
-                let joined = self.members.insert(MemberId::Peer(peer), Member::peer());
-                assert!(joined.is_none(), "a peer joins once");
-            }
-            Input::Left(peer) => self.left(peer, &mut out),
             Input::Tick => {}
         }
         self.dispatch(&mut out);
@@ -219,8 +213,7 @@ impl TrafficCore {
             Some(ask.sends.remove(sent))
         });
         let sent = sent.expect("a reply for a send in flight");
-        let member =
-            self.members.get_mut(&ticket.member).expect("T4: no send to a departed member");
+        let member = self.members.get_mut(&ticket.member).expect("a send's member");
         member.in_flight[ticket.class.lane().index()] -= 1;
         member.latency = self.now.saturating_duration_since(sent.at);
         member.outcome(reply != Reply::NonDomain, stamp);
@@ -234,9 +227,8 @@ impl TrafficCore {
     fn close(&mut self, id: AskId) {
         let ask = self.asks.remove(&id).expect("closing an open ask");
         for sent in ask.sends {
-            if let Some(member) = self.members.get_mut(&sent.member) {
-                member.in_flight[ask.class.lane().index()] -= 1;
-            }
+            let member = self.members.get_mut(&sent.member).expect("a send's member");
+            member.in_flight[ask.class.lane().index()] -= 1;
         }
     }
 
@@ -251,18 +243,6 @@ impl TrafficCore {
         member.latency = self.now.saturating_duration_since(started);
         member.outcome(read.is_some(), stamp);
         member.synced = read.or(member.synced);
-    }
-
-    /// Its sends dropped, each ask moving on as after a failure
-    fn left(&mut self, peer: PeerId, out: &mut Vec<Output>) {
-        let gone = MemberId::Peer(peer);
-        assert!(self.members.remove(&gone).is_some(), "a peer leaves once, after joining");
-        for (id, ask) in &mut self.asks {
-            if let Some(sent) = ask.sends.iter().position(|sent| sent.member == gone) {
-                ask.sends.remove(sent);
-                out.push(Output::Cancel(Ticket { ask: *id, member: gone, class: ask.class }));
-            }
-        }
     }
 
     fn dispatch(&mut self, out: &mut Vec<Output>) {
@@ -373,7 +353,7 @@ impl TrafficCore {
             .filter(|(_, member)| member.health() == Health::Live && !member.benched(self.now));
         live.filter_map(|(id, _)| match id {
             MemberId::Trusted(validator) => Some(*validator),
-            MemberId::Peer(_) => None,
+            MemberId::Peers => None,
         })
         .collect()
     }
@@ -432,8 +412,7 @@ impl TrafficCore {
         for ask in self.asks.values() {
             let mut asked = BTreeSet::new();
             for sent in &ask.sends {
-                let member =
-                    self.members.get(&sent.member).expect("T4: no send to a departed member");
+                let member = self.members.get(&sent.member).expect("a send's member");
                 let kind = matches!(sent.member, MemberId::Trusted(_)) || ask.class.peers();
                 assert!(
                     kind && ask.route.admits(sent.member),

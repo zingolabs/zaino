@@ -1,9 +1,11 @@
 //! Header trees at random against a naive model
 //!
-//! - trusted headers (no rule run) with any nBits, so work varies per branch and the most work is
-//!   not the highest; anchored at genesis (work counted from it)
+//! - any nBits, so work varies per branch and the most work is not the highest; anchored at
+//!   genesis (work counted from it)
+//! - trusted runs (no rule run) and untrusted ones (every rule: the model predicts an edited time
+//!   not past the median; ancestors held are always enough, `KEPT` ≥ `CONTEXT`)
 //! - model: every header ever mined (moves draw parents from it), the live tree as a plain map,
-//!   the final chain as a list (the chain keeps only its newest `2 · DEPTH`); best = the max-work
+//!   the final chain as a list (the chain keeps only its newest `KEPT`); best = the max-work
 //!   leaf (first received on a tie), eviction = the lowest-work side leaf (last received on a
 //!   tie), both recomputed from scratch
 //! - driver discipline (`HeaderSync`'s): nothing offered above `ceiling(RUN)`; a trusted run =
@@ -24,19 +26,23 @@ use proptest::prelude::*;
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
 
-use crate::rules::{median_time, Rejected, MEDIAN_SPAN};
+use crate::rules::{median_time, Rejected, CONTEXT, MEDIAN_SPAN};
 use crate::target::{expand, work};
-use crate::{decode_header, BestTip, Fork, Header, HeaderChain, Inserted, Record, VerifiedChain};
+use crate::{
+    decode_header, BestTip, Fork, Header, HeaderChain, Inserted, Params, Record, VerifiedChain,
+};
 
 const DEPTH: u32 = 3;
 /// Headers a fetch may reach past `depth` above the final tip (`HeaderSync`'s batch)
 const RUN: u32 = 6;
 const SIDE_NODES: usize = 4 * DEPTH as usize;
 const SIDE_TIPS: usize = 32;
-/// Finals the chain keeps by height
-const KEPT: usize = 2 * DEPTH as usize;
+/// Finals the chain keeps by height: `2 · DEPTH`, at least the rules' `CONTEXT`
+const KEPT: usize = if 2 * (DEPTH as usize) > CONTEXT { 2 * DEPTH as usize } else { CONTEXT };
 /// Work ≈ 16 · 512 · 4096 a header
 const BITS: [u32; 3] = [0x200f_0f0f, 0x1f7f_ffff, 0x1f0f_ffff];
+/// The local clock: past every mined header (the 2 h future bound never fires)
+const NOW: i64 = i64::MAX / 2;
 
 /// - `Extend`: `bits.len()` headers on mined `parent`, `gap` s apart; `trusted` = a validator's
 ///   run (its last accepted header vouched, then finality)
@@ -49,7 +55,7 @@ enum Move {
     Vouch { mined: usize },
     Orphan { parent: usize },
     Spray { from: usize, branches: usize },
-    Reinsert { mined: usize },
+    Reinsert { mined: usize, trusted: bool },
     Finalize,
 }
 
@@ -67,7 +73,8 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
             2 => any().prop_map(|mined| Move::Vouch { mined }),
             1 => any().prop_map(|parent| Move::Orphan { parent }),
             1 => (any(), 1usize..=40).prop_map(|(from, branches)| Move::Spray { from, branches }),
-            1 => any().prop_map(|mined| Move::Reinsert { mined }),
+            1 => (any(), prop::bool::ANY)
+                .prop_map(|(mined, trusted)| Move::Reinsert { mined, trusted }),
             3 => Just(Move::Finalize),
         ],
         1..100,
@@ -169,6 +176,39 @@ impl Model {
             at = header.prev_hash();
         }
         median_time(times.into_iter())
+    }
+
+    /// Ancestors of a child of `prev` the chain holds: live ones down to the final tip, then the
+    /// kept finals, up to `CONTEXT`
+    fn held_ancestors(&self, prev: BlockHash) -> usize {
+        let mut live = 0;
+        let mut at = prev;
+        while let Some(alive) = self.alive.get(&at) {
+            live += 1;
+            at = alive.parent;
+        }
+        (live + self.tail().len()).min(CONTEXT)
+    }
+
+    /// What the chain owes an untrusted `header`: the rules a valid `MockChain` header can break
+    /// here (too few ancestors held, a time not past the median: an edited one), else `offer`
+    fn offer_untrusted(&mut self, header: &Header) -> Result<Inserted, Rejected> {
+        let prev = header.prev_hash();
+        let known = self.alive.contains_key(&header.hash())
+            || self.tail().iter().any(|record| record.hash == header.hash());
+        let parent = self.parent(prev);
+        if let (false, Ok((at, _))) = (known, parent) {
+            let (held, needed) =
+                (self.held_ancestors(prev), (u32::from(at) as usize).min(17 + MEDIAN_SPAN));
+            if held < needed {
+                return Err(Rejected::ShortContext { held, needed });
+            }
+            let median_time_past = self.median_time_past(prev);
+            if header.time() <= median_time_past {
+                return Err(Rejected::TimeTooEarly { time: header.time(), median_time_past });
+            }
+        }
+        self.offer(header)
     }
 
     /// What the chain owes `header`, applied to the model
@@ -425,14 +465,22 @@ fn run(moves: Vec<Move>) {
     // (published chain, the model's path then, the lowest height it answered by height, forks)
     let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
 
-    // the driver's: nothing above the ceiling offered (H9)
-    let offer = |chain: &mut HeaderChain, model: &mut Model, header: &Header, context: &str| {
+    // the driver's: nothing above the ceiling offered (H9); untrusted = every rule run first
+    let params = Params::regtest(height(1), None).with_genesis(genesis.hash()).any_bits();
+    let offer = |chain: &mut HeaderChain,
+                 model: &mut Model,
+                 header: &Header,
+                 trusted: bool,
+                 context: &str| {
         let at = model.parent(header.prev_hash());
         if at.is_ok_and(|(at, _)| at > model.ceiling()) {
             return false;
         }
-        let expected = model.offer(header);
-        assert_eq!(chain.insert(header), expected, "{context}: insert {header:?}");
+        let (expected, got) = match trusted {
+            true => (model.offer(header), chain.insert(header)),
+            false => (model.offer_untrusted(header), chain.insert_untrusted(header, &params, NOW)),
+        };
+        assert_eq!(got, expected, "{context}: insert {header:?} (trusted {trusted})");
         chain.check();
         expected.is_ok()
     };
@@ -453,7 +501,7 @@ fn run(moves: Vec<Move>) {
                 for palette in bits {
                     time += gap;
                     let header = mine(&mut builder, &mut model, prev, time, BITS[palette]);
-                    if !offer(&mut chain, &mut model, &header, &context) {
+                    if !offer(&mut chain, &mut model, &header, trusted, &context) {
                         break;
                     }
                     prev = header.hash();
@@ -492,7 +540,8 @@ fn run(moves: Vec<Move>) {
                     mine(&mut builder, &mut model, parent.hash(), parent.time() + 1, BITS[0]);
                 let child =
                     mine(&mut builder, &mut model, skipped.hash(), skipped.time() + 1, BITS[0]);
-                assert!(!offer(&mut chain, &mut model, &child, &context), "{context}: orphan");
+                let offered = offer(&mut chain, &mut model, &child, false, &context);
+                assert!(!offered, "{context}: orphan");
             }
             Move::Spray { from, branches } => {
                 let mut live: Vec<(u64, BlockHash)> =
@@ -502,12 +551,12 @@ fn run(moves: Vec<Move>) {
                     let parent = live[(from + branch) % live.len()].1;
                     let time = model.by_hash[&parent].time() + 1 + branch as u32;
                     let header = mine(&mut builder, &mut model, parent, time, BITS[0]);
-                    offer(&mut chain, &mut model, &header, &context);
+                    offer(&mut chain, &mut model, &header, true, &context);
                 }
             }
-            Move::Reinsert { mined } => {
+            Move::Reinsert { mined, trusted } => {
                 let again = model.mined[mined % model.mined.len()].clone();
-                offer(&mut chain, &mut model, &again, &context);
+                offer(&mut chain, &mut model, &again, trusted, &context);
             }
             Move::Finalize => {
                 let boundary = model.finalizable();

@@ -53,7 +53,7 @@ impl Class {
     /// Headers + block bodies (checkable); trusted-only = the "only source" rows
     /// (`chainview.md`) + mempool bytes (peers serve them by wtxid, never a listing's txid)
     pub(crate) fn peers(self) -> bool {
-        !matches!(self, Self::Submit | Self::Lookup)
+        matches!(self, Self::Headers | Self::TipBlock | Self::BulkBlock)
     }
 
     /// Every member tried → next round after 1 s (else unanswered)
@@ -101,9 +101,10 @@ impl Permits {
         Self { max: max_connections - 1, reserve: 1 }
     }
 
-    /// One request at a time (a zebra peer connection serves one)
-    pub(crate) fn peer() -> Self {
-        Self { max: 1, reserve: 0 }
+    /// The peer set's requests at once: one reserved per lane, the rest shared (no poll)
+    pub(crate) fn peers(in_flight: u32) -> Self {
+        assert!(in_flight >= LANES as u32, "the peer set's in flight covers every lane reserve");
+        Self { max: in_flight, reserve: 1 }
     }
 
     pub(crate) fn admits(&self, in_flight: &PerLane<u32>, lane: Lane) -> bool {
@@ -128,7 +129,7 @@ mod tests {
     /// - MIN_CONNECTIONS = 5: of 8, the poll keeps 1; a lane fills the shared permits, never
     ///   another lane's reserve
     /// - each lane still admits its reserved one with every shared permit taken
-    /// - peers: one in flight, any lane
+    /// - peers: same lanes, no poll's permit
     #[test]
     fn lanes_share_idle_permits_but_never_a_reserve() {
         let permits = Permits::trusted(8);
@@ -146,7 +147,9 @@ mod tests {
         assert!(permits.holds(&in_flight));
         assert!(!permits.holds(&[6, 1, 0]), "control on the idle bulk reserve breaks T1");
 
-        let peer = Permits::peer();
-        assert!(peer.admits(&[0, 0, 0], Lane::Control) && !peer.admits(&[0, 1, 0], Lane::Bulk));
+        let peers = Permits::peers(4);
+        assert!(peers.admits(&[0, 0, 3], Lane::Control), "control reserve held beside full bulk");
+        assert!(!peers.admits(&[0, 0, 2], Lane::Bulk), "bulk stops at the other two reserves");
+        assert!(!peers.admits(&[1, 1, 2], Lane::Interactive), "all 4 in flight");
     }
 }

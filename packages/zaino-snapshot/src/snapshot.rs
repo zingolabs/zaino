@@ -6,7 +6,7 @@ use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
 use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
-use zaino_primitives::types::{BlockHash, BlockRef, BlockchainInfo, Height};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, UpgradeSchedule};
 use zaino_traffic::Health;
 
 use crate::feed::{Feed, MempoolTail};
@@ -29,6 +29,14 @@ pub struct ForkView {
     pub folded: Option<BlockRef>,
 }
 
+/// What `GetLightdInfo` renders (`Snapshot::lightd`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lightd {
+    pub served: Height,
+    pub best: Height,
+    pub schedule: UpgradeSchedule,
+}
+
 /// No answer (fail closed: `UNAVAILABLE`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Unavailable {
@@ -43,18 +51,25 @@ pub enum Unavailable {
 /// Serving judged from one snapshot (zainod adds draining, a stalled runtime, provisioning)
 ///
 /// - `Syncing` also while every holder of best is catching up (best trails the network)
+/// - `Degraded` = serving a fresh proof-of-work-verified best no trusted validator vouches for
+///   (peers'); `Down` = that best stale or not yet served
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Standing {
     Serving,
+    Degraded(Down),
     Syncing,
     Down(Down),
 }
 
+/// Why no trusted validator vouches for the best block
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Down {
     NoValidatorReachable,
     TipNotHeld,
 }
+
+/// Best block time this far behind the clock = stale (24 spacings: P(natural gap) ≈ e^-24)
+const STALE_TIP_SECS: i64 = 24 * 75;
 
 impl Down {
     /// `/statusz` + `/readyz` `detail`
@@ -106,10 +121,12 @@ impl<V> Snapshot<V> {
         Ok(self.feed.tail())
     }
 
-    /// `GetLightdInfo`: a holder's `getblockchaininfo` + the served height, one load
-    pub fn lightd(&self) -> Result<(&BlockchainInfo, Height), Unavailable> {
-        let info = self.view.validator_info().ok_or_else(|| self.unheld())?;
-        Ok((info, self.served()?.tip().height))
+    /// `GetLightdInfo`: the served height, the verified best (the network tip estimate), the
+    /// schedule they read, one load (no validator: served degraded too)
+    pub fn lightd(&self) -> Result<Lightd, Unavailable> {
+        let served = self.served()?;
+        let best = self.tips.best.map_or(served.tip().height, |best| best.height);
+        Ok(Lightd { served: served.tip().height, best, schedule: served.params().schedule })
     }
 
     /// Why no trusted validator vouches for the best block
@@ -133,16 +150,25 @@ impl<V> Snapshot<V> {
         self.indexed.as_ref()
     }
 
-    /// First match: every validator down; best unheld; not synced or best held only by
-    /// validators catching up; else serving
-    pub fn standing(&self) -> Standing {
+    /// First match: every validator down, or best unheld → degraded while synced to a fresh best
+    /// (`now_unix` = the clock), else down; not synced or best held only by validators catching
+    /// up → syncing; else serving
+    pub fn standing(&self, now_unix: i64) -> Standing {
         let endpoints = self.view.endpoints();
         let health = |at: usize| endpoints.get(at).map(|meta| meta.health);
-        if !endpoints.is_empty() && endpoints.iter().all(|meta| meta.health == Health::Down) {
-            return Standing::Down(Down::NoValidatorReachable);
-        }
-        if self.tips.best.is_some() && self.tips.held_by.is_empty() {
-            return Standing::Down(Down::TipNotHeld);
+        let unvouched =
+            if !endpoints.is_empty() && endpoints.iter().all(|meta| meta.health == Health::Down) {
+                Some(Down::NoValidatorReachable)
+            } else if self.tips.best.is_some() && self.tips.held_by.is_empty() {
+                Some(Down::TipNotHeld)
+            } else {
+                None
+            };
+        if let Some(why) = unvouched {
+            return match self.tips.synced && self.fresh(now_unix) {
+                true => Standing::Degraded(why),
+                false => Standing::Down(why),
+            };
         }
         let holders = || self.tips.held_by.positions().filter_map(health);
         let catching_up = holders().any(|health| health == Health::CatchingUp)
@@ -151,6 +177,12 @@ impl<V> Snapshot<V> {
             true => Standing::Serving,
             false => Standing::Syncing,
         }
+    }
+
+    /// Best block's time within [`STALE_TIP_SECS`] of `now_unix`
+    fn fresh(&self, now_unix: i64) -> bool {
+        let best = self.tips.best.and_then(|best| self.chain()?.header_at(best.height));
+        best.is_some_and(|best| now_unix - i64::from(best.time) < STALE_TIP_SECS)
     }
 
     /// Best's height, or above it the clock estimate of a validator still catching up

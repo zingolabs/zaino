@@ -1,11 +1,10 @@
 //! Driver over `MockValidator` members, paused clock (`traffic-balancer.md`)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
-use futures::stream::BoxStream;
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{h, MockChain};
@@ -17,8 +16,8 @@ use zaino_source::{
 };
 
 use crate::{
-    HeaderAsk, Health, Limits, MemberId, Membership, PeerId, PeerTransport, Push, TrafficBalancer,
-    Trusted, Urgency, ValidatorId,
+    HeaderAsk, Health, Limits, MemberId, PeerTransport, Peers, Push, TrafficBalancer, Trusted,
+    Urgency, ValidatorId,
 };
 
 fn v(index: usize) -> ValidatorId {
@@ -143,6 +142,69 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     cancel.cancel();
 }
 
+/// One member whose block port is down (polls fine): the block ask retries its rounds, a warning
+/// each minute naming the member + last cause; served once reachable, one line saying so
+#[tokio::test(start_paused = true)]
+async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
+    #[derive(Clone, Default)]
+    struct Captured(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Captured {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("log buffer poisoned").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .without_time()
+        .finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
+    let lines = |captured: &Captured| -> Vec<String> {
+        let bytes = captured.0.lock().expect("log buffer poisoned").clone();
+        String::from_utf8(bytes).expect("utf-8 logs").lines().map(str::to_owned).collect()
+    };
+
+    let mut chain = MockChain::regtest();
+    let tip = chain.mine_empty(3);
+    let ours = Arc::new(MockValidator::following(&chain, tip));
+    ours.reachable(&[Port::Block], false);
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = vec![Trusted { source: Arc::clone(&ours), priority: 0, limits }];
+    let (balancer, driver) = TrafficBalancer::new(trusted, None);
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+
+    let asking = {
+        let balancer = balancer.clone();
+        tokio::spawn(async move { balancer.block(tip.hash, Urgency::Bulk).await })
+    };
+    tokio::time::sleep(Duration::from_secs(125)).await;
+    let warnings: Vec<String> =
+        lines(&captured).into_iter().filter(|line| line.contains("Ask unanswered")).collect();
+    assert_eq!(warnings.len(), 2, "one per minute, 125 s open: {warnings:#?}");
+    let named = |line: &String| {
+        line.contains("WARN")
+            && line.contains("class=\"bulk_block\"")
+            && line.contains("member=Some(Trusted(")
+            && line.contains("MockValidator unreachable on Block")
+    };
+    assert!(warnings.iter().all(named), "level, class, member, cause: {warnings:#?}");
+    assert!(!asking.is_finished(), "never unanswered: still retrying");
+
+    ours.reachable(&[Port::Block], true);
+    let served = asking.await.expect("ask task joins");
+    assert_eq!((served.from, served.value.header().hash), (MemberId::Trusted(v(0)), tip.hash));
+    let answered = lines(&captured).into_iter().filter(|l| l.contains("Stalled ask answered"));
+    assert_eq!(answered.count(), 1, "one line once served");
+    cancel.cancel();
+}
+
 /// One member, its push stream up:
 /// - reconcile every 15 s, a push event polls within 200 ms
 /// - `poll_best` wakes nothing; the next poll asks `getblockhash` there
@@ -209,52 +271,35 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     cancel.cancel();
 }
 
-/// Peers from the WorkPool: block bodies + headers (checkable), never lookups
-struct Pool {
+/// The peer set: block bodies + headers (checkable), never lookups or bytes; holds `blocks` only
+struct PeerSet {
     blocks: Vec<Arc<Block>>,
     headers: Vec<Vec<u8>>,
-    membership: Mutex<Option<BoxStream<'static, Membership>>>,
 }
 
-impl PeerTransport for Pool {
+impl PeerTransport for PeerSet {
     fn headers(
         &self,
-        _: PeerId,
         _: Vec<BlockHash>,
         _: Option<BlockHash>,
     ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>> {
         futures::future::ready(Ok(self.headers.clone())).boxed()
     }
 
-    fn block(
-        &self,
-        _: PeerId,
-        hash: BlockHash,
-    ) -> BoxFuture<'static, Result<Block, NonDomainError>> {
+    fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>> {
         let block = self.blocks.iter().find(|block| block.header().hash == hash);
         let block = block.map(|block| Block::clone(block));
         let block = block.ok_or(NonDomainError::new(FailureMode::RpcError(0), "notfound"));
         futures::future::ready(block).boxed()
     }
-
-    fn transactions(
-        &self,
-        _: PeerId,
-        ids: Vec<TransactionId>,
-    ) -> BoxFuture<'static, Result<Vec<Option<Vec<u8>>>, NonDomainError>> {
-        futures::future::ready(Ok(vec![None; ids.len()])).boxed()
-    }
-
-    fn joined_left(&self) -> BoxStream<'static, Membership> {
-        self.membership.lock().expect("pool mutex").take().expect("subscribed once")
-    }
 }
 
-/// Trusted member down from the start, one peer joined:
-/// - tip block + peer headers served by the peer (`Peer(3)`)
+/// Trusted member down from the start, the peer set holding blocks 0..=2 (not 3):
+/// - tip block + peer headers served by the peer set
+/// - a report on its answer benches nothing: the next block is still its
 /// - lookup never reaches it: unanswered, the trusted member's transport failure as `last`
 /// - a block by height never reaches it: pending until the trusted member is back
-/// - the peer leaves: a block ask pends (no member left), served once the trusted member is back
+/// - a block it lacks: pending (rounds retried, never unanswered), served once the trusted is back
 #[tokio::test(start_paused = true)]
 async fn peers_serve_checkable_asks_and_never_lookups() {
     let mut chain = MockChain::regtest();
@@ -262,45 +307,44 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     let blocks = chain.blocks(tip);
     let validator = Arc::new(MockValidator::following(&chain, tip));
     validator.reachable(&Port::ALL, false);
-    let (joins, membership) = futures::channel::mpsc::unbounded();
     let headers = blocks.iter().map(|block| chain.header_bytes(block.header().hash)).collect();
-    let membership = Mutex::new(Some(membership.boxed()));
-    let pool = Pool { blocks: blocks.clone(), headers, membership };
+    let peer_set = PeerSet { blocks: blocks[..3].to_vec(), headers };
+    let peers = Peers { transport: Arc::new(peer_set), in_flight: 4 };
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
-    let (balancer, driver) = TrafficBalancer::new(trusted, Some(Arc::new(pool)));
+    let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
-    joins.unbounded_send(Membership::Joined(PeerId(3))).expect("driver running");
 
-    let peer = MemberId::Peer(PeerId(3));
     let hash = chain.at(h(1)).hash;
     let served = balancer.block(hash, Urgency::Tip).await;
-    assert_eq!((served.from, served.value.header().hash), (peer, hash));
+    assert_eq!((served.from, served.value.header().hash), (MemberId::Peers, hash));
+    balancer.report(served.ticket, &std::fmt::Error);
+    let after = balancer.block(chain.at(h(2)).hash, Urgency::Tip).await;
+    assert_eq!(after.from, MemberId::Peers, "a report never benches the peer set");
     let ask = HeaderAsk::Peers { locator: vec![chain.genesis().hash], stop: None };
-    let headers = balancer.headers(ask).await.expect("the peer answers");
-    assert_eq!((headers.from, headers.value.len()), (peer, blocks.len()));
+    let headers = balancer.headers(ask).await.expect("the peer set answers");
+    assert_eq!((headers.from, headers.value.len()), (MemberId::Peers, blocks.len()));
     let lookup =
         balancer.transaction(TransactionId::from([1; 32])).await.expect_err("trusted down");
     let mode = match lookup.last {
         Some(QueryError::NonDomain(cause)) => Some(cause.mode),
         _ => None,
     };
-    assert_eq!(mode, Some(FailureMode::Connection), "never asked of the peer");
+    assert_eq!(mode, Some(FailureMode::Connection), "never asked of the peer set");
     let by_height = balancer.blocks_at(Arc::from([h(1)]), Urgency::Bulk);
     tokio::pin!(by_height);
     let unserved = tokio::time::timeout(Duration::from_secs(10), &mut by_height).await;
-    assert!(unserved.is_err(), "by height: never asked of the peer, pending for a trusted one");
+    assert!(unserved.is_err(), "by height: never asked of the peer set, pending for a trusted one");
 
-    joins.unbounded_send(Membership::Left(PeerId(3))).expect("driver running");
-    tokio::time::sleep(Duration::from_millis(1)).await;
-    let pending = balancer.block(hash, Urgency::Bulk);
+    let lacking = chain.at(h(3)).hash;
+    let pending = balancer.block(lacking, Urgency::Bulk);
     tokio::pin!(pending);
     let none = tokio::time::timeout(Duration::from_secs(10), &mut pending).await;
-    assert!(none.is_err(), "no member to serve it: pending, never unanswered");
+    assert!(none.is_err(), "nobody holds it: pending, never unanswered");
     validator.reachable(&Port::ALL, true);
     let back = pending.await;
-    assert_eq!(back.from, MemberId::Trusted(v(0)));
+    assert_eq!((back.from, back.value.header().hash), (MemberId::Trusted(v(0)), lacking));
     let at_one = by_height.await;
     assert_eq!((at_one.from, at_one.value[0].header().hash), (MemberId::Trusted(v(0)), hash));
     cancel.cancel();

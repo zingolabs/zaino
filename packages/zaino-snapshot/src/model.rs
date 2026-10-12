@@ -246,7 +246,7 @@ fn run(moves: Vec<(Input, bool)>) {
             seq += 1;
             let snap = handle.load();
             assert_eq!((snap.seq(), snap.tips()), (seq, expected), "{context}: G2-G4 tips");
-            assert_eq!(snap.standing(), standing_of(&expected), "{context}: standing");
+            assert_eq!(snap.standing(EPOCH), standing_of(&expected), "{context}: standing");
         }
         let snap = handle.load();
         if matches!(input, Input::Tail) {
@@ -286,9 +286,13 @@ fn run(moves: Vec<(Input, bool)>) {
 }
 
 /// From tips alone (a chain always verified; holders `Live`, the rest `Pending`)
+/// The clock the model reads standing at: before every block, so every best is fresh
+const EPOCH: i64 = 0;
+
 fn standing_of(tips: &Tips) -> Standing {
     match (tips.held_by.is_empty(), tips.synced) {
-        (true, _) => Standing::Down(Down::TipNotHeld),
+        (true, true) => Standing::Degraded(Down::TipNotHeld),
+        (true, false) => Standing::Down(Down::TipNotHeld),
         (false, false) => Standing::Syncing,
         (false, true) => Standing::Serving,
     }

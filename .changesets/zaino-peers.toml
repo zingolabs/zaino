@@ -9,5 +9,6 @@ fetches headers, blocks and mempool transactions from peers, identifying each by
 recomputes from its bytes (an answer that was not asked for is dropped and its peer scored), \
 streams every transaction `inv` attributed to its sender (`announcements`), lists recently live \
 peers and submission entries, and pushes a transaction to one chosen address over a fresh \
-isolated connection (`push_isolated`).
+isolated connection (`push_isolated`). It advertises no services (Zaino serves no peer) and \
+keeps `DEFAULT_PEER_TARGET` (8) outbound peers by default.
 """

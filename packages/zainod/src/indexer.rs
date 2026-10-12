@@ -31,10 +31,10 @@ use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use zaino_chainview::ChainView;
 use zaino_grpc::{GrpcLimits, GrpcService, Routes, Tls, TlsFiles, TrustedProxies};
-use zaino_header_chain::VerifiedChain;
+use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
-use zaino_index_tree_state::{PoolActivations, TreeStateIndexWriter};
+use zaino_index_tree_state::TreeStateIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
@@ -88,6 +88,17 @@ async fn upgrade_schedule<S: ChainDataSource>(
         Some(schedule) => schedule,
         None => UpgradeSchedule::reported(&regtest_schedule(balancer, validators).await),
     }
+}
+
+/// The rules a peer's header meets on `network`
+fn header_rules(network: NetworkType, schedule: &UpgradeSchedule) -> Result<Params, IndexerError> {
+    Params::for_network(network, schedule).ok_or_else(|| {
+        IndexerError::ConfigError(
+            "p2p.enabled on a regtest whose validator never activates Blossom: peers' headers \
+             cannot be checked"
+                .to_owned(),
+        )
+    })
 }
 
 /// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
@@ -151,11 +162,15 @@ async fn boot_over<S: ChainDataSource>(
         chain: chainview.header_sync.subscribe(),
         view: Arc::clone(&chainview.view),
         balancer: chainview.balancer.clone(),
-        activations: PoolActivations::new(&schedule),
+        schedule,
     };
     let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
 
-    let run = chainview.header_sync.run(cancel.child_token());
+    let header_sync = match config.p2p.enabled {
+        true => chainview.header_sync.with_peers(header_rules(config.network, &schedule)?),
+        false => chainview.header_sync,
+    };
+    let run = header_sync.run(cancel.child_token());
     spawn_infallible(&mut tasks, "header-sync", chainview_span.clone(), run);
     if let Some((starting, watch)) = chainview.peers {
         // one task, ended only by cancel (a task ending = a fault): the start finishes early
@@ -186,7 +201,7 @@ struct Inputs<S: ChainDataSource> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
     balancer: TrafficBalancer<S>,
-    activations: PoolActivations,
+    schedule: UpgradeSchedule,
 }
 
 /// The NFS, every enabled index's writer, the global snapshot's publisher, the gRPC server:
@@ -204,7 +219,7 @@ async fn pipeline<S: ChainDataSource>(
 ) -> Result<JoinSet<TaskExit>, IndexerError> {
     let network = config.network;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
-    let params = ChainParams { network, activations: inputs.activations };
+    let params = ChainParams { network, schedule: inputs.schedule };
     let (chain, balancer, lookahead) =
         (inputs.chain, inputs.balancer.clone(), config.sync.concurrency);
     let follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
@@ -624,7 +639,7 @@ mod tests {
         let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
         let validator = Arc::new(MockValidator::following(&blocks, a8));
-        let activations = PoolActivations::new(&blocks.schedule().upgrades);
+        let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
             zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
@@ -632,7 +647,7 @@ mod tests {
         let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth);
         let view = Arc::new(view.expect("one endpoint"));
         let fold = view.observation_fold();
-        let inputs = Inputs { chain, view: Arc::clone(&view), balancer, activations };
+        let inputs = Inputs { chain, view: Arc::clone(&view), balancer, schedule };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let address = probe.local_addr().expect("local addr");
         drop(probe);

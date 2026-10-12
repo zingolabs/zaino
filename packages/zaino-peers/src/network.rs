@@ -27,6 +27,7 @@ use zcash_protocol::consensus::NetworkType;
 use zebra_chain::block;
 use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
+use zebra_network::types::PeerServices;
 use zebra_network::{
     AddressBook, BoxError, CacheDir, Config, InventoryResponse, PeerSocketAddr, Request, Response,
     SharedPeerError, Version,
@@ -39,6 +40,9 @@ const LIED: u32 = 50;
 
 /// Announcements buffered per subscriber before the slowest one lags (and learns it did)
 const ANNOUNCED_BUFFER: usize = 4_096;
+
+/// Outbound peers kept by default (each = one inbound slot on a public node: stay modest)
+pub const DEFAULT_PEER_TARGET: NonZeroUsize = NonZeroUsize::new(8).expect("8 is non-zero");
 
 /// - `listen_addr` = zebra's listener (Zaino serves no peer: keep it on loopback)
 /// - `initial_peers` `None` = the network's DNS seeders (regtest: loopback addresses only)
@@ -59,11 +63,18 @@ impl PeerConfig {
             network,
             listen_addr: SocketAddr::from(([127, 0, 0, 1], 0)),
             initial_peers: None,
-            peer_target: NonZeroUsize::new(16).expect("16 is non-zero"),
+            peer_target: DEFAULT_PEER_TARGET,
             request_timeout: Duration::from_secs(20),
             cache_dir: None,
         }
     }
+}
+
+/// One block's bytes + its sender (`None` = zebra named none): [`PeerNetwork::blame`] it on a lie
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Supplied {
+    pub bytes: Vec<u8>,
+    pub peer: Option<SocketAddr>,
 }
 
 /// Txids one peer announced (`inv`): the `peers: x/y` sightings (`chainview.md`)
@@ -132,9 +143,15 @@ impl PeerNetwork {
         }
         let (announced, _) = broadcast::channel(ANNOUNCED_BUFFER);
         let user_agent = format!("/Zaino:{}/", env!("CARGO_PKG_VERSION"));
-        let (peers, address_book, misbehaved) =
-            zebra_network::init(zebra, inbound(announced.clone()), NoChainTip, user_agent.clone())
-                .await;
+        // no services: Zaino serves no peer (claiming NODE_NETWORK draws block requests it drops)
+        let (peers, address_book, misbehaved) = zebra_network::init(
+            zebra,
+            inbound(announced.clone()),
+            NoChainTip,
+            user_agent.clone(),
+            PeerServices::empty(),
+        )
+        .await;
         let timeout = config.request_timeout;
         Self { network, peers, address_book, misbehaved, announced, timeout, user_agent }
     }
@@ -182,13 +199,14 @@ impl PeerNetwork {
         }
     }
 
-    /// Each asked block's bytes, in `hashes` order (`None` = not supplied)
+    /// Each asked block, in `hashes` order (`None` = not supplied)
     ///
     /// - block hashing to something not asked for → dropped, sender scored
+    /// - body vs its header = the caller's check ([`blame`](Self::blame) the sender on a lie)
     pub async fn blocks_by_hash(
         &self,
         hashes: &[BlockHash],
-    ) -> Result<Vec<(BlockHash, Option<Vec<u8>>)>, PeerError> {
+    ) -> Result<Vec<(BlockHash, Option<Supplied>)>, PeerError> {
         let asked = hashes.iter().copied().map(wire::zebra_block_hash).collect();
         let items = match self.inventory(Request::BlocksByHash(asked)).await? {
             Some(Response::Blocks(items)) => items,
@@ -200,11 +218,21 @@ impl PeerNetwork {
             let InventoryResponse::Available((block, peer)) = item else { continue };
             let hash = wire::block_hash(block.hash());
             match hashes.contains(&hash) {
-                true => drop(found.insert(hash, wire::block_bytes(&block))),
+                true => {
+                    let supplied =
+                        Supplied { bytes: wire::block_bytes(&block), peer: peer.map(|p| *p) };
+                    drop(found.insert(hash, supplied));
+                }
                 false => self.lied(peer, "a block not asked for"),
             }
         }
         Ok(hashes.iter().map(|hash| (*hash, found.remove(hash))).collect())
+    }
+
+    /// `peer` served something its own bytes refute (scored like any lie: zebra bans past its
+    /// threshold)
+    pub fn blame(&self, peer: SocketAddr, what: &str) {
+        self.lied(Some(PeerSocketAddr::from(peer)), what);
     }
 
     /// One peer's mempool listing (zebra picks the peer)

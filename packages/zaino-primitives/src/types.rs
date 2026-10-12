@@ -35,7 +35,7 @@ mod upgrade_schedule;
 mod zatoshis;
 
 pub use aliases::{BlockTime, EquihashNonce, OutputIndex};
-pub use block::{Block, BlockHeader};
+pub use block::{Block, BlockHeader, BodyMismatch};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;

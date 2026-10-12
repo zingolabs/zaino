@@ -58,10 +58,11 @@ max_attempts = 4
 
 # Zaino's own peers on the Zcash p2p network (zebra-network), off by default: per-transaction
 # `peers: x/y`, and SendTransaction entries (a random peer per attempt, then one trusted verdict).
-# Zaino serves no peer (listener on loopback); peers never decide the tip.
+# Zaino serves no peer (listener on loopback, no services advertised); peers never decide the tip.
 # [p2p]
 # enabled = true
-# peer_target = 16
+# Each peer holds one inbound slot on a public node: keep it modest
+# peer_target = 8
 # Empty = the network's DNS seeders (regtest has none: list peers)
 # initial_peers = []
 # cache_dir = "<ZAINO_DATA>/peers"

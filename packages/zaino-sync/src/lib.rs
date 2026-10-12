@@ -21,7 +21,7 @@ mod writer;
 
 pub use data_sink::{Applied, IndexerDataSink, Run, Step, Subscription, Weight};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
-pub use fetch::{check_block, check_block_at, fetch, fetch_at, merkle_root, Checked, Misanswer};
+pub use fetch::{check_block, check_block_at, fetch, fetch_at, Checked, Misanswer};
 pub use follower::{FinalFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};

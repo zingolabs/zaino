@@ -224,12 +224,16 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
 /// Validator back from an outage, catching up 1,200 blocks behind the network, its tip moving in
 /// jumps the NFS catches between: every publish serves best yet stays `Syncing` toward the
 /// validator's estimate (0.10.1 flapped ready ↔ syncing here); then each standing the holder's
-/// health and the endpoints' give, with the notes their alarms raise
+/// health and the endpoints' give, with the notes their alarms raise; with no trusted validator
+/// vouching for best (all down, or none holding it): degraded while best's time is within 30 min
+/// of the clock, down past that
 #[test]
 fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     let mut builder = MockChain::regtest();
     let a12 = builder.mine_empty(12);
     let a = builder.blocks(a12);
+    let now = i64::from(a[12].header().time);
+    let stale = now + 30 * 60;
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let none: [(IndexKind, DiskView); 0] = [];
     let served_at = |tip: &Block| {
@@ -253,7 +257,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         assert_eq!(snap.tips().served, snap.tips().best, "at {height}: served = best");
         let target = snap.sync_target().map(u32::from);
         assert_eq!(
-            (snap.standing(), target),
+            (snap.standing(now), target),
             (Standing::Syncing, Some(height + 1_200)),
             "{height}"
         );
@@ -275,7 +279,7 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
             Health::Down,
             0,
             Health::Down,
-            Standing::Down(Down::NoValidatorReachable),
+            Standing::Degraded(Down::NoValidatorReachable),
             vec![],
         ),
     ];
@@ -283,9 +287,14 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         let (indexed, view) = served_at(&a[12]);
         let view = view.endpoint(0, holder, behind).endpoint(1, other, 0);
         let snap = Snapshots::fixed(Some(indexed), Arc::new(view)).load();
-        assert_eq!(snap.standing(), standing, "{case}");
+        assert_eq!(snap.standing(now), standing, "{case}");
         assert_eq!(notes(&snap), expected_notes, "{case}");
     }
+    let (indexed, view) = served_at(&a[12]);
+    let all_down = view.endpoint(0, Health::Down, 0).endpoint(1, Health::Down, 0);
+    let snap = Snapshots::fixed(Some(indexed), Arc::new(all_down)).load();
+    let down = Standing::Down(Down::NoValidatorReachable);
+    assert_eq!(snap.standing(stale), down, "every validator down, best stale");
 
     let (indexed, _) = served_at(&a[12]);
     let unheld = ChainViewSnapshot::fixed(
@@ -296,7 +305,9 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         &[],
     );
     let snap = Snapshots::fixed(Some(indexed), Arc::new(unheld)).load();
-    assert_eq!(snap.standing(), Standing::Down(Down::TipNotHeld), "no holder of best");
+    let unheld = (snap.standing(now), snap.standing(stale));
+    let expected = (Standing::Degraded(Down::TipNotHeld), Standing::Down(Down::TipNotHeld));
+    assert_eq!(unheld, expected, "no holder of best: fresh, then stale");
 }
 
 /// Panic message of `run`, `None` = it returned

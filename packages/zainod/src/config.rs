@@ -475,7 +475,7 @@ impl Default for P2pConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            peer_target: NonZeroUsize::new(16).expect("16 is non-zero"),
+            peer_target: zaino_peers::DEFAULT_PEER_TARGET,
             initial_peers: Vec::new(),
             cache_dir: crate::paths::default_peer_cache(),
         }
@@ -679,6 +679,14 @@ impl DaemonConfig {
                     validator.jsonrpc_address
                 )));
             }
+        }
+        let peer_target = self.p2p.peer_target.get();
+        if self.p2p.enabled && peer_target < zaino_traffic::Peers::MIN_IN_FLIGHT as usize {
+            return Err(IndexerError::ConfigError(format!(
+                "p2p.peer_target = {peer_target} is below {}: the peer set carries one request \
+                 per lane at once (headers, tip blocks, bulk blocks)",
+                zaino_traffic::Peers::MIN_IN_FLIGHT
+            )));
         }
         if self.p2p.enabled
             && self.network == NetworkType::Regtest
@@ -1166,7 +1174,7 @@ max_attempts = 6
 
 [p2p]
 enabled = true
-peer_target = 8
+peer_target = 12
 initial_peers = ["203.0.113.7:18233"]
 cache_dir = "/var/cache/zaino/peers"
 "#;
@@ -1184,7 +1192,7 @@ cache_dir = "/var/cache/zaino/peers"
             (peers.network, peers.peer_target.get(), peers.initial_peers, peers.cache_dir),
             (
                 NetworkType::Test,
-                8,
+                12,
                 Some(vec!["203.0.113.7:18233".to_owned()]),
                 Some(PathBuf::from("/var/cache/zaino/peers")),
             )

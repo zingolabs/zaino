@@ -15,7 +15,7 @@ use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
-use zaino_primitives::types::{BlockHash, BlockRef, Height};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, UpgradeSchedule};
 use zaino_sync::PerIndex;
 use zcash_protocol::consensus::NetworkType;
 
@@ -25,7 +25,14 @@ use crate::graph::{Base, Graph};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChainParams {
     pub network: NetworkType,
-    pub activations: PoolActivations,
+    pub schedule: UpgradeSchedule,
+}
+
+impl ChainParams {
+    /// Each shielded pool's first height
+    pub fn activations(&self) -> PoolActivations {
+        PoolActivations::new(&self.schedule)
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -33,7 +40,7 @@ impl ChainParams {
     /// `chain`'s schedule under its network label
     pub fn of(chain: &zaino_primitives::testing::MockChain) -> Self {
         let schedule = chain.schedule();
-        Self { network: schedule.network, activations: PoolActivations::new(&schedule.upgrades) }
+        Self { network: schedule.network, schedule: schedule.upgrades }
     }
 }
 
@@ -259,19 +266,19 @@ impl<V: View> Indexed<V> {
 #[cfg(test)]
 mod tests {
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_primitives::types::UpgradeSchedule;
     use zcash_protocol::consensus::NetworkUpgrade;
 
     use super::*;
 
-    /// Activations = the chain's schedule (pending ones included); network = the chain's label
+    /// The chain's schedule (pending ones included) under its label; its pools' first heights
     #[test]
     fn chain_params_are_the_chains_schedule_under_its_label() {
         let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
         let schedule = upgrades.without(NetworkUpgrade::Nu6_3);
         let chain = MockChain::regtest().upgrades(schedule).network(NetworkType::Main);
+        let params = ChainParams::of(&chain);
+        assert_eq!(params, ChainParams { network: NetworkType::Main, schedule });
         let activations = PoolActivations { sapling: h(1), orchard: Some(h(3)), ironwood: None };
-        let expected = ChainParams { network: NetworkType::Main, activations };
-        assert_eq!(ChainParams::of(&chain), expected);
+        assert_eq!(params.activations(), activations);
     }
 }

@@ -13,7 +13,7 @@ use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
 use zaino_source::{ChainDataSource, IndexerWatch, ZcashGrpcClient, ZcashLegacyRpcClient};
-use zaino_traffic::{TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
+use zaino_traffic::{PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
@@ -47,7 +47,12 @@ pub(crate) fn connect<S: ChainDataSource>(
         Ok(Trusted { source, priority: validator.priority, limits })
     });
     let trusted = trusted.collect::<Result<Vec<_>, IndexerError>>()?;
-    let (balancer, balancing) = TrafficBalancer::new(trusted, None);
+    let p2p = config.p2p.enabled.then(|| crate::peers::start(config.p2p.peers(config.network)));
+    let peers = p2p.as_ref().map(|(port, _)| Peers {
+        transport: Arc::clone(port) as Arc<dyn PeerTransport>,
+        in_flight: u32::try_from(config.p2p.peer_target.get()).unwrap_or(u32::MAX),
+    });
+    let (balancer, balancing) = TrafficBalancer::new(trusted, peers);
     let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
         let address = validator.indexer_address.as_ref()?;
         let member = ValidatorId::new(index)?;
@@ -59,8 +64,7 @@ pub(crate) fn connect<S: ChainDataSource>(
     let view = ChainView::new(addresses.collect(), balancer.clone(), depth)?;
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;
-    if config.p2p.enabled {
-        let (port, start) = crate::peers::start(config.p2p.peers(config.network));
+    if let Some((port, start)) = p2p {
         view = view.with_peers(port);
         starting = Some(start.boxed());
     }

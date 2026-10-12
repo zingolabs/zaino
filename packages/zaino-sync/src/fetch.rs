@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use zaino_header_chain::Record;
-use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, MerkleRoot, TransactionId};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, BodyMismatch, Height};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
 
@@ -33,13 +33,11 @@ pub enum Misanswer {
     WrongBlock { got: BlockHash },
     #[error("served a block whose coinbase says height {got:?}")]
     WrongHeight { got: Height },
-    #[error("served a body whose txids do not rebuild the header's merkle root")]
-    MerkleRoot,
-    #[error("served a body repeating a txid pair (CVE-2012-2459)")]
-    Mutated,
+    #[error("served {0}")]
+    Body(#[from] BodyMismatch),
 }
 
-/// `block` = the one asked for at `height`, its body the one `record` commits to
+/// `block` = the one asked for at `height` (hash = `record`'s: its header = the verified one)
 ///
 /// - Mismatch = that member misanswered, never an invalid header (ZIP 256: a v5 hash does not
 ///   commit to authorizing data)
@@ -48,33 +46,18 @@ pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Chec
     if header.hash != record.hash {
         return Err(Misanswer::WrongBlock { got: header.hash });
     }
-    check_body(block, height, record.merkle_root)
+    check_block_at(block, height)
 }
 
 /// `block` = one at `height` whose body its own header commits to (a by-height answer: no
 /// verified header to hold it to)
 pub fn check_block_at(block: Block, height: Height) -> Result<Checked, Misanswer> {
-    let committed = block.header().merkle_root;
-    check_body(block, height, committed)
-}
-
-/// Coinbase height + body vs `committed` (CVE-2012-2459 mutation refused)
-fn check_body(block: Block, height: Height, committed: MerkleRoot) -> Result<Checked, Misanswer> {
     let labelled = block.header().height;
     if labelled != height {
         return Err(Misanswer::WrongHeight { got: labelled });
     }
-    match merkle_root(&block) {
-        None => Err(Misanswer::Mutated),
-        Some(root) if root != committed => Err(Misanswer::MerkleRoot),
-        Some(_) => Ok(Checked(Arc::new(block))),
-    }
-}
-
-/// `None` = a repeated txid pair (CVE-2012-2459)
-pub fn merkle_root(block: &Block) -> Option<MerkleRoot> {
-    let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
-    MerkleRoot::of_txids(&txids)
+    block.check_body()?;
+    Ok(Checked(Arc::new(block)))
 }
 
 /// Until a body passes [`check_block`] (drop = abandon: the balancer cancels its sends)
@@ -150,12 +133,14 @@ mod tests {
         assert_eq!(passed.at(), BlockRef { hash: two.hash, height: h2 });
         let side_at = BlockRef { hash: side.hash, height: h2 };
         let wrong_height = Misanswer::WrongHeight { got: Height::try_from(9u32).expect("h") };
+        let merkle_root = Misanswer::Body(BodyMismatch::MerkleRoot);
+        let mutated = Misanswer::Body(BodyMismatch::Mutated);
         #[rustfmt::skip]
         let served = [
             (block(side.hash),   Err(Misanswer::WrongBlock { got: side.hash }), Ok(side_at)),
             (lying,              Err(wrong_height),                             Err(wrong_height)),
-            (with_txs(added),    Err(Misanswer::MerkleRoot),                    Err(Misanswer::MerkleRoot)),
-            (with_txs(repeated), Err(Misanswer::Mutated),                       Err(Misanswer::Mutated)),
+            (with_txs(added),    Err(merkle_root),                              Err(merkle_root)),
+            (with_txs(repeated), Err(mutated),                                  Err(mutated)),
         ];
         for (block, by_hash, by_height) in served {
             let checked = |checked: Result<Checked, Misanswer>| checked.map(|c| c.at());
@@ -188,8 +173,10 @@ mod tests {
         let lies: [(Lie, Expected, Expected); 4] = [
             (Lie::WrongBlock,  |served| Some(Misanswer::WrongBlock { got: served.header().hash }),
                                |_| None),
-            (Lie::Poisoned,    |_| Some(Misanswer::MerkleRoot), |_| Some(Misanswer::MerkleRoot)),
-            (Lie::Mutated,     |_| Some(Misanswer::Mutated),    |_| Some(Misanswer::Mutated)),
+            (Lie::Poisoned,    |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot)),
+                               |_| Some(Misanswer::Body(BodyMismatch::MerkleRoot))),
+            (Lie::Mutated,     |_| Some(Misanswer::Body(BodyMismatch::Mutated)),
+                               |_| Some(Misanswer::Body(BodyMismatch::Mutated))),
             (Lie::WrongHeight, |_| Some(Misanswer::WrongHeight { got: h(3) }),
                                |_| Some(Misanswer::WrongHeight { got: h(3) })),
         ];

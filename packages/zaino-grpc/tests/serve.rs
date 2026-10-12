@@ -76,13 +76,13 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     .await
     .expect("the server binds and accepts");
 
-    // No verified tip → UNAVAILABLE (no stand-in), decoded over h2 as a status, not a dropped
+    // Nothing served → UNAVAILABLE (no stand-in), decoded over h2 as a status, not a dropped
     // stream
     let refusal = wallet
         .get_lightd_info(zaino_proto::proto::service::Empty {})
         .await
-        .expect_err("no verified tip");
-    let named = refusal.message() == "no verified header chain tip yet";
+        .expect_err("nothing served");
+    let named = refusal.message() == "the indexes are syncing: nothing served yet";
     assert_eq!((refusal.code(), named), (tonic::Code::Unavailable, true), "{refusal:?}");
 
     // Wallet holds the one per-address slot → next connection closed unserved (kernel handshake

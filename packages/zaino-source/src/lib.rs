@@ -14,7 +14,7 @@ mod parse;
 mod queries;
 mod rpc;
 
-pub use decode::{decode_transaction, prepare_transaction, DecodeError, Prepared};
+pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZcashGrpcClient;
 pub use indexer::{Change, IndexerWatch};
