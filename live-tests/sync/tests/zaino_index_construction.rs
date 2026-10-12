@@ -65,10 +65,11 @@ const MERGE_MIB_PER_SEC: NonZeroU32 = NonZeroU32::new(300).expect("non-zero");
 /// - gRPC: ceil(72 / 20) = 4 HTTP/2 connections (zebrad admits 20 streams per connection)
 /// - ≤ 100: zebra's jsonrpsee server refuses connection 101+ with HTTP 429 (JSON-RPC: the rest)
 const VALIDATOR_CONNECTIONS: NonZeroU32 = NonZeroU32::new(72).expect("non-zero");
-/// zebrad's catch-up past the pin: 1 verify thread of its 4 cores (rest = zaino's getblocks)
+/// zebrad's catch-up past the pin: 4 verify threads of its 6 cores (rest = zaino's block reads +
+/// RocksDB); verify + download depth = zebra's defaults
 const ZEBRA_SYNC_BUDGET: SyncBudget = SyncBudget {
-    verify_threads: NonZeroU32::new(1),
-    full_verify_blocks: NonZeroU32::new(2).expect("non-zero"),
+    verify_threads: NonZeroU32::new(4),
+    full_verify_blocks: NonZeroU32::new(20).expect("non-zero"),
     download_blocks: NonZeroU32::new(50).expect("non-zero"),
 };
 /// Above any mainnet address (pool payouts hold millions of receives): the oracle holds whole
@@ -122,7 +123,7 @@ const FETCHED_OPS: [Op; 6] = [
     subject = indexer,
     timeout = "60h",
     qos = sync,
-    footprint = "14c/20Gi",
+    footprint = "16c/20Gi",
     tags = ["mainnet", "zaino", "index", "light-wallet", "pepper-sync", "ironwood", "live-tip"],
 )]
 async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
@@ -140,7 +141,7 @@ async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
             .indexer()
             .follow_from(IRONWOOD_MAINNET, TRUSTED_MAINNET_P2P)
             .disk(Disk::gib(CHAIN_DISK_GIB))
-            .resources(Cpu::cores(4), Mem::gib(10)),
+            .resources(Cpu::cores(6), Mem::gib(10)),
         );
         let zaino = t.add_indexer(
             dev!(Indexer::Zainod, "../../Dockerfile", context = "../..")
