@@ -455,9 +455,10 @@ pub(crate) struct SubmissionConfig {
     pub(crate) max_attempts: std::num::NonZeroU8,
 }
 
-/// Zaino's own p2p peers: submission entries + `peers: x/y` sightings
+/// Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their word
+/// (> 5 netgroups, no difficulty collapse), submission entries, `peers: x/y` sightings
 ///
-/// - Serves no peer (listener on loopback); peers never decide the tip
+/// - Serves no peer (listener on loopback, no services advertised)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct P2pConfig {

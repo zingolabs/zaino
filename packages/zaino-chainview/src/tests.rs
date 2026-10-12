@@ -477,7 +477,7 @@ async fn peers_are_heard_first_entries_first_and_a_trusted_validator_gives_the_v
     tokio::time::sleep(Duration::from_secs(2)).await;
     let second = peers.pushes();
     assert_eq!(second.len(), 2, "threshold passed unseen: a second peer");
-    let group = crate::submit::Netgroup::of;
+    let group = crate::netgroup::Netgroup::of;
     assert_ne!(group(second[0]), group(second[1]), "another netgroup");
     let outsider = (0..4).map(peer).find(|p| !second.contains(p)).expect("two untried");
     peers.announce(outsider, vec![txid]);
@@ -983,5 +983,66 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     validator.reachable(&Port::ALL, true);
     until("a vouches the peers' chain", || published() == Some((at_60, at_50))).await;
     until("held by a", || reader.current().held_by() == EndpointSet::at([0])).await;
+    cancel.cancel();
+}
+
+/// The previous scenario's outage (a down at 40, peers on to 60, depth 10), now with peers' block
+/// `inv`s: final reaches best − depth = 50 on the peers' word once more than 5 netgroups carry it
+/// - 10.1–10.5 (two in 10.5) announce 60: five netgroups, final stays 40
+/// - 10.7 announces a block off our chain; 10.8 (not live: inbound) announces 60; 10.6 announces
+///   45 (ours, but below 50: its chain may leave ours after 45): none counts
+/// - 10.6 then announces 55 (ours, above 50): six netgroups → final 50, a still down
+#[tokio::test(start_paused = true)]
+async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator_vouches() {
+    use zaino_header_chain::{HeaderChain, Params};
+    use zaino_traffic::Peers;
+
+    let mut chain = MockChain::regtest();
+    let at_40 = chain.mine_empty(40);
+    let at_60 = chain.mine_empty(20);
+    let (at_30, at_45) = (chain.at(h(30)), chain.at(h(45)));
+    let (at_50, at_55) = (chain.at(h(50)), chain.at(h(55)));
+    let elsewhere = chain.fork(h(45)).mine_empty(3).tip();
+    let best: Vec<BlockRef> = (0..=60).map(|height| chain.at(h(height))).collect();
+    let headers = best.iter().map(|block| (block.hash, chain.header_bytes(block.hash))).collect();
+    let held = std::sync::Mutex::new(40);
+    let peer_set = Arc::new(PeerSet { best, held, headers, blocks: chain.blocks(at_60) });
+    let validator = Arc::new(MockValidator::following(&chain, at_40));
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
+    let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
+    let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
+    let peer = |b: u8, host: u8| std::net::SocketAddr::from(([10, b, 0, host], 8233));
+    let live = [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (5, 2), (6, 1), (7, 1)];
+    let announcing = Arc::new(MockPeers::new(live.map(|(b, host)| peer(b, host)), []));
+    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth());
+    let view = view.expect("a valid set").with_peers(announcing.clone());
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
+    let sync = view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(h(1), None));
+    let verified = sync.subscribe();
+    tokio::spawn(sync.run(cancel.clone()));
+    let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
+
+    until("anchored, a followed", || published() == Some((at_40, at_30))).await;
+    validator.reachable(&Port::ALL, false);
+    *peer_set.held.lock().expect("peer set mutex") = 60;
+    until("the peers' tip, unvouched", || published() == Some((at_60, at_40))).await;
+
+    for (b, host) in [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (5, 2)] {
+        announcing.announce_block(peer(b, host), at_60.hash);
+    }
+    announcing.announce_block(peer(7, 1), elsewhere.hash);
+    announcing.announce_block(peer(8, 1), at_60.hash);
+    announcing.announce_block(peer(6, 1), at_45.hash);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(published(), Some((at_60, at_40)), "five netgroups: final unmoved");
+
+    announcing.announce_block(peer(6, 1), at_55.hash);
+    until("final on six netgroups' word", || published() == Some((at_60, at_50))).await;
+    let held_by = view.subscriber().current().held_by();
+    assert_eq!(held_by, EndpointSet::default(), "a still down: vouched nothing");
     cancel.cancel();
 }

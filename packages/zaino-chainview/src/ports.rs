@@ -14,23 +14,26 @@ use std::net::SocketAddr;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use zaino_primitives::types::{Height, TransactionId};
+use zaino_primitives::types::{BlockHash, Height, TransactionId};
 use zaino_source::NonDomainError;
 
-/// Txids one peer announced (`inv`), attributed by the p2p layer
+/// One peer `inv`, attributed by the p2p layer
+///
+/// - `Transactions` = mempool sightings; `Block` = a new tip on the peer's chain (peer finality
+///   counts the netgroups carrying ours)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Heard {
-    pub peer: SocketAddr,
-    pub txids: Vec<TransactionId>,
+pub enum Heard {
+    Transactions { peer: SocketAddr, txids: Vec<TransactionId> },
+    Block { peer: SocketAddr, hash: BlockHash },
 }
 
-/// Zcash p2p network as the view uses it: sightings + submission entries, never the tip
-/// or finality; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
+/// Zcash p2p network as the view uses it: sightings, submission entries, and which chain each
+/// peer carries; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers
 pub trait ValidatorP2pSource: Send + Sync + 'static {
-    /// Fresh subscription per call: every transaction `inv` from now on (lag drops some:
-    /// telemetry undercounts)
+    /// Fresh subscription per call: every transaction and block `inv` from now on (lag drops
+    /// some: telemetry undercounts, peer finality waits for the next block)
     fn heard(&self) -> BoxStream<'static, Heard>;
     /// Connected peers whose announcements arrive now (`peers: x/y`'s `y`)
     fn live(&self) -> Vec<SocketAddr>;

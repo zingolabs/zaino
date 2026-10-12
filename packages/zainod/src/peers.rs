@@ -142,7 +142,12 @@ impl ValidatorP2pSource for ZebraPeers {
 }
 
 fn heard(announced: Announced) -> Heard {
-    Heard { peer: announced.peer, txids: announced.ids.into_iter().map(|id| id.txid).collect() }
+    match announced {
+        Announced::Transactions { peer, ids } => {
+            Heard::Transactions { peer, txids: ids.into_iter().map(|id| id.txid).collect() }
+        }
+        Announced::Block { peer, hash } => Heard::Block { peer, hash },
+    }
 }
 
 fn mode(failed: &PushError) -> FailureMode {

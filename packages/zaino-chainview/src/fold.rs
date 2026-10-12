@@ -204,19 +204,33 @@ impl ChainViewCore {
         let state = &mut *guard;
         let live: OrdSet<SocketAddr> = live.into_iter().collect();
         let mut changed = live != state.peers_live;
+        // only live (outbound) peers carry the chain: an inbound one is anyone who dialed us
+        let carrying = std::mem::take(&mut state.peers_carrying);
+        let carriers = carrying.len();
+        state.peers_carrying =
+            carrying.into_iter().filter(|(peer, _)| live.contains(peer)).collect();
+        changed |= state.peers_carrying.len() != carriers;
         state.peers_live = live;
         let overheard = state.overheard.len();
         let mut touched = Vec::new();
         for (at, heard) in batch {
-            for txid in heard.txids {
-                match state.mempool.get_mut(&txid) {
-                    Some(sighting) => {
-                        if sighting.hear(heard.peer) {
-                            touched.push(txid);
+            match heard {
+                Heard::Transactions { peer, txids } => {
+                    for txid in txids {
+                        match state.mempool.get_mut(&txid) {
+                            Some(sighting) => {
+                                if sighting.hear(peer) {
+                                    touched.push(txid);
+                                }
+                            }
+                            None => changed |= state.overheard.hear(txid, peer, at),
                         }
                     }
-                    None => changed |= state.overheard.hear(txid, heard.peer, at),
                 }
+                Heard::Block { peer, hash } if state.peers_live.contains(&peer) => {
+                    changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
+                }
+                Heard::Block { .. } => {}
             }
         }
         state.overheard.expire(now);

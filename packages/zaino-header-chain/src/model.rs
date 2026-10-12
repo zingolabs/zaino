@@ -12,6 +12,8 @@
 //!   its last header vouched, then finality
 //! - vouched oracle: every live ancestor of a vouched header (an evicted one passes it to its
 //!   parent); final target = min(highest vouched on best, best − depth)
+//! - peer finality oracle: best − depth above the final tip, unless an unfinal best-path header's
+//!   work (from its own nBits) is under half the highest vouched header's (the anchor's at first)
 //! - checked after every move: `check()`, best, final tip, boundary, tree size + its bound (H9),
 //!   every height of the published chain (kept finals and above; older finals = on best by
 //!   definition), its locator, its forks and their branches, `holds` for every header ever mined,
@@ -49,6 +51,7 @@ const NOW: i64 = i64::MAX / 2;
 /// - `Orphan`: two headers on `parent`, only the second offered (parent unknown)
 /// - `Spray`: `branches` single-header side branches off live nodes (prune pressure, H4)
 /// - `Vouch`: a poll's claim (any mined header, held or not)
+/// - `PeerFinalize`: the driver found enough netgroups carrying the chain
 #[derive(Debug, Clone)]
 enum Move {
     Extend { parent: usize, gap: u32, bits: Vec<usize>, trusted: bool },
@@ -57,6 +60,7 @@ enum Move {
     Spray { from: usize, branches: usize },
     Reinsert { mined: usize, trusted: bool },
     Finalize,
+    PeerFinalize,
 }
 
 fn moves() -> impl Strategy<Value = Vec<Move>> {
@@ -76,6 +80,7 @@ fn moves() -> impl Strategy<Value = Vec<Move>> {
             1 => (any(), prop::bool::ANY)
                 .prop_map(|(mined, trusted)| Move::Reinsert { mined, trusted }),
             3 => Just(Move::Finalize),
+            2 => Just(Move::PeerFinalize),
         ],
         1..100,
     )
@@ -91,6 +96,7 @@ struct Alive {
 
 /// - `finals[h]` = the final record at height `h`
 /// - `vouched` = live headers vouched (their live ancestors too, derived)
+/// - `last_vouched` = (height, work) of the highest header ever vouched, else the anchor
 struct Model {
     mined: Vec<Header>,
     by_hash: HashMap<BlockHash, Header>,
@@ -98,6 +104,7 @@ struct Model {
     vouched: HashSet<BlockHash>,
     finals: Vec<Record>,
     received: u64,
+    last_vouched: (Height, u128),
 }
 
 impl Model {
@@ -268,9 +275,27 @@ impl Model {
     }
 
     fn vouch(&mut self, block: BlockRef) {
-        if self.alive.get(&block.hash).is_some_and(|alive| alive.height == block.height) {
-            self.vouched.insert(block.hash);
+        let Some(alive) = self.alive.get(&block.hash).filter(|a| a.height == block.height) else {
+            return;
+        };
+        if block.height > self.last_vouched.0 {
+            self.last_vouched = (block.height, header_work(alive.record.bits));
         }
+        self.vouched.insert(block.hash);
+    }
+
+    fn peer_finalizable(&self) -> Option<BlockRef> {
+        let best = self.best()?;
+        let boundary = u32::from(best.block.height).checked_sub(DEPTH)? as usize;
+        if boundary < self.finals.len() {
+            return None;
+        }
+        let path = self.best_path();
+        let reference = self.last_vouched.1;
+        let unfinal = &path[self.finals.len()..];
+        let collapsed = unfinal.iter().any(|record| header_work(record.bits) * 2 < reference);
+        let hash = path[boundary].hash;
+        (!collapsed).then_some(BlockRef { hash, height: height(boundary as u32) })
     }
 
     /// Highest best-path height some vouched header descends from, else the final tip's
@@ -382,6 +407,10 @@ fn height(h: u32) -> Height {
     Height::try_from(h).expect("in range")
 }
 
+fn header_work(bits: u32) -> u128 {
+    expand(bits).and_then(work).expect("the palette's nBits are valid")
+}
+
 /// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
 ///
 /// - `templates[hash]` = block whose bytes `hash`'s header was cut from (itself unless edited)
@@ -461,6 +490,7 @@ fn run(moves: Vec<Move>) {
         vouched: HashSet::new(),
         finals: vec![anchor],
         received: 0,
+        last_vouched: (Height::GENESIS, header_work(genesis.bits())),
     };
     // (published chain, the model's path then, the lowest height it answered by height, forks)
     let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
@@ -567,12 +597,27 @@ fn run(moves: Vec<Move>) {
                 }
                 assert_eq!(chain.finalizable(), None, "{context}: one call reaches the target");
             }
+            Move::PeerFinalize => {
+                let target = model.peer_finalizable();
+                assert_eq!(chain.peer_finalizable(), target, "{context}");
+                if let Some(target) = target {
+                    chain.finalize_by_peers(target);
+                    model.finalize(target);
+                }
+                assert_eq!(
+                    chain.peer_finalizable(),
+                    None,
+                    "{context}: one call reaches best − depth"
+                );
+            }
         }
 
         chain.check();
         assert_eq!(chain.best(), model.best(), "{context}: best");
         assert_eq!(chain.final_tip(), model.final_tip(), "{context}: final tip");
         assert_eq!(chain.finalizable(), model.finalizable(), "{context}: boundary");
+        let peer_boundary = model.peer_finalizable();
+        assert_eq!(chain.peer_finalizable(), peer_boundary, "{context}: peer boundary");
         assert_eq!(chain.ceiling(RUN), model.ceiling(), "{context}: ceiling");
         assert_eq!(chain.tree_len(), model.alive.len(), "{context}: live tree");
         let unfinal = model.best_path().len() - model.finals.len();

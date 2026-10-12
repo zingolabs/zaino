@@ -177,14 +177,22 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
         .await
         .expect("an inv within 10 s")
         .expect("announcement");
-    let mut heard_ids = heard.ids.clone();
+    let Announced::Transactions { peer, ids: mut heard_ids } = heard else {
+        panic!("a transaction inv, got {heard:?}")
+    };
     heard_ids.sort();
     let mut sent_ids = vec![wire::peer_tx_id(a.id), wire::peer_tx_id(b.id)];
     sent_ids.sort();
-    assert_eq!(
-        Announced { peer: heard.peer, ids: heard_ids },
-        Announced { peer: fake, ids: sent_ids }
-    );
+    assert_eq!((peer, heard_ids), (fake, sent_ids), "txids, sender named");
+
+    let advertise = Request::AdvertiseBlock(blocks[1].hash(), None);
+    fake_peers.ready().await.expect("ready").call(advertise).await.expect("inv sent");
+    let heard = tokio::time::timeout(Duration::from_secs(10), announcements.recv())
+        .await
+        .expect("a block inv within 10 s")
+        .expect("announcement");
+    let block = Announced::Block { peer: fake, hash: hash(&blocks[1]) };
+    assert_eq!(heard, block, "the block's hash, sender named");
 }
 
 /// - Push → exactly the chosen address, exactly the bytes, named by the bytes' own txid

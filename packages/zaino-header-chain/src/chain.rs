@@ -13,8 +13,11 @@
 //!   work counted from it
 //! - pure core: no clock, no lock, no I/O; one owner (`HeaderSync`) drives it
 //! - H1 best = max work, H2 descends from final, H4 bounded, H5 published never changes, H6 final
-//!   = vouched: asserted by [`HeaderChain::check`]
+//!   = vouched or peer-confirmed: asserted by [`HeaderChain::check`] and on every finalize
 //! - final = min(highest vouched on best, best − depth) (H6: [`HeaderChain::vouch`])
+//! - no vouch that deep: best − depth may still go final on peers' word
+//!   ([`HeaderChain::peer_finalizable`]): no difficulty collapse since the last vouch here, enough
+//!   netgroups carrying the chain in the driver
 
 use std::cmp::Reverse;
 use std::collections::HashMap;
@@ -33,6 +36,9 @@ const SIDE_TIPS: usize = 32;
 const SIDE_NODES_PER_DEPTH: usize = 4;
 /// Final headers kept, per block of reorg depth (the NFS reads up to `2 · depth` below best)
 const FINALS_PER_DEPTH: usize = 2;
+/// Peer finality refused once an unfinal best-chain block holds under 1/this of the last vouched
+/// block's work (a minority miner's private chain retargets down to its own hashrate)
+const MAX_DIFFICULTY_DROP: u128 = 2;
 
 /// One header as the chain keeps it: identity, the fields block checks read, the work from the
 /// anchor up to it
@@ -83,6 +89,8 @@ impl Node {
 
 /// - `finals` = the newest final headers, oldest first, the final tip last (empty = no anchor)
 /// - `best_path[i]` = the best branch at `base() + i`, up to the best tip
+/// - `last_vouched` = (height, own work) of the highest block a trusted validator vouched for,
+///   else the anchor: peer finality's difficulty reference (never moved by peers)
 /// - every collection `imbl` (O(1) into each [`VerifiedChain`])
 pub struct HeaderChain {
     depth: ReorgDepth,
@@ -91,6 +99,7 @@ pub struct HeaderChain {
     leaves: imbl::HashSet<BlockHash>,
     best_path: imbl::Vector<Record>,
     received: u64,
+    last_vouched: Option<(Height, u128)>,
 }
 
 impl HeaderChain {
@@ -103,6 +112,7 @@ impl HeaderChain {
             leaves: imbl::HashSet::new(),
             best_path: imbl::Vector::new(),
             received: 0,
+            last_vouched: None,
         }
     }
 
@@ -120,6 +130,7 @@ impl HeaderChain {
         self.nodes = imbl::HashMap::new();
         self.leaves = imbl::HashSet::new();
         self.best_path = imbl::Vector::new();
+        self.last_vouched = own_work(header.bits()).map(|work| (height, work));
     }
 
     pub fn depth(&self) -> ReorgDepth {
@@ -207,7 +218,7 @@ impl HeaderChain {
         let (height, parent_work) = self.parent(prev)?;
 
         let bits = header.bits();
-        let own = expand(bits).and_then(work).ok_or(Rejected::Bits { bits })?;
+        let own = own_work(bits).ok_or(Rejected::Bits { bits })?;
         let cumulative_work = parent_work.checked_add(own).ok_or(Rejected::WorkOverflow)?;
         let record = Record {
             hash,
@@ -245,8 +256,11 @@ impl HeaderChain {
     /// - permanent (zebra commits only valid blocks); not held above the final tip = no-op
     pub fn vouch(&mut self, block: BlockRef) {
         let mut at = block.hash;
-        if self.nodes.get(&at).is_none_or(|node| node.height != block.height) {
+        let Some(node) = self.nodes.get(&at).filter(|node| node.height == block.height) else {
             return;
+        };
+        if self.last_vouched.is_none_or(|(height, _)| block.height > height) {
+            self.last_vouched = own_work(node.record.bits).map(|work| (block.height, work));
         }
         while let Some(node) = self.nodes.get_mut(&at).filter(|node| !node.vouched) {
             node.vouched = true;
@@ -270,15 +284,49 @@ impl HeaderChain {
         Some(BlockRef { hash, height: boundary })
     }
 
+    /// Best-chain block final may move to on peers' word alone: best − depth, unless an unfinal
+    /// best-chain block holds under 1/[`MAX_DIFFICULTY_DROP`] of the last vouched block's work
+    ///
+    /// - `None` = best − depth final already, or a difficulty collapse
+    /// - the driver's half: peers in enough netgroups carry a block at or above it
+    pub fn peer_finalizable(&self) -> Option<BlockRef> {
+        let best = self.best()?;
+        let boundary = best.block.height.checked_sub(self.depth.get())?;
+        let hash = self.best_path.get(self.offset(boundary)?)?.hash;
+        let (_, reference) = self.last_vouched?;
+        let collapsed =
+            self.best_path_work().any(|own| own.saturating_mul(MAX_DIFFICULTY_DROP) < reference);
+        (!collapsed).then_some(BlockRef { hash, height: boundary })
+    }
+
+    /// Height of `hash` on the best branch above the final tip (`None` = not there)
+    pub fn best_height_of(&self, hash: BlockHash) -> Option<Height> {
+        let node = self.nodes.get(&hash)?;
+        self.on_best(node.at()).then_some(node.height)
+    }
+
     /// Every best-chain header up to `through` becomes final, every branch not descending from
     /// it pruned; the newest [`finals_kept`](Self::finals_kept) finals kept
     pub fn finalize(&mut self, through: BlockRef) {
+        let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);
+        assert!(vouched, "H6: only a vouched block (or an ancestor of one) becomes final");
+        self.advance_final(through);
+    }
+
+    /// [`finalize`](Self::finalize) at [`peer_finalizable`](Self::peer_finalizable)'s block, no
+    /// vouch needed (the driver counted the netgroups)
+    pub fn finalize_by_peers(&mut self, through: BlockRef) {
+        let allowed = self.peer_finalizable() == Some(through);
+        assert!(allowed, "H6: unvouched, only peer_finalizable()'s block becomes final");
+        self.advance_final(through);
+    }
+
+    /// [`finalize`](Self::finalize)'s move, once H6 holds
+    fn advance_final(&mut self, through: BlockRef) {
         assert!(self.on_best(through), "H2: only a best-branch block becomes final");
         let best = self.best().expect("a best-branch block has a best tip");
         let deep = u32::from(best.block.height) - u32::from(through.height);
         assert!(deep >= self.depth.get(), "H2: the final boundary stays `depth` below the best");
-        let vouched = self.vouched().is_some_and(|vouched| through.height <= vouched);
-        assert!(vouched, "H6: only a vouched block (or an ancestor of one) becomes final");
 
         let count = self.offset(through.height).expect("on the best branch") + 1;
         let newly: Vec<(Height, Record)> =
@@ -336,7 +384,7 @@ impl HeaderChain {
                 }
                 (None, None) => unreachable!("H2: nothing held before an anchor"),
             };
-            let own = expand(node.record.bits).and_then(work).expect("nBits checked on insert");
+            let own = own_work(node.record.bits).expect("nBits checked on insert");
             assert_eq!(parent_work + own, node.record.cumulative_work, "tree: cumulative work");
             let parent_vouched = self.nodes.get(&node.parent).is_none_or(|parent| parent.vouched);
             assert!(!node.vouched || parent_vouched, "H6: {hash:?} vouched, its parent not");
@@ -396,6 +444,14 @@ impl HeaderChain {
             Some(at) => self.base().checked_add(u32::try_from(at).expect("heights fit u32")),
             None => self.final_tip().map(|tip| tip.height),
         }
+    }
+
+    /// Each unfinal best-chain block's own work (its cumulative minus its parent's)
+    fn best_path_work(&self) -> impl Iterator<Item = u128> + '_ {
+        let final_work = self.finals.back().map_or(0, |(_, record)| record.cumulative_work);
+        let parents = self.best_path.iter().map(|record| record.cumulative_work);
+        let parents = std::iter::once(final_work).chain(parents);
+        self.best_path.iter().zip(parents).map(|(record, parent)| record.cumulative_work - parent)
     }
 
     fn max_side_nodes(&self) -> usize {
@@ -507,6 +563,11 @@ impl HeaderChain {
         held.extend(finals.take(CONTEXT - held.len()));
         held
     }
+}
+
+/// One block's work from its nBits (`None` = an invalid target)
+fn own_work(bits: u32) -> Option<u128> {
+    expand(bits).and_then(work)
 }
 
 #[cfg(test)]

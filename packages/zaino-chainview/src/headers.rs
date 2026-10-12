@@ -19,8 +19,12 @@
 //!   chain forked below our final tip is not fetched again until its claim moves
 //! - peers ([`HeaderSync::with_peers`]): no trusted run due → the peer set asked past our best
 //!   (locator) every `PEER_POLL`, at once again after progress; every rule run per header
-//!   (untrusted), never vouched (finality stays the trusted validators')
+//!   (untrusted), never vouched
+//! - peer finality: no vouch that deep → best − depth final anyway once live peers in more than
+//!   `PEER_FINALITY_NETGROUPS` netgroups announced a block at or above it and no difficulty
+//!   collapsed since the last vouch (`HeaderChain::peer_finalizable`)
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -36,6 +40,7 @@ use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
 use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, ValidatorId};
 
 use crate::fold::ChainViewCore;
+use crate::netgroup::Netgroup;
 use crate::snapshot::ChainViewSnapshot;
 
 /// Heights per fetch step (tree ≤ `depth` + this above the final tip)
@@ -46,6 +51,10 @@ const RETRY: Duration = Duration::from_secs(5);
 
 /// Peer set asked past our best this often (nothing newer = an empty answer; a block ≈ 75 s)
 const PEER_POLL: Duration = Duration::from_secs(5);
+
+/// Peer finality: carried by live peers in more netgroups than this (an eclipse needs addresses
+/// in that many /16s; 6 of the default 8 outbound peers)
+const PEER_FINALITY_NETGROUPS: usize = 5;
 
 /// Feeds one header chain from every trusted validator (and the peer set, if any); owns it
 pub struct HeaderSync<S> {
@@ -148,22 +157,17 @@ impl<S: ChainDataSource> HeaderSync<S> {
     }
 
     /// Answering validators' claims + `getblockhash` answers we hold: vouched (each once had it
-    /// on its best chain), then finality
+    /// on its best chain), then finality (every view change: a peer's block `inv` may be what
+    /// peer finality waited on)
     fn vouch(&mut self, view: &ChainViewSnapshot) {
         let verified = self.verified.borrow().clone();
         let Some(verified) = verified else { return };
         let floor = verified.final_tip().height.next();
         let held = |at: &BlockRef| at.height >= floor && verified.holds(*at);
         let answering = view.endpoints().iter().filter(|meta| meta.answering());
-        let facts: Vec<BlockRef> = answering
-            .flat_map(|meta| meta.tip().into_iter().chain(meta.held))
-            .filter(held)
-            .collect();
-        if facts.is_empty() {
-            return;
-        }
-        facts.iter().for_each(|fact| self.chain.vouch(*fact));
-        finalize(&mut self.chain);
+        let facts = answering.flat_map(|meta| meta.tip().into_iter().chain(meta.held));
+        facts.filter(held).for_each(|fact| self.chain.vouch(fact));
+        self.finalize(view);
         self.publish();
     }
 
@@ -281,7 +285,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         if refused.is_none() {
             self.chain.vouch(top);
         }
-        finalize(&mut self.chain);
+        self.finalize(&self.core.current());
         if cfg!(debug_assertions) {
             self.chain.check();
         }
@@ -373,13 +377,41 @@ impl<S: ChainDataSource> HeaderSync<S> {
             }
         }
         if progressed {
-            finalize(&mut self.chain);
+            self.finalize(&self.core.current());
             if cfg!(debug_assertions) {
                 self.chain.check();
             }
             self.publish();
         }
         progressed
+    }
+
+    /// Final → min(vouched, best − depth); peers on and no vouch that deep → best − depth on the
+    /// peers' word (no difficulty collapse, enough netgroups carrying it)
+    fn finalize(&mut self, view: &ChainViewSnapshot) {
+        if let Some(boundary) = self.chain.finalizable() {
+            self.chain.finalize(boundary);
+        }
+        if self.peers.is_none() {
+            return;
+        }
+        let Some(boundary) = self.chain.peer_finalizable() else { return };
+        let netgroups = self.netgroups_carrying(view, boundary.height);
+        if netgroups > PEER_FINALITY_NETGROUPS {
+            let height = u32::from(boundary.height);
+            debug!(height, hash = %boundary.hash, netgroups, "Final on peers' word, unvouched");
+            self.chain.finalize_by_peers(boundary);
+        }
+    }
+
+    /// Netgroups of live peers whose latest announced block is on our best chain at or above
+    /// `from` (its chain holds `from`)
+    fn netgroups_carrying(&self, view: &ChainViewSnapshot, from: Height) -> usize {
+        let carrying = view.peers_carrying.iter().filter(|(_, announced)| {
+            self.chain.best_height_of(**announced).is_some_and(|height| height >= from)
+        });
+        let netgroups: BTreeSet<Netgroup> = carrying.map(|(peer, _)| Netgroup::of(*peer)).collect();
+        netgroups.len()
     }
 
     /// `VerifiedChain` → watch + view when its best or final tip moved
@@ -397,12 +429,5 @@ impl<S: ChainDataSource> HeaderSync<S> {
         if changed {
             self.core.apply_headers(self.verified.borrow().clone());
         }
-    }
-}
-
-/// Final → min(vouched, best − depth)
-fn finalize(chain: &mut HeaderChain) {
-    if let Some(boundary) = chain.finalizable() {
-        chain.finalize(boundary);
     }
 }

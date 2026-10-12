@@ -9,7 +9,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
-use zaino_primitives::types::{Height, TransactionId};
+use zaino_primitives::types::{BlockHash, Height, TransactionId};
 use zaino_source::{FailureMode, NonDomainError};
 
 use crate::{Heard, ValidatorP2pSource};
@@ -35,9 +35,17 @@ impl MockPeers {
         }
     }
 
-    /// One `inv` from `peer` (a watch subscribed first: `heard()`)
+    /// One transaction `inv` from `peer` (a watch subscribed first: `heard()`)
     pub fn announce(&self, peer: SocketAddr, txids: Vec<TransactionId>) {
-        let heard = Heard { peer, txids };
+        self.heard(Heard::Transactions { peer, txids });
+    }
+
+    /// One block `inv` from `peer`: its new tip (a watch subscribed first: `heard()`)
+    pub fn announce_block(&self, peer: SocketAddr, hash: BlockHash) {
+        self.heard(Heard::Block { peer, hash });
+    }
+
+    fn heard(&self, heard: Heard) {
         self.announce.send(heard).expect("a peer watch subscribed before the announcement");
     }
 

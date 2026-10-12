@@ -77,11 +77,14 @@ pub struct Supplied {
     pub peer: Option<SocketAddr>,
 }
 
-/// Txids one peer announced (`inv`): the `peers: x/y` sightings (`chainview.md`)
+/// One peer `inv`, its sender attached by zebra (`chainview.md`)
+///
+/// - `Transactions` = the `peers: x/y` sightings; `Block` = the peer's new tip (which chain it
+///   carries: peer finality's netgroup count)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Announced {
-    pub peer: SocketAddr,
-    pub ids: Vec<PeerTxId>,
+pub enum Announced {
+    Transactions { peer: SocketAddr, ids: Vec<PeerTxId> },
+    Block { peer: SocketAddr, hash: BlockHash },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -156,7 +159,7 @@ impl PeerNetwork {
         Self { network, peers, address_book, misbehaved, announced, timeout, user_agent }
     }
 
-    /// Every `inv` of transactions a connected peer sends from now on
+    /// Every transaction or block `inv` a connected peer sends from now on
     pub fn announcements(&self) -> broadcast::Receiver<Announced> {
         self.announced.subscribe()
     }
@@ -326,7 +329,7 @@ impl PeerNetwork {
     }
 }
 
-/// Answers every peer with nothing; reports each transaction `inv` with its sender
+/// Answers every peer with nothing; reports each transaction and block `inv` with its sender
 fn inbound(
     announced: broadcast::Sender<Announced>,
 ) -> impl Service<
@@ -339,9 +342,18 @@ fn inbound(
        + Sync
        + 'static {
     tower::service_fn(move |request: Request| {
-        if let Request::AdvertiseTransactionIds(ids, Some(peer)) = request {
-            let ids = ids.into_iter().map(wire::peer_tx_id).collect();
-            let _ = announced.send(Announced { peer: *peer, ids });
+        let heard = match request {
+            Request::AdvertiseTransactionIds(ids, Some(peer)) => {
+                let ids = ids.into_iter().map(wire::peer_tx_id).collect();
+                Some(Announced::Transactions { peer: *peer, ids })
+            }
+            Request::AdvertiseBlock(hash, Some(peer)) => {
+                Some(Announced::Block { peer: *peer, hash: wire::block_hash(hash) })
+            }
+            _ => None,
+        };
+        if let Some(heard) = heard {
+            let _ = announced.send(heard);
         }
         std::future::ready(Ok(Response::Nil))
     })

@@ -14,7 +14,9 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis,
+};
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::config::FINALITY_STALL;
@@ -209,6 +211,7 @@ impl Sighting {
 /// - `owed_since` = since when a block `depth` deep waits, final tip unmoved (stall alarm)
 /// - `mempool` ordered: two readers of one view walk it identically
 /// - `peers_live` = connected peers as of the last peer fold (`peers: x/y`'s `y`)
+/// - `peers_carrying` = each live peer's latest announced block (peer finality's netgroup count)
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
     pub(crate) chain: Option<Arc<VerifiedChain>>,
@@ -219,6 +222,7 @@ pub struct ChainViewSnapshot {
     pub(crate) endpoints: Vector<ValidatorMetadata>,
     pub(crate) alarms: Alarms,
     pub(crate) peers_live: OrdSet<SocketAddr>,
+    pub(crate) peers_carrying: OrdMap<SocketAddr, BlockHash>,
     pub(crate) overheard: Overheard,
 }
 
@@ -233,6 +237,7 @@ impl ChainViewSnapshot {
             endpoints,
             alarms: Alarms::default(),
             peers_live: OrdSet::new(),
+            peers_carrying: OrdMap::new(),
             overheard: Overheard::default(),
         }
     }
@@ -254,7 +259,7 @@ impl ChainViewSnapshot {
         self.chain = chain;
     }
 
-    /// A block `depth` deep owed finality ≥ [`FINALITY_STALL`] (never vouched, H6)
+    /// A block `depth` deep owed finality ≥ [`FINALITY_STALL`] (unvouched, peers short of it, H6)
     pub(crate) fn finality_stalled(&self, now: Instant) -> bool {
         self.owed_since.is_some_and(|since| now.duration_since(since) >= FINALITY_STALL)
     }
