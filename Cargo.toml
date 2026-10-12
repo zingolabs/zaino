@@ -8,6 +8,7 @@ members = [
     "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-persistence",
+    "packages/zaino-persistence-lsm-tree",
     "packages/zaino-address",
     "packages/zaino-source-macros",
     "packages/zaino-source",
@@ -120,6 +121,10 @@ metrics-process = "2.4"
 
 # Utility
 bytes = "1.12"
+memmap2 = "0.9"
+# sync_file_range (write-behind; no safe wrapper in rustix/nix)
+libc = "0.2"
+crc32fast = "1.4"
 imbl = "7.0"
 strum ={ version = "0.28", features = ["derive"] }
 thiserror = "2.0"
