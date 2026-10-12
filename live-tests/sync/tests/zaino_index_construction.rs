@@ -1,7 +1,7 @@
 //! Mainnet light-wallet index: built from empty, then synced through by a real wallet.
 //!
-//! - zebra = optimized fork (`perf/indexer-block-range`: lazy point decompression, stored-bytes
-//!   `GetBlockRange`), restored at `IRONWOOD_MAINNET`, following mainnet
+//! - zebra = optimized fork (`elicbarbieri/zebra` `perf/indexer-block-range`: lazy point
+//!   decompression, stored-bytes `GetBlockRange`), restored at `IRONWOOD_MAINNET`, following mainnet
 //! - `index`: blocks over zebrad's indexer gRPC (`validator_client = "grpc"`), the rest over
 //!   JSON-RPC; at completion each index held to zebra + `zainod verify`
 //! - `wallet`: pepper-sync scans [`WALLET`] birthday → tip under live blocks; roots, balances, notes
@@ -128,13 +128,12 @@ const FETCHED_OPS: [Op; 6] = [
 async fn zaino_index_construction(run: SyncRunner) -> SyncOutcome {
     let topology = run.topology(|t| {
         t.set_ready_timeout(READY_WINDOW);
-        // TODO: git form (`git = …, rev = …`) once perf/indexer-block-range is pushed; local
-        // worktree until then
         let zebra = t.add_validator(
             dev!(
                 Validator::Zebrad,
-                "../../../zebra-indexer-blocks/docker/Dockerfile",
-                context = "../../../zebra-indexer-blocks",
+                git = "https://github.com/elicbarbieri/zebra.git",
+                rev = "e7c50dad3fa906695a6d5da66b24f2ac37797d4f",
+                dockerfile = "docker/Dockerfile",
                 version = "6.3.0"
             )
             .sync_budget(ZEBRA_SYNC_BUDGET)
