@@ -1,7 +1,7 @@
 //! One progress task: every [`REPORT_INTERVAL`], read from the global snapshot + `SyncProgress`
 //!
-//! - `Syncing blocks` (handed, best, bps, eta) while the blocks handed trail the best; a stall
-//!   warning when a whole interval hands over nothing
+//! - `Syncing blocks` (handed, final tip, bps, eta) while the blocks handed trail the final tip; a
+//!   stall warning when a whole interval hands over nothing
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
 //!   not synced
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` `disk`)
@@ -88,8 +88,9 @@ pub(crate) async fn run(
         rate.send_replace(Some((now.blocks - before_last.blocks) as f64 / elapsed));
         let snap = snapshots.load();
         let tips = snap.tips();
-        if let (Some(best), handed) = (tips.best, progress.handed()) {
-            summarise(last, now, handed.map_or(0, u32::from), u32::from(best.height));
+        // the follower hands final blocks only: its ceiling = the final tip, never best
+        if let (Some(final_tip), handed) = (tips.final_tip, progress.handed()) {
+            summarise(last, now, handed.map_or(0, u32::from), u32::from(final_tip.height));
         }
         if !tips.synced {
             let sizes = disk.borrow();
@@ -106,21 +107,21 @@ pub(crate) async fn run(
     }
 }
 
-/// One line per interval while handed trails `best`: a rate + eta, or a stall
-fn summarise(last: Sample, now: Sample, handed: u32, best: u32) {
-    if handed >= best {
+/// One line per interval while handed trails `target` (the final tip): a rate + eta, or a stall
+fn summarise(last: Sample, now: Sample, handed: u32, target: u32) {
+    if handed >= target {
         return;
     }
     let elapsed = now.at - last.at;
     let blocks = now.blocks - last.blocks;
     if blocks == 0 {
-        warn!(height = handed, target = best, stalled = %Human(elapsed), "Block fetch stalled");
+        warn!(height = handed, target, stalled = %Human(elapsed), "Block fetch stalled");
         return;
     }
     let rate = blocks as f64 / elapsed.as_secs_f64();
     let bps = per_second(blocks, elapsed);
-    let eta = Human(Duration::from_secs_f64(f64::from(best - handed) / rate));
-    info!(height = handed, target = best, bps, eta = %eta, "Syncing blocks");
+    let eta = Human(Duration::from_secs_f64(f64::from(target - handed) / rate));
+    info!(height = handed, target, bps, eta = %eta, "Syncing blocks");
 }
 
 /// Whole units per second

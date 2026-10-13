@@ -451,8 +451,8 @@ What an operator sees at `info`:
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the blocks handed to the indexes trail the verified best (`height` handed, `target` = the best, `bps`, `eta`). |
-| `ZainoNFS` | `Block fetch stalled` | warn | A whole 30 s interval behind the best handed over no block. |
+| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the final blocks handed to the indexes trail the header chain's final tip (`height` handed, `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
+| `ZainoNFS` | `Block fetch stalled` | warn | A whole 30 s interval behind the final tip handed over no block. |
 | `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
 | `Snapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
