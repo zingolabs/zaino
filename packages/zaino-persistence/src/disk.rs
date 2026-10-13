@@ -101,17 +101,17 @@ impl Body {
     fn empty(schema: &Schema) -> Self {
         Self {
             committed: Committed::EMPTY,
-            sequences: vec![Seals::EMPTY; schema.sequences().len()],
+            sequences: schema.sequences().iter().map(|table| Seals::empty(table.record)).collect(),
             maps: vec![Vec::new(); schema.maps().len()],
         }
     }
 
     /// `committed ‖ seals per sequence ‖ segment list per map`, in schema order
-    fn encode(&self, schema: &Schema) -> Vec<u8> {
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         self.committed.encode(&mut out);
-        for (table, seals) in schema.sequences().iter().zip(&self.sequences) {
-            seals.encode(table.record, &mut out);
+        for seals in &self.sequences {
+            seals.encode(&mut out);
         }
         for list in &self.maps {
             encode_list(list, &mut out);
@@ -170,7 +170,7 @@ impl PersistenceEngine for DiskEngine {
             Some(bytes) => Body::decode(bytes, schema)?,
             None => {
                 for table in schema.sequences() {
-                    for name in SequenceFile::names(table) {
+                    for name in sequence::names(table) {
                         dir.ensure_empty(&name, false)?;
                     }
                 }
@@ -196,7 +196,7 @@ impl PersistenceEngine for DiskEngine {
         let map_dirs: Vec<PathBuf> =
             schema.maps().iter().map(|table| dir.subdir(table.name)).collect::<io::Result<_>>()?;
         if opened.body.is_none() {
-            dir.commit(&body.encode(schema))?;
+            dir.commit(&body.encode())?;
         }
 
         let mut maps = Vec::with_capacity(schema.maps().len());
@@ -286,7 +286,7 @@ impl DiskStore {
         }
 
         let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps };
-        self.dir.commit(&body.encode(&self.schema))?;
+        self.dir.commit(&body.encode())?;
         for log in &mut self.maps {
             log.committed()?;
         }
@@ -321,8 +321,7 @@ fn write_sequences(
         for record in buffer.records(table) {
             file.append(record)?;
         }
-        let grown = file.grown();
-        Ok((file.seal(durability)?, grown))
+        Ok(file.seal(durability)?)
     });
     sealed.collect()
 }

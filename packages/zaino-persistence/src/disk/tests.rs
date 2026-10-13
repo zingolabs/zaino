@@ -4,6 +4,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    num::NonZeroU32,
     path::Path,
     sync::Arc,
 };
@@ -19,6 +20,7 @@ use crate::{
     manifest::IndexKind,
     overlay::Overlay,
     port::{MapTable, SequenceTable, Tables, Width},
+    sequence::Records,
 };
 
 const ROOT: &str = "/idx";
@@ -997,8 +999,8 @@ fn a_manifest_body_is_its_golden_bytes() {
     let body = Body {
         committed: Committed { tip: Some(block_ref(3)) },
         sequences: vec![
-            Seals { data: sealed(4), ends: Sealed::EMPTY },
-            Seals { data: sealed(5), ends: sealed(8) },
+            Seals { data: sealed(4), records: Records::Fixed(NonZeroU32::new(4).expect("4")) },
+            Seals { data: sealed(5), records: Records::Variable(sealed(8)) },
         ],
         maps: vec![vec![SegmentMeta { id: 7, records: 2, sealed: sealed(9) }]],
     };
@@ -1022,7 +1024,7 @@ fn a_manifest_body_is_its_golden_bytes() {
         &seal(9),
     ]
     .concat();
-    assert_eq!(body.encode(&schema), golden);
+    assert_eq!(body.encode(), golden);
     assert_eq!(Body::decode(&golden, &schema).expect("decodes"), body);
 
     let partial = Body::decode(&[&golden[..40], &seal(6)].concat(), &schema);

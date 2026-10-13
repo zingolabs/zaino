@@ -142,6 +142,11 @@ pub(crate) fn sums_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Checksum file name of data file `name`
+pub(crate) fn sums_name(name: &str) -> String {
+    format!("{name}{SUMS_SUFFIX}")
+}
+
 /// Data file whose checksums `name` holds; `None` = not a checksum file
 pub(crate) fn sums_of(name: &str) -> Option<&str> {
     name.strip_suffix(SUMS_SUFFIX)
