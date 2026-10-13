@@ -592,7 +592,7 @@ mod tests {
     /// oracle's, and the next block folds on correctly
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_proven_prefix_that_keeps_folding() {
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
         // (sapling, orchard, ironwood) leaves per height 1..: 0, 1, many commitments per pool on
         // both parities (forces carries several levels up); nullifier = the leaf byte repeated
@@ -630,7 +630,7 @@ mod tests {
             let trees = TreeStateReader::new(view).treestate(h(at)).expect("held");
             (trees.sapling, trees.orchard, trees.ironwood)
         };
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;

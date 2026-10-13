@@ -399,16 +399,45 @@ pub struct CrashState {
     pub fs: Arc<SimFs>,
 }
 
+/// Crash points of a [`SimFs::recording`] filesystem
+#[derive(Debug)]
+pub struct Recording {
+    fs: Arc<SimFs>,
+}
+
+impl Recording {
+    /// Every distinct state a crash at any recorded point could leave (deduplicated on
+    /// `(tag, image)`: tag decides what a recovery may land on)
+    pub fn crash_states(&self) -> Vec<CrashState> {
+        let points = self.fs.lock_inner().recorded.clone().unwrap_or_default();
+        let mut seen = HashSet::new();
+        let mut states = Vec::new();
+        for point in points {
+            for (label, image) in point.image.crash_states() {
+                if seen.insert((point.tag, image.fingerprint())) {
+                    states.push(CrashState {
+                        tag: point.tag,
+                        label: format!("after `{}`: {label}", point.op),
+                        fs: self.fs.reopened(image),
+                    });
+                }
+            }
+        }
+        states
+    }
+}
+
 impl SimFs {
     pub fn new() -> Arc<Self> {
         Arc::new(Self::default())
     }
 
-    /// Records a `CrashPoint` around every persistence point (for [`SimFs::crash_states`])
-    pub fn recording() -> Arc<Self> {
+    /// Records a `CrashPoint` around every persistence point, enumerated by its [`Recording`]
+    pub fn recording() -> (Arc<Self>, Recording) {
         let fs = Self::default();
         fs.lock_inner().recorded = Some(Vec::new());
-        Arc::new(fs)
+        let fs = Arc::new(fs);
+        (Arc::clone(&fs), Recording { fs })
     }
 
     /// Same device after a crash or restart: `image`, this filesystem's flush model
@@ -433,27 +462,6 @@ impl SimFs {
         self.lock_inner().tag = tag;
     }
 
-    /// Every distinct state a crash at any recorded point could leave (deduplicated on
-    /// `(tag, image)`: tag decides what a recovery may land on)
-    pub fn crash_states(&self) -> Vec<CrashState> {
-        let points =
-            self.lock_inner().recorded.clone().expect("crash states need SimFs::recording");
-        let mut seen = HashSet::new();
-        let mut states = Vec::new();
-        for point in points {
-            for (label, image) in point.image.crash_states() {
-                if seen.insert((point.tag, image.fingerprint())) {
-                    states.push(CrashState {
-                        tag: point.tag,
-                        label: format!("after `{}`: {label}", point.op),
-                        fs: self.reopened(image),
-                    });
-                }
-            }
-        }
-        states
-    }
-
     /// Mutating call `op` (0-based, [`SimFs::mutations`] order) and every later one fail with
     /// `EIO`, nothing applied (Pebble `errorfs.OnIndex`: loop `op` until a workload succeeds)
     pub fn fail_from(&self, op: u64) {
@@ -464,8 +472,7 @@ impl SimFs {
     ///
     /// - mapped reads = copies here, never fail (real disk: `SIGBUS` kills the process, untestable
     ///   in-process)
-    #[cfg(test)]
-    pub(crate) fn fail_reads_from(&self, read: u64) {
+    pub fn fail_reads_from(&self, read: u64) {
         self.lock_inner().fail_reads_from = Some(read);
     }
 
@@ -482,15 +489,13 @@ impl SimFs {
 
     /// Image after a power loss right now (only synced entries + bytes; background threads
     /// mid-write included), healthy
-    #[cfg(test)]
-    pub(crate) fn power_loss(&self) -> Arc<SimFs> {
+    pub fn power_loss(&self) -> Arc<SimFs> {
         let image = self.lock_inner().image.power_loss();
         self.reopened(image)
     }
 
     /// Current volatile content, `None` when absent
-    #[cfg(test)]
-    pub(crate) fn contents(&self, path: &Path) -> Option<Vec<u8>> {
+    pub fn contents(&self, path: &Path) -> Option<Vec<u8>> {
         let inner = self.lock_inner();
         match inner.image.volatile.get(path) {
             Some(Node::File(id)) => Some(inner.image.files[*id].current.clone()),
@@ -499,8 +504,7 @@ impl SimFs {
     }
 
     /// Durable rewrite (bit rot, operator)
-    #[cfg(test)]
-    pub(crate) fn corrupt(&self, path: &Path, edit: impl FnOnce(&mut Vec<u8>)) {
+    pub fn corrupt(&self, path: &Path, edit: impl FnOnce(&mut Vec<u8>)) {
         let mut inner = self.lock_inner();
         let Some(Node::File(id)) = inner.image.volatile.get(path).copied() else {
             panic!("corrupt: {} is not a file", path.display());
@@ -764,7 +768,7 @@ mod tests {
     /// - unsynced rename over the file: whole or not at all
     #[test]
     fn crash_states_keep_what_was_synced_and_every_shape_of_what_was_not() {
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let dir = Path::new("/d");
         fs.create_dir_all(dir).expect("mkdir");
         let file = fs.open(&dir.join("a")).expect("create a");
@@ -782,7 +786,7 @@ mod tests {
 
         // tag 0 = before `a`'s name and bytes were synced (losing either is allowed, and seen)
         let (mut seen, mut unsynced_name_lost) = (BTreeSet::new(), false);
-        for state in fs.crash_states() {
+        for state in recording.crash_states() {
             let a = state.fs.contents(&dir.join("a"));
             match (state.tag, a) {
                 (0, None) => unsynced_name_lost = true,

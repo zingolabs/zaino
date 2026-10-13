@@ -153,13 +153,8 @@ impl SegmentFile {
     }
 
     /// `false` = no key starting with `prefix` (the [`filtered`](Self::filtered) bytes) here
-    ///
-    /// - reads only pages [`warm_filter`](Self::warm_filter) already checked
     pub(crate) fn may_contain(&self, prefix: &[u8]) -> bool {
         let (at, layout) = &self.sections.filter;
-        layout.may_contain(
-            |range| self.pages.read_unchecked(at + range.start..at + range.end),
-            prefix,
-        )
+        layout.may_contain(|range| self.pages.read(at + range.start..at + range.end), prefix)
     }
 }

@@ -17,13 +17,7 @@ use crate::{
 };
 
 /// Bytes held in memory before the stream moves to its scratch file (and the copy chunk size)
-///
-/// - tests spill from 4 KiB (every segment-writing test, crash states included, runs through the
-///   scratch files too)
-const SPILL_AT: usize = match cfg!(any(test, feature = "testing")) {
-    true => 4096,
-    false => 1 << 20,
-};
+const SPILL_AT: usize = 1 << 20;
 
 /// `file` = scratch file + bytes already written to it, once spilled
 pub(crate) struct Spill {

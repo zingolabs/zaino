@@ -221,7 +221,7 @@ mod tests {
             });
         }
         let blocks = chain.blocks(chain.tip());
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         {
             let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MIN));
             for (acked, block) in (1u64..).zip(&blocks[..10]) {
@@ -243,7 +243,7 @@ mod tests {
             let utxos = utxos.into_iter().map(|utxo| (utxo.height, utxo.value.as_u64()));
             (utxos.collect::<Vec<_>>(), reader.balance(&alice).expect("balance").as_u64())
         };
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;

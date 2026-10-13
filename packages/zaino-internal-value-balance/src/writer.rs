@@ -528,7 +528,7 @@ mod tests {
         let tip_of = |view: &DiskView| view.tip().map(|tip| u32::from(tip.height));
 
         // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let (sink, mut handle, mut consumer, running) = start(open(&fs, NonZeroUsize::MIN), QUEUE);
         for (acked, block) in (1u64..).zip(&blocks[..4]) {
             sink.send(step(block)).await;
@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(drained(&mut consumer).await, first, "one fee step per block, Shutdown last");
         let tip_after = |commits: u64| (commits > 0).then(|| (commits - 1).min(3) as u32);
 
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let crashed = &state.label;

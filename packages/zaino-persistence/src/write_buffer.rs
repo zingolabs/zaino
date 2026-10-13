@@ -208,26 +208,6 @@ fn key_at(keys: &Items, table: MapTable, row: usize) -> &[u8] {
     keys.get(table.key, row).expect("an indexed row is buffered")
 }
 
-#[cfg(test)]
-impl WriteBuffer {
-    /// Each map's index = its rows, each found by its own key; first <= tip
-    pub(crate) fn check(&self, label: &str) {
-        let first = self.first.map(|first| Some(first) <= self.tip.map(|tip| tip.height));
-        assert!(first.is_none_or(|ordered| ordered), "{label}: buffer first above its tip");
-        for (&table, rows) in self.schema.maps().iter().zip(&self.maps) {
-            let count = rows.keys.len(table.key);
-            let paired = rows.values.len(table.value) == count
-                && rows.kinds.len() == count
-                && rows.by_key.len() == count;
-            assert!(paired, "{label}: {} keys, values, kinds and index agree", table.name);
-            let indexed = (0..count).all(|row| {
-                rows.find(table, key_at(&rows.keys, table, row), &self.hasher) == Some(row)
-            });
-            assert!(indexed, "{label}: {} every row found by its key", table.name);
-        }
-    }
-}
-
 impl Uncommitted for WriteBuffer {
     fn schema(&self) -> &Schema {
         &self.schema
@@ -268,5 +248,29 @@ impl Uncommitted for WriteBuffer {
             .into_iter()
             .map(|(row, key)| (Bytes::copy_from_slice(key), rows.entry(table, row)))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl WriteBuffer {
+        /// Each map's index = its rows, each found by its own key; first <= tip
+        pub(crate) fn check(&self, label: &str) {
+            let first = self.first.map(|first| Some(first) <= self.tip.map(|tip| tip.height));
+            assert!(first.is_none_or(|ordered| ordered), "{label}: buffer first above its tip");
+            for (&table, rows) in self.schema.maps().iter().zip(&self.maps) {
+                let count = rows.keys.len(table.key);
+                let paired = rows.values.len(table.value) == count
+                    && rows.kinds.len() == count
+                    && rows.by_key.len() == count;
+                assert!(paired, "{label}: {} keys, values, kinds and index agree", table.name);
+                let indexed = (0..count).all(|row| {
+                    rows.find(table, key_at(&rows.keys, table, row), &self.hasher) == Some(row)
+                });
+                assert!(indexed, "{label}: {} every row found by its key", table.name);
+            }
+        }
     }
 }

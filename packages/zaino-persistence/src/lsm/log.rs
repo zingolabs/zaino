@@ -114,12 +114,6 @@ impl SegmentLog {
         &self.snapshot
     }
 
-    /// Committed list, ≈ data age (readers probe newest first; answers never depend on order)
-    #[cfg(test)]
-    pub(crate) fn segments(&self) -> &[SegmentMeta] {
-        &self.segments
-    }
-
     /// `rows` (`(key, value)`, `None` = tombstone) as one segment (sealed, durably linked) + every
     /// finished merge swapped in for its inputs = list for the owner's next manifest
     ///
@@ -268,20 +262,6 @@ impl SegmentLog {
         self.next = id.checked_add(1).expect("segment ids below u32::MAX");
         id
     }
-
-    /// Merges launched and not yet landed (each may have an unlisted output on disk)
-    #[cfg(test)]
-    pub(crate) fn merging(&self) -> usize {
-        self.merges.len()
-    }
-
-    /// Blocks until every running merge finishes (lands on the next `batch`)
-    #[cfg(test)]
-    pub(crate) fn settle(&self) {
-        while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
-            thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
 }
 
 /// `segments` lists [`stall_at`] of `merge`'s tier
@@ -339,5 +319,29 @@ impl fmt::Debug for SegmentLog {
             .field("segments", &self.segments.len())
             .field("merging", &self.merges.iter().map(|merge| merge.tier).collect::<Vec<_>>())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    impl SegmentLog {
+        /// Committed list, ≈ data age (readers probe newest first; answers never depend on order)
+        pub(crate) fn segments(&self) -> &[SegmentMeta] {
+            &self.segments
+        }
+
+        /// Merges launched and not yet landed (each may have an unlisted output on disk)
+        pub(crate) fn merging(&self) -> usize {
+            self.merges.len()
+        }
+
+        /// Blocks until every running merge finishes (lands on the next `batch`)
+        pub(crate) fn settle(&self) {
+            while self.merges.iter().any(|merge| !merge.thread.is_finished()) {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 }

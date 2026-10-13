@@ -30,10 +30,6 @@ use crate::{
 /// Records buffered to this before each append
 const CHUNK: usize = 1 << 20;
 
-/// O(rows) read-back of every sealed segment (RocksDB `paranoid_file_checks`, TigerBeetle
-/// `constants.verify`): tests and index test suites only
-const VERIFY: bool = cfg!(any(test, feature = "testing"));
-
 /// Merge input's next record: `(key, source, slot)`, min-first
 type Head<'a> = Reverse<(&'a [u8], usize, usize)>;
 
@@ -221,14 +217,12 @@ impl SegmentWriter {
         Ok(Some(Merged { output, cancelled }))
     }
 
-    /// `out` finished, then (under [`VERIFY`]) read back through its page checksums, then out of
-    /// page cache unless its table [`cache_writes`](crate::MapTable::cache_writes) (after the
-    /// read-back: it faults every page back in)
+    /// `out` finished, read back through its page checksums (RocksDB `paranoid_file_checks`), then
+    /// out of page cache unless its table [`cache_writes`](crate::MapTable::cache_writes) (after
+    /// the read-back: it faults every page back in)
     fn sealed(&self, out: SegmentOut) -> Result<SegmentMeta> {
         let (meta, digest, file) = out.finish()?;
-        if VERIFY {
-            self.verify(&meta, digest)?;
-        }
+        self.verify(&meta, digest)?;
         if !self.shape.cache_writes {
             file.drop_cache()?;
         }

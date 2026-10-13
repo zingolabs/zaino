@@ -210,7 +210,7 @@ mod tests {
     /// and commits the next block
     #[tokio::test]
     async fn every_crash_state_reopens_to_a_committed_prefix_that_keeps_committing() {
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(5);
         let blocks = chain.blocks(tip);
@@ -229,7 +229,7 @@ mod tests {
             running.await.expect("stops at Shutdown");
         }
 
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;

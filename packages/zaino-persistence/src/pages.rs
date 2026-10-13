@@ -449,17 +449,6 @@ impl Pages {
         &self.inner.data[range]
     }
 
-    /// `range` whose pages an earlier [`read`](Self::read) checked (caller's own record of it;
-    /// debug-asserted): no per-page bitmap walk on a hot path
-    pub(crate) fn read_unchecked(&self, range: Range<usize>) -> &[u8] {
-        debug_assert!(
-            (range.start / PAGE..range.end.div_ceil(PAGE)).all(|page| self.is_checked(page)),
-            "{} {range:?}: read_unchecked before a checked read",
-            self.inner.path.display()
-        );
-        &self.inner.data[range]
-    }
-
     /// Sealed bytes in page cache (`None` = not knowable; an empty file holds none)
     pub(crate) fn resident_bytes(&self) -> Option<u64> {
         match &self.inner.mapping {

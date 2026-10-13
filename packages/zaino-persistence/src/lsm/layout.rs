@@ -208,7 +208,7 @@ pub(crate) struct Navigation {
     records: u64,
     fences: Spill,
     summary: Vec<u8>,
-    filter: FilterWriter<Spill>,
+    filter: FilterWriter,
     previous: Vec<u8>,
 }
 

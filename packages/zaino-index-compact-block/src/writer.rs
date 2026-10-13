@@ -491,7 +491,7 @@ mod tests {
                 (s + u32::from(ds), o + u32::from(d_o), i + u32::from(di))
             })
         };
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let mut index = Running::start(open(&fs, NonZeroUsize::MIN));
         for (acked, block) in (1u64..).zip(&chain[..5]) {
             index.send(block).await;
@@ -501,7 +501,7 @@ mod tests {
         let reader = CompactBlockReader::new(index.stop().await);
         let records: Vec<_> = (0..5).map(|n| reader.block(h(n))).collect();
 
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;

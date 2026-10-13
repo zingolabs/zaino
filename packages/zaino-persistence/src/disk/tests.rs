@@ -40,6 +40,22 @@ fn open(engine: &DiskEngine) -> DiskStore {
     engine.open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX).expect("open")
 }
 
+impl DiskEngine {
+    /// Merges after `fanout` same-tier segments (small = merges in a handful of commits)
+    fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
+        Self::new(fs, LsmConfig { fanout, ..LsmConfig::default() })
+    }
+}
+
+impl DiskStore {
+    /// Blocks until every running merge finishes (lands on the next commit)
+    fn settle(&self) {
+        for log in &self.maps {
+            log.settle();
+        }
+    }
+}
+
 /// `fs`, flushing the whole device on any `sync_data` when `flush_device` (ext4 / XFS-like: commits
 /// take the `Barrier` path)
 fn sim_fs(fs: Arc<SimFs>, flush_device: bool) -> Arc<SimFs> {
@@ -571,7 +587,8 @@ fn every_crash_state_reopens_to_exactly_an_acknowledged_or_the_attempted_commit(
 }
 
 fn crash_states_reopen_to_a_commit(flush_device: bool) {
-    let fs = sim_fs(SimFs::recording(), flush_device);
+    let (fs, recording) = SimFs::recording();
+    let fs = sim_fs(fs, flush_device);
     let batches: [(u8, &[u8], u16, &[u16]); 4] =
         [(2, &[1, 2, 1], 2, &[]), (1, &[1, 3], 1, &[0]), (0, &[], 1, &[0, 1]), (3, &[4], 0, &[])];
     let mut models = vec![Model::default()];
@@ -590,7 +607,7 @@ fn crash_states_reopen_to_a_commit(flush_device: bool) {
         assert_eq!(merged, [3, 2], "merges landed: scanned 4+2+1 rows, probed 2+2");
     }
 
-    let states = fs.crash_states();
+    let states = recording.crash_states();
     assert!(states.len() > 50, "enumerated {} crash states", states.len());
     for state in states {
         let label = &format!("flush_device {flush_device}: {}", state.label);

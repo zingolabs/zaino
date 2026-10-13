@@ -18,7 +18,7 @@ mod sim;
 pub use real::RealFs;
 pub(crate) use real::{background_priority, resident_bytes};
 #[cfg(any(test, feature = "testing"))]
-pub use sim::{CrashState, SimFs};
+pub use sim::{CrashState, Recording, SimFs};
 
 /// Directory operations (Linux semantics)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {

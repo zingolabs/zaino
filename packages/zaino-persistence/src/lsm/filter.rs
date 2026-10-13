@@ -58,24 +58,6 @@ fn shard(key: &[u8], bits: u8) -> usize {
     }
 }
 
-/// Where a filter's fingerprints go as each shard closes: memory, or a segment's [`Spill`]
-pub(crate) trait Fingerprints {
-    fn put(&mut self, bytes: &[u8]) -> io::Result<()>;
-}
-
-impl Fingerprints for Vec<u8> {
-    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.extend_from_slice(bytes);
-        Ok(())
-    }
-}
-
-impl Fingerprints for Spill {
-    fn put(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.push(bytes)
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FilterError {
     #[error("{0}")]
@@ -87,17 +69,17 @@ pub(crate) enum FilterError {
 /// Streams ascending keys into the serialized filter section
 ///
 /// - only the shard being built and the table stay in memory; each closed shard's fingerprints
-///   go straight to `S`
-pub(crate) struct FilterWriter<S> {
+///   go straight to `fingerprints`
+pub(crate) struct FilterWriter {
     bits: u8,
     current: usize,
     hashes: Vec<u64>,
     table: Vec<u8>,
-    fingerprints: S,
+    fingerprints: Spill,
 }
 
-impl<S: Fingerprints> FilterWriter<S> {
-    pub(crate) fn new(records: u64, fingerprints: S) -> Self {
+impl FilterWriter {
+    pub(crate) fn new(records: u64, fingerprints: Spill) -> Self {
         Self {
             bits: shard_bits(records),
             current: 0,
@@ -120,7 +102,7 @@ impl<S: Fingerprints> FilterWriter<S> {
 
     /// Section head `shard bits u8 ‖ 2^bits × (descriptor ‖ count u32 LE)` + the fingerprints
     /// after it
-    pub(crate) fn finish(mut self) -> Result<(Vec<u8>, S), FilterError> {
+    pub(crate) fn finish(mut self) -> Result<(Vec<u8>, Spill), FilterError> {
         while self.current < 1 << self.bits {
             self.close()?;
         }
@@ -140,7 +122,7 @@ impl<S: Fingerprints> FilterWriter<S> {
             let fingerprints = built.dma_fingerprints();
             let count = u32::try_from(fingerprints.len()).expect("shard fingerprints < 2^32");
             entry[DESCRIPTOR..].copy_from_slice(&count.to_le_bytes());
-            self.fingerprints.put(fingerprints)?;
+            self.fingerprints.push(fingerprints)?;
             self.hashes.clear();
         }
         self.table.extend_from_slice(&entry);
@@ -199,7 +181,14 @@ impl FilterLayout {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
+    use crate::{
+        fs::{Fs, SimFs},
+        lsm::spill::scratch_path,
+        pages::{FileKind, PagedFile, Sealed},
+    };
 
     /// - golden inputs (persisted filter readable only while these stay byte-identical)
     /// - sharding monotone in key order; every written key found, strangers mostly refused
@@ -221,14 +210,28 @@ mod tests {
             key.extend_from_slice(&n.to_be_bytes());
             key
         };
+        // section as a segment holds it: head, then the spilled fingerprints
+        let fs = SimFs::new();
+        let dir = Path::new("/f");
+        fs.create_dir_all(dir).expect("dir");
+        let written = |keys: &[Vec<u8>], id: u32| {
+            let spill = Spill::new(fs.clone(), scratch_path(dir, id, "filter"));
+            let mut writer = FilterWriter::new(keys.len() as u64, spill);
+            for key in keys {
+                writer.push(key).expect("push");
+            }
+            let (head, fingerprints) = writer.finish().expect("build");
+            let path = dir.join(format!("{id}.seg"));
+            let mut out = PagedFile::open(fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)
+                .expect("segment");
+            out.append(&head).expect("head");
+            fingerprints.append_to(&mut out).expect("fingerprints");
+            fs.contents(&path).expect("section")
+        };
+
         let mut keys: Vec<Vec<u8>> = (0..3 * SHARD_KEYS / 2).map(key).collect();
         keys.sort_unstable();
-        let mut writer = FilterWriter::new(keys.len() as u64, Vec::new());
-        for key in &keys {
-            writer.push(key).expect("push");
-        }
-        let (head, fingerprints) = writer.finish().expect("build");
-        let section = [head, fingerprints].concat();
+        let section = written(&keys, 0);
         let read = |range: Range<usize>| &section[range];
         let layout = FilterLayout::parse(read, section.len()).expect("parses");
         assert_eq!(layout.bits, 1);
@@ -242,8 +245,7 @@ mod tests {
         let rate_ok = (false_positives as f64) < strangers as f64 * 2.0 / 256.0;
         assert!(rate_ok, "{false_positives} false positives in {strangers}");
 
-        let (head, fingerprints) = FilterWriter::new(0, Vec::new()).finish().expect("empty");
-        let empty = [head, fingerprints].concat();
+        let empty = written(&[], 1);
         let layout = FilterLayout::parse(|range| &empty[range], empty.len()).expect("empty");
         assert!(!layout.may_contain(|range| &empty[range], &key(1)));
         assert!(FilterLayout::parse(read, section.len() - 1).is_none(), "short");

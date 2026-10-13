@@ -28,6 +28,31 @@ fn block(n: u8) -> BlockChanges {
     changes
 }
 
+impl Overlay {
+    /// Per-table items = what the blocks added; tips ascending
+    pub(crate) fn check(&self, label: &str) {
+        let tips: Vec<_> = self.deltas.iter().map(|delta| delta.tip.height).collect();
+        assert!(tips.is_sorted_by(|a, b| a < b), "{label}: layer blocks ascending {tips:?}");
+        let records = appended(self.deltas.iter(), self.sequences.len());
+        for (at, (held, records)) in self.sequences.iter().zip(records).enumerate() {
+            assert_eq!(held.len(), records, "{label}: sequence {at} = its blocks' appends");
+        }
+        for (at, held) in self.maps.iter().enumerate() {
+            let mut keys: Vec<&Bytes> =
+                self.deltas.iter().flat_map(|delta| &delta.keys[at]).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let same = held.len() == keys.len() && keys.iter().all(|key| held.contains_key(*key));
+            assert!(same, "{label}: map {at} = its blocks' keys");
+            let owned = held.iter().all(|(key, (owner, _))| {
+                let wrote = self.deltas.iter().filter(|delta| delta.keys[at].contains(key));
+                wrote.map(|delta| delta.tip.height).max() == Some(*owner)
+            });
+            assert!(owned, "{label}: map {at} each entry owned by the newest block writing it");
+        }
+    }
+}
+
 /// Committed side of an `OverlayView`: a tip + a schema, nothing else read
 #[derive(Clone)]
 struct Durable {

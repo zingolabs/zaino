@@ -59,12 +59,6 @@ impl DiskEngine {
         let slots = Arc::new(Slots::new(lsm.merge_slots.get(), bytes_per_sec));
         Self { fs, fanout: lsm.fanout, slots }
     }
-
-    /// Merges after `fanout` same-tier segments (small = merges in a handful of commits)
-    #[cfg(test)]
-    pub(crate) fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
-        Self::new(fs, LsmConfig { fanout, ..LsmConfig::default() })
-    }
 }
 
 /// Index directory's writer (holds its `LOCK`)
@@ -182,11 +176,11 @@ impl PersistenceEngine for DiskEngine {
             None => {
                 for table in schema.sequences() {
                     for name in SequenceFile::names(table) {
-                        dir.ensure_empty(&name)?;
+                        dir.ensure_empty(&name, false)?;
                     }
                 }
                 for table in schema.maps() {
-                    dir.ensure_empty_dir(table.name)?;
+                    dir.ensure_empty(table.name, true)?;
                 }
                 Body::empty(schema)
             }
@@ -275,14 +269,6 @@ fn verify_committed(
 }
 
 impl DiskStore {
-    /// Blocks until every running merge finishes (lands on the next commit)
-    #[cfg(test)]
-    pub(crate) fn settle(&self) {
-        for log in &self.maps {
-            log.settle();
-        }
-    }
-
     /// WriteBuffer written + sealed, every table in parallel → (`Barrier`) one device flush →
     /// manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {

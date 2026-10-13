@@ -103,28 +103,40 @@ impl IndexDir {
         Ok(())
     }
 
-    /// Fresh-directory check: `relative` absent or empty (else uncommitted data)
-    pub(crate) fn ensure_empty(&self, relative: &str) -> Result<(), ManifestError> {
+    /// Fresh-directory check: `relative` absent, an empty file, or a directory of empty files
+    /// (crash between creating them and the first commit); else uncommitted data
+    ///
+    /// - `recursive` = nested directories checked too, else skipped
+    pub(crate) fn ensure_empty(
+        &self,
+        relative: &str,
+        recursive: bool,
+    ) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
-        if let Some(file) = self.fs.open_existing(&path)? {
-            if !file.is_empty()? {
-                return Err(unmanifested());
-            }
-        }
-        Ok(())
-    }
-
-    /// Fresh-directory check for a subdirectory: absent, or empty files only (crash between
-    /// creating them and the first commit)
-    pub(crate) fn ensure_empty_dir(&self, relative: &str) -> Result<(), ManifestError> {
-        let names = match self.fs.list(&self.path.join(relative)) {
-            Ok(names) => names,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        let names = match self.fs.open_existing(&path) {
+            Ok(None) => return Ok(()),
+            Ok(Some(file)) if file.is_empty()? => return Ok(()),
+            Ok(Some(_)) => return Err(unmanifested()),
+            Err(error) if error.kind() == io::ErrorKind::IsADirectory => self.fs.list(&path)?,
             Err(error) => return Err(error.into()),
         };
         for name in names {
-            self.ensure_empty(&format!("{relative}/{name}"))?;
+            let child = format!("{relative}/{name}");
+            if recursive {
+                self.ensure_empty(&child, true)?;
+                continue;
+            }
+            match self.fs.open_existing(&self.path.join(&child)) {
+                Ok(Some(file)) if !file.is_empty()? => {
+                    let path = self.path.join(&child).display().to_string();
+                    return Err(ManifestError::Unmanifested { path });
+                }
+                Err(error) if error.kind() != io::ErrorKind::IsADirectory => {
+                    return Err(error.into())
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -173,17 +185,12 @@ mod tests {
         assert_eq!(opened.body, None);
         let manifest_len = || fs.contents(&path.join(MANIFEST)).expect("manifest").len() as u64;
         assert_eq!(manifest_len(), manifest::FILE_LEN, "both slots exist before any commit");
-        opened.dir.ensure_empty("blocks.dat").expect("absent = empty");
         opened.dir.commit(&[1, 2, 3]).expect("commit");
 
         let locked = IndexDir::open(fs.clone(), path, IDENTITY).expect_err("locked");
         let would_block =
             matches!(&locked, ManifestError::Io(e) if e.kind() == io::ErrorKind::WouldBlock);
         assert!(would_block, "{locked}");
-
-        fs.open(&path.join("blocks.dat")).expect("file").write_all_at(&[9], 0).expect("write");
-        let written = opened.dir.ensure_empty("blocks.dat");
-        assert!(matches!(written, Err(ManifestError::Unmanifested { .. })));
         drop(opened);
 
         for (body, then) in [([1, 2, 3], [4, 5, 6]), ([4, 5, 6], [7, 8, 9])] {
@@ -200,11 +207,38 @@ mod tests {
         assert!(matches!(foreign, Err(ManifestError::Network { .. })));
     }
 
+    /// Absent, empty file, directory of empty files = empty; a written file anywhere it looks = not
+    #[test]
+    fn ensure_empty_refuses_a_written_file_at_the_depth_it_checks() {
+        let fs = SimFs::new();
+        let path = Path::new("/idx");
+        let opened = IndexDir::open(fs.clone(), path, IDENTITY).expect("open");
+        fs.create_dir_all(&path.join("map/nested")).expect("dirs");
+        fs.open(&path.join("map/empty.seg")).expect("file");
+        fs.open(&path.join("map/nested/written.seg"))
+            .expect("file")
+            .write_all_at(&[9], 0)
+            .expect("write");
+        fs.open(&path.join("written.dat")).expect("file").write_all_at(&[9], 0).expect("write");
+
+        assert!(opened.dir.ensure_empty("absent.dat", false).is_ok());
+        assert!(opened.dir.ensure_empty("map/empty.seg", false).is_ok());
+        assert!(opened.dir.ensure_empty("map", false).is_ok(), "nested directory skipped");
+        assert!(matches!(
+            opened.dir.ensure_empty("map", true),
+            Err(ManifestError::Unmanifested { path }) if path == "/idx/map/nested/written.seg"
+        ));
+        assert!(matches!(
+            opened.dir.ensure_empty("written.dat", false),
+            Err(ManifestError::Unmanifested { path }) if path == "/idx/written.dat"
+        ));
+    }
+
     /// - every crash state of a commit reopens to the old body or the new one, never neither
     /// - commit 3 = first overwrite of a used slot (commit 1's)
     #[test]
     fn a_commit_is_atomic_under_every_crash_state() {
-        let fs = SimFs::recording();
+        let (fs, recording) = SimFs::recording();
         let path = Path::new("/idx");
         let mut opened = IndexDir::open(fs.clone(), path, IDENTITY).expect("open");
         for commit in 1u8..=3 {
@@ -213,7 +247,7 @@ mod tests {
         }
         drop(opened);
 
-        let states = fs.crash_states();
+        let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let body = IndexDir::open(state.fs, path, IDENTITY)
