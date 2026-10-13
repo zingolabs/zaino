@@ -13,21 +13,20 @@ use zaino_primitives::types::{
 
 use crate::{NonDomainError, QueryError};
 
-/// One trusted validator's RPC, as every Zaino consumer asks it
+/// Trusted validator's RPC, as every Zaino consumer asks it
 ///
-/// - production = `ZcashLegacyRpcClient` or `ZcashGrpcClient` (`zainod`'s `validator_client`); a
-///   test fake answers what its test asks (`unimplemented!()` the rest)
+/// - production = `ZcashLegacyRpcClient` or `ZcashGrpcClient` (`zainod`'s `validator_client`)
+/// - test fake = answers what its test asks (`unimplemented!()` the rest)
 pub trait ChainDataSource: Send + Sync + 'static {
-    /// The block with `hash` on the validator's best chain, decoded from consensus bytes
+    /// Best-chain block `hash`, decoded from consensus bytes
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
     ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 
-    /// The validator's best-chain block at each height, decoded from consensus bytes, `heights`
-    /// order
+    /// Best-chain block per height, `heights` order, decoded from consensus bytes
     ///
-    /// - any height absent = `HeightNotFound` for it (the batch is all or nothing)
+    /// - any height absent = `HeightNotFound` for it (batch = all or nothing)
     fn get_blocks_by_height(
         &self,
         heights: &[Height],
@@ -41,7 +40,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
         heights: &[Height],
     ) -> impl Future<Output = Result<BlockLinks, NonDomainError>> + Send;
 
-    /// One poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
+    /// Poll in one round trip: `getblockchaininfo` + `getrawmempool true` + `getblockhash <h>`
     /// per `holds` height; with `metadata`, `getpeerinfo` + `getinfo` + `getdeprecationinfo` too
     ///
     /// - `Err` = no tip read (transport, or the info unparseable)
@@ -75,8 +74,8 @@ pub trait ChainDataSource: Send + Sync + 'static {
 
     /// `checkadmission`: `sendrawtransaction`'s verdict, nothing admitted or relayed
     ///
-    /// - a validator without it (zcashd, stock zebrad) = `Unsupported`, its answer (never a
-    ///   transport failure: it stays healthy)
+    /// - no such method (zcashd, stock zebrad) = `Unsupported`: an answer, never a transport
+    ///   failure (validator stays healthy)
     fn check_admission(
         &self,
         transaction: Vec<u8>,
@@ -105,7 +104,7 @@ pub struct BlockLink {
 
 pub type BlockLinks = Vec<Result<BlockLink, GetAtHeightError>>;
 
-/// One batch's answers (the tip a listing is tagged with)
+/// Poll batch answers (`info` = tip the listing is tagged with)
 ///
 /// - `held[i]` = its best-chain hash at `holds[i]`; `HeightNotFound` = above its tip; `NonDomain`
 ///   = that item unanswered (the rest of the poll stands)
@@ -172,7 +171,7 @@ pub enum CheckAdmissionError {
     Unsupported,
 }
 
-/// A verdict on the transaction, as the validator's JSON-RPC error spelled it (`code` = its own)
+/// Verdict on the transaction, as the validator's JSON-RPC error spelled it (`code` = its own)
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum SendRawTransactionError {
     #[error("malformed transaction: {0}")]
@@ -190,7 +189,7 @@ impl SendRawTransactionError {
         }
     }
 
-    /// The validator's reason, verbatim
+    /// Validator's reason, verbatim
     pub fn message(&self) -> &str {
         match self {
             Self::Malformed(message) | Self::Rejected { message, .. } => message,

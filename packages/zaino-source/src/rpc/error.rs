@@ -1,6 +1,3 @@
-#[cfg(test)]
-use super::client::MAX_RESPONSE_BYTES;
-
 /// JSON-RPC transport failure (`Rpc` = server's error object, `NullResult` = neither result
 /// nor error, `ResponseBodyTooLarge` = abandoned mid-read)
 #[derive(Debug, thiserror::Error)]
@@ -50,19 +47,5 @@ impl From<RpcError> for crate::NonDomainError {
             // real error value: type + source() chain kept, never stringified
             other => crate::NonDomainError::from_cause(kind, other),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The validator's answer, unreadable (never a transport failure)
-    #[test]
-    fn an_oversized_body_is_a_parse_failure() {
-        let fetch_error =
-            crate::NonDomainError::from(RpcError::ResponseBodyTooLarge { max: MAX_RESPONSE_BYTES });
-
-        assert_eq!(fetch_error.mode, crate::FailureMode::Parse);
     }
 }

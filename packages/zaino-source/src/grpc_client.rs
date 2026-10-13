@@ -81,7 +81,7 @@ impl ZcashGrpcClient {
         Ok(Self { rpc, connections, next: AtomicUsize::new(0), read: timeouts.read })
     }
 
-    /// The next connection in turn
+    /// Round-robin over `connections`
     fn indexer(&self) -> IndexerClient<Channel> {
         let turn = self.next.fetch_add(1, Ordering::Relaxed);
         self.connections[turn % self.connections.len()].clone()
@@ -115,9 +115,8 @@ impl ZcashGrpcClient {
                 }
                 Err(status) => return Err(QueryError::NonDomain(failed(status))),
             };
-            self.rpc.rpc.pace(block.data.len()).await;
-            emit::received(self.rpc.rpc.name(), block.data.len());
-            blocks.push(decoded(&block.data)?);
+            self.rpc.rpc.received(block.data.len()).await;
+            blocks.push(decode::served_block(&block.data)?);
         }
         Ok(())
     }
@@ -155,14 +154,6 @@ impl ZcashGrpcClient {
     }
 }
 
-/// Consensus bytes → [`Block`] (undecodable = the validator's bytes, not a transport fault)
-fn decoded<E>(raw: &[u8]) -> Result<Block, QueryError<E>>
-where
-    E: std::fmt::Debug + std::fmt::Display,
-{
-    decode::decode_block(raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
-}
-
 /// A status other than the port's own answers (`NOT_FOUND` is handled by each caller)
 fn failed(status: Status) -> NonDomainError {
     let mode = match status.code() {
@@ -192,9 +183,8 @@ impl ChainDataSource for ZcashGrpcClient {
             match self.within(indexer.get_block(request)).await? {
                 Ok(block) => {
                     let block = block.into_inner();
-                    self.rpc.rpc.pace(block.data.len()).await;
-                    emit::received(self.rpc.rpc.name(), block.data.len());
-                    decoded(&block.data)
+                    self.rpc.rpc.received(block.data.len()).await;
+                    decode::served_block(&block.data)
                 }
                 Err(status) if status.code() == Code::NotFound => {
                     Err(QueryError::Domain(GetBlockByHashError::NotFound(hash)))

@@ -41,6 +41,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-util"] }
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
+zaino-source = { workspace = true, features = ["testing"] }
 zcash_transparent.workspace = true
 rcgen.workspace = true
 

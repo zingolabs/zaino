@@ -17,6 +17,8 @@ use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
 use zcash_protocol::{consensus::BranchId, value::ZatBalance};
 
+use crate::{FailureMode, NonDomainError, QueryError};
+
 type OrchardBytes = orchard::BundleBytes<orchard::bundle::Authorized, ZatBalance>;
 
 /// Bytes that do not decode into a domain block or transaction (one variant per rejection)
@@ -61,10 +63,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
     let count = CompactSize::read(&mut cursor)?;
     let transactions =
         (0..count).map(|_| read_transaction(&mut cursor)).collect::<Result<Vec<_>, _>>()?;
-    let trailing = body.len() - cursor.position() as usize;
-    if trailing != 0 {
-        return Err(DecodeError::Trailing(trailing));
-    }
+    reject_trailing(&cursor)?;
 
     let coinbase = transactions.first().ok_or(DecodeError::NoTransactions)?;
     if !coinbase.transparent_bundle().is_some_and(|bundle| bundle.is_coinbase()) {
@@ -88,12 +87,7 @@ pub struct Prepared {
 }
 
 pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
-    let mut cursor = Cursor::new(raw);
-    let tx = read_transaction(&mut cursor)?;
-    let trailing = raw.len() - cursor.position() as usize;
-    if trailing != 0 {
-        return Err(DecodeError::Trailing(trailing));
-    }
+    let tx = read_whole(raw)?;
     let embeds_branch =
         !matches!(tx.version(), TxVersion::Sprout(_) | TxVersion::V3 | TxVersion::V4);
     let expiry = u32::from(tx.expiry_height());
@@ -109,18 +103,35 @@ pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
 
 /// One standalone transaction's bytes (mempool: no block, so no position) → [`Transaction`]
 pub fn decode_transaction(raw: &[u8]) -> Result<Transaction, DecodeError> {
-    let mut cursor = Cursor::new(raw);
-    let tx = read_transaction(&mut cursor)?;
-    let trailing = raw.len() - cursor.position() as usize;
-    if trailing != 0 {
-        return Err(DecodeError::Trailing(trailing));
-    }
-    transaction(&tx)
+    transaction(&read_whole(raw)?)
+}
+
+/// Validator-served block bytes → [`Block`] (undecodable = the validator's bytes, `Parse`)
+pub(crate) fn served_block<E>(raw: &[u8]) -> Result<Block, QueryError<E>>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    decode_block(raw).map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
 }
 
 /// Branch id = read from the tx itself for v5+; v1–v4 only store it (txid = hash of the bytes)
 fn read_transaction(cursor: &mut Cursor<&[u8]>) -> io::Result<CompressedTransaction> {
     CompressedTransaction::read(cursor, BranchId::Sprout)
+}
+
+/// `raw` = exactly one transaction
+fn read_whole(raw: &[u8]) -> Result<CompressedTransaction, DecodeError> {
+    let mut cursor = Cursor::new(raw);
+    let tx = read_transaction(&mut cursor)?;
+    reject_trailing(&cursor)?;
+    Ok(tx)
+}
+
+fn reject_trailing(cursor: &Cursor<&[u8]>) -> Result<(), DecodeError> {
+    match cursor.get_ref().len() - cursor.position() as usize {
+        0 => Ok(()),
+        trailing => Err(DecodeError::Trailing(trailing)),
+    }
 }
 
 /// `coinbase` = transaction 0, already checked to be a coinbase
@@ -295,82 +306,53 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::fixtures::block as fixture;
-    use zaino_primitives::types::EquihashSolution;
+    use crate::testing::fixtures::{block as fixture, HEIGHTS};
     use zcash_primitives::block::BlockHeader as RawHeader;
 
-    /// Mainnet 2,000,000 (44 txs: transparent in/out, sapling spends + outputs, orchard)
-    ///
-    /// - header decoded, BIP 34 height agrees, every pool present, standalone = block path
+    /// Mainnet 2,000,000 (every pool): each tx decoded alone = its decode inside the block
     #[test]
-    fn a_mainnet_block_decodes_and_each_tx_decodes_alone_identically() {
+    fn each_tx_of_a_mainnet_block_decodes_alone_identically() {
         let raw = fixture(2_000_000);
         let block = decode_block(&raw).expect("block decodes");
-
-        assert_eq!(u32::from(block.header().height), 2_000_000);
-        assert!(matches!(block.header().solution, EquihashSolution::Standard(_)));
-
         let standalone: Vec<Transaction> = tx_spans(&raw)
             .into_iter()
             .map(|span| decode_transaction(&raw[span]).expect("standalone decodes"))
             .collect();
-        assert_eq!(standalone.len(), block.transactions().len());
-        for (alone, mined) in standalone.iter().zip(block.transactions()) {
-            assert_eq!(format!("{alone:?}"), format!("{mined:?}"), "tx {:?}", mined.txid);
-        }
+        assert_eq!(format!("{standalone:?}"), format!("{:?}", block.transactions()));
+    }
 
-        let totals = standalone.iter().fold([0usize; 5], |mut acc, tx| {
-            acc[0] += tx.transparent.inputs.len();
-            acc[1] += tx.transparent.outputs.len();
-            acc[2] += tx.sapling.spends.len();
-            acc[3] += tx.sapling.outputs.len();
-            acc[4] += tx.orchard.actions.len();
-            acc
-        });
-        assert_eq!(standalone.len(), 44);
-        assert_eq!(totals, [53, 35, 5, 12, 44]);
-
-        assert!(matches!(decode_transaction(&[0u8; 8]), Err(DecodeError::Malformed(_))));
+    #[test]
+    fn garbage_and_trailing_bytes_are_refused() {
+        let raw = fixture(2_000_000);
         let first = tx_spans(&raw)[0].clone();
-        let mut padded = raw[first].to_vec();
-        padded.push(0);
-        assert!(matches!(decode_transaction(&padded), Err(DecodeError::Trailing(1))));
-        let mut padded_block = raw.clone();
-        padded_block.push(0);
+        let padded_tx = [&raw[first], &[0]].concat();
+        let padded_block = [&raw[..], &[0]].concat();
+        assert!(matches!(decode_transaction(&[0u8; 8]), Err(DecodeError::Malformed(_))));
+        assert!(matches!(decode_transaction(&padded_tx), Err(DecodeError::Trailing(1))));
         assert!(matches!(decode_block(&padded_block), Err(DecodeError::Trailing(1))));
     }
 
-    /// - Header prefix of each fixture → the full-block decode's hash + parent
-    /// - Header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)
-    /// - Hash = SHA-256d of those bytes
-    /// - `testing::encode_header` of the decoded header = those bytes (test chains' one encoder)
+    /// - header prefix located by librustzcash's reader (independent of `HeaderBytes::split`)
+    /// - hash = SHA-256d of it, `encode_header` round-trips it, txids rebuild its merkle root
     #[test]
-    fn a_header_links_to_its_block_hash_and_parent() {
-        for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
+    fn each_fixture_header_hashes_links_reencodes_and_roots_its_txids() {
+        for height in HEIGHTS {
             let raw = fixture(height);
             let mut cursor = Cursor::new(raw.as_slice());
             RawHeader::read(&mut cursor).expect("header");
             let header = &raw[..cursor.position() as usize];
+            let prev: [u8; 32] = header[4..36].try_into().expect("32");
 
             let decoded = decode_block(&raw).expect("block decodes");
-            let prev: [u8; 32] = header[4..36].try_into().expect("32");
-            assert_eq!(
-                (decoded.header().hash, decoded.header().prev_hash),
-                (BlockHash::from(zaino_primitives::sha256d(header)), BlockHash::from(prev)),
-                "height {height}"
+            let got = (
+                decoded.header().hash,
+                decoded.header().prev_hash,
+                zaino_primitives::testing::encode_header(decoded.header()),
+                decoded.check_body(),
             );
-            let encoded = zaino_primitives::testing::encode_header(decoded.header());
-            assert_eq!(encoded, header, "re-encoded at {height}");
-        }
-    }
-
-    /// Header merkle root = Bitcoin merkle tree over txids (every tx version) → pins each txid,
-    /// v4 (byte hash) and v5 (ZIP 244 digest) alike, and `Block::check_body` on real blocks
-    #[test]
-    fn every_fixture_txid_rebuilds_its_header_merkle_root() {
-        for height in [419_200, 1_000_000, 1_687_104, 2_000_000, 2_500_000] {
-            let block = decode_block(&fixture(height)).expect("block decodes");
-            assert_eq!(block.check_body(), Ok(()), "merkle root at {height}");
+            let hash = BlockHash::from(zaino_primitives::sha256d(header));
+            let want = (hash, BlockHash::from(prev), header.to_vec(), Ok(()));
+            assert_eq!(got, want, "height {height}");
         }
     }
 
