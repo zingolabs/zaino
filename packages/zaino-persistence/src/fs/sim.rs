@@ -24,7 +24,7 @@ use std::{
 
 use bytes::Bytes;
 
-use super::{Durability, FileHandle, Fs, LockGuard, Mapping};
+use super::{Durability, FileHandle, Fs, LockGuard, Mapping, Opened, ReadHandle};
 
 type FileId = usize;
 
@@ -540,34 +540,37 @@ impl Fs for SimFs {
         Ok(())
     }
 
-    fn open(&self, path: &Path) -> io::Result<Arc<dyn FileHandle>> {
+    fn open(&self, path: &Path) -> io::Result<Opened> {
         let mut inner = self.lock_inner();
         if !inner.image.is_dir(parent(path)) {
             return Err(not_found(parent(path)));
         }
-        let id = match inner.image.file(path)? {
-            Some(id) => id,
+        let (id, created) = match inner.image.file(path)? {
+            Some(id) => (id, false),
             None => {
                 inner.mutate(|| format!("create {}", path.display()))?;
                 let id = inner.image.files.len();
                 inner.image.files.push(Content::default());
                 inner.image.volatile.insert(path.to_path_buf(), Node::File(id));
-                id
+                (id, true)
             }
         };
-        Ok(Arc::new(SimFile { inner: Arc::clone(&self.inner), id, path: path.to_path_buf() }))
+        let file = SimFile { inner: Arc::clone(&self.inner), id, path: path.to_path_buf() };
+        Ok(Opened { file: Arc::new(file), created })
     }
 
-    fn open_existing(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
+    fn open_read(&self, path: &Path) -> io::Result<Option<Arc<dyn ReadHandle>>> {
         let id = self.lock_inner().image.file(path)?;
         Ok(id.map(|id| {
             Arc::new(SimFile { inner: Arc::clone(&self.inner), id, path: path.to_path_buf() })
-                as Arc<dyn FileHandle>
+                as Arc<dyn ReadHandle>
         }))
     }
 
-    fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        self.open_existing(path)
+    fn size(&self, path: &Path) -> io::Result<Option<u64>> {
+        let inner = self.lock_inner();
+        let id = inner.image.file(path)?;
+        Ok(id.map(|id| inner.image.files[id].current.len() as u64))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -621,7 +624,7 @@ impl Fs for SimFs {
         Ok(())
     }
 
-    fn durability(&self, _: &Path) -> io::Result<Durability> {
+    fn durability(&self, _: &[PathBuf]) -> io::Result<Durability> {
         Ok(match self.lock_inner().flush_device {
             true => Durability::Barrier,
             false => Durability::PerFile,
@@ -686,8 +689,8 @@ impl SimFile {
     }
 }
 
-impl FileHandle for SimFile {
-    fn len(&self) -> io::Result<u64> {
+impl ReadHandle for SimFile {
+    fn size(&self) -> io::Result<u64> {
         Ok(self.lock_inner().image.files[self.id].current.len() as u64)
     }
 
@@ -706,6 +709,18 @@ impl FileHandle for SimFile {
         Ok(())
     }
 
+    fn drop_cache(&self) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn map(&self) -> io::Result<Option<Mapping>> {
+        let inner = self.lock_inner();
+        let data = &inner.image.files[self.id].current;
+        Ok((!data.is_empty()).then(|| Mapping { bytes: Bytes::copy_from_slice(data), mmap: None }))
+    }
+}
+
+impl FileHandle for SimFile {
     fn write_all_at(&self, buf: &[u8], at: u64) -> io::Result<()> {
         self.push(Op::Write { at, bytes: buf.to_vec() })
     }
@@ -745,17 +760,6 @@ impl FileHandle for SimFile {
     fn write_behind(&self, _: Range<u64>) -> io::Result<()> {
         Ok(())
     }
-
-    fn drop_cache(&self) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn map(&self) -> io::Result<Option<Mapping>> {
-        let inner = self.lock_inner();
-        let data = &inner.image.files[self.id].current;
-        Ok((!data.is_empty())
-            .then(|| Mapping { bytes: Bytes::copy_from_slice(data), advice: None }))
-    }
 }
 
 #[cfg(test)]
@@ -771,7 +775,7 @@ mod tests {
         let (fs, recording) = SimFs::recording();
         let dir = Path::new("/d");
         fs.create_dir_all(dir).expect("mkdir");
-        let file = fs.open(&dir.join("a")).expect("create a");
+        let file = fs.open(&dir.join("a")).expect("create a").file;
         file.write_all_at(b"v1", 0).expect("write");
         file.sync_data().expect("sync a");
         fs.sync_dir(dir).expect("sync dir");
@@ -779,7 +783,7 @@ mod tests {
         fs.set_tag(1);
         file.write_all_at(b"X", 0).expect("unsynced write 0");
         file.write_all_at(b"Y", 1).expect("unsynced write 1");
-        let staged = fs.open(&dir.join("next")).expect("create next");
+        let staged = fs.open(&dir.join("next")).expect("create next").file;
         staged.write_all_at(b"v2", 0).expect("write");
         staged.sync_data().expect("sync next");
         fs.rename(&dir.join("next"), &dir.join("a")).expect("rename over a");
@@ -822,7 +826,8 @@ mod tests {
             }
             let dir = Path::new("/d");
             fs.create_dir_all(dir).expect("mkdir");
-            let (a, b) = (fs.open(&dir.join("a")).expect("a"), fs.open(&dir.join("b")).expect("b"));
+            let a = fs.open(&dir.join("a")).expect("a").file;
+            let b = fs.open(&dir.join("b")).expect("b").file;
             fs.sync_dir(dir).expect("sync dir");
             fs.sync_dir(Path::new("/")).expect("sync root");
             a.write_all_at(b"aa", 0).expect("write a");
@@ -847,7 +852,7 @@ mod tests {
                 (Some(b"aa".to_vec()), Some(b_kept)),
                 "flush_device {flush_device}"
             );
-            let mode = fs.durability(dir).expect("durability");
+            let mode = fs.durability(&[dir.join("a")]).expect("durability");
             let expected = if flush_device { Durability::Barrier } else { Durability::PerFile };
             assert_eq!(mode, expected, "the filesystem reports how commits may flush");
         }
@@ -861,7 +866,7 @@ mod tests {
         fs.fail_from(2);
         let dir = Path::new("/d");
         fs.create_dir_all(dir).expect("op 0: mkdir");
-        let file = fs.open(&dir.join("a")).expect("op 1: create");
+        let file = fs.open(&dir.join("a")).expect("op 1: create").file;
         let failed = file.write_all_at(b"v1", 0).expect_err("op 2 fails");
         assert!(
             failed.to_string().contains("injected EIO at op 2: write 2B at 0 /d/a"),
@@ -871,8 +876,9 @@ mod tests {
         assert_eq!((fs.contents(&dir.join("a")), fs.mutations()), (Some(Vec::new()), 5));
 
         let healed = fs.restarted();
-        let file = healed.open_existing(&dir.join("a")).expect("open").expect("a survives");
-        file.write_all_at(b"v1", 0).expect("healthy");
+        let reopened = healed.open(&dir.join("a")).expect("open");
+        assert!(!reopened.created, "a survives the restart");
+        reopened.file.write_all_at(b"v1", 0).expect("healthy");
         assert_eq!(healed.contents(&dir.join("a")), Some(b"v1".to_vec()));
         assert_eq!(fs.contents(&dir.join("a")), Some(Vec::new()), "original untouched");
     }

@@ -26,12 +26,12 @@ use rayon::prelude::*;
 use zaino_primitives::types::BlockRef;
 
 use crate::{
-    dir::IndexDir,
+    dir::{self, IndexDir},
     fs::{Durability, Fs},
     lsm::{
         self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
     },
-    manifest::{self, BodyReader, Committed, Identity, ManifestError},
+    manifest::{BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, PageError, Sealed},
     port::{
@@ -190,8 +190,15 @@ impl PersistenceEngine for DiskEngine {
             .zip(&body.sequences)
             .map(|(table, seals)| SequenceFile::open(self.fs.as_ref(), dir.path(), table, *seals))
             .collect::<Result<Vec<_>, _>>()?;
-        // every sequence file exists now: the probe sees each one a `Barrier` commit would write
-        let durability = self.fs.durability(dir.path())?;
+        // the files a `Barrier` commit writes back: every sequence's (each exists now)
+        let written_back: Vec<PathBuf> = schema
+            .sequences()
+            .iter()
+            .zip(&body.sequences)
+            .flat_map(|(table, seals)| sequence::files(table, seals))
+            .map(|(name, _)| dir.path().join(name))
+            .collect();
+        let durability = self.fs.durability(&written_back)?;
         tracing::info!(index = schema.kind.name(), path = %path.display(), ?durability, "Commits");
         let map_dirs: Vec<PathBuf> =
             schema.maps().iter().map(|table| dir.subdir(table.name)).collect::<io::Result<_>>()?;
@@ -227,7 +234,7 @@ impl PersistenceEngine for DiskEngine {
     /// Read only, no lock: safe beside a live writer
     fn verify(&self, path: &Path, schema: &Schema) -> Result<Verification, StoreError> {
         let fs = self.fs.as_ref();
-        verify_committed(fs, path, schema, || manifest::read(fs, path, identity(schema)))
+        verify_committed(fs, path, schema, || dir::read_committed(fs, path, identity(schema)))
     }
 }
 

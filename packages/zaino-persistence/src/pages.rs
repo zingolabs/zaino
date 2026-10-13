@@ -27,7 +27,7 @@ use std::{
 use bytes::Bytes;
 
 use crate::{
-    fs::{Access, Durability, FileHandle, Fs, Mapping},
+    fs::{Access, Durability, FileHandle, Fs, Mapping, ReadHandle},
     manifest::{BodyReader, ManifestError},
     port::Checked,
 };
@@ -102,8 +102,8 @@ fn page_intact(index: u64, bytes: &[u8], sums: &[u8], tail: u32) -> bool {
 }
 
 /// `file`'s length, refused when short of `need` (committed bytes lost)
-fn committed_len(file: &dyn FileHandle, path: &Path, need: u64) -> Result<u64, PageError> {
-    let have = file.len()?;
+fn committed_len(file: &dyn ReadHandle, path: &Path, need: u64) -> Result<u64, PageError> {
+    let have = file.size()?;
     match have < need {
         true => Err(PageError::Lost { path: path.to_owned(), have, need }),
         false => Ok(have),
@@ -239,10 +239,9 @@ impl PagedFile {
         sealed: Sealed,
         kind: FileKind,
     ) -> Result<Self, PageError> {
-        let created =
-            fs.open_existing(path)?.is_none() || fs.open_existing(&sums_path(path))?.is_none();
-        let data = fs.open(path)?;
-        let sums = fs.open(&sums_path(path))?;
+        let (data, sums) = (fs.open(path)?, fs.open(&sums_path(path))?);
+        let created = data.created || sums.created;
+        let (data, sums) = (data.file, sums.file);
         if kind == FileKind::Log && created {
             fs.sync_dir(path.parent().unwrap_or(Path::new("")))?;
         }
@@ -407,9 +406,9 @@ impl Pages {
     ) -> Result<Self, PageError> {
         let missing =
             |path: &Path| PageError::Lost { path: path.to_owned(), have: 0, need: sealed.len };
-        let data = fs.open_existing(path)?.ok_or_else(|| missing(path))?;
+        let data = fs.open_read(path)?.ok_or_else(|| missing(path))?;
         let sums_at = sums_path(path);
-        let sums = fs.open_existing(&sums_at)?.ok_or_else(|| missing(&sums_at))?;
+        let sums = fs.open_read(&sums_at)?.ok_or_else(|| missing(&sums_at))?;
         committed_len(data.as_ref(), path, sealed.len)?;
         committed_len(sums.as_ref(), &sums_at, sealed.sums_len())?;
         let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
@@ -421,8 +420,8 @@ impl Pages {
 
     fn map(
         path: &Path,
-        data: &dyn FileHandle,
-        sums: &dyn FileHandle,
+        data: &dyn ReadHandle,
+        sums: &dyn ReadHandle,
         sealed: Sealed,
         previous: Option<&Pages>,
         access: Access,
@@ -539,9 +538,7 @@ pub(crate) fn scrub(
         bad_sums: false,
         bad_pages: Vec::new(),
     };
-    let (Some(data), Some(sums)) =
-        (fs.open_read_only(&path)?, fs.open_read_only(&sums_path(&path))?)
-    else {
+    let (Some(data), Some(sums)) = (fs.open_read(&path)?, fs.open_read(&sums_path(&path))?) else {
         report.lost = true;
         return Ok(report);
     };

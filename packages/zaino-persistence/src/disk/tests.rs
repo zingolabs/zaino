@@ -976,7 +976,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
 
     let bare = SimFs::new();
     bare.create_dir_all(Path::new(ROOT)).expect("dir");
-    bare.open(&path("heights.dat")).expect("file").write_all_at(&[1], 0).expect("write");
+    bare.open(&path("heights.dat")).expect("file").file.write_all_at(&[1], 0).expect("write");
     let opened = DiskEngine::new(bare, LsmConfig::default()).open(
         Path::new(ROOT),
         &SCHEMA,
@@ -1045,7 +1045,7 @@ fn verify_names_bad_pages_and_lost_files_and_rescrubs_after_a_merge() {
     store.commit().expect("commit");
     store.apply(model.advance(1, &[2], 1, &[]));
     store.commit().expect("commit");
-    let read = || manifest::read(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
+    let read = || dir::read_committed(fs.as_ref(), &path, identity(&SCHEMA)).expect("read");
     let before = read();
     store.settle();
     store.apply(model.advance(0, &[], 0, &[]));

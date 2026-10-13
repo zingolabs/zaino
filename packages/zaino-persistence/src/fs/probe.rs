@@ -7,19 +7,23 @@
 //! - mount: ext4 with `barrier`, no `journal_async_commit`, no DAX (`/proc/fs/ext4/<dev>/options`
 //!   lists every option, superblock defaults included; mountinfo hides them); XFS on one device
 //!   (no `logdev` / `rtdev`), no DAX
-//! - every file under the directory: on its device, not DAX, no shared (reflinked) extent on XFS
-//!   (overwriting one = copy-on-write: a remap the barrier never commits)
+//! - every file the barrier covers: on the first's device, not DAX, no shared (reflinked) extent
+//!   on XFS (overwriting one = copy-on-write: a remap the barrier never commits)
 //! - re-verify on a kernel bump: `ext4_sync_file`, `xfs_file_fsync` still flush a clean file's
 //!   device; the option names above unchanged
 
-use std::{io, path::Path};
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 use rustix::fs::{AtFlags, StatxAttributes, StatxFlags, CWD};
 
 use super::Durability;
 
-pub(crate) fn durability(dir: &Path) -> Durability {
-    match barrier_safe(dir) {
+/// `files` = every file a `Barrier` commit writes back (none = `PerFile`)
+pub(crate) fn durability(files: &[PathBuf]) -> Durability {
+    match barrier_safe(files) {
         Ok(true) => Durability::Barrier,
         Ok(false) | Err(_) => Durability::PerFile,
     }
@@ -31,8 +35,9 @@ enum Filesystem {
     Xfs,
 }
 
-fn barrier_safe(dir: &Path) -> io::Result<bool> {
-    let at = stat(dir)?;
+fn barrier_safe(files: &[PathBuf]) -> io::Result<bool> {
+    let Some(first) = files.first() else { return Ok(false) };
+    let at = stat(first)?;
     let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
     let Some(mount) = at.mount.and_then(|id| mount(&mountinfo, id)) else { return Ok(false) };
     let (filesystem, options) = match mount.fstype.as_str() {
@@ -40,7 +45,7 @@ fn barrier_safe(dir: &Path) -> io::Result<bool> {
         "xfs" => (Filesystem::Xfs, mount.options),
         _ => return Ok(false),
     };
-    Ok(mount_allows(filesystem, &options) && files_in_place(dir, filesystem, at.dev)?)
+    Ok(mount_allows(filesystem, &options) && files_in_place(files, filesystem, at.dev)?)
 }
 
 /// One mountinfo record: device, filesystem type, super options (escapes undone)
@@ -146,22 +151,14 @@ fn stat(path: &Path) -> io::Result<Stat> {
     })
 }
 
-/// Every entry under `dir` on device `dev`, none DAX, no file sharing an extent (XFS)
-fn files_in_place(dir: &Path, filesystem: Filesystem, dev: (u32, u32)) -> io::Result<bool> {
-    for entry in std::fs::read_dir(dir)? {
-        let path = entry?.path();
-        let at = stat(&path)?;
+/// Every one of `files` on device `dev`, none DAX, none sharing an extent (XFS)
+fn files_in_place(files: &[PathBuf], filesystem: Filesystem, dev: (u32, u32)) -> io::Result<bool> {
+    for path in files {
+        let at = stat(path)?;
         if at.dev != dev || at.dax {
             return Ok(false);
         }
-        let kind = std::fs::symlink_metadata(&path)?.file_type();
-        let in_place = match (kind.is_dir(), kind.is_file(), filesystem) {
-            (true, _, _) => files_in_place(&path, filesystem, dev)?,
-            (_, true, Filesystem::Xfs) => !shares_extents(&std::fs::File::open(&path)?)?,
-            (_, true, Filesystem::Ext4) => true,
-            _ => false,
-        };
-        if !in_place {
+        if filesystem == Filesystem::Xfs && shares_extents(&std::fs::File::open(path)?)? {
             return Ok(false);
         }
     }
@@ -295,10 +292,13 @@ mod tests {
         }
     }
 
-    /// This host's own temp dir: probing never fails loudly, whatever the filesystem
+    /// A file in this host's temp dir: probing never fails loudly, whatever the filesystem; no
+    /// files = nothing a barrier covers
     #[test]
-    fn probing_a_real_directory_answers() {
-        let dir = std::env::temp_dir();
-        assert!(matches!(durability(&dir), Durability::Barrier | Durability::PerFile));
+    fn probing_real_files_answers() {
+        let file = tempfile::NamedTempFile::new().expect("temp file");
+        let probed = durability(&[file.path().to_path_buf()]);
+        assert!(matches!(probed, Durability::Barrier | Durability::PerFile));
+        assert_eq!(durability(&[]), Durability::PerFile);
     }
 }

@@ -7,12 +7,12 @@ use std::{
 };
 
 use crate::{
-    fs::{FileHandle, Fs, LockGuard},
+    fs::{read_all, FileHandle, Fs, LockGuard, ReadHandle},
     manifest::{self, Identity, ManifestError},
 };
 
 const LOCK: &str = "LOCK";
-pub(crate) const MANIFEST: &str = "MANIFEST";
+const MANIFEST: &str = "MANIFEST";
 
 /// Manifest mid-creation: zeroed + synced here, then renamed to [`MANIFEST`] whole
 const CREATING: &str = "MANIFEST.creating";
@@ -55,13 +55,13 @@ impl IndexDir {
         }
         let lock = fs.lock(&path.join(LOCK))?;
 
-        if fs.open_existing(&path.join(CREATING))?.is_some() {
+        if fs.size(&path.join(CREATING))?.is_some() {
             fs.remove(&path.join(CREATING))?;
         }
-        let manifest = match fs.open_existing(&path.join(MANIFEST))? {
-            Some(manifest) => manifest,
+        let manifest = match fs.size(&path.join(MANIFEST))? {
+            Some(_) => fs.open(&path.join(MANIFEST))?.file,
             None => {
-                let creating = fs.open(&path.join(CREATING))?;
+                let creating = fs.open(&path.join(CREATING))?.file;
                 creating.write_all_at(&vec![0; manifest::FILE_LEN as usize], 0)?;
                 creating.sync_data()?;
                 fs.rename(&path.join(CREATING), &path.join(MANIFEST))?;
@@ -70,9 +70,8 @@ impl IndexDir {
         };
         fs.sync_dir(path)?;
 
-        let bytes = manifest.read_all()?;
-        let committed = manifest::latest(identity, &bytes)?;
-        let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body.to_vec())));
+        let committed = committed_body(manifest.as_ref(), identity)?;
+        let (seq, body) = committed.map_or((0, None), |(seq, body)| (seq, Some(body)));
         let dir = Self { fs, path: path.to_path_buf(), identity, manifest, seq, _lock: lock };
         Ok(Opened { dir, body })
     }
@@ -114,9 +113,8 @@ impl IndexDir {
     ) -> Result<(), ManifestError> {
         let path = self.path.join(relative);
         let unmanifested = || ManifestError::Unmanifested { path: path.display().to_string() };
-        let names = match self.fs.open_existing(&path) {
-            Ok(None) => return Ok(()),
-            Ok(Some(file)) if file.is_empty()? => return Ok(()),
+        let names = match self.fs.size(&path) {
+            Ok(None | Some(0)) => return Ok(()),
             Ok(Some(_)) => return Err(unmanifested()),
             Err(error) if error.kind() == io::ErrorKind::IsADirectory => self.fs.list(&path)?,
             Err(error) => return Err(error.into()),
@@ -127,8 +125,8 @@ impl IndexDir {
                 self.ensure_empty(&child, true)?;
                 continue;
             }
-            match self.fs.open_existing(&self.path.join(&child)) {
-                Ok(Some(file)) if !file.is_empty()? => {
+            match self.fs.size(&self.path.join(&child)) {
+                Ok(Some(len)) if len > 0 => {
                     let path = self.path.join(&child).display().to_string();
                     return Err(ManifestError::Unmanifested { path });
                 }
@@ -140,6 +138,29 @@ impl IndexDir {
         }
         Ok(())
     }
+}
+
+/// `path`'s committed body, read offline (read only, no lock: safe beside a live writer)
+///
+/// - `None` = never committed; manifest not decoding as `identity` = `InvalidData`
+pub(crate) fn read_committed(
+    fs: &dyn Fs,
+    path: &Path,
+    identity: Identity,
+) -> io::Result<Option<Vec<u8>>> {
+    let Some(file) = fs.open_read(&path.join(MANIFEST))? else { return Ok(None) };
+    let committed = committed_body(file.as_ref(), identity);
+    let committed = committed.map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok(committed.map(|(_, body)| body))
+}
+
+/// `(sequence number, body)` of the manifest's last commit; `None` = never committed
+fn committed_body(
+    manifest: &dyn ReadHandle,
+    identity: Identity,
+) -> Result<Option<(u64, Vec<u8>)>, ManifestError> {
+    let bytes = read_all(manifest)?;
+    Ok(manifest::latest(identity, &bytes)?.map(|(seq, body)| (seq, body.to_vec())))
 }
 
 /// Bytes of every file under `path`, subdirectories included (plain `stat`s, no lock)
@@ -215,11 +236,10 @@ mod tests {
         let opened = IndexDir::open(fs.clone(), path, IDENTITY).expect("open");
         fs.create_dir_all(&path.join("map/nested")).expect("dirs");
         fs.open(&path.join("map/empty.seg")).expect("file");
-        fs.open(&path.join("map/nested/written.seg"))
-            .expect("file")
-            .write_all_at(&[9], 0)
-            .expect("write");
-        fs.open(&path.join("written.dat")).expect("file").write_all_at(&[9], 0).expect("write");
+        let nested = fs.open(&path.join("map/nested/written.seg")).expect("file").file;
+        nested.write_all_at(&[9], 0).expect("write");
+        let top = fs.open(&path.join("written.dat")).expect("file").file;
+        top.write_all_at(&[9], 0).expect("write");
 
         assert!(opened.dir.ensure_empty("absent.dat", false).is_ok());
         assert!(opened.dir.ensure_empty("map/empty.seg", false).is_ok());
@@ -268,7 +288,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let path = root.path().join("idx");
         let fs = crate::fs::RealFs::shared();
-        let read = || manifest::read(fs.as_ref(), &path, IDENTITY);
+        let read = || read_committed(fs.as_ref(), &path, IDENTITY);
         assert_eq!(read().expect("no directory"), None);
 
         let mut opened = IndexDir::open(fs.clone(), &path, IDENTITY).expect("open").dir;

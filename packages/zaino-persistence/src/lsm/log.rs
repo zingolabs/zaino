@@ -218,7 +218,7 @@ impl SegmentLog {
                 let span = tracing::Span::current();
                 move || {
                     let _owner = span.enter();
-                    crate::fs::background_priority();
+                    crate::thread::background_priority();
                     let Some(slot) = slots.acquire(tier, &cancel) else {
                         return Ok(None);
                     };

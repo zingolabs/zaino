@@ -65,7 +65,7 @@ impl Spill {
 
     fn write_out(&mut self) -> io::Result<()> {
         if self.file.is_none() {
-            let file = self.fs.open(&self.path)?;
+            let file = self.fs.open(&self.path)?.file;
             // scratch name reusable after a crash (open removes it; belt and braces)
             file.set_len(0)?;
             self.file = Some((file, 0));

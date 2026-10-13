@@ -5,14 +5,14 @@ use std::{
     io,
     ops::Range,
     os::unix::fs::FileExt,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use bytes::Bytes;
 use memmap2::Mmap;
 
-use super::{Durability, FileHandle, Fs, LockGuard, Mapping};
+use super::{Durability, FileHandle, Fs, LockGuard, Mapping, Opened, ReadHandle};
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RealFs;
@@ -23,10 +23,14 @@ impl RealFs {
     }
 }
 
-fn existing(opened: io::Result<File>) -> io::Result<Option<Arc<dyn FileHandle>>> {
-    match opened {
-        Ok(file) => Ok(Some(Arc::new(RealFile(file)))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+/// Read + write, created if absent (`true` = by this call), never truncated
+fn open_or_create(path: &Path) -> io::Result<(File, bool)> {
+    let options = || OpenOptions::new().read(true).write(true).clone();
+    match options().create_new(true).open(path) {
+        Ok(file) => Ok((file, true)),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+            Ok((options().open(path)?, false))
+        }
         Err(error) => Err(error),
     }
 }
@@ -36,18 +40,26 @@ impl Fs for RealFs {
         std::fs::create_dir_all(dir)
     }
 
-    fn open(&self, path: &Path) -> io::Result<Arc<dyn FileHandle>> {
-        let file =
-            OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
-        Ok(Arc::new(RealFile(file)))
+    fn open(&self, path: &Path) -> io::Result<Opened> {
+        let (file, created) = open_or_create(path)?;
+        Ok(Opened { file: Arc::new(RealFile(file)), created })
     }
 
-    fn open_existing(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        existing(OpenOptions::new().read(true).write(true).open(path))
+    fn open_read(&self, path: &Path) -> io::Result<Option<Arc<dyn ReadHandle>>> {
+        match File::open(path) {
+            Ok(file) => Ok(Some(Arc::new(RealFile(file)))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
-    fn open_read_only(&self, path: &Path) -> io::Result<Option<Arc<dyn FileHandle>>> {
-        existing(OpenOptions::new().read(true).open(path))
+    fn size(&self, path: &Path) -> io::Result<Option<u64>> {
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_dir() => Err(io::ErrorKind::IsADirectory.into()),
+            Ok(meta) => Ok(Some(meta.len())),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -78,19 +90,18 @@ impl Fs for RealFs {
     }
 
     #[cfg(target_os = "linux")]
-    fn durability(&self, dir: &Path) -> io::Result<Durability> {
-        Ok(super::probe::durability(dir))
+    fn durability(&self, files: &[PathBuf]) -> io::Result<Durability> {
+        Ok(super::probe::durability(files))
     }
 
     /// No probe off Linux (no `sync_file_range`)
     #[cfg(not(target_os = "linux"))]
-    fn durability(&self, _: &Path) -> io::Result<Durability> {
+    fn durability(&self, _: &[PathBuf]) -> io::Result<Durability> {
         Ok(Durability::PerFile)
     }
 
     fn lock(&self, path: &Path) -> io::Result<LockGuard> {
-        let file =
-            OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
+        let (file, _) = open_or_create(path)?;
         match file.try_lock() {
             Ok(()) => Ok(LockGuard { _held: Box::new(file) }),
             Err(std::fs::TryLockError::WouldBlock) => Err(io::Error::new(
@@ -105,8 +116,8 @@ impl Fs for RealFs {
 #[derive(Debug)]
 struct RealFile(File);
 
-impl FileHandle for RealFile {
-    fn len(&self) -> io::Result<u64> {
+impl ReadHandle for RealFile {
+    fn size(&self) -> io::Result<u64> {
         Ok(self.0.metadata()?.len())
     }
 
@@ -114,6 +125,20 @@ impl FileHandle for RealFile {
         self.0.read_exact_at(buf, at)
     }
 
+    fn drop_cache(&self) -> io::Result<()> {
+        Ok(rustix::fs::fadvise(&self.0, 0, None, rustix::fs::Advice::DontNeed)?)
+    }
+
+    fn map(&self) -> io::Result<Option<Mapping>> {
+        if self.size()? == 0 {
+            return Ok(None);
+        }
+        let map = Arc::new(map_read_only(&self.0)?);
+        Ok(Some(Mapping { bytes: Bytes::from_owner(Shared(Arc::clone(&map))), mmap: Some(map) }))
+    }
+}
+
+impl FileHandle for RealFile {
     fn write_all_at(&self, buf: &[u8], at: u64) -> io::Result<()> {
         self.0.write_all_at(buf, at)
     }
@@ -133,25 +158,13 @@ impl FileHandle for RealFile {
     fn write_behind(&self, range: Range<u64>) -> io::Result<()> {
         start_writeback(&self.0, range)
     }
-
-    fn drop_cache(&self) -> io::Result<()> {
-        Ok(rustix::fs::fadvise(&self.0, 0, None, rustix::fs::Advice::DontNeed)?)
-    }
-
-    fn map(&self) -> io::Result<Option<Mapping>> {
-        if self.len()? == 0 {
-            return Ok(None);
-        }
-        let map = Arc::new(map_read_only(&self.0)?);
-        Ok(Some(Mapping { bytes: Bytes::from_owner(Shared(Arc::clone(&map))), advice: Some(map) }))
-    }
 }
 
 /// Bytes of `map[..len]` in page cache (`mincore`; sound: `map` = a live mapping, `len` <= its
 /// length, the vector one byte per page)
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
-pub(crate) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
+pub(super) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
     assert!(len <= map.len(), "residency of {len} bytes past a {}-byte mapping", map.len());
     if len == 0 {
         return Ok(0);
@@ -170,7 +183,7 @@ pub(crate) fn resident_bytes(map: &Mmap, len: usize) -> io::Result<u64> {
 
 /// No `mincore` reading off Linux
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn resident_bytes(_: &Mmap, _: usize) -> io::Result<u64> {
+pub(super) fn resident_bytes(_: &Mmap, _: usize) -> io::Result<u64> {
     Err(io::ErrorKind::Unsupported.into())
 }
 
@@ -237,30 +250,3 @@ fn write_back(file: &File) -> io::Result<()> {
 fn write_back(file: &File) -> io::Result<()> {
     file.sync_data()
 }
-
-/// Calling thread → background priority: CPU nice 10, I/O best-effort level 7 (merges yield disk
-/// + cores to serving reads)
-///
-/// - hint: failures ignored; I/O class honoured by BFQ / mq-deadline only (`none`, common on NVMe,
-///   ignores it)
-/// - sound: plain syscalls on the calling thread's own id, no memory passed
-#[cfg(target_os = "linux")]
-#[allow(unsafe_code)]
-pub(crate) fn background_priority() {
-    const IOPRIO_WHO_PROCESS: libc::c_int = 1;
-    const IOPRIO_CLASS_BE: libc::c_int = 2;
-    const IOPRIO_CLASS_SHIFT: libc::c_int = 13;
-    const LOWEST_BE_LEVEL: libc::c_int = 7;
-    const NICE: libc::c_int = 10;
-
-    unsafe {
-        let thread = libc::gettid();
-        let io_priority = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | LOWEST_BE_LEVEL;
-        libc::syscall(libc::SYS_ioprio_set, IOPRIO_WHO_PROCESS, thread, io_priority);
-        libc::setpriority(libc::PRIO_PROCESS as _, thread as _, NICE);
-    }
-}
-
-/// No thread priorities off Linux
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn background_priority() {}

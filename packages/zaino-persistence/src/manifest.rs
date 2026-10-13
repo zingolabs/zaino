@@ -200,22 +200,6 @@ pub(crate) fn latest(
     }
 }
 
-/// `dir`'s committed body, read offline (read only, no lock)
-///
-/// - `None` = never committed; manifest not decoding as `identity` = `InvalidData`
-pub(crate) fn read(
-    fs: &dyn crate::fs::Fs,
-    dir: &std::path::Path,
-    identity: Identity,
-) -> std::io::Result<Option<Vec<u8>>> {
-    let Some(file) = fs.open_read_only(&dir.join(crate::dir::MANIFEST))? else {
-        return Ok(None);
-    };
-    latest(identity, &file.read_all()?)
-        .map(|committed| committed.map(|(_, body)| body.to_vec()))
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
-}
-
 /// Committed tip (`None` = nothing committed): every body's first 40 bytes
 ///
 /// - block count from genesis ‖ tip hash (zeros when empty)

@@ -169,7 +169,8 @@ fn retain_removes_strays_and_open_checks_lengths_leaving_pages_to_the_first_touc
     let orphan = writer.write(1, borrowed(&[scanned_row(3, 0)])).expect("write").expect("rows");
     // merge cut short by a crash leaves its scratch, even under a listed segment's id
     for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
-        fs.open(&dir.join(leftover)).expect("scratch").write_all_at(&[1; 9], 0).expect("write");
+        let scratch = fs.open(&dir.join(leftover)).expect("scratch").file;
+        scratch.write_all_at(&[1; 9], 0).expect("write");
     }
     writer.dir().sync().expect("sync");
 
