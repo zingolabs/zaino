@@ -20,7 +20,7 @@ use zaino_nfs::{Indexed, Published};
 use zaino_primitives::types::ReorgDepth;
 
 use crate::compose::{check, compose};
-use crate::feed::Feed;
+use crate::feed::{nonfinalized_txids, Feed};
 use crate::report::transitions;
 use crate::snapshot::Snapshot;
 
@@ -80,7 +80,8 @@ impl<V> Core<V> {
     ) -> Self {
         let wake = watch::Sender::new(());
         let tips = compose(false, indexed.as_deref(), &view, depth);
-        let feed = Feed::open(tips.served, view.arrivals(None), wake.subscribe());
+        let mined = nonfinalized_txids(indexed.as_deref());
+        let feed = Feed::open(tips.served, view.arrivals(None), mined, wake.subscribe());
         let first = Snapshot { seq: 0, tips, indexed, view, feed };
         let current = Arc::new(ArcSwap::from_pointee(first));
         Self { depth, current, changed: watch::Sender::new(()), wake }
@@ -96,7 +97,10 @@ impl<V> Core<V> {
         let tips = compose(prev.tips.synced, indexed.as_deref(), &view, self.depth);
         let moved = tips.served != prev.tips.served;
         let feed = match moved {
-            true => Feed::open(tips.served, view.arrivals(None), self.wake.subscribe()),
+            true => {
+                let mined = nonfinalized_txids(indexed.as_deref());
+                Feed::open(tips.served, view.arrivals(None), mined, self.wake.subscribe())
+            }
             false => {
                 view.arrivals(Some(&prev.view))
                     .into_iter()

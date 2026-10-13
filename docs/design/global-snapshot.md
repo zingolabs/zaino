@@ -208,6 +208,20 @@ let snap = self.routes.snapshots.load();
 
 - Stream end ⇒ next load's `GetLatestBlock` ≥ new tip (store before seal: G5); `Unavailable` →
   `UNAVAILABLE`, today's messages
+
+`GetMempoolStream` contract (the proto states only "closes when a new block is mined"; this is
+lightwalletd's behaviour, made exact):
+
+| ID | Rule | Holds by |
+| --- | ------------------------------------------------------------------------------------- | ------------- |
+| S1 | bound to `tips.served` (hash, not height); ends `OK` once it moves, extend or reorg | G5 |
+| S2 | never a tx of served's own chain, opening or append (the view's listings lag a block) | G10 |
+| S3 | each txid ≤ once per stream; bytes = the validator's raw tx (= `GetTransaction`'s) | G6 |
+| S4 | every message `height: 0` (the proto's "latest block height" = librustzcash#1484) | `unmined()` |
+
+- Out of scope: arrival latency; removal mid-epoch (ZIP 401 eviction shows as absence from the
+  next epoch; expiry only at a tip move)
+- S2 over `served_nonfinalized()` only (a final block's txs = a listing ≥ depth blocks stale)
 - Behaviour change: closes when the served tip moves (after the fold), not the best; during sync
   at each served move (not ready: no traffic routed)
 
@@ -283,10 +297,11 @@ histograms and `zaino_build_info` unchanged:
 | G7 | `at(h)` Some ⇔ h ∈ graph ∪ {root}; `at(h)` = folding genesis..h along h's branch (N6 + side) | NFS model, driver test |
 | G8 | every graph node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check`; header model |
 | G9 | `/statusz`, `/readyz`, gauges = f(one snapshot, counters, owners' live tables) | types; golden `Report` test |
+| G10 | an epoch carries no txid of a block in `served_nonfinalized()` (opening or append) | `compose::check`; model tails |
 
 | Test | Scenario → assertions |
 | ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| publisher model | random header publishes, lagging `Indexed` (reorg, retreat, root moves), folds + arrivals → G2–G6; tails see each tx once per epoch, end iff served moved |
+| publisher model | random header publishes, lagging `Indexed` (reorg, retreat, root moves), folds + arrivals, blocks mining held txs → G2–G6, G10; tails see each unmined tx once per epoch, end iff served moved |
 | NFS model | oracle extended to `at(h)` for every node, side included (G7); fire drill per new `check()` assertion (G8) |
 | header model | `forks` / `branch` / `holds` vs the tree oracle |
 | grpc | one `Snapshots::fixed`: `GetLatestBlock`, `GetBlockRange`, `GetTreeState`, `GetLightdInfo.blockHeight` agree |

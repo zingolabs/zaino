@@ -53,7 +53,11 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
   or unknown. `At::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.
+- `served_nonfinalized()` = the full blocks `served` extends above the root, served first (its own
+  path only, side nodes never): what the mempool stream excludes.
 - Feature `testing`: `Indexed::fixed(chain, tip, params, [(kind, view)])`;
+  `Indexed::fixed_above(chain, root, &nonfinalized_blocks, params, [(kind, view)])` (served =
+  the last);
   `ChainParams::of(&mock_chain, tip)`.
 
 ## Observability

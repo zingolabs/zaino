@@ -1,4 +1,4 @@
-//! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6
+//! [`compose`]: one publish's tips from that publish's inputs alone; [`check`]: G2–G6, G10
 
 use zaino_chainview::ChainViewSnapshot;
 use zaino_header_chain::VerifiedChain;
@@ -6,6 +6,7 @@ use zaino_nfs::Indexed;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_traffic::Health;
 
+use crate::feed::nonfinalized_txids;
 use crate::snapshot::{Snapshot, Tips};
 
 /// Pure (no I/O, no clock); `was_synced` = the last publish's (hysteresis)
@@ -73,6 +74,10 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
     let gate = next.mempool().is_ok();
     let reads = mempool_read(next);
     assert_eq!(gate, reads, "G6: mempool() Ok iff a `Live` holder of the tip or a peer quorum");
+
+    let mined = nonfinalized_txids(next.indexed.as_deref());
+    let carried = mined.iter().find(|txid| next.feed.carries(txid));
+    assert_eq!(carried, None, "G10: the epoch carries a tx of the served tip's own chain");
 }
 
 /// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the

@@ -74,6 +74,11 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
   new tip (`GetLatestBlock` ≥ it).
 - Arrivals = `ChainViewSnapshot::arrivals` between two consecutive publishes (an `imbl` diff),
   appended to the open epoch; an epoch never carries a transaction twice nor un-sends one.
+- Never a transaction of the served tip's own chain: the opening and every arrival skip the
+  txids of `Indexed::served_nonfinalized()`, collected once per epoch (the chain view's listings
+  trail a block by up to a poll, so its mempool still lists what the new tip mined).
+- Contract S1–S4 (bound to the tip hash, never mined, once per stream, `height: 0`):
+  `docs/design/global-snapshot.md` §4.
 
 ## Reporting
 
@@ -109,7 +114,8 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 `compose::check(prev, next, depth)` runs after every publish in debug builds: G2 (seq + 1), G3
 (tips = this publish's inputs), G4 (synced hysteresis), G5 (epoch key = served, rotates iff it
 moved, old sealed, stored open), G6 (`mempool()` gate = a `Live` holder in `held_by`, or a peer
-quorum reading: `ChainViewSnapshot::peers_quorate`).
+quorum reading: `ChainViewSnapshot::peers_quorate`), G10 (the epoch carries no txid of
+`served_nonfinalized()`).
 
 - `model.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails

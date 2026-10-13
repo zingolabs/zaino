@@ -1,5 +1,6 @@
 //! The run loop over real watches, the `/statusz` + `/metrics` goldens, `check()`'s fire drills
 
+use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
@@ -317,13 +318,15 @@ fn fired(run: impl FnOnce()) -> Option<String> {
     message.or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
 }
 
-/// A 0..=6 + S5 off A4, both validators hold A6: seq 0 serves A3 (not synced), seq 1 serves
-/// A6 (synced, epoch rotated): `check` passes; then one planted bug per assertion, each firing
-/// its own (G6 = the same view as G3's `held_by`: no separate plant)
+/// A 0..=6 (A6 mines tx M) + S5 off A4, both validators hold A6: seq 0 serves A3 (not synced),
+/// seq 1 serves A6 (synced, epoch rotated): `check` passes; then one planted bug per assertion,
+/// each firing its own (G6 = the same view as G3's `held_by`: no separate plant)
 #[test]
 fn every_check_fires_on_its_planted_bug() {
     let mut builder = MockChain::regtest();
-    let a6 = builder.mine_empty(6);
+    builder.mine_empty(5);
+    let mined = TransactionId::from([0x66; 32]);
+    let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
     let a = builder.blocks(a6);
     let s5 = builder.fork(h(4)).mine_empty(1).tip();
     let chain = Arc::new(builder.verified(a6));
@@ -351,8 +354,9 @@ fn every_check_fires_on_its_planted_bug() {
         view: Arc::clone(&s.view),
         feed: s.feed.clone(),
     };
-    let fresh =
-        |key: BlockRef| Feed::open(Some(key), Vec::new(), watch::Sender::new(()).subscribe());
+    let fresh = |key: BlockRef| {
+        Feed::open(Some(key), Vec::new(), HashSet::new(), watch::Sender::new(()).subscribe())
+    };
     let serving = |block: BlockRef, synced: bool| {
         let mut planted = copy(&next);
         planted.indexed = served(block);
@@ -417,6 +421,23 @@ fn every_check_fires_on_its_planted_bug() {
                 let feed = fresh(at(&a[6]));
                 feed.seal();
                 (copy(&prev), Snapshot { feed, ..copy(&next) })
+            }),
+        ),
+        (
+            "G10: the epoch carries a tx of the served tip's own chain",
+            Box::new(|| {
+                let none: [(IndexKind, DiskView); 0] = [];
+                let indexed =
+                    Indexed::fixed_above(Arc::clone(&chain), at(&a[5]), &a[6..], params, none);
+                let stale = ChainViewSnapshot::fixed(
+                    Some(Arc::clone(&chain)),
+                    EndpointSet::at([0, 1]),
+                    &["10.0.0.1:8232", "10.0.0.2:8232"],
+                    &[(mined, Bytes::from_static(&[0x66]))],
+                );
+                let wake = watch::Sender::new(()).subscribe();
+                let feed = Feed::open(Some(at(&a[6])), stale.arrivals(None), HashSet::new(), wake);
+                (copy(&prev), Snapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&next) })
             }),
         ),
     ];

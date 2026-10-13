@@ -44,7 +44,6 @@ impl<F> Graph<F> {
         Self { nodes: imbl::HashMap::new() }
     }
 
-    #[cfg(test)]
     pub(crate) fn get(&self, hash: &BlockHash) -> Option<&Arc<Node<F>>> {
         self.nodes.get(hash)
     }

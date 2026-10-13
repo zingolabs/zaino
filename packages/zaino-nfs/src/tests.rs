@@ -167,6 +167,14 @@ fn verify(
     if let Some(lowest) = lowest.map(|at| at.height).min() {
         assert_eq!(lowest, tip.height, "{context}: N4 the tip = the lowest view served");
     }
+    let above_root = snapshot.root().map_or(0, |root| u32::from(root.height) as usize + 1);
+    let path = blocks.blocks(tip);
+    let expected: Vec<BlockHash> =
+        path[above_root..].iter().rev().map(|b| b.header().hash).collect();
+    let nonfinalized: Vec<BlockHash> =
+        snapshot.served_nonfinalized().map(|b| b.header().hash).collect();
+    let message = "served_nonfinalized = served's own path above the root";
+    assert_eq!(nonfinalized, expected, "{context}: {message}");
 
     for hash in mined {
         let Some(at) = snapshot.at(hash) else {

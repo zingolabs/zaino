@@ -9,6 +9,7 @@
 //!
 //! - Key = the served tip (G5): a stream's end ⇒ the next load serves the new tip
 //! - Arrivals = the chain view's `arrivals` between two publishes (no per-tx pass)
+//! - Never carries a tx of the key's own chain (G10: the view's listings lag a block)
 //! - Never un-sends within an epoch (a tx gone mid-epoch stays in its log)
 
 use std::collections::HashSet;
@@ -17,7 +18,14 @@ use std::sync::{Arc, OnceLock, RwLock};
 use bytes::Bytes;
 use tokio::sync::watch;
 use zaino_chainview::MempoolEntry;
+use zaino_nfs::Indexed;
 use zaino_primitives::types::{BlockRef, TransactionId};
+
+/// Txids of the nonfinalized blocks the served tip extends (finalized: no live listing holds them)
+pub(crate) fn nonfinalized_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TransactionId> {
+    let blocks = indexed.into_iter().flat_map(Indexed::served_nonfinalized);
+    blocks.flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
+}
 
 /// One transaction in an epoch's log, with the serving layer's wire form once rendered
 #[derive(Debug)]
@@ -37,6 +45,7 @@ impl Logged {
 struct Epoch {
     opening: Vec<MempoolEntry>,
     opening_rendered: OnceLock<Bytes>,
+    mined: HashSet<TransactionId>,
     log: RwLock<Log>,
 }
 
@@ -57,14 +66,18 @@ pub(crate) struct Feed {
 }
 
 impl Feed {
+    /// `mined` = [`nonfinalized_txids`] at `key`: dropped from `mempool` and from every append
     pub(crate) fn open(
         key: Option<BlockRef>,
-        opening: Vec<MempoolEntry>,
+        mempool: Vec<MempoolEntry>,
+        mined: HashSet<TransactionId>,
         wake: watch::Receiver<()>,
     ) -> Self {
+        let opening: Vec<MempoolEntry> =
+            mempool.into_iter().filter(|entry| !mined.contains(&entry.txid)).collect();
         let sent = opening.iter().map(|entry| entry.txid).collect();
         let log = RwLock::new(Log { sent, ..Log::default() });
-        let epoch = Epoch { opening, opening_rendered: OnceLock::new(), log };
+        let epoch = Epoch { opening, opening_rendered: OnceLock::new(), mined, log };
         Self { key, epoch: Arc::new(epoch), wake }
     }
 
@@ -72,13 +85,18 @@ impl Feed {
         self.key
     }
 
-    /// Appended unless sealed or already carried
+    /// Appended unless sealed, mined under the key, or already carried
     pub(crate) fn append(&self, entry: MempoolEntry) {
         let mut log = self.epoch.log.write().expect("feed log lock poisoned");
-        if log.sealed || !log.sent.insert(entry.txid) {
+        if log.sealed || self.epoch.mined.contains(&entry.txid) || !log.sent.insert(entry.txid) {
             return;
         }
         log.entries.push(Arc::new(Logged { entry, rendered: OnceLock::new() }));
+    }
+
+    /// Opening or appended
+    pub(crate) fn carries(&self, txid: &TransactionId) -> bool {
+        self.epoch.log.read().expect("feed log lock poisoned").sent.contains(txid)
     }
 
     pub(crate) fn seal(&self) {

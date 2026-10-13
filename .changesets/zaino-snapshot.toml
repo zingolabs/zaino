@@ -65,3 +65,15 @@ description = """
 gate against both. `mempool_transactions{state}` and `/statusz`'s mempool counts gain `quorum` \
 (held by the peer quorum, no trusted listing), no longer counted as `ours_unverified`.
 """
+
+[[changes]]
+crate = "zaino-snapshot"
+kind = "fix"
+section = "fixed"
+description = """
+`GetMempoolStream` no longer sends transactions the served tip already mined. A new epoch \
+opened from the chain view's mempool, whose listings trail a block by up to a poll, so a stream \
+opened just after a block replayed that block's transactions as unmined until the next one \
+(seen on mainnet: 14 of 17 in one opening). Each epoch now skips the txids of \
+`served_nonfinalized()`, in its opening and every arrival; G10 checks it after every publish.
+"""

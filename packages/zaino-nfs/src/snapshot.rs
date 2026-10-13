@@ -15,11 +15,13 @@ use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
-use zaino_primitives::types::{BlockHash, BlockRef, Height, UpgradeSchedule};
+use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, UpgradeSchedule};
 use zaino_sync::PerIndex;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::fold::Folded;
+#[cfg(any(test, feature = "testing"))]
+use crate::graph::Node;
 use crate::graph::{Base, Graph};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +151,13 @@ impl<V> Indexed<V> {
         self.graph.contains(hash)
     }
 
+    /// Blocks `served` extends above the root, served first (`served` = the root → none)
+    pub fn served_nonfinalized(&self) -> impl Iterator<Item = &Block> + '_ {
+        let served = self.graph.get(&self.served.block.hash);
+        std::iter::successors(served, |node| self.graph.get(&node.parent))
+            .map(|node| node.block.as_ref())
+    }
+
     #[cfg(test)]
     pub(crate) fn root(&self) -> Option<BlockRef> {
         self.root
@@ -255,11 +264,30 @@ impl<V: View> Indexed<V> {
         params: ChainParams,
         durable: impl IntoIterator<Item = (IndexKind, V)>,
     ) -> Self {
+        Self::fixed_above(chain, tip, &[], params, durable)
+    }
+
+    /// [`fixed`](Self::fixed) at `root`, then `nonfinalized` (root's child first) folded with no
+    /// layers: served = its last
+    pub fn fixed_above(
+        chain: Arc<VerifiedChain>,
+        root: BlockRef,
+        nonfinalized: &[Arc<Block>],
+        params: ChainParams,
+        durable: impl IntoIterator<Item = (IndexKind, V)>,
+    ) -> Self {
         let mut views = PerIndex::default();
         for (kind, view) in durable {
             views.insert(kind, view);
         }
-        Self::new(chain, tip, Some(tip), params, views, Graph::new())
+        let mut graph = Graph::new();
+        for block in nonfinalized {
+            let (at, parent) = (block.at(), block.header().prev_hash);
+            let folded = Arc::new(Folded { layers: PerIndex::default() });
+            graph.insert(Node { at, parent, block: Arc::clone(block), folded });
+        }
+        let tip = nonfinalized.last().map_or(root, |block| block.at());
+        Self::new(chain, tip, Some(root), params, views, graph)
     }
 }
 

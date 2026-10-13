@@ -2,8 +2,9 @@
 //! after every publish (inside it), every snapshot against a naive model
 //!
 //! - Chain view: header moves (extend, reorg above final, finalize), holders, mempool (relays,
-//!   drops)
-//! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet
+//!   drops), a block mining a held tx while the view still lists it (listings lag a block)
+//! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet;
+//!   root = genesis (every served block above it nonfinalized)
 //! - Each move published or coalesced with the next (the run loop's `watch`es keep the latest)
 //! - Tails opened at random, drained after every publish: each tx once per epoch, every one the
 //!   epoch carried, end iff the served tip moved and only once the new snapshot is stored
@@ -30,7 +31,7 @@ const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
 /// - `Reorg`: top `depth` (above final) replaced by `len` blocks, the first outweighing them
-/// - `Relay` = ours (held, served)
+/// - `Relay` = ours (held, served); `Mine` = one block on best carrying that txid (kept held)
 /// - `ServeBest` = NFS `lag` below the best; `ServeOld` = an earlier best tip (reorg in flight)
 /// - paired `bool` = published now (else coalesced with the next)
 #[derive(Debug, Clone)]
@@ -40,6 +41,7 @@ enum Input {
     Finalize,
     Hold(u8),
     Relay(u8),
+    Mine(u8),
     Drop(u8),
     ServeBest { lag: u32 },
     ServeOld { pick: u8 },
@@ -52,8 +54,9 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
         2 => (1u32..=5, 1u32..=4).prop_map(|(depth, len)| Input::Reorg { depth, len }),
         1 => Just(Input::Finalize),
         2 => (0u8..4).prop_map(Input::Hold),
-        4 => any::<u8>().prop_map(Input::Relay),
-        1 => any::<u8>().prop_map(Input::Drop),
+        4 => (0u8..8).prop_map(Input::Relay),
+        3 => (0u8..8).prop_map(Input::Mine),
+        1 => (0u8..8).prop_map(Input::Drop),
         4 => (0u32..=5).prop_map(|lag| Input::ServeBest { lag }),
         1 => any::<u8>().prop_map(|pick| Input::ServeOld { pick }),
         2 => Just(Input::Tail),
@@ -115,10 +118,17 @@ impl Model {
     }
 
     fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
-        let served = self.served?;
+        let path = self.builder.blocks(self.served?);
         let params = ChainParams::of(&self.builder);
         let none: [(IndexKind, DiskView); 0] = [];
-        Some(Arc::new(Indexed::fixed(self.chain(), served, params, none)))
+        let root = path[0].at();
+        Some(Arc::new(Indexed::fixed_above(self.chain(), root, &path[1..], params, none)))
+    }
+
+    /// Txids of the served path above genesis (by the builder, not `served_nonfinalized`)
+    fn mined_under_served(&self) -> BTreeSet<TransactionId> {
+        let path = self.served.map(|served| self.builder.blocks(served)).unwrap_or_default();
+        path.iter().skip(1).flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
     }
 
     /// Path membership by the builder, not `hash_at`
@@ -155,6 +165,18 @@ impl Model {
             }
             Input::Hold(mask) => self.held = mask,
             Input::Relay(pick) => drop(self.mempool.insert(txid(pick))),
+            Input::Mine(pick) => {
+                let path = self.builder.blocks(best);
+                let on_path =
+                    path.iter().flat_map(|b| b.transactions()).any(|tx| tx.txid == txid(pick));
+                let branch = self.builder.branch(best);
+                let tip = match on_path {
+                    true => branch.mine_empty(1).tip(),
+                    false => branch.mine(|block| block.tx(|tx| tx.txid([pick; 32]))).tip(),
+                };
+                let above = u32::from(best.height) as usize + 1;
+                insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
+            }
             Input::Drop(pick) => drop(self.mempool.remove(&txid(pick))),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
@@ -181,7 +203,7 @@ impl Model {
             }
         };
         let served_moved = self.epochs.last().is_none_or(|epoch| epoch.key != self.served);
-        let held = self.mempool.clone();
+        let held = &self.mempool - &self.mined_under_served();
         if served_moved {
             if let Some(epoch) = self.epochs.last_mut() {
                 epoch.closed = true;
