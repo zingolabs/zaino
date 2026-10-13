@@ -1,5 +1,7 @@
 //! End-to-end over the real transport: a wallet's h2 connection + the caps around it
 
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,21 +39,19 @@ fn routes() -> Routes<MockValidator, DiskView> {
         network,
         version: "0.11.0-test",
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
+        indexes: Vec::new(),
     }
 }
+
+const ANY_PORT: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 /// Real wallet → real answer over hyper-served h2; second connection from its address closed at
 /// accept
 #[tokio::test(flavor = "multi_thread")]
 async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused() {
-    // Bound then released (a port nothing else on the box holds)
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
-    let bind = probe.local_addr().expect("local addr");
-    drop(probe);
-
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
     let server = GrpcService::new(
-        bind,
+        ANY_PORT,
         GrpcLimits {
             max_connections: non_zero(64),
             max_connections_per_ip: non_zero(1),
@@ -63,7 +63,8 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     .with_routes(routes())
     .bind()
     .await
-    .expect("the freed port binds");
+    .expect("binds");
+    let bind = server.local_addr().expect("bound");
 
     let cancel = CancellationToken::new();
     let serving = tokio::spawn(server.run(cancel.clone()));
@@ -99,7 +100,7 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
     assert_eq!(eof.expect("read"), 0, "closed without a byte served");
 
     cancel.cancel();
-    serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
+    serving.await.expect("the serve task ran");
 }
 
 /// Behind a trusted proxy the per-address cap counts the PROXY header's client:
@@ -110,20 +111,17 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
 async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     use tokio::io::AsyncWriteExt as _;
 
-    let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
-    let bind = probe.local_addr().expect("local addr");
-    drop(probe);
-
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
     let limits = GrpcLimits { max_connections_per_ip: non_zero(1), ..GrpcLimits::default() };
-    let server = GrpcService::new(bind, limits)
+    let server = GrpcService::new(ANY_PORT, limits)
         .with_routes(routes())
         .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
             .parse()
             .expect("loopback net")]))
         .bind()
         .await
-        .expect("the freed port binds");
+        .expect("binds");
+    let bind = server.local_addr().expect("bound");
 
     let cancel = CancellationToken::new();
     let serving = tokio::spawn(server.run(cancel.clone()));
@@ -169,7 +167,7 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
     assert_eq!(eof.expect("read"), 0, "closed without a byte served");
 
     cancel.cancel();
-    serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
+    serving.await.expect("the serve task ran");
 }
 
 /// Cancel closes the listener at once, then `run` drains:
@@ -196,19 +194,16 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         ),
     ];
     for (case, silent, drain_timeout, returns) in cases {
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
-        let bind = probe.local_addr().expect("local addr");
-        drop(probe);
-
         let limits = GrpcLimits { drain_timeout, ..GrpcLimits::default() };
-        let server = GrpcService::new(bind, limits)
+        let server = GrpcService::new(ANY_PORT, limits)
             .with_routes(routes())
             .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
                 .parse()
                 .expect("loopback net")]))
             .bind()
             .await
-            .expect("the freed port binds");
+            .expect("binds");
+        let bind = server.local_addr().expect("bound");
 
         let cancel = CancellationToken::new();
         let serving = tokio::spawn(server.run(cancel.clone()));
@@ -240,7 +235,7 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         tokio::time::sleep(Duration::from_millis(200)).await;
         let refused = tokio::net::TcpStream::connect(bind).await;
         assert!(refused.is_err(), "{case}: still accepting after cancel");
-        serving.await.expect("the serve task ran").expect("cancellation is a clean stop");
+        serving.await.expect("the serve task ran");
         let took = cancelled.elapsed();
         assert!(returns.contains(&took), "{case}: run returned after {took:?}, not in {returns:?}");
         assert!(wallet.get_lightd_info(empty).await.is_err(), "{case}: wallet connection survived");
@@ -255,7 +250,8 @@ async fn binding_a_held_port_fails_before_anything_is_served() {
 
     let outcome = GrpcService::new(bind, GrpcLimits::default()).with_routes(routes()).bind().await;
 
-    use zaino_grpc::GrpcServeError::Serve;
+    use zaino_grpc::GrpcServeError::Bind;
     let error = outcome.err();
-    assert!(matches!(&error, Some(Serve(r)) if r.starts_with("bind failed")), "{error:?}");
+    let in_use = matches!(&error, Some(Bind(error)) if error.kind() == ErrorKind::AddrInUse);
+    assert!(in_use, "{error:?}");
 }

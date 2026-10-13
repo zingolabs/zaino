@@ -23,7 +23,8 @@ use tracing::{
 };
 use zaino_sync::ByteSize;
 
-use crate::emit::{Method, CODES, METHODS};
+use crate::emit::{label, slot, CODES, LABELS};
+use crate::service::Method;
 
 pub(crate) const INTERVAL: Duration = Duration::from_secs(60);
 
@@ -105,7 +106,7 @@ impl MethodWindow {
 
 /// Everything counted since the last summary (`*_logged` = this window's first already logged)
 struct Window {
-    methods: [MethodWindow; METHODS.len()],
+    methods: [MethodWindow; LABELS],
     at_capacity: AtomicU64,
     connections_refused: AtomicU64,
     stalled: AtomicU64,
@@ -116,7 +117,7 @@ struct Window {
 impl Window {
     const fn new() -> Self {
         Self {
-            methods: [const { MethodWindow::new() }; METHODS.len()],
+            methods: [const { MethodWindow::new() }; LABELS],
             at_capacity: AtomicU64::new(0),
             connections_refused: AtomicU64::new(0),
             stalled: AtomicU64::new(0),
@@ -125,8 +126,8 @@ impl Window {
         }
     }
 
-    fn finished(&self, method: Method, code: Code, latency: Option<Duration>, sent: u64) {
-        let counters = &self.methods[method.index()];
+    fn finished(&self, method: Option<Method>, code: Code, latency: Option<Duration>, sent: u64) {
+        let counters = &self.methods[slot(method)];
         counters.codes[code as usize].fetch_add(1, Ordering::Relaxed);
         counters.sent.fetch_add(sent, Ordering::Relaxed);
         if let Some(latency) = latency {
@@ -166,7 +167,7 @@ impl Window {
 static WINDOW: Window = Window::new();
 
 /// A stream's close-out; `latency` = time to its first message, for an answered work request
-pub(crate) fn finished(method: Method, code: Code, latency: Option<Duration>, sent: u64) {
+pub(crate) fn finished(method: Option<Method>, code: Code, latency: Option<Duration>, sent: u64) {
     WINDOW.finished(method, code, latency, sent);
 }
 
@@ -185,19 +186,15 @@ pub(crate) fn connection_stalled() {
 
 /// A server fault or unavailable answer (never an admission refusal): the window's first of each
 /// is logged now, with the message the client got
-pub(crate) fn answered_badly(method: Method, code: Code, message: &str) {
+pub(crate) fn answered_badly(method: Option<Method>, code: Code, message: &str) {
     let first = |logged: &AtomicBool| !logged.swap(true, Ordering::Relaxed);
+    let method = label(slot(method));
     match Outcome::of(code) {
         Outcome::Failed if first(&WINDOW.failure_logged) => {
-            error!(
-                method = method.name(),
-                code = CODES[code as usize],
-                error = message,
-                "Request failed"
-            );
+            error!(method, code = CODES[code as usize], error = message, "Request failed");
         }
         Outcome::Refused if first(&WINDOW.unavailable_logged) => {
-            warn!(method = method.name(), error = message, "Request unavailable");
+            warn!(method, error = message, "Request unavailable");
         }
         _ => {}
     }
@@ -281,7 +278,7 @@ pub(crate) fn summarise(elapsed: Duration, held: Held) {
         if tally.requests == 0 {
             continue;
         }
-        let name = METHODS[at];
+        let name = label(at);
         let (p50, p99) = (
             quantile(&method.latency, method.max_us, 0.5),
             quantile(&method.latency, method.max_us, 0.99),
@@ -446,7 +443,7 @@ mod tests {
     #[test]
     fn a_window_tallies_outcomes_and_reads_quantiles() {
         let window = Window::new();
-        let method = Method::of("/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlock");
+        let method = Some(Method::GetBlock);
         let ms = Duration::from_millis;
         for latency in 1..=100 {
             window.finished(method, Code::Ok, Some(ms(latency)), 1_000);
@@ -457,7 +454,7 @@ mod tests {
         }
 
         let snapshot = window.take();
-        let totals = &snapshot.methods[method.index()];
+        let totals = &snapshot.methods[slot(method)];
         let tally = Tally::of(&totals.codes);
         assert_eq!(
             tally,
@@ -473,7 +470,7 @@ mod tests {
         assert_eq!(quantile(&[0; 4], 0, 0.5), None);
 
         let drained = window.take();
-        assert_eq!(Tally::of(&drained.methods[method.index()].codes), Tally::default());
+        assert_eq!(Tally::of(&drained.methods[slot(method)].codes), Tally::default());
     }
 
     #[test]

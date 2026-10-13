@@ -12,11 +12,16 @@ use zaino_primitives::types::Height;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
-use crate::wire::{self, path, status_response, trailers, unary_response};
+use crate::wire::{self, trailers, unary_response};
 use zaino_proto::proto::service as proto;
+
+pub(crate) use deprecated_nullifiers::range as range_nullifiers;
 
 /// One snapshot's compact-block records
 type Blocks<V> = CompactBlockReader<OverlayView<V>>;
+
+/// The served snapshot + its compact-block records
+pub(crate) type Compact<'a, V> = (&'a At<V>, Blocks<V>);
 
 /// Kinds kept distinct (miss != bad request != corruption)
 fn to_status(error: ServeError) -> Status {
@@ -25,38 +30,6 @@ fn to_status(error: ServeError) -> Status {
             Status::not_found(error.to_string())
         }
         ServeError::Malformed { .. } => Status::internal(error.to_string()),
-    }
-}
-
-pub(crate) async fn dispatch<V, B>(
-    at: &At<V>,
-    blocks: Blocks<V>,
-    path: &str,
-    body: B,
-    reads: ReadLanes,
-) -> Response<Body>
-where
-    V: CommittedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let through = at.answers_through(IndexKind::CompactBlock);
-    let answer = match path {
-        path::GET_LATEST_BLOCK => Ok(unary_response(latest(at))),
-        path::GET_BLOCK => block(at, blocks, body, &reads).await.map(unary_response),
-        path::GET_BLOCK_RANGE => {
-            let range = range(blocks, through, body).await;
-            range.map(|walk| range_response(walk, reads, Ok))
-        }
-        path::GET_BLOCK_RANGE_NULLIFIERS => deprecated_nullifiers::range(blocks, through, body)
-            .await
-            .map(|walk| range_response(walk, reads, deprecated_nullifiers::reproject)),
-        _ => Err(Status::unimplemented("not a compact-block method")),
-    };
-
-    match answer {
-        Ok(response) => response,
-        Err(status) => status_response(status),
     }
 }
 
@@ -111,17 +84,30 @@ fn range_response<V: CommittedView>(
 }
 
 /// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)
-fn latest<V>(at: &At<V>) -> Bytes {
+pub(crate) fn latest<V>(at: &At<V>) -> Response<Body> {
     let tip = at.tip();
     let hash = <[u8; 32]>::from(tip.hash).to_vec();
-    wire::frame(&proto::BlockId { height: tip.height.into(), hash })
+    unary_response(wire::frame(&proto::BlockId { height: tip.height.into(), hash }))
 }
 
 /// `GetBlock`: one whole block, every pool
 ///
 /// - TODO: deprecate pending light-client ZIP updates (`GetBlockRange` defaults shielded-only:
 ///   one block != range of one; `BlockID` has no `poolTypes`; kept = lightwalletd parity)
-async fn block<V, B>(
+pub(crate) async fn block<V, B>(
+    (at, blocks): Compact<'_, V>,
+    body: B,
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    V: CommittedView,
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    stored_block(at, blocks, body, reads).await.map(unary_response)
+}
+
+async fn stored_block<V, B>(
     at: &At<V>,
     blocks: Blocks<V>,
     body: B,
@@ -155,7 +141,11 @@ where
 }
 
 /// `GetBlockRange` (wallet-sync path: must stay cheap)
-async fn range<V, B>(blocks: Blocks<V>, through: Height, body: B) -> Result<Walk<V>, Status>
+pub(crate) async fn range<V, B>(
+    (at, blocks): Compact<'_, V>,
+    body: B,
+    reads: ReadLanes,
+) -> Result<Response<Body>, Status>
 where
     V: CommittedView,
     B: http_body::Body,
@@ -163,7 +153,9 @@ where
 {
     let request: proto::BlockRange = wire::decode_request(body).await?;
 
-    open_range(blocks, through, &request, wire::pools(&request.pool_types)?)
+    let through = at.answers_through(IndexKind::CompactBlock);
+    let walk = open_range(blocks, through, &request, wire::pools(&request.pool_types)?)?;
+    Ok(range_response(walk, reads, Ok))
 }
 
 /// - walk order up to the first height past `through`: a first height past it = refused before
@@ -202,28 +194,30 @@ fn open_range<V: CommittedView>(
 // =================================================================================================
 // !!! TODO: REMOVE THIS MODULE. DEPRECATED `GetBlockRangeNullifiers`.
 // !!! - Served only because pepper-sync still calls it; not part of Zaino's supported surface
-// !!! - Delete with its path, its `GrpcService` stub and its proto rpc once pepper-sync
+// !!! - Delete with its `ROUTES` row + `Method` variant and its proto rpc once pepper-sync
 // !!!   requests `GetBlockRange` with `poolTypes`
 // =================================================================================================
 mod deprecated_nullifiers {
     use bytes::Bytes;
+    use http::Response;
     use prost::Message as _;
-    use tonic::Status;
-    use zaino_primitives::types::Height;
-    use zaino_proto::frame::{frame_into, split_frame};
+    use tonic::{body::Body, Status};
+    use zaino_persistence::IndexKind;
+    use zaino_proto::frame::frame_into;
     use zaino_proto::proto::compact_formats;
     use zaino_proto::proto::service as proto;
 
-    use super::{open_range, Blocks, Walk};
+    use super::{open_range, range_response, Compact};
+    use crate::limits::ReadLanes;
     use crate::wire::{self, pools};
 
     /// Proto: MUST ignore a `TRANSPARENT` member (dropped before projection → `[TRANSPARENT]`
     /// alone = empty = shielded default, not "no pools")
-    pub(super) async fn range<V, B>(
-        blocks: Blocks<V>,
-        through: Height,
+    pub(crate) async fn range<V, B>(
+        (at, blocks): Compact<'_, V>,
         body: B,
-    ) -> Result<Walk<V>, Status>
+        reads: ReadLanes,
+    ) -> Result<Response<Body>, Status>
     where
         V: zaino_persistence::CommittedView,
         B: http_body::Body,
@@ -232,23 +226,21 @@ mod deprecated_nullifiers {
         let mut request: proto::BlockRange = wire::decode_request(body).await?;
         request.pool_types.retain(|pool| *pool != proto::PoolType::Transparent as i32);
 
-        open_range(blocks, through, &request, pools(&request.pool_types)?)
+        let through = at.answers_through(IndexKind::CompactBlock);
+        let walk = open_range(blocks, through, &request, pools(&request.pool_types)?)?;
+        Ok(range_response(walk, reads, reproject))
     }
 
     /// Framed records → framed nullifier-only records, one frame per block
-    pub(super) fn reproject(chunk: Bytes) -> Result<Bytes, Status> {
+    fn reproject(chunk: Bytes) -> Result<Bytes, Status> {
         let mut out = Vec::with_capacity(chunk.len());
-
-        let mut rest = &chunk[..];
-        while !rest.is_empty() {
-            let (message, tail) = split_frame(rest)
-                .ok_or_else(|| Status::internal("stored range chunk is not whole frames"))?;
-            let block = nullifiers_only(
-                compact_formats::CompactBlock::decode(message)
-                    .map_err(|e| Status::internal(e.to_string()))?,
-            );
+        let messages = wire::messages(&chunk)
+            .ok_or_else(|| Status::internal("stored range chunk is not whole frames"))?;
+        for message in messages {
+            let block = compact_formats::CompactBlock::decode(message)
+                .map_err(|e| Status::internal(e.to_string()));
+            let block = nullifiers_only(block?);
             frame_into(&mut out, |out| block.encode_raw(out));
-            rest = tail;
         }
 
         Ok(Bytes::from(out))
@@ -282,15 +274,16 @@ mod deprecated_nullifiers {
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderMap, HeaderValue, Response};
+    use http::{HeaderValue, Response};
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_proto::frame::{split_frame, FRAME_HEADER};
+    use zaino_proto::frame::FRAME_HEADER;
 
-    use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
-    use crate::wire::path;
+    use crate::service::{Method, Routes};
+    use crate::testing::{
+        decode_frames, dispatch, drained, framed_request, indexed, routes, snapshot, MAINNET,
+    };
 
     /// `GetBlock` by hash: the block-hash index locates, the compact index answers only where it
     /// holds that same block; no locator wired = `Unimplemented`
@@ -319,7 +312,7 @@ mod tests {
             ..routes()
         });
         let request = |hash: Vec<u8>, height: u64| {
-            framed_request(path::GET_BLOCK, proto::BlockId { height, hash }.encode_to_vec().into())
+            framed_request(Method::GetBlock, proto::BlockId { height, hash }.encode_to_vec().into())
         };
         let code = |response: &Response<Body>| {
             Status::from_header_map(response.headers())
@@ -365,47 +358,43 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
         let past = |h: u32| format!("block%20{h}%20is%20above%20the%20compact-block%20tip%205");
+        let (range, nullifiers) = (Method::GetBlockRange, Method::GetBlockRangeNullifiers);
         let cases = [
-            (path::GET_BLOCK_RANGE, (1, 4), (vec![1, 2, 3, 4], "0", None)),
-            (path::GET_BLOCK_RANGE, (5, 1), (vec![5, 4, 3, 2, 1], "0", None)),
-            (path::GET_BLOCK_RANGE, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
-            (path::GET_BLOCK_RANGE_NULLIFIERS, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
-            (path::GET_BLOCK_RANGE, (9, 3), (vec![], "11", Some(past(9)))),
-            (path::GET_BLOCK_RANGE, (7, 9), (vec![], "11", Some(past(7)))),
+            (range, (1, 4), (vec![1, 2, 3, 4], "0", None)),
+            (range, (5, 1), (vec![5, 4, 3, 2, 1], "0", None)),
+            (range, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
+            (nullifiers, (3, 9), (vec![3, 4, 5], "11", Some(past(6)))),
+            (range, (9, 3), (vec![], "11", Some(past(9)))),
+            (range, (7, 9), (vec![], "11", Some(past(7)))),
         ];
-        for (path, (start, end), expected) in cases {
+        for (method, (start, end), expected) in cases {
             let range = proto::BlockRange {
                 start: Some(proto::BlockId { height: start, hash: Vec::new() }),
                 end: Some(proto::BlockId { height: end, hash: Vec::new() }),
                 pool_types: Vec::new(),
             };
-            let request = framed_request(path, range.encode_to_vec().into());
+            let request = framed_request(method, range.encode_to_vec().into());
             let response = router.call(request).await.expect("router answers");
             let headers = response.headers().clone();
             let body = response.into_body().collect().await.expect("body");
             let status = body.trailers().cloned().unwrap_or(headers);
             let text =
                 |name: &str| status.get(name).and_then(|v| v.to_str().ok()).map(str::to_owned);
-            let bytes = body.to_bytes();
-            let mut rest = &bytes[..];
-            let mut heights = Vec::new();
-            while !rest.is_empty() {
-                let (message, tail) = split_frame(rest).expect("whole frame");
-                heights
-                    .push(compact_formats::CompactBlock::decode(message).expect("a block").height);
-                rest = tail;
-            }
+            let blocks = decode_frames::<compact_formats::CompactBlock>(&body.to_bytes());
+            let heights: Vec<_> = blocks.into_iter().map(|block| block.height).collect();
             let code = text("grpc-status").expect("a status");
             let got = (heights, code.as_str(), text("grpc-message"));
-            assert_eq!(got, (expected.0, expected.1, expected.2), "{path} {start}..={end}");
+            assert_eq!(got, (expected.0, expected.1, expected.2), "{method:?} {start}..={end}");
         }
     }
 
     /// Blocks 1..=5: a coinbase paying alice, then one tx spending it into every pool (transparent
     /// in + out, a sapling spend + output, one orchard, two ironwood actions); body = stored bytes
+    /// - `GetBlock` 3: one unary record, transparent kept
+    /// - `GetBlockRange` 1..=4, no `poolTypes`: shielded only, one data frame, `OK` trailers
+    /// - `[TRANSPARENT]`: the coinbase kept, orchard dropped
     #[tokio::test]
-    async fn get_block_and_get_block_range_answer_from_stored_records() {
-        use http_body_util::BodyExt as _;
+    async fn get_block_and_get_block_range_answer_stored_records_in_their_shapes() {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh};
@@ -436,7 +425,7 @@ mod tests {
 
         let id = proto::BlockId { height: 3, hash: Vec::new() };
         let response = router
-            .call(framed_request(path::GET_BLOCK, id.encode_to_vec().into()))
+            .call(framed_request(Method::GetBlock, id.encode_to_vec().into()))
             .await
             .expect("router answers");
         // unary too: a body + `grpc-status` in headers = malformed Trailers-Only (grpc-go refuses)
@@ -449,33 +438,14 @@ mod tests {
         assert_eq!(decoded.height, 3);
         assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
 
-        // Data frames, then trailers (`grpc-status` = trailers only: undrained = none)
-        async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
-            let mut body = std::pin::pin!(response.into_body());
-            let mut chunks = Vec::new();
-            let mut trailers = None;
-
-            while let Some(frame) = body.frame().await {
-                let frame = frame.expect("frame");
-                assert!(trailers.is_none(), "trailers are the last frame");
-                match frame.into_data() {
-                    Ok(chunk) => chunks.push(chunk),
-                    Err(frame) => trailers = frame.into_trailers().ok(),
-                }
-            }
-
-            (chunks, trailers.expect("a streaming body ends in trailers"))
-        }
-
-        // Empty poolTypes = shielded only; one data frame per file window (<= 1 MiB), records
-        // still framed one by one
+        // one data frame per file window (<= 1 MiB), records still framed one by one
         let range = proto::BlockRange {
             start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
             end: Some(proto::BlockId { height: 4, hash: Vec::new() }),
             pool_types: Vec::new(),
         };
         let response = router
-            .call(framed_request(path::GET_BLOCK_RANGE, range.encode_to_vec().into()))
+            .call(framed_request(Method::GetBlockRange, range.encode_to_vec().into()))
             .await
             .expect("router answers");
         let headers = response.headers();
@@ -483,24 +453,16 @@ mod tests {
         let (status, content) =
             (headers.get("grpc-status"), headers.get(http::header::CONTENT_TYPE));
         assert_eq!((status, content), (None, Some(&grpc)), "stream status rides in the trailers");
-
         let (chunks, trailing) = drained(response).await;
         assert_eq!(chunks.len(), 1, "four committed records = one projected window");
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-
-        let body = chunks.concat();
-        let mut rest = &body[..];
-        let mut heights = Vec::new();
-        while !rest.is_empty() {
-            let (message, tail) = split_frame(rest).expect("whole frame");
-            let block = compact_formats::CompactBlock::decode(message).expect("framed message");
-
-            assert!(block.vtx[0].vin.is_empty(), "default prunes transparent");
-            assert_eq!(block.vtx[0].actions.len(), 1, "shielded kept");
-            heights.push(block.height);
-            rest = tail;
-        }
-        assert_eq!(heights, vec![1, 2, 3, 4], "in order, none missing");
+        let blocks = decode_frames::<compact_formats::CompactBlock>(&chunks.concat());
+        let shapes: Vec<_> = blocks
+            .iter()
+            .map(|block| (block.height, block.vtx.len(), block.vtx[0].vin.len()))
+            .collect();
+        let shielded_only = vec![(1, 1, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0)];
+        assert_eq!(shapes, shielded_only, "(height, txs, transparent ins): coinbase pruned");
 
         let range = proto::BlockRange {
             start: Some(proto::BlockId { height: 2, hash: Vec::new() }),
@@ -508,136 +470,131 @@ mod tests {
             pool_types: vec![proto::PoolType::Transparent as i32],
         };
         let response = router
-            .call(framed_request(path::GET_BLOCK_RANGE, range.encode_to_vec().into()))
+            .call(framed_request(Method::GetBlockRange, range.encode_to_vec().into()))
             .await
             .expect("router answers");
         let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let decoded = compact_formats::CompactBlock::decode(&chunks.concat()[FRAME_HEADER..])
             .expect("framed message");
-        assert_eq!(decoded.vtx.len(), 2, "transparent requested: the coinbase kept too");
-        assert_eq!(decoded.vtx[1].vin.len(), 1, "transparent requested, so kept");
-        assert!(decoded.vtx[1].actions.is_empty(), "orchard not requested");
+        let spend = &decoded.vtx[1];
+        let shape = (decoded.vtx.len(), spend.vin.len(), spend.actions.len());
+        assert_eq!(shape, (2, 1, 0), "(txs, transparent ins, orchard actions): coinbase kept");
+    }
 
-        // TODO: REMOVE with the deprecated alias. `[TRANSPARENT]` ignored → shielded default;
-        // every nullifier kept, everything else gone
-        let range_of = |pool_types: Vec<i32>| proto::BlockRange {
+    /// TODO: REMOVE with the deprecated alias. Blocks 1..=4, each one tx spending sapling
+    /// nullifier `0x30 + h`, orchard `0x70 + h`, ironwood `0x80 + h` and `0x90 + h`:
+    /// `[TRANSPARENT]` ignored (shielded default), each block = its nullifiers, all else gone
+    #[tokio::test]
+    async fn get_block_range_nullifiers_answers_only_each_blocks_nullifiers() {
+        use prost::Message as _;
+        use tower::Service as _;
+        use zaino_primitives::testing::{outpoint, p2pkh};
+        use zaino_proto::proto::compact_formats;
+        use zaino_proto::proto::service as proto;
+
+        let alice = p2pkh([0xaa; 20]);
+        let mut chain = MockChain::regtest().network(MAINNET);
+        for at in 1..=4u8 {
+            let leaf = u32::from(at);
+            chain.mine(|b| {
+                b.coinbase(|c| c.txid([at; 32]).pay(&alice, 17_345)).tx(|t| {
+                    t.spend(outpoint([at; 32], 0))
+                        .pay(&alice, 12_345)
+                        .fee(5_000)
+                        .sapling_spend([0x30 + at; 32])
+                        .sapling_output(leaf)
+                        .orchard_action([0x70 + at; 32], leaf)
+                        .ironwood_action([0x80 + at; 32], 2 * leaf)
+                        .ironwood_action([0x90 + at; 32], 2 * leaf + 1)
+                })
+            });
+        }
+        let tip = chain.tip();
+        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
+
+        let range = proto::BlockRange {
             start: Some(proto::BlockId { height: 1, hash: Vec::new() }),
             end: Some(proto::BlockId { height: 4, hash: Vec::new() }),
-            pool_types,
+            pool_types: vec![proto::PoolType::Transparent as i32],
         };
-        let decoded_all = |body: bytes::Bytes| {
-            let mut rest = &body[..];
-            let mut blocks = Vec::new();
-            while !rest.is_empty() {
-                let (message, tail) = split_frame(rest).expect("whole frame");
-                blocks
-                    .push(compact_formats::CompactBlock::decode(message).expect("framed message"));
-                rest = tail;
-            }
-            blocks
-        };
-        let (full, _) = drained(
-            router
-                .call(framed_request(
-                    path::GET_BLOCK_RANGE,
-                    range_of(Vec::new()).encode_to_vec().into(),
-                ))
-                .await
-                .expect("router answers"),
-        )
-        .await;
-        let (nullifiers, trailing) = drained(
-            router
-                .call(framed_request(
-                    path::GET_BLOCK_RANGE_NULLIFIERS,
-                    range_of(vec![proto::PoolType::Transparent as i32]).encode_to_vec().into(),
-                ))
-                .await
-                .expect("router answers"),
-        )
-        .await;
+        let response = router
+            .call(framed_request(Method::GetBlockRangeNullifiers, range.encode_to_vec().into()))
+            .await
+            .expect("router answers");
+        let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let (full, nullifiers) =
-            (decoded_all(full.concat().into()), decoded_all(nullifiers.concat().into()));
-        let expected: Vec<compact_formats::CompactBlock> = full
-            .iter()
-            .map(|block| compact_formats::CompactBlock {
-                chain_metadata: Some(compact_formats::ChainMetadata::default()),
-                vtx: block
+
+        // per tx: (sapling spends, sapling outputs, transparent in + out, orchard, ironwood)
+        let projected: Vec<_> = decode_frames::<compact_formats::CompactBlock>(&chunks.concat())
+            .into_iter()
+            .map(|block| {
+                let txs: Vec<_> = block
                     .vtx
-                    .iter()
-                    .map(|tx| compact_formats::CompactTx {
-                        outputs: Vec::new(),
-                        vin: Vec::new(),
-                        vout: Vec::new(),
-                        actions: tx
-                            .actions
-                            .iter()
-                            .map(|a| compact_formats::CompactOrchardAction {
-                                nullifier: a.nullifier.clone(),
-                                ..Default::default()
-                            })
-                            .collect(),
-                        ironwood_actions: tx
-                            .ironwood_actions
-                            .iter()
-                            .map(|a| compact_formats::CompactOrchardAction {
-                                nullifier: a.nullifier.clone(),
-                                ..Default::default()
-                            })
-                            .collect(),
-                        ..tx.clone()
+                    .into_iter()
+                    .map(|tx| {
+                        let spends: Vec<_> = tx.spends.into_iter().map(|spend| spend.nf).collect();
+                        let transparent = tx.vin.len() + tx.vout.len();
+                        (spends, tx.outputs.len(), transparent, tx.actions, tx.ironwood_actions)
                     })
-                    .collect(),
-                ..block.clone()
+                    .collect();
+                (block.height, block.chain_metadata, txs)
             })
             .collect();
-        assert_eq!(nullifiers, expected, "nullifier-only projection of the same four blocks");
-        let mut actions = nullifiers.iter().flat_map(|b| &b.vtx).flat_map(|tx| &tx.actions);
-        let carried = actions.any(|a| !a.nullifier.is_empty());
-        assert!(carried, "fixture carries nullifiers (projection not vacuously empty)");
+        let nullifier = |seed: u8| compact_formats::CompactOrchardAction {
+            nullifier: vec![seed; 32],
+            ..Default::default()
+        };
+        let expected: Vec<_> = (1..=4u8)
+            .map(|at| {
+                let spends = vec![vec![0x30 + at; 32]];
+                let ironwood = vec![nullifier(0x80 + at), nullifier(0x90 + at)];
+                let tx = (spends, 0, 0, vec![nullifier(0x70 + at)], ironwood);
+                (u64::from(at), Some(compact_formats::ChainMetadata::default()), vec![tx])
+            })
+            .collect();
+        assert_eq!(projected, expected);
+    }
 
-        // start > end = descending (proto: "decreasing height order"), same records reversed
-        let (descending, trailing) = drained(
-            router
-                .call(framed_request(
-                    path::GET_BLOCK_RANGE,
-                    proto::BlockRange {
-                        start: Some(proto::BlockId { height: 4, hash: Vec::new() }),
-                        end: Some(proto::BlockId { height: 1, hash: Vec::new() }),
-                        pool_types: Vec::new(),
-                    }
-                    .encode_to_vec()
-                    .into(),
-                ))
-                .await
-                .expect("router answers"),
-        )
-        .await;
-        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let reversed: Vec<compact_formats::CompactBlock> = full.iter().rev().cloned().collect();
-        assert_eq!(decoded_all(descending.concat().into()), reversed, "4..=1 = 1..=4 reversed");
+    /// Malformed ranges refused at the boundary (never reach the index's asserts); grpc-message
+    /// percent-encoded
+    #[tokio::test]
+    async fn a_malformed_range_is_invalid_argument_before_any_read() {
+        use prost::Message as _;
+        use tower::Service as _;
+        use zaino_proto::proto::service as proto;
 
-        // - Malformed ranges refused at the boundary (never reach the index's asserts)
-        // - grpc-message = percent-encoded
-        let invalid = HeaderValue::from_static("3");
+        let chain = MockChain::regtest().network(MAINNET);
+        let genesis = chain.genesis();
+        let compact = indexed(IndexKind::CompactBlock, &chain, genesis);
+        let mut router =
+            dispatch(Routes { snapshots: snapshot(&chain, genesis, vec![compact]), ..routes() });
+
         let at = |height: u64| Some(proto::BlockId { height, hash: Vec::new() });
         let above_ceiling = |bound: &str, height: u64| {
             format!("range%20{bound}%20{height}%20is%20above%20the%20protocol%20height%20ceiling")
         };
-        for (start, end, message) in [
+        let cases = [
             (None, at(1), "range%20has%20no%20start".to_owned()),
+            (at(1), None, "range%20has%20no%20end".to_owned()),
             (at(1), at(1 << 31), above_ceiling("end", 1 << 31)),
             (at(u64::MAX), at(1), above_ceiling("start", u64::MAX)),
-        ] {
-            let bad = proto::BlockRange { start, end, pool_types: Vec::new() };
-            let request = framed_request(path::GET_BLOCK_RANGE, bad.encode_to_vec().into());
+        ];
+        let mut answered = Vec::new();
+        for (start, end, _) in &cases {
+            let bad =
+                proto::BlockRange { start: start.clone(), end: end.clone(), pool_types: vec![] };
+            let request = framed_request(Method::GetBlockRange, bad.encode_to_vec().into());
             let response = router.call(request).await.expect("router answers");
-            let headers = response.headers();
-            let reply = headers.get("grpc-message").and_then(|m| m.to_str().ok());
-            let got = (headers.get("grpc-status"), reply);
-            assert_eq!(got, (Some(&invalid), Some(message.as_str())), "{bad:?}");
+            let header = |name| response.headers().get(name).and_then(|v| v.to_str().ok());
+            answered.push((
+                header("grpc-status").map(str::to_owned),
+                header("grpc-message").map(str::to_owned),
+            ));
         }
+        let invalid = |(_, _, message): (_, _, String)| (Some("3".to_owned()), Some(message));
+        assert_eq!(answered, cases.map(invalid));
     }
 }

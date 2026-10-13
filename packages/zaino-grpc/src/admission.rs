@@ -18,6 +18,7 @@ use tonic::Status;
 
 use crate::adaptive::{Limiter, Overload, RefusalRate};
 use crate::emit;
+use crate::service::Method;
 
 /// Refusal retry hint, ms (held streams = wallet syncs: a permit frees well under a second)
 const PUSHBACK_MS: &str = "250";
@@ -25,21 +26,13 @@ const PUSHBACK_MS: &str = "250";
 /// gRPC's own "come back later" header (grpc-core)
 const PUSHBACK_HEADER: &str = "grpc-retry-pushback-ms";
 
-/// Cap a request counts against: `Work` = unary, ranges, scans; `Subscription` =
-/// `GetMempoolStream` (open until the next block, idle between arrivals)
+/// Cap a request counts against (each method's in [`ROUTES`](crate::service::ROUTES); an unknown
+/// path = `Work`): `Work` = unary, ranges, scans; `Subscription` = open until the next block,
+/// idle between arrivals
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Class {
     Work,
     Subscription,
-}
-
-impl Class {
-    fn of(path: &str) -> Self {
-        match path {
-            crate::wire::path::GET_MEMPOOL_STREAM => Self::Subscription,
-            _ => Self::Work,
-        }
-    }
 }
 
 /// The two admission pools + the adaptive work limit, shared by every connection
@@ -176,7 +169,8 @@ where
     }
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
-        let class = Class::of(request.uri().path());
+        let method = Method::of(request.uri().path());
+        let class = method.map_or(Class::Work, |method| method.route().class);
         let Some(permit) = self.load.admit(class) else {
             emit::stream_rejected(class);
             return Box::pin(std::future::ready(Ok(
@@ -297,7 +291,8 @@ mod tests {
 
     use super::*;
 
-    /// `/open` never ends; `/data` = one frame then waits; `/short` = one frame, done
+    /// `/open` + `GetMempoolStream` never end; `/data` = one frame then waits; `/short` = one
+    /// frame, done
     #[derive(Clone)]
     struct Answers;
 
@@ -311,8 +306,9 @@ mod tests {
         }
 
         fn call(&mut self, request: Request<Full<Bytes>>) -> Self::Future {
-            let body = match request.uri().path() {
-                "/open" | crate::wire::path::GET_MEMPOOL_STREAM => {
+            let path = request.uri().path();
+            let body = match path {
+                _ if path == "/open" || path == Method::GetMempoolStream.path() => {
                     tonic::body::Body::new(StreamBody::new(futures::stream::pending::<
                         Result<Frame<Bytes>, Status>,
                     >()))
@@ -399,7 +395,7 @@ mod tests {
         let open = admission.call(request("/open")).await.expect("infallible");
         assert_eq!(streams.available_permits(), 0, "the open stream holds it");
 
-        let mempool = crate::wire::path::GET_MEMPOOL_STREAM;
+        let mempool = &Method::GetMempoolStream.path();
         let subscribed = admission.call(request(mempool)).await.expect("infallible");
         let status = subscribed.headers().get("grpc-status");
         assert_eq!(status, None, "a full work pool leaves subscriptions admitted");
@@ -461,8 +457,8 @@ mod tests {
         assert_eq!((report.limit, report.in_flight, report.overloaded), (256, 256, false));
         assert!(report.refused_per_s > 0.0, "{report:?}");
 
-        let mempool = crate::wire::path::GET_MEMPOOL_STREAM;
-        let subscribed = admission.call(request(mempool)).await.expect("infallible");
+        let mempool = Method::GetMempoolStream.path();
+        let subscribed = admission.call(request(&mempool)).await.expect("infallible");
         assert_eq!(subscribed.headers().get("grpc-status"), None, "subscriptions: own pool");
     }
 }

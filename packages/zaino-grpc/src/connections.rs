@@ -15,6 +15,7 @@ use crate::{emit, GrpcLimits};
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectionCaps {
     total: Arc<Semaphore>,
+    total_max: usize,
     per_client: Arc<Mutex<HashMap<IpAddr, usize>>>,
     per_client_max: usize,
 }
@@ -27,16 +28,18 @@ pub(crate) struct Reserved {
 
 impl ConnectionCaps {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
+        let total_max = limits.max_connections.get();
         Self {
-            total: Arc::new(Semaphore::new(limits.max_connections.get())),
+            total: Arc::new(Semaphore::new(total_max)),
+            total_max,
             per_client: Arc::new(Mutex::new(HashMap::new())),
             per_client_max: limits.max_connections_per_ip.get(),
         }
     }
 
-    /// Connections held now (reserved or served), of `cap` (`max_connections`)
-    pub(crate) fn held(&self, cap: usize) -> (usize, usize) {
-        (cap.saturating_sub(self.total.available_permits()), cap)
+    /// Connections held now (reserved or served), of `max_connections`
+    pub(crate) fn held(&self) -> (usize, usize) {
+        (self.total_max.saturating_sub(self.total.available_permits()), self.total_max)
     }
 
     /// `None` = at `max_connections` (caller drops the socket)

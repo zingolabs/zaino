@@ -14,9 +14,10 @@ use tonic::{Code, Status};
 use zaino_proto::frame::{framed_len, FRAME_HEADER};
 
 use crate::admission::AtCapacity;
-use crate::emit::{self, Method};
+use crate::emit;
 use crate::lifetime::{Activity, Open};
 use crate::report;
+use crate::service::Method;
 
 /// Each request timed, its body's writes counted, held open on its connection's `activity` until
 /// the body drops
@@ -101,7 +102,7 @@ where
 /// - `at_capacity` = admission refusal (counted, never logged one by one)
 pub(crate) struct Counted<Inner> {
     inner: Inner,
-    method: Method,
+    method: Option<Method>,
     started: Instant,
     first_message: Option<Duration>,
     sent: u64,
@@ -167,8 +168,9 @@ impl<Inner> Drop for Counted<Inner> {
 
         let elapsed = self.started.elapsed();
         // an answered work request's latency = what its client waited for the first message
-        let latency = (code == Code::Ok && !self.method.is_subscription())
-            .then(|| self.first_message.unwrap_or(elapsed));
+        let subscription = self.method.is_some_and(|method| method.route().is_subscription());
+        let latency =
+            (code == Code::Ok && !subscription).then(|| self.first_message.unwrap_or(elapsed));
 
         emit::stream_finished(
             self.method,

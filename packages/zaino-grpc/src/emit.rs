@@ -7,6 +7,7 @@ use tonic::Code;
 
 use crate::admission::Class;
 use crate::report;
+use crate::service::{Method, ROUTES};
 
 const REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
 const FIRST_MESSAGE_SECONDS: &str = "zaino.grpc.first_message_seconds";
@@ -32,54 +33,17 @@ const STALLED_CONNECTIONS_TOTAL: &str = "zaino.grpc.stalled_connections_total";
 const RETIRED_CONNECTIONS_TOTAL: &str = "zaino.grpc.retired_connections_total";
 const ADAPTIVE_STREAM_LIMIT: &str = "zaino.grpc.adaptive_stream_limit";
 
-/// Every `CompactTxStreamer` method, then `unknown` (any other path): the `method` label set
-pub(crate) const METHODS: [&str; 19] = [
-    "GetLatestBlock",
-    "GetBlock",
-    "GetBlockRange",
-    "GetBlockRangeNullifiers",
-    "GetTransaction",
-    "SendTransaction",
-    "GetTaddressTxids",
-    "GetTaddressTransactions",
-    "GetTaddressBalance",
-    "GetTaddressBalanceStream",
-    "GetMempoolTx",
-    "GetMempoolStream",
-    "GetTreeState",
-    "GetLatestTreeState",
-    "GetSubtreeRoots",
-    "GetAddressUtxos",
-    "GetAddressUtxosStream",
-    "GetLightdInfo",
-    "unknown",
-];
+/// `method` label slots: one per [`ROUTES`] row, then `unknown` (any other path: the set stays
+/// fixed however clients misbehave)
+pub(crate) const LABELS: usize = ROUTES.len() + 1;
 
-/// A request's slot in [`METHODS`], resolved once from its path (no allocation)
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Method(usize);
+/// `method`'s label slot (`None` = `unknown`)
+pub(crate) fn slot(method: Option<Method>) -> usize {
+    method.map_or(ROUTES.len(), |method| method as usize)
+}
 
-impl Method {
-    /// `/{service}/{method}` → its slot, `unknown` for any other path
-    pub(crate) fn of(path: &str) -> Self {
-        let name = path.rsplit('/').next().unwrap_or_default();
-        let unknown = METHODS.len() - 1;
-        Self(METHODS[..unknown].iter().position(|known| *known == name).unwrap_or(unknown))
-    }
-
-    pub(crate) fn name(self) -> &'static str {
-        METHODS[self.0]
-    }
-
-    /// Slot in [`METHODS`]
-    pub(crate) fn index(self) -> usize {
-        self.0
-    }
-
-    /// Open until the next block, idle between arrivals: no latency worth timing
-    pub(crate) fn is_subscription(self) -> bool {
-        self.name() == "GetMempoolStream"
-    }
+pub(crate) fn label(slot: usize) -> &'static str {
+    ROUTES.get(slot).map_or("unknown", |row| row.name)
 }
 
 /// `Code`'s `Debug` spelling by value (the `code` label, never formatted per request)
@@ -113,12 +77,12 @@ struct MethodSeries {
     requests: [std::sync::OnceLock<metrics::Counter>; CODES.len()],
 }
 
-fn series(method: Method) -> &'static MethodSeries {
-    static SERIES: [std::sync::OnceLock<MethodSeries>; METHODS.len()] =
-        [const { std::sync::OnceLock::new() }; METHODS.len()];
+fn series(slot: usize) -> &'static MethodSeries {
+    static SERIES: [std::sync::OnceLock<MethodSeries>; LABELS] =
+        [const { std::sync::OnceLock::new() }; LABELS];
 
-    SERIES[method.0].get_or_init(|| {
-        let name = METHODS[method.0];
+    SERIES[slot].get_or_init(|| {
+        let name = label(slot);
         MethodSeries {
             first_message: metrics::histogram!(FIRST_MESSAGE_SECONDS, "method" => name),
             duration: metrics::histogram!(DURATION_SECONDS, "method" => name),
@@ -252,14 +216,14 @@ pub(crate) fn disk_read_waited(lane: crate::limits::Lane, waited: Duration) {
         .record(waited.as_secs_f64());
 }
 
-pub(crate) fn first_message(method: Method, elapsed: Duration) {
-    series(method).first_message.record(elapsed.as_secs_f64());
+pub(crate) fn first_message(method: Option<Method>, elapsed: Duration) {
+    series(slot(method)).first_message.record(elapsed.as_secs_f64());
 }
 
 /// One stream's close-out (recorded where the body drops); `latency` = time to its first message,
 /// for an answered work request
 pub(crate) fn stream_finished(
-    method: Method,
+    method: Option<Method>,
     code: Code,
     elapsed: Duration,
     latency: Option<Duration>,
@@ -267,37 +231,18 @@ pub(crate) fn stream_finished(
     sent: u64,
 ) {
     report::finished(method, code, latency, sent);
-    {
-        let series = series(method);
-        // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)
-        let at = code as usize;
-        series.requests[at]
-            .get_or_init(|| {
-                let (method, code) = (METHODS[method.0], CODES[at]);
-                metrics::counter!(REQUESTS_TOTAL, "method" => method, "code" => code)
-            })
-            .increment(1);
-        series.duration.record(elapsed.as_secs_f64());
-        series.messages.record(messages as f64);
-        series.sent.increment(sent);
-    }
+    let slot = slot(method);
+    let series = series(slot);
+    // `Code` = the 17 gRPC codes, discriminants 0 to 16 (both inclusive)
+    let at = code as usize;
+    series.requests[at]
+        .get_or_init(|| {
+            let (method, code) = (label(slot), CODES[at]);
+            metrics::counter!(REQUESTS_TOTAL, "method" => method, "code" => code)
+        })
+        .increment(1);
+    series.duration.record(elapsed.as_secs_f64());
+    series.messages.record(messages as f64);
+    series.sent.increment(sent);
     SENT_BYTES.fetch_add(sent, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Method;
-
-    /// Every served path names its own method; any other path (reflection, garbage) shares one
-    /// `unknown` label, so the label set stays fixed however clients misbehave
-    #[test]
-    fn a_path_resolves_to_its_method_or_to_unknown() {
-        let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
-        for method in super::METHODS.iter().filter(|name| **name != "unknown") {
-            assert_eq!(Method::of(&format!("{service}/{method}")).name(), *method);
-        }
-        for other in ["/grpc.reflection.v1.ServerReflection/Info", "/", "", "/x/GetBlocks"] {
-            assert_eq!(Method::of(other).name(), "unknown", "{other:?}");
-        }
-    }
 }

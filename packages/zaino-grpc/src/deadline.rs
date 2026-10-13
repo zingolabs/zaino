@@ -18,7 +18,7 @@ use http_body::Frame;
 use tokio::time::{Instant, Sleep};
 use tonic::{body::Body, Status};
 
-use crate::wire::{status_response, trailers};
+use crate::wire::trailers;
 
 /// `grpc-timeout` (gRPC over HTTP/2: <= 8 digits + `H M S m u n`); malformed = none, as tonic reads
 /// it
@@ -40,16 +40,16 @@ fn requested(headers: &HeaderMap) -> Option<Duration> {
     }
 }
 
-/// One request's bounds, fixed at arrival (`idle` = `None`: never idles out)
+/// One request's bounds, fixed at arrival (`idle_limit` = `None`: never idles out)
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Bounds {
     deadline: Option<Instant>,
-    idle: Option<Duration>,
+    idle_limit: Option<Duration>,
 }
 
 impl Bounds {
-    pub(crate) fn of(headers: &HeaderMap, idle: Option<Duration>) -> Self {
-        Self { deadline: requested(headers).map(|timeout| Instant::now() + timeout), idle }
+    pub(crate) fn of(headers: &HeaderMap, idle_limit: Option<Duration>) -> Self {
+        Self { deadline: requested(headers).map(|timeout| Instant::now() + timeout), idle_limit }
     }
 
     /// `answer` cut at the first bound; a stream's body (status in trailers) bounded the same
@@ -57,7 +57,7 @@ impl Bounds {
         self,
         answer: impl Future<Output = Response<Body>>,
     ) -> Response<Body> {
-        let first_message = self.idle.map(|idle| Instant::now() + idle);
+        let first_message = self.idle_limit.map(|limit| Instant::now() + limit);
         let cut = match (self.deadline, first_message) {
             (Some(deadline), Some(idle)) => Some(deadline.min(idle)),
             (deadline, idle) => deadline.or(idle),
@@ -65,7 +65,7 @@ impl Bounds {
         let response = match cut {
             Some(at) => match tokio::time::timeout_at(at, answer).await {
                 Ok(response) => response,
-                Err(_) => return status_response(self.cut_at(at)),
+                Err(_) => return self.cut_at(at).into_http(),
             },
             None => answer.await,
         };
@@ -74,14 +74,16 @@ impl Bounds {
             return response;
         }
         let deadline = self.deadline.map(|at| Box::pin(tokio::time::sleep_until(at)));
-        let (limit, idle) = (self.idle, None);
-        response.map(|inner| Body::new(Bounded { inner: Some(inner), deadline, limit, idle }))
+        let (idle_limit, idle_timer) = (self.idle_limit, None);
+        response.map(|inner| {
+            Body::new(Bounded { inner: Some(inner), deadline, idle_limit, idle_timer })
+        })
     }
 
     /// Why a cut at `at` ended the request
     fn cut_at(&self, at: Instant) -> Status {
-        match (self.deadline == Some(at), self.idle) {
-            (false, Some(idle)) => idled(idle),
+        match (self.deadline == Some(at), self.idle_limit) {
+            (false, Some(limit)) => idled(limit),
             _ => expired(),
         }
     }
@@ -97,12 +99,12 @@ fn idled(idle: Duration) -> Status {
 
 /// A stream body under its [`Bounds`] (`inner` dropped at a cut: its reads and permits go with it)
 ///
-/// - `idle` runs from the first `Pending` since the last frame, never while hyper holds one
+/// - `idle_timer` runs from the first `Pending` since the last frame, never while hyper holds one
 struct Bounded {
     inner: Option<Body>,
     deadline: Option<Pin<Box<Sleep>>>,
-    limit: Option<Duration>,
-    idle: Option<Pin<Box<Sleep>>>,
+    idle_limit: Option<Duration>,
+    idle_timer: Option<Pin<Box<Sleep>>>,
 }
 
 impl Bounded {
@@ -127,7 +129,7 @@ impl http_body::Body for Bounded {
         }
         match Pin::new(inner).poll_frame(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                this.idle = None;
+                this.idle_timer = None;
                 if frame.is_trailers() {
                     this.inner = None;
                 }
@@ -143,9 +145,10 @@ impl http_body::Body for Bounded {
                         return this.cut(expired());
                     }
                 }
-                if let Some(limit) = this.limit {
-                    let idle = this.idle.get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
-                    if idle.as_mut().poll(cx).is_ready() {
+                if let Some(limit) = this.idle_limit {
+                    let timer =
+                        this.idle_timer.get_or_insert_with(|| Box::pin(tokio::time::sleep(limit)));
+                    if timer.as_mut().poll(cx).is_ready() {
                         return this.cut(idled(limit));
                     }
                 }
@@ -295,9 +298,8 @@ mod tests {
         use zaino_persistence::IndexKind;
         use zaino_proto::proto::service as proto;
 
-        use crate::service::Routes;
+        use crate::service::{Method, Routes};
         use crate::testing::{dispatch, indexed, routes, snapshot, MAINNET};
-        use crate::wire::path;
 
         let chain = zaino_primitives::testing::MockChain::regtest().network(MAINNET);
         let genesis = chain.genesis();
@@ -318,7 +320,7 @@ mod tests {
                 futures::stream::pending(),
             );
             let mut request = http::Request::builder()
-                .uri(format!("http://localhost{}", path::GET_TADDRESS_BALANCE_STREAM));
+                .uri(format!("http://localhost{}", Method::GetTaddressBalanceStream.path()));
             if let Some(header) = header {
                 request = request.header("grpc-timeout", header);
             }
