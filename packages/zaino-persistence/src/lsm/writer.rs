@@ -135,7 +135,7 @@ impl SegmentWriter {
     /// - no row left → no file, `output: None` (the inputs retire with nothing in their place)
     /// - inputs read through their page checksums (corrupt input dies, never propagates)
     /// - caller then commits a manifest listing it in their place, then
-    ///   [`remove`](Self::remove)s the inputs
+    ///   [removes](SegmentDir::remove) the inputs
     /// - streams: memory = a few 1 MiB buffers + summary + filter's shard table, whatever the
     ///   segments' size (fences + fingerprints spill to scratch files, `spill.rs`)
     pub(crate) fn merge(
@@ -178,33 +178,28 @@ impl SegmentWriter {
                 group.push((source, at));
             }
             uncharged += group.len() * self.shape.stride;
-            let rows: Vec<&[u8]> = match group.as_slice() {
-                [only] => vec![sources[only.0].row(only.1)],
-                [a, b] if self.shape.deletes => {
-                    let contents = [sources[a.0].content(a.1), sources[b.0].content(b.1)];
-                    let pair = matches!(contents, [Row::Value(_), Row::Tombstone])
-                        || matches!(contents, [Row::Tombstone, Row::Value(_)]);
-                    if !pair {
-                        let reason = format!("key held twice as {contents:?}");
-                        return Err(SegmentError::Contract { segment: id, reason });
-                    }
-                    cancelled += 1;
-                    Vec::new()
+            let held: Vec<&str> = group
+                .iter()
+                .map(|&(source, at)| match sources[source].entry(at).1 {
+                    Some(_) => "value",
+                    None => "tombstone",
+                })
+                .collect();
+            match (group.as_slice(), held.as_slice()) {
+                ([only], _) => {
+                    let row = sources[only.0].row(only.1);
+                    let writing = match &mut out {
+                        Some(out) => out,
+                        None => out.insert(self.create(id, total)?),
+                    };
+                    writing.push(row)?;
+                    uncharged += row.len();
                 }
-                _ if self.shape.deletes => {
-                    let reason = format!("key held {} times", group.len());
+                (_, ["value", "tombstone"] | ["tombstone", "value"]) => cancelled += 1,
+                _ => {
+                    let reason = format!("key held {} times: {}", group.len(), held.join(", "));
                     return Err(SegmentError::Contract { segment: id, reason });
                 }
-                // no deletes: a duplicate = a writer bug, `Navigation::push` panics on it
-                many => many.iter().map(|&(source, at)| sources[source].row(at)).collect(),
-            };
-            for row in rows {
-                let writing = match &mut out {
-                    Some(out) => out,
-                    None => out.insert(self.create(id, total)?),
-                };
-                writing.push(row)?;
-                uncharged += row.len();
             }
             if uncharged >= CHUNK {
                 slot.charge(std::mem::take(&mut uncharged));
@@ -244,7 +239,7 @@ impl SegmentWriter {
             }
             let filtered = &key[..file.filtered()];
             assert!(file.may_contain(filtered), "segment {} slot {slot}: filter finds it", meta.id);
-            file.content(slot);
+            file.entry(slot);
             digest.update(file.row(slot));
         }
         assert_eq!(digest.finalize(), written, "segment {}: rows read back as written", meta.id);

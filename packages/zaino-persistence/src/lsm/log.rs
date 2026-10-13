@@ -245,9 +245,6 @@ impl SegmentLog {
                 .join()
                 .unwrap_or_else(|payload| panic::resume_unwind(payload))?
                 .expect("merges cancel only on drop");
-            let inputs: u64 = merge.inputs.iter().map(|input| input.records).sum();
-            let written = merged.output.map_or(0, |output| output.records);
-            assert_eq!(written + 2 * merged.cancelled, inputs, "{}: merge rows", self.name);
             tiers.push(merge.tier);
             staged.swap(merge.tier, merge.inputs, merged, took);
         }

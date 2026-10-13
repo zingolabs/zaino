@@ -55,38 +55,27 @@ pub(crate) enum Row<'a> {
 const VALUE: u8 = 0;
 const TOMBSTONE: u8 = 1;
 
-/// `key ‖ value` (+ flag on a `deletes()` table) into `out`
-///
-/// - panics: a tombstone on a table without deletes, or widths off the shape (bugs)
+/// `key ‖ value` (+ flag on a `deletes()` table) into `out` (widths: `SegmentLog::batch` checks)
 pub(crate) fn encode_row(shape: &Shape, key: &[u8], row: Row<'_>, out: &mut Vec<u8>) {
-    assert_eq!(key.len(), shape.key_len, "row key width");
     out.extend_from_slice(key);
     match row {
-        Row::Value(value) => {
-            assert_eq!(value.len(), shape.value_len, "row value width");
-            out.extend_from_slice(value);
-        }
-        Row::Tombstone => {
-            assert!(shape.deletes, "a tombstone in a table without deletes");
-            out.resize(out.len() + shape.value_len, 0);
-        }
+        Row::Value(value) => out.extend_from_slice(value),
+        Row::Tombstone => out.resize(out.len() + shape.value_len, 0),
     }
     if shape.deletes {
         out.push(if matches!(row, Row::Tombstone) { TOMBSTONE } else { VALUE });
     }
 }
 
-/// `(key, row)` of an encoded row; `None` = a flag that is neither, or a tombstone whose value
+/// Encoded row's value or tombstone; `None` = a flag that is neither, or a tombstone whose value
 /// bytes are not zero (corruption: page checksums passed, so a writer bug)
-pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<(&'a [u8], Row<'a>)> {
-    let (key, rest) = row.split_at(shape.key_len);
-    let (value, flag) = rest.split_at(shape.value_len);
-    let decoded = match flag {
-        [] | [VALUE] => Row::Value(value),
-        [TOMBSTONE] if value.iter().all(|&byte| byte == 0) => Row::Tombstone,
-        _ => return None,
-    };
-    Some((key, decoded))
+pub(crate) fn decode_row<'a>(shape: &Shape, row: &'a [u8]) -> Option<Row<'a>> {
+    let (value, flag) = row[shape.key_len..].split_at(shape.value_len);
+    match flag {
+        [] | [VALUE] => Some(Row::Value(value)),
+        [TOMBSTONE] if value.iter().all(|&byte| byte == 0) => Some(Row::Tombstone),
+        _ => None,
+    }
 }
 
 impl Shape {
@@ -293,7 +282,7 @@ mod tests {
             encode_row(&shape, &key, row, &mut out);
             assert_eq!(out, golden, "{row:?} encoded");
             assert_eq!(out.len(), shape.stride, "{row:?} = one stride");
-            assert_eq!(decode_row(&shape, &out), Some((&key[..], row)), "{row:?} decoded");
+            assert_eq!(decode_row(&shape, &out), Some(row), "{row:?} decoded");
         }
         let corrupt: [&[u8]; 2] =
             [&[7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 0, 2], &[7, 7, 7, 7, 7, 7, 7, 7, 0, 0, 0, 9, 1]];

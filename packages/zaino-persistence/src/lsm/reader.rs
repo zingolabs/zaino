@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use super::{
     dir::SegmentDir,
     file::{Prefetch, SegmentFile},
-    layout::{Row, Shape},
+    layout::Shape,
     Result, SegmentMeta,
 };
 use crate::{
@@ -95,56 +95,37 @@ impl Snapshot {
         end: &[u8],
         limit: usize,
     ) -> Option<Vec<(Bytes, Bytes)>> {
-        if self.shape.deletes {
-            return self.live_range(start, end, limit);
-        }
-        let mut found = Vec::new();
-        for file in self.candidates(start, end) {
-            for slot in file.seek(start)..file.records() {
-                if file.key(slot) >= end {
-                    break;
-                }
-                if found.len() == limit {
-                    return None;
-                }
-                found.push(file.entry(slot));
+        let mut rows = Vec::new();
+        for (file, slot) in self.scan(start, end) {
+            // no tombstones: every row read is one answered
+            if !self.shape.deletes && rows.len() == limit {
+                return None;
             }
-        }
-
-        found.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-        for pair in found.windows(2) {
-            assert!(pair[0].0 < pair[1].0, "a key listed in two committed segments");
-        }
-        Some(found)
-    }
-
-    /// [`range`](Self::range) of a `deletes()` table
-    fn live_range(&self, start: &[u8], end: &[u8], limit: usize) -> Option<Vec<(Bytes, Bytes)>> {
-        let mut rows: Vec<(Bytes, Option<Bytes>)> = Vec::new();
-        for file in self.candidates(start, end) {
-            for slot in file.seek(start)..file.records() {
-                if file.key(slot) >= end {
-                    break;
-                }
-                let (key, value) = file.entry(slot);
-                let live = matches!(file.content(slot), Row::Value(_));
-                rows.push((key, live.then_some(value)));
-            }
+            rows.push(file.entry(slot));
         }
         rows.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         let mut found = Vec::new();
-        let mut at = 0;
-        while at < rows.len() {
-            let same = rows[at..].iter().take_while(|(key, _)| *key == rows[at].0).count();
-            match &rows[at..at + same] {
+        for held in rows.chunk_by(|(a, _), (b, _)| a == b) {
+            match held {
                 [(key, Some(value))] => found.push((key.clone(), value.clone())),
-                [(_, None)] => {}
-                [(_, Some(_)), (_, None)] | [(_, None), (_, Some(_))] => {}
+                [(_, None)] | [(_, Some(_)), (_, None)] | [(_, None), (_, Some(_))] => {}
                 many => panic!("a key held {} times across committed segments", many.len()),
             }
-            at += same;
         }
         (found.len() <= limit).then_some(found)
+    }
+
+    /// Every candidate segment's rows in `start..end`, `(file, slot)`
+    fn scan<'a>(
+        &'a self,
+        start: &'a [u8],
+        end: &'a [u8],
+    ) -> impl Iterator<Item = (&'a SegmentFile, usize)> {
+        self.candidates(start, end).flat_map(move |file| {
+            (file.seek(start)..file.records())
+                .take_while(move |&slot| file.key(slot) < end)
+                .map(move |slot| (file.as_ref(), slot))
+        })
     }
 
     /// Segments a `start..end` scan reads: those whose filter may hold a shared filtered prefix
@@ -162,11 +143,6 @@ impl Snapshot {
             .filter(move |file| prefix.is_none_or(|prefix| file.may_contain(prefix)))
     }
 
-    /// Value under `key` (each segment's filter first: a miss = a memory probe per segment)
-    pub(crate) fn get(&self, key: &[u8]) -> Option<Bytes> {
-        self.find(key)
-    }
-
     /// Values for `keys`, in `keys`' order (`None` = absent)
     ///
     /// - probed in ascending key order: neighbouring keys share fence, filter and record pages
@@ -179,7 +155,7 @@ impl Snapshot {
         if sorted.len() >= PARALLEL_FROM {
             self.prefetch(&sorted);
         }
-        let probe = |(key, at): &(&[u8], usize)| (*at, self.find(key));
+        let probe = |(key, at): &(&[u8], usize)| (*at, self.get(key));
         let found: Vec<(usize, Option<Bytes>)> = match sorted.len() < PARALLEL_FROM {
             true => sorted.iter().map(probe).collect(),
             false => sorted.par_iter().map(probe).collect(),
@@ -231,27 +207,29 @@ impl Snapshot {
         per_segment.flatten_iter().collect()
     }
 
-    /// Newest segment first: list ≈ data age (batches append, merge takes its oldest input's slot)
-    /// + lookups skew recent; order never changes an answer (keys unique across segments)
+    /// Value under `key` (each segment's filter first: a miss = a memory probe per segment)
+    ///
+    /// - newest segment first: list ≈ data age (batches append, a merge takes its oldest input's
+    ///   slot) + lookups skew recent; order never changes an answer (keys unique across segments)
     ///
     /// - `deletes()` table: every admitting segment checked, a tombstone in any = absent
-    fn find(&self, key: &[u8]) -> Option<Bytes> {
+    pub(crate) fn get(&self, key: &[u8]) -> Option<Bytes> {
         assert_eq!(key.len(), self.shape.key_len, "a point lookup names a whole key");
         let mut held = self.segments.iter().rev().filter_map(|file| {
             if !file.may_contain(&key[..self.shape.filtered]) {
                 return None;
             }
             let slot = file.seek(key);
-            (slot < file.records() && file.key(slot) == key).then_some((file, slot))
+            (slot < file.records() && file.key(slot) == key).then(|| file.entry(slot).1)
         });
         if !self.shape.deletes {
-            return held.next().map(|(file, slot)| file.entry(slot).1);
+            return held.next().flatten();
         }
         let mut value = None;
-        for (file, slot) in held {
-            match file.content(slot) {
-                Row::Tombstone => return None,
-                Row::Value(_) => value = Some(file.entry(slot).1),
+        for held in held {
+            match held {
+                None => return None,
+                Some(held) => value = Some(held),
             }
         }
         value

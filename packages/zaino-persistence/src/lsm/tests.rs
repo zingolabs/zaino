@@ -12,7 +12,7 @@ use super::{
     dir::SegmentDir,
     file::{Prefetch, SegmentFile},
     file_name,
-    layout::{Row, Shape},
+    layout::Shape,
     writer::SegmentWriter,
     SegmentError, SegmentLog, Slots, Snapshot,
 };
@@ -402,13 +402,17 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
             Ok((&[(2, true), (3, true)], 1)),
         ),
         ("lone tombstone", &[&[(1, false)], &[(2, true)]], Ok((&[(1, false), (2, true)], 0))),
-        ("two values", &[&[(1, true)], &[(1, true)]], Err("key held twice as [Value(")),
+        ("two values", &[&[(1, true)], &[(1, true)]], Err("key held 2 times: value, value")),
         (
             "two tombstones",
             &[&[(1, false)], &[(1, false)]],
-            Err("key held twice as [Tombstone, Tombstone]"),
+            Err("key held 2 times: tombstone, tombstone"),
         ),
-        ("three rows", &[&[(1, true)], &[(1, false)], &[(1, true)]], Err("key held 3 times")),
+        (
+            "three rows",
+            &[&[(1, true)], &[(1, false)], &[(1, true)]],
+            Err("key held 3 times: value, tombstone, value"),
+        ),
     ];
     let shape = Shape::of(&probed().deletes());
     let slots = Slots::new(1, u64::MAX);
@@ -440,9 +444,9 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
                 )
                 .expect("output");
                 (0..file.records())
-                    .map(|slot| match file.content(slot) {
-                        Row::Value(value) => (file.key(slot).to_vec(), Some(value.to_vec())),
-                        Row::Tombstone => (file.key(slot).to_vec(), None),
+                    .map(|slot| {
+                        let (key, value) = file.entry(slot);
+                        (key.to_vec(), value.map(|value| value.to_vec()))
                     })
                     .collect()
             });

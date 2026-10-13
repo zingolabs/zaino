@@ -873,7 +873,7 @@ fn a_removal_from_a_table_without_deletes_panics() {
 // same key inserted by two commits: neither layer above durable can see the first
 
 #[test]
-#[should_panic(expected = "a key listed in two committed segments")]
+#[should_panic(expected = "a key held 2 times across committed segments")]
 fn an_insert_only_key_in_two_committed_segments_panics_on_read() {
     let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
     for n in [1, 2] {
@@ -898,38 +898,27 @@ fn a_deletes_key_held_in_two_committed_segments_panics_on_read() {
     store.committed().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
 }
 
-/// Two 1-row segments at fanout 2 = a merge; its duplicate panics on its thread, resumed at commit
+/// Two 1-row segments at fanout 2 = a merge; its duplicate = the merge's `Contract` error, surfaced
+/// at the next commit (either table kind)
 #[test]
-#[should_panic(expected = "strictly ascending")]
-fn a_merge_of_an_insert_only_key_held_twice_panics_at_the_next_commit() {
-    let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
-    for n in [1, 2] {
-        let mut changes = store.changes(block_ref(n));
-        changes.map(PROBED).insert(&probed_key(0), &[0; 4]);
-        store.apply(changes);
-        store.commit().expect("commit");
+fn a_merge_of_a_key_held_twice_fails_the_next_commit() {
+    for table in [PROBED, SCANNED] {
+        let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
+        let key = if table == PROBED { probed_key(0) } else { scanned_key(1, 0) };
+        let value = vec![0; if table == PROBED { 4 } else { 8 }];
+        for n in [1, 2] {
+            let mut changes = store.changes(block_ref(n));
+            changes.map(table).insert(&key, &value);
+            store.apply(changes);
+            store.commit().expect("commit");
+        }
+        store.settle();
+        store.apply(store.changes(block_ref(3)));
+
+        let refused = store.commit().expect_err("a merge of two values of one key").to_string();
+
+        assert!(refused.contains("key held 2 times: value, value"), "{}: {refused}", table.name);
     }
-    store.settle();
-    store.apply(store.changes(block_ref(3)));
-    let _ = store.commit();
-}
-
-/// `deletes()` table: same duplicate = the merge's `Contract` error, not a panic
-#[test]
-fn a_merge_of_a_deletes_key_held_twice_fails_the_next_commit() {
-    let mut store = open(&DiskEngine::with_fanout(SimFs::new(), 2));
-    for n in [1, 2] {
-        let mut changes = store.changes(block_ref(n));
-        changes.map(SCANNED).insert(&scanned_key(1, 0), &[0; 8]);
-        store.apply(changes);
-        store.commit().expect("commit");
-    }
-    store.settle();
-    store.apply(store.changes(block_ref(3)));
-
-    let refused = store.commit().expect_err("a merge of two values of one key").to_string();
-
-    assert!(refused.contains("key held twice as [Value("), "{refused}");
 }
 
 #[test]
