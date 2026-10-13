@@ -95,51 +95,26 @@ pub fn fold<V: MapRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path, sync::Arc};
+    use std::num::NonZeroUsize;
 
-    use proptest::strategy::Strategy as _;
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, View,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
     use zaino_primitives::types::{OutPoint, Script, TransactionId, Zatoshis};
-    use zaino_sync::{IndexerDataSink, Step};
+    use zaino_sync::testing::{
+        block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
+    };
     use zcash_protocol::consensus::NetworkType;
     use zcash_transparent::address::TransparentAddress;
 
     use super::*;
-    use crate::{key::AddressKey, TransactionRef, FORMAT, TABLES};
+    use crate::{key::AddressKey, AddressUtxo, TransactionRef, FORMAT, TABLES};
 
-    const NAME: &str = IndexKind::TransparentAddress.name();
-    const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
     const SCHEMA: Schema =
         Schema::new(IndexKind::TransparentAddress, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// `write_buffer` = MIN: every applied block committed by the store itself
-    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/ta"), &SCHEMA, write_buffer)
-            .expect("open")
-    }
-
-    /// Writer over `store`, its final stream and handle
-    fn start(
-        store: DiskStore,
-    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
+    fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = TransparentAddressIndexWriter::new(store);
-        let handle = writer.handle();
-        let mut sink = IndexerDataSink::new();
-        let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, handle, running)
-    }
-
-    fn step(block: &Arc<Block>) -> Step<Block> {
-        Step::Apply { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// The chain's final tip: the writer commits after it
-    fn finalized(block: &Arc<Block>) -> Step<Block> {
-        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
+        Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
     /// Block 1 spends alice's block-0 receive, paying bob: its `BlockChanges` = the spend under the
@@ -163,7 +138,7 @@ mod tests {
         let blocks = chain.blocks(one);
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
         fold(&TransparentAddressReader::new(store.staged()), &blocks[0], &mut genesis);
         store.apply(genesis);
@@ -195,13 +170,6 @@ mod tests {
         assert_eq!(read.spends_of(&[alice_receive]), vec![Some(Spend { height: 1, spender })]);
     }
 
-    /// `handle`'s durable tip at `tip` (`None` = nothing)
-    async fn reached(handle: &mut IndexHandle<DiskView>, tip: Option<u32>) {
-        while handle.tip().map(|tip| u32::from(tip.height)) != tip {
-            assert!(handle.changed().await, "writer alive");
-        }
-    }
-
     /// Ten one-block commits (write_buffer = 1 byte: each block commits as it arrives; the 9th
     /// launches a background merge), crashed at every persistence point: each state reopens to a
     /// committed prefix with its one unspent output and balance exact, takes the next block
@@ -222,43 +190,43 @@ mod tests {
         }
         let blocks = chain.blocks(chain.tip());
         let (fs, recording) = SimFs::recording();
-        {
-            let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MIN));
-            for (acked, block) in (1u64..).zip(&blocks[..10]) {
-                sink.send(step(block)).await;
-                reached(&mut handle, Some(u32::from(block.header().height))).await;
-                fs.set_tag(acked);
-            }
-            sink.shutdown();
-            running.await.expect("stops at Shutdown");
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
+        for (acked, block) in (1u64..).zip(&blocks[..10]) {
+            writer.send(step(block)).await;
+            writer.durable_at(block.header().height).await;
+            fs.set_tag(acked);
         }
+        writer.stop().await.expect("stops at Shutdown");
 
-        let expected = |count: u64| match count {
-            0 => (Vec::new(), 0),
-            count => (vec![(h(count as u32 - 1), count)], count),
+        // `count` blocks held: alice's one unspent = block `count - 1`'s coinbase
+        let expected = |count: u8| {
+            let balance = Zatoshis::new(u64::from(count)).expect("in supply");
+            let unspent = (count > 0).then(|| AddressUtxo {
+                outpoint: outpoint([count; 32], 0),
+                height: h(u32::from(count) - 1),
+                value: balance,
+            });
+            (Ok(vec![Vec::from_iter(unspent)]), Ok(vec![balance]))
         };
         let observed = |view: DiskView| {
             let reader = TransparentAddressReader::new(view);
-            let utxos = reader.utxos(&alice, h(0)).expect("utxos");
-            let utxos = utxos.into_iter().map(|utxo| (utxo.height, utxo.value.as_u64()));
-            (utxos.collect::<Vec<_>>(), reader.balance(&alice).expect("balance").as_u64())
+            (reader.utxos_of(&[alice], h(0)), reader.balances(&[alice]))
         };
         let states = recording.crash_states();
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs, NonZeroUsize::MAX);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
             // one block per commit: blocks held = commits recovered
-            let count = store.committed().tip().map_or(0, |tip| u64::from(tip.height) + 1);
+            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as u8 + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
-            assert!(acked.contains(&count), "{label}: recovered {count}");
+            assert!(acked.contains(&u64::from(count)), "{label}: recovered {count}");
             assert_eq!(observed(store.committed()), expected(count), "{label}");
 
-            let (sink, _handle, running) = start(store);
-            sink.send(step(&blocks[count as usize])).await;
-            sink.shutdown();
-            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let after = observed(open(&state.fs, NonZeroUsize::MAX).committed());
+            let writer = start(store);
+            writer.send(step(&blocks[usize::from(count)])).await;
+            writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            let after = observed(open(&state.fs, &SCHEMA, NonZeroUsize::MAX).committed());
             assert_eq!(after, expected(count + 1), "{label}: next after recovery");
         }
     }
@@ -289,25 +257,25 @@ mod tests {
             b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
         });
         let blocks = chain.blocks(tip);
-        let reader = |handle: &IndexHandle<DiskView>| TransparentAddressReader::new(handle.view());
-        let zats = |balance: Result<Zatoshis, _>| balance.map(Zatoshis::as_u64);
+        let zats = |zats: u64| Zatoshis::new(zats).expect("in supply");
+        let reader =
+            |writer: &Writer<DiskView>| TransparentAddressReader::new(writer.handle().view());
 
-        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
-        sink.send(step(&blocks[0])).await;
-        sink.send(finalized(&blocks[1])).await;
-        reached(&mut handle, Some(1)).await;
-        assert_eq!(zats(reader(&handle).balance(&alice)), Ok(800), "both receives unspent");
-        sink.send(finalized(&blocks[2])).await;
-        reached(&mut handle, Some(2)).await;
-        let at_two = reader(&handle);
-        assert_eq!(zats(at_two.balance(&alice)), Ok(300), "2's spend retires 0's receive");
-        let utxos = at_two.utxos(&alice, h(0)).expect("utxos");
-        let utxos: Vec<_> = utxos
-            .iter()
-            .map(|utxo| (utxo.height, utxo.outpoint.txid, utxo.value.as_u64()))
-            .collect();
-        let received = TransactionId::from([0x11; 32]);
-        assert_eq!(utxos, [(h(1), received, 300)], "only the unspent receive");
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
+        writer.send(step(&blocks[0])).await;
+        writer.send(finalized(&blocks[1])).await;
+        writer.durable_at(h(1)).await;
+        let both_unspent = reader(&writer).balances(&[alice]);
+        assert_eq!(both_unspent, Ok(vec![zats(800)]), "both receives unspent");
+        writer.send(finalized(&blocks[2])).await;
+        writer.durable_at(h(2)).await;
+        let at_two = reader(&writer);
+        let balances = at_two.balances(&[alice, bob]);
+        assert_eq!(balances, Ok(vec![zats(300), zats(560)]), "2's spend retires 0's receive");
+        let unspent =
+            AddressUtxo { outpoint: outpoint([0x11; 32], 0), height: h(1), value: zats(300) };
+        let utxos = at_two.utxos_of(&[alice], h(0));
+        assert_eq!(utxos, Ok(vec![vec![unspent]]), "only the unspent receive");
         // paying and spending transactions both alice's, each once
         let touching = at_two.transactions(&alice, h(0), h(2)).expect("transactions");
         let expected = [(0, 0x10), (1, 0x11), (2, 0x20)].map(|(height, tag)| TransactionRef {
@@ -316,32 +284,25 @@ mod tests {
         });
         assert_eq!(touching, expected);
         // opaque outputs stored, not dropped (same fold answers for them)
-        assert_eq!(zats(at_two.balance_of(AddressKey::opaque())), Ok(1));
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        assert_eq!(at_two.balances_of(&[AddressKey::opaque()]), Ok(vec![zats(1)]));
+        writer.stop().await.expect("stops at Shutdown");
 
-        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
-        assert_eq!(zats(reader(&handle).balance(&bob)), Ok(560), "resumed at 2, no replay");
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
+        let resumed = reader(&writer).balances(&[bob]);
+        assert_eq!(resumed, Ok(vec![zats(560)]), "resumed at 2, no replay");
         for block in &blocks[1..3] {
-            sink.send(step(block)).await;
+            writer.send(step(block)).await;
         }
-        sink.send(finalized(&blocks[3])).await;
-        reached(&mut handle, Some(3)).await;
-        let at_three = reader(&handle);
-        assert_eq!(zats(at_three.balance(&alice)), Ok(290), "pre-restart receive spent after it");
-        assert_eq!(zats(at_three.balance(&bob)), Ok(560), "resent 2 not applied twice");
-        let recent = at_three.utxos(&alice, h(3)).expect("utxos").len();
-        assert_eq!(recent, 1, "start_height filters the reply, not the spend resolution");
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
-    }
-
-    /// - `Send(n)`: next `n` blocks
-    /// - `Reopen`: shutdown, reopen, resend from one below the tip (held: skipped)
-    #[derive(Debug, Clone)]
-    enum Move {
-        Send(usize),
-        Reopen,
+        writer.send(finalized(&blocks[3])).await;
+        writer.durable_at(h(3)).await;
+        let at_three = reader(&writer);
+        let balances = at_three.balances(&[alice, bob]);
+        assert_eq!(balances, Ok(vec![zats(290), zats(560)]), "resent 2 not applied twice");
+        let unspent =
+            AddressUtxo { outpoint: outpoint([0x30; 32], 0), height: h(3), value: zats(290) };
+        let recent = at_three.utxos_of(&[alice], h(3));
+        assert_eq!(recent, Ok(vec![vec![unspent]]), "start filters the reply, not spends");
+        writer.stop().await.expect("stops at Shutdown");
     }
 
     /// Per block: outputs `(address 0..3, zats)`, spend picks (index into what is unspent then)
@@ -364,20 +325,9 @@ mod tests {
                 ),
                 1..10,
             ),
-            moves in proptest::collection::vec(
-                proptest::prop_oneof![
-                    4 => (1usize..=3).prop_map(Move::Send),
-                    1 => proptest::strategy::Just(Move::Reopen),
-                ],
-                1..16,
-            ),
+            moves in moves(),
         ) {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .start_paused(true)
-                .build()
-                .expect("runtime")
-                .block_on(random_history(plans, moves));
+            block_on_paused(random_history(plans, moves));
         }
     }
 
@@ -452,84 +402,53 @@ mod tests {
                     Some((height, spender)) => {
                         touched.push(TransactionRef { height: h(height), txid: spender })
                     }
-                    None => utxos.push((received, txid, vout, zats)),
+                    None => utxos.push(AddressUtxo {
+                        outpoint: OutPoint { txid, vout },
+                        height: h(received),
+                        value: Zatoshis::new(zats).expect("in supply"),
+                    }),
                 }
             }
             touched.sort_unstable();
             touched.dedup();
-            let balance: u64 = utxos.iter().map(|utxo| utxo.3).sum();
-            (utxos, balance, touched)
+            let balance = utxos.iter().map(|utxo| utxo.value.as_u64()).sum();
+            (utxos, Zatoshis::new(balance).expect("in supply"), touched)
         };
 
         let fs = SimFs::new();
-        let (mut sink, mut handle, mut running) = start(open(&fs, NonZeroUsize::MIN));
-        let mut sent = 0usize;
-        for (at, next) in moves.iter().enumerate() {
-            match *next {
-                Move::Send(count) => {
-                    for block in blocks.iter().skip(sent).take(count) {
-                        sink.send(step(block)).await;
-                        sent += 1;
-                    }
-                }
-                Move::Reopen => {
-                    sink.shutdown();
-                    running.await.expect("stops at Shutdown");
-                    (sink, handle, running) = start(open(&fs, NonZeroUsize::MIN));
-                    if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&blocks[held])).await;
-                    }
-                }
+        let mut stream = FinalStream::new(&blocks);
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
+        for (at, next) in moves.into_iter().enumerate() {
+            if next == Move::Reopen {
+                writer.stop().await.expect("stops at Shutdown");
+                writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
             }
-            reached(&mut handle, sent.checked_sub(1).map(|last| last as u32)).await;
+            for step in stream.steps(next) {
+                writer.send(step).await;
+            }
+            writer.durable_at(stream.tip()).await;
 
-            let held = sent as u32;
-            let reader = TransparentAddressReader::new(handle.view());
-            for tag in 0..3u8 {
-                let (utxos, balance, touched) = expected(tag, held);
-                let served = reader.utxos(&address(tag), h(0)).expect("utxos");
-                let served: Vec<_> = served
-                    .into_iter()
-                    .map(|utxo| {
-                        let OutPoint { txid, vout } = utxo.outpoint;
-                        (u32::from(utxo.height), txid, vout, utxo.value.as_u64())
-                    })
-                    .collect();
-                assert_eq!(served, utxos, "move {at} {next:?}: utxos of {tag}");
-                let served = reader.balance(&address(tag)).expect("balance").as_u64();
-                assert_eq!(served, balance, "move {at} {next:?}: balance of {tag}");
-                if held > 0 {
+            let held = stream.sent() as u32;
+            let reader = TransparentAddressReader::new(writer.handle().view());
+            if held > 0 {
+                for tag in 0..3u8 {
                     let served = reader.transactions(&address(tag), h(0), h(held - 1));
+                    let touched = expected(tag, held).2;
                     assert_eq!(served, Ok(touched), "move {at} {next:?}: transactions of {tag}");
                 }
             }
 
-            // every address in one request, repeats included: one batched spend lookup, same
-            // answers as one address at a time
+            // every address in one request, repeats included: one batched spend lookup, each
+            // answer its own address's
             let tags = [2u8, 0, 1, 0];
             let addresses = tags.map(address);
-            let batched: Vec<Vec<_>> = reader
-                .utxos_of(&addresses, h(0))
-                .expect("utxos of all")
-                .into_iter()
-                .map(|utxos| {
-                    utxos
-                        .into_iter()
-                        .map(|utxo| {
-                            let OutPoint { txid, vout } = utxo.outpoint;
-                            (u32::from(utxo.height), txid, vout, utxo.value.as_u64())
-                        })
-                        .collect()
-                })
-                .collect();
-            let one_by_one: Vec<Vec<_>> = tags.iter().map(|&tag| expected(tag, held).0).collect();
-            assert_eq!(batched, one_by_one, "move {at} {next:?}: utxos of all");
-            let balances = reader.balances(&addresses).expect("balances of all");
-            let balances: Vec<u64> = balances.into_iter().map(|zats| zats.as_u64()).collect();
-            let one_by_one: Vec<u64> = tags.iter().map(|&tag| expected(tag, held).1).collect();
-            assert_eq!(balances, one_by_one, "move {at} {next:?}: balances of all");
+            let utxos = tags.map(|tag| expected(tag, held).0).to_vec();
+            let served = reader.utxos_of(&addresses, h(0));
+            assert_eq!(served, Ok(utxos), "move {at} {next:?}: utxos of all");
+            let balances = tags.map(|tag| expected(tag, held).1).to_vec();
+            let served = reader.balances(&addresses);
+            assert_eq!(served, Ok(balances), "move {at} {next:?}: balances of all");
         }
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        writer.stop().await.expect("stops at Shutdown");
     }
 }

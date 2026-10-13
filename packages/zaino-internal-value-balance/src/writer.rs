@@ -204,29 +204,19 @@ fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::num::NonZeroUsize;
 
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, View,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
     use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, SignedZatoshis, Transaction};
-    use zaino_sync::{IndexerDataSink, Subscription};
+    use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::{FORMAT, TABLES};
 
-    const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
     const SCHEMA: Schema =
         Schema::new(IndexKind::ValueBalance, FORMAT, NetworkType::Regtest, TABLES);
-
-    /// `write_buffer` = MIN: every applied block committed by the store itself
-    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/vb"), &SCHEMA, write_buffer)
-            .expect("open")
-    }
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
     /// the parent, its own block or an earlier run block; fees = the stated ones
@@ -267,7 +257,7 @@ mod tests {
         });
         let blocks = chain.blocks(two);
         let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
         let genesis_fees = fold(&ValueBalanceReader::new(store.staged()), &blocks[0], &mut genesis);
         assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
@@ -397,26 +387,13 @@ mod tests {
         ];
 
         for (case, blocks, expected) in cases {
-            let store = open(&SimFs::new(), NonZeroUsize::MAX);
+            let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
                 run.iter().map(|block| store.changes(block.at())).collect();
             let folded = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_run_skipping_a_block_panics() {
-        let mut chain = MockChain::regtest();
-        let two = chain.mine_empty(2);
-        let (genesis, two) = (chain.block(chain.genesis().hash), chain.block(two.hash));
-        let store = open(&SimFs::new(), NonZeroUsize::MAX);
-        let run = [&**genesis, &**two];
-        let mut out: Vec<BlockChanges> =
-            run.iter().map(|block| store.changes(block.at())).collect();
-        let _ = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
     }
 
     /// Fees read back for a held block: as folded; a height with no record or a record not one fee
@@ -433,7 +410,7 @@ mod tests {
         });
         let two = chain.mine(|b| b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)));
         let blocks = chain.blocks(one);
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
             let mut changes = store.changes(block.at());
             fold(&ValueBalanceReader::new(store.staged()), block, &mut changes).expect("folds");
@@ -451,38 +428,15 @@ mod tests {
         assert_eq!(mismatched, Err(FoldError::StoredFeesUnreadable { height: h(1) }));
     }
 
-    /// Writer over `store`: its final stream (`queue` bytes = one run's), handle and fee stream
-    fn start(
-        store: DiskStore,
-        queue: NonZeroUsize,
-    ) -> (
-        IndexerDataSink<Block>,
-        IndexHandle<DiskView>,
-        Subscription<BlockFees>,
-        tokio::task::JoinHandle<()>,
-    ) {
+    /// Writer over `store` (`queue` bytes = one run's) + the fee stream it publishes
+    fn start(store: DiskStore, queue: NonZeroUsize) -> (Writer<DiskView>, Subscription<BlockFees>) {
         let writer = ValueBalanceIndexWriter::new(store);
-        let handle = writer.handle();
-        let (mut sink, mut fee_sink) = (IndexerDataSink::new(), FeeSink::new());
+        let mut fee_sink = FeeSink::new();
         let consumer = fee_sink.subscribe("consumer", QUEUE);
-        let running = tokio::spawn(writer.run(sink.subscribe(NAME, queue), fee_sink));
-        (sink, handle, consumer, running)
-    }
-
-    fn step(block: &Arc<Block>) -> Step<Block> {
-        Step::Apply { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// The chain's final tip: the writer commits after it
-    fn finalized(block: &Arc<Block>) -> Step<Block> {
-        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// Until `handle`'s durable tip = `height`
-    async fn durable_at(handle: &mut IndexHandle<DiskView>, height: u32) {
-        while handle.tip().map(|tip| u32::from(tip.height)) != Some(height) {
-            assert!(handle.changed().await, "writer alive");
-        }
+        (
+            Writer::spawn(writer.handle(), queue, move |blocks| writer.run(blocks, fee_sink)),
+            consumer,
+        )
     }
 
     /// Every fee step through `Shutdown`
@@ -527,14 +481,13 @@ mod tests {
 
         // commits of 0..=3 (4 only ever committed after a recovery); tag = commits acknowledged
         let (fs, recording) = SimFs::recording();
-        let (sink, mut handle, mut consumer, running) = start(open(&fs, NonZeroUsize::MIN), QUEUE);
+        let (mut writer, mut consumer) = start(open(&fs, &SCHEMA, NonZeroUsize::MIN), QUEUE);
         for (acked, block) in (1u64..).zip(&blocks[..4]) {
-            sink.send(step(block)).await;
-            durable_at(&mut handle, u32::from(block.header().height)).await;
+            writer.send(step(block)).await;
+            writer.durable_at(block.header().height).await;
             fs.set_tag(acked);
         }
-        sink.shutdown();
-        running.await.expect("clean stop");
+        writer.stop().await.expect("clean stop");
         let first = &expected[..4];
         assert_eq!(drained(&mut consumer).await, first, "one fee step per block, Shutdown last");
         let tip_after = |commits: u64| (commits > 0).then(|| (commits - 1).min(3) as u32);
@@ -543,16 +496,16 @@ mod tests {
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let crashed = &state.label;
-            let store = open(&state.fs, NonZeroUsize::MAX);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
             let tip = tip_of(&store.committed());
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
             assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
 
             let next = tip.map_or(0, |tip| tip + 1);
-            let (sink, handle, mut consumer, running) = start(store, QUEUE);
-            sink.send(step(&blocks[next as usize])).await;
-            sink.shutdown();
-            running
+            let (writer, mut consumer) = start(store, QUEUE);
+            writer.send(step(&blocks[next as usize])).await;
+            let handle = writer
+                .stop()
                 .await
                 .unwrap_or_else(|error| panic!("{crashed}: commit after recovery: {error}"));
             let resolved = drained(&mut consumer).await;
@@ -625,36 +578,31 @@ mod tests {
             blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
         for queue in [NonZeroUsize::MIN, QUEUE] {
             let fs = SimFs::new();
-            let (sink, mut handle, mut consumer, running) =
-                start(open(&fs, NonZeroUsize::MAX), queue);
+            let (mut writer, mut consumer) = start(open(&fs, &SCHEMA, NonZeroUsize::MAX), queue);
             for block in &blocks[..4] {
-                sink.send(step(block)).await;
+                writer.send(step(block)).await;
             }
-            sink.send(finalized(&blocks[4])).await;
-            durable_at(&mut handle, 4).await;
-            sink.shutdown();
-            running.await.expect("clean stop");
+            writer.send(finalized(&blocks[4])).await;
+            writer.durable_at(h(4)).await;
+            writer.stop().await.expect("clean stop");
             assert_eq!(drained(&mut consumer).await, expected, "queue {queue}: one per block");
 
-            let (sink, handle, mut consumer, running) = start(open(&fs, NonZeroUsize::MAX), queue);
+            let (writer, mut consumer) = start(open(&fs, &SCHEMA, NonZeroUsize::MAX), queue);
             for block in &blocks[1..] {
-                sink.send(step(block)).await;
+                writer.send(step(block)).await;
             }
-            sink.shutdown();
-            running.await.expect("clean stop");
+            let handle = writer.stop().await.expect("clean stop");
             assert_eq!(drained(&mut consumer).await, expected[1..], "queue {queue}: republished");
             let tip = handle.tip().map(|tip| tip.height);
             assert_eq!(tip, Some(h(4)), "held: nothing new");
         }
     }
 
-    /// Fold error (each kind: `fold::tests`) = the writer panics, named; the fee consumer never
-    /// sees `Shutdown` (its sink dropped → it panics too)
+    /// Fold error (each kind: the fold tests) → writer panic naming its index + block
     #[tokio::test]
-    async fn a_fold_error_panics_the_writer_and_its_consumer() {
-        let (sink, _handle, mut consumer, running) =
-            start(open(&SimFs::new(), NonZeroUsize::MAX), QUEUE);
-        let downstream = tokio::spawn(async move { consumer.next().await });
+    #[should_panic(expected = "value_balance index: block 1 tx")]
+    async fn a_fold_error_panics_the_writer_naming_the_index() {
+        let (writer, _consumer) = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX), QUEUE);
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest()
             .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
@@ -664,21 +612,9 @@ mod tests {
         let mut txs = chain.block(one.hash).transactions().to_vec();
         txs[1].transparent.inputs[0] = outpoint([0x99; 32], 3);
         let unrecorded = Arc::new(Block::new(chain.block(one.hash).header().clone(), txs));
-        sink.send(step(chain.block(chain.genesis().hash))).await;
-        sink.send(step(&unrecorded)).await;
-
-        let message = |joined: Result<_, tokio::task::JoinError>| {
-            let payload = joined.expect_err("panicked").into_panic();
-            payload
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| payload.downcast_ref::<&str>().map(|message| (*message).to_owned()))
-        };
-        let id = |byte| TransactionId::from([byte; 32]);
-        let expected =
-            FoldError::MissingPrevout { height: h(1), txid: id(0x20), spent: id(0x99), vout: 3 };
-        assert_eq!(message(running.await), Some(format!("value_balance index: {expected}")));
-        let consumer = message(downstream.await.map(drop));
-        assert_eq!(consumer.as_deref(), Some("sink dropped without Shutdown"));
+        writer.send(step(chain.block(chain.genesis().hash))).await;
+        writer.send(step(&unrecorded)).await;
+        let Err(panicked) = writer.stop().await else { panic!("writer stopped cleanly") };
+        std::panic::resume_unwind(panicked.into_panic());
     }
 }

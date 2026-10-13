@@ -14,6 +14,7 @@ description = "Zaino's index sync plumbing: the final stream every index writer 
 [dependencies]
 futures.workspace = true
 metrics = { workspace = true }
+proptest = { workspace = true, optional = true }
 rayon.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
@@ -27,6 +28,7 @@ zaino-traffic.workspace = true
 
 [dev-dependencies]
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
+proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "test-util", "time"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
@@ -40,5 +42,5 @@ unsafe_code = "forbid"
 unreachable_pub = "warn"
 
 [features]
-# `SyncProgress::fixed` (no follower)
-testing = []
+# `SyncProgress::fixed` (no follower), `testing` (index-writer test kit)
+testing = ["dep:proptest", "tokio/test-util", "zaino-persistence/testing"]

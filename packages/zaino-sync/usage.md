@@ -140,6 +140,32 @@ one ahead.
 
 ## Testing a writer
 
-Send `Step`s into a real `IndexerDataSink<Block>` (and `FeeSink`), spawn `run`, wait on
-`handle().changed()`, read through a reader over the committed view, reopen the store for
-durability. Send a `Finalized` step to make the writer commit without filling its buffer.
+`zaino_sync::testing` (feature `testing`, a dev-dependency): the shared kit every index writer's
+tests use; each crate keeps only its own fold oracle.
+
+```rust,ignore
+use zaino_sync::testing::{block_on_paused, finalized, moves, open, step, write_buffers,
+    FinalStream, Move, Writer, QUEUE};
+
+fn start(store: DiskStore) -> Writer<DiskView> {
+    let writer = MyIndexWriter::new(store);
+    Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
+}
+
+let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));  // SimFs, at /<index name>
+writer.send(step(&blocks[0])).await;
+writer.send(finalized(&blocks[1])).await;                     // commits after it
+writer.durable_at(h(1)).await;                                // None = nothing committed
+let handle = writer.stop().await.expect("stops at Shutdown"); // Err = the writer panicked
+```
+
+- `open(fs, schema, write_buffer)`: `write_buffer` = MIN commits every applied block.
+- `Writer::stop` → `Err(JoinError)` on a writer panic: `#[should_panic]` tests re-raise it with
+  `std::panic::resume_unwind(error.into_panic())`.
+- Random histories: `moves()` (1..16 of `Move::Send(1..=3)` / `Move::Reopen`, 4 : 1) and
+  `write_buffers()` (MIN | MAX) as proptest strategies; `FinalStream::new(&blocks).steps(next)`
+  = the steps a move sends (a `Send`'s last `Finalized`, a `Reopen`'s = the last sent block again,
+  into the restarted writer), `tip()` = the durable tip to wait for; `block_on_paused(history)`
+  runs the async body on a current-thread runtime, clock paused.
+- Fold preconditions (`assert_next` / `assert_run`) and the commit-failure panic are tested here,
+  once; an index's tests cover only its own fold.

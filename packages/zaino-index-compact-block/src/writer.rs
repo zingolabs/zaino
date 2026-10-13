@@ -102,7 +102,7 @@ pub fn fold<V: SequenceRead>(
     fees: &BlockFees,
     out: &mut BlockChanges,
 ) -> Result<(), TreeSizeOutOfRange> {
-    assert_next(out, parent.tip(), block);
+    assert_next(out, parent.view().tip(), block);
     let sizes = parent.tip_sizes().advance(block)?;
     out.sequence(BLOCKS).append(&encode_compact_block(block, fees, &sizes));
     Ok(())
@@ -110,39 +110,32 @@ pub fn fold<V: SequenceRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::num::NonZeroUsize;
 
-    use proptest::strategy::Strategy as _;
     use prost::Message as _;
-    use tokio::task::JoinHandle;
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockRef, Height, TreeSize, TreeSizes};
+    use zaino_primitives::types::{Height, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
-    use zaino_sync::{FeeSink, IndexerDataSink};
+    use zaino_sync::testing::{
+        block_on_paused, finalized, moves, open, step, write_buffers, FinalStream, Move, Writer,
+        QUEUE,
+    };
+    use zaino_sync::FeeSink;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::{FORMAT, TABLES};
 
-    const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
     const SCHEMA: Schema =
         Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// `write_buffer` = MIN: every applied block committed by the store itself
-    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/cb"), &SCHEMA, write_buffer)
-            .expect("open")
-    }
-
-    /// Genesis ..= tip, each block beside the fees value-balance derives for it
-    fn with_fees(chain: &MockChain) -> Vec<(Arc<Block>, BlockFees)> {
-        let blocks = chain.blocks(chain.tip()).into_iter();
-        blocks.map(|block| (Arc::clone(&block), chain.fees(block.header().hash))).collect()
+    /// Genesis ..= tip + each block's fees as value-balance derives them
+    fn blocks_and_fees(chain: &MockChain) -> (Vec<Arc<Block>>, Vec<BlockFees>) {
+        let blocks = chain.blocks(chain.tip());
+        let fees = blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
+        (blocks, fees)
     }
 
     /// Genesis + three blocks folded one onto the next: each record = the block encoded with the
@@ -180,7 +173,7 @@ mod tests {
             let parent = CompactBlockReader::new(store.staged());
             fold(&parent, block, &fees(block), &mut changes).map(|()| changes)
         };
-        let mut through_three = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut through_three = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (at, after) in [
             (chain.genesis(), sizes(0, 0, 0)),
             (one, sizes(2, 1, 0)),
@@ -197,7 +190,7 @@ mod tests {
         }
 
         // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
-        let mut seeded = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut seeded = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
         let mut changes = SCHEMA.changes(one);
         let near_full = sizes(u32::MAX - 1, 0, 0);
@@ -208,95 +201,37 @@ mod tests {
         assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
     }
 
-    /// Regtest 0..=3 + `cousin` at 3 off 1; the store folded through height `held`
-    fn folded_through(held: u32) -> (MockChain, DiskStore, BlockRef) {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(3);
-        let cousin = chain.fork(h(1)).mine_empty(2).tip();
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
-        for block in &chain.blocks(tip)[..=held as usize] {
-            store.apply(fold_onto(&store, &chain, block).expect("small"));
-        }
-        (chain, store, cousin)
-    }
-
-    fn fold_onto(
-        store: &DiskStore,
-        chain: &MockChain,
-        block: &Block,
-    ) -> Result<BlockChanges, TreeSizeOutOfRange> {
-        let mut changes = store.changes(block.at());
-        let parent = CompactBlockReader::new(store.staged());
-        fold(&parent, block, &chain.fees(block.header().hash), &mut changes).map(|()| changes)
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_fold_past_a_gap_panics() {
-        let (chain, store, _) = folded_through(1);
-        let three = chain.at(h(3));
-        let _ = fold_onto(&store, &chain, chain.block(three.hash));
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_fold_onto_a_sibling_at_the_same_height_panics() {
-        let (chain, store, cousin) = folded_through(2);
-        let _ = fold_onto(&store, &chain, chain.block(cousin.hash));
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_fold_below_the_tip_panics() {
-        let (chain, store, _) = folded_through(3);
-        let two = chain.at(h(2));
-        let _ = fold_onto(&store, &chain, chain.block(two.hash));
-    }
-
-    /// Writer as zainod runs it: the final stream, value-balance's fee stream (one per step), its
-    /// handle
+    /// Writer as zainod runs it: the final stream + value-balance's fee stream, one fee per step
     struct Running {
-        blocks: IndexerDataSink<Block>,
-        fees: FeeSink,
-        handle: IndexHandle<DiskView>,
-        run: JoinHandle<()>,
+        writer: Writer<DiskView>,
+        fee_sink: FeeSink,
+        fees: Vec<BlockFees>,
     }
 
     impl Running {
-        fn start(store: DiskStore) -> Self {
-            let writer = CompactBlockIndexWriter::new(store);
-            let handle = writer.handle();
-            let (mut blocks, mut fees) = (IndexerDataSink::new(), FeeSink::new());
-            let (block_sub, fee_sub) = (blocks.subscribe(NAME, QUEUE), fees.subscribe(NAME, QUEUE));
-            let run = tokio::spawn(writer.run(block_sub, fee_sub));
-            Self { blocks, fees, handle, run }
+        /// `fees` = the chain's, by height
+        fn start(store: DiskStore, fees: &[BlockFees]) -> Self {
+            let index = CompactBlockIndexWriter::new(store);
+            let mut fee_sink = FeeSink::new();
+            let paid = fee_sink.subscribe(NAME, QUEUE);
+            let writer =
+                Writer::spawn(index.handle(), QUEUE, move |blocks| index.run(blocks, paid));
+            Self { writer, fee_sink, fees: fees.to_vec() }
         }
 
-        /// `block` + its `fees` (as value-balance sends them)
-        async fn send(&self, (block, fees): &(Arc<Block>, BlockFees)) {
-            let height = block.header().height;
-            self.fees.send(Step::Apply { height, data: Arc::new(fees.clone()) }).await;
-            self.blocks.send(Step::Apply { height, data: Arc::clone(block) }).await;
-        }
-
-        /// [`send`](Self::send) as the chain's final tip: the writer commits after it
-        async fn finalize(&self, (block, fees): &(Arc<Block>, BlockFees)) {
-            let height = block.header().height;
-            self.fees.send(Step::Apply { height, data: Arc::new(fees.clone()) }).await;
-            self.blocks.send(Step::Finalized { height, data: Arc::clone(block) }).await;
-        }
-
-        async fn reached(&mut self, tip: Option<u32>) {
-            while self.handle.tip().map(|tip| u32::from(tip.height)) != tip {
-                assert!(self.handle.changed().await, "writer alive");
-            }
+        /// `step` behind its block's fees (as value-balance sends them)
+        async fn send(&self, step: Step<Block>) {
+            let (Step::Apply { height, .. } | Step::Finalized { height, .. }) = step else {
+                panic!("Shutdown = `stop`");
+            };
+            let fees = Arc::new(self.fees[position(height) as usize].clone());
+            self.fee_sink.send(Step::Apply { height, data: fees }).await;
+            self.writer.send(step).await;
         }
 
         async fn stop(self) -> DiskView {
-            self.fees.shutdown();
-            self.blocks.shutdown();
-            self.run.await.expect("stops at Shutdown");
-            self.handle.view()
+            self.fee_sink.shutdown();
+            self.writer.stop().await.expect("stops at Shutdown").view()
         }
     }
 
@@ -338,14 +273,14 @@ mod tests {
                 })
             });
         }
-        let chain = with_fees(&mock);
+        let (blocks, fees_by_height) = blocks_and_fees(&mock);
 
-        let mut index = Running::start(open(&fs, NonZeroUsize::MAX));
-        for block in &chain[..3] {
-            index.send(block).await;
+        let mut index = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MAX), &fees_by_height);
+        for block in &blocks[..3] {
+            index.send(step(block)).await;
         }
-        index.finalize(&chain[3]).await;
-        index.reached(Some(3)).await;
+        index.send(finalized(&blocks[3])).await;
+        index.writer.durable_at(h(3)).await;
         let view = index.stop().await;
         let stored = [0, 1, 2, 3].map(|height| record(&view, height));
         let fees = |height: u32| vec![0, 1_000 * height];
@@ -357,23 +292,15 @@ mod tests {
         ];
         assert_eq!(stored, expected, "cumulative sizes, each block's own fees");
 
-        let mut resumed = Running::start(open(&fs, NonZeroUsize::MAX));
-        for block in &chain[2..4] {
-            resumed.send(block).await;
+        let mut resumed = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MAX), &fees_by_height);
+        for block in &blocks[2..4] {
+            resumed.send(step(block)).await;
         }
-        resumed.finalize(&chain[4]).await;
-        resumed.reached(Some(4)).await;
+        resumed.send(finalized(&blocks[4])).await;
+        resumed.writer.durable_at(h(4)).await;
         let view = resumed.stop().await;
         assert_eq!(record(&view, 3), expected[3], "held: untouched");
         assert_eq!(record(&view, 4), ((6, 4, 6), fees(4)), "folded onto 3's record");
-    }
-
-    /// - `Send(n)`: next `n` blocks
-    /// - `Reopen`: shutdown, reopen, resend from one below the tip (held: fees popped, skipped)
-    #[derive(Debug, Clone)]
-    enum Move {
-        Send(usize),
-        Reopen,
     }
 
     proptest::proptest! {
@@ -382,31 +309,17 @@ mod tests {
             ..proptest::prelude::ProptestConfig::default()
         })]
 
-        /// Random blocks through random final streams (runs, restarts): once every move
-        /// commits, each height serves a record whose hash and cumulative tree sizes equal an
-        /// independently summed model and whose fees are its own block's, and a full range read
-        /// is those records in order
+        /// Random blocks through random final streams (runs, restarts; a resent held block's fees
+        /// popped, the block skipped): once every move commits, each height serves a record
+        /// whose hash and cumulative tree sizes equal an independently summed model and whose
+        /// fees are its own block's, and a full range read is those records in order
         #[test]
         fn random_histories_serve_records_with_the_models_tree_sizes_and_fees(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
-            moves in proptest::collection::vec(
-                proptest::prop_oneof![
-                    4 => (1usize..=3).prop_map(Move::Send),
-                    1 => proptest::strategy::Just(Move::Reopen),
-                ],
-                1..16,
-            ),
-            write_buffer in proptest::prop_oneof![
-                proptest::strategy::Just(NonZeroUsize::MIN),
-                proptest::strategy::Just(NonZeroUsize::MAX),
-            ],
+            moves in moves(),
+            write_buffer in write_buffers(),
         ) {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .start_paused(true)
-                .build()
-                .expect("runtime")
-                .block_on(random_history(counts, moves, write_buffer));
+            block_on_paused(random_history(counts, moves, write_buffer));
         }
     }
 
@@ -432,7 +345,7 @@ mod tests {
                 })
             });
         }
-        let chain = with_fees(&mock);
+        let (blocks, fees_by_height) = blocks_and_fees(&mock);
         let sizes_at = |height: usize| {
             counts[..height].iter().fold((0u32, 0u32, 0u32), |(s, o, i), &(ds, d_o, di)| {
                 (s + ds as u32, o + d_o as u32, i + di as u32)
@@ -440,40 +353,29 @@ mod tests {
         };
 
         let fs = SimFs::new();
-        let mut index = Running::start(open(&fs, write_buffer));
-        let mut sent = 0usize;
-        for (at, next) in moves.iter().enumerate() {
-            match *next {
-                Move::Send(count) => {
-                    let burst: Vec<_> = chain.iter().skip(sent).take(count).collect();
-                    for (at, block) in burst.iter().enumerate() {
-                        match at + 1 == burst.len() {
-                            true => index.finalize(block).await,
-                            false => index.send(block).await,
-                        }
-                        sent += 1;
-                    }
-                }
-                Move::Reopen => {
-                    index.stop().await;
-                    index = Running::start(open(&fs, write_buffer));
-                    if let Some(held) = sent.checked_sub(1) {
-                        index.send(&chain[held]).await;
-                    }
-                }
+        let mut stream = FinalStream::new(&blocks);
+        let mut index = Running::start(open(&fs, &SCHEMA, write_buffer), &fees_by_height);
+        for (at, next) in moves.into_iter().enumerate() {
+            if next == Move::Reopen {
+                index.stop().await;
+                index = Running::start(open(&fs, &SCHEMA, write_buffer), &fees_by_height);
             }
-            index.reached(sent.checked_sub(1).map(|last| last as u32)).await;
+            for step in stream.steps(next) {
+                index.send(step).await;
+            }
+            index.writer.durable_at(stream.tip()).await;
 
             let case = format!("move {at} {next:?}");
-            let view = index.handle.view();
+            let view = index.writer.handle().view();
             let reader = CompactBlockReader::new(view.clone());
+            let sent = stream.sent();
             let mut records = Vec::new();
             for height in 0..sent as u32 {
                 let (sizes, fees) = record(&view, height);
                 let stored = reader.block(h(height)).expect("record");
                 let decoded = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..])
                     .expect("decodes");
-                let hash = <[u8; 32]>::from(chain[height as usize].0.header().hash);
+                let hash = <[u8; 32]>::from(blocks[height as usize].header().hash);
                 assert_eq!(decoded.hash, hash.to_vec(), "{case}: record {height}");
                 assert_eq!(sizes, sizes_at(height as usize), "{case}: record {height}");
                 let own = match height {
@@ -509,17 +411,17 @@ mod tests {
                 })
             });
         }
-        let chain = with_fees(&mock);
+        let (blocks, fees_by_height) = blocks_and_fees(&mock);
         let sizes_at = |height: usize| {
             counts[..height].iter().fold((0, 0, 0), |(s, o, i), &(ds, d_o, di)| {
                 (s + u32::from(ds), o + u32::from(d_o), i + u32::from(di))
             })
         };
         let (fs, recording) = SimFs::recording();
-        let mut index = Running::start(open(&fs, NonZeroUsize::MIN));
-        for (acked, block) in (1u64..).zip(&chain[..5]) {
-            index.send(block).await;
-            index.reached(Some(u32::from(block.0.header().height))).await;
+        let mut index = Running::start(open(&fs, &SCHEMA, NonZeroUsize::MIN), &fees_by_height);
+        for (acked, block) in (1u64..).zip(&blocks[..5]) {
+            index.send(step(block)).await;
+            index.writer.durable_at(block.header().height).await;
             fs.set_tag(acked);
         }
         let reader = CompactBlockReader::new(index.stop().await);
@@ -529,7 +431,7 @@ mod tests {
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs, NonZeroUsize::MIN);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
             let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
@@ -537,9 +439,9 @@ mod tests {
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
             assert_eq!(served, records[..count], "{label}: byte-identical records");
 
-            let mut index = Running::start(store);
-            index.send(&chain[count]).await;
-            index.reached(Some(count as u32)).await;
+            let mut index = Running::start(store, &fees_by_height);
+            index.send(step(&blocks[count])).await;
+            index.writer.durable_at(blocks[count].header().height).await;
             let (sizes, _) = record(&index.stop().await, count as u32);
             assert_eq!(sizes, sizes_at(count), "{label}: folded onto the tip record");
         }

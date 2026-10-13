@@ -17,6 +17,8 @@ mod offload;
 mod per_index;
 mod progress;
 mod report;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 mod writer;
 
 pub use data_sink::{Applied, IndexerDataSink, Run, Step, Subscription, Weight};

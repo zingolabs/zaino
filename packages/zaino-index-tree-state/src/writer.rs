@@ -15,7 +15,9 @@ use std::{
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
-use zaino_primitives::types::{Block, Height, PerPool, ShieldedPool, TreeRoot, TreeSizes};
+use zaino_primitives::types::{
+    Block, Height, NoteCommitment, PerPool, ShieldedPool, Transaction, TreeRoot, TreeSizes,
+};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
@@ -173,26 +175,10 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
         let mut ends = Vec::with_capacity(blocks.len());
         for block in blocks {
             let height = block.header().height;
-            let leaf =
-                |bytes: [u8; 32]| nodes::decode(&bytes).ok_or(FoldError::Commitment { height });
-            for tx in block.transactions() {
-                match pool {
-                    ShieldedPool::Sapling => {
-                        for output in &tx.sapling.outputs {
-                            leaves.push(leaf(output.cmu.into())?);
-                        }
-                    }
-                    ShieldedPool::Orchard => {
-                        for action in &tx.orchard.actions {
-                            leaves.push(leaf(action.cmx.into())?);
-                        }
-                    }
-                    ShieldedPool::Ironwood => {
-                        for action in &tx.ironwood.actions {
-                            leaves.push(leaf(action.cmx.into())?);
-                        }
-                    }
-                }
+            let txs = block.transactions().iter();
+            for commitment in txs.flat_map(|tx| commitments(tx, pool)) {
+                let leaf = nodes::decode(&commitment.into());
+                leaves.push(leaf.ok_or(FoldError::Commitment { height })?);
             }
             ends.push((height, leaves.len()));
         }
@@ -228,6 +214,17 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
         assert!(appended, "commitment tree full");
         out
     }
+}
+
+/// `tx`'s note commitments to `pool`'s tree, in order (sapling `cmu`s, orchard / ironwood `cmx`s)
+fn commitments(tx: &Transaction, pool: ShieldedPool) -> impl Iterator<Item = NoteCommitment> + '_ {
+    let (outputs, actions) = match pool {
+        ShieldedPool::Sapling => (&tx.sapling.outputs[..], &[][..]),
+        ShieldedPool::Orchard => (&[][..], &tx.orchard.actions[..]),
+        ShieldedPool::Ironwood => (&[][..], &tx.ironwood.actions[..]),
+    };
+    let actions = actions.iter().map(|action| action.cmx);
+    outputs.iter().map(|output| output.cmu).chain(actions)
 }
 
 /// `retained` per pool per block → each block's delta, every table appended at its end
@@ -280,58 +277,29 @@ fn append_in_order<R: AsRef<[u8]>>(
 mod tests {
     use super::*;
 
-    use std::{num::NonZeroUsize, path::Path, sync::Arc};
+    use std::{num::NonZeroUsize, sync::Arc};
 
     use incrementalmerkletree::frontier::CommitmentTree;
     use proptest::prelude::*;
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{
         BlockHash, BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot,
     };
-    use zaino_sync::{IndexerDataSink, Step};
+    use zaino_sync::testing::{
+        block_on_paused, finalized, moves, open, step, write_buffers, FinalStream, Move, Writer,
+        QUEUE,
+    };
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
     use zcash_protocol::consensus::NetworkType;
 
     use crate::{nodes::retained_nodes, ServeError, FORMAT, TABLES};
 
-    const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
     const SCHEMA: Schema = Schema::new(IndexKind::TreeState, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// `write_buffer` = MIN: every applied block committed by the store itself
-    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/ts"), &SCHEMA, write_buffer)
-            .expect("open")
-    }
-
-    /// Writer over `store`, its final stream and handle
-    fn start(
-        store: DiskStore,
-    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
+    fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = TreeStateIndexWriter::new(store);
-        let handle = writer.handle();
-        let mut sink = IndexerDataSink::new();
-        let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, handle, running)
-    }
-
-    fn step(block: &Arc<Block>) -> Step<Block> {
-        Step::Apply { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// The chain's final tip: the writer commits after it
-    fn finalized(block: &Arc<Block>) -> Step<Block> {
-        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// `handle`'s durable tip at `tip` (`None` = nothing)
-    async fn reached(handle: &mut IndexHandle<DiskView>, tip: Option<u32>) {
-        while handle.tip().map(|tip| u32::from(tip.height)) != tip {
-            assert!(handle.changed().await, "writer alive");
-        }
+        Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
     /// Cheap, order- and level-sensitive stand-in hash (trees past 2^16 leaves in milliseconds)
@@ -389,7 +357,7 @@ mod tests {
                 (0..size).all(|n| frontier.append(leaf(n))).then_some(frontier)
             };
 
-            let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+            let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
             let mut out = Vec::new();
             let (mut next_block, mut next_leaf) = (0usize, 0u64);
             for (run, length) in runs.iter().cycle().enumerate() {
@@ -496,7 +464,7 @@ mod tests {
                 .map(|&table| changes.appends(table).map(<[u8]>::to_vec).collect::<Vec<_>>());
             (changes.block(), appends.collect::<Vec<_>>())
         };
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let one_by_one: Vec<_> = chain
             .iter()
             .map(|block| {
@@ -510,7 +478,7 @@ mod tests {
 
         // bit `i` of `split` = a run ends after block `i`
         let fold_in_runs = |split: u32| {
-            let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+            let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
             let mut folded = Vec::new();
             let mut run: Vec<&Block> = Vec::new();
             for (at, block) in chain.iter().enumerate() {
@@ -547,7 +515,7 @@ mod tests {
         let uncommittable = Arc::new(Block::new(chain.block(two.hash).header().clone(), txs));
         let mut blocks = chain.blocks(two);
         blocks[2] = uncommittable;
-        let store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
@@ -615,16 +583,13 @@ mod tests {
         }
         let blocks = chain.blocks(chain.tip());
         let seen = |through: u32| naive_trees(&blocks[..=through as usize]);
-        {
-            let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MIN));
-            for (acked, block) in (1u64..).zip(&blocks[..5]) {
-                sink.send(step(block)).await;
-                reached(&mut handle, Some(u32::from(block.header().height))).await;
-                fs.set_tag(acked);
-            }
-            sink.shutdown();
-            running.await.expect("stops at Shutdown");
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
+        for (acked, block) in (1u64..).zip(&blocks[..5]) {
+            writer.send(step(block)).await;
+            writer.durable_at(block.header().height).await;
+            fs.set_tag(acked);
         }
+        writer.stop().await.expect("stops at Shutdown");
 
         let trees = |view: DiskView, at: u32| {
             let trees = TreeStateReader::new(view).treestate(h(at)).expect("held");
@@ -634,7 +599,7 @@ mod tests {
         assert!(states.len() > 20, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs, NonZeroUsize::MIN);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
             let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as u32);
             assert!(acked.contains(&count), "{label}: recovered {count}");
@@ -642,28 +607,16 @@ mod tests {
                 assert_eq!(trees(store.committed(), tip), seen(tip), "{label}: at {tip}");
             }
 
-            let (sink, handle, running) = start(store);
-            sink.send(step(&blocks[count as usize])).await;
-            sink.shutdown();
-            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            let writer = start(store);
+            writer.send(step(&blocks[count as usize])).await;
+            let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let next = trees(handle.view(), count);
             assert_eq!(next, seen(count), "{label}: folding on after recovery");
         }
     }
 
-    /// - `Send(n)`: next `n` blocks
-    /// - `Reopen`: shutdown, reopen, resend from one below the tip (held: skipped)
-    #[derive(Debug, Clone)]
-    enum Move {
-        Send(usize),
-        Reopen,
-    }
-
-    proptest::proptest! {
-        #![proptest_config(proptest::prelude::ProptestConfig {
-            cases: 64,
-            ..proptest::prelude::ProptestConfig::default()
-        })]
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
 
         /// Random chains through random final streams (runs, restarts): once every move commits,
         /// every height serves exactly the naive frontier's three trees and nothing past the tip
@@ -671,24 +624,10 @@ mod tests {
         #[test]
         fn random_histories_serve_the_naive_trees_at_every_height(
             counts in proptest::collection::vec((0usize..=3, 0usize..=3, 0usize..=3), 1..10),
-            moves in proptest::collection::vec(
-                proptest::prop_oneof![
-                    4 => (1usize..=3).prop_map(Move::Send),
-                    1 => proptest::strategy::Just(Move::Reopen),
-                ],
-                1..16,
-            ),
-            write_buffer in proptest::prop_oneof![
-                proptest::strategy::Just(NonZeroUsize::MIN),
-                proptest::strategy::Just(NonZeroUsize::MAX),
-            ],
+            moves in moves(),
+            write_buffer in write_buffers(),
         ) {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .start_paused(true)
-                .build()
-                .expect("runtime")
-                .block_on(random_history(counts, moves, write_buffer));
+            block_on_paused(random_history(counts, moves, write_buffer));
         }
     }
 
@@ -726,44 +665,31 @@ mod tests {
         let trees_through = |height: usize| naive_trees(&chain[..=height]);
 
         let fs = SimFs::new();
-        let (mut sink, mut handle, mut running) = start(open(&fs, write_buffer));
-        let mut sent = 0usize;
-        for (at, next) in moves.iter().enumerate() {
-            match *next {
-                Move::Send(count) => {
-                    let burst: Vec<_> = chain.iter().skip(sent).take(count).collect();
-                    for (at, block) in burst.iter().enumerate() {
-                        let last = at + 1 == burst.len();
-                        sink.send(if last { finalized(block) } else { step(block) }).await;
-                        sent += 1;
-                    }
-                }
-                Move::Reopen => {
-                    sink.shutdown();
-                    running.await.expect("stops at Shutdown");
-                    (sink, handle, running) = start(open(&fs, write_buffer));
-                    if let Some(held) = sent.checked_sub(1) {
-                        sink.send(step(&chain[held])).await;
-                    }
-                }
+        let mut stream = FinalStream::new(&chain);
+        let mut writer = start(open(&fs, &SCHEMA, write_buffer));
+        for (at, next) in moves.into_iter().enumerate() {
+            if next == Move::Reopen {
+                writer.stop().await.expect("stops at Shutdown");
+                writer = start(open(&fs, &SCHEMA, write_buffer));
             }
-            let tip = sent.checked_sub(1).map(|last| last as u32);
-            reached(&mut handle, tip).await;
+            for step in stream.steps(next) {
+                writer.send(step).await;
+            }
+            writer.durable_at(stream.tip()).await;
 
             let label = format!("move {at} {next:?}");
-            let reader = TreeStateReader::new(handle.view());
-            for height in 0..sent as u32 {
+            let reader = TreeStateReader::new(writer.handle().view());
+            let sent = stream.sent() as u32;
+            for height in 0..sent {
                 let served = reader.treestate(h(height));
                 let served = served.unwrap_or_else(|error| panic!("{label}: {error}"));
                 let trees = (served.sapling, served.orchard, served.ironwood);
                 assert_eq!(trees, trees_through(height as usize), "{label}: trees at {height}");
             }
-            let past = h(sent as u32);
-            let absent = Err(ServeError::NotFound { height: past });
-            assert_eq!(reader.treestate(past), absent, "{label}: past the tip");
+            let absent = Err(ServeError::NotFound { height: h(sent) });
+            assert_eq!(reader.treestate(h(sent)), absent, "{label}: past the tip");
         }
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        writer.stop().await.expect("stops at Shutdown");
     }
 
     /// Real 2^16-leaf subtrees: each root = the served tree's own level-16 root at its completing
@@ -810,15 +736,14 @@ mod tests {
             TreeRoot::from(bytes)
         };
 
-        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         for block in &blocks[..4] {
-            sink.send(step(block)).await;
+            writer.send(step(block)).await;
         }
-        sink.send(finalized(&blocks[4])).await;
-        reached(&mut handle, Some(4)).await;
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(open(&fs, NonZeroUsize::MAX).committed());
+        writer.send(finalized(&blocks[4])).await;
+        writer.durable_at(h(4)).await;
+        writer.stop().await.expect("stops at Shutdown");
+        let view = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).committed());
         let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
         let expected = [(2, &blocks[2]), (4, &blocks[4])].map(|(at, block)| SubtreeRoot {
             root: tree_root(&view, at),
@@ -834,10 +759,9 @@ mod tests {
         assert_eq!(view.subtree_roots(Sapling, 0, 0).expect("untouched pool"), Vec::new());
 
         // reopen rebuilds the subtree cursor from the files; the next boundary follows it
-        let (sink, handle, running) = start(open(&fs, NonZeroUsize::MAX));
-        sink.send(step(&blocks[5])).await;
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
+        writer.send(step(&blocks[5])).await;
+        let handle = writer.stop().await.expect("stops at Shutdown");
         let view = TreeStateReader::new(handle.view());
         let resumed_roots = view.subtree_roots(Orchard, 0, 0).expect("roots");
         let third = SubtreeRoot { root: tree_root(&view, 5), completing: completing(&blocks[5]) };
@@ -848,8 +772,7 @@ mod tests {
     /// an absent field onto `CommitmentTree::empty()` silently)
     #[tokio::test]
     async fn ironwood_serves_a_real_tree_not_an_empty_field() {
-        let fs = SimFs::new();
-        let (sink, handle, running) = start(open(&fs, NonZeroUsize::MAX));
+        let writer = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX));
         // ironwood-only block: sapling and orchard empty at this height
         let mut chain = MockChain::regtest();
         let one = chain.mine(|b| {
@@ -860,10 +783,9 @@ mod tests {
             })
         });
         for block in chain.blocks(one) {
-            sink.send(step(&block)).await;
+            writer.send(step(&block)).await;
         }
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        let handle = writer.stop().await.expect("stops at Shutdown");
         let reader = TreeStateReader::new(handle.view());
         let trees = reader.treestate(h(1)).expect("served");
 

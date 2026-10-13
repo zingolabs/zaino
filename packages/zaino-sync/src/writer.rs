@@ -94,3 +94,66 @@ impl<V: View> IndexPublisher<V> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use zaino_persistence::{fs::SimFs, IndexKind, Schema, Tables};
+    use zaino_primitives::testing::{h, MockChain};
+    use zcash_protocol::consensus::NetworkType;
+
+    use super::*;
+    use crate::testing::open;
+
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::BlockHash, 1, NetworkType::Regtest, Tables::new(&[], &[]));
+
+    #[test]
+    #[should_panic(expected = "block_hash: changes opened for another block")]
+    fn changes_opened_for_another_block_panic() {
+        let mut chain = MockChain::regtest();
+        let one = chain.mine_empty(1);
+        assert_next(&SCHEMA.changes(chain.genesis()), Some(chain.genesis()), chain.block(one.hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_run_past_a_gap_panics() {
+        let mut chain = MockChain::regtest();
+        let two = chain.mine_empty(2);
+        let run = [&**chain.block(chain.genesis().hash), &**chain.block(two.hash)];
+        assert_run(None, &run, &run.map(|block| SCHEMA.changes(block.at())));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_sibling_at_the_tips_height_panics() {
+        let mut chain = MockChain::regtest();
+        let two = chain.mine_empty(2);
+        let sibling = chain.fork(h(1)).mine_empty(1).tip();
+        assert_next(&SCHEMA.changes(sibling), Some(two), chain.block(sibling.hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_block_below_the_tip_panics() {
+        let mut chain = MockChain::regtest();
+        let three = chain.mine_empty(3);
+        let two = chain.at(h(2));
+        assert_next(&SCHEMA.changes(two), Some(three), chain.block(two.hash));
+    }
+
+    /// Commit I/O failure = panic naming the index and its directory (never an `Err` to drain)
+    #[test]
+    #[should_panic(
+        expected = "block_hash index commit failed at /block_hash: index io: sim: injected EIO"
+    )]
+    fn a_failed_commit_panics_naming_the_index_and_its_directory() {
+        let fs = SimFs::new();
+        let mut store = open(&fs, &SCHEMA, NonZeroUsize::MAX);
+        apply(&mut store, SCHEMA.changes(MockChain::regtest().genesis()));
+        fs.fail_from(fs.mutations());
+        commit(&mut store);
+    }
+}
