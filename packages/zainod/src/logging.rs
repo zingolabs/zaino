@@ -11,7 +11,6 @@ use std::env;
 use std::fmt;
 use std::io::IsTerminal;
 use std::path::Path;
-use std::sync::Once;
 
 use tracing_subscriber::{
     fmt::time::UtcTime, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter,
@@ -95,40 +94,29 @@ impl LogConfig {
 ///
 /// A global tracing subscriber already set
 pub fn init() -> Result<(), LogConfigError> {
-    install(LogConfig::from_env()?, true)?;
+    install(LogConfig::from_env()?)?;
     install_panic_logger();
     Ok(())
 }
-
-/// Idempotent [`init`] (library entry → the binary may already have installed one)
-pub(crate) fn try_init() -> Result<(), LogConfigError> {
-    install(LogConfig::from_env()?, false)?;
-    install_panic_logger();
-    Ok(())
-}
-
-static PANIC_LOGGER: Once = Once::new();
 
 /// Panic → structured `error` on target `panic`, then the previous hook (backtrace unchanged)
 fn install_panic_logger() {
-    PANIC_LOGGER.call_once(|| {
-        let previous = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            let message = info
-                .payload()
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_owned())
-                .or_else(|| info.payload().downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "<non-string panic payload>".to_owned());
-            let location = info
-                .location()
-                .map(std::string::ToString::to_string)
-                .unwrap_or_else(|| "<unknown>".to_owned());
-            let thread = std::thread::current().name().unwrap_or("<unnamed>").to_owned();
-            tracing::error!(target: "panic", %thread, %location, %message, "Panic");
-            previous(info);
-        }));
-    });
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string panic payload>".to_owned());
+        let location = info
+            .location()
+            .map(std::string::ToString::to_string)
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        let thread = std::thread::current().name().unwrap_or("<unnamed>").to_owned();
+        tracing::error!(target: "panic", %thread, %location, %message, "Panic");
+        previous(info);
+    }));
 }
 
 /// Span owning every line under it: the terminal's component column, a span field in JSON
@@ -179,8 +167,7 @@ pub(crate) fn shown_path(path: &Path) -> Cow<'_, str> {
     }
 }
 
-/// `exclusive` → a subscriber already set is a bug (the binary); else it wins (a library caller)
-fn install(config: LogConfig, exclusive: bool) -> Result<(), LogConfigError> {
+fn install(config: LogConfig) -> Result<(), LogConfigError> {
     let filter = match env::var_os(EnvFilter::DEFAULT_ENV) {
         Some(_) => EnvFilter::try_from_default_env()?,
         None => EnvFilter::new(DEFAULT_FILTER),
@@ -208,9 +195,7 @@ fn install(config: LogConfig, exclusive: bool) -> Result<(), LogConfigError> {
             )
             .try_init(),
     };
-    if exclusive {
-        installed.expect("global tracing subscriber already set");
-    }
+    installed.expect("global tracing subscriber already set");
     Ok(())
 }
 

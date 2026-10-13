@@ -1,11 +1,13 @@
 //! Zaino indexer daemon
 
+use std::fmt::Display;
+use std::process::ExitCode;
+
 use clap::Parser;
 
 use zainodlib::cli::{Cli, Command};
 
-#[tokio::main]
-async fn main() {
+fn main() -> ExitCode {
     // a panic anywhere = a violated invariant: print it, then die (never unwound into a task
     // boundary that keeps serving)
     let report = std::panic::take_hook();
@@ -17,38 +19,40 @@ async fn main() {
     let cli = Cli::parse();
 
     // logging → stdout by default (reserved for `verify`'s JSON and `hold`/`resume`'s state)
-    if !matches!(
-        cli.command,
-        Command::Verify { .. } | Command::Hold { .. } | Command::Resume { .. }
-    ) {
+    if !matches!(cli.command, Command::Verify | Command::Hold(_)) {
         if let Err(error) = zainodlib::logging::init() {
             eprintln!("Error: logging: {error}");
-            std::process::exit(2);
+            return ExitCode::from(2);
         }
     }
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("Error: tokio runtime: {error}");
+            return ExitCode::from(2);
+        }
+    };
 
-    match cli.command {
-        Command::Start { config } => {
-            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
-            if let Err(e) = zainodlib::run(config_path).await {
-                eprintln!("Error: {}", e);
-                std::process::exit(1);
+    let config = cli.config.unwrap_or_else(zainodlib::paths::default_config);
+    let code = runtime.block_on(async {
+        match cli.command {
+            Command::Start => exit(zainodlib::run(config).await.map(|()| ExitCode::SUCCESS), 1),
+            Command::GenerateConfig { output } => {
+                exit(zainodlib::generate_config(&output.unwrap_or(config)), 1)
             }
+            Command::Verify => exit(zainodlib::verify::run(&config), 2),
+            Command::Hold(action) => exit(zainodlib::hold::command(&config, action), 1),
         }
-        Command::GenerateConfig { output } => Command::generate_config(output),
-        Command::Verify { config } => {
-            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
-            std::process::exit(zainodlib::verify::run(&config_path));
-        }
-        Command::Hold { config } => {
-            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
-            let action = zainodlib::hold::Action::Hold;
-            std::process::exit(zainodlib::hold::command(&config_path, action));
-        }
-        Command::Resume { config } => {
-            let config_path = config.unwrap_or_else(zainodlib::paths::default_config);
-            let action = zainodlib::hold::Action::Resume;
-            std::process::exit(zainodlib::hold::command(&config_path, action));
-        }
-    }
+    });
+    // never waits on blocking work a failed start left behind (it may never finish)
+    runtime.shutdown_background();
+    code
+}
+
+/// `Err` → stderr + `failure`
+fn exit(outcome: Result<ExitCode, impl Display>, failure: u8) -> ExitCode {
+    outcome.unwrap_or_else(|error| {
+        eprintln!("Error: {error}");
+        ExitCode::from(failure)
+    })
 }

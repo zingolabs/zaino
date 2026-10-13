@@ -142,19 +142,27 @@ fn pressure_totals(pressure: &str) -> Option<(u64, u64)> {
 mod tests {
     use super::*;
 
-    /// procfs + cgroup formats as the kernel writes them; missing fields = no reading
     #[test]
-    fn proc_io_cgroup_path_and_pressure_totals_parse_the_kernels_formats() {
+    fn proc_io_reads_the_block_layer_fields() {
         let io = "rchar: 64042856889\nwchar: 64042856889\nsyscr: 1\nsyscw: 2\n\
                   read_bytes: 23569625088\nwrite_bytes: 70950584320\ncancelled_write_bytes: 0\n";
         assert_eq!(proc_io(io), Some((23_569_625_088, 70_950_584_320)));
         assert_eq!(proc_io("rchar: 1\n"), None, "no block-layer fields");
+    }
 
-        assert_eq!(cgroup_v2_path("0::/\n"), Some(""), "own cgroup namespace (container)");
-        let unit = "0::/system.slice/zainod.service\n";
-        assert_eq!(cgroup_v2_path(unit), Some("system.slice/zainod.service"));
-        assert_eq!(cgroup_v2_path("12:cpu,cpuacct:/x\n"), None, "cgroup v1 only");
+    #[test]
+    fn cgroup_v2_path_is_the_unified_line_relative() {
+        for (cgroup, path) in [
+            ("0::/\n", Some("")),
+            ("0::/system.slice/zainod.service\n", Some("system.slice/zainod.service")),
+            ("12:cpu,cpuacct:/x\n", None),
+        ] {
+            assert_eq!(cgroup_v2_path(cgroup), path, "{cgroup:?}");
+        }
+    }
 
+    #[test]
+    fn pressure_totals_need_both_some_and_full() {
         let pressure = "some avg10=92.26 avg60=92.93 avg300=91.80 total=11954751839\n\
                         full avg10=89.02 avg60=89.51 avg300=87.84 total=9874765437\n";
         assert_eq!(pressure_totals(pressure), Some((11_954_751_839, 9_874_765_437)));

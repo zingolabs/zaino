@@ -53,28 +53,28 @@ pub(crate) async fn beat(cancel: CancellationToken) -> Result<(), IndexerError> 
     }
 }
 
-fn last_heartbeat() -> Option<Instant> {
-    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner)
+fn heartbeat_age() -> Option<Duration> {
+    HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner).map(|at| at.elapsed())
 }
 
-/// Never beaten = still starting (k8s covers that window with its own startup delay)
-fn is_fresh(heartbeat: Option<Instant>) -> bool {
-    heartbeat.is_none_or(|at| at.elapsed() < HEARTBEAT_MAX_AGE)
+/// `None` = never beaten = still starting (k8s covers that window with its own startup delay)
+fn is_fresh(age: Option<Duration>) -> bool {
+    age.is_none_or(|age| age < HEARTBEAT_MAX_AGE)
 }
 
 /// Serving runtime still scheduling (`/livez`; stale = `down`, "Runtime stalled")
 pub(crate) fn live() -> bool {
-    is_fresh(last_heartbeat())
+    is_fresh(heartbeat_age())
 }
 
 /// Called by `metrics::init` before the recorder installs (no sample without a draining listener)
 pub(crate) fn bind(endpoint: SocketAddr) -> Result<std::net::TcpListener, IndexerError> {
     let listener = std::net::TcpListener::bind(endpoint).map_err(|e| {
-        IndexerError::MetricsError(format!("admin endpoint {endpoint} failed to bind: {e}"))
+        IndexerError::Metrics(format!("admin endpoint {endpoint} failed to bind: {e}"))
     })?;
     listener
         .set_nonblocking(true)
-        .map_err(|e| IndexerError::MetricsError(format!("admin endpoint {endpoint}: {e}")))?;
+        .map_err(|e| IndexerError::Metrics(format!("admin endpoint {endpoint}: {e}")))?;
     Ok(listener)
 }
 
@@ -92,7 +92,7 @@ pub(crate) fn spawn(
             };
             runtime.block_on(serve(listener, handle));
         })
-        .map_err(|e| IndexerError::MetricsError(format!("failed to spawn admin thread: {e}")))?;
+        .map_err(|e| IndexerError::Metrics(format!("failed to spawn admin thread: {e}")))?;
     Ok(())
 }
 
@@ -254,15 +254,14 @@ mod tests {
         assert!(error.to_string().contains(&endpoint.to_string()), "{error}");
     }
 
-    /// - Stale heartbeat = wedged indexer runtime
     #[test]
     fn a_stale_heartbeat_is_not_live() {
-        let Some(at) = Instant::now().checked_sub(HEARTBEAT_MAX_AGE + Duration::from_secs(1))
-        else {
-            return; // monotonic clock younger than the max age (fresh boot)
-        };
-        assert!(!is_fresh(Some(at)));
-        assert!(is_fresh(Some(Instant::now())));
-        assert!(is_fresh(None), "never beaten = still starting");
+        for (case, age, fresh) in [
+            ("just beaten", Some(Duration::ZERO), true),
+            ("stale = wedged runtime", Some(HEARTBEAT_MAX_AGE), false),
+            ("never beaten = still starting", None, true),
+        ] {
+            assert_eq!(is_fresh(age), fresh, "{case}");
+        }
     }
 }

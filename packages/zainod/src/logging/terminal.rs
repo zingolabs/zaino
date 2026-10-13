@@ -306,7 +306,7 @@ mod tests {
     }
 
     /// Tag, timestamp shape, innermost component, padded message, grouped integers vs `%`
-    /// fields, shortened hashes, quoting, split `parts`, error chains, span context, bare message
+    /// fields, shortened hashes, quoting, padded columns, error chains, span context, bare message
     #[test]
     fn lines_follow_the_layout_under_their_component() {
         let captured = Captured::default();

@@ -29,10 +29,10 @@ pub(crate) fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
         .try_fold(PrometheusBuilder::new(), |builder, (metric, edges)| {
             builder.set_buckets_for_metric(Matcher::Full((*metric).to_owned()), edges)
         })
-        .map_err(|e| IndexerError::MetricsError(format!("setting histogram buckets: {e}")))?;
+        .map_err(|e| IndexerError::Metrics(format!("setting histogram buckets: {e}")))?;
     let handle = builder
         .install_recorder()
-        .map_err(|e| IndexerError::MetricsError(format!("installing the recorder: {e}")))?;
+        .map_err(|e| IndexerError::Metrics(format!("installing the recorder: {e}")))?;
 
     describe_all();
     crate::admin::spawn(listener, handle)?;

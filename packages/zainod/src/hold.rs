@@ -11,7 +11,8 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -32,10 +33,35 @@ pub(crate) fn serving(retire: zaino_grpc::Retire) {
     let _ = RETIRE.set(retire);
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::Subcommand)]
 pub enum Action {
+    /// Take this node out of rotation until `zainod resume`, across restarts and reboots.
+    ///
+    /// Writes a marker in `[serve] state_dir`. The running zainod picks it up within a second:
+    /// its state becomes `held` (`/readyz` 503), and after `[serve] hold_goaway_delay_secs` every
+    /// open gRPC connection is sent GOAWAY. It keeps answering health and admin requests. A
+    /// stopped zainod is never reported held. Hold before stopping a node behind a load balancer:
+    /// a shutdown signal alone closes the listener at once.
+    ///
+    /// Prints `held`, then on stderr what changed and, when `[metrics] listen_address` is set,
+    /// the state the running zainod reports. Then waits until a running zainod has sent its
+    /// GOAWAYs. Exits 0 once the marker is in place (holding twice is a no-op), 1 when the config
+    /// or state directory could not be read or written.
     Hold,
+    /// Undo `zainod hold`: back to syncing or serving as the indexes dictate.
+    ///
+    /// Removes the marker in `[serve] state_dir`; the running zainod picks it up within a
+    /// second. Prints `resumed`, then on stderr what changed and the running zainod's state.
+    /// Exits 0 once the marker is gone (resuming when not held is a no-op), 1 on an error.
     Resume,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HoldError {
+    #[error(transparent)]
+    Config(#[from] crate::error::IndexerError),
+    #[error("{}: {source}", marker.display())]
+    Marker { marker: PathBuf, source: io::Error },
 }
 
 /// What a command found, the marker now matching what was asked
@@ -70,25 +96,13 @@ fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
     Ok(changed)
 }
 
-/// `zainod hold` / `zainod resume`: prints the resulting state; exit 0 = the marker says what was
-/// asked (hold: and a running zainod's connections GOAWAY'd), 1 = the config or state dir could
-/// not be read or written
-pub fn command(config_path: &Path, action: Action) -> i32 {
-    let config = match crate::config::load_config(config_path) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("Error: {error}");
-            return 1;
-        }
-    };
+/// `zainod hold` / `zainod resume`: prints the resulting state; `Ok` = the marker says what was
+/// asked (hold: and a running zainod's connections GOAWAY'd)
+pub fn command(config_path: &Path, action: Action) -> Result<ExitCode, HoldError> {
+    let config = crate::config::load_config(config_path)?;
     let state_dir = &config.serve.state_dir;
-    let changed = match apply(state_dir, action) {
-        Ok(changed) => changed,
-        Err(error) => {
-            eprintln!("Error: {}: {error}", state_dir.join(MARKER).display());
-            return 1;
-        }
-    };
+    let marker_failed = |source| HoldError::Marker { marker: state_dir.join(MARKER), source };
+    let changed = apply(state_dir, action).map_err(marker_failed)?;
     let (state, note) = match changed {
         Changed::Held => ("held", "hold marker written"),
         Changed::AlreadyHeld => ("held", "already held"),
@@ -117,20 +131,15 @@ pub fn command(config_path: &Path, action: Action) -> i32 {
         }
     };
     if held && maybe_running {
-        let goaway_by = match goaway_deadline(state_dir, config.serve.hold_goaway_delay()) {
-            Ok(goaway_by) => goaway_by,
-            Err(error) => {
-                eprintln!("Error: {}: {error}", state_dir.join(MARKER).display());
-                return 1;
-            }
-        };
+        let goaway_by =
+            goaway_deadline(state_dir, config.serve.hold_goaway_delay()).map_err(marker_failed)?;
         if let Ok(remaining) = goaway_by.duration_since(std::time::SystemTime::now()) {
             eprintln!("waiting {}s for open gRPC connections' GOAWAY", remaining.as_secs());
             std::thread::sleep(remaining);
         }
         eprintln!("open gRPC connections sent GOAWAY: safe to stop");
     }
-    0
+    Ok(ExitCode::SUCCESS)
 }
 
 /// When a running zainod has GOAWAY'd every connection under this hold: marker written + its poll
