@@ -2,7 +2,7 @@
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
 //! - [`OverlayView`] = rows [`Uncommitted`] the committed view they sit on: above first, then durable
-//! - a key removed above masks durable ([`Entry::Removed`], `docs/design/lsm-deletes.md`)
+//! - a key removed above masks durable ([`Entry::Removed`]; usage.md "Deletes")
 
 use std::{
     fmt,

@@ -3,7 +3,7 @@
 //! - Stripped to what Zaino's indexes use: **nothing updated** (every row derives from one block)
 //!   → no memtable, no WAL, no versions
 //! - `deletes()` map: insert-once / remove-once → a tombstone row, cancelled with its value in any
-//!   merge (`docs/design/lsm-deletes.md`)
+//!   merge
 //! - Segment = one batch, sorted by key, **fixed stride, 100% packed**, then per-block fences and
 //!   a binary fuse filter (`layout.rs`)
 //! - Committed segments = owner's manifest list (`SegmentMeta`: id, record count, file seal)
@@ -11,8 +11,7 @@
 //! - Integrity = the file's page checksums (`crate::pages`)
 //! - Merge = pure k-way merge on a background thread, one per size tier (Lucene
 //!   `TieredMergePolicy`), swapped in by the owner's next manifest (`SegmentLog`)
-//!
-//! Design: `docs/design/index-data-structures.md`, `docs/design/durability.md`
+//! - Merge = read-time cost only (segments = state, not a log: unmerged set never slows a reopen)
 //!
 //! [`DiskEngine`]: crate::DiskEngine
 
@@ -41,7 +40,7 @@ use std::num::{NonZeroU32, NonZeroUsize};
 
 use crate::pages::PageError;
 
-/// Map tables' merge policy, one per [`DiskEngine`] (every store it opens shares `merge_slots`)
+/// Map tables' merge policy, one per [`crate::DiskEngine`] (its stores share `merge_slots`)
 ///
 /// - `fanout` (>= 2) same-tier segments merge into one: write amplification `log_fanout(rows)`
 /// - `merge_slots` = merges doing I/O at once (the rest wait, lowest tier first)

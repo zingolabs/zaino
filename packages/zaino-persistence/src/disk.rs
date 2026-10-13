@@ -9,7 +9,8 @@
 //!
 //! - apply → [`WriteBuffer`] (RAM, unsorted)
 //! - commit → every table written + sealed in parallel → manifest (commit point) → readable
-//! - failed commit poisons the store (`docs/design/durability.md`): recovery = reopen
+//! - failed commit poisons the store: recovery = reopen (retried fsync may "succeed" on pages the
+//!   kernel already marked clean: <https://wiki.postgresql.org/wiki/Fsync_Errors>)
 
 use std::{
     io,

@@ -1,6 +1,13 @@
 //! [`MockChain`]: the one regtest block tree every test takes its blocks, headers and fees from
 //!
-//! - invariants M1–M7 (`docs/design/mock-chain.md`): every block handed out passes them
+//! Every block handed out passes M1–M7 (else panic naming the rule; `usage.md` § Invariants):
+//! - M1: hash = SHA-256d(`encode_header`)
+//! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
+//! - M3: merkle root = `MerkleRoot::of_txids`, txids distinct per branch (`Ledger::admit`)
+//! - M4: one coinbase, slot 0, spends nothing, states no fee (`plan()`, `Ledger::admit`)
+//! - M5: nBits = regtest limit, or `outweigh()` = least work that becomes best (`bits()`)
+//! - M6: spends unspent on own branch, nullifiers fresh, pools >= 0 (ZIP 209), fee = derived
+//! - M7: pool data only once its upgrade active (Sapling, NU5 = Orchard, NU6.3 = Ironwood)
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

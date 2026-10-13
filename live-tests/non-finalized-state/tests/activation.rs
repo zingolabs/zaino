@@ -1,7 +1,7 @@
 //! Reorgs around the NU6.3 activation height serve the validator's blocks, trees and branch id
 //!
 //! - Orchard coinbase → Orchard tree before activation, Ironwood from it (zebra `Reset` edge)
-//! - Contract C16 in `docs/design/non-finalized-state-tests.md`
+//! - C16 (`README.md`)
 
 use std::time::Duration;
 

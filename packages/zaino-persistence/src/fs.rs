@@ -2,7 +2,8 @@
 //!
 //! - positional I/O only (a partial write can never move where the next one lands)
 //! - new file / rename / removal durable only after [`Fs::sync_dir`] on its parent
-//! - maps read-only; callers bound reads by committed lengths (`docs/design/durability.md`)
+//! - maps read-only (full disk = `io::Error` from a write, never SIGBUS on a mapped store)
+//! - mapping spans the whole file → callers bound reads by committed lengths (`crate::pages`)
 
 use std::{fmt, io, ops::Range, path::Path, sync::Arc};
 
@@ -19,7 +20,7 @@ pub(crate) use real::{background_priority, resident_bytes};
 #[cfg(any(test, feature = "testing"))]
 pub use sim::{CrashState, SimFs};
 
-/// Directory operations (Linux semantics; `docs/design/durability.md`)
+/// Directory operations (Linux semantics)
 pub trait Fs: Send + Sync + fmt::Debug + 'static {
     fn create_dir_all(&self, dir: &Path) -> io::Result<()>;
 
@@ -52,7 +53,7 @@ pub trait Fs: Send + Sync + fmt::Debug + 'static {
 ///
 /// - `PerFile` = `sync_data` each (any POSIX filesystem)
 /// - `Barrier` = [`FileHandle::write_back`] each, then one `sync_data` = one device cache flush
-///   covering them all (in-place-update filesystems only: `docs/design/durability.md`)
+///   covering them all (in-place-update filesystems only: `probe.rs`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Durability {
     PerFile,

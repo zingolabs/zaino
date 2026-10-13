@@ -1,7 +1,7 @@
 //! Stalled across a reorg that then ran past the window: realign first, never finalize an orphan
 //!
 //! - Frozen (SIGSTOP, same process on thaw) → the next tip = another branch, > `DEPTH` ahead
-//! - Contract C18 in `docs/design/non-finalized-state-tests.md`
+//! - C18, C12 (`README.md`)
 
 use std::time::Duration;
 

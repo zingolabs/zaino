@@ -1,7 +1,7 @@
 //! Readers polling straight through a reorg see one branch per answer, never a regression
 //!
 //! - Every read of the whole trace judged after the fact (a mid-replay race = one bad sample)
-//! - Contract C8 in `docs/design/non-finalized-state-tests.md`
+//! - C8 (`README.md`)
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};

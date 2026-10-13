@@ -16,19 +16,19 @@ Which side a method falls on is not a per-method judgement. It follows from
 Zaino index (never the validator), and writes and point lookups of primary
 consensus objects are forwarded to the validator.
 
-| Method | Answered by |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------- |
-| `GetLatestBlock`, `GetBlock`, `GetBlockRange` | compact-block index |
-| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index |
-| `GetAddressUtxos`, `GetAddressUtxosStream` | transparent-address index |
-| `GetTaddressBalance`, `GetTaddressBalanceStream` | transparent-address index |
-| `GetTaddressTransactions` | transparent-address index for the `{height, txid}` set, the validator for the bytes |
-| `GetTransaction` | validator |
-| `SendTransaction` | chain view [submission](./architecture.md#6-submission): one random entry per attempt |
-| `GetMempoolTx`, `GetMempoolStream` | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |
-| `GetLightdInfo` | the served snapshot: its tip, the verified best, the upgrade schedule (no validator call) |
-| `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)* | compact-block index, re-projected to nullifiers |
-| `GetTaddressTxids` *(deprecated, TODO: REMOVE)* | as `GetTaddressTransactions` |
+| Method                                                  | Answered by                                                                                                                                    |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GetLatestBlock`, `GetBlock`, `GetBlockRange`           | compact-block index                                                                                                                            |
+| `GetTreeState`, `GetLatestTreeState`, `GetSubtreeRoots` | tree-state index                                                                                                                               |
+| `GetAddressUtxos`, `GetAddressUtxosStream`              | transparent-address index                                                                                                                      |
+| `GetTaddressBalance`, `GetTaddressBalanceStream`        | transparent-address index                                                                                                                      |
+| `GetTaddressTransactions`                               | transparent-address index for the `{height, txid}` set, the validator for the bytes                                                            |
+| `GetTransaction`                                        | validator                                                                                                                                      |
+| `SendTransaction`                                       | chain view [submission](./architecture.md#6-submission): one random entry per attempt                                                          |
+| `GetMempoolTx`, `GetMempoolStream`                      | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |
+| `GetLightdInfo`                                         | the served snapshot: its tip, the verified best, the upgrade schedule (no validator call)                                                      |
+| `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                                                                                |
+| `GetTaddressTxids` *(deprecated, TODO: REMOVE)*         | as `GetTaddressTransactions`                                                                                                                   |
 
 "The validator" here is the traffic balancer (`zaino-traffic`) over every
 `[[trusted_validators]]` entry: lowest `priority` tier first, the least loaded
@@ -105,22 +105,22 @@ deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
 
 ## Status codes a client must distinguish
 
-| Condition | Code | Read it as |
-| ------------------------------------------------------------------------------------------------ | -------------------- | ------------------------------------------------------------ |
-| nothing served yet (indexes opening at boot) | `UNAVAILABLE` | back off and retry |
-| stream or subscription cap full (`grpc-retry-pushback-ms: 250`) | `UNAVAILABLE` | retry after the hint |
-| no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`) | `UNAVAILABLE` | back off and retry |
-| validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`) | `UNAVAILABLE` | back off and retry |
-| stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`) | `UNAVAILABLE` | retry |
-| index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED` | never retry |
-| height, hash or txid not in the chain, or above the answering index's tip | `NOT_FOUND` | ask for something else |
-| `GetBlockRange` reaching past the compact-block index's tip (after the blocks up to it) | `OUT_OF_RANGE` | ask again once the tip moves |
-| the request's own `grpc-timeout` passed | `DEADLINE_EXCEEDED` | allow longer or ask for less |
-| bad or oversized range, unparseable or foreign-network address | `INVALID_ARGUMENT` | fix the request |
-| request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`) | `RESOURCE_EXHAUSTED` | send less per call |
-| addresses with more receives than one request may walk (`serve.max_address_rows`) | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
-| request body not complete within 30 s | `DEADLINE_EXCEEDED` | resend |
-| stored record will not walk | `INTERNAL` | the server is broken |
+| Condition                                                                                           | Code                 | Read it as                                                             |
+| --------------------------------------------------------------------------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
+| stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                     | `UNAVAILABLE`        | retry after the hint                                                   |
+| no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`)              | `UNAVAILABLE`        | back off and retry                                                     |
+| validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`)                        | `UNAVAILABLE`        | back off and retry                                                     |
+| stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`)                       | `UNAVAILABLE`        | retry                                                                  |
+| index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED`      | never retry                                                            |
+| height, hash or txid not in the chain, or above the answering index's tip                           | `NOT_FOUND`          | ask for something else                                                 |
+| `GetBlockRange` reaching past the compact-block index's tip (after the blocks up to it)             | `OUT_OF_RANGE`       | ask again once the tip moves                                           |
+| the request's own `grpc-timeout` passed                                                             | `DEADLINE_EXCEEDED`  | allow longer or ask for less                                           |
+| bad or oversized range, unparseable or foreign-network address                                      | `INVALID_ARGUMENT`   | fix the request                                                        |
+| request body over its cap (64 KiB, or 2 MB + 1 KiB for `SendTransaction`)                           | `RESOURCE_EXHAUSTED` | send less per call                                                     |
+| addresses with more receives than one request may walk (`serve.max_address_rows`)                   | `RESOURCE_EXHAUSTED` | fewer addresses per call; one huge address is not a light-wallet query |
+| request body not complete within 30 s                                                               | `DEADLINE_EXCEEDED`  | resend                                                                 |
+| stored record will not walk                                                                         | `INTERNAL`           | the server is broken                                                   |
 
 While Zaino syncs, the snapshot's tip trails the chain: it is the lowest tip
 across the enabled indexes, and `GetLatestBlock` / `GetLightdInfo.blockHeight`

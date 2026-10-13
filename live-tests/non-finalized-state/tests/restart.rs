@@ -2,7 +2,7 @@
 //!
 //! - Non-finalized state in memory only → a restart rebuilds it from the validator's current chain
 //! - Down across a reorg = `freeze` then kill (kubelet restarts a first crash at once)
-//! - Contracts C10, C13 in `docs/design/non-finalized-state-tests.md`
+//! - C10, C13 (`README.md`)
 
 use std::collections::HashSet;
 use std::time::Duration;

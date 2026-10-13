@@ -1,7 +1,7 @@
 //! `GetMempoolStream` ends when a reorg moves the tip, including one that keeps its height
 //!
 //! - Stream = snapshot + arrivals until the tip moves (wallets re-subscribe per block)
-//! - Contract C14 in `docs/design/non-finalized-state-tests.md`
+//! - C14 (`README.md`)
 
 use std::time::Duration;
 

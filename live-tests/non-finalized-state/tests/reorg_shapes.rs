@@ -1,7 +1,8 @@
 //! Every index serves the validator's chain after a reorg, whatever the reorg's shape
 //!
 //! - Branch A → configured Orchard miner (Ironwood commitments), B → `FILLER_ADDRESS` (none)
-//! - Contracts C1–C5, C11, C12 in `docs/design/non-finalized-state-tests.md`
+//! - `len = 0` cases = bare retreat (C11)
+//! - C1–C5, C11, C12 (`README.md`)
 
 use std::time::Duration;
 

@@ -1,7 +1,7 @@
 //! The non-final window's edges: the deepest legal reorg, and one block deeper
 //!
 //! - `depth` orphans = fork parent on the window floor (legal); `depth + 1` = below it (fatal)
-//! - Contracts C9, C10 in `docs/design/non-finalized-state-tests.md`
+//! - C9, C10 (`README.md`)
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};

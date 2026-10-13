@@ -1,7 +1,7 @@
 //! A → B → A → B …: each return to a branch serves it byte-identically
 //!
 //! - `reconsiderblock` revives A (more work → best again), `invalidateblock` hands back to B
-//! - Contracts C7, C12 in `docs/design/non-finalized-state-tests.md`
+//! - C7, C12 (`README.md`)
 
 use std::time::Duration;
 

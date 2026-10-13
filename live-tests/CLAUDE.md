@@ -8,7 +8,7 @@ are specific to the live suite, and overrides the root where it says so.
 - `e2e` — a wallet drives Zaino over gRPC.
 - `clientless` — no wallet; tests call Zaino's gRPC directly.
 - `non-finalized-state` — reorgs, the served snapshot tip and every tip-dependent RPC
-  ([design](../docs/design/non-finalized-state-tests.md)). All reorg testing
+  ([README](non-finalized-state/README.md)). All reorg testing
   lives here; sync profiles only tolerate reorgs.
 - `zaino-testutils` — shared test helpers.
 - `sync/` — long-running sync profiles over snapshot-restored public chains. A

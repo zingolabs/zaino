@@ -118,11 +118,8 @@ Operating it:
 
 How it is built, and why:
 - [Architecture](./docs/architecture.md): **start here.** Who owns what, the map, what each source is trusted for, the best chain and finality, the mempool, submission, indexing, serving from one snapshot, failure modes.
-- [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
-- [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
-- [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.
+- [Storage](./packages/zaino-persistence/usage.md): the port every index stores through, the on-disk layout, the commit and crash contract, and why it is append-only files and mmap. Each index's own guide (below) covers what it keeps.
 - [What the clients actually call](./docs/client-requirements.md): an audit of the two wallet sync engines.
-- [Ironwood activation](./docs/notes/ironwood-activation.md): NU6.3 domain facts the indexes and live suite rely on.
 
 Releasing it:
 - [RELEASING.md](./RELEASING.md): change files, releases, publishing.

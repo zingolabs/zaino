@@ -138,8 +138,8 @@ pub(crate) enum FileKind {
 /// Zeroed, flushed room past the end of a [`FileKind::Log`] (appends below EOF = no metadata
 /// change: seal's `fdatasync` never waits on the journal / other files' writeback)
 ///
-/// - zeros, not `fallocate` (unwritten extents = metadata change on first write); usage.md
-///   "Write-ahead reserve"
+/// - zeros, not `fallocate` (unwritten extents = metadata change on first write)
+/// - cost: file's bytes written twice; dropped at open (truncated to the seal), rebuilt on append
 #[derive(Debug)]
 struct Reserve {
     end: u64,
@@ -331,8 +331,7 @@ pub(crate) fn footprint<'a>(pages: impl IntoIterator<Item = &'a Pages>) -> (u64,
 
 /// Sealed file, mapped: every page checked on a read's first touch
 ///
-/// - failed check = bytes changed on disk after the seal → dies (never serves unverified bytes;
-///   `docs/design/durability.md`)
+/// - failed check = bytes changed on disk after the seal → dies (never serves unverified bytes)
 #[derive(Clone)]
 pub(crate) struct Pages {
     inner: Arc<Mapped>,
@@ -402,6 +401,7 @@ impl Pages {
         for mapped in mapping.iter().chain(&sums_mapping) {
             mapped.advise(access);
         }
+        // mapping may run past the seal (reserve zeros, next commit's appends): sliced to `len`
         let bytes =
             mapping.as_ref().map(|mapping| mapping.bytes().slice(..len)).unwrap_or_default();
         let sums = sums_mapping

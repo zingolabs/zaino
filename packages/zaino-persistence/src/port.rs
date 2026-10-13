@@ -1,4 +1,4 @@
-//! Persistence port: what an index may ask of storage (`docs/design/persistence-engine.md`)
+//! Persistence port: what an index may ask of storage (usage.md "What an index may ask")
 //!
 //! - final data only, insert only (+ single removes on a `deletes()` map), buffered then one atomic
 //!   commit, snapshot reads, verifiable
@@ -244,7 +244,7 @@ impl SequenceTable {
 /// - `scope` = leading key bytes every range read shares (0 = keys read whole; partition hint)
 /// - keys lead with >= 8 uniform bytes (hash, txid: shardable)
 /// - `cache_writes` = written data kept in page cache ([`cache_writes`](Self::cache_writes))
-/// - `deletes` = keys removable ([`deletes`](Self::deletes), `docs/design/lsm-deletes.md`)
+/// - `deletes` = keys removable ([`deletes`](Self::deletes))
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapTable {
     pub(crate) id: MapId,
@@ -263,7 +263,7 @@ impl MapTable {
     }
 
     /// Keys removable ([`MapChanges::remove`]) under a contract: per key, inserted at most once,
-    /// removed at most once, never re-inserted (`docs/design/lsm-deletes.md`)
+    /// removed at most once, never re-inserted (RocksDB `SingleDelete`; usage.md "Deletes")
     ///
     /// - the LSM then stores a flag byte per row (value or tombstone)
     pub const fn deletes(self) -> Self {

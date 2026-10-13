@@ -1,7 +1,7 @@
 //! Back-to-back reorgs fired during catch-up, never awaited, converge on the validator's chain
 //!
 //! - Zaino may observe any subset of the intermediate tips (reorg mid-replay, mid-bulk-sync)
-//! - Contract C17 in `docs/design/non-finalized-state-tests.md`
+//! - C17 (`README.md`)
 
 use std::time::Duration;
 

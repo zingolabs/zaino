@@ -2,7 +2,8 @@
 
 How `zainod` turns a Zcash chain into the lightwalletd gRPC service, and why it is built this way.
 Crate APIs live in each crate's `usage.md` (also its rustdoc); the per-method RPC table is
-[rpc_api.md](./rpc_api.md); storage is [design/persistence-engine.md](./design/persistence-engine.md).
+[rpc_api.md](./rpc_api.md); storage is the
+[`zaino-persistence` guide](../packages/zaino-persistence/usage.md).
 
 ## 1. Who owns what
 

@@ -28,7 +28,6 @@
 //! ```
 //!
 //! - balance = sum of the unspent; transactions = receiving txids + their spenders
-//! - `docs/design/index-data-structures.md`
 
 mod address;
 mod key;

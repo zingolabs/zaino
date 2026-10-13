@@ -35,7 +35,7 @@ pub mod verify;
 /// Until a shutdown signal (`Ok`) or the first failure (`Err`)
 ///
 /// - no in-process restart: failure ends the process, the service manager restarts it, next boot
-///   proves its state from disk (`docs/design/durability.md`)
+///   proves its state from disk (`zaino-persistence/usage.md` "The commit and crash contract")
 /// - logging initialised by the caller
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     crate::logging::try_init()

@@ -3,7 +3,7 @@
 //! - Faucet spends a shielded note → a transparent recipient: nullifier, tx lookup and address rows
 //!   move with the reorg, address rows checked against zebrad's own address RPCs at every step
 //! - zebrad never re-admits an orphaned tx (rebroadcast = the wallet's job, done via zaino)
-//! - Contract C15 in `docs/design/non-finalized-state-tests.md`
+//! - C15, C11 via `remined_at_the_same_height` (`README.md`)
 
 use std::time::Duration;
 

@@ -1,7 +1,7 @@
 //! Transparent address index across a reorg: orphaned coinbase debited, winning coinbase credited
 //!
 //! - Branch A → `MINER_ADDRESS`, B → `FILLER_ADDRESS`: one address loses, the other gains
-//! - Contract C6 in `docs/design/non-finalized-state-tests.md`
+//! - C6 (`README.md`)
 
 use std::time::Duration;
 

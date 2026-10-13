@@ -17,7 +17,8 @@ pub(crate) const MANIFEST: &str = "MANIFEST";
 /// Manifest mid-creation: zeroed + synced here, then renamed to [`MANIFEST`] whole
 const CREATING: &str = "MANIFEST.creating";
 
-/// Locked for the life of this value; see `docs/design/durability.md`
+/// Locked for the life of this value (second process's open-time truncation under this one's
+/// mappings = SIGBUS)
 ///
 /// - `seq` = last committed manifest's sequence number (0 = nothing committed yet)
 #[derive(Debug)]

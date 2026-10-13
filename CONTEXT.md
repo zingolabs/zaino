@@ -45,7 +45,7 @@ _Avoid_: default pools, backfill set, "Sapling and Orchard"
 **Cross-address restriction**:
 The post-NU6.3 Orchard Action circuit rule that an output note carry the same
 `(g_d, pk_d)` as the note it spends, so every Orchard action is change to the
-spent note's own address or a withdrawal. Details:
-[Ironwood activation](./docs/notes/ironwood-activation.md).
+spent note's own address or a withdrawal. Spec:
+[the cross-address restriction](https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction).
 _Avoid_: "exit-only" (same-receiver change still lands in the pool, and its
 commitment tree still grows)

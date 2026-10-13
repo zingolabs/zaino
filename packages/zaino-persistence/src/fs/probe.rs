@@ -1,6 +1,8 @@
-//! Whether one device flush can make an index directory's commits durable ([`Durability::Barrier`],
-//! `docs/design/durability.md` "Barrier commit")
+//! Whether one device flush can make an index directory's commits durable ([`Durability::Barrier`])
 //!
+//! - sequence commit = overwrite of zeroed reserve blocks → no metadata → fsync = cache flush only
+//! - flush = every completed write durable, any file (kernel `block/writeback_cache_control.rst`)
+//! - anything but ext4 / XFS = `PerFile` (CoW, log-structured, network: overwrite = new metadata)
 //! - allowlist on positive evidence: any unknown fact, or any probe failing = `PerFile`
 //! - mount: ext4 with `barrier`, no `journal_async_commit`, no DAX (`/proc/fs/ext4/<dev>/options`
 //!   lists every option, superblock defaults included; mountinfo hides them); XFS on one device

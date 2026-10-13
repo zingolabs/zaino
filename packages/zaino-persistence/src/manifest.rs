@@ -1,4 +1,4 @@
-//! `MANIFEST`: index's one commit point (`docs/design/durability.md`)
+//! `MANIFEST`: index's one commit point
 //!
 //! ```text
 //! file = slot 0 ‖ slot 1                     2 × SLOT bytes, zero-filled when created
@@ -171,6 +171,7 @@ fn decode_slot(identity: Identity, slot: &[u8]) -> Result<Slot<'_>, ManifestErro
 ///
 /// - both committed → higher `seq` (other = the commit before it)
 /// - committed + torn → the committed one (torn = later commit interrupted before its ack)
+///   - bit rot in the live slot reads as torn too → rollback one commit (CRC can't tell them apart)
 /// - none committed, <= 1 torn → nothing committed yet (first commit interrupted)
 /// - both torn → error (created zeroed + synced first; a crash tears only the slot written)
 /// - other length → error (older layout; file only ever created whole)

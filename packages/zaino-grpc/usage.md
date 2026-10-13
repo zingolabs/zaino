@@ -60,7 +60,7 @@ routing.route(routes);
   `GetTreeState`, by height or hash) = up to `At::answers_through(kind)`, the
   index's own durable tip when past the served one. A point read past it =
   `NOT_FOUND`; a range streams to it, then `OUT_OF_RANGE`.
-- Wire contract (`docs/design/integration-test-plan.md` W1–W15): `SendTransaction`
+- Wire contract: `SendTransaction`
   rejections = gRPC `OK` + the validator's code and message; `GetTreeState` = the
   exact height, `""` below a pool's activation, `000000` for an empty active
   tree; `GetSubtreeRoots` whole or refused before the first byte (unknown pool

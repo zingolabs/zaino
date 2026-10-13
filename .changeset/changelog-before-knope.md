@@ -385,7 +385,7 @@ default: major
   `Ping` was testing-only. The `Duration` and `PingResponse` messages went with
   `Ping`; nothing else referenced them.
 - **`zaino-consensus` is deleted from the workspace.** Zaino is an indexer and
-  carries no consensus logic (`docs/design/boundaries.md`): its raw-transaction
+  carries no consensus logic (`docs/architecture.md` §1): its raw-transaction
   size/hex validation (`validate_raw_transaction_bytes`,
   `validate_raw_transaction_hex`, `RawTransactionError`, `MAX_BLOCK_BYTES`) had
   no consumers and is gone — Zaino relays, Zebra validates and rejects. The

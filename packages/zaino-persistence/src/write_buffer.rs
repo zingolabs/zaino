@@ -3,7 +3,7 @@
 //! - map rows unsorted (the LSM sorts each batch at commit)
 //! - per map: row numbers by key (staged lookups + the held-key check)
 //! - a removed key = a tombstone row, unless the buffer holds its insert: both cancel (neither
-//!   reaches a segment; `docs/design/lsm-deletes.md`)
+//!   reaches a segment)
 
 use std::hash::BuildHasher;
 

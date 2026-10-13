@@ -3,7 +3,7 @@
 //! - [`Snapshot`] = one committed list, mapped; immutable (a commit builds the next one)
 //! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 //! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
-//!   (insert-once / remove-once: at most one value + one tombstone exist; `lsm-deletes.md`)
+//!   (insert-once / remove-once: at most one value + one tombstone exist)
 
 use std::{ops::Range, path::Path, sync::Arc};
 

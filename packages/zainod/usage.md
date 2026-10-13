@@ -320,7 +320,7 @@ zainod verify --config /etc/zaino/zainod.toml
 
 Loads the same config the daemon runs with and, for every **enabled** index,
 reads every file its `MANIFEST` seals against that file's page checksums
-([`docs/design/durability.md`](../../docs/design/durability.md)). The same
+([zaino-persistence: Verifying offline](../zaino-persistence/usage.md#verifying-offline)). The same
 check for every index: the bytes on disk are the bytes that were sealed. What
 they mean was settled while they were built, so nothing here decodes or
 re-derives them. A disabled index is skipped and reported as `null`.
@@ -362,7 +362,7 @@ means delete that index's directory and resync it.
 ## Failure policy
 
 zainod dies rather than serve from a state it cannot vouch for
-([`docs/design/durability.md`](../../docs/design/durability.md)):
+([zaino-persistence: the commit and crash contract](../zaino-persistence/usage.md#the-commit-and-crash-contract)):
 
 - any panic aborts the process, including a page checksum mismatch on the read
   that first touches a corrupt page
