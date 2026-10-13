@@ -175,9 +175,11 @@ impl<S: LightWalletService> LightServe<S> {
         Ok(roots.into_iter().map(ToWire::to_wire).collect())
     }
 
-    /// `GetTransaction`: a transaction as raw bytes, or `None` when the
-    /// validator does not know it (the caller maps that to not-found). Passed
-    /// through to the validator's raw-transaction fetch.
+    /// `GetTransaction`: a transaction as raw bytes with where it was mined, or
+    /// `None` when the validator does not know it (the caller maps that to
+    /// not-found). The bytes are the validator's; the height is the engine's,
+    /// which under a local transaction-location placement is where the pinned
+    /// view holds the transaction.
     pub async fn get_transaction(
         &self,
         id: TransactionId,

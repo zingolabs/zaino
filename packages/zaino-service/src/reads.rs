@@ -309,12 +309,31 @@ pub trait TransactionRead: Send + Sync {
 /// validator; the pool-decomposed [`TransactionRead`] is the explorer/node
 /// surface.
 ///
-/// Backed by: passthrough to the validator's raw-transaction fetch.
+/// Backed by: passthrough to the validator's raw-transaction fetch for the
+/// bytes. Where the transaction lives is the validator's answer too, unless the
+/// deployment places transaction location locally; then it is where the pinned
+/// tiers hold the transaction.
 pub trait RawTransactionRead: Send + Sync {
     fn raw_transaction(
         &self,
         id: TransactionId,
     ) -> impl Future<Output = Result<Option<RawTransaction>, TxReadError>> + Send;
+}
+
+/// Where one tier holds a transaction: on its best chain at a height, on a
+/// displaced branch, or — `Ok(None)` — not at all.
+///
+/// A tier read: the finalised store and the non-finalised head each answer for
+/// what they hold, and the engine composes them. It never answers
+/// [`TransactionLocation::Mempool`]; a tier holds only mined transactions.
+///
+/// Backed by: the `txid_location` index in the store, the retained graph in
+/// the head.
+pub trait TransactionLocationRead: Send + Sync {
+    fn transaction_location(
+        &self,
+        id: TransactionId,
+    ) -> impl Future<Output = Result<Option<TransactionLocation>, TxReadError>> + Send;
 }
 
 /// Backed by: commitment-tree index.

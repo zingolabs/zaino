@@ -24,12 +24,15 @@ use zaino_primitives::types::{
     TransparentSpend,
 };
 use zaino_primitives::types::{PoolActivations, ShieldedPool, SubtreeRoot, Treestate};
+use zaino_primitives::types::{TransactionId, TransactionLocation};
 use zaino_service::error::{
     AddressReadError, BlockReadError, ReadError, SpendReadError, Transient, TreestateReadError,
+    TxReadError,
 };
 use zaino_service::{
     AddressReceiveRead, Capability, ChainSegment, CompactBlockRead, HeaderRead, HeaderSummary,
-    PoolActivationSource, SpendRead, SpendStatus, TakeSnapshot, TreestateRead, TreestateWindowRead,
+    PoolActivationSource, SpendRead, SpendStatus, TakeSnapshot, TransactionLocationRead,
+    TreestateRead, TreestateWindowRead,
 };
 
 /// A fixed non-finalised window backed by an in-memory map.
@@ -43,12 +46,21 @@ pub struct StubNonFinalised {
     blocks: BTreeMap<Height, CompactBlock>,
     /// The highest-height block's id, or `None` when empty.
     tip: Option<BlockRef>,
+    /// Where this tier holds each scripted transaction.
+    transactions: BTreeMap<[u8; 32], TransactionLocation>,
 }
 
 impl StubNonFinalised {
     /// An empty window — the head holds nothing.
     pub fn empty() -> Self {
         Self::default()
+    }
+
+    /// Script where this tier holds `id`.
+    #[must_use]
+    pub fn with_transaction(mut self, id: TransactionId, location: TransactionLocation) -> Self {
+        self.transactions.insert(id.into(), location);
+        self
     }
 
     /// A window over `blocks`. The floor and tip are derived from the contents
@@ -67,7 +79,11 @@ impl StubNonFinalised {
             height: *height,
             hash: block.hash,
         });
-        Self { blocks, tip }
+        Self {
+            blocks,
+            tip,
+            transactions: BTreeMap::new(),
+        }
     }
 }
 
@@ -149,6 +165,15 @@ impl TakeSnapshot for StubNonFinalised {
 /// Mirrors `zaino_chain_head_service`'s implementation, including its reading
 /// of `NoSuchOutput` as "not in this window" rather than "nowhere" — the
 /// composer falls through to the finalised store on anything but a spend.
+impl TransactionLocationRead for StubNonFinalised {
+    async fn transaction_location(
+        &self,
+        id: TransactionId,
+    ) -> Result<Option<TransactionLocation>, TxReadError> {
+        Ok(self.transactions.get(&<[u8; 32]>::from(id)).cloned())
+    }
+}
+
 impl SpendRead for StubNonFinalised {
     async fn spend_status(&self, outpoint: Outpoint) -> Result<SpendStatus, SpendReadError> {
         let mut created = false;

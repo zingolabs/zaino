@@ -241,24 +241,114 @@ async fn address_reads_are_local_under_light_routing() {
     );
 }
 
-#[tokio::test]
-async fn raw_transaction_passes_through_the_bytes_and_location() {
-    let bytes = vec![0xab, 0xcd, 0xef];
-    let engine = engine_with(
-        MockChain::new()
-            .respond_transaction(bytes.clone(), TransactionLocation::BestChain(height(9))),
-    );
+/// An engine whose head and finalised tiers each hold a scripted set of
+/// transactions, over a validator that answers every raw-transaction fetch with
+/// `relayed`.
+fn engine_locating(
+    head: StubNonFinalised,
+    finalised: StubNonFinalised,
+    relayed: TransactionLocation,
+) -> LightEngine {
+    Engine::new(
+        finalised,
+        head,
+        ValidatorClient::new(
+            MockChain::new().respond_transaction(vec![0xab, 0xcd, 0xef], relayed),
+            RetryPolicy::default(),
+        ),
+    )
+}
+
+async fn located(engine: &LightEngine, id: TransactionId) -> RawTransaction {
     let snapshot = engine.snapshot().await.expect("snapshot acquired");
-    let got = RawTransactionRead::raw_transaction(&snapshot, TransactionId::from([1u8; 32]))
+    RawTransactionRead::raw_transaction(&snapshot, id)
         .await
-        .expect("served");
-    assert_eq!(
-        got,
-        Some(RawTransaction {
-            data: bytes,
-            location: TransactionLocation::BestChain(height(9)),
-        })
+        .expect("served")
+        .expect("the validator knows the transaction")
+}
+
+/// Under the local routing the bytes are the validator's and the location is
+/// the pinned view's. The validator here always claims height 99; each case
+/// shows which tier's answer replaces that claim.
+#[tokio::test]
+async fn raw_transaction_reports_where_the_pinned_tiers_hold_it() {
+    let id = TransactionId::from([1u8; 32]);
+    let validator_claim = TransactionLocation::BestChain(height(99));
+
+    // The head holds it on its best chain: the head's height.
+    let engine = engine_locating(
+        StubNonFinalised::empty().with_transaction(id, TransactionLocation::BestChain(height(7))),
+        StubNonFinalised::empty(),
+        validator_claim.clone(),
     );
+    let got = located(&engine, id).await;
+    assert_eq!(got.data, vec![0xab, 0xcd, 0xef], "the bytes are relayed");
+    assert_eq!(got.location, TransactionLocation::BestChain(height(7)));
+
+    // Only the finalised store holds it: the store's height.
+    let engine = engine_locating(
+        StubNonFinalised::empty(),
+        StubNonFinalised::empty().with_transaction(id, TransactionLocation::BestChain(height(3))),
+        validator_claim.clone(),
+    );
+    assert_eq!(
+        located(&engine, id).await.location,
+        TransactionLocation::BestChain(height(3))
+    );
+
+    // The head saw it on a displaced branch, but the store has it on the best
+    // chain: the best-chain position wins.
+    let engine = engine_locating(
+        StubNonFinalised::empty().with_transaction(id, TransactionLocation::NonBestChain),
+        StubNonFinalised::empty().with_transaction(id, TransactionLocation::BestChain(height(3))),
+        validator_claim.clone(),
+    );
+    assert_eq!(
+        located(&engine, id).await.location,
+        TransactionLocation::BestChain(height(3))
+    );
+
+    // The head saw it on a displaced branch only.
+    let engine = engine_locating(
+        StubNonFinalised::empty().with_transaction(id, TransactionLocation::NonBestChain),
+        StubNonFinalised::empty(),
+        validator_claim.clone(),
+    );
+    assert_eq!(
+        located(&engine, id).await.location,
+        TransactionLocation::NonBestChain
+    );
+}
+
+/// A transaction the validator has mined but neither pinned tier holds is not
+/// mined in this view: the validator's block is above or off the pinned chain,
+/// so its height is not reported. A displaced-branch claim by the validator
+/// stands, and so does a mempool one.
+#[tokio::test]
+async fn a_transaction_outside_the_pinned_view_is_not_reported_mined() {
+    let id = TransactionId::from([1u8; 32]);
+    for (validator_claim, expected) in [
+        (
+            TransactionLocation::BestChain(height(99)),
+            TransactionLocation::Mempool,
+        ),
+        (TransactionLocation::Mempool, TransactionLocation::Mempool),
+        (
+            TransactionLocation::NonBestChain,
+            TransactionLocation::NonBestChain,
+        ),
+    ] {
+        let engine = engine_locating(
+            StubNonFinalised::empty(),
+            StubNonFinalised::empty(),
+            validator_claim.clone(),
+        );
+        assert_eq!(
+            located(&engine, id).await.location,
+            expected,
+            "validator claimed {validator_claim:?}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -366,12 +456,13 @@ fn the_manifest_is_derived_from_the_routing_and_the_store() {
     // Passthrough: live, the validator answers.
     assert_eq!(manifest.get(Capability::RawTransaction), Answerable::Live);
     assert_eq!(manifest.get(Capability::Broadcast), Answerable::Live);
-    // Withheld: absent, whatever the providers could answer.
-    assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
+    // Local: transaction location follows the store too.
     assert_eq!(
         manifest.get(Capability::TransactionLocation),
-        Answerable::Absent
+        Answerable::ToHeight(height(42))
     );
+    // Withheld: absent, whatever the providers could answer.
+    assert_eq!(manifest.get(Capability::SpendStatus), Answerable::Absent);
 }
 
 #[test]

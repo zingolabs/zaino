@@ -134,7 +134,7 @@ fn creates(transaction: &Transaction, outpoint: Outpoint) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::Arc;
 
     use zaino_chain_head::{ChainHeadBlock, ChainHeadWork};
@@ -149,11 +149,11 @@ mod tests {
     use crate::serve::HeadSnapshot;
     use crate::snapshot::MapBackedSnapshot;
 
-    fn height(h: u32) -> Height {
+    pub(crate) fn height(h: u32) -> Height {
         Height::try_from(h).expect("a valid test height")
     }
 
-    fn outpoint(txid_byte: u8, index: u32) -> Outpoint {
+    pub(crate) fn outpoint(txid_byte: u8, index: u32) -> Outpoint {
         Outpoint {
             txid: TransactionId::from([txid_byte; 32]),
             index,
@@ -169,7 +169,7 @@ mod tests {
     }
 
     /// A transaction that spends `inputs` and creates `outputs` outputs.
-    fn transaction(
+    pub(crate) fn transaction(
         txid_byte: u8,
         inputs: Vec<Outpoint>,
         outputs: usize,
@@ -196,7 +196,7 @@ mod tests {
 
     /// A chain-head block at `h` with hash `[hash_byte; 32]`, parent
     /// `[parent_byte; 32]`, carrying `transactions`.
-    fn block(
+    pub(crate) fn block(
         h: u32,
         hash_byte: u8,
         parent_byte: u8,

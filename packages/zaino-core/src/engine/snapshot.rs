@@ -17,16 +17,14 @@ use crate::chain_view::ChainTier;
 use crate::chain_view::ChainViewSnapshot;
 use crate::routing::Routing;
 use zaino_primitives::types::{
-    BlockRef, BlockSelector, BlockchainInfo, CompactBlock, HeightRange, RawTransaction,
-    TransactionId, rpc::ChainTip,
+    BlockRef, BlockSelector, BlockchainInfo, CompactBlock, HeightRange, rpc::ChainTip,
 };
 use zaino_service::ServiceableRange;
-use zaino_service::error::{BlockReadError, ReadError, TxReadError};
+use zaino_service::error::{BlockReadError, ReadError};
 use zaino_service::{
-    ChainInfoRead, ChainSegment, ChainTipsRead, CompactBlockRead, CompactNullifierRead,
-    RawTransactionRead, Snapshot,
+    ChainInfoRead, ChainSegment, ChainTipsRead, CompactBlockRead, CompactNullifierRead, Snapshot,
 };
-use zaino_source::{GetBlockchainInfo, GetTransaction};
+use zaino_source::GetBlockchainInfo;
 
 use crate::passthrough::PassthroughProvider;
 
@@ -234,22 +232,5 @@ where
 {
     async fn chain_info(&self) -> Result<BlockchainInfo, ReadError> {
         self.passthrough.chain_info().await
-    }
-}
-
-/// Always passthrough: no local index holds transaction bytes, and the wallet parses
-/// them itself, so the validator's `getrawtransaction` answer relays as is.
-impl<F, N, Src, R> RawTransactionRead for EngineSnapshot<F, N, Src, R>
-where
-    F: ChainTier,
-    N: ChainTier,
-    Src: GetTransaction + Send + Sync + 'static,
-    R: Routing,
-{
-    async fn raw_transaction(
-        &self,
-        id: TransactionId,
-    ) -> Result<Option<RawTransaction>, TxReadError> {
-        self.passthrough.raw_transaction(id).await
     }
 }

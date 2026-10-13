@@ -28,9 +28,11 @@ use super::{Local, Routing, Withheld};
 /// the validator. The explorer's treestate surface is served from the same branch
 /// as the compact blocks beside it.
 ///
-/// Transaction location is withheld: no engine read dispatches on that placement,
-/// so withholding it keeps the manifest honest — a capability no served method
-/// consumes is `Absent`, not a false `Live`.
+/// Transaction location is withheld: the node-RPC surface renders a
+/// transaction's position from the validator's decoded read, not from the raw
+/// transaction read that placement governs, so withholding it keeps the manifest
+/// honest — a capability no served method consumes is `Absent`, not a false
+/// `Live`.
 ///
 /// [`NodeRpcReads`]: zaino_service::read_sets::NodeRpcReads
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

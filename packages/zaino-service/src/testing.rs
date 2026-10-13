@@ -47,7 +47,8 @@ use crate::{
     MempoolContent, MempoolEntry, MempoolListing, MempoolSubscribe, MempoolSummary,
     NodeStatusError, NodeStatusRead, PoolActivationSource, RawTransactionRead, ReadBudget,
     ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
-    TransactionRead, TransactionViewRead, TreestateRead, TreestateWindowRead, TxOutRead,
+    TransactionLocationRead, TransactionRead, TransactionViewRead, TreestateRead,
+    TreestateWindowRead, TxOutRead,
 };
 use zaino_primitives::types::{rpc::TxOut, OutputIndex};
 
@@ -646,6 +647,16 @@ impl CompactNullifierRead for MockSnapshot {
         &self,
         _at: BlockSelector,
     ) -> Result<Option<CompactBlock>, BlockReadError> {
+        Ok(None)
+    }
+}
+
+impl TransactionLocationRead for MockSnapshot {
+    async fn transaction_location(
+        &self,
+        _id: TransactionId,
+    ) -> Result<Option<zaino_primitives::types::TransactionLocation>, TxReadError> {
+        // The mock holds no located transactions: as a tier it knows none.
         Ok(None)
     }
 }

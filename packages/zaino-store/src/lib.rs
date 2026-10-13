@@ -39,6 +39,7 @@ mod address;
 mod index_coverage;
 mod spend;
 mod spend_resolve;
+mod transaction_location;
 mod tree_state;
 mod watermark_repair;
 
@@ -934,6 +935,63 @@ mod readiness_tests {
     /// and past the gate once `finish_bulk` completes them. (The deeper spend
     /// resolution `spend_info` then performs is exercised elsewhere; here the
     /// point is only that the gate flips.)
+    /// The store locates a transaction it holds on its best chain at the indexed
+    /// height, answers `None` for one it does not hold, and — while the
+    /// scattered `txid_location` index is still deferred — refuses the read as
+    /// not serviceable, where answering `None` would be a false miss.
+    #[tokio::test]
+    async fn transaction_location_is_gated_and_then_located() {
+        use zaino_primitives::types::TransactionLocation;
+        use zaino_service::error::TxReadError;
+        use zaino_service::TransactionLocationRead;
+
+        // The shared fixture records a spend by `spender()` but no location for
+        // it, so this test adds the entry it reads.
+        let mut ops = store_ops();
+        ops.push(put::<TxidLocationIndex>(
+            txid_location::ID.into(),
+            &spender(),
+            &txid_location::TxLocation {
+                height: BlockHeight::new(u64::from(H)),
+                tx_index: 0,
+            },
+        ));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let backend = Arc::new(open_at(dir.path()));
+        backend
+            .begin_bulk(BulkPolicy { enabled: true })
+            .expect("begin_bulk");
+        commit(&backend, ops);
+
+        let during = snapshot(backend.clone())
+            .await
+            .transaction_location(spender())
+            .await;
+        assert!(
+            matches!(
+                during,
+                Err(TxReadError::NotServiceable(Capability::TransactionLocation))
+            ),
+            "a deferred index is not serviceable, never a miss: {during:?}"
+        );
+
+        backend.finish_bulk().expect("finish_bulk");
+        let snap = snapshot(backend).await;
+        assert_eq!(
+            snap.transaction_location(spender())
+                .await
+                .expect("the read serves"),
+            Some(TransactionLocation::BestChain(height(H)))
+        );
+        assert_eq!(
+            snap.transaction_location(TransactionId::from([0x44u8; 32]))
+                .await
+                .expect("the read serves"),
+            None
+        );
+    }
+
     #[tokio::test]
     async fn spend_info_is_gated_and_then_ungated() {
         let dir = tempfile::tempdir().expect("tempdir");

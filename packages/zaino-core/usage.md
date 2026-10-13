@@ -18,8 +18,8 @@ Engine<Fs, Nfs, Src, R>
 
 `routing::Routing` is a type with one `Placement` — `Local`, `Passthrough` or
 `Withheld` — per capability whose placement is a decision. Compact blocks are
-always local and raw transactions, broadcast, mempool and the upgrade schedule
-are always the validator's, so they are not on it. `placement()` is exhaustive
+always local and raw transaction bytes, broadcast, mempool and the upgrade
+schedule are always the validator's, so they are not on it. `placement()` is exhaustive
 over `Capability`: a new variant must be classified.
 
 The light-wallet use case has two routings that differ only in where transparent
@@ -31,7 +31,7 @@ impl Routing for LightWalletLocalRouting {
     type Address = Local;             // served from Zaino's own transparent indexes
     type Treestate = Local;           // served from Zaino's own tree_state + subtrees
     type Spend = Withheld;            // a node read; not offered
-    type TransactionLocation = Withheld;
+    type TransactionLocation = Local; // where the pinned tiers hold a transaction
 }
 
 pub struct LightWalletPassthroughRouting;
@@ -110,7 +110,8 @@ that capability and on the provider ports that placement needs:
 | verbose header / block (chain position) | always passthrough | `GetBlockHeader`, `GetBlockVerbose`, `GetBlockVerboseByHash` |
 | chain-info aggregate | always passthrough | `GetBlockchainInfo` |
 | pool-decomposed transaction and its status | always passthrough | `GetTransactionVerbose` |
-| raw transaction, broadcast, mempool, upgrades | always passthrough | the source ports |
+| broadcast, mempool, upgrades | always passthrough | the source ports |
+| raw transaction (`GetTransaction`) | bytes always passthrough; location `R::TransactionLocation` | `GetTransaction` for the bytes. `Local`: both tiers `TransactionLocationRead` — the head first, then the store — so the reported height is where the pinned view holds the transaction, and one it does not hold is reported unmined even when the validator already has it in a block. `Passthrough` / `Withheld`: the validator's location rides along |
 | address history | `R::Address` | `Local`: finalised store `AddressRead`, head `AddressReceiveRead` (receives + the spends it saw), threaded across the seam; `Passthrough`: the four address source ports |
 | treestate, subtree roots | `R::Treestate` | `Local`: finalised store `TreestateRead` at or below the watermark, head `TreestateWindowRead` above it (folding from the finalised seed the store supplies); subtree roots are the store's page then the window's higher-indexed completions. `Passthrough`: the treestate + subtree-roots source ports |
 | spend status / location (`getspentinfo`) | `R::Spend` | `Local` only: both tiers `SpendRead`; the head is asked first (a spend there is the newer fact) and the store second, so a spend above the watermark of an output created below it is located |

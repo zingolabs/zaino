@@ -1,0 +1,46 @@
+[[changes]]
+crate = "zaino-core"
+kind = "feature"
+description = """
+`LightWalletLocalRouting` places transaction location locally. The raw \
+transaction read still relays the bytes from the validator, but the location \
+beside them is where the pinned tiers hold the transaction: the head is asked \
+first, then the finalised store. A transaction neither holds is reported \
+unmined even when the validator already has it in a block, since that block is \
+above or off the pinned chain. Other routings relay the validator's location \
+as before.
+"""
+
+[[changes]]
+crate = "zaino-service"
+kind = "feature"
+description = """
+`TransactionLocationRead` is a tier read answering where one tier holds a \
+transaction: on its best chain at a height, on a displaced branch, or not at all.
+"""
+
+[[changes]]
+crate = "zaino-store"
+kind = "feature"
+description = """
+`StoreSnapshot` implements `TransactionLocationRead` over the `txid_location` \
+index, wherever its index set builds it. The read is not serviceable while that \
+index is deferred by a bulk load.
+"""
+
+[[changes]]
+crate = "zaino-chain-head-service"
+kind = "feature"
+description = """
+`HeadSnapshot` implements `TransactionLocationRead` over the retained graph, \
+telling a best-chain position from one on a displaced branch.
+"""
+
+[[changes]]
+crate = "zaino-lightserve"
+kind = "fix"
+description = """
+Under the light-wallet-local deployment `GetTransaction` and the address \
+transaction reads report a transaction's height from the same pinned view the \
+compact blocks are served from, instead of from the validator's own tip.
+"""

@@ -54,8 +54,13 @@ impl Routing for LightWalletPassthroughRouting {
 /// outpoint's spend state through the engine `Spend` placement — the window's
 /// spend data reaches the address read through [`AddressReceiveRead`], not that
 /// placement — so withholding it keeps the manifest honest, a capability no
-/// served method consumes being `Absent`, not a false `Live`. Transaction
-/// location is withheld for the same reason: no engine read dispatches on it.
+/// served method consumes being `Absent`, not a false `Live`.
+///
+/// Transaction location is [`Local`]: the set already builds `txid_location`
+/// for the address read, so the height `GetTransaction` reports beside a
+/// transaction's bytes is where the pinned tiers hold it — the same view the
+/// compact blocks were served from — instead of where the validator's own tip
+/// puts it. The bytes are still relayed; no local index holds them.
 ///
 /// [`AddressReceiveRead`]: zaino_service::AddressReceiveRead
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -65,7 +70,7 @@ impl Routing for LightWalletLocalRouting {
     type Address = Local;
     type Treestate = Local;
     type Spend = Withheld;
-    type TransactionLocation = Withheld;
+    type TransactionLocation = Local;
 }
 
 #[cfg(test)]
@@ -88,10 +93,11 @@ mod tests {
                 Capability::Blocks
                 | Capability::AddressHistory
                 | Capability::Treestate
-                | Capability::SubtreeRoots => {
+                | Capability::SubtreeRoots
+                | Capability::TransactionLocation => {
                     assert_eq!(placement, PlacementKind::Local)
                 }
-                Capability::SpendStatus | Capability::TransactionLocation => {
+                Capability::SpendStatus => {
                     assert_eq!(placement, PlacementKind::Withheld)
                 }
                 Capability::RawTransaction

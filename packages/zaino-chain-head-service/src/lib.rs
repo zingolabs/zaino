@@ -46,6 +46,7 @@ mod service;
 mod snapshot;
 mod spend;
 mod subscriber;
+mod transaction_location;
 mod tree_state;
 
 #[cfg(test)]

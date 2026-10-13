@@ -126,6 +126,7 @@ mod block;
 mod block_deltas;
 mod block_hash;
 mod block_verbose;
+mod raw_transaction;
 mod snapshot;
 mod spend;
 mod transaction;
