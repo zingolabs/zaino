@@ -5,25 +5,9 @@ Canonical terms, where the team has picked one word among several.
 ## Release engineering
 
 **Publishable set**:
-The crates released to crates.io: the `[[target]]` entries in `relman.toml`,
-which are every `packages/*` crate without `publish = false`.
+The crates released to crates.io, all at the workspace version: every
+`packages/*` crate without `publish = false`.
 _Avoid_: crate list, publish list
-
-**Blocking context**:
-A CI context in which release checks must pass: pushes to `stable`, whose tip is
-the release commit.
-_Avoid_: strict mode, release mode
-
-**Advisory context**:
-Any CI context that is not a blocking context. Release checks report findings
-there but do not fail the build.
-_Avoid_: soft mode, informational mode
-
-**Version-reuse violation**:
-A publishable crate whose exact version already exists on crates.io with
-different packaged content. The tree cannot be released until that version is
-bumped. An unchanged crate keeping its published version is not a violation.
-_Avoid_: stale version, forgotten bump
 
 ## Chains and networks
 

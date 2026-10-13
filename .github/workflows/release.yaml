@@ -1,10 +1,11 @@
-# zainod images, on blessing's `zainod-X.Y.Z` provenance tag (image version = X.Y.Z)
+# zainod images, on Knope's `vX.Y.Z` release tag (RELEASING.md; image version = X.Y.Z)
 name: Zaino Release
 
 on:
   push:
     tags:
-      - 'zainod-[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
     inputs:
       push:
@@ -35,7 +36,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/zaino
             ${{ secrets.DOCKERHUB_USERNAME }}/zainod
           tags: |
-            type=match,pattern=zainod-(.*),group=1
+            type=match,pattern=v(.*),group=1
             type=ref,event=branch
             type=sha,prefix=,format=short
 

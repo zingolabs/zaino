@@ -30,8 +30,8 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
   cargo-deny bans, shellcheck, the Dockerfile openssl ban, code duplication,
   `tools/` lints).
   `git config core.hooksPath .githooks` runs it as a pre-push hook.
-- Every PR that changes a released crate carries a changeset; see
-  [changeset format](./docs/release/changeset-format.md).
+- Every PR that changes a released crate carries a change file (`knope document-change`); see
+  [RELEASING.md](./RELEASING.md#every-pr-a-change-file).
 - All CI checks must pass. Review happens in public on the PR.
 - A PR from a fork does not dispatch the `zcash/integration-tests` suite,
   because GitHub withholds repository secrets from fork PRs. Its

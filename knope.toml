@@ -1,0 +1,82 @@
+# One package = the workspace: every crate shares `[workspace.package] version` (RELEASING.md)
+[package]
+versioned_files = [
+    "Cargo.toml",
+    { path = "Cargo.toml", dependency = "zaino-chainview" },
+    { path = "Cargo.toml", dependency = "zaino-grpc" },
+    { path = "Cargo.toml", dependency = "zaino-header-chain" },
+    { path = "Cargo.toml", dependency = "zaino-index-compact-block" },
+    { path = "Cargo.toml", dependency = "zaino-index-transparent-address" },
+    { path = "Cargo.toml", dependency = "zaino-index-tree-state" },
+    { path = "Cargo.toml", dependency = "zaino-internal-block-hash-to-height" },
+    { path = "Cargo.toml", dependency = "zaino-internal-value-balance" },
+    { path = "Cargo.toml", dependency = "zaino-nfs" },
+    { path = "Cargo.toml", dependency = "zaino-peers" },
+    { path = "Cargo.toml", dependency = "zaino-persistence" },
+    { path = "Cargo.toml", dependency = "zaino-primitives" },
+    { path = "Cargo.toml", dependency = "zaino-proto" },
+    { path = "Cargo.toml", dependency = "zaino-snapshot" },
+    { path = "Cargo.toml", dependency = "zaino-source" },
+    { path = "Cargo.toml", dependency = "zaino-sync" },
+    { path = "Cargo.toml", dependency = "zaino-traffic" },
+    { path = "Cargo.lock", dependency = "zaino-chainview" },
+    { path = "Cargo.lock", dependency = "zaino-grpc" },
+    { path = "Cargo.lock", dependency = "zaino-header-chain" },
+    { path = "Cargo.lock", dependency = "zaino-index-compact-block" },
+    { path = "Cargo.lock", dependency = "zaino-index-transparent-address" },
+    { path = "Cargo.lock", dependency = "zaino-index-tree-state" },
+    { path = "Cargo.lock", dependency = "zaino-internal-block-hash-to-height" },
+    { path = "Cargo.lock", dependency = "zaino-internal-value-balance" },
+    { path = "Cargo.lock", dependency = "zaino-nfs" },
+    { path = "Cargo.lock", dependency = "zaino-peers" },
+    { path = "Cargo.lock", dependency = "zaino-persistence" },
+    { path = "Cargo.lock", dependency = "zaino-primitives" },
+    { path = "Cargo.lock", dependency = "zaino-proto" },
+    { path = "Cargo.lock", dependency = "zaino-snapshot" },
+    { path = "Cargo.lock", dependency = "zaino-source" },
+    { path = "Cargo.lock", dependency = "zaino-sync" },
+    { path = "Cargo.lock", dependency = "zaino-traffic" },
+    { path = "Cargo.lock", dependency = "zainod" },
+]
+changelog = "CHANGELOG.md"
+extra_changelog_sections = [{ name = "Internal", types = ["internal"] }]
+
+# Changesets only: commit messages never bump the version
+[changes]
+ignore_conventional_commits = true
+
+[github]
+owner = "zingolabs"
+repo = "zaino"
+
+[[workflows]]
+name = "document-change"
+
+[[workflows.steps]]
+type = "CreateChangeFile"
+
+# Bump + changelog from `.changeset/`, commit, push, then the GitHub release + `v$version` tag
+[[workflows]]
+name = "release"
+
+[[workflows.steps]]
+type = "PrepareRelease"
+
+[[workflows.steps]]
+type = "Command"
+command = "git commit -m \"chore: release $version\""
+
+[[workflows.steps]]
+type = "Command"
+command = "git push"
+
+[[workflows.steps]]
+type = "Release"
+
+# crates.io, dependency order (an owner of the published crates, after `release`)
+[[workflows]]
+name = "publish"
+
+[[workflows.steps]]
+type = "Command"
+command = "cargo publish --workspace --locked"

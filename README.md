@@ -9,19 +9,13 @@ Validation stays in Zebra and indexing moves to Zaino: the two run as separate
 processes, on separate hosts if you like, and a new index needs no change to the
 validator. [The architecture](./docs/architecture.md#1-who-owns-what) states the rule.
 
-## Release pipeline
+## Releases
 
-Zaino ships through a gated pipeline (`dev → rc → release-ready → stable`),
-specified in [docs/release/pipeline.md](./docs/release/pipeline.md).
+Every crate shares one version. Each PR adds a change file (`knope document-change`), and a
+release turns them into the version bump, the changelog and the `vX.Y.Z` tag with
+[Knope](https://knope.tech): see [RELEASING.md](./RELEASING.md).
 
-| Gate | Workflow |
-| ---- | -------- |
-| Changeset check (`dev`-gate) | [![changeset-check](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml) |
-| RC gate (nightly) | [![rc-gate](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml) |
-| Blessing (release) | [![blessing](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml) |
-
-[![latest RC](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*-rc.*&label=latest%20RC)](https://github.com/zingolabs/zaino/tags)
-[![latest release](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*%2C!*-rc.*&label=latest%20release)](https://github.com/zingolabs/zaino/tags)
+[![latest release](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=v*&label=latest%20release)](https://github.com/zingolabs/zaino/tags)
 
 ## Project structure
 
@@ -61,10 +55,10 @@ scripts/                           ztest chain-fixture producer
 nix/, flake.nix                    Nix build and dev shell
 .github/                           CI workflows and issue templates
 .githooks/                         pre-push hook (`makers lint`)
-.changesets/                       Pending release changesets
+.changeset/                        Pending change files (Knope)
 
 Makefile.toml                      cargo-make tasks
-relman.toml                        Release targets (governed crate set)
+knope.toml                         Release config: one version, changelog, GitHub release
 rust-toolchain.toml                Pinned Rust toolchain
 deny.toml                          cargo-deny policy
 Dockerfile                         Container image
@@ -131,7 +125,7 @@ How it is built, and why:
 - [Ironwood activation](./docs/notes/ironwood-activation.md): NU6.3 domain facts the indexes and live suite rely on.
 
 Releasing it:
-- [Release pipeline](./docs/release/pipeline.md), [changeset format](./docs/release/changeset-format.md), [implementation](./docs/release/implementation.md).
+- [RELEASING.md](./RELEASING.md): change files, releases, publishing.
 
 ### Crate usage guides
 

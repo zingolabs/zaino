@@ -74,6 +74,8 @@
             cargo-nextest
             cargo-deny
             cargo-make
+            # changesets, version bump, changelog, GitHub release (knope.toml)
+            knope
             shellcheck
             rust-analyzer
 
