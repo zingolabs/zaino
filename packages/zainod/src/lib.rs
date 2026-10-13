@@ -54,7 +54,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
         zaino_nfs::INDEXES.into_iter().filter(|kind| config.enabled(*kind).is_some()),
     );
     // Before the snapshot bootstrap (a held node reads held from its first answer)
-    crate::hold::spawn(config.serve.state_dir.clone(), config.grpc.shutdown.delay());
+    crate::hold::spawn(config.serve.state_dir.clone(), config.serve.hold_goaway_delay());
     config.warn_about_metrics_listener();
     // Before the snapshot bootstrap (its progress extends systemd's start timeout)
     crate::notify::spawn();

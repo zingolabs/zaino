@@ -19,12 +19,11 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 `/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
 (`zaino-snapshot`): none of them can mix two moments.
 
-`state` is one of seven, and the first rule that matches wins:
+`state` is one of six, and the first rule that matches wins:
 
 | `state`        | When                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
-| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold)), even while draining |
-| `draining`     | a shutdown signal arrived (see [systemd](#systemd))                                      |
+| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold))                      |
 | `provisioning` | not booted yet: a snapshot bootstrap, or plain startup                                   |
 | `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or no trusted validator vouching (every one down, or none holding the verified tip) while not `degraded` |
 | `degraded`     | no trusted validator vouching, but synced to a fresh verified best (its block time within 30 min of the clock: p2p peers carried the tip) |
@@ -95,18 +94,20 @@ moves it by one. Traffic data: keep the listener private.
 ## Operator hold
 
 `zainod hold [--config FILE]` takes a node out of rotation until `zainod resume [--config FILE]`.
-It persists across restarts, deploys and reboots.
+It persists across restarts, deploys and reboots. It is also the only drain. A shutdown signal
+closes the gRPC listener at once, so a planned stop is `zainod hold`, then `systemctl stop`.
 
 - `hold` writes the marker `<[serve] state_dir>/held` (default `<data dir>/zaino/state`),
   synced to disk with its directory. `resume` removes it. There is no network endpoint, so
   holding a node requires write access to its state directory.
 - The running zainod checks the marker every second. Held:
   - `state` becomes `held`: `/readyz` answers `503` and `detail` is `null`.
-  - It outranks every other state, `draining` included. A held node that is overloaded, has
-    lost its validators, or is draining after a shutdown signal still reports `held`, so a
-    planned stop's last answer before exit is `held`.
-  - After `[grpc.shutdown] delay_secs` (zero when shutdown draining is off), every open gRPC
-    connection gets a GOAWAY, and its in-flight streams get `max_connection_age_grace`.
+  - It outranks every other state. A held node that is overloaded or has lost its validators
+    still reports `held`, and so does a held node stopping, so a planned stop's last answer
+    before exit is `held`.
+  - After `[serve] hold_goaway_delay_secs` (default 0), every open gRPC connection gets a
+    GOAWAY, and its in-flight streams get `max_connection_age_grace`. Set the delay to at least
+    the time your load balancer takes to mark a server down, plus its DNS TTL.
   - The process keeps running and answering `/readyz`, `/status` and the admin listener. New
     connections are still served.
 - On resume, the state returns to normal evaluation, so a node that fell behind while held
@@ -121,6 +122,10 @@ It persists across restarts, deploys and reboots.
     `was not held`).
   - stderr, when `[metrics] listen_address` is set: the state the running zainod reports
     within 5 s, or that none answered (the marker applies when it next starts).
+  - `hold` then blocks until a running zainod has sent its GOAWAYs: the marker's write time,
+    plus the 1 s poll, plus `hold_goaway_delay_secs`, plus 1 s of slack. A marker written long
+    ago returns at once. It skips the wait only when `[metrics] listen_address` is set and
+    nothing answered there (no zainod running).
   - Exit 0 once the marker matches the command (both commands are idempotent), 1 when the
     config or state directory could not be read or written.
 
@@ -205,8 +210,8 @@ Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit
 
 ## systemd
 
-Run under `Type=notify` and zainod reports its own startup and shutdown to systemd. Without
-`NOTIFY_SOCKET` (any other service manager, a container, a shell) nothing is sent.
+Run under `Type=notify` and zainod reports its own startup to systemd. Without `NOTIFY_SOCKET`
+(any other service manager, a container, a shell) nothing is sent.
 
 ```ini
 [Service]
@@ -219,10 +224,8 @@ TimeoutStartSec=15min
 
 | Message | When |
 |---|---|
-| `READY=1` | the first time `/readyz` passes: serving at the verified tip |
+| `READY=1` | the first time `/readyz` passes (serving at the verified tip) or the node is held; nothing is sent after it |
 | `EXTEND_TIMEOUT_USEC` (5 min) | each 10 s check before that which saw progress: snapshot bytes, the fetch height, the served height or an index height moved |
-| `STATUS=` | the `/statusz` `state` (`<state>: <detail>` when down or degraded), whenever it changes |
-| `STOPPING=1` + `EXTEND_TIMEOUT_USEC` | on the shutdown signal, covering `[grpc.shutdown]`'s delay and timeout plus 30 s for the index flush |
 
 - `systemctl start` / `restart` returns only once zainod serves at the tip, so a deploy
   that restarts it (`nixos-rebuild switch`, deploy-rs) sees an upgrade that cannot catch up as
@@ -231,14 +234,12 @@ TimeoutStartSec=15min
   `TimeoutStartSec` bounds only a stalled start (5 minutes without progress, once past it).
   Units ordered after zainod, and `multi-user.target` at boot, wait for that start; use
   `systemctl start --no-block` to return at once.
-- One extension is at most 71 minutes (a 32-bit µs count): a longer shutdown drain still needs
-  that much `TimeoutStopSec`.
 - `NOTIFY_SOCKET` must be a filesystem path (systemd's default), not an abstract `@` socket.
 
-With `[grpc.shutdown]` on, a `systemctl stop` or `restart` drains: `/readyz` reports
-`draining` for `delay_secs` while gRPC keeps serving, then the listener closes and open
-connections get `timeout_secs` (see [Stopping and restarts](../../docs/running.md#stopping-and-restarts)).
-A crash restart skips the drain (no signal arrives).
+A `systemctl stop` or `restart` closes the gRPC listener at once. Open connections get
+`[grpc] shutdown_grace_secs`, then each index commits what it holds. `TimeoutStopSec` must
+cover both. To take a node out of rotation before a stop, hold it first (see
+[Operator hold](#operator-hold)).
 
 ## Index snapshot
 

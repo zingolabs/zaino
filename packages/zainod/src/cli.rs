@@ -50,13 +50,15 @@ pub enum Command {
     /// Take this node out of rotation until `zainod resume`, across restarts and reboots.
     ///
     /// Writes a marker in `[serve] state_dir`. The running zainod picks it up within a second:
-    /// its state becomes `held` (`/readyz` 503), and after `[grpc.shutdown]`'s delay every open
-    /// gRPC connection is sent GOAWAY. It keeps answering health and admin requests. A stopped
-    /// zainod is never reported held.
+    /// its state becomes `held` (`/readyz` 503), and after `[serve] hold_goaway_delay_secs` every
+    /// open gRPC connection is sent GOAWAY. It keeps answering health and admin requests. A
+    /// stopped zainod is never reported held. Hold before stopping a node behind a load balancer:
+    /// a shutdown signal alone closes the listener at once.
     ///
     /// Prints `held`, then on stderr what changed and, when `[metrics] listen_address` is set,
-    /// the state the running zainod reports. Exits 0 once the marker is in place (holding twice
-    /// is a no-op), 1 when the config or state directory could not be read or written.
+    /// the state the running zainod reports. Then waits until a running zainod has sent its
+    /// GOAWAYs. Exits 0 once the marker is in place (holding twice is a no-op), 1 when the config
+    /// or state directory could not be read or written.
     Hold {
         /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
         #[arg(short, long, value_name = "FILE")]

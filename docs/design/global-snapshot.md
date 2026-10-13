@@ -241,7 +241,7 @@ pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>);     // syn
 
 | Surface | Reads | When |
 | ------------- | ------------------------------------------------------------------------------------- | ---------- |
-| `/readyz` | `state` + `detail`: draining, provisioning (before boot), heartbeat, then `snap.standing()` | per probe |
+| `/readyz` | `state` + `detail`: held, provisioning (before boot), heartbeat, then `snap.standing()` | per probe |
 | `/statusz` | `Report::of` (`serde(flatten)`) + zainod's `version`, `network`, `uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `grpc.sent_bytes`, `disk` | per request |
 | `/metrics` | `emit_gauges(snap, progress)` then `render()` (admin thread, `spawn_blocking`) | per scrape |
 | edge logs | publisher `transitions(prev, next)` | per publish |
@@ -366,7 +366,7 @@ Taken: 1–3, 4 (not yet), 6, 7 as recommended (2026-10-07).
 - zainod: `Publisher` wired + supervised (`snapshot` task); `serving.rs`, `index_report.rs`,
   `track_index` + `publish_*`, `INDEX_*` describes, `status.rs` `Sources` / `IndexSource` /
   per-field mapping and the `synced` watch gone; one `progress` task (sync + per-index lines,
-  disk walk); `/statusz` = `Report::of` + process fields, `/readyz` = draining + heartbeat +
+  disk walk); `/statusz` = `Report::of` + process fields, `/readyz` = hold + heartbeat +
   `standing()`, `/metrics` = `emit_gauges` then render; `snapshot.rs` → `bootstrap.rs`
 - tests: golden `Report` + gauges (snapshot); `every_rpc_agrees_on_one_snapshot` (grpc); the
   pipeline reorg test opens a `GetMempoolStream` at A8, sees it end on the reorg, then a

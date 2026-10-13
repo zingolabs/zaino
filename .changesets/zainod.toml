@@ -24,8 +24,8 @@ crate = "zainod"
 kind = "breaking"
 description = """
 The config schema is replaced and unknown keys are refused at load. Top-level tables: \
-`network`, `[metrics]`, `[[trusted_validators]]`, `[serve]` (+ `[serve.tls]`), `[grpc]` \
-(+ `[grpc.shutdown]`), `[submission]`, `[p2p]`, `[sync]`, `[index.*]` and `[snapshot]`. \
+`network`, `[metrics]`, `[[trusted_validators]]`, `[serve]` (+ `[serve.tls]`), `[grpc]`, \
+`[submission]`, `[p2p]`, `[sync]`, `[index.*]` and `[snapshot]`. \
 Environment overrides take the `ZAINO_CONFIG_` prefix (`__` nesting) instead of `ZAINO_`. \
 `network` is `mainnet`, `testnet` or `regtest` (default `mainnet`), declared and never read off \
 the validator.
@@ -170,7 +170,7 @@ kind = "feature"
 description = """
 Admin listener (`[metrics] listen_address`, its own thread and runtime): `/metrics`, `/livez` \
 (fails once the serving runtime stops its heartbeat for 30 s), `/readyz` (`ready` plus reasons: \
-`draining`, `starting`, `heartbeat_stale`, `headers_syncing`, `tip_not_held`, `syncing`, the \
+`starting`, `heartbeat_stale`, `headers_syncing`, `tip_not_held`, `syncing`, the \
 `snapshot_*` phases) and `/statusz` (verified tip and its holders, header-chain best, fetch and \
 served heights, each validator, chain-view alarms, mempool spread, every index).
 """
@@ -191,11 +191,11 @@ apart), read lanes `max_point_reads` / `max_range_reads` / `max_scan_reads`, \
 crate = "zainod"
 kind = "feature"
 description = """
-`[grpc.shutdown]` (`enabled`, default false; `delay_secs`, 0; `timeout_secs`, 10): on \
-SIGTERM/SIGINT `/readyz` fails with `draining` while gRPC keeps serving for `delay_secs`, then \
-open connections get `timeout_secs` to finish. Under systemd `Type=notify` zainod sends \
-`READY=1` once `/readyz` first passes, `STATUS=` with the readiness reasons, start-timeout \
-extensions while a sync or snapshot bootstrap progresses and `STOPPING=1` on shutdown.
+`[grpc] shutdown_grace_secs` (default 10): on SIGTERM/SIGINT the gRPC listener closes at once \
+and open connections get that long to finish (GOAWAY sent); out of a load balancer's rotation \
+first = `zainod hold`. Under systemd `Type=notify` zainod sends `READY=1` once `/readyz` first \
+passes (or the node is held), and start-timeout extensions while a sync or snapshot bootstrap \
+progresses; nothing after `READY=1`.
 """
 
 [[changes]]
@@ -332,13 +332,13 @@ crate = "zainod"
 kind = "breaking"
 section = "changed"
 description = """
-`/statusz` and `/readyz` report one closed `state`: `provisioning`, `syncing`, `serving`, \
-`draining` or `down` (first match). `/statusz` adds `progress` (`{done, total, unit, rate}`, \
+`/statusz` and `/readyz` report one closed `state`: `provisioning`, `syncing`, `serving` or \
+`down` (first match). `/statusz` adds `progress` (`{done, total, unit, rate}`, \
 blocks or bootstrap bytes, only while provisioning or syncing), `detail` (why, only when down) \
 and `notes` (one sentence per raised alarm); `ready` = `state` is `serving`. `/readyz` answers \
 `{"state", "detail"}`, `200` only when serving. A tip held only by validators still catching up \
-is `syncing`, never `serving`; boot waiting on its first validator answer is `down`. systemd \
-`STATUS=` carries the state. `reasons` (both endpoints) and `unready` (`/statusz`) are gone.
+is `syncing`, never `serving`; boot waiting on its first validator answer is `down`. \
+`reasons` (both endpoints) and `unready` (`/statusz`) are gone.
 """
 migration = """
 Read `state` (and `detail` when `down`) instead of `reasons` / `unready`.
@@ -377,10 +377,11 @@ description = """
 `zainod hold` / `zainod resume [--config FILE]`: an operator hold that survives restarts, \
 deploys and reboots. The marker lives in the new `[serve] state_dir` (default \
 `<data dir>/zaino/state`); the running zainod reads it every second. Held = state `held` on \
-`/statusz`, `/readyz` (503) and `/status`, above every other state, `draining` included (a \
-planned stop's last answer is `held`); after \
-`[grpc.shutdown]`'s delay every open gRPC connection is sent GOAWAY, while health and admin keep \
-answering. A stopped zainod is never reported held. Under systemd a node started held completes \
+`/statusz`, `/readyz` (503) and `/status`, above every other state (a held node stopping \
+still reports `held`); after `[serve] hold_goaway_delay_secs` (default 0) every open gRPC \
+connection is sent GOAWAY, while health and admin keep answering, and `zainod hold` returns only \
+once a running zainod sent them (hold = the drain before a planned stop). A stopped zainod is \
+never reported held. Under systemd a node started held completes \
 its start. Both commands are idempotent, print the resulting state and exit 0 (1 on a config or \
 state-dir error).
 """

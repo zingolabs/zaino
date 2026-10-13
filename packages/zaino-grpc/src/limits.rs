@@ -57,8 +57,7 @@ impl Default for GrpcLimits {
             max_scan_reads: non_zero(4),
             // past pepper-sync's longest legitimate backpressure (scanning a fetched batch)
             stall_timeout: Duration::from_secs(300),
-            // opt-in (zainod `[grpc.shutdown]`)
-            drain_timeout: Duration::ZERO,
+            drain_timeout: Duration::from_secs(10),
             // long-held wallet connections re-resolve DNS (gRPC A9)
             max_connection_age: Some(Duration::from_secs(30 * 60)),
             // a whole `GetBlockRange` sync

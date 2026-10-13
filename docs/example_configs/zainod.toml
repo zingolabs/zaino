@@ -78,6 +78,9 @@ grpc_listen_address = "127.0.0.1:8137"
 # zainod's own state, kept across restarts (`zainod hold` writes its marker here);
 # default <data dir>/zaino/state
 # state_dir = "/var/lib/zainod"
+# held: /readyz fails with "held" while still serving this long, then every open gRPC connection
+# gets a GOAWAY; >= the balancer's down detection + DNS TTL
+hold_goaway_delay_secs = 0
 
 # TLS on the gRPC listener (rustls + ring); PEM files re-read on change (renewal = no restart)
 # [serve.tls]
@@ -117,15 +120,9 @@ max_connection_age_grace_secs = 600
 max_connection_idle_secs = 1800
 # proxies that open every connection with a PROXY header (v1/v2); see docs/running.md
 trusted_proxies = []
-
-# Graceful shutdown on SIGTERM/SIGINT, for a load balancer polling /readyz (defaults shown)
-[grpc.shutdown]
-# off = the listener closes on the signal; open connections drop once the indexes flush
-enabled = false
-# /readyz fails with "draining" while still serving: >= the balancer's down detection + DNS TTL
-delay_secs = 0
-# then the listener closes; open connections get this long to finish (GOAWAY sent)
-timeout_secs = 10
+# SIGTERM/SIGINT closes the listener at once; open connections get this long to finish (GOAWAY
+# sent). Out of a load balancer's rotation first = `zainod hold` (see docs/running.md)
+shutdown_grace_secs = 10
 
 # One block-fetch pipeline, shared by every index (defaults shown; all non-zero)
 [sync]

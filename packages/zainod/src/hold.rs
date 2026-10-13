@@ -2,9 +2,11 @@
 //!
 //! - marker `<serve.state_dir>/held` = the hold (survives restart, deploy, reboot; a stopped
 //!   zainod is never held, only absent)
-//! - the running zainod polls it every [`POLL`]: held = state `held` (outranks draining too),
-//!   then after `[grpc.shutdown]`'s delay every open gRPC connection GOAWAY'd; resume = normal
+//! - the running zainod polls it every [`POLL`]: held = state `held` (outranks every other), then
+//!   after `[serve] hold_goaway_delay_secs` every open gRPC connection GOAWAY'd; resume = normal
 //!   evaluation again
+//! - only drain before a stop (a SIGTERM alone closes the listener at once): `zainod hold`
+//!   returns once the GOAWAYs went out
 //! - no write endpoint: holding takes the state dir, not network reach to the admin listener
 
 use std::io;
@@ -69,7 +71,8 @@ fn apply(state_dir: &Path, action: Action) -> io::Result<Changed> {
 }
 
 /// `zainod hold` / `zainod resume`: prints the resulting state; exit 0 = the marker says what was
-/// asked, 1 = the config or state dir could not be read or written
+/// asked (hold: and a running zainod's connections GOAWAY'd), 1 = the config or state dir could
+/// not be read or written
 pub fn command(config_path: &Path, action: Action) -> i32 {
     let config = match crate::config::load_config(config_path) {
         Ok(config) => config,
@@ -95,16 +98,46 @@ pub fn command(config_path: &Path, action: Action) -> i32 {
     println!("{state}");
     eprintln!("{note}: {}", state_dir.join(MARKER).display());
     let held = action == Action::Hold;
-    match config.metrics.listen_address {
+    let maybe_running = match config.metrics.listen_address {
         Some(admin) => match confirm(admin, held) {
-            Some(running) => eprintln!("zainod at {admin} reports {running}"),
-            None => eprintln!("no zainod answering at {admin}: applies when it next starts"),
+            Some(running) => {
+                eprintln!("zainod at {admin} reports {running}");
+                true
+            }
+            None => {
+                eprintln!("no zainod answering at {admin}: applies when it next starts");
+                false
+            }
         },
-        None => eprintln!(
-            "no [metrics] listen_address to confirm on: a running zainod applies it within 1 s"
-        ),
+        None => {
+            eprintln!(
+                "no [metrics] listen_address to confirm on: a running zainod applies it within 1 s"
+            );
+            true
+        }
+    };
+    if held && maybe_running {
+        let goaway_by = match goaway_deadline(state_dir, config.serve.hold_goaway_delay()) {
+            Ok(goaway_by) => goaway_by,
+            Err(error) => {
+                eprintln!("Error: {}: {error}", state_dir.join(MARKER).display());
+                return 1;
+            }
+        };
+        if let Ok(remaining) = goaway_by.duration_since(std::time::SystemTime::now()) {
+            eprintln!("waiting {}s for open gRPC connections' GOAWAY", remaining.as_secs());
+            std::thread::sleep(remaining);
+        }
+        eprintln!("open gRPC connections sent GOAWAY: safe to stop");
     }
     0
+}
+
+/// When a running zainod has GOAWAY'd every connection under this hold: marker written + its poll
+/// + `delay` (+ one more poll for scheduling slack); an old marker = already past
+fn goaway_deadline(state_dir: &Path, delay: Duration) -> io::Result<std::time::SystemTime> {
+    let written = std::fs::metadata(state_dir.join(MARKER))?.modified()?;
+    Ok(written + POLL + delay + POLL)
 }
 
 /// The running zainod's `/readyz` state once it matches `held` (or the last one seen after
@@ -196,5 +229,14 @@ mod tests {
             assert_eq!(apply(&state_dir, action).expect("applies"), changed, "step {step}");
             assert_eq!(state_dir.join(MARKER).exists(), marked, "step {step}: marker");
         }
+
+        // GOAWAY deadline = the marker's write time + its poll + the delay + slack; none unheld
+        let delay = Duration::from_secs(155);
+        assert!(goaway_deadline(&state_dir, delay).is_err(), "deadline without a marker");
+        apply(&state_dir, Action::Hold).expect("holds");
+        let written = std::fs::metadata(state_dir.join(MARKER)).and_then(|m| m.modified());
+        let deadline = goaway_deadline(&state_dir, delay).expect("marker readable");
+        let after = deadline.duration_since(written.expect("mtime")).expect("deadline after write");
+        assert_eq!(after, delay + POLL + POLL);
     }
 }

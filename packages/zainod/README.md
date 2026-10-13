@@ -40,9 +40,9 @@ Unknown keys fail the load. Sections:
   `indexer_address` (zebrad's push streams). Their headers feed the verified
   header chain, whose most-work tip is served while any of them holds it; one
   listing admits a mempool transaction; block fetches spread over all of them.
-- `[serve]`: gRPC listen address, `max_address_rows`, optional `[serve.tls]`
-  (`cert_path`, `key_path`)
-- `[grpc]`: serving caps, `trusted_proxies`, `[grpc.shutdown]`
+- `[serve]`: gRPC listen address, `max_address_rows`, `state_dir`,
+  `hold_goaway_delay_secs`, optional `[serve.tls]` (`cert_path`, `key_path`)
+- `[grpc]`: serving caps, `trusted_proxies`, `shutdown_grace_secs`
 - `[submission]`: `propagation_threshold_secs`, `max_attempts`
 - `[p2p]`: Zaino's own peers (off by default): `enabled`, `peer_target`,
   `initial_peers`, `cache_dir`

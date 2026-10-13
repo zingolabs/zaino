@@ -44,20 +44,7 @@ fn configured_network() -> Option<NetworkType> {
     CONFIGURED.get().map(|(network, _)| *network)
 }
 
-/// Set once on the shutdown signal, never cleared (the process is exiting)
-static DRAINING: AtomicBool = AtomicBool::new(false);
-
-/// From here on the state is `draining` (first match)
-pub(crate) fn drain() {
-    DRAINING.store(true, Ordering::Relaxed);
-}
-
-pub(crate) fn draining() -> bool {
-    DRAINING.load(Ordering::Relaxed)
-}
-
-/// Operator hold (`hold.rs`, from its marker): `held` above everything, draining included (last
-/// answer before a planned stop's exit = `held`, not `draining`)
+/// Operator hold (`hold.rs`, from its marker): `held` above every other state
 static HELD: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn hold(held: bool) {
@@ -91,8 +78,7 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set; first match: held, draining, not booted, runtime stalled, the snapshot's
-/// [`Standing`]
+/// Closed set; first match: held, not booted, runtime stalled, the snapshot's [`Standing`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -100,23 +86,8 @@ pub(crate) enum State {
     Syncing,
     Serving,
     Degraded,
-    Draining,
     Held,
     Down,
-}
-
-impl State {
-    pub(crate) const fn label(self) -> &'static str {
-        match self {
-            Self::Provisioning => "provisioning",
-            Self::Syncing => "syncing",
-            Self::Serving => "serving",
-            Self::Degraded => "degraded",
-            Self::Draining => "draining",
-            Self::Held => "held",
-            Self::Down => "down",
-        }
-    }
 }
 
 /// `rate` per second of `unit` (`None` = not measured yet, or a bootstrap phase past downloading)
@@ -152,14 +123,6 @@ impl Readiness {
     /// Serving, or degraded (serving a peer-verified tip no trusted validator vouches for)
     pub(crate) fn ready(&self) -> bool {
         matches!(self.state, State::Serving | State::Degraded)
-    }
-
-    /// systemd `STATUS=`: the state, `: detail` when down or degraded
-    pub(crate) fn summary(&self) -> String {
-        match self.detail {
-            Some(detail) => format!("{}: {detail}", self.state.label()),
-            None => self.state.label().to_owned(),
-        }
     }
 }
 
@@ -201,8 +164,8 @@ impl Booted {
     }
 }
 
-/// Pure: the state rules over the process flags + stage (held > draining > the rest)
-fn readiness(draining: bool, held: bool, live: bool, stage: Stage) -> Readiness {
+/// Pure: the state rules over the hold + heartbeat + stage (held > the rest)
+fn readiness(held: bool, live: bool, stage: Stage) -> Readiness {
     let at = |state, progress, detail, notes| Readiness { state, progress, detail, notes };
     if held {
         let notes = match stage {
@@ -211,22 +174,20 @@ fn readiness(draining: bool, held: bool, live: bool, stage: Stage) -> Readiness 
         };
         return at(State::Held, None, None, notes);
     }
-    match (draining, live, stage) {
-        (true, _, Stage::Booted(booted)) => at(State::Draining, None, None, booted.notes),
-        (true, _, Stage::Starting { .. }) => at(State::Draining, None, None, Vec::new()),
-        (false, false, Stage::Booted(booted)) => {
+    match (live, stage) {
+        (false, Stage::Booted(booted)) => {
             at(State::Down, None, Some(RUNTIME_STALLED), booted.notes)
         }
-        (false, _, Stage::Starting { awaiting_validator: true, .. }) => {
+        (_, Stage::Starting { awaiting_validator: true, .. }) => {
             at(State::Down, None, Some(Down::NoValidatorReachable.detail()), Vec::new())
         }
-        (false, _, Stage::Starting { bootstrap, .. }) => {
+        (_, Stage::Starting { bootstrap, .. }) => {
             at(State::Provisioning, bootstrap, None, Vec::new())
         }
-        (false, true, Stage::Booted(booted)) if booted.overloaded => {
+        (true, Stage::Booted(booted)) if booted.overloaded => {
             at(State::Down, None, Some(OVERLOADED), booted.notes)
         }
-        (false, true, Stage::Booted(booted)) => match booted.standing {
+        (true, Stage::Booted(booted)) => match booted.standing {
             Standing::Down(down) => at(State::Down, None, Some(down.detail()), booted.notes),
             Standing::Degraded(why) => at(State::Degraded, None, Some(why.detail()), booted.notes),
             Standing::Serving => at(State::Serving, None, None, booted.notes),
@@ -252,7 +213,7 @@ fn current_readiness(live: bool) -> Readiness {
             awaiting_validator: AWAITING_VALIDATOR.load(Ordering::Relaxed),
         },
     };
-    readiness(draining(), held(), live, stage)
+    readiness(held(), live, stage)
 }
 
 /// Once per process (a second boot = a bug, ignored)
@@ -365,7 +326,7 @@ struct Grpc {
 fn current(live: bool) -> Option<Status> {
     let sources = SOURCES.get()?;
     let snap = sources.snapshots.load();
-    let readiness = readiness(draining(), held(), live, Stage::Booted(Booted::of(sources, &snap)));
+    let readiness = readiness(held(), live, Stage::Booted(Booted::of(sources, &snap)));
     let members = sources.members.borrow().clone();
     Some(Status {
         version: env!("CARGO_PKG_VERSION"),
@@ -536,10 +497,8 @@ pub(crate) fn emit_gauges() {
 ///
 /// - `started` = serving or held (a node started held must not fail its start job waiting on a
 ///   readiness the operator withholds)
-/// - `status` = [`Readiness::summary`]
 pub(crate) struct Startup {
     pub(crate) started: bool,
-    pub(crate) status: String,
     pub(crate) progress: Vec<Option<u64>>,
 }
 
@@ -547,16 +506,15 @@ pub(crate) struct Startup {
 pub(crate) fn startup(live: bool) -> Startup {
     let readiness = current_readiness(live);
     let started = readiness.ready() || readiness.state == State::Held;
-    let status = readiness.summary();
     let Some(sources) = SOURCES.get() else {
-        return Startup { started, status, progress: bootstrap_progress() };
+        return Startup { started, progress: bootstrap_progress() };
     };
     let snap = sources.snapshots.load();
     let durable = snap.indexed().into_iter().flat_map(|indexed| indexed.durable());
     let durable = durable.map(|(_, tip)| tip.map(|tip| tip.height));
     let heights = [sources.progress.handed(), snap.tips().served.map(|tip| tip.height)];
     let progress = heights.into_iter().chain(durable).map(|h| h.map(|h| u64::from(u32::from(h))));
-    Startup { started, status, progress: progress.collect() }
+    Startup { started, progress: progress.collect() }
 }
 
 fn bootstrap_progress() -> Vec<Option<u64>> {
@@ -616,29 +574,13 @@ mod tests {
         let unreachable = Standing::Down(Down::NoValidatorReachable);
         let cases = [
             (
-                "draining beats serving",
-                true,
-                true,
-                booted(Standing::Serving, Some(3_514_194), None),
-                serde_json::json!({ "state": "draining", "progress": null, "detail": null, "notes": stale }),
-            ),
-            (
-                "draining before boot",
-                true,
-                true,
-                starting(None, false),
-                serde_json::json!({ "state": "draining", "progress": null, "detail": null, "notes": [] }),
-            ),
-            (
                 "plain startup",
-                false,
                 true,
                 starting(None, false),
                 serde_json::json!({ "state": "provisioning", "progress": null, "detail": null, "notes": [] }),
             ),
             (
                 "boot waiting on a validator",
-                false,
                 true,
                 starting(None, true),
                 serde_json::json!({
@@ -649,34 +591,29 @@ mod tests {
             (
                 "runtime stalled beats serving",
                 false,
-                false,
                 booted(Standing::Serving, Some(3_514_194), None),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "runtime stalled beats overloaded",
                 false,
-                false,
                 overloaded(Standing::Serving),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "overloaded beats syncing",
-                false,
                 true,
                 overloaded(Standing::Syncing),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
                 "overloaded beats unreachable validators",
-                false,
                 true,
                 overloaded(unreachable),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
             ),
             (
                 "overloaded beats degraded",
-                false,
                 true,
                 overloaded(Standing::Degraded(Down::NoValidatorReachable)),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Overloaded", "notes": stale }),
@@ -684,13 +621,11 @@ mod tests {
             (
                 "runtime stalled beats degraded",
                 false,
-                false,
                 booted(Standing::Degraded(Down::TipNotHeld), None, None),
                 serde_json::json!({ "state": "down", "progress": null, "detail": "Runtime stalled", "notes": stale }),
             ),
             (
                 "every validator down, a fresh peer-verified tip served",
-                false,
                 true,
                 booted(Standing::Degraded(Down::NoValidatorReachable), Some(3_514_194), None),
                 serde_json::json!({
@@ -700,7 +635,6 @@ mod tests {
             ),
             (
                 "best unheld, a fresh peer-verified tip served",
-                false,
                 true,
                 booted(Standing::Degraded(Down::TipNotHeld), Some(3_514_194), None),
                 serde_json::json!({
@@ -710,7 +644,6 @@ mod tests {
             ),
             (
                 "every validator down",
-                false,
                 true,
                 booted(unreachable, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
@@ -720,7 +653,6 @@ mod tests {
             ),
             (
                 "best unheld",
-                false,
                 true,
                 booted(no_holder, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
@@ -730,7 +662,6 @@ mod tests {
             ),
             (
                 "syncing",
-                false,
                 true,
                 booted(Standing::Syncing, Some(3_515_406), Some(6.2)),
                 serde_json::json!({
@@ -740,14 +671,12 @@ mod tests {
             ),
             (
                 "syncing, no header chain yet",
-                false,
                 true,
                 booted(Standing::Syncing, None, None),
                 serde_json::json!({ "state": "syncing", "progress": null, "detail": null, "notes": stale }),
             ),
             (
                 "serving",
-                false,
                 true,
                 booted(Standing::Serving, Some(3_514_194), Some(1.0)),
                 serde_json::json!({ "state": "serving", "progress": null, "detail": null, "notes": stale }),
@@ -756,7 +685,6 @@ mod tests {
         #[cfg(feature = "snapshot")]
         let cases = cases.into_iter().chain([(
             "bootstrap downloading",
-            false,
             true,
             starting(
                 Some(Progress { done: 4 << 30, total: 9 << 30, unit: Unit::Byte, rate: Some(5e7) }),
@@ -767,8 +695,8 @@ mod tests {
                 "progress": { "done": 4u64 << 30, "total": 9u64 << 30, "unit": "byte", "rate": 5e7 },
             }),
         )]);
-        for (case, draining, live, stage, expected) in cases {
-            let readiness = readiness(draining, false, live, stage);
+        for (case, live, stage, expected) in cases {
+            let readiness = readiness(false, live, stage);
             let state = readiness.state;
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
             let serving = matches!(state, State::Serving | State::Degraded);
@@ -779,20 +707,18 @@ mod tests {
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
 
-        // held: the operator's intent over every condition, draining included, notes kept
+        // held: the operator's intent over every condition, notes kept
         let held = |notes| serde_json::json!({ "state": "held", "progress": null, "detail": null, "notes": notes });
         let held_cases = [
             (
                 "held while serving",
-                false,
                 true,
                 booted(Standing::Serving, None, None),
                 held(stale.clone()),
             ),
-            ("held while overloaded", false, true, overloaded(unreachable), held(stale.clone())),
+            ("held while overloaded", true, overloaded(unreachable), held(stale.clone())),
             (
                 "held while degraded",
-                false,
                 true,
                 booted(Standing::Degraded(Down::NoValidatorReachable), None, None),
                 held(stale.clone()),
@@ -800,34 +726,18 @@ mod tests {
             (
                 "held with a stalled runtime",
                 false,
-                false,
                 booted(Standing::Syncing, None, None),
                 held(stale.clone()),
             ),
             (
                 "held while booting, no validator",
-                false,
                 true,
                 starting(None, true),
                 held(serde_json::json!([])),
             ),
-            (
-                "held beats draining",
-                true,
-                true,
-                booted(Standing::Serving, None, None),
-                held(stale.clone()),
-            ),
-            (
-                "held beats draining before boot",
-                true,
-                true,
-                starting(None, false),
-                held(serde_json::json!([])),
-            ),
         ];
-        for (case, draining, live, stage, expected) in held_cases {
-            let readiness = readiness(draining, true, live, stage);
+        for (case, live, stage, expected) in held_cases {
+            let readiness = readiness(true, live, stage);
             assert_eq!(serde_json::to_value(&readiness).expect("serializes"), expected, "{case}");
             assert!(!readiness.ready(), "{case}: never ready");
         }
@@ -846,12 +756,8 @@ mod tests {
             index("tree_state", false),
             index("transparent_address", false),
         ]);
-        let starting = readiness(
-            false,
-            false,
-            true,
-            Stage::Starting { bootstrap: None, awaiting_validator: false },
-        );
+        let starting =
+            readiness(false, true, Stage::Starting { bootstrap: None, awaiting_validator: false });
         assert_eq!(
             stub(starting.clone(), None, &configured),
             serde_json::json!({
@@ -876,7 +782,7 @@ mod tests {
     fn the_public_status_projects_readiness_and_counts_only() {
         let configured = [IndexKind::CompactBlock, IndexKind::ValueBalance];
         let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
-        let readiness = |stage| readiness(false, false, true, stage);
+        let readiness = |stage| readiness(false, true, stage);
         let indexes =
             serde_json::json!({ "enabled": ["value_balance", "compact_block"], "total": 5 });
         let version = env!("CARGO_PKG_VERSION");
