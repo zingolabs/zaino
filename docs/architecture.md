@@ -329,8 +329,8 @@ A trait exists only where there must be more than one implementation:
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
 | `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZcashGrpcClient`, `MockValidator` | RPC versions; tests control the data |
 | `zaino_chainview::ValidatorP2pSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets; Tor later       |
-| `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, test peer sets            | keeps zebra-network out of the balancer  |
-| `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, `MockUtxos`              | the chain view sits below the indexes    |
+| `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
+| `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, a `MockChain` `Ledger`   | the chain view sits below the indexes    |
 | `zaino_persistence::PersistenceEngine`, `fs::Fs` | `DiskEngine`; `RealFs`, `SimFs`   | one storage contract; crash testing      |
 
 Not seams: the gRPC service, each index, and the validator set (`TrafficBalancer` is not a

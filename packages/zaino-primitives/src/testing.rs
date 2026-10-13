@@ -2,12 +2,14 @@
 //! root = the txids' (`cfg(test)` too: a crate's own features don't self-enable)
 
 mod build;
+mod ledger;
 mod mock_chain;
 mod upgrades;
 
 use crate::sha256d;
 
 pub use build::{outpoint, p2pkh, BlockBuilder, TxBuilder};
+pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 
 use crate::types::{BlockHash, BlockHeader, EquihashSolution, Height, Transaction};
@@ -19,7 +21,7 @@ pub fn h(height: u32) -> Height {
 
 /// Transparent value `tx` leaves the miner: `spent` (its inputs' sum) − outputs + each pool's
 /// balance (protocol.pdf#transactions §3.4; negative = overspent)
-pub fn fee_left(tx: &Transaction, spent: i64) -> i64 {
+fn fee_left(tx: &Transaction, spent: i64) -> i64 {
     let paid: i64 = tx.transparent.outputs.iter().map(|output| output.value.as_i64()).sum();
     spent - paid + balances(tx).iter().sum::<i64>()
 }

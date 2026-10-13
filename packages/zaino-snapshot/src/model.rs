@@ -10,7 +10,7 @@
 //! - Tails opened at random, drained after every publish: each tx once per epoch, every one the
 //!   epoch carried, end iff the served tip moved and only once the new snapshot is stored
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
@@ -22,8 +22,9 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_primitives::testing::MockChain;
+use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
+use zaino_source::testing::{decoded, raw_transaction};
 
 use crate::publisher::Core;
 use crate::{Down, MempoolTail, Standing, Tips};
@@ -95,7 +96,7 @@ struct Tailed {
 }
 
 /// `held` / `ahead` = bitmasks over `ADDRESSES` (ahead counts for holders only, `read` = `Ahead`'s);
-/// `mempool` = our relays still held
+/// `mempool` = our relays the view still lists (real bytes: `relayed(pick)`)
 struct Model {
     builder: MockChain,
     headers: HeaderChain,
@@ -103,7 +104,7 @@ struct Model {
     held: u8,
     ahead: u8,
     read: bool,
-    mempool: BTreeSet<TransactionId>,
+    mempool: BTreeMap<TransactionId, Vec<u8>>,
     served: Option<BlockRef>,
     synced: bool,
     epochs: Vec<Epoch>,
@@ -125,7 +126,7 @@ impl Model {
     }
 
     fn view(&self) -> Arc<ChainViewSnapshot> {
-        let raw = |txid: &TransactionId| (*txid, Bytes::copy_from_slice(&<[u8; 32]>::from(*txid)));
+        let raw = |(txid, raw): (&TransactionId, &Vec<u8>)| (*txid, Bytes::from(raw.clone()));
         let ours: Vec<(TransactionId, Bytes)> = self.mempool.iter().map(raw).collect();
         let chain = Some(self.chain());
         let view = ChainViewSnapshot::fixed(chain, Self::set(self.held), &ADDRESSES, &ours);
@@ -156,7 +157,7 @@ impl Model {
 
     fn apply(&mut self, input: &Input) {
         let best = self.headers.best().expect("genesis verified").block;
-        let txid = |pick: u8| TransactionId::from([pick; 32]);
+        let relayed = |pick: u8| raw_transaction(u32::from(pick), 0);
         match *input {
             Input::Extend(count) => {
                 let tip = self.builder.branch(best).mine_empty(count).tip();
@@ -166,7 +167,7 @@ impl Model {
             Input::Reorg { depth, len } => {
                 let floor = self.headers.final_tip().map_or(0, |tip| u32::from(tip.height));
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
-                let parent = self.builder.blocks(best)[at as usize].at();
+                let parent = self.builder.ancestor(best, h(at));
                 let tip = self.builder.branch(parent).outweigh().mine_empty(len).tip();
                 let above = at as usize + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
@@ -181,20 +182,20 @@ impl Model {
             }
             Input::Hold(mask) => self.held = mask,
             Input::Ahead { mask, read } => (self.ahead, self.read) = (mask, read),
-            Input::Relay(pick) => drop(self.mempool.insert(txid(pick))),
+            Input::Relay(pick) => drop(self.mempool.insert(relayed(pick).0, relayed(pick).1)),
             Input::Mine(pick) => {
+                let (txid, raw) = relayed(pick);
                 let path = self.builder.blocks(best);
-                let on_path =
-                    path.iter().flat_map(|b| b.transactions()).any(|tx| tx.txid == txid(pick));
+                let on_path = path.iter().flat_map(|b| b.transactions()).any(|tx| tx.txid == txid);
                 let branch = self.builder.branch(best);
                 let tip = match on_path {
                     true => branch.mine_empty(1).tip(),
-                    false => branch.mine(|block| block.tx(|tx| tx.txid([pick; 32]))).tip(),
+                    false => branch.mine(|block| block.raw_tx(decoded(raw))).tip(),
                 };
                 let above = u32::from(best.height) as usize + 1;
                 insert(&mut self.headers, &self.builder.blocks(tip)[above..]).expect("valid");
             }
-            Input::Drop(pick) => drop(self.mempool.remove(&txid(pick))),
+            Input::Drop(pick) => drop(self.mempool.remove(&relayed(pick).0)),
             Input::ServeBest { lag } => {
                 let height = u32::from(best.height).saturating_sub(lag);
                 self.served = Some(self.builder.blocks(best)[height as usize].at());
@@ -220,7 +221,8 @@ impl Model {
             }
         };
         let served_moved = self.epochs.last().is_none_or(|epoch| epoch.key != self.served);
-        let held = &self.mempool - &self.mined_under_served();
+        let listed: BTreeSet<TransactionId> = self.mempool.keys().copied().collect();
+        let held = &listed - &self.mined_under_served();
         if served_moved {
             if let Some(epoch) = self.epochs.last_mut() {
                 epoch.closed = true;
@@ -250,7 +252,7 @@ fn run(moves: Vec<(Input, bool)>) {
         held: 0,
         ahead: 0,
         read: false,
-        mempool: BTreeSet::new(),
+        mempool: BTreeMap::new(),
         served: None,
         synced: false,
         epochs: vec![Epoch { key: None, txs: BTreeSet::new(), closed: false }],

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use zaino_primitives::sha256d;
 use zaino_primitives::testing::{h, outpoint, p2pkh};
-use zaino_primitives::types::MerkleRoot;
+use zaino_primitives::types::{MerkleRoot, Zatoshis};
 
 use super::fixtures;
 use super::*;
@@ -20,7 +20,7 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
     chain.mine_empty(2);
     let three = chain.mine(|b| b.raw_tx(decoded(raw.clone())).tx(|t| t.txid([0x33; 32])));
     let four = chain.mine_empty(1);
-    let validator = Arc::new(MockValidator::following(&chain, three));
+    let validator = Arc::new(chain.validator(three));
 
     let links = validator.get_block_links(&[h(0), h(3), h(4)]).await.expect("reachable");
     let link = |at: BlockRef| Ok(BlockLink { header: chain.header_bytes(at.hash) });
@@ -94,9 +94,9 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
     assert_eq!(block.header().time, early);
 }
 
-/// Paused clock, one validator at height 1:
-/// - mempool: inserted at its stated fee, a relayed tx at the fee its bytes leave, a mined or
-///   evicted tx gone
+/// Paused clock, one validator at height 2 (two 5 000 coinbases to Alice):
+/// - mempool: a heard tx at the fee its spends leave, a relayed one likewise, a mined or evicted
+///   tx gone
 /// - verdicts: an unknown input refused, a scripted refusal, garbage = `Malformed`; a check =
 ///   the send's verdict, nothing listed
 /// - listing refusal, metadata timeouts, the estimate; latency + reachability per port; injected
@@ -105,10 +105,12 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
 async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
-    let tip = chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&alice, 5_000)));
-    let validator = MockValidator::following(&chain, tip);
-    let (listed, listed_raw) = raw_transaction(1, 0);
-    assert_eq!(validator.mempool_insert(listed_raw.clone(), 2_000), listed);
+    chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&alice, 5_000)));
+    let tip = chain.mine(|b| b.coinbase(|c| c.txid([0x02; 32]).pay(&alice, 5_000)));
+    let validator = chain.validator(tip);
+    let (listed, listed_raw) = raw_transparent(&[outpoint([0x02; 32], 0)], &[(&alice, 3_000)]);
+    chain.submit(decoded(listed_raw.clone()));
+    validator.hear(&chain, listed);
     let (sent, sent_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
     let fee = |zats: u64| Zatoshis::new(zats).expect("in supply");
     let len = |raw: &[u8]| u32::try_from(raw.len()).expect("a small transaction");
@@ -139,7 +141,7 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
                     why: &str| {
         matches!(answer, Err(QueryError::Domain(SendRawTransactionError::Rejected { message, .. })) if message.starts_with(why))
     };
-    assert!(rejected(refused, "missing input"), "prevout not on its best chain");
+    assert!(rejected(refused, "spends "), "prevout not on its best chain");
     let fee_too_low =
         SendRawTransactionError::Rejected { code: -25, message: "fee too low".into() };
     validator.relay(Err(fee_too_low));
@@ -171,11 +173,11 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let polled = validator.get_poll_reading(true, &[]).await.expect("reachable");
     let only = MempoolListed { txid: listed, fee: fee(2_000), encoded_len: len(&listed_raw) };
     assert_eq!(polled.listing, Ok(vec![only]), "mined = out of the mempool");
-    assert_eq!((polled.info.blocks, polled.info.estimated_height), (h(2), h(100)));
+    assert_eq!((polled.info.blocks, polled.info.estimated_height), (h(3), h(100)));
     let metadata = polled.metadata.expect("asked");
     assert_eq!(metadata.peers.expect_err("times out").mode, FailureMode::Timeout);
     assert_eq!(metadata.release.expect("answered"), release);
-    validator.mempool_remove(listed);
+    validator.evict(listed);
     let polled = validator.get_poll_reading(false, &[]).await.expect("reachable");
     assert_eq!(polled.listing, Ok(Vec::new()), "evicted = unlisted");
     validator.listing(Err(GetMempoolListingError::Inactive));
@@ -209,4 +211,12 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     assert_eq!(back.expect("reachable again on every port"), raw_transaction(4, 0).0);
     let calls = Calls { polls: 8, links: 4, blocks: 0, sends: 6, checks: 3 };
     assert_eq!(validator.calls(), calls);
+}
+
+/// A node only hears what the network holds: never a transaction outside the chain's mempool
+#[test]
+#[should_panic(expected = "not in the chain's mempool")]
+fn hearing_a_transaction_the_chain_never_held_panics() {
+    let chain = MockChain::regtest();
+    chain.validator(chain.tip()).hear(&chain, raw_transaction(1, 0).0);
 }

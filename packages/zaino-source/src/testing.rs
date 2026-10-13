@@ -2,16 +2,17 @@
 //! [`ChainDataSource`] as zebrad does, plus what a test scripts (latency, failures, lies, verdicts)
 //!
 //! - best chain only, by height and hash; nothing above its tip; upgrades from the chain's schedule
-//! - N nodes over one `MockChain` = N validators, each `follow`ing its own tip
+//! - N nodes over one `MockChain` = N validators (`chain.validator(tip)`), each `follow`ing its tip
+//! - own mempool = entries of the chain's it `hear`s + sends, each admitted on its own tip
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use zaino_primitives::testing::{encode_header, fee_left, header_hash, MockChain};
+use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
     Block, BlockHash, BlockHeader, BlockRef, BlockchainInfo, EndOfService, Height, NodeRelease,
-    OutPoint, PeerInfo, Script, Transaction, TransactionId, TransactionLocation, Zatoshis,
+    OutPoint, PeerInfo, Script, Transaction, TransactionId, TransactionLocation,
 };
 
 use crate::{
@@ -78,6 +79,18 @@ pub struct Calls {
     pub checks: usize,
 }
 
+/// [`MockValidator`]s on a [`MockChain`]
+pub trait ValidatorViews {
+    /// Best chain = genesis ..= `tip`; reachable, accepting, mempool empty, no latency
+    fn validator(&self, tip: BlockRef) -> MockValidator;
+}
+
+impl ValidatorViews for MockChain {
+    fn validator(&self, tip: BlockRef) -> MockValidator {
+        MockValidator::following(self, tip)
+    }
+}
+
 pub struct MockValidator {
     state: Mutex<State>,
 }
@@ -86,7 +99,7 @@ struct State {
     followed: Followed,
     reorg_after_poll: Option<Followed>,
     estimate: Option<Height>,
-    mempool: BTreeMap<TransactionId, (Vec<u8>, Zatoshis)>,
+    mempool: Vec<Unmined>,
     listing: Result<(), GetMempoolListingError>,
     relay: Result<(), SendRawTransactionError>,
     checks: bool,
@@ -105,6 +118,7 @@ struct Followed {
     best: Vec<Arc<Block>>,
     info: BlockchainInfo,
     bytes: HashMap<TransactionId, Vec<u8>>,
+    ledger: Ledger,
 }
 
 impl Followed {
@@ -112,13 +126,12 @@ impl Followed {
         let best = chain.blocks(tip);
         let txids = best.iter().flat_map(|block| block.transactions()).map(|tx| tx.txid);
         let bytes = txids.filter_map(|txid| Some((txid, chain.tx_bytes(txid)?.to_vec()))).collect();
-        Self { best, info: chain.blockchain_info(tip), bytes }
+        Self { best, info: chain.blockchain_info(tip), bytes, ledger: chain.ledger(tip) }
     }
 }
 
 impl MockValidator {
-    /// Best chain = genesis ..= `tip`; reachable, accepting, mempool empty, no latency
-    pub fn following(chain: &MockChain, tip: BlockRef) -> Self {
+    fn following(chain: &MockChain, tip: BlockRef) -> Self {
         let release = NodeRelease {
             build: "mock".to_owned(),
             user_agent: "/MockValidator/".to_owned(),
@@ -129,7 +142,7 @@ impl MockValidator {
             followed: Followed::of(chain, tip),
             reorg_after_poll: None,
             estimate: None,
-            mempool: BTreeMap::new(),
+            mempool: Vec::new(),
             listing: Ok(()),
             relay: Ok(()),
             checks: true,
@@ -160,17 +173,22 @@ impl MockValidator {
         self.state().estimate = Some(height);
     }
 
-    /// Listed from the next poll at `fee` zats
-    pub fn mempool_insert(&self, raw: Vec<u8>, fee: u64) -> TransactionId {
-        let txid = crate::prepare_transaction(&raw).expect("mempool_insert takes real bytes").txid;
-        let fee = Zatoshis::new(fee).expect("a fee within the supply");
-        self.state().mempool.insert(txid, (raw, fee));
-        txid
+    /// `chain`'s mempool entry `txid` relayed here: listed from the next poll, at the fee it
+    /// leaves on this node's tip (panic: not in `chain`'s mempool, or refused on this tip)
+    pub fn hear(&self, chain: &MockChain, txid: TransactionId) {
+        let held = chain.mempool().iter().find(|unmined| unmined.tx.txid == txid);
+        let held = held.unwrap_or_else(|| panic!("hear {txid}: not in the chain's mempool"));
+        let mut state = self.state();
+        let fee = state.pool().admit(&held.tx);
+        let fee = fee.unwrap_or_else(|refused| panic!("hear {txid}: {refused} on its tip"));
+        state.mempool.push(Unmined { fee, ..held.clone() });
     }
 
-    /// Evicted (expiry, churn): unlisted from the next poll
-    pub fn mempool_remove(&self, txid: TransactionId) {
-        self.state().mempool.remove(&txid);
+    /// Evicted (expiry, churn), with every entry spending its outputs: unlisted from the next poll
+    pub fn evict(&self, txid: TransactionId) {
+        let mut state = self.state();
+        state.mempool.retain(|unmined| unmined.tx.txid != txid);
+        state.readmit();
     }
 
     /// Followed header at `height` edited, hash recomputed (a header the builder refuses to mine)
@@ -264,12 +282,26 @@ impl MockValidator {
 }
 
 impl State {
-    /// Mined txids leave the mempool
+    /// Mined, conflicting and orphaned entries leave the mempool
     fn adopt(&mut self, followed: Followed) {
-        for tx in followed.best.iter().flat_map(|block| block.transactions()) {
-            self.mempool.remove(&tx.txid);
-        }
         self.followed = followed;
+        self.readmit();
+    }
+
+    /// Each entry re-admitted in order on its tip, refused ones dropped
+    fn readmit(&mut self) {
+        let held = std::mem::take(&mut self.mempool);
+        let candidates = held.into_iter().map(|unmined| (unmined.tx, unmined.bytes));
+        self.mempool = self.followed.ledger.clone().readmit(candidates);
+    }
+
+    /// Its tip's ledger + every entry: what a new transaction may spend
+    fn pool(&self) -> Ledger {
+        let mut pool = self.followed.ledger.clone();
+        for unmined in &self.mempool {
+            pool.admit(&unmined.tx).expect("entries admitted in order (readmit)");
+        }
+        pool
     }
 
     fn injected(&mut self, port: Port) -> Result<(), NonDomainError> {
@@ -285,6 +317,10 @@ impl State {
         Err(NonDomainError::new(mode, format!("MockValidator injected {mode:?}")))
     }
 
+    fn held(&self, txid: TransactionId) -> Option<&Unmined> {
+        self.mempool.iter().find(|unmined| unmined.tx.txid == txid)
+    }
+
     fn best_at(&self, height: Height) -> Option<&Arc<Block>> {
         self.followed.best.get(u32::from(height) as usize)
     }
@@ -297,40 +333,21 @@ impl State {
         }
     }
 
-    /// zebrad's verdict on `raw` over its best chain: its txid + fee, or refused
-    fn verdict(&self, raw: &[u8]) -> Result<(TransactionId, Zatoshis), SendRawTransactionError> {
+    /// zebrad's verdict on `raw` over its tip + mempool: the entry it would hold, or refused
+    /// (`Rejected` -25 = consensus-invalid there)
+    fn verdict(&self, raw: Vec<u8>) -> Result<Unmined, SendRawTransactionError> {
         self.relay.clone()?;
         let malformed =
             |error: crate::DecodeError| SendRawTransactionError::Malformed(error.to_string());
-        let txid = crate::prepare_transaction(raw).map_err(malformed)?.txid;
-        let tx = crate::decode_transaction(raw).map_err(malformed)?;
-        Ok((txid, fee_over(&self.followed.best, &tx)?))
+        crate::prepare_transaction(&raw).map_err(malformed)?;
+        let tx = crate::decode_transaction(&raw).map_err(malformed)?;
+        let invalid = |refused: Refused| SendRawTransactionError::Rejected {
+            code: -25,
+            message: refused.to_string(),
+        };
+        let fee = self.pool().admit(&tx).map_err(invalid)?;
+        Ok(Unmined { tx, bytes: raw, fee })
     }
-}
-
-/// Inputs from the best chain's unspent outputs; `Rejected` = an unknown input or an overspend
-/// (zebrad's `-25`: consensus-invalid)
-fn fee_over(best: &[Arc<Block>], tx: &Transaction) -> Result<Zatoshis, SendRawTransactionError> {
-    let invalid = |message: String| SendRawTransactionError::Rejected { code: -25, message };
-    let mut unspent: HashMap<OutPoint, Zatoshis> = HashMap::new();
-    for mined in best.iter().flat_map(|block| block.transactions()) {
-        for prevout in &mined.transparent.inputs {
-            unspent.remove(prevout);
-        }
-        for (vout, output) in (0..).zip(&mined.transparent.outputs) {
-            unspent.insert(OutPoint { txid: mined.txid, vout }, output.value);
-        }
-    }
-    let mut spent = 0;
-    for prevout in &tx.transparent.inputs {
-        let value = unspent
-            .get(prevout)
-            .ok_or_else(|| invalid(format!("missing input {}:{}", prevout.txid, prevout.vout)))?;
-        spent += value.as_i64();
-    }
-    let fee = fee_left(tx, spent);
-    let fee = u64::try_from(fee).ok().and_then(|fee| Zatoshis::new(fee).ok());
-    fee.ok_or_else(|| invalid(format!("{} overspends", tx.txid)))
 }
 
 impl Lie {
@@ -415,12 +432,14 @@ impl ChainDataSource for MockValidator {
             None => Err(QueryError::Domain(GetAtHeightError::HeightNotFound(*height))),
         });
         let listing = state.listing.clone().map(|()| {
-            let listed = state.mempool.iter().map(|(txid, (raw, fee))| MempoolListed {
-                txid: *txid,
-                fee: *fee,
-                encoded_len: u32::try_from(raw.len()).expect("a test transaction under 4 GiB"),
+            let listed = state.mempool.iter().map(|unmined| MempoolListed {
+                txid: unmined.tx.txid,
+                fee: unmined.fee,
+                encoded_len: u32::try_from(unmined.bytes.len()).expect("a test tx under 4 GiB"),
             });
-            listed.collect()
+            let mut listed: Vec<MempoolListed> = listed.collect();
+            listed.sort_by_key(|entry| entry.txid);
+            listed
         });
         let timed_out = || NonDomainError::new(FailureMode::Timeout, "MockValidator metadata");
         let metadata = metadata.then(|| MetadataReading {
@@ -436,8 +455,8 @@ impl ChainDataSource for MockValidator {
     ) -> Result<RawMempoolTransactions, NonDomainError> {
         self.enter(Port::MempoolBytes, |_| {}).await?;
         let state = self.state();
-        let bytes = |entry: &MempoolListed| match state.mempool.get(&entry.txid) {
-            Some((raw, _)) => Ok(raw.clone()),
+        let bytes = |entry: &MempoolListed| match state.held(entry.txid) {
+            Some(unmined) => Ok(unmined.bytes.clone()),
             None => Err(GetRawMempoolTransactionError::NotFound(entry.txid)),
         };
         Ok(listed.iter().map(bytes).collect())
@@ -450,9 +469,9 @@ impl ChainDataSource for MockValidator {
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         self.enter(Port::Transaction, |_| {}).await?;
         let state = self.state();
-        if let Some((raw, _)) = state.mempool.get(&txid) {
+        if let Some(unmined) = state.held(txid) {
             let location = TransactionLocation::Mempool;
-            return Ok(TransactionResponse { bytes: raw.clone(), location });
+            return Ok(TransactionResponse { bytes: unmined.bytes.clone(), location });
         }
         let mined = state
             .followed
@@ -475,8 +494,9 @@ impl ChainDataSource for MockValidator {
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
         self.enter(Port::Send, |calls| calls.sends += 1).await?;
         let mut state = self.state();
-        let (txid, fee) = state.verdict(&transaction).map_err(QueryError::Domain)?;
-        state.mempool.insert(txid, (transaction, fee));
+        let unmined = state.verdict(transaction).map_err(QueryError::Domain)?;
+        let txid = unmined.tx.txid;
+        state.mempool.push(unmined);
         Ok(txid)
     }
 
@@ -490,8 +510,7 @@ impl ChainDataSource for MockValidator {
             return Err(QueryError::Domain(CheckAdmissionError::Unsupported));
         }
         let refused = |refused| QueryError::Domain(CheckAdmissionError::Refused(refused));
-        let (txid, _) = state.verdict(&transaction).map_err(refused)?;
-        Ok(txid)
+        Ok(state.verdict(transaction).map_err(refused)?.tx.txid)
     }
 }
 

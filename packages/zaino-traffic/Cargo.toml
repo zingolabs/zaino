@@ -11,6 +11,10 @@ readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+# `testing::{MockPeerSet, PeerSetViews}`
+testing = ["zaino-primitives/testing"]
+
 [dependencies]
 futures.workspace = true
 metrics.workspace = true

@@ -215,13 +215,14 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).
-- `testing::MockPeers` (`ValidatorP2pSource` as a script) and `testing::MockUtxos`, beside
-  `zaino_source::testing::MockValidator`:
+- `testing::MockPeers` (`ValidatorP2pSource` as a script), beside
+  `zaino_source::testing::MockValidator`; a `MockChain` tip's `Ledger` is the `UnspentOutputs`
+  (fund prevouts by mining them, e.g. a coinbase with a stated txid):
 
 ```rust,ignore
 let peers = Arc::new(MockPeers::new(live, dead));     // dead refuse a listing; no live = no relay
 let view = view.with_peers(peers.clone());
-let utxos = Arc::new(MockUtxos::of([(outpoint, value)]));
+let utxos = Arc::new(chain.ledger(tip));             // that tip's unspent outputs
 tokio::spawn(view.peer_mempool(utxos).expect("peers").run(cancel));
 peers.hold(id, raw);                                 // bytes served for `id`
 peers.list(peer, vec![id]);                          // `peer`'s mempool from its next listing

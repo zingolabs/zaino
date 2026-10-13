@@ -148,17 +148,19 @@ mainnet, `NotEnforced` elsewhere, `Unknown` for a zebrad older than 6.3.
 
 Behind the `testing` feature (always compiled for this crate's own tests): one
 simulated zebrad over a `zaino_primitives::testing::MockChain`, a whole
-`ChainDataSource`. N nodes over one chain = N validators, each following its own tip.
+`ChainDataSource`, made by the `ValidatorViews` extension on the chain. N nodes over
+one chain = N validators, each following its own tip.
 
 ```rust,ignore
-use zaino_source::testing::{decoded, raw_transaction, raw_transparent, Lie, MockValidator, Port};
+use zaino_source::testing::{decoded, raw_transaction, raw_transparent, Lie, Port, ValidatorViews};
 
-let validator = MockValidator::following(&chain, chain.tip());
+let validator = chain.validator(chain.tip());        // a MockValidator
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
 validator.estimate(h(500));                          // getblockchaininfo estimatedheight
-let txid = validator.mempool_insert(raw, 2_000);     // listed from the next poll at 2 000
-validator.mempool_remove(txid);                      // evicted: unlisted from the next poll
+let txid = chain.submit(decoded(raw));               // the network's mempool (MockChain)
+validator.hear(&chain, txid);                        // relayed here: listed from the next poll
+validator.evict(txid);                               // evicted: unlisted from the next poll
 validator.listing(Err(GetMempoolListingError::Inactive));
 let fee = SendRawTransactionError::Rejected { code: -26, message: "fee".into() };
 validator.relay(Err(fee));                           // sendrawtransaction + checkadmission verdict
@@ -178,10 +180,16 @@ chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: ge
 
 - Answers as zebrad: blocks by hash and links by height from its best chain only,
   nothing above its tip; `getblockchaininfo` = `chain.blockchain_info(tip)` (the
-  chain's upgrade schedule, statuses by its tip); a mined txid leaves the mempool.
-- An accepted send is listed at the fee its bytes leave over its best chain; an input
-  not unspent there = `Rejected { code: -25, message: "missing input …" }`; undecodable =
-  `Malformed`.
+  chain's upgrade schedule, statuses by its tip).
+- Its mempool is its own view of the chain's: entries it `hear`s plus sends it accepts,
+  each admitted in order on its tip by the chain's own `Ledger` (unspent inputs, fresh
+  nullifiers, fee ≥ 0) and listed at the fee its bytes leave there. Nodes differ in what
+  they heard, never in the rules. `hear` panics on a txid outside `chain.mempool()` or
+  refused on its tip.
+- Each `follow` re-admits its mempool on the new tip: mined, conflicting and orphaned
+  entries leave. `evict` drops an entry and every entry spending its outputs.
+- A send refused on its tip + mempool = `Rejected { code: -25, message }` naming the
+  `Refused` rule (e.g. `spends …, not unspent on this branch`); undecodable = `Malformed`.
 - `get_transaction` of a mined `TxBuilder` transaction panics: it has no bytes, and
   the double never invents a body (mine real bytes with `raw_tx`).
 - Each `Lie` fails the NFS body check (`check_block`) by the rule that names it.

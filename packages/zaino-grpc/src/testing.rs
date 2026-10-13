@@ -14,7 +14,7 @@ use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId, UpgradeSchedule};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_snapshot::{Publisher, Snapshots};
-use zaino_source::testing::MockValidator;
+use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
 use crate::service::{Dispatch, Routes};
@@ -147,7 +147,7 @@ pub(super) fn published(
 /// [`routes_over`] a never-polled node at a bare genesis, for tests that only serve indexes
 pub(super) fn routes() -> Routes<MockValidator, DiskView> {
     let chain = MockChain::regtest();
-    routes_over(&Arc::new(MockValidator::following(&chain, chain.genesis()))).0
+    routes_over(&Arc::new(chain.validator(chain.genesis()))).0
 }
 
 pub(super) fn dispatch(

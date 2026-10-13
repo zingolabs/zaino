@@ -32,6 +32,7 @@ zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
+zaino-traffic = { workspace = true, features = ["testing"] }
 zcash_protocol.workspace = true
 
 [lints.rust]

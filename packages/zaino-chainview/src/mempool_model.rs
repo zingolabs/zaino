@@ -21,11 +21,8 @@ use imbl::Vector;
 use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
-use zaino_primitives::testing::{p2pkh, MockChain};
-use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, OutPoint, PeerTxId,
-    ReorgDepth, TransactionId, Zatoshis,
-};
+use zaino_primitives::testing::{outpoint, p2pkh, Ledger, MockChain};
+use zaino_primitives::types::{BlockRef, OutPoint, PeerTxId, ReorgDepth, TransactionId, Zatoshis};
 use zaino_source::testing::raw_transparent;
 use zaino_traffic::ValidatorId;
 
@@ -35,9 +32,8 @@ use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
 use crate::listings::{LISTING_FRESH, QUORUM_NETGROUPS};
 use crate::netgroup::Netgroup;
 use crate::peer_mempool::judge;
-use crate::testing::MockUtxos;
 
-/// `a`, `b` and `rival` (spends `b`'s prevout) fund from the UTXO set, `child` spends `a`'s
+/// `a`, `b` and `rival` (spends `b`'s prevout) fund from coinbases at 1..=3, `child` spends `a`'s
 /// output, `bad` pays out more than it spends, `orphan` spends an outpoint nobody holds
 const A: usize = 0;
 const B: usize = 1;
@@ -175,7 +171,7 @@ struct Run {
     peers: Vec<SocketAddr>,
     byzantine: Vec<bool>,
     txs: Vec<(TransactionId, Bytes)>,
-    utxos: MockUtxos,
+    utxos: Ledger,
     start: Instant,
     clock: Duration,
     oracle: Oracle,
@@ -183,15 +179,7 @@ struct Run {
 
 impl Run {
     fn reading(&self) -> Reading {
-        let branch = ConsensusBranchId::new(0);
-        let info = BlockchainInfo {
-            blocks: self.tip.height,
-            estimated_height: self.tip.height,
-            best_block_hash: self.tip.hash,
-            sapling_activation: Height::GENESIS,
-            upgrades: Vec::new(),
-            consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
-        };
+        let info = self.chain.blockchain_info(self.tip);
         Reading { held: Some(self.tip), info, peers: None, release: None, streaming: false }
     }
 
@@ -351,8 +339,12 @@ impl Run {
 
 fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move>) {
     let alice = p2pkh([0xaa; 20]);
-    let funding = |n: u8| OutPoint { txid: TransactionId::from([n; 32]), vout: 0 };
-    let unknown = OutPoint { txid: TransactionId::from([9; 32]), vout: 0 };
+    let mut chain = MockChain::regtest();
+    for (n, zats) in [(1u8, 10_000), (2, 10_000), (3, 5_000)] {
+        chain.mine(|b| b.coinbase(|c| c.txid([n; 32]).pay(&alice, zats)));
+    }
+    let funding = |n: u8| outpoint([n; 32], 0);
+    let unknown = outpoint([9; 32], 0);
     let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
     let txs = [
         (a, a_raw),
@@ -362,20 +354,14 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
         raw_transparent(&[funding(3)], &[(&alice, 6_000)]),
         raw_transparent(&[unknown], &[(&alice, 1)]),
     ];
-    let zats = |n: u64| Zatoshis::new(n).expect("in supply");
-    let utxos = MockUtxos::of([
-        (funding(1), zats(10_000)),
-        (funding(2), zats(10_000)),
-        (funding(3), zats(5_000)),
-    ]);
     let peers: Vec<SocketAddr> = groups
         .iter()
         .enumerate()
         .map(|(n, group)| SocketAddr::from(([10, group % 8, 0, n as u8 + 1], 8233)))
         .collect();
 
-    let mut chain = MockChain::regtest();
-    let tip = chain.mine_empty(3);
+    let tip = chain.tip();
+    let utxos = chain.ledger(tip);
     let endpoints: Vector<ValidatorMetadata> =
         (0..validators).map(|v| ValidatorMetadata::new(format!("v{v}:8232"))).collect();
     let core = ChainViewCore::new(endpoints, ReorgDepth::CONSENSUS);

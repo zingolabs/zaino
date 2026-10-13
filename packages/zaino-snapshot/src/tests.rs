@@ -19,7 +19,7 @@ use zaino_persistence::{
 };
 use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
-use zaino_source::testing::{within, MockValidator};
+use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{
     Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
@@ -50,7 +50,7 @@ async fn the_publisher_follows_both_watches_coalesces_and_stops_on_cancel_or_a_g
     let a3 = builder.mine_empty(3);
     let path = builder.blocks(a3);
     let params = ChainParams::of(&builder);
-    let source = Arc::new(MockValidator::following(&builder, a3));
+    let source = Arc::new(builder.validator(a3));
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let (balancer, _never_driven) =
         TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);

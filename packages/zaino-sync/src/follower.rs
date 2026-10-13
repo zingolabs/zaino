@@ -185,7 +185,7 @@ fn link(
 mod tests {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::{within, Lie, MockValidator};
+    use zaino_source::testing::{within, Lie, ValidatorViews};
     use zaino_traffic::{Limits, Trusted};
 
     use super::*;
@@ -203,7 +203,7 @@ mod tests {
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
         let members = [None, Some(Lie::Poisoned)].map(|lie| {
-            let member = MockValidator::following(&chain, a11);
+            let member = chain.validator(a11);
             member.lie(lie);
             Arc::new(member)
         });
@@ -279,7 +279,7 @@ mod tests {
         let x1 = chain.fork(h(0)).mine_empty(1).tip();
         let b11 = chain.fork(h(4)).mine_empty(7).tip();
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let validator = Arc::new(MockValidator::following(&chain, a7));
+        let validator = Arc::new(chain.validator(a7));
         let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
         let (balancer, balancing) = TrafficBalancer::new(trusted, None);
         let stop_balancing = CancellationToken::new();
@@ -334,34 +334,13 @@ mod tests {
 mod peers {
     use std::time::Duration;
 
-    use futures::future::BoxFuture;
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_source::testing::{MockValidator, Port};
-    use zaino_source::{FailureMode, NonDomainError};
-    use zaino_traffic::{Limits, PeerTransport, Peers, Trusted};
+    use zaino_source::testing::{Port, ValidatorViews};
+    use zaino_traffic::testing::PeerSetViews;
+    use zaino_traffic::{Limits, Peers, Trusted};
 
     use super::*;
-
-    /// Blocks by hash from one `MockChain` (headers: none asked here)
-    struct PeerSet(Vec<Arc<Block>>);
-
-    impl PeerTransport for PeerSet {
-        fn headers(
-            &self,
-            _: Vec<BlockHash>,
-            _: Option<BlockHash>,
-        ) -> BoxFuture<'static, Result<Vec<Vec<u8>>, NonDomainError>> {
-            Box::pin(std::future::ready(Ok(Vec::new())))
-        }
-
-        fn block(&self, hash: BlockHash) -> BoxFuture<'static, Result<Block, NonDomainError>> {
-            let block = self.0.iter().find(|block| block.header().hash == hash);
-            let block = block.map(|block| Block::clone(block));
-            let absent = || NonDomainError::new(FailureMode::Connection, "absent");
-            Box::pin(std::future::ready(block.ok_or_else(absent)))
-        }
-    }
 
     /// The trusted validator unreachable throughout, the peer set holding A0..=A11; final 8 on a
     /// chain naming every header: A0..=A8 reach the stream from the peer set alone (each checked
@@ -371,11 +350,11 @@ mod peers {
         let mut chain = MockChain::regtest();
         let a11 = chain.mine_empty(11);
         let trunk = chain.blocks(a11);
-        let validator = Arc::new(MockValidator::following(&chain, a11));
+        let validator = Arc::new(chain.validator(a11));
         validator.reachable(&Port::ALL, false);
         let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
-        let peers = Peers { transport: Arc::new(PeerSet(trunk.clone())), in_flight: 4 };
+        let peers = Peers { transport: Arc::new(chain.peer_set(a11)), in_flight: 4 };
         let (balancer, balancing) = TrafficBalancer::new(trusted, Some(peers));
         let cancel = CancellationToken::new();
         tokio::spawn(balancing.run(cancel.clone()));

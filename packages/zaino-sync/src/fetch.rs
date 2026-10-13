@@ -100,7 +100,7 @@ mod tests {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::Transaction;
-    use zaino_source::testing::{Lie, MockValidator};
+    use zaino_source::testing::{Lie, ValidatorViews};
     use zaino_source::ChainDataSource;
 
     use super::*;
@@ -162,7 +162,7 @@ mod tests {
         chain.mine_empty(1);
         let two = chain.mine(|b| b.tx(|t| t.txid([0x21; 32])).tx(|t| t.txid([0x22; 32])));
         let record = chain.verified(two).header_at(h(2)).expect("verified");
-        let validator = MockValidator::following(&chain, two);
+        let validator = chain.validator(two);
         let honest = validator.get_block_by_hash(two.hash).await.expect("on its best");
         let passed = check_block(honest, h(2), &record).map(|checked| checked.at());
         assert_eq!(passed, Ok(two));
