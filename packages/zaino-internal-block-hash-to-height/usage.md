@@ -24,7 +24,7 @@ by_hash   hash 32 (protocol byte order) → height u32 BE      point lookups onl
 
 ## Wiring
 
-```rust
+```rust,ignore
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 

@@ -3,7 +3,7 @@
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
 //! - Every snapshot seen: tip on its best; `at` of every mined block (served, side, root): each
-//!   index = the oracle at its view's tip, that tip = the block's (R12: a durable-only view ahead)
+//!   index = the oracle at its view's tip, that tip = the block's (or a durable-only view ahead)
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
@@ -149,8 +149,8 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
 /// - N4: tip on its chain's best = the lowest view (a root snapshot: the lowest durable tip)
 /// - G7: `at` of every mined block, served included: `Some` iff folded or the root; branch = the
 ///   block's path vs the chain's; every enabled index readable, through the block or (durable at
-///   or past it) its durable tip alone (R12); either = the oracle there
-/// - R12: `answers_through` = that durable tip on the best branch, the block on a side branch
+///   or past it) its durable tip alone; either = the oracle there
+/// - `answers_through` = that durable tip on the best branch, the block on a side branch
 fn verify(
     snapshot: &Indexed<DiskView>,
     blocks: &MockChain,
@@ -206,7 +206,7 @@ fn verify(
                 Branch::Side { .. } => block.height,
             };
             let answers = at.answers_through(*kind);
-            assert_eq!(answers, reach, "{context}: R12 {name} answers through, at {block:?}");
+            assert_eq!(answers, reach, "{context}: {name} answers_through, at {block:?}");
             let expected =
                 oracles.entry(through.hash).or_insert_with(|| oracle(&blocks.blocks(through)));
             let (_, expected) =

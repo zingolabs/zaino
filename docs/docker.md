@@ -1,6 +1,6 @@
 # Container image
 
-The repo-root `Dockerfile` builds a Debian bookworm image whose entrypoint is
+The repo-root `Dockerfile` builds a Debian bookworm-slim image whose entrypoint is
 `zainod` and whose default command is `start`. It runs as `container_user` (UID and
 GID 1000), reads its config from `/app/config/zainod.toml`, and exposes the gRPC port
 `8137`.
@@ -21,9 +21,9 @@ the mounted config names.
 The default `grpc_listen_address` is `127.0.0.1:8137`, which a published port cannot
 reach. Inside a container the config MUST set it to `0.0.0.0:8137`, either in the file
 or with `ZAINO_CONFIG_SERVE__GRPC_LISTEN_ADDRESS=0.0.0.0:8137`. The same applies to
-`[metrics] listen_address` if you scrape it from outside the container. zainod then logs a
-warning, because `/metrics` is unauthenticated. The validator's `[rpc] listen_addr`
-must likewise be reachable from the container.
+`[metrics] listen_address` if you scrape it from outside the container (who should reach either:
+[running.md: Network exposure](./running.md#network-exposure)). The validator's `[rpc]
+listen_addr` must likewise be reachable from the container.
 
 ## Paths
 

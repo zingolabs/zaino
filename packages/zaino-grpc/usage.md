@@ -53,8 +53,8 @@ routing.route(routes);
 | `GetTransaction` | `validators.transaction(txid)` (absent → the next; `NOT_FOUND` only when every one asked said absent) |
 
 - **One snapshot per request** (`snapshots.load()`, pinned for the request or
-  the whole stream, G1). No height named = the served tip, which every enabled
-  index holds (R12): `GetLatestBlock`, `GetLatestTreeState`,
+  the whole stream, [G1](../zaino-snapshot/usage.md#invariants-and-tests)). No height named = the served tip, which every enabled
+  index holds: `GetLatestBlock`, `GetLatestTreeState`,
   `GetLightdInfo.blockHeight`, subtree roots completing at or below it, the
   transparent reader `.as_of(tip)`. A height named (`GetBlock`, `GetBlockRange`,
   `GetTreeState`, by height or hash) = up to `At::answers_through(kind)`, the
@@ -106,17 +106,25 @@ routing.route(routes);
   listener, sends every open connection an HTTP/2 GOAWAY, and returns `Ok(())`
   when they have all closed or `GrpcLimits::drain_timeout` has passed,
   whichever is first. Connections still open then are dropped with the runtime.
-  The default `drain_timeout` is zero: return at once.
+  The default `drain_timeout` is 10 s; zero returns at once.
 
 ### Why `GetTransaction` forwards
 
 Raw transaction bytes are consensus data the validator already stores. Indexing
-them would be a second copy of the chain, about ten times the compact store
-(compact blocks drop proofs, signatures and 528 of each 580-byte ciphertext), to
-serve a read that happens only for transactions a wallet already trial-decrypted.
-`GetAddressUtxos` and the other address methods are the opposite case: they are
-*derived*, so forwarding them would mean a second implementation that can
-disagree, or a dependency on a validator index Zebra need not have.
+them would be a second copy of the chain, far larger than the compact store
+(compact blocks drop proofs, signatures and 528 of each 580-byte note
+ciphertext), to serve a read that happens only for transactions a wallet already
+trial-decrypted. `GetAddressUtxos` and the other address methods are the
+opposite case: they are *derived*, so forwarding them would mean a second
+implementation that can disagree, or a dependency on a validator index Zebra
+need not have.
+
+`GetTransaction` (and the bytes behind `GetTaddressTransactions`) asks the
+traffic balancer's trusted validators in turn: an absent answer moves to the next, and
+the answer is `NOT_FOUND` only when every validator asked said absent (any other
+failure = `UNAVAILABLE`). `height` = the mined height on the best chain, else `0`
+(mempool, or mined on a branch no longer best). Only the `hash` form of
+`TxFilter` is served.
 
 ## Serve stack
 
@@ -134,6 +142,12 @@ accept ─ total cap ─ client identity ─ per-client cap ─ h2 / HTTP/1.1 co
   - Each connection may send 10 at once and regains one per second; past that the answer is `429`.
   - A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`.
   - Without `with_health`, those paths go to the gRPC stack like any other.
+- **TLS** (`with_tls(Tls::load(files)?)`): rustls with the ring provider, ALPN `h2` then
+  `http/1.1`. A missing or mismatched pair fails `Tls::load`, never plaintext. The files are
+  checked every 60 s; a changed pair serves new connections, and one that fails to load is
+  logged while the previous pair keeps serving. A handshake not done within 10 s closes the
+  connection. A PROXY header, when required, precedes the handshake.
+- An HTTP/1.1 connection must send its request headers within 10 s.
 - `load()` → `Load::report()` also carries `overloaded`: ≥ 10% of work refused (at ≥ 1/s,
   averaged over 60 s) for 5 minutes straight, cleared after 5 minutes under 2%.
 - `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a snapshot, `version` the
@@ -153,7 +167,7 @@ Every cap refuses; none queues except the read lanes:
 | `max_range_reads` | 32 | one `GetBlockRange` window off the files | bounded wait |
 | `max_scan_reads` | 4 | one address-history scan | bounded wait |
 | `stall_timeout` | 300 s | per stream: unread data / nothing to send | connection closed / stream `UNAVAILABLE` |
-| `drain_timeout` | 0 s | `run`, after `cancel` | still-open connections dropped |
+| `drain_timeout` | 10 s | `run`, after `cancel` | still-open connections dropped |
 | `max_connection_age` | 30 min ±10% | per connection | GOAWAY, then the grace |
 | `max_connection_idle` | 30 min | per connection, no open stream | GOAWAY |
 | `max_connection_age_grace` | 600 s | a GOAWAY'd connection's in-flight streams | connection dropped |
@@ -288,6 +302,8 @@ ERROR … Grpc:  Request failed    method=GetBlock code=DataLoss error="…"
   longest), a stalled connection closed (`stalled`) or a connection refused at a
   cap (`conns_refused`); problem fields appear only when non-zero. Nothing
   served and nothing held = no line.
+- While more than 25% of the stream, subscription or connection cap is held, the
+  summary is WARN `High load` instead, with each such cap as `used/max`.
 - The window's first failure is logged as it happens (ERROR `Request failed`:
   `method`, `code`, the `error` message the client got), and its first
   refusal other than admission (WARN `Request unavailable`); the rest are only

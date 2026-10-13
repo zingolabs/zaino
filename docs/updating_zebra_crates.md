@@ -1,7 +1,8 @@
 # Updating Zebra
 
-Zaino's validator path links no Zebra crate. `zaino-source` fetches each block by
-hash as consensus bytes (`getblock <hash> 0`), splits the header with
+Zaino's validator path links no Zebra crate. `zaino-source` fetches each block as
+consensus bytes, over JSON-RPC (`getblock <hash> 0`) or, with
+`validator_client = "grpc"`, the node's indexer gRPC. It splits the header with
 `zaino_primitives::types::HeaderBytes` and decodes the transactions with
 librustzcash (`zcash_primitives`'s `CompressedTransaction`), and it parses every
 other JSON-RPC result into `zaino-primitives` types in
@@ -37,10 +38,6 @@ path to a sibling checkout while a change spans several repositories. Cargo hono
 `[patch.crates-io]` only in the workspace root. Patching one of these crates usually
 forces patching the others with it, so that every crate agrees on one version of the
 types that cross between them. Comment each patch with why it is not a published
-version and when to drop it.
-
-The current patch set is the lazy point-decompression stack. It pins `orchard`,
-`sapling-crypto`, `incrementalmerkletree` and the librustzcash crates to forks by git
-rev; the `zebra-*` workspace dependencies point at a zebra fork built on the same
-forks, so both sides agree on one version of each type. Each entry is dropped once
-its change is released.
+version and when to drop it. The current set, and why each entry exists, is in those
+comments. The `zebra-*` workspace dependencies point at a zebra fork built on the same
+forks, so both sides agree on one version of each type.

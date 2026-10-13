@@ -288,7 +288,7 @@ mod tests {
         }
     }
 
-    /// G1, R12: no height named = the snapshot's tip; a height named = that index's own durable
+    /// G1, zingolib #2835: no height named = snapshot's tip; height named = that index's durable
     /// - Views hold 0..=3, snapshot serves 2 (root snapshot in bulk sync: views ahead of its tip);
     ///   validator 0 holds 2, one tx of ours relayed
     /// - `GetLatestBlock`, `GetLatestTreeState`, `GetLightdInfo.blockHeight` = 2

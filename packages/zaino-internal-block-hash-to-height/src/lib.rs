@@ -1,15 +1,4 @@
-//! Block hash → height
-//!
-//! # Data structure: one point-lookup map on the persistence port (`zaino_persistence`)
-//!
-//! ```text
-//! by_hash   hash 32 (protocol byte order) → height u32 BE      scope 0: read whole, never scanned
-//! ```
-//!
-//! - insert only: a finalised block's height never changes (no tombstones, no versions)
-//! - one block = one row ([`fold`]); non-final blocks = `zaino-nfs` layers, read through a
-//!   snapshot's `OverlayView`
-//! - segments, merges, filters, manifest, crash safety = the engine's
+#![doc = include_str!("../usage.md")]
 
 use zaino_persistence::Tables;
 

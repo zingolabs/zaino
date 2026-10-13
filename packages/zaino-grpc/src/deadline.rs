@@ -240,7 +240,7 @@ mod tests {
         Response::new(Body::new(StreamBody::new(Box::pin(frames))))
     }
 
-    /// Z#1537, R9 (paused clock, idle = 300 s):
+    /// Z#1537 (paused clock, idle = 300 s):
     /// - no total cap: 1,000 s of a record every 100 s ends `OK`
     /// - `grpc-timeout` 250 s cuts the same stream after two records, `DEADLINE_EXCEEDED`
     /// - nothing to send for 300 s = `UNAVAILABLE`; no idle bound (a subscription) = never cut

@@ -434,7 +434,7 @@ mod tests {
     use crate::service::Routes;
     use crate::testing::{indexed, routes, snapshot, MAINNET};
 
-    /// R11, W4: a wallet on an h2 >= 0.4.16 client (charges every DATA frame < 256 B against a
+    /// Wallet on an h2 >= 0.4.16 client (charges every DATA frame < 256 B against a
     /// connection budget until read: `GOAWAY too_many_data_frames`, lightwalletd #593), reading
     /// only after the server filled its window, over the real transport:
     /// - 10,000 UTXOs of one address (~100 B each) stream whole, height order

@@ -1,9 +1,11 @@
 # Zaino
 
-Zaino is a Zcash indexer written in Rust. `zainod` fetches blocks from a
-[Zebra](https://github.com/ZcashFoundation/zebra) node over its JSON-RPC
-interface, builds its own indexes from them, and serves light wallets over the
-lightwalletd-compatible `CompactTxStreamer` gRPC service.
+Zaino is a Zcash indexer written in Rust. `zainod` follows the chain from one or more trusted
+[Zebra](https://github.com/ZcashFoundation/zebra) validators (JSON-RPC, or blocks over their
+indexer gRPC) and, optionally, Zcash p2p peers
+([architecture §3](./docs/architecture.md#3-sources-and-what-each-is-trusted-for)), builds its
+own indexes, and serves light wallets over the lightwalletd-compatible `CompactTxStreamer` gRPC
+service.
 
 Validation stays in Zebra and indexing moves to Zaino: the two run as separate
 processes, on separate hosts if you like, and a new index needs no change to the
@@ -25,6 +27,7 @@ packages/                          Cargo workspace members
   # serving
   zaino-grpc/                        Lightwalletd-compatible gRPC over snapshots, chain view, validators
   zaino-chainview/                   One view over N validators: verified tip, mempool, submission
+  zaino-snapshot/                    One published snapshot of everything served, /statusz report
   # indexing
   zaino-nfs/                         Non-finalized state: fetch, fold at the tip, final stream, snapshots
   zaino-header-chain/                Validated Header tree (by a trusted validator or by Zaino)
@@ -36,8 +39,9 @@ packages/                          Cargo workspace members
   zaino-index-transparent-address/   Transparent address → receives and their spends (two maps)
   zaino-persistence/                 Persistence port + DiskEngine (files for sequences, LSM for maps)
   # validator source
-  zaino-source/                      `ChainDataSource` + the Zebra JSON-RPC adapter, block decode
-  zaino-peers/                       zebra-network peer set: mempool sightings + submission pushes
+  zaino-source/                      `ChainDataSource` + its JSON-RPC and indexer-gRPC clients, block decode
+  zaino-traffic/                     One scheduler for every request to validators and peers
+  zaino-peers/                       zebra-network peer set: headers, blocks, mempool listings, submission
   # vocabulary
   zaino-primitives/                  Chain-level domain types and protocol constants
   zaino-proto/                       Lightwallet protocol buffers
@@ -49,7 +53,7 @@ live-tests/                        Standalone workspace, run on the ztest Kubern
   zaino-testutils/                   Shared test utilities
   sync/                              Mainnet sync profiles (own workspace, `ztest sync`)
 
-docs/                              Operator docs, design notes, release process
+docs/                              Operator docs, architecture, RPC API, testing
 tools/workbench/                   Repo guards run by `makers lint`
 scripts/                           ztest chain-fixture producer
 nix/, flake.nix                    Nix build and dev shell
@@ -65,50 +69,21 @@ Dockerfile                         Container image
 CONTEXT.md                         Glossary of canonical terms
 CLAUDE.md, AGENTS.md               AI-contributor guidelines
 CONTRIBUTING.md                    Human-contributor guide
+RELEASING.md                       Release process
 ```
 
-## Network exposure
-
-zainod serves one interface, the gRPC server on `[serve] grpc_listen_address`:
-plaintext HTTP/2 unless `[serve.tls]` names a certificate pair, in which case it
-terminates TLS itself (rustls). Expose it beyond a trusted network only with
-`[serve.tls]` or behind a TLS-terminating proxy. The validator connection is plain
-HTTP JSON-RPC to each `[[trusted_validators]] jsonrpc_address`.
-
-The optional admin listener (`[metrics] listen_address`) serves `/metrics`, `/livez`,
-`/readyz` and `/statusz` without authentication or encryption. It publishes the
-chain tip, sync progress, request volumes and process memory. zainod warns at
-startup when it binds a non-private address; restrict it to loopback, a private
-interface, or a network only the scraper reaches (e.g. with the host firewall). See
-[`zainod`'s guide](./packages/zainod/usage.md).
-
-## Container image
-
-`Dockerfile`: `rust:<pin>` build → `debian-slim` runtime, non-root `container_user`.
-
-| Build arg        | Values                                    | Default   |
-| ---------------- | ----------------------------------------- | --------- |
-| `CARGO_PROFILE`  | `release`, `profiling` (+ line tables & frame pointers, for sampling profilers) | `release` |
-| `CARGO_FEATURES` | comma-separated zainod features, e.g. `snapshot` (also installs `aria2`) | empty     |
+## Quick start
 
 ```sh
-docker build -t zainod .
-RUSTFLAGS="-C force-frame-pointers=yes" cargo build --profile profiling --bin zainod  # local profiling build
+cargo run --release -p zainod -- generate-config   # then edit; every key: docs/example_configs/zainod.toml
+cargo run --release -p zainod -- start
+cargo nextest run --workspace                      # unit tests, no validator
 ```
-
-## Running tests
-
-```sh
-cargo nextest run --workspace                     # packages/*, no validator
-cd live-tests && ztest run -p clientless -p e2e   # live suites, on a ztest cluster
-```
-
-Cluster setup and the sync profiles: [docs/testing.md](./docs/testing.md).
 
 ## Documentation
 
 Operating it:
-- [Running zainod](./docs/running.md): install, configure, a local Zebra + Zaino pair.
+- [Running zainod](./docs/running.md): install, configure, network exposure, a local Zebra + Zaino pair.
 - [RPC API](./docs/rpc_api.md): the methods zainod serves, where each is answered from, and the status codes a client must tell apart.
 - [Docker](./docs/docker.md): the container image.
 - [Testing](./docs/testing.md): unit tests, live tests, sync profiles, ztest cluster setup.
@@ -129,7 +104,7 @@ Releasing it:
 Working *in* a crate: its scope, its invariants, and the mistakes its design
 prevents.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary and protocol constants, and why it depends on nothing.
-- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `ZebraRpcAdapter`, one attempt per call over one validator's link.
+- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and its two clients, `ZcashLegacyRpcClient` (JSON-RPC) and `ZcashGrpcClient` (indexer gRPC).
 - [`zaino-traffic`](./packages/zaino-traffic/usage.md): one scheduler for every request to trusted validators and peers — request classes with reserved permits, one hedge / retry / blame policy under one budget, `report` benching exactly the member that misanswered, and every trusted validator's poll.
 - [`zaino-chainview`](./packages/zaino-chainview/usage.md): one view over N trusted validators — the two-layer model, the proof-of-work verified tip and who holds it, randomized submission, and why `ours` is the exception.
 - [`zaino-peers`](./packages/zaino-peers/usage.md): zebra-network embedded as Zaino's p2p layer — headers and blocks (checked by proof of work and merkle root, so the tip follows the network while every trusted validator is down), each peer's own mempool listing (the chain view's peer quorum: the mempool keeps serving while every trusted validator is down), attributed block announcements (finality on peers' word) and the isolated per-attempt submission push; advertises no services.
@@ -145,13 +120,12 @@ prevents.
 - [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs as two pure projections, why the fold performs no lookups, and what an empty result means.
 - [`zaino-proto`](./packages/zaino-proto/README.md): the vendored lightwallet protocol, Zebra's indexer protocol, and the gRPC frame helpers.
 - [`zaino-grpc`](./packages/zaino-grpc/usage.md): the index/validator split, why the router writes bytes rather than messages, and which status code a client must read as "retry".
-- [`zainod`](./packages/zainod/usage.md): `zainod verify` (the read-only page-checksum scrub, its JSON report and exit status), the failure policy, logging, and the admin listener (`/metrics`, `/livez`).
+- [`zainod`](./packages/zainod/usage.md): the admin listener and its states (`/readyz`, `/statusz`, `/metrics`), operator hold, systemd, index snapshots, `zainod verify`, the failure policy and logging.
 
 ## Security disclosure
 
-Report a time-sensitive security issue on Matrix (contacts in
-[CONTRIBUTING.md](./CONTRIBUTING.md)); otherwise email
-zingodisclosure@proton.me.
+Report security issues privately, never in a public issue: see
+[CONTRIBUTING.md](./CONTRIBUTING.md#security-issues).
 
 ## License
 

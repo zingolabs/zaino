@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
     }
 
-    /// W4 over a snapshot served at 5: a range reaching past the tip streams every block to the tip
+    /// Snapshot served at 5: a range reaching past the tip streams every block to the tip
     /// in walk order, then `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on
     /// one); a first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
     #[tokio::test]

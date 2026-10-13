@@ -36,7 +36,7 @@ in `fees` and read back for a held height.
 
 ## Wiring
 
-```rust
+```rust,ignore
 use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 use zaino_sync::FeeSink;

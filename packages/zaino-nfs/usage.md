@@ -101,9 +101,4 @@ folds and publishes pair layers with exactly the tips the core knows.
 - `core/fire_drills.rs`: one planted bug per `check()` assertion and precondition.
 - `tests.rs`: `FinalFollower` + the five real writers + the NFS, end to end.
 
-```bash
-# heavy run: at least 3 minutes after any change to this crate
-end=$((SECONDS + 180)); while [ $SECONDS -lt $end ]; do
-  PROPTEST_CASES=1000 cargo test -p zaino-nfs || break
-done
-```
+Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

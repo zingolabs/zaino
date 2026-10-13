@@ -407,7 +407,7 @@ mod tests {
         assert_eq!(capped.address_utxos, list.address_utxos[..1]);
 
         // GetAddressUtxosStream: same records, one framed reply each (ready replies joined into
-        // one data frame: R11)
+        // one data frame: lightwalletd #593)
         let response = router
             .call(framed_request(
                 path::GET_ADDRESS_UTXOS_STREAM,

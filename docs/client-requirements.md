@@ -8,8 +8,7 @@ matter:
 - **pepper-sync**: `zingolib/pepper-sync`, with all traffic going through
   `client/fetch.rs`. It backs zingolib and Zingo mobile.
 
-Line references point into the right function at the revision audited. They are
-not stable coordinates.
+References name a function or file, not a line.
 
 [rpc_api.md](./rpc_api.md) and [architecture §1](./architecture.md#1-who-owns-what)
 say where Zaino answers each method from. This document is the other half: what
@@ -23,7 +22,7 @@ answering.
 | `GetLatestBlock`                               | every loop iteration                                                          | once per session                             |
 | `GetBlockRange`                                | per batch, dominant                                                           | per scan range, dominant                     |
 | `GetBlock`                                     | not called                                                                    | reorg check and backfill                     |
-| `GetTreeState`                                 | **1:1 with every `GetBlockRange`**, at `scan_range.start - 1` (`sync.rs:381`) | birthday and fallbacks                       |
+| `GetTreeState`                                 | **1:1 with every `GetBlockRange`**, at `scan_range.start - 1` (`download_chain_state`) | birthday and fallbacks                       |
 | `GetSubtreeRoots`                              | three pools at startup, ironwood included                                     | three pools per session, two passes each     |
 | `GetTransaction`                               | not called                                                                    | per scan target                              |
 | `GetTaddressTransactions`                      | not called                                                                    | not called (it uses `GetTaddressTxids`)      |
@@ -66,14 +65,16 @@ and *"please use GetTaddressTransactions instead"*.
 **Ironwood tree state must be served correctly or wallets silently mis-sync.**
 Both clients map an empty `TreeState.{orchard,ironwood}_tree` to an empty
 commitment tree with no error and no warning
-(`zcash_client_backend/src/proto.rs:404,420-444`; `pepper-sync/src/witness.rs`),
-which is indistinguishable from a genuinely pre-activation height. A post-NU6.3
-server that omits the field therefore produces a *wrong* ironwood tree in the
-wallet rather than a diagnosable failure. `GetSubtreeRoots` has the same
-tolerance on ironwood, where the result is swallowed into `Vec::new()`. For this
-reason the tree-state index emits all three fields at every height, always as
-the serialization of the real tree, which is `000000` for an empty one. It never
-emits `""`.
+(`TreeState::orchard_tree` / `ironwood_tree` in `zcash_client_backend/src/proto.rs`;
+`pepper-sync/src/witness.rs`), which is indistinguishable from a genuinely
+pre-activation height. A post-NU6.3 server that omits the field therefore
+produces a *wrong* ironwood tree in the wallet rather than a diagnosable failure.
+`GetSubtreeRoots` has the same tolerance on ironwood, where the result is
+swallowed into `Vec::new()`. For this reason Zaino serves each pool from its
+activation on as the serialization of the real tree, which is `000000` for an
+empty one, and never `""` for an active pool; `""` means only a height below the
+pool's activation
+([tree-state guide](../packages/zaino-index-tree-state/usage.md#serving)).
 
 **The wire format is a `CommitmentTree`, not a frontier.**
 `TreeState.{sapling,orchard,ironwood}_tree` is the hex of
@@ -119,7 +120,7 @@ reader for the field.
 Transparent sync today leaks the wallet. pepper-sync discovers transparent funds
 by walking the BIP-44 derivation path and sending **each derived address to the
 server**, one per round trip, until `gap_limit` consecutive addresses come back
-empty (`pepper-sync/src/sync/transparent.rs:125-154`). That is 20 round trips at
+empty (`address_discovery` in `pepper-sync/src/sync/transparent.rs`). That is 20 round trips at
 minimum for a default single-account wallet and 60 in recovery, strictly serial,
 and re-paid **every session**, because the trailing gap addresses are truncated
 rather than persisted. The server therefore learns every address a wallet
@@ -130,13 +131,16 @@ The protocol defines the private alternative: request the `TRANSPARENT` pool in
 `BlockRange.poolTypes` and match scripts locally, disclosing nothing
 (lightwallet-protocol v0.4.0, PR #1; lightwalletd PR #534).
 
-**No client consumes it yet, for two independent reasons.** Both clients send
-`pool_types: vec![]`. And librustzcash's compact scanner hardcodes the
-transparent-output argument to `vec![]` and gates the push on
-`has_sapling || has_orchard || has_ironwood` with no transparent term
-(`scanning/compact.rs:526,529`), so a purely transparent transaction is dropped
-**entirely**, not merely stripped of its transparent fields. This is tracked as
-librustzcash #2187 and #2395.
+**Adoption is partial.** pepper-sync (zingolib `dev`) requests `TRANSPARENT`
+with the shielded pools above its transparent scan floor (`get_block_range` in
+`client/fetch.rs`). librustzcash's sync still sends `pool_types: vec![]`
+(`download_blocks` in `sync.rs`). Its compact scanner in the
+`zcash_client_backend` 0.24.0 release hardcodes the transparent-output argument
+to `vec![]` and gates the push on `has_sapling || has_orchard || has_ironwood`
+with no transparent term (`scan_block_with_runners` in `scanning/compact.rs`),
+so a purely transparent transaction is dropped **entirely**, not merely stripped
+of its transparent fields (librustzcash #2187, #2395). librustzcash `main` scans
+transparent data there.
 
 Zaino serves the private path, and it is cheap for us to do so. `CompactTxIn` is
 `{prevoutTxid, prevoutIndex}` with **no prevout value**, a deliberate omission

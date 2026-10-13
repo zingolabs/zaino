@@ -40,7 +40,7 @@ pub(crate) const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 "#;
 
 /// Zebra JSON-RPC endpoint Zaino trusts: headers for the verified chain, mempool admission (with
-/// fees), mined-transaction lookups; every entry equal
+/// fees), mined-transaction lookups; no vote (`priority` = who is asked first)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct TrustedValidatorConfig {

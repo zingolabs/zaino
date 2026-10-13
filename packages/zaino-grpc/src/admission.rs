@@ -56,7 +56,7 @@ pub struct Load {
 }
 
 /// The work pool now: `limit` = the adaptive one (`max_streams` when off), `refused_per_s` decays
-/// over ~10 s, `overloaded` = ≥ 10 % of work refused for 5 min (`adaptive.rs` [`Overload`])
+/// over ~10 s, `overloaded` = ≥ 10 % of work refused for 5 min (`adaptive.rs` `Overload`)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LoadReport {
     pub limit: usize,

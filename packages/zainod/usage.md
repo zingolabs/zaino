@@ -1,19 +1,21 @@
 # `zainod` — usage
 
-The daemon binary: its offline disk check, failure policy, logging and admin listener.
-Configuration and running the daemon are in [`docs/running.md`](../../docs/running.md).
+The daemon binary: its admin listener and states, operator hold, systemd, index snapshot,
+offline disk check, failure policy and logging. Configuration, running the daemon and network
+exposure are in [`docs/running.md`](../../docs/running.md).
 
 ## The admin listener
 
 With `[metrics] listen_address` set, zainod serves an admin listener on
 its own thread and current-thread runtime. A probe answered from a saturated serving runtime
-would measure that runtime's queue, and a timed-out liveness probe gets the pod killed.
+would measure that runtime's queue, and a timed-out liveness probe gets the pod killed. Who
+may reach it: [running.md: Network exposure](../../docs/running.md#network-exposure).
 
 | Path       | Answers                                | Fails when                     |
 | ---------- | -------------------------------------- | ------------------------------ |
 | `/metrics` | Prometheus exposition, process metrics | render panic (`500`)           |
 | `/livez`   | the serving runtime still schedules    | no heartbeat for 30s (`503`)   |
-| `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` (`503`) |
+| `/readyz`  | `{"state", "detail"}`                  | `state` other than `serving` or `degraded` (`503`) |
 | `/statusz` | one JSON snapshot (below)              | never (readiness in the body)  |
 
 `/readyz`, `/statusz` and the `/metrics` gauges each read **one** load of the global snapshot
@@ -50,14 +52,10 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 - `detail` is a short sentence saying why, set only when `down` or `degraded`: `No trusted
   validator reachable`, `No trusted validator holds the verified tip`, `Runtime stalled` or
   `Overloaded` (a degraded node only ever shows one of the first two).
-- `Overloaded` is a backstop for a node persistently over capacity. Admission already sheds load
-  within seconds; this only takes the node out of a load balancer:
-  - It turns on once ≥ 10% of gRPC work requests have been refused, at ≥ 1 refusal/s, for
-    5 minutes straight. The share is averaged over 60 s, so a brief dip does not reset the clock.
-  - It turns off once the share stays under 2% for 5 minutes.
-  - Below 10%, refusals are the adaptive limit trimming bursts, and the node is still serving.
-    The 1/s floor keeps a near-idle node from flipping on a handful of refusals. The gap between
-    10% and 2%, each held for 5 minutes, stops it flapping as traffic returns.
+- `Overloaded` is a backstop for a node persistently over capacity: admission already sheds
+  bursts within seconds, and this only takes the node out of a load balancer. It follows the gRPC
+  work pool's `overloaded` flag (thresholds in
+  [zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack)).
 - `progress` is set only while `provisioning` or `syncing`, as `{done, total, unit, rate}`:
   - A bootstrap reports `unit` `byte`, with `rate` in bytes/s while downloading.
   - Syncing reports `unit` `block`:
@@ -71,8 +69,35 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 - `notes` holds one sentence per raised alarm (partition, eclipse, finality paused, validators
   on a stale tip, releases reaching end of service within a week), or `[]` when none.
 
+```json
+{
+  "version": "0.11.0-alpha.2", "network": "main", "uptime_s": 5321,
+  "ready": false, "state": "syncing", "detail": null,
+  "progress": { "done": 3503023, "total": 3506659, "unit": "block", "rate": 412.5 },
+  "notes": [],
+  "load": { "limit": 310, "in_flight": 290, "refused_per_s": 0.0, "overloaded": false },
+  "grpc": { "sent_bytes": 1048576 },
+  "disk": { "compact_block": { "size_bytes": 4100000000, "tables": { "<subdirectory>": 4099000000 } } },
+  "seq": 18234,
+  "tips": {
+    "best": { "height": 3506659, "hash": "0000…" }, "final": { "height": 3506559, "hash": "0000…" },
+    "served": { "height": 3503023, "hash": "0000…" }, "held_by": 2, "configured": 2, "synced": false
+  },
+  "handed": 3503030,
+  "indexes": [{ "name": "compact_block", "enabled": true, "durable": 3502900 }],
+  "validators": [{
+    "address": "127.0.0.1:8232", "state": "live", "agreement": "agreed", "height": 3506659,
+    "stale_blocks": 0, "latency_ms": 4, "failures": 0, "observed_s_ago": 1, "streaming": true,
+    "release": null, "peers": []
+  }],
+  "alarms": { "partitioned": false, "eclipsed": false, "finality_paused": false, "stale": [], "ending": [] },
+  "mempool": { "transactions": 12, "verified": 12, "quorum": 0, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
+  "forks": []
+}
+```
+
 `/statusz` = zainod's process fields beside the snapshot's report (`zaino_snapshot::Report`,
-flattened; shape in [`docs/running.md`](../../docs/running.md#status)): `version`, `network`,
+flattened): `version`, `network`,
 `uptime_s`, `ready`, `state`, `progress`, `detail`, `notes`, `load` (the gRPC work pool:
 `limit` = work streams admitted at once now, latency-adaptive with `[grpc] adaptive_streams`,
 `in_flight`, `refused_per_s` decaying over ~10 s, `overloaded`), `grpc.sent_bytes` (response body bytes served,
@@ -91,7 +116,7 @@ protocol and `end_of_service` as `{"status": "at", height, estimated_unix, block
 = releases halting within a week), `mempool` (`transactions`, `verified`, `quorum`, `ours_unverified`,
 `fully_spread`, `trusted_readers`), `forks` (each side branch: `from`, `tip`, `cumulative_work`
 as a decimal string, `folded`). Bulk sync moves `durable` per batch; at the tip, each final block
-moves it by one. Traffic data: keep the listener private.
+moves it by one.
 
 ## Operator hold
 
@@ -133,24 +158,18 @@ closes the gRPC listener at once, so a planned stop is `zainod hold`, then `syst
 
 ## Public health on the gRPC listener
 
-The gRPC listener also answers two plain `GET`s, over HTTPS/1.1 or h2. TLS offers ALPN `h2` and
-`http/1.1`, with the same certificate and the same per-client connection cap. These paths are
-for load-balancer monitors and public dashboards, and a `200` from them also proves TLS and the
-listener are up:
+The gRPC listener also answers two plain `GET`s, over HTTPS/1.1 or h2, for load-balancer
+monitors and public dashboards; a `200` from them also proves TLS and the listener are up. Rate
+limits and status codes: [zaino-grpc: serve stack](../zaino-grpc/usage.md#serve-stack).
 
 | Path | Answers |
 |---|---|
 | `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving` or `degraded`, else `503` |
 | `/status` | the public projection below, always `200` |
 
-- The listener binds at process start, before a snapshot bootstrap or boot, so these paths
-  answer `provisioning` (with progress) or `down` from the first second. Until boot finishes,
-  every gRPC method answers `UNAVAILABLE`. A port already in use fails startup at once.
-- They are answered before admission, so they never take a gRPC work permit.
-- Each connection may send 10 at once and regains one per second; past that the answer is
-  `429`. A client is therefore bounded by `max_connections_per_ip` × that.
-- A non-`GET` to either path is `405`. Any other path over HTTP/1.x is `404`, because gRPC
-  needs h2.
+The listener binds at process start, before a snapshot bootstrap or boot, so these paths
+answer `provisioning` (with progress) or `down` from the first second. Until boot finishes,
+every gRPC method answers `UNAVAILABLE`. A port already in use fails startup at once.
 
 `/status` is safe for the open internet. It carries no validator address, peer, disk, mempool
 or tailnet name:
@@ -209,8 +228,6 @@ Each durable commit records `zaino_store_commit_seconds` and `zaino_store_commit
 - A supervised task on the serving runtime republishes the heartbeat every 100ms.
 - The listener binds before the recorder installs, so a bind failure fails startup.
 - At most 32 admin connections are served at once; the rest wait in the accept backlog.
-- A non-private `listen_address` logs a warning at startup, because `/metrics` is
-  unauthenticated.
 - The build gauge is `zaino_build_info`, with the version as a label.
 
 ## systemd
@@ -345,19 +362,22 @@ network or format included).
   "clean": true,
   "compact_block": {
     "heights": 4,
-    "files": [
-      { "path": "blocks.dat", "committed_bytes": 1234, "orphaned_bytes": 0, "lost": false, "bad_sums": false, "bad_pages": [] },
-      { "path": "offsets.idx", … }
+    "units": [
+      { "name": "blocks.dat", "committed_bytes": 1234, "orphaned_bytes": 0, "lost": false, "bad_sums": false, "bad_pages": [] },
+      { "name": "blocks.idx", … }
     ]
   },
-  "block_hash": { "heights": 4, "files": [ … by_hash/*.seg ] },
-  "tree_state": { "heights": 4, "files": [ … heights.idx, then per pool l00.dat … l31.dat, subtrees.dat ] },
-  "transparent_address": { "heights": 4, "files": [ … receives/*.seg, spent/*.seg ] }
+  "value_balance": { "heights": 4, "units": [ … ] },
+  "block_hash": { "heights": 4, "units": [ … ] },
+  "tree_state": { "heights": 4, "units": [ … ] },
+  "transparent_address": null
 }
 ```
 
-`bad_pages` = 4 KiB page indexes whose CRC disagrees; `bad_sums` = the `.crc` file no longer matches the digest the manifest committed. A corrupt or lost file
-means delete that index's directory and resync it.
+`heights` = committed tip + 1; `units` = one entry per sealed file; `bad_pages` = 4 KiB page
+indexes whose CRC disagrees; `bad_sums` = the `.crc` file no longer matches the digest the
+manifest committed; `null` = index disabled. A corrupt or lost file means delete that index's
+directory and resync it.
 
 ## Failure policy
 
@@ -370,10 +390,13 @@ zainod dies rather than serve from a state it cannot vouch for
   the index and its directory: `<index> index commit failed: disk <dir> full`,
   or `… failed at <dir>: <error>`
   ([zaino-sync: Failure](../zaino-sync/usage.md#failure-panic-never-err))
-- any other task that ends first (the NFS, chainview poller, gRPC), cleanly or
-  not, cancels the rest and `zainod start` exits 1 (`IndexerError::TaskEnded` or
-  the task's own error, e.g. `NfsError::Diverged` = an index committed off the
-  verified chain: resync it)
+- any other task that ends first (the final-stream follower, the NFS, the snapshot
+  publisher, gRPC), cleanly or not, cancels the rest and `zainod start` exits 1
+  (`IndexerError::TaskEnded` or the task's own error, e.g. `FollowError::Diverged`
+  = the next final block does not extend an index's stored tip, as for a directory
+  from another chain: delete that index's directory to resync it)
+- a trusted validator going away never stops zainod: it is retried until it answers
+- SIGINT or SIGTERM: each index commits what it holds, then exit 0
 - there is no in-process restart, so run it under a service manager that
   restarts it
 - an index directory built for another network or format, shorter than its

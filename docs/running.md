@@ -1,9 +1,11 @@
 # Running zainod
 
-`zainod` indexes the Zcash chain from a Zebra node over JSON-RPC and serves it to
-light wallets over lightwalletd-compatible gRPC. The validator's JSON-RPC endpoint is
-the only link between the two, so they can run on separate hosts. For the container
-image see [docker.md](./docker.md), and for the methods zainod answers see
+`zainod` indexes the Zcash chain from one or more trusted Zebra validators and serves it to
+light wallets over lightwalletd-compatible gRPC. It reaches each validator over JSON-RPC (with
+`validator_client = "grpc"`, blocks come over the validator's indexer gRPC instead), and with
+`[p2p]` on it also takes checked headers, blocks and mempool listings from Zcash peers
+([architecture §2–3](./architecture.md#2-the-map)). Validators can run on separate hosts. For
+the container image see [docker.md](./docker.md), and for the methods zainod answers see
 [rpc_api.md](./rpc_api.md).
 
 ## Requirements
@@ -20,11 +22,13 @@ zainod generate-config                   # writes every key at its default
 zainod start                             # reads $XDG_CONFIG_HOME/zaino/zainod.toml
 zainod start -c /path/to/zainod.toml
 zainod verify -c /path/to/zainod.toml    # read-only page-checksum scrub
+zainod hold -c /path/to/zainod.toml      # out of rotation until `zainod resume`
 ```
 
 `generate-config` writes to the default config path unless given `-o <FILE>`.
-`verify` is safe to run beside a live daemon, and its report and exit codes are
-described in [`packages/zainod/usage.md`](../packages/zainod/usage.md#zainod-verify).
+[`verify`](../packages/zainod/usage.md#zainod-verify) is safe beside a live daemon;
+[`hold` / `resume`](../packages/zainod/usage.md#operator-hold) drain a node behind a load
+balancer.
 
 ## Configuration
 
@@ -33,30 +37,25 @@ prefixed `ZAINO_CONFIG_` win, with `__` separating nested keys, so
 `ZAINO_CONFIG_SYNC__CONCURRENCY=64` sets `[sync] concurrency`. The TOML
 file comes next, then the built-in defaults. An unknown key fails the load.
 
-[`example_configs/zainod.toml`](./example_configs/zainod.toml) annotates every key and
-its default. In outline:
+[`example_configs/zainod.toml`](./example_configs/zainod.toml) documents every key and its
+default. In outline:
 
-| Section                  | What it configures                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `network`                | `mainnet` (default), `testnet` or `regtest`. It is declared rather than read off the validator, because Zebra on regtest reports its chain as `"test"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `[metrics]`              | The admin listener serving Prometheus `/metrics`, `/livez`, `/readyz` and `/statusz`: `listen_address` (unset by default, which disables it; `0.0.0.0` = every interface, so restrict who reaches it with the host firewall).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `[[trusted_validators]]` | The validators zainod trusts, at least one, all equal. Each: `jsonrpc_address` (default `127.0.0.1:8232`) and credentials, either `cookie_path` or `user` and `password` (a cookie path takes precedence); `connect_timeout_secs` (2) and `read_timeout_secs` (30), the read timeout counting silence, not total duration, so a large block over a slow link completes; the link budget, `max_connections` (32, at least 5: one for the poll, which never waits behind other requests, one reserved for each lane — control (submissions, headers), interactive (tip blocks, wallet lookups, mempool bytes), bulk (block sync) — and one shared; the rest go to whichever lane waits, control first, a lane's reserve never) and `max_mib_per_sec` (unlimited when unset; response bytes are paced as they are read); `indexer_address`, zebrad's indexer gRPC (`indexer_listen_addr`), whose tip and mempool push streams wake polling at once while it slows to a 15 s reconcile (unset = poll every second); `[trusted_validators.indexer_tls]` for mutual TLS to that indexer, which zakurad requires on any non-loopback address (`ca_path` verifies the validator, `cert_path` and `key_path` are zainod's client certificate signed by the validator's `client_ca_file`, optional `server_name` defaults to the address's host; the files are read at boot, so an unreadable one fails boot; unset = plaintext); and `priority` (0): every request goes to the lowest tier with a validator that has room before any higher one (ours on the LAN = 0, a partner's across an ocean = 1: a lower tier takes overflow and hedges). One traffic balancer sends every request (polls, headers, blocks, lookups, submissions): tier first, then the least loaded; a slow answer is hedged to another validator, a failed one retried on the next validator (each asked once per round); a validator serving a block or header that fails its check is benched for 60 s (doubling). Their headers feed zainod's own header chain, checked against every consensus rule including proof of work; the tip is its most-work block, served while at least one of them holds it. One listing admits a mempool transaction; bulk sync spreads over all of them. There is no vote, so each added validator only adds failover: two is the first set that survives one being down. A validator down at boot or later is retried, never fatal. |
-| `[submission]`           | How `SendTransaction` reaches the network: each attempt goes to one trusted validator drawn at random, and an accepted transaction not seen beyond the validators it was sent to within `propagation_threshold_secs` (15) is sent through another, up to `max_attempts` (4). The wallet is answered at the first acceptance.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `[p2p]`                  | Zaino's own peers on the Zcash p2p network, off by default: `enabled` (false), `peer_target` (8), `initial_peers` (empty = the network's DNS seeders; regtest needs a list) and `cache_dir` (zebra-network's peer address cache, `$XDG_CACHE_HOME/zaino/peers`). On, peers also serve headers and blocks, checked by proof of work and merkle root: the tip keeps up while every trusted validator is down (reported `degraded`), and finality keeps moving once peers in more than 5 netgroups carry the chain with no difficulty collapse (else it waits for a trusted validator to return). Each outbound peer's mempool is polled every 5 s: a transaction more than 2/3 of them list, from more than 5 netgroups, is served once Zaino's consensus checks pass against the served UTXO set (needs `index.compact_block`), so the mempool and `SendTransaction` keep working with every trusted validator down; every transaction's spread also counts the peers listing it, and each `SendTransaction` attempt goes to a random peer (a different /16 each time) before one trusted validator gives the verdict, so no trusted validator is the first node to see a wallet's transaction. Zaino serves no peer and advertises no services. The network starts in the background and never delays boot.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `[serve]`                | `grpc_listen_address` (default `127.0.0.1:8137`), `max_address_rows` (100000) and `[serve.tls]` (`cert_path`, `key_path`; unset = plaintext HTTP/2, see [Network exposure](#network-exposure)).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `[grpc]`                 | Connection, stream and read caps, plus `trusted_proxies`. See [Network exposure](#network-exposure). `shutdown_grace_secs` (10), see [Stopping and restarts](#stopping-and-restarts).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `[sync]`                 | The one block-fetch pipeline every index shares: `finalised_depth` (1000), `concurrency` (32, block fetches and folds in flight ahead of the next one needed), and `queue_mib` (256, MiB of final blocks an index may lag the fetch before it throttles the pipeline). Each index commits when its own fixed write buffer fills, after the chain's final-tip block, and at shutdown. `[sync.lsm_store]`: the disk engine's map tables, `fanout` (16, same-tier segments merged into one) `merge_slots` (4, merges doing disk I/O at once across every index) and `merge_mib_per_sec` (200, read + written MiB/s those merges share, so commits and lookups keep the rest of the disk).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `[index.*]`              | One table per index, each with `enabled` (true) and `path`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `[snapshot]`             | Optional, `snapshot` builds only: `manifest` (URL) and `connections` (8 in total across archives, at most 16). Empty indexes are filled from their own archives before boot; see [zainod: Index snapshot](../packages/zainod/usage.md#index-snapshot).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Key or table             | For                                                                                         |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| `network`                | `mainnet` (default), `testnet` or `regtest`, declared rather than read off the validator    |
+| `validator_client`       | `legacy_rpc` (default, JSON-RPC for everything) or `grpc` (blocks over `indexer_address`)   |
+| `[metrics]`              | the admin listener's `listen_address` (unset = off; see [Network exposure](#network-exposure)) |
+| `[[trusted_validators]]` | one table per validator: address, credentials, timeouts, link budget, `indexer_address` and `[trusted_validators.indexer_tls]`, `priority` tier ([architecture §3](./architecture.md#3-sources-and-what-each-is-trusted-for)) |
+| `[submission]`           | when `SendTransaction` relays again ([architecture §6](./architecture.md#6-submission))    |
+| `[p2p]`                  | Zaino's own Zcash peers, off by default                                                     |
+| `[serve]`                | gRPC listen address, `max_address_rows`, `[serve.tls]`, `state_dir`, `hold_goaway_delay_secs` |
+| `[grpc]`                 | connection, stream and read caps, connection lifetimes, `trusted_proxies`, `shutdown_grace_secs` |
+| `[sync]`                 | the shared block-fetch pipeline; `[sync.lsm_store]` = the disk engine's merge budget       |
+| `[index.<name>]`         | `compact_block`, `block_hash`, `tree_state`, `transparent_address`: `enabled`, `path` (at least one on) |
+| `[snapshot]`             | `snapshot` builds only: fill empty indexes from an [index snapshot](../packages/zainod/usage.md#index-snapshot) |
 
-The index tables are `compact_block`, `block_hash`, `tree_state` and
-`transparent_address`. Each `path` defaults to `$XDG_CACHE_HOME/zaino/indexes/<index>`
-Any of them may be disabled (at least one must stay on): its
-methods then answer `UNIMPLEMENTED`, and `GetLightdInfo`'s height is the served snapshot tip
-either way. Compact-block's fee index, value-balance, has no table: it runs with
-compact-block, in a `value_balance` directory beside compact-block's `path`.
-`finalised_depth` below 1000 is refused on mainnet and testnet, because a reorg Zebra
-accepts could then reach blocks zainod has already written. Only regtest may set less.
+There is no vote among trusted validators: each one added adds failover, so two is the
+first set that survives one being down.
 
 ## A local Testnet pair
 
@@ -75,131 +74,58 @@ zainod then serves gRPC on `127.0.0.1:8137`.
 
 ## First launch
 
-Each index syncs from genesis, so a first run on Mainnet or Testnet takes a long
-time. Each index persists to its own directory and resumes from its own committed
-height on restart.
-
-**While an index is still building, every method it backs is refused with gRPC
-`UNAVAILABLE`.** The exceptions are `GetTreeState`, `GetBlock` and `GetBlockRange`
-(and its deprecated `GetBlockRangeNullifiers` alias), which answer any height their
-index has already committed, since that answer is final and will not change. A range
-reaching past the committed height is refused whole, never cut short. We refuse
-rather than proxy to the validator because a derived answer comes from Zaino's own
-index or not at all (see [architecture §1](./architecture.md#1-who-owns-what)).
-A client MUST read `UNAVAILABLE` as "retry later", never as "the chain ends here".
+Each index syncs from genesis (or from an [index snapshot](../packages/zainod/usage.md#index-snapshot)),
+so a first run on Mainnet or Testnet takes a long time, and resumes from its own committed height
+on restart. While it syncs, every request answers at the served tip, the lowest tip across the
+enabled indexes; only before the first snapshot is published do index methods answer
+`UNAVAILABLE` ([status codes](./rpc_api.md#status-codes-a-client-must-distinguish)).
 
 ## Disk
 
-Plan for the whole chain's worth of indexes on one local filesystem. We recommend
-NVMe, because the indexes are read through mmap. For Mainnet in September 2026 we
-estimate tens of GiB for compact blocks, about 27 GiB for the transparent-address
-index at roughly 190M outputs, and under 1 GiB for tree state. These figures are not
-yet measured on a full sync.
-
-Every index file carries page checksums. A corrupt page stops zainod on the first
-read that touches it. Run `zainod verify` to find the damaged index, then delete its
-directory and let it resync.
+Plan for the whole chain's worth of indexes on local storage, preferably NVMe, because the
+indexes are read through mmap. Every index file carries page checksums: run `zainod verify` to
+find a damaged index, then delete its directory and let it resync.
 
 ## Stopping and restarts
 
 Boot fails with exit code 1 if the gRPC address cannot be bound (checked first, before any
-snapshot download) or an index cannot open. No validator needs to answer for boot to finish.
-An index refuses to open when another zainod holds
-its directory lock, when it was built for another network or format, when its files
-are shorter than its `MANIFEST` seals (committed bytes were lost), or when its last
-page fails its checksum.
+snapshot download) or an index cannot open. No validator needs to answer for boot to finish,
+and a validator that goes away is retried, never fatal.
 
-Once booted, each stage (the index writers, the NFS that fetches and folds blocks, the
-snapshot publisher, the chainview pollers and the gRPC server) runs as its own task. SIGINT
-or SIGTERM cancels them all and waits for each index to commit what it holds before exiting
-0\. If the NFS, the publisher or the gRPC server stops on its own, it stops the rest the same
-way and zainod exits 1. While syncing, `GetLatestBlock` reports the served tip (`/statusz`
-`tips.served`, the lowest index tip), a request naming a height answers up to its own index's
-tip, and `/readyz` reports state `syncing` (and systemd's `READY=1` waits) until the served tip
-is the verified best and no trusted validator claims a tip past it. After a restart the NFS
-fetches up to `depth` non-finalized blocks again first, logged every 30 s as `Fetching non-finalized blocks`. A
-trusted validator going away never stops zainod: its poller retries until it answers.
+SIGINT or SIGTERM closes the gRPC listener at once, sends every open connection an HTTP/2
+GOAWAY, waits up to `[grpc] shutdown_grace_secs` for in-flight streams, lets each index commit
+what it holds, and exits 0. Behind a load balancer that routes by polling `/readyz`, run
+[`zainod hold`](../packages/zainod/usage.md#operator-hold) first, then stop. Under systemd, use
+[`Type=notify`](../packages/zainod/usage.md#systemd) so a restart waits until zainod serves again.
+
+zainod never restarts in-process and stops on any fault it cannot vouch past
+([failure policy](../packages/zainod/usage.md#failure-policy)), so run it under a service
+manager that restarts it with backoff. Opening an index reads only file lengths and one tail
+page per file, so a restarted zainod is serving again within seconds, after it fetches the
+non-finalized window again (logged as `Fetching non-finalized blocks`).
 
 ## Status
 
-Every request, probe and scrape reads one published snapshot of what zainod serves
-([architecture §8](./architecture.md#8-serving-one-snapshot)): the verified chain, the served
-tip, the indexes, the mempool and the validators, as of one moment. `/statusz` (admin
-listener) shows it:
-
-```json
-{
-  "version": "0.11.0-alpha.2", "network": "main", "uptime_s": 5321,
-  "ready": false, "state": "syncing", "detail": null,
-  "progress": { "done": 3503023, "total": 3506659, "unit": "block", "rate": 412.5 },
-  "notes": [],
-  "load": { "limit": 310, "in_flight": 290, "refused_per_s": 0.0, "overloaded": false },
-  "grpc": { "sent_bytes": 1048576 },
-  "disk": { "compact_block": { "size_bytes": 4100000000, "tables": { "<subdirectory>": 4099000000 } } },
-  "seq": 18234,
-  "tips": {
-    "best": { "height": 3506659, "hash": "0000…" }, "final": { "height": 3506559, "hash": "0000…" },
-    "served": { "height": 3503023, "hash": "0000…" }, "held_by": 2, "configured": 2, "synced": false
-  },
-  "handed": 3503030,
-  "indexes": [{ "name": "compact_block", "enabled": true, "durable": 3502900 }],
-  "validators": [{
-    "address": "127.0.0.1:8232", "state": "live", "agreement": "agreed", "height": 3506659,
-    "stale_blocks": 0, "latency_ms": 4, "failures": 0, "observed_s_ago": 1, "streaming": true,
-    "release": null, "peers": []
-  }],
-  "alarms": { "partitioned": false, "eclipsed": false, "finality_paused": false, "stale": [], "ending": [] },
-  "mempool": { "transactions": 12, "verified": 12, "quorum": 0, "ours_unverified": 0, "fully_spread": 10, "trusted_readers": 2 },
-  "forks": []
-}
-```
-
-- `state` = `provisioning`, `syncing`, `serving`, `degraded`, `held` or `down` (`ready` =
-  `serving` or `degraded`, the only states `/readyz` answers `200` for, with body
-  `{"state", "detail"}`); `detail` = why, only when `down` or `degraded`; `progress` = `{done, total, unit, rate}`, only while provisioning or
-  syncing; `notes` = one sentence per raised alarm. Rules:
-  [zainod: admin endpoints](../packages/zainod/usage.md)
-- `tips.best` = the header chain's most-work verified block; `served` = the block every
-  request answers at (`GetLatestBlock`); `held_by` of `configured` = trusted validators
-  holding `best` (0 = mempool and `GetLightdInfo` refused); `synced` = `served` reached
-  `best`
-- `handed` = the last block handed to the indexes (moves between their commits);
-  `indexes[].durable` = each index's committed height
-- `validators[]`: `state`, `latency_ms`, `failures` = the traffic balancer's; the rest = the
-  validator's last poll (`release.end_of_service` = `{"status": "at", height, estimated_unix, blocks_left}`, `not_enforced` or `unknown`)
-- `forks[]` = side branches of the verified chain (`cumulative_work` a decimal string)
-- Before boot: `ready`, `state` `provisioning` (or `down` while waiting on the first validator
-  answer), `progress`, `detail`, `notes` and the configured `indexes`, plus a `snapshot` object
-  while an index snapshot bootstraps
-
-A shutdown signal closes the gRPC listener at once. Every open connection is sent an HTTP/2
-GOAWAY, and zainod waits up to `[grpc] shutdown_grace_secs` for their in-flight streams before
-it exits. Behind a load balancer that routes by polling `/readyz`, take the node out of
-rotation first with `zainod hold`: `/readyz` fails with state `held` while zainod keeps serving
-for `[serve] hold_goaway_delay_secs`, then every open connection gets a GOAWAY, and the command
-returns. Stop it after that ([zainod: operator hold](../packages/zainod/usage.md#operator-hold)).
-Under systemd, see [zainod: systemd](../packages/zainod/usage.md#systemd) for `Type=notify`,
-which makes a restart wait until zainod is serving again.
-
-An index writer never stops with an error. A failure panics and aborts the process at
-once, and so does a page checksum mismatch. A failed write names the index and its
-directory, for example `compact_block index commit failed: disk /home/zaino/.cache/zaino/indexes/compact_block full`. Free space or fix the disk, then
-restart: every index resumes from its last committed batch.
-
-zainod never restarts in-process, so run it under a service manager that restarts it
-with backoff. Opening an index only reads file lengths and one tail page per file, so
-a restarted zainod is serving again within seconds.
-
-If the next final block a trusted validator serves does not extend an index's stored tip
-(a directory from another chain), zainod stops with `FollowError::Diverged` (naming the
-index). Delete that index's directory to resync it.
+The admin listener's `/livez`, `/readyz` and `/statusz`, and the public `/readyz` and `/status`
+on the gRPC listener, all read one published snapshot of what zainod serves
+([architecture §8](./architecture.md#8-serving-one-snapshot)). States, readiness rules and every
+field: [zainod: the admin listener](../packages/zainod/usage.md#the-admin-listener).
 
 ## Network exposure
 
-zainod reaches the validator over plain HTTP JSON-RPC. Its gRPC listener serves
-plaintext HTTP/2 unless `[serve.tls]` names a certificate pair, in which case zainod
-terminates TLS itself (rustls with the ring provider, ALPN `h2`). Expose the listener
-beyond a trusted network only with `[serve.tls]` or behind a TLS-terminating proxy.
+zainod listens on two interfaces:
+
+- **gRPC** (`[serve] grpc_listen_address`): plaintext HTTP/2 unless `[serve.tls]` names a
+  certificate pair, in which case zainod terminates TLS itself (rustls with the ring provider).
+  Expose it beyond a trusted network only with `[serve.tls]` or behind a
+  TLS-terminating proxy. Its public `/readyz` and `/status` are safe for the open internet.
+- **Admin** (`[metrics] listen_address`, off by default): `/metrics`, `/livez`, `/readyz` and
+  `/statusz` with no authentication or encryption, publishing the chain tip, sync progress,
+  traffic and validator addresses. zainod warns at startup when it binds a non-private address.
+  Keep it on loopback, a private interface, or a network only the scraper reaches.
+
+Outbound, each validator link is plain HTTP JSON-RPC, and its indexer gRPC is plaintext unless
+`[trusted_validators.indexer_tls]` sets up mutual TLS.
 
 ```toml
 [serve.tls]
@@ -207,35 +133,20 @@ cert_path = "/etc/zaino/fullchain.pem"   # chain, leaf first
 key_path = "/etc/zaino/key.pem"          # PKCS#8, PKCS#1 or SEC1
 ```
 
-- A missing, unreadable or mismatched pair fails startup.
-- Both files are checked every minute. A changed pair is swapped in for new connections
-  without a restart, so an ACME client renewing them in place needs no hook. A changed
-  pair that fails to load is logged and the previous one keeps serving.
-- A client that does not finish its handshake within 10 seconds is dropped.
-- With a proxy in front that sends a PROXY header, the header precedes the handshake.
+A bad pair fails startup. A renewed pair is picked up within a minute with no restart, so an
+ACME client renewing in place needs no hook; one that fails to load keeps the previous pair
+serving. The TLS details: [zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack).
 
-The `[grpc]` caps, listed with their defaults in the example config, all refuse
-rather than queue. A connection over a cap is closed at accept and a stream over one
-is answered `UNAVAILABLE` with a retry hint. The read lanes are the exception: an
-index read waits for a permit in its own lane.
+The `[grpc]` caps, listed with their defaults in the example config, refuse rather than
+queue, except the read lanes. How each cap, the accept loop and the health paths behave:
+[zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack).
 
 ### Stream time limits
 
-No stream has a cap on its total length. A full sync streams for as long as it keeps
-receiving, which on mainnet is far longer than any fixed limit would allow.
-
-- **The client's deadline.** A request carrying `grpc-timeout` (tonic's
-  `Request::set_timeout`, grpc-go's context deadline) is cut when that deadline passes:
-  a call still pending answers `DEADLINE_EXCEEDED`, and a stream ends with
-  `DEADLINE_EXCEEDED` in its trailers. A request without one has no deadline.
-- **No progress, either side, for `stall_timeout_secs` (default 300).** A stream whose
-  client has stopped reading holds data it cannot send; once any stream on a
-  connection has done so for that long, the whole connection is closed (hyper stops
-  polling a stream blocked on flow control, so the stream alone cannot be ended). A
-  stream that has had nothing to send for that long while its client waits, for
-  example behind a validator that does not answer, ends with `UNAVAILABLE` in its
-  trailers, and the client may retry. `GetMempoolStream` is exempt from the second
-  case because it is silent until the next block by design.
+No stream has a cap on its total length, so a full sync streams for as long as it keeps
+receiving. A client's own `grpc-timeout` is its deadline, and `[grpc] stall_timeout_secs`
+(default 300) bounds a stream that makes no progress in either direction
+([zaino-grpc: serve stack](../packages/zaino-grpc/usage.md#serve-stack)).
 
 ### Behind a proxy
 
@@ -283,10 +194,6 @@ to the hard limit, then refuses to start with exit code 1 if `max_connections` p
 1024 descriptors reserved for index files and the validator does not fit. Raise the
 hard limit (systemd `LimitNOFILE=`, docker `--ulimit nofile=`) or lower
 `max_connections`.
-
-If `accept()` still fails at runtime with `EMFILE`, `ENOBUFS` or a similar error, the
-listener backs off from 10 ms, doubling up to 1 s, and keeps serving the connections
-it already has. The `zaino_grpc_accept_errors_total` metric counts each failure.
 
 ## Logging
 

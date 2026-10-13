@@ -1,28 +1,4 @@
-//! Unspent transparent outpoint → value; block → per-tx [`Fee`] for the
-//! [`FeeSink`](zaino_sync::FeeSink)
-//!
-//! # Data structure: on the persistence port (`zaino_persistence`)
-//!
-//! ```text
-//! outputs   OutPoint::encode() (txid 32 ‖ vout u32 BE) → value u64 BE   unspent only, scope 0
-//! fees      record h = block h's fees, per tx: tag u8 (0 coinbase, 1 paid) ‖ value u64 BE
-//! ```
-//!
-//! - `outputs` = the UTXO set: a spend removes its prevout (`deletes()`), an output created and
-//!   spent in one block writes neither row
-//! - fees stored: a held block's prevouts may be spent since, so its fees are read, never re-folded
-//! - one block = its rows + its fees record ([`fold`]); non-final blocks = `zaino-nfs` layers
-//! - segments, merges, filters, manifest, crash safety = the engine's
-//!
-//! # Lookup (per transparent input, [`fold`])
-//!
-//! ```text
-//! prevout ──▶ unspent output of an earlier tx in the run ──hit──▶ value (spent: gone from the run)
-//!    │ miss
-//!    ▼
-//! parent reader (whole run at once) ──found──▶ value
-//!                                    └─────────▶ `FoldError::MissingPrevout`
-//! ```
+#![doc = include_str!("../usage.md")]
 
 mod reader;
 mod writer;

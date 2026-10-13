@@ -2,9 +2,9 @@
 //!
 //! - marker `<serve.state_dir>/held` = the hold (survives restart, deploy, reboot; a stopped
 //!   zainod is never held, only absent)
-//! - the running zainod polls it every [`POLL`]: held = state `held` (outranks every other), then
-//!   after `[serve] hold_goaway_delay_secs` every open gRPC connection GOAWAY'd; resume = normal
-//!   evaluation again
+//! - the running zainod polls it every second (`POLL`): held = state `held` (outranks every
+//!   other), then after `[serve] hold_goaway_delay_secs` every open gRPC connection GOAWAY'd;
+//!   resume = normal evaluation again
 //! - only drain before a stop (a SIGTERM alone closes the listener at once): `zainod hold`
 //!   returns once the GOAWAYs went out
 //! - no write endpoint: holding takes the state dir, not network reach to the admin listener

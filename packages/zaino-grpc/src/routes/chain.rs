@@ -3,7 +3,7 @@
 //! `GetTransaction` forwards")
 //!
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
-//! - `estimated_height` = the validator's network-tip estimate ("how far behind")
+//! - `estimated_height` = verified best tip, no validator call ("how far behind")
 
 use http::{HeaderValue, Response};
 use http_body::Frame;

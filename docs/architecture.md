@@ -16,9 +16,8 @@ index and never falls back to a validator. So:
 
 - Block, tree-state and transparent-address methods come from an index or not at all. A disabled
   index answers `UNIMPLEMENTED` naming it.
-- `GetTransaction` goes to a validator. Compact blocks are lossy (no raw transaction, ciphertexts
-  cut to 52 bytes), so serving it locally would need a store of every raw transaction, comparable
-  to the chain itself, read only for the rare transactions a wallet decrypts.
+- `GetTransaction` goes to a validator: raw transaction bytes are consensus data it already stores
+  ([why](../packages/zaino-grpc/usage.md#why-gettransaction-forwards)).
   `GetTaddressTransactions` works the same way: the index names the txids, a validator supplies the
   bytes.
 - Zaino does not validate transactions. That would be a second mempool verifier (proofs,

@@ -3,31 +3,15 @@
 The repo-root `CLAUDE.md` applies here in full. This file adds the rules that
 are specific to the live suite, and overrides the root where it says so.
 
-## What this tree is
-
-- `e2e` — a wallet drives Zaino over gRPC.
-- `clientless` — no wallet; tests call Zaino's gRPC directly.
-- `non-finalized-state` — reorgs, the served snapshot tip and every tip-dependent RPC
-  ([README](non-finalized-state/README.md)). All reorg testing
-  lives here; sync profiles only tolerate reorgs.
-- `zaino-testutils` — shared test helpers.
-- `sync/` — long-running sync profiles over snapshot-restored public chains. A
-  **separate** workspace with its own lock.
-
-`live-tests/` is a standalone Cargo workspace with its own lock. Every test here
-is ztest-based and runs against a containerized zebrad + zainod stack. A test
-that exercises Zaino internals and needs no real validator or wallet is a unit
-test in `packages/`, not a live test.
-
-## Running
-
-Cluster setup and the `ztest` CLI install are in
+The sets, how to run them and the cluster setup are in
 [`docs/testing.md`](../docs/testing.md).
 
-- `ztest run` from `live-tests/`; most nextest options work (`-p`, `-E`,
-  `--rerun latest`)
-- `ztest sync` from `live-tests/sync/`
-- `ztest run --no-cleanup`, then `kubectl get pods`, to inspect pods after a test
+## What belongs here
+
+- A test that exercises Zaino internals and needs no real validator or wallet is a
+  unit test in `packages/`, not a live test.
+- All reorg testing lives in `non-finalized-state`
+  ([README](non-finalized-state/README.md)); sync profiles only tolerate reorgs.
 
 Never `#[ignore]` a test that can run on the cluster. If a test is blocked,
 write the **full body** and let it fail on-cluster; a red test is information, a
@@ -60,8 +44,9 @@ Two tests differing only in one input (typically the pool) are one `#[rstest]`.
 async fn send_to_self(#[case] pool: Pool) -> Result<()> {
 ```
 
-Zebra is the only validator and Zaino has one ingest path (zebrad JSON-RPC), so
-neither is an axis. A single-case `#[rstest]` is noise: write a plain test.
+Zebra is the only validator, so it is not an axis. Zaino reads it over JSON-RPC
+(`validator_client = "legacy_rpc"`, the default) or its indexer gRPC (`"grpc"`), and
+fetches blocks from p2p peers too. A single-case `#[rstest]` is noise: write a plain test.
 
 ## Tag the QoS tier, and tag it honestly
 

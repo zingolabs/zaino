@@ -51,18 +51,12 @@ refuse fails here rather than on a cluster.
 
 Every model suite runs at its in-code case count under
 `cargo nextest run --workspace`. To run them harder, use the `models` nextest
-profile (`.config/nextest.toml`), which selects only the model suites, and set
-the case count with `PROPTEST_CASES`, which overrides the in-code value:
+profile (`.config/nextest.toml`), which selects only the model suites and lifts the
+default profile's 60 s per-test kill, and set the case count with `PROPTEST_CASES`,
+which overrides the in-code value:
 
 ```sh
 PROPTEST_CASES=5000 cargo nextest run --profile models
-
-# fresh seeds, round after round, for 10 minutes
-end=$((SECONDS + 600)); round=0
-while [ $SECONDS -lt $end ]; do
-  round=$((round + 1))
-  PROPTEST_CASES=2000 cargo nextest run --profile models || { echo "FAILED in round $round"; break; }
-done
 ```
 
 `PROPTEST_MAX_SHRINK_ITERS` shrinks a failure harder and `PROPTEST_VERBOSE=1`
@@ -79,27 +73,44 @@ is saved and replays on every run, on every machine and in CI: beside an
 integration test as `<test>.proptest-regressions`, or under the crate's
 `proptest-regressions/` for an in-crate suite. Commit it with the fix.
 
-Two pieces are not built yet:
+### Heavy run
 
-- TODO: `cargo-fuzz` targets for every decoder (`Entry`, height records, subtree
-  entries, run rows, manifest bodies, and `project`/`framed_len` against a prost
-  decode) and for each store's `open` over arbitrary file images. The target must never
-  panic or SIGBUS, and must end in either an error or a state that `verify` reports
-  clean.
-- TODO: a nightly run of the crash scenarios on a
-  [LazyFS](https://github.com/dsrhaslab/lazyfs) mount (`clear-cache`, `torn-op`,
-  `torn-seq`), to check the `SimFs` model against real syscalls.
+A change to `zaino-persistence`, `zaino-header-chain`, `zaino-nfs`, `zaino-snapshot` or
+`zaino-traffic` is done only once this passes for that crate. Each round runs the crate's whole
+suite on fresh seeds, so the timing-sensitive tests (background merges, failed I/O, crash
+states) repeat alongside the models. Then the crates built on it run once:
+
+```sh
+crate=zaino-persistence
+end=$((SECONDS + 180)); round=0
+while [ $SECONDS -lt $end ]; do
+  round=$((round + 1))
+  PROPTEST_CASES=1000 cargo nextest run -p "$crate" --all-features --profile heavy \
+    || { echo "$crate: FAILED in round $round"; break; }
+  echo "$crate: round $round passed"
+done
+
+cargo nextest run --workspace -E "rdeps($crate)"   # after the loop passes
+```
+
+- `--profile heavy` runs every test with a 300 s timeout (at 1000 cases a model test outlives
+  the default profile's 60 s kill).
+- `--all-features` turns on the crate's `testing` feature (`zaino-persistence`'s
+  `footprint` test needs it).
+- Lengthen the run by raising `180`, never shorten it. Keep the debug build (no
+  `--release`): some invariants, such as `Pages::read_unchecked`'s, are `debug_assert!`.
+- A failure saves its shrunk case (above). Fix the bug and rerun the whole block.
 
 ## Commands
 
 ```sh
 cargo nextest run --workspace              # from the repo root
-PROPTEST_CASES=5000 cargo nextest run --profile models   # model suites only, harder
 
 cd live-tests
 ztest run                                  # clientless, e2e and non-finalized-state
 ztest run -p clientless                    # one partition
 ztest run --rerun latest -p clientless     # the last run's failures
+ztest run --no-cleanup -p clientless       # keep each test's namespace (pods, logs) to inspect
 
 cd sync                                    # now in live-tests/sync
 ztest sync start zaino_index_construction --watch

@@ -333,7 +333,7 @@ mod tests {
         }
     }
 
-    /// W8, R4 over the router, no subtree complete yet:
+    /// Over the router, no subtree complete yet:
     /// - every pool, any `startIndex` / `maxEntries` (past `u16` too) = an empty `OK` stream
     ///   (status in trailers: pepper-sync's resume probe; Orchard after Sapling = iOS's pass)
     /// - unknown pool = `UNIMPLEMENTED`, trailers-only (no body: never a partial prefix)
@@ -379,7 +379,7 @@ mod tests {
         }
     }
 
-    /// W6, R10: exactly the requested height, display-order hash, each pool `""` below its upgrade
+    /// Z#1622: exactly the requested height, display-order hash, each pool `""` below its upgrade
     /// and its tree from it on (`000000` while empty: pepper-sync rejects `""` there); below
     /// Sapling = every pool `""`, never an error (Android asks Sapling activation − 1)
     #[tokio::test]

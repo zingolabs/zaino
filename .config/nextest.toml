@@ -8,3 +8,7 @@ slow-timeout = { period = "30s", terminate-after = 2 }
 [profile.models]
 default-filter = "test(/model|random_histories/)"
 slow-timeout = { period = "300s" }
+
+# Whole crate suite at heavy case counts (docs/testing.md "Heavy run")
+[profile.heavy]
+slow-timeout = { period = "300s" }

@@ -19,9 +19,9 @@ network = "testnet"
 # [metrics]
 # listen_address = "127.0.0.1:9999"
 
-# Validators Zaino trusts (Zebra JSON-RPC), at least one, all equal
+# Validators Zaino trusts (Zebra JSON-RPC), at least one; no vote (`priority` orders who is asked)
 # - tip = their most-work header (trusted: zebra validated it), served while any of them holds it
-# - one listing admits a mempool transaction; each submission attempt goes to one at random
+# - one listing admits a mempool transaction; submission: see [submission]
 # - 2+ = survives one going down (no vote: more never weakens it)
 # - down at boot or later = retried, never fatal
 [[trusted_validators]]
@@ -143,6 +143,15 @@ finalised_depth = 1000
 concurrency = 32
 # MiB of final blocks one index may lag the fetch before it throttles the pipeline
 queue_mib = 256
+
+# The disk engine's map tables (one engine per process: every index shares merge_slots)
+# [sync.lsm_store]
+# Same-tier segments merged into one (>= 2; higher = less rewriting, larger merges)
+# fanout = 16
+# Merges doing disk I/O at once (the rest wait, smallest first)
+# merge_slots = 4
+# MiB/s every merge together may read + write (commits are never paced)
+# merge_mib_per_sec = 200
 
 # One table per index: `enabled` (default true; off = its methods UNIMPLEMENTED) and `path`
 # (default $XDG_CACHE_HOME/zaino/indexes/<name>); an omitted table takes both defaults

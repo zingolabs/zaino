@@ -147,9 +147,4 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 - `tests.rs` (paused clock): a lookup storm never delays a poll, a merkle liar is benched, a hedge
   beats a 20 s stall, a push stream wakes the poll within 200 ms.
 
-```bash
-# heavy run: at least 3 minutes after any change to this crate
-end=$((SECONDS + 180)); while [ $SECONDS -lt $end ]; do
-  PROPTEST_CASES=1000 cargo test -p zaino-traffic || break
-done
-```
+After any change to this crate: the [heavy run](../../docs/testing.md#heavy-run).

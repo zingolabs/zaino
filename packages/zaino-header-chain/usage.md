@@ -120,12 +120,4 @@ max(`2 · depth`, `CONTEXT`), every node descends from the final tip), H4, H5, H
   let pinned = chain.verified_final(tip, h(9));        // final through 9 (depth = tip − 9)
   ```
 
-Heavy run after any change here (the in-code 256 cases are the light run):
-
-```bash
-end=$((SECONDS + 180)); round=0
-while [ $SECONDS -lt $end ]; do
-  round=$((round + 1))
-  PROPTEST_CASES=1000 cargo test -p zaino-header-chain --features testing || { echo "FAILED in round $round"; break; }
-done
-```
+Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

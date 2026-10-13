@@ -11,7 +11,7 @@ use zaino_traffic::Health;
 
 use crate::feed::{Feed, MempoolTail};
 
-/// - `held_by` = trusted validators holding `best` (V1)
+/// - `held_by` = trusted validators holding `best`
 /// - `synced`: opens at served == best, closes off best or > depth behind
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tips {

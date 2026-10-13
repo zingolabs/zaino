@@ -59,7 +59,7 @@ state, no deletes, and a reorg never touches disk.
 
 ## Wiring
 
-```rust
+```rust,ignore
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
@@ -86,7 +86,7 @@ tokio::spawn(writer.run(blocks)); // returns at Shutdown
 
 ## Serving
 
-```rust
+```rust,ignore
 // a route's reader: snap.views().transparent_address() (None = disabled)
 let reader = reader.as_of(snap.tip().height).with_max_rows(max_address_rows);
 let utxos = reader.utxos_of(&addresses, start)?;          // Vec<Vec<AddressUtxo>>, oldest first

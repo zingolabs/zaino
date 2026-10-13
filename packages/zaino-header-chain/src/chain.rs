@@ -285,7 +285,7 @@ impl HeaderChain {
     }
 
     /// Best-chain block final may move to on peers' word alone: best − depth, unless an unfinal
-    /// best-chain block holds under 1/[`MAX_DIFFICULTY_DROP`] of the last vouched block's work
+    /// best-chain block holds under half the last vouched block's work (`MAX_DIFFICULTY_DROP`)
     ///
     /// - `None` = best − depth final already, or a difficulty collapse
     /// - the driver's half: peers in enough netgroups carry a block at or above it

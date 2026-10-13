@@ -1,33 +1,4 @@
-//! Transparent address → received outputs, each with its spend (if any)
-//!
-//! # Data structure: two maps in one store (`zaino_persistence`, [`TABLES`])
-//!
-//! ```text
-//! receives  addr 21 ([hash160][kind]) ‖ height u32 ‖ txid 32 ‖ vout u32 → value u64
-//!           scope = addr: one address's history = one key range
-//! spent     txid 32 ‖ vout u32 (OutPoint::encode) → height u32 ‖ spending txid 32
-//!           point lookups only
-//!
-//! integers big-endian: byte order = key order
-//! ```
-//!
-//! - insert only: a spend = a new `spent` row, never a delete of its `receives` row
-//! - no outpoint → address map, no UTXO set: [`fold`] = a pure projection of one block, no lookups
-//! - `O(received)` per address, not `O(unspent)` (single-use receivers make the gap nil)
-//! - non-final blocks = `zaino-nfs` layers (keyed as the maps), read through an `OverlayView`
-//!
-//! # Lookup ([`TransparentAddressReader::utxos_of`], as of the served tip)
-//!
-//! ```text
-//! address ──▶ receives:  `map(RECEIVES).range((addr, start), (addr, tip + 1), budget)`
-//!                        (layer rows merged over committed ones, by key)
-//!                           │
-//!                           ▼
-//! each received outpoint ──▶ spent:  one `map(SPENT).values(outpoints)` ──found ≤ tip──▶ spent
-//!                                    (layer first, then committed)     └──otherwise──▶ unspent
-//! ```
-//!
-//! - balance = sum of the unspent; transactions = receiving txids + their spenders
+#![doc = include_str!("../usage.md")]
 
 mod address;
 mod key;

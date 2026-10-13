@@ -1,18 +1,4 @@
-//! Height → gRPC-framed `CompactBlock` record, one `Variable` sequence through the persistence port
-//!
-//! ```text
-//! <dir>/                                    e.g. `zaino_persistence::DiskEngine`
-//!   MANIFEST      committed tip + each file's seal = the commit point
-//!   blocks.dat    framed records, back to back, height order
-//!   blocks.idx    end offset per record (record h = height h)
-//!
-//! one record:     [0x00][len u32 BE][CompactBlock protobuf] = the exact bytes on the wire
-//!                 every pool included (pruned on read, `project.rs`)
-//! ```
-//!
-//! - records = wire bytes: serving = byte movement (no decode, no re-encode)
-//! - tree sizes after a block = its record's `chainMetadata` ([`fold`] reads the parent's)
-//! - hash → height = `zaino-internal-block-hash-to-height` (record's own `hash` confirms a hit)
+#![doc = include_str!("../usage.md")]
 
 use zaino_persistence::{SequenceTable, Tables, Width};
 use zaino_primitives::types::Height;

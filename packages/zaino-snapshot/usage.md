@@ -135,9 +135,4 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
   `/statusz` golden (a `MemberTable` joined) and its rendered gauges; one fire drill per `check`
   assertion. `report.rs`: the end-of-service serialization contract.
 
-```bash
-# heavy run: at least 3 minutes after any change to this crate
-end=$((SECONDS + 180)); round=0; while [ $SECONDS -lt $end ]; do
-  round=$((round + 1)); PROPTEST_CASES=1000 cargo test -p zaino-snapshot || break
-done
-```
+Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

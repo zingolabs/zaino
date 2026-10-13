@@ -42,8 +42,8 @@ From the devshell, with a GitHub token that can create releases. Every command t
 `--dry-run`: run it that way first.
 
 ```bash
-# 1. newest dev commit whose nightly passed
-SHA=$(gh run list -w ci.yml -e schedule -b dev -s success -L1 --json headSha -q '.[0].headSha')
+# 1. newest dev commit whose CI passed
+SHA=$(gh run list -w ci.yml -b dev -s success -L1 --json headSha -q '.[0].headSha')
 
 # 2. release branch at that commit
 git fetch origin && git switch -c release/0.11 "$SHA" && git push -u origin release/0.11

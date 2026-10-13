@@ -48,8 +48,8 @@ pub struct FinalFollower<S> {
 }
 
 impl<S: ChainDataSource> FinalFollower<S> {
-    /// `lookahead` = blocks in flight ahead of the next block sent ([`BLOCKS_PER_REQUEST`] per
-    /// batched request)
+    /// `lookahead` = blocks in flight ahead of the next block sent (4 per batched request:
+    /// `BLOCKS_PER_REQUEST`)
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         balancer: TrafficBalancer<S>,

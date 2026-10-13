@@ -20,7 +20,7 @@ use zaino_primitives::types::{
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::config::FINALITY_STALL;
-use crate::endpoints::{Agreement, EndpointSet, ValidatorMetadata};
+use crate::endpoints::{EndpointSet, ValidatorMetadata};
 use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
 
@@ -304,7 +304,7 @@ impl ChainViewSnapshot {
                 if let Some(meta) = view.endpoints.get_mut(at) {
                     meta.info = Some(info.clone());
                     meta.health = Health::Live;
-                    meta.agreement = Agreement::Agreed;
+                    meta.agreement = crate::endpoints::Agreement::Agreed;
                 }
             }
         }

@@ -48,7 +48,7 @@ hash comes from its completing height's `heights` record.
 
 ## Wiring
 
-```rust
+```rust,ignore
 use zaino_index_tree_state::{TreeStateIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 
@@ -77,7 +77,7 @@ tokio::spawn(writer.run(blocks));
 
 ## Fold
 
-```rust
+```rust,ignore
 use zaino_index_tree_state::{fold, FoldError, TreeStateReader};
 
 let parent = TreeStateReader::new(view);  // any `V: SequenceRead` over these tables

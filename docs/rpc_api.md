@@ -56,16 +56,13 @@ included). A block or tree-state method naming a height
 (`GetBlock`, `GetBlockRange`, `GetTreeState`) answers up to its own index's
 tip, which during sync may be above the snapshot's.
 
-`GetLightdInfo` takes `chainName` from config (lightwalletd's `main`, `test` or
-`regtest`) and `saplingActivationHeight`, `consensusBranchId`, `upgradeName`
-and `upgradeHeight` (the next pending upgrade), and `estimatedHeight` from the
-validator's `getblockchaininfo`, which it reuses for up to one second because
-every wallet polls it. `blockHeight` is the served snapshot tip (0 before the
-first), not the validator's, because a wallet gates its sync on it. `lightwalletProtocolVersion`
-is the release of the vendored protos (currently `v0.5.0`), which pepper-sync
-requires before it syncs ([client-requirements.md](./client-requirements.md)).
-With the validator unreachable the call is `UNAVAILABLE`. We never substitute a
-stand-in branch, schedule or tip.
+`GetLightdInfo` never calls a validator. `blockHeight` is the served snapshot tip (a wallet gates
+its sync on it), `estimatedHeight` the verified best, `chainName` the configured network, and the
+branch and next upgrade come from the upgrade schedule at the served tip. `version` is zainod's.
+`lightwalletProtocolVersion` is the vendored protos' release (`v0.5.0`), which pepper-sync requires
+([client-requirements.md](./client-requirements.md)). Before anything is served the call is
+`UNAVAILABLE`. Field by field: the
+[`zaino-grpc` guide](../packages/zaino-grpc/usage.md).
 
 `GetTransaction` answers a mined transaction with its height, and an unmined or
 orphaned one with height 0, the wire's only "no height" value.
@@ -110,7 +107,7 @@ deadline, and `[grpc] stall_timeout_secs` bounds a stream that makes no progress
 | nothing served yet (indexes opening at boot)                                                        | `UNAVAILABLE`        | back off and retry                                                     |
 | stream or subscription cap full (`grpc-retry-pushback-ms: 250`)                                     | `UNAVAILABLE`        | retry after the hint                                                   |
 | no verified tip, or no trusted validator holds it (`GetMempoolStream`, `GetMempoolTx`)              | `UNAVAILABLE`        | back off and retry                                                     |
-| validator unreachable (`GetTransaction`, `GetLightdInfo`, `SendTransaction`)                        | `UNAVAILABLE`        | back off and retry                                                     |
+| validator unreachable (`GetTransaction`, `SendTransaction`)                                         | `UNAVAILABLE`        | back off and retry                                                     |
 | stream with nothing to send for `stall_timeout_secs` (not `GetMempoolStream`)                       | `UNAVAILABLE`        | retry                                                                  |
 | index disabled by config, unknown `shieldedProtocol`, unknown method (`GetBlockNullifiers`, `Ping`) | `UNIMPLEMENTED`      | never retry                                                            |
 | height, hash or txid not in the chain, or above the answering index's tip                           | `NOT_FOUND`          | ask for something else                                                 |

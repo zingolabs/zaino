@@ -1,47 +1,4 @@
-//! Height → commitment-tree state (Sapling, Orchard, Ironwood); subtree index → subtree root
-//!
-//! # Data structure: incremental Merkle tree, retained nodes in per-level flat arrays (`nodes.rs`)
-//!
-//! ```text
-//! <dir>/
-//!   MANIFEST                  committed tip, every table's seal = the commit point
-//!   heights.dat               one record per height (slot = height)
-//!   sapling/ orchard/ ironwood/
-//!     l00.dat … l31.dat       one sequence per tree level, 32 B per node
-//!     subtrees.dat            one entry per completed 2^16-leaf subtree (slot = subtree index)
-//!
-//! heights.dat record, 48 B:   hash 32 ‖ time u32 ‖ sapling u32 ‖ orchard u32 ‖ ironwood u32 (LE)
-//! subtrees.dat entry, 36 B:   root 32 ‖ completing height u32 LE
-//! level sequences:            l00 = every leaf (slot = index); l01..l31 = even index only
-//!                             (slot = index / 2)
-//! ```
-//!
-//! - textbook incremental tree = frontier only (latest state); full tree = 2N nodes
-//! - kept here: every leaf + every even-index internal node = exactly where any past frontier's
-//!   ommers come from (ommer = left sibling = even) → ≈48 B per commitment (32 leaf + ≈16 internal)
-//! - positional: no keys stored, one record read per node
-//! - read-heavy (librustzcash asks 1:1 with `GetBlockRange`) → no replay per read, no hashing
-//! - one block = its height record + the nodes and subtree roots it completes ([`fold`]);
-//!   non-final blocks = `zaino-nfs` layers (same positions, RAM only)
-//!
-//! # Lookup ([`TreeStateReader`]: a request's tree state, a fold's parent frontier)
-//!
-//! ```text
-//! height h ──▶ heights[h] ──▶ hash, time, size s per pool        (held records first)
-//!                                 │ per pool, position p = s - 1
-//!                                 ▼
-//!              leaf     l00[p]
-//!              ommers   each set bit ℓ of p: node (ℓ, (p >> ℓ) - 1)  (≤ 32 reads, no hashing,
-//!                         ℓ = 0 → l00[p - 1]                          held nodes first)
-//!                         ℓ ≥ 1 → lℓ[((p >> ℓ) - 1) / 2]
-//!                                 │
-//!                                 ▼
-//!              frontier → `write_commitment_tree` → `Treestate`
-//!
-//! subtree i ──▶ subtrees[i] ──▶ root, completing height ──▶ heights ──▶ completing hash
-//! ```
-//!
-//! Storage = `zaino_persistence` port (engine contract: `packages/zaino-persistence/usage.md`)
+#![doc = include_str!("../usage.md")]
 
 use zaino_persistence::{SequenceTable, Tables, Width};
 use zaino_primitives::types::ShieldedPool;
