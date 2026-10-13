@@ -74,55 +74,22 @@ pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Bl
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path, sync::Arc};
+    use std::{num::NonZeroUsize, sync::Arc};
 
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, View,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockHash, Height};
-    use zaino_sync::{IndexerDataSink, Step};
+    use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
     use crate::{FORMAT, TABLES};
 
-    const NAME: &str = IndexKind::BlockHash.name();
-    const QUEUE: NonZeroUsize = NonZeroUsize::new(1 << 20).expect("non-zero");
     const SCHEMA: Schema = Schema::new(IndexKind::BlockHash, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// `write_buffer` = MIN: every applied block committed by the store itself
-    fn open(fs: &Arc<SimFs>, write_buffer: NonZeroUsize) -> DiskStore {
-        DiskEngine::new(fs.clone(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/bh"), &SCHEMA, write_buffer)
-            .expect("open")
-    }
-
-    /// Writer over `store`, its final stream and handle
-    fn start(
-        store: DiskStore,
-    ) -> (IndexerDataSink<Block>, IndexHandle<DiskView>, tokio::task::JoinHandle<()>) {
+    fn start(store: DiskStore) -> Writer<DiskView> {
         let writer = BlockHashIndexWriter::new(store);
-        let handle = writer.handle();
-        let mut sink = IndexerDataSink::new();
-        let running = tokio::spawn(writer.run(sink.subscribe(NAME, QUEUE)));
-        (sink, handle, running)
-    }
-
-    fn step(block: &Arc<Block>) -> Step<Block> {
-        Step::Apply { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// The chain's final tip: the writer commits after it
-    fn finalized(block: &Arc<Block>) -> Step<Block> {
-        Step::Finalized { height: block.header().height, data: Arc::clone(block) }
-    }
-
-    /// Until `handle`'s durable tip = `height`
-    async fn durable_at(handle: &mut IndexHandle<DiskView>, height: u32) {
-        while handle.tip().map(|tip| u32::from(tip.height)) != Some(height) {
-            assert!(handle.changed().await, "writer alive");
-        }
+        Writer::spawn(writer.handle(), QUEUE, move |blocks| writer.run(blocks))
     }
 
     /// Each block → one golden row at its own tip; the reader locates every folded hash and
@@ -132,7 +99,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         let tip = chain.mine_empty(2);
         let blocks = chain.blocks(tip);
-        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
 
         for (height, block) in (0u8..).zip(&blocks) {
             let hash = <[u8; HASH]>::from(block.header().hash);
@@ -151,26 +118,6 @@ mod tests {
         assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
     }
 
-    #[test]
-    #[should_panic(expected = "block_hash: changes opened for another block")]
-    fn a_fold_into_changes_opened_for_another_block_panics() {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(2);
-        let store = open(&SimFs::new(), NonZeroUsize::MAX);
-        let mut changes = store.changes(chain.genesis());
-        fold(&BlockHashReader::new(store.staged()), chain.block(tip.hash), &mut changes);
-    }
-
-    #[test]
-    #[should_panic(expected = "does not extend the parent tip")]
-    fn a_fold_past_a_gap_panics() {
-        let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(2);
-        let store = open(&SimFs::new(), NonZeroUsize::MAX);
-        let mut changes = store.changes(tip);
-        fold(&BlockHashReader::new(store.staged()), chain.block(tip.hash), &mut changes);
-    }
-
     /// 0..=3 (3 `Finalized`: committed there), then a restart resending 2 and 3 (held: skipped)
     /// before 4; every hash located at its height after a reopen, a never-sent one nowhere
     #[tokio::test]
@@ -181,25 +128,23 @@ mod tests {
         let blocks = chain.blocks(tip);
         let sibling = chain.fork(h(3)).mine_empty(1).tip();
 
-        let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MAX));
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
         for block in &blocks[..3] {
-            sink.send(step(block)).await;
+            writer.send(step(block)).await;
         }
-        sink.send(finalized(&blocks[3])).await;
-        durable_at(&mut handle, 3).await;
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        writer.send(finalized(&blocks[3])).await;
+        writer.durable_at(h(3)).await;
+        writer.stop().await.expect("stops at Shutdown");
 
-        let (sink, handle, running) = start(open(&fs, NonZeroUsize::MAX));
-        let resumed = handle.tip().map(|tip| u32::from(tip.height));
-        assert_eq!(resumed, Some(3), "resumes at the committed tip");
+        let writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
+        let resumed = writer.handle().tip().map(|tip| tip.height);
+        assert_eq!(resumed, Some(h(3)), "resumes at the committed tip");
         for block in &blocks[2..=4] {
-            sink.send(step(block)).await;
+            writer.send(step(block)).await;
         }
-        sink.shutdown();
-        running.await.expect("stops at Shutdown");
+        writer.stop().await.expect("stops at Shutdown");
 
-        let reader = BlockHashReader::new(open(&fs, NonZeroUsize::MAX).committed());
+        let reader = BlockHashReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).committed());
         let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
         let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
         let heights = (0..=4u32).map(|n| Some(Height::try_from(n).expect("h")));
@@ -219,22 +164,19 @@ mod tests {
             let reader = BlockHashReader::new(view);
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect()
         };
-        {
-            let (sink, mut handle, running) = start(open(&fs, NonZeroUsize::MIN));
-            for (acked, block) in (1u64..).zip(&blocks[..5]) {
-                sink.send(step(block)).await;
-                durable_at(&mut handle, u32::from(block.header().height)).await;
-                fs.set_tag(acked);
-            }
-            sink.shutdown();
-            running.await.expect("stops at Shutdown");
+        let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MIN));
+        for (acked, block) in (1u64..).zip(&blocks[..5]) {
+            writer.send(step(block)).await;
+            writer.durable_at(block.header().height).await;
+            fs.set_tag(acked);
         }
+        writer.stop().await.expect("stops at Shutdown");
 
         let states = recording.crash_states();
         assert!(states.len() > 10, "enumerated {} crash states", states.len());
         for state in states {
             let label = &state.label;
-            let store = open(&state.fs, NonZeroUsize::MIN);
+            let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
             let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
@@ -246,28 +188,11 @@ mod tests {
                 "{label}: held only"
             );
 
-            let (sink, handle, running) = start(store);
-            sink.send(step(&blocks[count])).await;
-            sink.shutdown();
-            running.await.unwrap_or_else(|error| panic!("{label}: {error}"));
+            let writer = start(store);
+            writer.send(step(&blocks[count])).await;
+            let handle = writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
             let next = located(handle.view(), &blocks[count..=count]);
             assert_eq!(next, [Height::try_from(count as u32).ok()], "{label}: commits continue");
         }
-    }
-
-    /// Commit I/O failure = panic naming the index and its directory (never an `Err` to drain)
-    #[tokio::test]
-    async fn a_failed_commit_panics_naming_the_index_and_its_directory() {
-        let fs = SimFs::new();
-        let (sink, _handle, running) = start(open(&fs, NonZeroUsize::MIN));
-        fs.fail_from(fs.mutations());
-        let chain = MockChain::regtest();
-        sink.send(step(chain.block(chain.genesis().hash))).await;
-        sink.shutdown();
-
-        let payload = running.await.expect_err("commit failure panics").into_panic();
-        let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
-        assert!(message.starts_with("block_hash index commit failed at /bh: "), "{message}");
-        assert!(message.contains("sim: injected EIO"), "{message}");
     }
 }

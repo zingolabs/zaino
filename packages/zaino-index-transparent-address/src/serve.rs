@@ -54,16 +54,6 @@ impl<V: MapRead> TransparentAddressReader<V> {
         ServeError::TooManyRows { limit: self.max_rows().get() }
     }
 
-    #[cfg(test)]
-    pub(crate) fn utxos(
-        &self,
-        address: &TransparentAddress,
-        start: Height,
-    ) -> Result<Vec<AddressUtxo>, ServeError> {
-        let mut utxos = self.utxos_of(std::slice::from_ref(address), start)?;
-        Ok(utxos.pop().expect("one list per address"))
-    }
-
     /// `GetAddressUtxos`: unspent receives from height `start` (inclusive) to the tip, oldest
     /// first, per address in `addresses` order (one batched spend lookup across all of them)
     pub fn utxos_of(
@@ -89,11 +79,6 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .collect())
     }
 
-    #[cfg(test)]
-    pub(crate) fn balance(&self, address: &TransparentAddress) -> Result<Zatoshis, ServeError> {
-        self.balance_of(address.into())
-    }
-
     /// `GetTaddressBalance`: sum of everything unspent, all of history, per address in
     /// `addresses` order (one batched spend lookup across all of them)
     pub fn balances(&self, addresses: &[TransparentAddress]) -> Result<Vec<Zatoshis>, ServeError> {
@@ -101,13 +86,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
         self.balances_of(&keys)
     }
 
-    /// One balance by storage key (reaches the opaque key no address parses to)
-    #[cfg(test)]
-    pub(crate) fn balance_of(&self, key: AddressKey) -> Result<Zatoshis, ServeError> {
-        Ok(self.balances_of(&[key])?.pop().expect("one balance per key"))
-    }
-
-    fn balances_of(&self, keys: &[AddressKey]) -> Result<Vec<Zatoshis>, ServeError> {
+    /// [`balances`](Self::balances) by storage key (reaches the opaque key no address parses to)
+    pub(crate) fn balances_of(&self, keys: &[AddressKey]) -> Result<Vec<Zatoshis>, ServeError> {
         self.unspent(keys, 0, self.max_rows().get())
             .ok_or_else(|| self.too_many())?
             .into_iter()
@@ -160,11 +140,11 @@ impl<V: MapRead> TransparentAddressReader<V> {
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, path::Path};
+    use std::num::NonZeroUsize;
 
-    use zaino_persistence::{fs::SimFs, DiskEngine, IndexKind, PersistenceEngine, Schema, Store};
+    use zaino_persistence::{fs::SimFs, IndexKind, Schema, Store};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::OutPoint;
+    use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
 
     use super::*;
@@ -186,9 +166,7 @@ mod tests {
         });
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
-        let mut store = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
-            .expect("open");
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(two).iter().enumerate() {
             let mut changes = store.changes(block.at());
             fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
@@ -200,29 +178,30 @@ mod tests {
         let at_two = TransparentAddressReader::new(store.staged());
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
-            outpoint: OutPoint { txid: TransactionId::from([0x77; 32]), vout: 0 },
+            outpoint: outpoint([0x77; 32], 0),
             height: h(1),
             value: Zatoshis::new(42).expect("in supply"),
         };
         let paying = TransactionRef { height: h(1), txid: TransactionId::from([0x77; 32]) };
         let spending = TransactionRef { height: h(2), txid: TransactionId::from([0x78; 32]) };
-
-        assert_eq!(at_two.balance(&paid), Ok(Zatoshis::ZERO), "spent at 2");
-        assert_eq!(at_two.utxos(&paid, h(0)), Ok(Vec::new()));
-        assert_eq!(at_two.transactions(&paid, h(0), h(2)), Ok(vec![paying, spending]));
-        let at_one_balance = at_one.balance(&paid).map(Zatoshis::as_u64);
-        assert_eq!(at_one_balance, Ok(42), "2's spend past the tip");
-        assert_eq!(at_one.utxos(&paid, h(0)), Ok(vec![received]));
-        assert_eq!(at_one.transactions(&paid, h(0), h(2)), Ok(vec![paying]));
         let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
-        assert_eq!(at_one.balance(&receiver), Ok(Zatoshis::ZERO), "2's receive past the tip");
+
+        let balances = at_two.balances(&[paid, receiver]);
+        assert_eq!(balances, Ok(vec![Zatoshis::ZERO, Zatoshis::new(41).expect("in supply")]));
+        assert_eq!(at_two.utxos_of(&[paid], h(0)), Ok(vec![Vec::new()]), "spent at 2");
+        assert_eq!(at_two.transactions(&paid, h(0), h(2)), Ok(vec![paying, spending]));
+        let balances = at_one.balances(&[paid, receiver]);
+        let past_the_tip = Ok(vec![received.value, Zatoshis::ZERO]);
+        assert_eq!(balances, past_the_tip, "2's spend and receive past the tip");
+        assert_eq!(at_one.utxos_of(&[paid], h(0)), Ok(vec![vec![received]]));
+        assert_eq!(at_one.transactions(&paid, h(0), h(2)), Ok(vec![paying]));
 
         for reader in [&at_two, &at_one] {
-            assert_eq!(reader.utxos(&stranger, h(0)), Ok(Vec::new()));
+            assert_eq!(reader.utxos_of(&[stranger], h(0)), Ok(vec![Vec::new()]));
             assert_eq!(reader.transactions(&stranger, h(0), h(2)), Ok(Vec::new()));
-            assert_eq!(reader.balance(&stranger), Ok(Zatoshis::ZERO));
+            assert_eq!(reader.balances(&[stranger]), Ok(vec![Zatoshis::ZERO]));
             assert_eq!(reader.transactions(&paid, h(3), h(3)), Ok(Vec::new()), "past the tip");
-            assert_eq!(reader.utxos(&paid, h(3)), Ok(Vec::new()), "past the tip");
+            assert_eq!(reader.utxos_of(&[paid], h(3)), Ok(vec![Vec::new()]), "past the tip");
         }
     }
 
@@ -241,9 +220,7 @@ mod tests {
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
         chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10).pay(&pays_second, 10)));
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&pays_first, 10)));
-        let mut store = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
-            .open(Path::new("/ta"), &SCHEMA, NonZeroUsize::MAX)
-            .expect("open");
+        let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(three).iter().enumerate() {
             let mut changes = store.changes(block.at());
             fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
@@ -259,23 +236,24 @@ mod tests {
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });
         let both = [first, second];
 
+        let zats = |zats: u64| Zatoshis::new(zats).expect("in supply");
+        let rows = |utxos: Result<Vec<Vec<AddressUtxo>>, _>| utxos.map(|all| all[0].len());
+
         // `first` alone = 3 rows (2 committed + 1 buffered); both = 4
         let at = budget(3);
-        assert_eq!(at.balance(&first).map(Zatoshis::as_u64), Ok(30));
-        assert_eq!(at.utxos(&first, h(0)).map(|rows| rows.len()), Ok(3));
+        assert_eq!(at.balances(&[first]), Ok(vec![zats(30)]));
+        assert_eq!(rows(at.utxos_of(&[first], h(0))), Ok(3));
         assert_eq!(at.transactions(&first, h(0), h(3)).map(|found| found.len()), Ok(3));
         assert_eq!(at.balances(&both).err(), over(3), "3 + 1 across the request's addresses");
+        assert_eq!(at.utxos_of(&both, h(0)).err(), over(3));
 
         let under = budget(2);
-        assert_eq!(under.balance(&first).err(), over(2));
-        assert_eq!(under.utxos(&first, h(0)).err(), over(2));
+        assert_eq!(under.balances(&[first]).err(), over(2));
+        assert_eq!(under.utxos_of(&[first], h(0)).err(), over(2));
         let narrow = under.transactions(&first, h(3), h(3)).err();
         assert_eq!(narrow, over(2), "a narrow range still walks the whole history");
-        assert_eq!(under.utxos(&first, h(2)).map(|rows| rows.len()), Ok(2), "from 2: 2 rows");
+        assert_eq!(rows(under.utxos_of(&[first], h(2))), Ok(2), "from 2: 2 rows");
 
-        let roomy = budget(4);
-        let balances = roomy.balances(&both).map(|all| all.into_iter().map(Zatoshis::as_u64));
-        let balances = balances.map(Vec::from_iter);
-        assert_eq!(balances, Ok(vec![30, 10]));
+        assert_eq!(budget(4).balances(&both), Ok(vec![zats(30), zats(10)]));
     }
 }

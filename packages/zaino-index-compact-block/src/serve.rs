@@ -112,7 +112,7 @@ impl<V: SequenceRead> RangeCursor<V> {
     ) -> Result<Self, ServeError> {
         let descending = start > end;
         let (low, high) = if descending { (end, start) } else { (start, end) };
-        let held = reader.tip().map(|held| held.height.min(tip));
+        let held = reader.view().tip().map(|held| held.height.min(tip));
         let Some(top) = held.filter(|&top| low <= top) else {
             return Err(ServeError::NotFound { height: low });
         };
@@ -168,15 +168,16 @@ mod tests {
     use super::*;
     use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
-    use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, Overlay, PersistenceEngine, Schema,
-        Store,
-    };
+    use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Overlay, Schema, Store};
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
     use zaino_primitives::types::UpgradeSchedule;
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats as cf;
+    use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
+
+    const SCHEMA: Schema =
+        Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
 
     /// Blocks 0..`count` (every upgrade from genesis), each: a coinbase paying 17 345, then one tx
     /// spending it into every pool (transparent in + out, a sapling spend + output, one orchard,
@@ -213,18 +214,6 @@ mod tests {
         chain
     }
 
-    /// `chain(height + 1)`'s block at `height`
-    fn hash_at(height: u32) -> [u8; HASH] {
-        chain(height + 1).at(h(height)).hash.into()
-    }
-
-    fn store() -> DiskStore {
-        let schema = Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
-        DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default())
-            .open(std::path::Path::new("/cb"), &schema, NonZeroUsize::MAX)
-            .expect("open")
-    }
-
     /// `chain`'s blocks `heights` folded onto `store`
     fn folded(mut store: DiskStore, chain: &MockChain, heights: std::ops::Range<u32>) -> DiskStore {
         for block in &chain.blocks(chain.tip())[heights.start as usize..heights.end as usize] {
@@ -237,17 +226,19 @@ mod tests {
         store
     }
 
-    /// `chain(count)` committed, read as a snapshot reads it (nothing above)
-    fn reader(count: u32) -> CompactBlockReader<OverlayView<DiskView>> {
-        let mut store = folded(store(), &chain(count), 0..count);
+    /// `chain` committed whole, read as a snapshot reads it (nothing above)
+    fn reader(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
+        let count = u32::from(chain.tip().height) + 1;
+        let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut store = folded(store, chain, 0..count);
         store.commit().expect("SimFs commit");
         CompactBlockReader::new(OverlayView::new(store.committed(), Overlay::empty(store.schema())))
     }
 
     /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them (as the NFS folds them)
-    fn four_committed_three_above() -> CompactBlockReader<OverlayView<DiskView>> {
-        let chain = chain(7);
-        let mut store = folded(store(), &chain, 0..4);
+    fn four_committed_three_above(chain: &MockChain) -> CompactBlockReader<OverlayView<DiskView>> {
+        let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
+        let mut store = folded(store, chain, 0..4);
         store.commit().expect("SimFs commit");
         let mut layer = Overlay::empty(store.schema());
         for block in &chain.blocks(chain.tip())[4..7] {
@@ -289,7 +280,9 @@ mod tests {
 
     #[test]
     fn single_block_reads_carry_every_pool_and_confirm_the_located_hash() {
-        let reader = reader(4);
+        let chain = chain(4);
+        let reader = reader(&chain);
+        let hash = |height| <[u8; HASH]>::from(chain.at(h(height)).hash);
 
         let body = reader.block(h(2)).expect("block 2");
         let [decoded] = decode(&body).try_into().expect("one record");
@@ -302,15 +295,14 @@ mod tests {
         assert_eq!(body[0], 0, "gRPC compression flag");
         assert_eq!(framed_len(&body), Some(body.len()), "frame length = the message it carries");
 
-        let tip = reader.tip().expect("held");
         let [stored] = decode(&reader.block(h(3)).expect("tip")).try_into().expect("one record");
-        assert_eq!((tip.height, <[u8; HASH]>::from(tip.hash).to_vec()), (h(3), stored.hash));
+        assert_eq!(stored.hash, hash(3), "tip record = the chain's tip");
         assert_eq!(reader.block(h(4)), None);
 
-        assert_eq!(reader.block_at(h(2), &hash_at(2)), Ok(body), "by hash = by height");
-        let other = reader.block_at(h(2), &hash_at(3));
+        assert_eq!(reader.block_at(h(2), &hash(2)), Ok(body), "by hash = by height");
+        let other = reader.block_at(h(2), &hash(3));
         assert_eq!(other, Err(ServeError::HashNotFound), "another block at the located height");
-        let past = reader.block_at(h(9), &hash_at(9));
+        let past = reader.block_at(h(9), &[0xee; HASH]);
         assert_eq!(past, Err(ServeError::HashNotFound), "a height past the tip");
     }
 
@@ -319,43 +311,39 @@ mod tests {
     #[test]
     fn a_range_spans_the_committed_records_and_the_layer_without_a_seam() {
         // committed 0 to 3 (both inclusive), layer from 4
-        let reader = four_committed_three_above();
-        let range = |start, end, pools| {
-            RangeCursor::new(reader.clone(), h(start), h(end), h(6), pools).expect("range")
+        let chain = chain(7);
+        let reader = four_committed_three_above(&chain);
+        let range = |start, end| {
+            RangeCursor::new(reader.clone(), h(start), h(end), h(6), Pools::ALL).expect("range")
         };
         let single = |height| decode(&reader.block(h(height)).expect("block"))[0].height;
         assert_eq!((single(2), single(5)), (2, 5));
 
-        let chunks = drain(range(2, 6, Pools::ALL));
+        let chunks = drain(range(2, 6));
         assert_eq!(heights(&chunks), [2, 3, 4, 5, 6], "no gap or repeat at the seam");
         let per_chunk: Vec<usize> = chunks.iter().map(|chunk| decode(chunk).len()).collect();
         assert_eq!(per_chunk, [2, 1, 1, 1], "file span whole, layer per block");
 
-        let (above, below) = (drain(range(5, 6, Pools::ALL)), drain(range(0, 1, Pools::ALL)));
+        let (above, below) = (drain(range(5, 6)), drain(range(0, 1)));
         assert_eq!((heights(&above), heights(&below)), (vec![5, 6], vec![0, 1]));
 
-        // default pools either side of the seam = the full records projected on read
-        let shielded = drain(range(2, 6, Pools::default()));
-        let records: Vec<Bytes> =
-            (2..=6).map(|height| reader.block(h(height)).expect("held")).collect();
-        let projected = project(&records, Pools::default()).expect("walks");
-        assert_eq!(shielded.concat(), projected, "layer records = the committed projection");
-        assert_eq!(shielded.len(), chunks.len(), "same chunks as the unprojected range");
         assert_eq!(reader.resident_block(h(5)), reader.block(h(5)), "layer: RAM");
         assert_eq!(reader.resident_block(h(2)), None, "files: not resident");
-        assert!(reader.block_at(h(5), &hash_at(5)).is_ok(), "layer hash");
+        let layer_hash = <[u8; HASH]>::from(chain.at(h(5)).hash);
+        assert!(reader.block_at(h(5), &layer_hash).is_ok(), "layer hash");
     }
 
     /// `start > end` = lightwalletd's descending range: the ascending range's records, top down,
-    /// across the seam (layer first), clamped at the tip like the ascending one
+    /// across the seam (layer first)
     #[test]
     fn a_descending_range_serves_the_ascending_records_top_down_across_the_seam() {
-        let reader = four_committed_three_above();
-        let range =
-            |start, end, pools| RangeCursor::new(reader.clone(), h(start), h(end), h(6), pools);
+        let reader = four_committed_three_above(&chain(7));
+        let range = |start, end| {
+            RangeCursor::new(reader.clone(), h(start), h(end), h(6), Pools::ALL).expect("range")
+        };
 
-        let ascending = drain(range(1, 6, Pools::ALL).expect("ascending"));
-        let descending = drain(range(6, 1, Pools::ALL).expect("descending"));
+        let ascending = drain(range(1, 6));
+        let descending = drain(range(6, 1));
         let mut reversed = decode(&ascending.concat());
         reversed.reverse();
         assert_eq!(decode(&descending.concat()), reversed, "6..=1 = 1..=6 reversed");
@@ -365,36 +353,60 @@ mod tests {
         // budget under one record: one record per file window, still top down
         let narrow = RangeCursor::with_budget(reader.clone(), h(6), h(1), h(6), Pools::ALL, 1);
         assert_eq!(heights(&drain(narrow.expect("narrow"))), [6, 5, 4, 3, 2, 1]);
-
-        let clamped = drain(range(99, 4, Pools::ALL).expect("clamped"));
-        assert_eq!(heights(&clamped), [6, 5, 4], "top past the tip = from the tip down");
-        let past_tip = range(99, 7, Pools::ALL).err();
-        assert_eq!(past_tip, Some(ServeError::NotFound { height: h(7) }), "bottom past the tip");
-
-        let shielded = drain(range(6, 1, Pools::default()).expect("shielded"));
-        let records: Vec<Bytes> =
-            (1..=6).rev().map(|height| reader.block(h(height)).expect("held")).collect();
-        let projected = project(&records, Pools::default()).expect("walks");
-        assert_eq!(shielded.concat(), projected, "projected record for record, order kept");
-        assert_eq!(shielded.len(), descending.len(), "same chunks as the unprojected range");
     }
 
-    /// Reader past the served tip (root snapshot during bulk sync) → served to the tip only:
-    /// clamped either direction, a range starting past it = a miss
+    /// Bounds over 0..=6 held (0..=3 committed): top past the snapshot tip = clamped, either
+    /// direction; bottom past it = a miss (snapshot tip 4 = a root snapshot behind its reader)
     #[test]
-    fn a_range_never_serves_past_the_snapshot_tip() {
-        let reader = four_committed_three_above();
-        let range =
-            |start, end| RangeCursor::new(reader.clone(), h(start), h(end), h(4), Pools::ALL);
+    fn a_range_clamps_its_top_to_the_snapshot_tip_and_misses_past_it() {
+        let reader = four_committed_three_above(&chain(7));
+        let served = |heights: &[u64]| Ok(heights.to_vec());
+        let missed = |height| Err(ServeError::NotFound { height: h(height) });
+        // (start, end, snapshot tip) → heights in walk order
+        #[rustfmt::skip]
+        let cases = [
+            ((1, 4, 6),  served(&[1, 2, 3, 4])),
+            ((4, 99, 6), served(&[4, 5, 6])),
+            ((99, 4, 6), served(&[6, 5, 4])),
+            ((2, 99, 4), served(&[2, 3, 4])),
+            ((99, 3, 4), served(&[4, 3])),
+            ((5, 6, 4),  missed(5)),
+            ((99, 7, 6), missed(7)),
+            ((7, 9, 6),  missed(7)),
+        ];
+        for ((start, end, tip), expected) in cases {
+            let range = RangeCursor::new(reader.clone(), h(start), h(end), h(tip), Pools::ALL);
+            let served = range.map(|cursor| heights(&drain(cursor)));
+            assert_eq!(served, expected, "{start} to {end}, snapshot tip {tip}");
+        }
+    }
 
-        assert_eq!(heights(&drain(range(2, 99).expect("up"))), [2, 3, 4]);
-        assert_eq!(heights(&drain(range(99, 3).expect("down"))), [4, 3]);
-        assert_eq!(range(5, 6).err(), Some(ServeError::NotFound { height: h(5) }));
+    /// Projected range, either direction and across the seam = its records projected in walk
+    /// order, chunked as the unprojected range
+    #[test]
+    fn a_projected_range_is_its_records_projected_in_walk_order() {
+        let reader = four_committed_three_above(&chain(7));
+        for (start, end) in [(2, 6), (6, 1), (0, 3)] {
+            let range = |pools| {
+                let range = RangeCursor::new(reader.clone(), h(start), h(end), h(6), pools);
+                drain(range.expect("range"))
+            };
+            let walk: Vec<u32> = match start <= end {
+                true => (start..=end).collect(),
+                false => (end..=start).rev().collect(),
+            };
+            let records: Vec<Bytes> =
+                walk.into_iter().map(|height| reader.block(h(height)).expect("held")).collect();
+            let projected = project(&records, Pools::default()).expect("walks");
+            let (shielded, all) = (range(Pools::default()), range(Pools::ALL));
+            assert_eq!(shielded.concat(), projected, "{start} to {end}");
+            assert_eq!(shielded.len(), all.len(), "{start} to {end}: same chunks");
+        }
     }
 
     #[test]
     fn a_range_is_walked_in_bounded_windows() {
-        let reader = reader(8);
+        let reader = reader(&chain(8));
 
         // budget under one record: one record per window anyway (progress beats the bound)
         let one = RangeCursor::with_budget(reader.clone(), h(0), h(7), h(7), Pools::ALL, 1);
@@ -412,7 +424,7 @@ mod tests {
 
         // records per window capped under any budget, either direction
         let tip = WINDOW_RECORDS + 1;
-        let long = self::reader(tip + 1);
+        let long = self::reader(&chain(tip + 1));
         let up =
             drain(RangeCursor::new(long.clone(), h(0), h(tip), h(tip), Pools::ALL).expect("up"));
         let down = drain(RangeCursor::new(long, h(tip), h(0), h(tip), Pools::ALL).expect("down"));
@@ -423,43 +435,5 @@ mod tests {
         assert_eq!((per_chunk(&up), per_chunk(&down)), (capped.clone(), capped));
         let top_down: Vec<u64> = (0..=u64::from(tip)).rev().collect();
         assert_eq!(heights(&down), top_down, "no gap or repeat at the window edge");
-    }
-
-    /// Range bounds and pool projection: clamped at the tip, a start past it = a miss, a projected
-    /// window = the same records with only the asked pools
-    #[test]
-    fn a_range_clamps_at_the_tip_and_projects_every_record_it_yields() {
-        let reader = reader(6);
-        let range =
-            |start, end, pools| RangeCursor::new(reader.clone(), h(start), h(end), h(5), pools);
-
-        let inner = drain(range(1, 4, Pools::ALL).expect("range"));
-        assert_eq!(heights(&inner), [1, 2, 3, 4], "exactly the asked heights, in order");
-
-        let clamped = drain(range(4, 99, Pools::ALL).expect("clamped"));
-        assert_eq!(heights(&clamped), [4, 5], "past the tip = what exists, no error");
-
-        let past_tip = range(6, 7, Pools::ALL).err();
-        assert_eq!(past_tip, Some(ServeError::NotFound { height: h(6) }), "starts past the tip");
-
-        // shielded default: transparent pruned from every record (the coinbase, transparent only,
-        // with it), shielded pools intact
-        let full = decode(&drain(range(0, 2, Pools::ALL).expect("all")).concat());
-        let shielded = drain(range(0, 2, Pools::default()).expect("filtered"));
-        assert_eq!(shielded.len(), 1, "projected span still one window");
-        let shielded = decode(&shielded.concat());
-        let stripped: Vec<cf::CompactBlock> = full
-            .into_iter()
-            .map(|mut block| {
-                assert!(block.vtx[0].vin.is_empty() && !block.vtx[0].vout.is_empty(), "coinbase");
-                block.vtx.remove(0);
-                for tx in &mut block.vtx {
-                    (tx.vin, tx.vout) = (Vec::new(), Vec::new());
-                }
-                block
-            })
-            .collect();
-        assert_eq!(shielded, stripped, "only transparent dropped, every other field kept");
-        assert!(stripped.iter().all(|block| !block.vtx[0].actions.is_empty()), "orchard present");
     }
 }

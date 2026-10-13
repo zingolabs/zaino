@@ -5,7 +5,7 @@
 
 use bytes::Bytes;
 use zaino_persistence::{SequenceRead, View};
-use zaino_primitives::types::{BlockRef, Height, TreeSizes};
+use zaino_primitives::types::{Height, TreeSizes};
 
 use crate::{position, project::record_sizes, BLOCKS};
 
@@ -24,11 +24,6 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 
     pub(crate) fn view(&self) -> &V {
         &self.view
-    }
-
-    /// `None` = nothing held
-    pub(crate) fn tip(&self) -> Option<BlockRef> {
-        self.view.tip()
     }
 
     /// Framed, wire-ready, every pool
@@ -70,7 +65,7 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 
     /// Cumulative tree sizes after the tip (its record's `chainMetadata`; nothing held = zero)
     pub(crate) fn tip_sizes(&self) -> TreeSizes {
-        let Some(tip) = self.tip() else { return TreeSizes::ZERO };
+        let Some(tip) = self.view.tip() else { return TreeSizes::ZERO };
         let record = self.block(tip.height);
         let record =
             record.unwrap_or_else(|| panic!("compact_block: no record at its tip {tip:?}"));

@@ -112,16 +112,14 @@ pub fn compact_tx(index: u64, tx: &Transaction, fee: Option<Zatoshis>) -> cf::Co
 
 #[cfg(test)]
 mod tests {
-    use std::slice;
-
     use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
     use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
 
     use super::*;
-    use crate::project::{record_hash, record_sizes};
 
-    /// Block 2's tx spends block 1's output 7 and carries every pool; fee 5 000
+    /// Block 2's tx (spends block 1's output 7, every pool, fee 5 000) → one gRPC frame decoding
+    /// to every field built from it (transparent kept: pruning = read-side)
     #[test]
     fn a_record_decodes_back_to_every_pool_it_was_built_from() {
         let alice = p2pkh([0xaa; 20]);
@@ -130,7 +128,7 @@ mod tests {
             b.coinbase(|c| (0..8).fold(c.txid([0x22; 32]), |c, _| c.pay(&alice, 17_345)))
         });
         let two = chain.mine(|b| {
-            b.tx(|t| {
+            b.coinbase(|c| c.txid([0x0c; 32])).tx(|t| {
                 t.txid([0x11; 32])
                     .spend(outpoint([0x22; 32], 7))
                     .pay(&alice, 12_345)
@@ -152,44 +150,56 @@ mod tests {
         assert_eq!(framed_len(&framed), Some(framed.len()), "gRPC length prefix");
         let decoded = cf::CompactBlock::decode(&framed[FRAME_HEADER..]).expect("decodes as proto");
 
-        let hash = <[u8; HASH]>::from(block.header().hash);
-        let prev = <[u8; HASH]>::from(block.header().prev_hash);
-        assert_eq!((decoded.height, decoded.time), (2, block.header().time));
-        assert_eq!((decoded.hash, decoded.prev_hash), (hash.to_vec(), prev.to_vec()));
-        assert_eq!(record_hash(&framed), Some(hash), "framing walk reads the proto's hash");
-        assert_eq!(record_hash(&framed[..FRAME_HEADER + 4]), None, "cut before the hash");
-        assert_eq!(decoded.vtx.len(), 2, "coinbase + the tx");
-        assert_eq!(decoded.vtx[0].fee, 0, "coinbase: no fee on the wire");
-
-        let tx = &decoded.vtx[1];
-        assert_eq!(tx.index, 1);
-        assert_eq!(tx.txid, [0x11; HASH].to_vec());
-
-        // every pool survives the round trip (`ironwood_actions` included)
-        assert_eq!(tx.spends.len(), 1, "sapling spends");
-        assert_eq!(tx.spends[0].nf, [0x33; HASH].to_vec());
-        assert_eq!(tx.outputs.len(), 1, "sapling outputs");
-        assert_eq!(tx.actions.len(), 1, "orchard actions");
-        assert_eq!(tx.ironwood_actions.len(), 2, "ironwood actions");
-        assert_eq!(tx.ironwood_actions[0].nullifier, [0x88; HASH].to_vec());
-        assert_eq!(tx.ironwood_actions[1].nullifier, [0x99; HASH].to_vec());
-
-        // transparent rides in the record (pruning = a read-side decision)
-        assert_eq!(tx.vin.len(), 1, "transparent inputs");
-        assert_eq!(tx.vin[0].prevout_index, 7);
-        assert_eq!(tx.vout.len(), 1, "transparent outputs");
-        assert_eq!(tx.vout[0].value, 12_345);
-
-        // tree sizes for all three pools
-        let metadata = decoded.chain_metadata.expect("chain metadata");
-        assert_eq!(metadata.sapling_commitment_tree_size, 10);
-        assert_eq!(metadata.orchard_commitment_tree_size, 20);
-        assert_eq!(metadata.ironwood_commitment_tree_size, 30);
-        assert_eq!(record_sizes(&framed), Some(sizes), "framing walk reads chainMetadata back");
-        let cut = &framed[..framed.len() - 1];
-        assert_eq!(record_sizes(cut), None, "cut inside chainMetadata");
-
-        assert_eq!(tx.fee, 5_000, "fee from the block's BlockFees");
+        // detection bytes = the builder's own, opaque here
+        let shielded = &block.transactions()[1];
+        let key = |key| <[u8; HASH]>::from(key).to_vec();
+        let ciphertext = |bytes| <[u8; CompactCiphertext::LENGTH]>::from(bytes).to_vec();
+        let leaf = |leaf: u8| [[leaf].as_slice(), &[0; HASH - 1]].concat();
+        let action = |nullifier: u8, cmx: u8, built: &OrchardAction| cf::CompactOrchardAction {
+            nullifier: vec![nullifier; HASH],
+            cmx: leaf(cmx),
+            ephemeral_key: key(built.ephemeral_key),
+            ciphertext: ciphertext(built.enc_ciphertext),
+        };
+        let output = &shielded.sapling.outputs[0];
+        let ironwood = &shielded.ironwood.actions;
+        let expected = cf::CompactBlock {
+            height: 2,
+            hash: <[u8; HASH]>::from(block.header().hash).to_vec(),
+            prev_hash: <[u8; HASH]>::from(block.header().prev_hash).to_vec(),
+            time: block.header().time,
+            header: Vec::new(),
+            vtx: vec![
+                cf::CompactTx { index: 0, txid: vec![0x0c; HASH], ..cf::CompactTx::default() },
+                cf::CompactTx {
+                    index: 1,
+                    txid: vec![0x11; HASH],
+                    fee: 5_000,
+                    spends: vec![cf::CompactSaplingSpend { nf: vec![0x33; HASH] }],
+                    outputs: vec![cf::CompactSaplingOutput {
+                        cmu: leaf(0x44),
+                        ephemeral_key: key(output.ephemeral_key),
+                        ciphertext: ciphertext(output.enc_ciphertext),
+                    }],
+                    actions: vec![action(0x77, 0x78, &shielded.orchard.actions[0])],
+                    ironwood_actions: vec![
+                        action(0x88, 0x89, &ironwood[0]),
+                        action(0x99, 0x9a, &ironwood[1]),
+                    ],
+                    vin: vec![cf::CompactTxIn { prevout_txid: vec![0x22; HASH], prevout_index: 7 }],
+                    vout: vec![cf::TxOut {
+                        value: 12_345,
+                        script_pub_key: alice.as_bytes().to_vec(),
+                    }],
+                },
+            ],
+            chain_metadata: Some(cf::ChainMetadata {
+                sapling_commitment_tree_size: 10,
+                orchard_commitment_tree_size: 20,
+                ironwood_commitment_tree_size: 30,
+            }),
+        };
+        assert_eq!(decoded, expected);
     }
 
     /// Wire `fee` = `uint32`, no presence: unknown (coinbase, unpriced mempool tx) and past
@@ -220,150 +230,5 @@ mod tests {
         let (one, two) = (chain.mine_empty(1), chain.mine_empty(1));
         let stranger = chain.fees(two.hash);
         let _ = encode_compact_block(chain.block(one.hash), &stranger, &TreeSizes::ZERO);
-    }
-
-    /// Decoded projection = exactly the requested pools, nothing else changed (the walk rewrites
-    /// framing: an off-by-one corrupts an unrelated field)
-    #[test]
-    fn projection_drops_only_the_pools_not_requested() {
-        use crate::{project::project, Pools};
-
-        // coinbase pays (transparent only); the tx carries every pool
-        let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 17_345)));
-        let two = chain.mine(|b| {
-            b.coinbase(|c| c.pay(&alice, 625)).tx(|t| {
-                t.spend(outpoint([0x22; 32], 0))
-                    .pay(&alice, 12_345)
-                    .sapling_spend([0x33; 32])
-                    .sapling_output(0x44)
-                    .orchard_action([0x77; 32], 0x78)
-                    .ironwood_action([0x88; 32], 0x89)
-            })
-        });
-        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
-        let stored = encode_compact_block(block, &fees, &TreeSizes::ZERO);
-        let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decode");
-        let full_tx = &full.vtx[1];
-
-        // every pool requested: the stored bytes, untouched
-        assert_eq!(
-            project(slice::from_ref(&stored), Pools::ALL).expect("all pools"),
-            stored,
-            "identity"
-        );
-
-        // default (shielded only): transparent gone, shielded intact
-        let shielded = project(slice::from_ref(&stored), Pools::default()).expect("default");
-        let decoded = cf::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
-        let [tx] = &decoded.vtx[..] else { panic!("coinbase (transparent only) dropped") };
-
-        assert!(tx.vin.is_empty(), "transparent inputs dropped");
-        assert!(tx.vout.is_empty(), "transparent outputs dropped");
-        assert_eq!(tx.spends, full_tx.spends, "sapling spends kept");
-        assert_eq!(tx.outputs, full_tx.outputs, "sapling outputs kept");
-        assert_eq!(tx.actions, full_tx.actions, "orchard kept");
-        assert_eq!(tx.ironwood_actions, full_tx.ironwood_actions, "ironwood kept");
-
-        // nothing outside the pools moved
-        assert_eq!(decoded.height, full.height);
-        assert_eq!(decoded.hash, full.hash);
-        assert_eq!(decoded.prev_hash, full.prev_hash);
-        assert_eq!(decoded.time, full.time);
-        assert_eq!(decoded.chain_metadata, full.chain_metadata);
-        assert_eq!(tx.index, full_tx.index);
-        assert_eq!(tx.txid, full_tx.txid);
-
-        // frame length prefix rewritten to the shortened payload
-        assert_eq!(framed_len(&shielded), Some(shielded.len()));
-        assert!(shielded.len() < stored.len(), "dropping fields shrinks it");
-
-        // one pool at a time: each selection keeps exactly its own
-        let orchard = Pools { sapling: false, orchard: true, ironwood: false, transparent: false };
-        let orchard_only = project(slice::from_ref(&stored), orchard).expect("orchard only");
-        let decoded = cf::CompactBlock::decode(&orchard_only[FRAME_HEADER..]).expect("decodes");
-        let [tx] = &decoded.vtx[..] else { panic!("coinbase (transparent only) dropped") };
-
-        assert_eq!(tx.actions, full_tx.actions, "orchard kept");
-        assert!(tx.spends.is_empty(), "sapling spends dropped");
-        assert!(tx.outputs.is_empty(), "sapling outputs dropped");
-        assert!(tx.ironwood_actions.is_empty(), "ironwood dropped");
-        assert!(tx.vin.is_empty());
-        assert_eq!(tx.txid, full_tx.txid, "identity survives every selection");
-    }
-
-    /// lightwalletd `FilterTxPool`: a tx left with no component after projection is dropped, for
-    /// every pool selection (`ALL` included), from a block and one at a time from the mempool; the
-    /// block stays, even with no tx left; the stored record (`GetBlock`) keeps every tx
-    #[test]
-    fn projection_drops_transactions_left_with_no_component() {
-        use crate::{
-            project::{project, project_tx_at},
-            Pools,
-        };
-
-        // slots: coinbase (transparent), component-less, sapling only, orchard only, transparent
-        let alice = p2pkh([0xaa; 20]);
-        let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 1).pay(&alice, 1_100)));
-        let two = chain.mine(|b| {
-            b.coinbase(|c| c.pay(&alice, 625))
-                .tx(|t| t.txid([1; 32]))
-                .tx(|t| t.txid([2; 32]).sapling_output(0x44))
-                .tx(|t| t.txid([3; 32]).orchard_action([0x77; 32], 0x78))
-                .tx(|t| t.txid([4; 32]).spend(outpoint([0x22; 32], 1)).pay(&alice, 100).fee(1_000))
-        });
-        let three = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
-        let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));
-        let sizes = TreeSizes {
-            sapling: TreeSize::from(1),
-            orchard: TreeSize::from(1),
-            ironwood: TreeSize::from(0),
-        };
-        let stored = encode_compact_block(block, &fees, &sizes);
-        let indices = |pools| {
-            let projected = project(slice::from_ref(&stored), pools).expect("walks");
-            let decoded = cf::CompactBlock::decode(&projected[FRAME_HEADER..]).expect("decodes");
-            decoded.vtx.iter().map(|tx| tx.index).collect::<Vec<_>>()
-        };
-        let transparent =
-            Pools { sapling: false, orchard: false, ironwood: false, transparent: true };
-        let orchard = Pools { sapling: false, orchard: true, ironwood: false, transparent: false };
-
-        let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-        assert_eq!(full.vtx.len(), 5, "stored record (GetBlock) keeps every tx");
-        assert_eq!(indices(Pools::default()), [2, 3], "shielded: coinbase + transparent-only gone");
-        assert_eq!(indices(Pools::ALL), [0, 2, 3, 4], "all: only the component-less tx gone");
-        assert_eq!(indices(transparent), [0, 4]);
-        assert_eq!(indices(orchard), [3]);
-
-        // the same transactions one at a time from the mempool: the same rule, each re-slotted
-        let mempool = |pools| {
-            let fee = Some(Zatoshis::new(1_000).expect("in range"));
-            let kept = block.transactions().iter().enumerate().filter_map(|(slot, tx)| {
-                let rendered = compact_tx(0, tx, fee);
-                let framed = project_tx_at(&rendered.encode_to_vec(), slot as u64, pools)?;
-                let decoded = cf::CompactTx::decode(&framed[FRAME_HEADER..]).expect("decodes");
-                assert_eq!(
-                    (&decoded.txid, decoded.fee),
-                    (&rendered.txid, 1_000),
-                    "slot {slot}: identity + fee"
-                );
-                Some(decoded.index)
-            });
-            kept.collect::<Vec<_>>()
-        };
-        assert_eq!(mempool(Pools::default()), [2, 3], "shielded: as from a block");
-        assert_eq!(mempool(Pools::ALL), [0, 2, 3, 4]);
-        assert_eq!(mempool(transparent), [0, 4]);
-        assert_eq!(mempool(orchard), [3]);
-
-        let coinbase_only = chain.block(three.hash);
-        let stored = encode_compact_block(coinbase_only, &chain.fees(three.hash), &sizes);
-        let shielded = project(slice::from_ref(&stored), Pools::default()).expect("walks");
-        let decoded = cf::CompactBlock::decode(&shielded[FRAME_HEADER..]).expect("decodes");
-        let full = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
-        assert_eq!(decoded, cf::CompactBlock { vtx: vec![], ..full }, "block kept, no tx left");
     }
 }

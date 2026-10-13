@@ -20,6 +20,7 @@ zcash_protocol.workspace = true
 zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
+zaino-sync = { workspace = true, features = ["testing"] }
 
 [lints.rust]
 unreachable_pub = "warn"
