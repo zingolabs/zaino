@@ -13,7 +13,6 @@ use zaino_source::testing::Lie;
 use zaino_sync::check_block;
 
 use super::{Indexes, Input, NfsCore, Output};
-use crate::fired;
 use crate::graph::Node;
 
 fn h(n: u32) -> Height {
@@ -118,9 +117,9 @@ struct Hold {
 }
 
 #[test]
-fn every_invariant_check_fires_on_its_planted_bug() {
+fn the_unplanted_core_passes_every_check_in_its_planted_state() {
     let world = World::new();
-    let (a, s, q) = (&world.a, &world.s, &world.q);
+    let (a, s) = (&world.a, &world.s);
     let valid = world.valid();
     valid.check();
     let nodes: BTreeSet<BlockHash> = valid.graph.nodes().map(|node| node.at.hash).collect();
@@ -131,80 +130,193 @@ fn every_invariant_check_fires_on_its_planted_bug() {
     assert_eq!(
         (nodes, ready, folding, valid.wanted.get(&h(9)) == Some(&a[9]), shown),
         (expected, vec![h(8)], vec![a[7]], true, Some(world.at(a[6]))),
-        "the planted state"
     );
+}
 
-    type Plant<'a> = Box<dyn Fn(&mut NfsCore<Height>) + 'a>;
-    let drills: Vec<(&str, Plant)> = vec![
-        ("nothing before a chain", Box::new(|c| c.chain = None)),
-        (
-            "N1: every node's block = its own header",
-            Box::new(|c| c.graph.insert(Node { block: world.block(a[6]), ..world.node(a[5]) })),
-        ),
-        (
-            "N1: every node's body = its header's merkle root",
-            Box::new(|c| {
-                let block = Arc::new(Lie::Poisoned.told(&world.block(a[5])));
-                c.graph.insert(Node { block, ..world.node(a[5]) });
-            }),
-        ),
-        ("N2: nodes only above the root", Box::new(|c| c.graph.insert(world.node(a[2])))),
-        ("N2: every node folds on a held parent", Box::new(|c| c.graph.remove(&a[5]))),
-        (
-            "G8: every node on the best chain or a side branch it holds",
-            Box::new(|c| c.graph.insert(world.node(q[0]))),
-        ),
-        (
-            "G8: every node on the best chain or a side branch it holds",
-            Box::new(|c| c.graph.insert(world.node(s[2]))),
-        ),
-        ("N5: nothing folded outside the window", Box::new(|c| c.window = 2)),
-        (
-            "N4: served tip = the deepest folded best block",
-            Box::new(|c| c.shown.as_mut().expect("published").tip = world.at(a[5])),
-        ),
-        (
-            "fetch: ready bodies above the root",
-            Box::new(|c| drop(c.ready.insert(h(2), world.block(a[2])))),
-        ),
-        (
-            "N1: every ready body is best",
-            Box::new(|c| drop(c.ready.insert(h(8), world.block(s[3])))),
-        ),
-        (
-            "fetch: a folded block is not ready",
-            Box::new(|c| drop(c.ready.insert(h(6), world.block(a[6])))),
-        ),
-        ("fetch: a ready body is not wanted", Box::new(|c| _ = c.wanted.insert(h(8), a[8]))),
-        ("fetch: wants above the root", Box::new(|c| _ = c.wanted.insert(h(1), a[1]))),
-        ("N1: every want is best", Box::new(|c| _ = c.wanted.insert(h(9), BlockHash::ZERO))),
-        ("fetch: a folded block is not wanted", Box::new(|c| _ = c.wanted.insert(h(6), a[6]))),
-        (
-            "fold: nothing folds twice",
-            Box::new(|c| drop(c.folding.insert(a[6], (world.block(a[6]), both())))),
-        ),
-    ];
-    for (expected, plant) in drills {
-        let mut core = world.valid();
-        plant(&mut core);
-        let message = fired(|| core.check()).unwrap_or_default();
-        assert!(message.contains(expected), "planted {expected:?}, fired {message:?}");
-    }
+#[test]
+#[should_panic(expected = "nothing before a chain")]
+fn check_catches_a_core_without_a_chain() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.chain = None;
+    core.check();
+}
 
-    // preconditions: caller / driver bug → named panic
-    let step = |input: Input<Height>| fired(|| drop(world.valid().step(input)));
-    let preconditions = [
-        ("at least one block in flight", fired(|| drop(NfsCore::<Height>::new(0, 1, 10)))),
-        ("1 to 32 indexes", fired(|| drop(NfsCore::<Height>::new(1, 0, 10)))),
-        ("one durable tip per enabled index", step(Input::Durable(vec![]))),
-        ("N3: index 0's durable tip never moves back", step(world.durable([a[2], a[2]]))),
-    ];
-    for (expected, message) in preconditions {
-        let message = message.unwrap_or_default();
-        assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
-    }
+#[test]
+#[should_panic(expected = "N1: every node's block = its own header")]
+fn check_catches_a_node_holding_another_block() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.graph.insert(Node { block: world.block(world.a[6]), ..world.node(world.a[5]) });
+    core.check();
+}
 
-    // stale fold result (no fold in flight, or another covers): ignored, no node
+#[test]
+#[should_panic(expected = "N1: every node's body = its header's merkle root")]
+fn check_catches_a_node_body_off_its_merkle_root() {
+    let world = World::new();
+    let mut core = world.valid();
+    let block = Arc::new(Lie::Poisoned.told(&world.block(world.a[5])));
+    core.graph.insert(Node { block, ..world.node(world.a[5]) });
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N2: nodes only above the root")]
+fn check_catches_a_node_at_or_below_the_root() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.graph.insert(world.node(world.a[2]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N2: every node folds on a held parent")]
+fn check_catches_a_node_whose_parent_is_gone() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.graph.remove(&world.a[5]);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "G8: every node on the best chain or a side branch it holds")]
+fn check_catches_a_node_on_a_branch_the_chain_does_not_hold() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.graph.insert(world.node(world.q[0]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "G8: every node on the best chain or a side branch it holds")]
+fn check_catches_a_side_node_past_what_the_chain_holds() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.graph.insert(world.node(world.s[2]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N5: nothing folded outside the window")]
+fn check_catches_a_node_outside_the_window() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.window = 2;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N4: served tip = the deepest folded best block")]
+fn check_catches_a_served_tip_short_of_the_deepest_fold() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.shown.as_mut().expect("published").tip = world.at(world.a[5]);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fetch: ready bodies above the root")]
+fn check_catches_a_ready_body_at_or_below_the_root() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.ready.insert(h(2), world.block(world.a[2]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N1: every ready body is best")]
+fn check_catches_a_ready_body_off_the_best_chain() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.ready.insert(h(8), world.block(world.s[3]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fetch: a folded block is not ready")]
+fn check_catches_a_folded_block_still_ready() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.ready.insert(h(6), world.block(world.a[6]));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fetch: a ready body is not wanted")]
+fn check_catches_a_ready_body_still_wanted() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.wanted.insert(h(8), world.a[8]);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fetch: wants above the root")]
+fn check_catches_a_want_at_or_below_the_root() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.wanted.insert(h(1), world.a[1]);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "N1: every want is best")]
+fn check_catches_a_want_off_the_best_chain() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.wanted.insert(h(9), BlockHash::ZERO);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fetch: a folded block is not wanted")]
+fn check_catches_a_folded_block_still_wanted() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.wanted.insert(h(6), world.a[6]);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "fold: nothing folds twice")]
+fn check_catches_a_folded_block_folding_again() {
+    let world = World::new();
+    let mut core = world.valid();
+    core.folding.insert(world.a[6], (world.block(world.a[6]), both()));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "at least one block in flight")]
+fn a_core_with_no_block_in_flight_panics() {
+    NfsCore::<Height>::new(0, 1, 10);
+}
+
+#[test]
+#[should_panic(expected = "1 to 32 indexes")]
+fn a_core_with_no_index_panics() {
+    NfsCore::<Height>::new(1, 0, 10);
+}
+
+#[test]
+#[should_panic(expected = "one durable tip per enabled index")]
+fn durable_tips_short_of_the_indexes_panic() {
+    World::new().valid().step(Input::Durable(vec![]));
+}
+
+#[test]
+#[should_panic(expected = "N3: index 0's durable tip never moves back")]
+fn a_durable_tip_moving_back_panics() {
+    let world = World::new();
+    world.valid().step(world.durable([world.a[2], world.a[2]]));
+}
+
+/// No fold in flight, or another covers: ignored, never a node
+#[test]
+fn a_stale_fold_result_is_ignored() {
+    let world = World::new();
+    let a = &world.a;
     let mut core = world.valid();
     for (at, covers) in [(a[8], both()), (a[7], Indexes::one(0))] {
         let stale = Input::Folded { at: world.at(at), covers, folded: Arc::new(h(0)) };
@@ -212,9 +324,14 @@ fn every_invariant_check_fires_on_its_planted_bug() {
         assert!(!core.graph.contains(&at), "{at:?}: never a node");
     }
     core.check();
+}
 
-    // root A2 past the window of best A9 (bulk sync): every node, body, fold and want dropped,
-    // the root published (committed views alone)
+/// Root A2 past the window of best A9 (bulk sync): every node, body, fold and want dropped, the
+/// root published (committed views alone)
+#[test]
+fn a_root_past_the_window_drops_everything_and_publishes_the_root() {
+    let world = World::new();
+    let a = &world.a;
     let mut core = world.valid();
     core.window = 6;
     let outputs = core.step(world.durable([a[3], a[2]]));

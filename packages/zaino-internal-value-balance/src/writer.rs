@@ -204,11 +204,7 @@ fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        num::NonZeroUsize,
-        panic::{catch_unwind, AssertUnwindSafe},
-        path::Path,
-    };
+    use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema, View,
@@ -324,7 +320,7 @@ mod tests {
     }
 
     /// Every rejection names its block and tx; a run never lets a block spend a later one's
-    /// output, nor an output twice; a run off the parent tip panics, naming the index
+    /// output, nor an output twice
     ///
     /// - lies (one field of a mined tx edited): a prevout never mined, a prevout three mints, one
     ///   prevout twice in a tx, two's prevout again in three, outputs past the inputs, sapling past
@@ -408,17 +404,19 @@ mod tests {
             let folded = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
+    }
 
-        let (store, two) = (open(&SimFs::new(), NonZeroUsize::MAX), block(two));
-        let run = [&*genesis, &*two];
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_run_skipping_a_block_panics() {
+        let mut chain = MockChain::regtest();
+        let two = chain.mine_empty(2);
+        let (genesis, two) = (chain.block(chain.genesis().hash), chain.block(two.hash));
+        let store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let run = [&**genesis, &**two];
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
-        let parent = ValueBalanceReader::new(store.staged());
-        let gap = catch_unwind(AssertUnwindSafe(|| fold_run(&parent, &run, &mut out)));
-        let payload = gap.expect_err("a run skipping 1");
-        let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
-        assert!(message.starts_with("value_balance: block"), "{message}");
-        assert!(message.contains("does not extend the parent tip"), "{message}");
+        let _ = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
     }
 
     /// Fees read back for a held block: as folded; a height with no record or a record not one fee

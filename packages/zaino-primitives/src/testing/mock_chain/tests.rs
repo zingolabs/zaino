@@ -1,5 +1,3 @@
-use std::panic::{catch_unwind, AssertUnwindSafe};
-
 use zcash_protocol::consensus::{BranchId, NetworkUpgrade};
 
 use super::*;
@@ -163,110 +161,172 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
     assert_eq!(chain.tip(), withdrawn, "a shorter sibling stays a side branch");
 }
 
-/// Each construction no real chain holds panics, naming the rule it breaks
+// constructions no real chain holds: each panics naming the rule it breaks
+
+/// Regtest + block 1 whose coinbase `[0x10; 32]` pays alice 50 000
+fn funded() -> MockChain {
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
+    chain
+}
+
+/// Spends block 1's coinbase output
+fn spend(t: TxBuilder) -> TxBuilder {
+    t.spend(outpoint([0x10; 32], 0))
+}
+
 #[test]
-fn each_impossible_construction_panics_naming_its_rule() {
-    let alice = p2pkh([0xaa; 20]);
-    let funded = || {
-        let mut chain = MockChain::regtest();
-        chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
-        chain
-    };
-    let spend = |t: TxBuilder| t.spend(outpoint([0x10; 32], 0));
-    type Case<'a> = (&'a str, Box<dyn Fn() + 'a>);
-    #[rustfmt::skip]
-    let cases: Vec<Case> = vec![
-        ("not unspent on this branch", Box::new(|| {
-            funded().mine(|b| b.tx(|t| t.spend(outpoint([0x99; 32], 0))));
-        })),
-        ("not unspent on this branch", Box::new(|| {
-            let mut chain = funded();
-            chain.mine(|b| b.tx(spend));
-            chain.mine(|b| b.tx(spend));
-        })),
-        ("not unspent on this branch", Box::new(|| {
-            funded().mine(|b| b.tx(spend).tx(spend));
-        })),
-        ("not unspent on this branch", Box::new(|| {
-            let mut chain = funded();
-            let genesis = chain.genesis();
-            chain.branch(genesis).mine(|b| b.tx(spend));
-        })),
-        ("overspends by 1", Box::new(|| {
-            funded().mine(|b| b.tx(|t| spend(t).pay(&alice, 50_001)));
-        })),
-        ("stated fee", Box::new(|| {
-            funded().mine(|b| b.tx(|t| spend(t).pay(&alice, 49_000).fee(500)));
-        })),
-        ("txid repeated on this branch", Box::new(|| {
-            funded().mine(|b| b.tx(|t| t.txid([0x10; 32])));
-        })),
-        ("pool data before Sapling", Box::new(|| {
-            let mut chain = MockChain::regtest().upgrades(UpgradeSchedule::all_at(h(5)));
-            chain.mine(|b| b.tx(|t| t.sapling_output(1)));
-        })),
-        ("pool data before Nu5", Box::new(|| {
-            let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
-            MockChain::regtest().upgrades(upgrades).mine(|b| b.coinbase(|c| c.orchard_action([1; 32], 1)));
-        })),
-        ("pool data before Nu6.3", Box::new(|| {
-            let upgrades = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu6_3);
-            MockChain::regtest().upgrades(upgrades).mine(|b| b.tx(|t| t.ironwood_action([1; 32], 1)));
-        })),
-        ("nullifier revealed twice", Box::new(|| {
-            let mut chain = MockChain::regtest();
-            chain.mine(|b| b.tx(|t| t.sapling_spend([5; 32])));
-            chain.mine(|b| b.tx(|t| t.sapling_spend([5; 32])));
-        })),
-        ("orchard nullifier revealed twice", Box::new(|| {
-            let mut chain = MockChain::regtest();
-            chain.mine(|b| b.coinbase(|c| c.orchard_action([6; 32], 1)));
-            chain.mine(|b| b.coinbase(|c| c.orchard_action([6; 32], 2)));
-        })),
-        ("ZIP 209", Box::new(|| {
-            funded().mine(|b| b.tx(|t| t.sapling_spend([5; 32]).value_balance(ShieldedPool::Sapling, 1)));
-        })),
-        ("a coinbase spends nothing", Box::new(|| {
-            funded().mine(|b| b.coinbase(spend));
-        })),
-        ("a coinbase pays no fee", Box::new(|| {
-            funded().mine(|b| b.coinbase(|c| c.fee(1)));
-        })),
-        ("past the supply", Box::new(|| {
-            funded().mine(|b| b.coinbase(|c| c.pay(&alice, 21_000_000 * 100_000_000 + 1)));
-        })),
-        ("not after the median time past", Box::new(|| {
-            funded().mine(|b| b.time(GENESIS_TIME));
-        })),
-        ("bits() under Work::Limit", Box::new(|| {
-            funded().mine(|b| b.bits(REGTEST_BITS));
-        })),
-        ("outweigh() under Work::Limit", Box::new(|| {
-            funded().fork(h(0)).outweigh();
-        })),
-        ("bits() on an outweigh() block", Box::new(|| {
-            MockChain::regtest().varied_work().fork(h(0)).outweigh().mine(|b| b.bits(REGTEST_BITS));
-        })),
-        ("configured after its first mine", Box::new(|| {
-            funded().varied_work();
-        })),
-        ("Sapling at 5 activates before Overwinter", Box::new(|| {
-            let upgrades = UpgradeSchedule::all_at(h(6)).with(NetworkUpgrade::Sapling, h(5));
-            MockChain::regtest().upgrades(upgrades);
-        })),
-        ("above the best tip", Box::new(|| {
-            funded().at(h(2));
-        })),
-    ];
-    for (rule, case) in cases {
-        let panic = catch_unwind(AssertUnwindSafe(case)).expect_err(rule);
-        let message = panic
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| panic.downcast_ref::<&str>().map(|message| message.to_string()))
-            .unwrap_or_default();
-        assert!(message.contains(rule), "expected `{rule}`, got `{message}`");
-    }
+#[should_panic(expected = "not unspent on this branch")]
+fn spending_an_output_never_mined_panics() {
+    funded().mine(|b| b.tx(|t| t.spend(outpoint([0x99; 32], 0))));
+}
+
+#[test]
+#[should_panic(expected = "not unspent on this branch")]
+fn spending_an_output_a_block_before_spent_panics() {
+    let mut chain = funded();
+    chain.mine(|b| b.tx(spend));
+    chain.mine(|b| b.tx(spend));
+}
+
+#[test]
+#[should_panic(expected = "not unspent on this branch")]
+fn spending_an_output_twice_in_one_block_panics() {
+    funded().mine(|b| b.tx(spend).tx(spend));
+}
+
+#[test]
+#[should_panic(expected = "not unspent on this branch")]
+fn spending_an_output_off_its_branch_panics() {
+    let mut chain = funded();
+    let genesis = chain.genesis();
+    chain.branch(genesis).mine(|b| b.tx(spend));
+}
+
+#[test]
+#[should_panic(expected = "overspends by 1")]
+fn paying_past_the_inputs_panics() {
+    funded().mine(|b| b.tx(|t| spend(t).pay(&p2pkh([0xaa; 20]), 50_001)));
+}
+
+#[test]
+#[should_panic(expected = "stated fee")]
+fn a_stated_fee_off_the_derived_one_panics() {
+    funded().mine(|b| b.tx(|t| spend(t).pay(&p2pkh([0xaa; 20]), 49_000).fee(500)));
+}
+
+#[test]
+#[should_panic(expected = "txid repeated on this branch")]
+fn a_txid_repeated_on_its_branch_panics() {
+    funded().mine(|b| b.tx(|t| t.txid([0x10; 32])));
+}
+
+#[test]
+#[should_panic(expected = "pool data before Sapling")]
+fn sapling_data_before_sapling_panics() {
+    let mut chain = MockChain::regtest().upgrades(UpgradeSchedule::all_at(h(5)));
+    chain.mine(|b| b.tx(|t| t.sapling_output(1)));
+}
+
+#[test]
+#[should_panic(expected = "pool data before Nu5")]
+fn orchard_data_before_nu5_panics() {
+    let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
+    let mut chain = MockChain::regtest().upgrades(upgrades);
+    chain.mine(|b| b.coinbase(|c| c.orchard_action([1; 32], 1)));
+}
+
+#[test]
+#[should_panic(expected = "pool data before Nu6.3")]
+fn ironwood_data_before_nu6_3_panics() {
+    let upgrades = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu6_3);
+    let mut chain = MockChain::regtest().upgrades(upgrades);
+    chain.mine(|b| b.tx(|t| t.ironwood_action([1; 32], 1)));
+}
+
+#[test]
+#[should_panic(expected = "nullifier revealed twice")]
+fn a_sapling_nullifier_revealed_twice_panics() {
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.tx(|t| t.sapling_spend([5; 32])));
+    chain.mine(|b| b.tx(|t| t.sapling_spend([5; 32])));
+}
+
+#[test]
+#[should_panic(expected = "orchard nullifier revealed twice")]
+fn an_orchard_nullifier_revealed_twice_panics() {
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.orchard_action([6; 32], 1)));
+    chain.mine(|b| b.coinbase(|c| c.orchard_action([6; 32], 2)));
+}
+
+#[test]
+#[should_panic(expected = "ZIP 209")]
+fn a_pool_driven_below_zero_panics() {
+    let drained = |t: TxBuilder| t.sapling_spend([5; 32]).value_balance(ShieldedPool::Sapling, 1);
+    funded().mine(|b| b.tx(drained));
+}
+
+#[test]
+#[should_panic(expected = "a coinbase spends nothing")]
+fn a_coinbase_spending_panics() {
+    funded().mine(|b| b.coinbase(spend));
+}
+
+#[test]
+#[should_panic(expected = "a coinbase pays no fee")]
+fn a_coinbase_paying_a_fee_panics() {
+    funded().mine(|b| b.coinbase(|c| c.fee(1)));
+}
+
+#[test]
+#[should_panic(expected = "past the supply")]
+fn a_coinbase_past_the_supply_panics() {
+    funded().mine(|b| b.coinbase(|c| c.pay(&p2pkh([0xaa; 20]), 21_000_000 * 100_000_000 + 1)));
+}
+
+#[test]
+#[should_panic(expected = "not after the median time past")]
+fn a_time_at_or_before_the_median_time_past_panics() {
+    funded().mine(|b| b.time(GENESIS_TIME));
+}
+
+#[test]
+#[should_panic(expected = "bits() under Work::Limit")]
+fn stated_bits_under_limit_work_panic() {
+    funded().mine(|b| b.bits(REGTEST_BITS));
+}
+
+#[test]
+#[should_panic(expected = "outweigh() under Work::Limit")]
+fn outweighing_under_limit_work_panics() {
+    funded().fork(h(0)).outweigh();
+}
+
+#[test]
+#[should_panic(expected = "bits() on an outweigh() block")]
+fn stated_bits_on_an_outweighing_block_panic() {
+    let mut chain = MockChain::regtest().varied_work();
+    chain.fork(h(0)).outweigh().mine(|b| b.bits(REGTEST_BITS));
+}
+
+#[test]
+#[should_panic(expected = "configured after its first mine")]
+fn configuring_after_the_first_mine_panics() {
+    funded().varied_work();
+}
+
+#[test]
+#[should_panic(expected = "Sapling at 5 activates before Overwinter")]
+fn upgrades_out_of_order_panic() {
+    let upgrades = UpgradeSchedule::all_at(h(6)).with(NetworkUpgrade::Sapling, h(5));
+    MockChain::regtest().upgrades(upgrades);
+}
+
+#[test]
+#[should_panic(expected = "above the best tip")]
+fn a_height_above_the_best_tip_panics() {
+    funded().at(h(2));
 }
 
 /// M5: `outweigh()` = the best right after its first block, by the least work that wins

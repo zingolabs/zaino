@@ -1,8 +1,7 @@
-//! Fire drills: each check in `check()` and each precondition
-//! assert, seen firing on a planted bug (a check never seen firing is not known to work)
+//! Fire drills: each check in `check()` and each precondition assert, seen firing on a planted bug
+//! (a check never seen firing is not known to work)
 
 use std::num::NonZeroU32;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use zaino_primitives::testing::{h, MockChain};
@@ -12,11 +11,18 @@ use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
 use crate::{decode_header, Inserted};
 
-/// Panic message of `run`, `None` = it returned
-fn fired(run: impl FnOnce()) -> Option<String> {
-    let panic = catch_unwind(AssertUnwindSafe(run)).err()?;
-    let message = panic.downcast_ref::<String>().cloned();
-    message.or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+/// Trunk 0..=12 final through 3 (depth 9), a side header at 12 on 11 (equal work, received after
+/// the trunk's 12) → `(chain, trunk hashes by height, side hash, builder)`
+fn valid() -> (HeaderChain, [BlockHash; 13], BlockHash, MockChain) {
+    let mut builder = MockChain::regtest();
+    let tip = builder.mine_empty(12);
+    let trunk: Vec<BlockHash> = builder.blocks(tip).iter().map(|b| b.header().hash).collect();
+    let side = builder.fork(h(11)).mine_empty(1).tip().hash;
+    let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(9).expect("nz")));
+    insert(&mut chain, &builder.blocks(tip)).expect("valid");
+    insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
+    chain.finalize(chain.finalizable().expect("12 − 9"));
+    (chain, trunk.try_into().expect("genesis ..= 12"), side, builder)
 }
 
 /// Copy of side node `of` under a fresh hash: same parent and work, received last (bookkeeping
@@ -34,138 +40,145 @@ fn clone_side(chain: &mut HeaderChain, of: BlockHash, salt: u8) {
     }
 }
 
-/// Trunk 0..=12 final through 3 (depth 9), a side header at 12 on 11 (equal work, received after
-/// the trunk's 12): every check passes; then one planted bug per check, each firing its own
 #[test]
-fn every_invariant_check_fires_on_its_planted_bug() {
-    let mut builder = MockChain::regtest();
-    let tip = builder.mine_empty(12);
-    let trunk: Vec<BlockHash> = builder.blocks(tip).iter().map(|b| b.header().hash).collect();
-    let side = builder.fork(h(11)).mine_empty(1).tip().hash;
-    let valid = || {
-        let mut chain = builder.header_chain(ReorgDepth::new(NonZeroU32::new(9).expect("nz")));
-        insert(&mut chain, &builder.blocks(tip)).expect("valid");
-        insert(&mut chain, &[Arc::clone(builder.block(side))]).expect("valid");
-        chain.finalize(chain.finalizable().expect("12 − 9"));
-        chain
-    };
-    assert_eq!(fired(|| valid().check()), None, "the unplanted chain passes");
-    assert_eq!(valid().final_tip().map(|tip| u32::from(tip.height)), Some(3));
-
-    type Plant = Box<dyn Fn(&mut HeaderChain)>;
-    let at: [BlockHash; 13] = trunk.clone().try_into().expect("genesis ..= 12");
-    let drills: Vec<(&str, Plant)> = vec![
-        (
-            "H1: best = the max-work leaf",
-            Box::new(move |c| {
-                let side_record = c.nodes[&side].record;
-                c.best_path.set(c.best_path.len() - 1, side_record);
-            }),
-        ),
-        (
-            "does not descend from the final tip",
-            Box::new(move |c| {
-                c.nodes.get_mut(&at[4]).expect("held").parent = BlockHash::from([9u8; 32]);
-            }),
-        ),
-        (
-            "H2: one height above its parent",
-            Box::new(move |c| {
-                c.nodes.get_mut(&at[6]).expect("held").height = Height::try_from(9u32).expect("h");
-            }),
-        ),
-        (
-            "H2: nothing held before an anchor",
-            Box::new(|c| {
-                c.finals.clear();
-            }),
-        ),
-        (
-            "H2: finals one height apart",
-            Box::new(|c| {
-                c.finals.remove(1);
-            }),
-        ),
-        (
-            "H5: best_path record = its node",
-            Box::new(|c| {
-                let mut record = c.best_path[2];
-                record.time += 1;
-                c.best_path.set(2, record);
-            }),
-        ),
-        (
-            "H5: best_path at",
-            Box::new(|c| {
-                c.best_path.remove(2);
-            }),
-        ),
-        (
-            "H4: 37 side nodes",
-            Box::new(move |c| (1..=36).for_each(|salt| clone_side(c, side, salt))),
-        ),
-        (
-            "H4: 34 side tips",
-            Box::new(move |c| (1..=33).for_each(|salt| clone_side(c, side, salt))),
-        ),
-        (
-            "tree: cumulative work",
-            Box::new(move |c| {
-                c.nodes.get_mut(&side).expect("held").record.cumulative_work += 1;
-            }),
-        ),
-        (
-            "tree: child count",
-            Box::new(move |c| {
-                c.nodes.get_mut(&at[11]).expect("held").children = 1;
-            }),
-        ),
-        (
-            "tree: leaf set",
-            Box::new(move |c| {
-                c.leaves.remove(&side);
-            }),
-        ),
-        (
-            "vouched, its parent not",
-            Box::new(move |c| {
-                c.nodes.get_mut(&at[8]).expect("held").vouched = false;
-            }),
-        ),
-    ];
-    for (expected, plant) in drills {
-        let mut chain = valid();
-        plant(&mut chain);
-        let message = fired(|| chain.check()).unwrap_or_default();
-        assert!(message.contains(expected), "planted {expected:?}, fired {message:?}");
-    }
-
-    // preconditions: a caller bug panics naming the invariant
-    let off_best = BlockRef { hash: side, height: Height::try_from(12u32).expect("h") };
-    let shallow = BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") };
-    let preconditions: [(&str, Plant); 3] = [
-        ("H2: only a best-branch block becomes final", Box::new(move |c| c.finalize(off_best))),
-        (
-            "H2: the final boundary stays `depth` below the best",
-            Box::new(move |c| c.finalize(shallow)),
-        ),
-        (
-            "H6: only a vouched block",
-            Box::new(move |c| {
-                c.depth = ReorgDepth::new(NonZeroU32::MIN);
-                at.iter().chain([&side]).for_each(|hash| {
-                    c.nodes.get_mut(hash).into_iter().for_each(|node| node.vouched = false);
-                });
-                c.finalize(shallow);
-            }),
-        ),
-    ];
-    for (expected, call) in preconditions {
-        let mut chain = valid();
-        let message = fired(|| call(&mut chain)).unwrap_or_default();
-        assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
-    }
-    let mut chain = valid();
+fn the_unplanted_chain_passes_every_check_and_knows_its_side_header() {
+    let (mut chain, _, side, builder) = valid();
+    chain.check();
+    assert_eq!(chain.final_tip().map(|tip| u32::from(tip.height)), Some(3));
     let header = decode_header(&builder.header_bytes(side)).expect("real header");
-    assert_eq!(chain.insert(&header), Ok(Inserted::Known), "a valid call passes");
+    assert_eq!(chain.insert(&header), Ok(Inserted::Known));
+}
+
+#[test]
+#[should_panic(expected = "H1: best = the max-work leaf")]
+fn check_catches_a_best_that_is_not_the_max_work_leaf() {
+    let (mut chain, _, side, _) = valid();
+    let side_record = chain.nodes[&side].record;
+    chain.best_path.set(chain.best_path.len() - 1, side_record);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "does not descend from the final tip")]
+fn check_catches_a_node_off_the_final_tip() {
+    let (mut chain, at, _, _) = valid();
+    chain.nodes.get_mut(&at[4]).expect("held").parent = BlockHash::from([9u8; 32]);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H2: one height above its parent")]
+fn check_catches_a_height_gap() {
+    let (mut chain, at, _, _) = valid();
+    chain.nodes.get_mut(&at[6]).expect("held").height = Height::try_from(9u32).expect("h");
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H2: nothing held before an anchor")]
+fn check_catches_a_chain_without_an_anchor() {
+    let (mut chain, _, _, _) = valid();
+    chain.finals.clear();
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H2: finals one height apart")]
+fn check_catches_a_gap_in_the_finals() {
+    let (mut chain, _, _, _) = valid();
+    chain.finals.remove(1);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H5: best_path record = its node")]
+fn check_catches_a_best_path_record_off_its_node() {
+    let (mut chain, _, _, _) = valid();
+    let mut record = chain.best_path[2];
+    record.time += 1;
+    chain.best_path.set(2, record);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H5: best_path at")]
+fn check_catches_a_best_path_missing_a_height() {
+    let (mut chain, _, _, _) = valid();
+    chain.best_path.remove(2);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H4: 37 side nodes")]
+fn check_catches_side_nodes_past_the_bound() {
+    let (mut chain, _, side, _) = valid();
+    (1..=36).for_each(|salt| clone_side(&mut chain, side, salt));
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H4: 34 side tips")]
+fn check_catches_side_tips_past_the_bound() {
+    let (mut chain, _, side, _) = valid();
+    (1..=33).for_each(|salt| clone_side(&mut chain, side, salt));
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "tree: cumulative work")]
+fn check_catches_cumulative_work_off_its_parent() {
+    let (mut chain, _, side, _) = valid();
+    chain.nodes.get_mut(&side).expect("held").record.cumulative_work += 1;
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "tree: child count")]
+fn check_catches_a_wrong_child_count() {
+    let (mut chain, at, _, _) = valid();
+    chain.nodes.get_mut(&at[11]).expect("held").children = 1;
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "tree: leaf set")]
+fn check_catches_a_leaf_missing_from_the_leaf_set() {
+    let (mut chain, _, side, _) = valid();
+    chain.leaves.remove(&side);
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "vouched, its parent not")]
+fn check_catches_a_vouched_node_under_an_unvouched_parent() {
+    let (mut chain, at, _, _) = valid();
+    chain.nodes.get_mut(&at[8]).expect("held").vouched = false;
+    chain.check();
+}
+
+#[test]
+#[should_panic(expected = "H2: only a best-branch block becomes final")]
+fn finalizing_a_block_off_the_best_branch_panics() {
+    let (mut chain, _, side, _) = valid();
+    chain.finalize(BlockRef { hash: side, height: Height::try_from(12u32).expect("h") });
+}
+
+#[test]
+#[should_panic(expected = "H2: the final boundary stays `depth` below the best")]
+fn finalizing_within_depth_of_the_best_panics() {
+    let (mut chain, at, _, _) = valid();
+    chain.finalize(BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") });
+}
+
+#[test]
+#[should_panic(expected = "H6: only a vouched block")]
+fn finalizing_an_unvouched_block_panics() {
+    let (mut chain, at, side, _) = valid();
+    chain.depth = ReorgDepth::new(NonZeroU32::MIN);
+    for hash in at.iter().chain([&side]) {
+        if let Some(node) = chain.nodes.get_mut(hash) {
+            node.vouched = false;
+        }
+    }
+    chain.finalize(BlockRef { hash: at[5], height: Height::try_from(5u32).expect("h") });
 }

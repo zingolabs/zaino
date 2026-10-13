@@ -116,7 +116,8 @@ impl<V> Core<V> {
         self.changed.send_replace(());
         self.wake.send_replace(());
         transitions(&prev, &next);
-        if cfg!(debug_assertions) {
+        // invariant pass: tests + `testing` builds only (never changes a result)
+        if cfg!(any(test, feature = "testing")) {
             check(&prev, &next, self.depth);
         }
     }

@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 
 use super::{Ask, AskId, Input, Reply, Route, Ticket, TrafficCore};
 use crate::class::{Class, Lane, Permits};
-use crate::fired;
 use crate::member::{Bench, Limits, Member, MemberId, Synced, ValidatorId};
 
 fn trusted(index: usize) -> MemberId {
@@ -35,112 +34,186 @@ fn valid(t0: Instant) -> TrafficCore {
     core
 }
 
+fn member(core: &mut TrafficCore, index: usize) -> &mut Member {
+    core.members.get_mut(&trusted(index)).expect("configured")
+}
+
+fn ask(core: &mut TrafficCore, id: u64) -> &mut Ask {
+    core.asks.get_mut(&AskId(id)).expect("open")
+}
+
 #[test]
-fn every_check_and_precondition_fires_on_its_planted_bug() {
-    let t0 = Instant::now();
-    let core = valid(t0);
+fn the_unplanted_core_passes_every_check_in_its_planted_state() {
+    let core = valid(Instant::now());
     core.check();
     let sent: Vec<(AskId, MemberId)> =
         core.asks.iter().flat_map(|(id, ask)| ask.sends.iter().map(|s| (*id, s.member))).collect();
-    let peer = MemberId::Peers;
-    let expected = [(0, trusted(0)), (1, trusted(0)), (2, peer), (3, trusted(0))];
-    assert_eq!(sent, expected.map(|(ask, member)| (AskId(ask), member)), "the planted state");
+    let expected = [(0, trusted(0)), (1, trusted(0)), (2, MemberId::Peers), (3, trusted(0))];
+    assert_eq!(sent, expected.map(|(ask, member)| (AskId(ask), member)));
+}
 
-    type Plant = Box<dyn Fn(&mut TrafficCore)>;
-    fn member(core: &mut TrafficCore, index: usize) -> &mut Member {
-        core.members.get_mut(&trusted(index)).expect("configured")
-    }
-    fn ask(core: &mut TrafficCore, id: u64) -> &mut Ask {
-        core.asks.get_mut(&AskId(id)).expect("open")
-    }
-    let drills: Vec<(&str, Plant)> = vec![
-        (
-            "T1: in flight within max_connections, reserves never borrowed",
-            Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] += 1),
-        ),
-        (
-            "T4: in flight = open asks' sends",
-            Box::new(move |c| member(c, 0).in_flight[Lane::Interactive.index()] = 1),
-        ),
-        ("a send's member", Box::new(move |c| _ = c.members.remove(&peer))),
-        (
-            "T3: no send to a benched member",
-            Box::new(move |c| {
-                let until = c.now + Duration::from_secs(60);
-                member(c, 0).bench = Some(Bench { until, times: 1, stamp: 0 });
-            }),
-        ),
-        ("T3: no send to a down member", Box::new(move |c| member(c, 0).down_since = Some(0))),
-        (
-            "T10: polls of one member at least 200 ms apart",
-            Box::new(move |c| {
-                let poller = member(c, 1).poller.as_mut().expect("trusted");
-                poller.previous = poller.last.map(|last| last - Duration::from_millis(100));
-            }),
-        ),
-        (
-            "T10: a due poll is sent",
-            Box::new(move |c| {
-                let now = c.now;
-                member(c, 1).poller.as_mut().expect("trusted").last =
-                    Some(now - Duration::from_secs(9));
-            }),
-        ),
-        (
-            "T2: a class reaches only the member kinds its row allows",
-            Box::new(move |c| ask(c, 0).route = Route::Peers),
-        ),
-        ("T5: a round asks each member once", Box::new(move |c| ask(c, 0).tried.clear())),
-        (
-            "T6: a send goes to the best tier with room",
-            Box::new(move |c| ask(c, 0).sends[0].top = 1),
-        ),
-    ];
-    for (expected, plant) in drills {
-        let mut core = valid(t0);
-        plant(&mut core);
-        let message = fired(|| core.check()).unwrap_or_default();
-        assert!(message.contains(expected), "planted {expected:?}, fired {message:?}");
-    }
+#[test]
+#[should_panic(expected = "T1: in flight within max_connections, reserves never borrowed")]
+fn check_catches_in_flight_past_max_connections() {
+    let mut core = valid(Instant::now());
+    member(&mut core, 0).in_flight[Lane::Interactive.index()] += 1;
+    core.check();
+}
 
-    // preconditions: caller / driver bug → named panic
-    let t = t0 + Duration::from_millis(50);
-    let step = |input: Input, now: Instant| fired(|| drop(valid(t0).step(input, now)));
+#[test]
+#[should_panic(expected = "T4: in flight = open asks' sends")]
+fn check_catches_in_flight_off_the_open_sends() {
+    let mut core = valid(Instant::now());
+    member(&mut core, 0).in_flight[Lane::Interactive.index()] = 1;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "a send's member")]
+fn check_catches_a_send_to_a_member_gone() {
+    let mut core = valid(Instant::now());
+    core.members.remove(&MemberId::Peers);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T3: no send to a benched member")]
+fn check_catches_a_send_to_a_benched_member() {
+    let mut core = valid(Instant::now());
+    let until = core.now + Duration::from_secs(60);
+    member(&mut core, 0).bench = Some(Bench { until, times: 1, stamp: 0 });
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T3: no send to a down member")]
+fn check_catches_a_send_to_a_down_member() {
+    let mut core = valid(Instant::now());
+    member(&mut core, 0).down_since = Some(0);
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T10: polls of one member at least 200 ms apart")]
+fn check_catches_polls_closer_than_the_floor() {
+    let mut core = valid(Instant::now());
+    let poller = member(&mut core, 1).poller.as_mut().expect("trusted");
+    poller.previous = poller.last.map(|last| last - Duration::from_millis(100));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T10: a due poll is sent")]
+fn check_catches_a_due_poll_never_sent() {
+    let mut core = valid(Instant::now());
+    let now = core.now;
+    member(&mut core, 1).poller.as_mut().expect("trusted").last =
+        Some(now - Duration::from_secs(9));
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T2: a class reaches only the member kinds its row allows")]
+fn check_catches_a_send_outside_its_route() {
+    let mut core = valid(Instant::now());
+    ask(&mut core, 0).route = Route::Peers;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T5: a round asks each member once")]
+fn check_catches_a_round_asking_a_member_twice() {
+    let mut core = valid(Instant::now());
+    ask(&mut core, 0).tried.clear();
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "T6: a send goes to the best tier with room")]
+fn check_catches_a_send_past_the_best_tier_with_room() {
+    let mut core = valid(Instant::now());
+    ask(&mut core, 0).sends[0].top = 1;
+    core.check();
+}
+
+#[test]
+#[should_panic(expected = "a trusted validator to ask")]
+fn a_core_without_trusted_validators_panics() {
+    TrafficCore::new(&[], None, Instant::now());
+}
+
+#[test]
+#[should_panic(expected = "at most ValidatorId::MAX trusted validators")]
+fn a_core_past_the_validator_limit_panics() {
     let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
-    let ticket = Ticket { ask: AskId(0), member: trusted(1), class: Class::TipBlock };
-    let v = |index| ValidatorId::new(index).expect("small");
-    let preconditions = [
-        ("a trusted validator to ask", fired(|| drop(TrafficCore::new(&[], None, t0)))),
-        (
-            "at most ValidatorId::MAX trusted validators",
-            fired(|| drop(TrafficCore::new(&[(0, limits); 65], None, t0))),
-        ),
-        (
-            "max_connections covers the poll, every lane reserve + one shared",
-            fired(|| _ = Permits::trusted(4)),
-        ),
-        ("the peer set's in flight covers every lane reserve", fired(|| _ = Permits::peers(2))),
-        ("time never runs back", step(Input::Tick, t0)),
-        (
-            "a fresh ask id",
-            step(Input::Ask { ask: AskId(0), class: Class::Lookup, route: Route::Any }, t),
-        ),
-        ("a reply for a send in flight", step(Input::Reply { ticket, reply: Reply::Value }, t)),
-        ("abandon: an open ask", step(Input::Abandon(AskId(9)), t)),
-        ("a poll result for a poll in flight", step(Input::Polled { member: v(0), read: None }, t)),
-        (
-            "a configured validator",
-            step(Input::Push { member: v(5), push: super::Push::Changed }, t),
-        ),
-    ];
-    for (expected, message) in preconditions {
-        let message = message.unwrap_or_default();
-        assert!(message.contains(expected), "expected {expected:?}, fired {message:?}");
-    }
+    TrafficCore::new(&[(0, limits); 65], None, Instant::now());
+}
 
-    // not a bug: a report on the peer set benches nothing (its transport blames the peer)
+#[test]
+#[should_panic(expected = "max_connections covers the poll, every lane reserve + one shared")]
+fn trusted_permits_short_of_the_reserves_panic() {
+    Permits::trusted(4);
+}
+
+#[test]
+#[should_panic(expected = "the peer set's in flight covers every lane reserve")]
+fn peer_permits_short_of_the_reserves_panic() {
+    Permits::peers(2);
+}
+
+#[test]
+#[should_panic(expected = "time never runs back")]
+fn a_step_back_in_time_panics() {
+    let t0 = Instant::now();
+    valid(t0).step(Input::Tick, t0);
+}
+
+#[test]
+#[should_panic(expected = "a fresh ask id")]
+fn an_ask_id_reused_panics() {
+    let t0 = Instant::now();
+    let ask = Input::Ask { ask: AskId(0), class: Class::Lookup, route: Route::Any };
+    valid(t0).step(ask, t0 + Duration::from_millis(50));
+}
+
+#[test]
+#[should_panic(expected = "a reply for a send in flight")]
+fn a_reply_without_a_send_panics() {
+    let t0 = Instant::now();
+    let ticket = Ticket { ask: AskId(0), member: trusted(1), class: Class::TipBlock };
+    valid(t0).step(Input::Reply { ticket, reply: Reply::Value }, t0 + Duration::from_millis(50));
+}
+
+#[test]
+#[should_panic(expected = "abandon: an open ask")]
+fn abandoning_an_unknown_ask_panics() {
+    let t0 = Instant::now();
+    valid(t0).step(Input::Abandon(AskId(9)), t0 + Duration::from_millis(50));
+}
+
+#[test]
+#[should_panic(expected = "a poll result for a poll in flight")]
+fn a_poll_result_without_a_poll_panics() {
+    let t0 = Instant::now();
+    let member = ValidatorId::new(0).expect("small");
+    valid(t0).step(Input::Polled { member, read: None }, t0 + Duration::from_millis(50));
+}
+
+#[test]
+#[should_panic(expected = "a configured validator")]
+fn a_push_from_an_unknown_validator_panics() {
+    let t0 = Instant::now();
+    let member = ValidatorId::new(5).expect("small");
+    let push = Input::Push { member, push: super::Push::Changed };
+    valid(t0).step(push, t0 + Duration::from_millis(50));
+}
+
+/// Its transport blames the peer instead
+#[test]
+fn a_report_on_the_peer_set_benches_nobody() {
+    let t0 = Instant::now();
     let mut core = valid(t0);
-    let headers = Ticket { ask: AskId(2), member: peer, class: Class::Headers };
-    core.step(Input::Report(headers), t);
+    let headers = Ticket { ask: AskId(2), member: MemberId::Peers, class: Class::Headers };
+    core.step(Input::Report(headers), t0 + Duration::from_millis(50));
     assert!(core.members.values().all(|member| member.bench.is_none()), "nobody benched");
 }

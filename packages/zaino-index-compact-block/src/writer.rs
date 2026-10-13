@@ -110,7 +110,7 @@ pub fn fold<V: SequenceRead>(
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroUsize, panic::AssertUnwindSafe, path::Path};
+    use std::{num::NonZeroUsize, path::Path};
 
     use proptest::strategy::Strategy as _;
     use prost::Message as _;
@@ -119,7 +119,7 @@ mod tests {
         fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::{Height, TreeSize, TreeSizes};
+    use zaino_primitives::types::{BlockRef, Height, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats as cf;
     use zaino_sync::{FeeSink, IndexerDataSink};
@@ -147,9 +147,9 @@ mod tests {
 
     /// Genesis + three blocks folded one onto the next: each record = the block encoded with the
     /// running sizes; a parent record claiming near-`u32::MAX` seeds the next fold (sizes read,
-    /// not carried), so one block more overflows; a gap or a fork panics
+    /// not carried), so one block more overflows
     #[test]
-    fn sizes_advance_from_the_parent_record_and_a_non_parent_panics() {
+    fn sizes_advance_from_the_parent_record_and_overflow_past_u32() {
         let sizes = |sapling: u32, orchard: u32, ironwood: u32| TreeSizes {
             sapling: TreeSize::from(sapling),
             orchard: TreeSize::from(orchard),
@@ -174,8 +174,6 @@ mod tests {
                 c.orchard_action([6; 32], 6).ironwood_action([5; 32], 5)
             })
         });
-        // height 3 on a sibling of `two`
-        let cousin = chain.fork(h(1)).mine_empty(2).tip();
         let fees = |block: &Block| chain.fees(block.header().hash);
         let folded = |store: &DiskStore, block: &Block| {
             let mut changes = store.changes(block.at());
@@ -208,27 +206,51 @@ mod tests {
         seeded.apply(changes);
         let overflow = folded(&seeded, chain.block(two.hash)).err();
         assert_eq!(overflow, Some(TreeSizeOutOfRange { got: u64::from(u32::MAX) + 2 }));
+    }
 
-        // parents: `through_three` = 0..=3, `seeded` = 0..=1, `through_two` = 0..=2
-        let mut through_two = open(&SimFs::new(), NonZeroUsize::MAX);
-        for at in [chain.genesis(), one, two] {
-            through_two.apply(folded(&through_two, chain.block(at.hash)).expect("small"));
+    /// Regtest 0..=3 + `cousin` at 3 off 1; the store folded through height `held`
+    fn folded_through(held: u32) -> (MockChain, DiskStore, BlockRef) {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(3);
+        let cousin = chain.fork(h(1)).mine_empty(2).tip();
+        let mut store = open(&SimFs::new(), NonZeroUsize::MAX);
+        for block in &chain.blocks(tip)[..=held as usize] {
+            store.apply(fold_onto(&store, &chain, block).expect("small"));
         }
-        for (case, parent, at) in [
-            ("gap", &seeded, three),
-            ("fork at the same height", &through_two, cousin),
-            ("below the tip", &through_three, two),
-        ] {
-            let block = chain.block(at.hash);
-            let refused = std::panic::catch_unwind(AssertUnwindSafe(|| folded(parent, block)));
-            let payload = refused.expect_err(case);
-            let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
-            let named = message.starts_with("compact_block: ");
-            assert!(
-                named && message.contains("does not extend the parent tip"),
-                "{case}: {message}"
-            );
-        }
+        (chain, store, cousin)
+    }
+
+    fn fold_onto(
+        store: &DiskStore,
+        chain: &MockChain,
+        block: &Block,
+    ) -> Result<BlockChanges, TreeSizeOutOfRange> {
+        let mut changes = store.changes(block.at());
+        let parent = CompactBlockReader::new(store.staged());
+        fold(&parent, block, &chain.fees(block.header().hash), &mut changes).map(|()| changes)
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_fold_past_a_gap_panics() {
+        let (chain, store, _) = folded_through(1);
+        let three = chain.at(h(3));
+        let _ = fold_onto(&store, &chain, chain.block(three.hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_fold_onto_a_sibling_at_the_same_height_panics() {
+        let (chain, store, cousin) = folded_through(2);
+        let _ = fold_onto(&store, &chain, chain.block(cousin.hash));
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_fold_below_the_tip_panics() {
+        let (chain, store, _) = folded_through(3);
+        let two = chain.at(h(2));
+        let _ = fold_onto(&store, &chain, chain.block(two.hash));
     }
 
     /// Writer as zainod runs it: the final stream, value-balance's fee stream (one per step), its

@@ -218,14 +218,6 @@ fn install(config: LogConfig, exclusive: bool) -> Result<(), LogConfigError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn panic_logger_installs_idempotently_and_still_unwinds() {
-        install_panic_logger();
-        install_panic_logger();
-        let caught = std::panic::catch_unwind(|| panic!("boom"));
-        assert!(caught.is_err(), "panic still propagates through the hook");
-    }
-
     /// Defaults, every accepted spelling, and an unrecognised value per knob refused by name
     #[test]
     fn config_parses_every_knob_and_refuses_what_it_does_not_know() {

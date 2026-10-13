@@ -286,7 +286,8 @@ impl<S: ChainDataSource> HeaderSync<S> {
             self.chain.vouch(top);
         }
         self.finalize(&self.core.current());
-        if cfg!(debug_assertions) {
+        // invariant pass: tests + `testing` builds only (never changes a result)
+        if cfg!(any(test, feature = "testing")) {
             self.chain.check();
         }
         self.publish();
@@ -378,7 +379,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
         if progressed {
             self.finalize(&self.core.current());
-            if cfg!(debug_assertions) {
+            if cfg!(any(test, feature = "testing")) {
                 self.chain.check();
             }
             self.publish();

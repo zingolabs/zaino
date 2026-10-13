@@ -74,12 +74,7 @@ pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut Bl
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        num::NonZeroUsize,
-        panic::{catch_unwind, AssertUnwindSafe},
-        path::Path,
-        sync::Arc,
-    };
+    use std::{num::NonZeroUsize, path::Path, sync::Arc};
 
     use zaino_persistence::{
         fs::SimFs, DiskEngine, DiskStore, DiskView, IndexKind, PersistenceEngine, Schema, View,
@@ -131,7 +126,7 @@ mod tests {
     }
 
     /// Each block → one golden row at its own tip; the reader locates every folded hash and
-    /// nothing else; a delta opened for another block or a block off the parent tip panics
+    /// nothing else
     #[test]
     fn each_block_folds_to_its_golden_row_and_the_reader_locates_exactly_those() {
         let mut chain = MockChain::regtest();
@@ -154,20 +149,26 @@ mod tests {
         let expected: Vec<_> = (0..3u32).map(|n| Some(Height::try_from(n).expect("h"))).collect();
         assert_eq!(located, expected);
         assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
+    }
 
-        let next = chain.mine_empty(2);
-        let (three, four) = (chain.block(chain.at(h(3)).hash), chain.block(next.hash));
-        for (case, opened_for, block, expected) in [
-            ("another block", three, four, "changes opened for another block"),
-            ("a gap", four, four, "does not extend the parent tip"),
-        ] {
-            let mut changes = store.changes(opened_for.at());
-            let folded = catch_unwind(AssertUnwindSafe(|| fold(&reader, block, &mut changes)));
-            let payload = folded.expect_err(case);
-            let message = payload.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
-            let named = message.starts_with("block_hash: ") && message.contains(expected);
-            assert!(named, "{case}: {message}");
-        }
+    #[test]
+    #[should_panic(expected = "block_hash: changes opened for another block")]
+    fn a_fold_into_changes_opened_for_another_block_panics() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(2);
+        let store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut changes = store.changes(chain.genesis());
+        fold(&BlockHashReader::new(store.staged()), chain.block(tip.hash), &mut changes);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not extend the parent tip")]
+    fn a_fold_past_a_gap_panics() {
+        let mut chain = MockChain::regtest();
+        let tip = chain.mine_empty(2);
+        let store = open(&SimFs::new(), NonZeroUsize::MAX);
+        let mut changes = store.changes(tip);
+        fold(&BlockHashReader::new(store.staged()), chain.block(tip.hash), &mut changes);
     }
 
     /// 0..=3 (3 `Finalized`: committed there), then a restart resending 2 and 3 (held: skipped)

@@ -153,9 +153,34 @@ pub(crate) fn decode_spend(bytes: &[u8; SPEND]) -> Spend {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::catch_unwind;
-
     use super::*;
+
+    /// Corrupt rows panic naming the invariant, never decode to a guess
+    #[test]
+    #[should_panic(expected = "receives: value within the money supply")]
+    fn a_receive_value_above_the_money_supply_panics() {
+        let receive = ReceiveKey {
+            address: AddressKey::p2pkh([0x11; HASH160]),
+            height: 7,
+            txid: TransactionId::from([0x22; TXID]),
+            vout: 0,
+        };
+        decode_receive(&encode_receive_key(&receive), &u64::MAX.to_be_bytes());
+    }
+
+    #[test]
+    #[should_panic(expected = "receives: kind tag from encode_receive")]
+    fn a_receive_of_an_unknown_kind_panics() {
+        let receive = ReceiveKey {
+            address: AddressKey::p2pkh([0x11; HASH160]),
+            height: 7,
+            txid: TransactionId::from([0x22; TXID]),
+            vout: 0,
+        };
+        let mut key = encode_receive_key(&receive);
+        key[HASH160] = 0x03;
+        decode_receive(&key, &5u64.to_be_bytes());
+    }
 
     /// `Ord` = the encoding byte for byte, every level of the composite key (range reads compare
     /// bytes: a disagreement silently reorders a scan); golden bytes of both maps' rows
@@ -210,14 +235,6 @@ mod tests {
         assert_eq!(key.as_slice(), golden_key, "hash ‖ kind ‖ height ‖ txid ‖ vout, big-endian");
         assert_eq!(value, [0, 0, 0, 0, 0, 0x12, 0xd6, 0x87], "zats big-endian");
         assert_eq!(decode_receive(&key, &value), receive);
-
-        // corrupt rows panic naming the invariant, never decode to a guess
-        let above_supply = catch_unwind(|| decode_receive(&key, &u64::MAX.to_be_bytes()));
-        assert!(above_supply.is_err(), "value above the money supply decoded");
-        let mut unknown_kind = key;
-        unknown_kind[HASH160] = 0x03;
-        let unknown = catch_unwind(|| decode_receive(&unknown_kind, &value));
-        assert!(unknown.is_err(), "unknown kind tag decoded");
 
         let spend = Spend { height: 900, spender: TransactionId::from([0x44; TXID]) };
         let golden = [&[0, 0, 0x03, 0x84][..], &[0x44; TXID]].concat();

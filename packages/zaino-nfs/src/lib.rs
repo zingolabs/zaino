@@ -121,7 +121,8 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
                 for output in core.step(input) {
                     self.execute(output, &mut work, &mut fetches);
                 }
-                if cfg!(debug_assertions) {
+                // invariant pass: tests + `testing` builds only (never changes a result)
+                if cfg!(any(test, feature = "testing")) {
                     core.check();
                 }
             }
@@ -286,14 +287,6 @@ fn joined<T>(done: Result<T, JoinError>) -> T {
         Err(join) if join.is_panic() => std::panic::resume_unwind(join.into_panic()),
         Err(join) => panic!("NFS task cancelled: {join}"),
     }
-}
-
-/// Panic message of `run` (`None` = it returned): fire drills
-#[cfg(test)]
-fn fired(run: impl FnOnce()) -> Option<String> {
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()?;
-    let message = panic.downcast_ref::<String>().cloned();
-    message.or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
 }
 
 #[cfg(test)]

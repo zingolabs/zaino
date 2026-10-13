@@ -2,7 +2,6 @@
 
 use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroUsize};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,6 +11,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
+use zaino_header_chain::VerifiedChain;
 use zaino_internal_block_hash_to_height as block_hash;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{
@@ -312,154 +312,198 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
     assert_eq!(unheld, expected, "no holder of best: fresh through 30 min − 1 s, stale at 30 min");
 }
 
-/// Panic message of `run`, `None` = it returned
-fn fired(run: impl FnOnce()) -> Option<String> {
-    let panic = catch_unwind(AssertUnwindSafe(run)).err()?;
-    let message = panic.downcast_ref::<String>().cloned();
-    message.or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+/// `check()` fire drills: A 0..=6 (A6 mines tx M) + S5 off A4, both validators hold A6
+struct Drill {
+    a: Vec<Arc<Block>>,
+    s5: BlockRef,
+    mined: TransactionId,
+    chain: Arc<VerifiedChain>,
+    params: ChainParams,
+    prev: Arc<Snapshot<DiskView>>,
+    next: Arc<Snapshot<DiskView>>,
 }
 
-/// A 0..=6 (A6 mines tx M) + S5 off A4, both validators hold A6: seq 0 serves A3 (not synced),
-/// seq 1 serves A6 (synced, epoch rotated): `check` passes; then one planted bug per assertion,
-/// each firing its own (G6 = the same view as G3's `held_by`: no separate plant)
-#[test]
-fn every_check_fires_on_its_planted_bug() {
-    let mut builder = MockChain::regtest();
-    builder.mine_empty(5);
-    let mined = TransactionId::from([0x66; 32]);
-    let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
-    let a = builder.blocks(a6);
-    let s5 = builder.fork(h(4)).mine_empty(1).tip();
-    let chain = Arc::new(builder.verified(a6));
-    let params = ChainParams::of(&builder);
-    let served = |block: BlockRef| {
-        let none: [(IndexKind, DiskView); 0] = [];
-        Some(Arc::new(Indexed::fixed(Arc::clone(&chain), block, params, none)))
-    };
-    let view = Arc::new(ChainViewSnapshot::fixed(
-        Some(Arc::clone(&chain)),
-        EndpointSet::at([0, 1]),
-        &["10.0.0.1:8232", "10.0.0.2:8232"],
-        &[],
-    ));
-    let core = Core::new(served(at(&a[3])), Arc::clone(&view), DEPTH);
-    let prev = core.handle().load();
-    core.publish(served(at(&a[6])), Arc::clone(&view));
-    let next = core.handle().load();
-    assert_eq!(fired(|| check(&prev, &next, DEPTH)), None, "the unplanted pair passes");
+impl Drill {
+    /// `prev` = seq 0 serving A3 (not synced), `next` = seq 1 serving A6 (synced, epoch rotated)
+    fn new() -> Self {
+        let mut builder = MockChain::regtest();
+        builder.mine_empty(5);
+        let a6 = builder.mine(|block| block.tx(|tx| tx.txid([0x66; 32])));
+        let a = builder.blocks(a6);
+        let s5 = builder.fork(h(4)).mine_empty(1).tip();
+        let chain = Arc::new(builder.verified(a6));
+        let params = ChainParams::of(&builder);
+        let view = Arc::new(view(&chain, &[]));
+        let core = Core::new(served(&chain, params, at(&a[3])), Arc::clone(&view), DEPTH);
+        let prev = core.handle().load();
+        core.publish(served(&chain, params, at(&a[6])), view);
+        let next = core.handle().load();
+        Self { a, s5, mined: TransactionId::from([0x66; 32]), chain, params, prev, next }
+    }
 
-    let copy = |s: &Snapshot<DiskView>| Snapshot {
+    /// `next`, serving `block`
+    fn serving(&self, block: BlockRef, synced: bool) -> Snapshot<DiskView> {
+        let mut planted = copy(&self.next);
+        planted.indexed = served(&self.chain, self.params, block);
+        planted.tips = Tips { served: Some(block), synced, ..self.next.tips };
+        planted
+    }
+
+    fn synced_prev(&self) -> Snapshot<DiskView> {
+        Snapshot { tips: Tips { synced: true, ..self.prev.tips }, ..copy(&self.prev) }
+    }
+}
+
+/// Both validators holding `chain`'s best, `mempool` listed
+fn view(chain: &Arc<VerifiedChain>, mempool: &[(TransactionId, Bytes)]) -> ChainViewSnapshot {
+    let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+    ChainViewSnapshot::fixed(Some(Arc::clone(chain)), EndpointSet::at([0, 1]), &addresses, mempool)
+}
+
+/// Index views serving `block` (no tables)
+fn served(
+    chain: &Arc<VerifiedChain>,
+    params: ChainParams,
+    block: BlockRef,
+) -> Option<Arc<Indexed<DiskView>>> {
+    let none: [(IndexKind, DiskView); 0] = [];
+    Some(Arc::new(Indexed::fixed(Arc::clone(chain), block, params, none)))
+}
+
+fn copy(s: &Snapshot<DiskView>) -> Snapshot<DiskView> {
+    Snapshot {
         seq: s.seq,
         tips: s.tips,
         indexed: s.indexed.clone(),
         view: Arc::clone(&s.view),
         feed: s.feed.clone(),
-    };
-    let fresh = |key: BlockRef| {
-        Feed::open(Some(key), Vec::new(), HashSet::new(), watch::Sender::new(()).subscribe())
-    };
-    let serving = |block: BlockRef, synced: bool| {
-        let mut planted = copy(&next);
-        planted.indexed = served(block);
-        planted.tips = Tips { served: Some(block), synced, ..next.tips };
-        planted
-    };
-    let synced_prev = || Snapshot { tips: Tips { synced: true, ..prev.tips }, ..copy(&prev) };
-    type Plant<'a> = Box<dyn Fn() -> (Snapshot<DiskView>, Snapshot<DiskView>) + 'a>;
-    let drills: Vec<(&str, Plant)> = vec![
-        ("G2: seq + 1", Box::new(|| (copy(&prev), Snapshot { seq: 5, ..copy(&next) }))),
-        (
-            "G3: best",
-            Box::new(|| {
-                (copy(&prev), Snapshot { tips: Tips { best: None, ..next.tips }, ..copy(&next) })
-            }),
-        ),
-        (
-            "G3: final",
-            Box::new(|| {
-                let tips = Tips { final_tip: Some(at(&a[1])), ..next.tips };
-                (copy(&prev), Snapshot { tips, ..copy(&next) })
-            }),
-        ),
-        (
-            "G3: held_by",
-            Box::new(|| {
-                let tips = Tips { held_by: EndpointSet::default(), ..next.tips };
-                (copy(&prev), Snapshot { tips, ..copy(&next) })
-            }),
-        ),
-        (
-            "G3: served",
-            Box::new(|| {
-                let tips = Tips { served: Some(at(&a[5])), ..next.tips };
-                (copy(&prev), Snapshot { tips, ..copy(&next) })
-            }),
-        ),
-        (
-            "G4: synced opens only at served = best",
-            Box::new(|| (copy(&prev), serving(at(&a[5]), true))),
-        ),
-        (
-            // boot race: validator 0's claim past best, its hash at best not polled yet
-            "no validator claiming past it",
-            Box::new(|| {
-                let mut planted = serving(at(&a[6]), true);
-                let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
-                let holders = EndpointSet::at([0, 1]);
-                let view =
-                    ChainViewSnapshot::fixed(Some(Arc::clone(&chain)), holders, &addresses, &[]);
-                let view = view.ahead(0, 1, false);
-                planted.tips.held_by = view.held_by();
-                planted.view = Arc::new(view);
-                (copy(&prev), planted)
-            }),
-        ),
-        ("G4: synced stays on best", Box::new(|| (synced_prev(), serving(s5, true)))),
-        ("G4: synced stays within", Box::new(|| (synced_prev(), serving(at(&a[2]), true)))),
-        (
-            "G5: epoch key",
-            Box::new(|| (copy(&prev), Snapshot { feed: fresh(at(&a[3])), ..copy(&next) })),
-        ),
-        (
-            "G5: epoch rotates iff",
-            Box::new(|| {
-                let again = Snapshot { seq: 2, feed: fresh(at(&a[6])), ..copy(&next) };
-                (copy(&next), again)
-            }),
-        ),
-        (
-            "G5: the old epoch sealed iff rotated",
-            Box::new(|| (Snapshot { feed: fresh(at(&a[3])), ..copy(&prev) }, copy(&next))),
-        ),
-        (
-            "G5: the stored epoch open",
-            Box::new(|| {
-                let feed = fresh(at(&a[6]));
-                feed.seal();
-                (copy(&prev), Snapshot { feed, ..copy(&next) })
-            }),
-        ),
-        (
-            "G10: the epoch carries a tx of the served tip's own chain",
-            Box::new(|| {
-                let none: [(IndexKind, DiskView); 0] = [];
-                let indexed =
-                    Indexed::fixed_above(Arc::clone(&chain), at(&a[5]), &a[6..], params, none);
-                let stale = ChainViewSnapshot::fixed(
-                    Some(Arc::clone(&chain)),
-                    EndpointSet::at([0, 1]),
-                    &["10.0.0.1:8232", "10.0.0.2:8232"],
-                    &[(mined, Bytes::from_static(&[0x66]))],
-                );
-                let wake = watch::Sender::new(()).subscribe();
-                let feed = Feed::open(Some(at(&a[6])), stale.arrivals(None), HashSet::new(), wake);
-                (copy(&prev), Snapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&next) })
-            }),
-        ),
-    ];
-    for (expected, plant) in drills {
-        let (prev, next) = plant();
-        let message = fired(|| check(&prev, &next, DEPTH)).unwrap_or_default();
-        assert!(message.contains(expected), "planted {expected:?}, fired {message:?}");
     }
+}
+
+fn fresh(key: BlockRef) -> Feed {
+    Feed::open(Some(key), Vec::new(), HashSet::new(), watch::Sender::new(()).subscribe())
+}
+
+/// G6 = the same view as G3's `held_by`: no separate plant
+#[test]
+fn the_unplanted_pair_passes_every_check() {
+    let d = Drill::new();
+    check(&d.prev, &d.next, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G2: seq + 1")]
+fn check_catches_a_skipped_seq() {
+    let d = Drill::new();
+    check(&d.prev, &Snapshot { seq: 5, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G3: best")]
+fn check_catches_a_best_off_the_chain() {
+    let d = Drill::new();
+    let tips = Tips { best: None, ..d.next.tips };
+    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G3: final")]
+fn check_catches_a_final_tip_off_the_chain() {
+    let d = Drill::new();
+    let tips = Tips { final_tip: Some(at(&d.a[1])), ..d.next.tips };
+    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G3: held_by")]
+fn check_catches_holders_off_the_view() {
+    let d = Drill::new();
+    let tips = Tips { held_by: EndpointSet::default(), ..d.next.tips };
+    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G3: served")]
+fn check_catches_a_served_tip_off_the_indexes() {
+    let d = Drill::new();
+    let tips = Tips { served: Some(at(&d.a[5])), ..d.next.tips };
+    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G4: synced opens only at served = best")]
+fn check_catches_synced_opening_below_best() {
+    let d = Drill::new();
+    check(&d.prev, &d.serving(at(&d.a[5]), true), DEPTH);
+}
+
+/// Boot race: validator 0's claim past best, its hash at best not polled yet
+#[test]
+#[should_panic(expected = "no validator claiming past it")]
+fn check_catches_synced_opening_under_a_validator_claiming_past_best() {
+    let d = Drill::new();
+    let mut planted = d.serving(at(&d.a[6]), true);
+    let view = view(&d.chain, &[]).ahead(0, 1, false);
+    planted.tips.held_by = view.held_by();
+    planted.view = Arc::new(view);
+    check(&d.prev, &planted, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G4: synced stays on best")]
+fn check_catches_synced_serving_a_side_branch() {
+    let d = Drill::new();
+    check(&d.synced_prev(), &d.serving(d.s5, true), DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G4: synced stays within")]
+fn check_catches_synced_falling_behind_its_window() {
+    let d = Drill::new();
+    check(&d.synced_prev(), &d.serving(at(&d.a[2]), true), DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G5: epoch key")]
+fn check_catches_an_epoch_keyed_off_the_served_tip() {
+    let d = Drill::new();
+    check(&d.prev, &Snapshot { feed: fresh(at(&d.a[3])), ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G5: epoch rotates iff")]
+fn check_catches_an_epoch_rotating_without_a_move() {
+    let d = Drill::new();
+    let again = Snapshot { seq: 2, feed: fresh(at(&d.a[6])), ..copy(&d.next) };
+    check(&d.next, &again, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G5: the old epoch sealed iff rotated")]
+fn check_catches_an_old_epoch_left_open() {
+    let d = Drill::new();
+    check(&Snapshot { feed: fresh(at(&d.a[3])), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G5: the stored epoch open")]
+fn check_catches_a_sealed_stored_epoch() {
+    let d = Drill::new();
+    let feed = fresh(at(&d.a[6]));
+    feed.seal();
+    check(&d.prev, &Snapshot { feed, ..copy(&d.next) }, DEPTH);
+}
+
+#[test]
+#[should_panic(expected = "G10: the epoch carries a tx of the served tip's own chain")]
+fn check_catches_an_epoch_carrying_a_tx_its_served_tip_mined() {
+    let d = Drill::new();
+    let none: [(IndexKind, DiskView); 0] = [];
+    let indexed =
+        Indexed::fixed_above(Arc::clone(&d.chain), at(&d.a[5]), &d.a[6..], d.params, none);
+    let stale = view(&d.chain, &[(d.mined, Bytes::from_static(&[0x66]))]);
+    let wake = watch::Sender::new(()).subscribe();
+    let feed = Feed::open(Some(at(&d.a[6])), stale.arrivals(None), HashSet::new(), wake);
+    let planted = Snapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&d.next) };
+    check(&d.prev, &planted, DEPTH);
 }

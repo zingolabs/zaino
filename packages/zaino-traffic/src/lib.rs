@@ -18,13 +18,5 @@ pub use balancer::{
 pub use core::{Push, Ticket};
 pub use member::{Health, Limits, MemberId, MemberRow, MemberTable, ValidatorId};
 
-/// Panic message of `run`, `None` = no panic (fire drills)
-#[cfg(test)]
-fn fired(run: impl FnOnce()) -> Option<String> {
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).err()?;
-    let message = panic.downcast_ref::<String>().cloned();
-    message.or_else(|| panic.downcast_ref::<&str>().map(|s| (*s).to_owned()))
-}
-
 #[cfg(test)]
 mod tests;

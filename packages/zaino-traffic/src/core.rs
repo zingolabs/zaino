@@ -195,8 +195,10 @@ impl TrafficCore {
             Input::Tick => {}
         }
         self.dispatch(&mut out);
-        #[cfg(debug_assertions)]
-        self.check();
+        // invariant pass: tests + `testing` builds only (never changes a result)
+        if cfg!(any(test, feature = "testing")) {
+            self.check();
+        }
         out
     }
 
