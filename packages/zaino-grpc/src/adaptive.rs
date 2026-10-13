@@ -249,24 +249,20 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_limit_tracks_latency_under_load_and_holds_while_app_limited() {
         let ms = Duration::from_millis;
-        let advance = || tokio::time::advance(WINDOW);
-        let windows = |limiter: &Limiter, count: usize, rtt, in_flight| {
-            let mut limits = Vec::new();
-            for _ in 0..count {
-                for _ in 0..WINDOW_SAMPLES {
-                    limiter.sample(rtt, in_flight);
-                }
-                limits.push(limiter.limit());
+        // one window passed, then filled with `rtt` samples: the limit after it
+        let window = async |limiter: &Limiter, rtt, in_flight| {
+            tokio::time::advance(WINDOW).await;
+            for _ in 0..WINDOW_SAMPLES {
+                limiter.sample(rtt, in_flight);
             }
-            limits
+            limiter.limit()
         };
         let limiter = Limiter::new(2048, true);
         assert_eq!(limiter.limit(), INITIAL, "starts at INITIAL");
 
         let mut grown = Vec::new();
         for _ in 0..20 {
-            advance().await;
-            grown.extend(windows(&limiter, 1, ms(10), 4_096));
+            grown.push(window(&limiter, ms(10), 4_096).await);
         }
         assert!(grown.windows(2).all(|pair| pair[1] >= pair[0]), "steady RTT: never shrinks");
         assert!(*grown.last().expect("20 windows") > INITIAL + 40, "grew: {grown:?}");
@@ -274,38 +270,31 @@ mod tests {
         let before = limiter.limit();
         let mut shrunk = Vec::new();
         for _ in 0..10 {
-            advance().await;
-            shrunk.extend(windows(&limiter, 1, ms(40), 4_096));
+            shrunk.push(window(&limiter, ms(40), 4_096).await);
         }
         let after = *shrunk.last().expect("10 windows");
         assert!(after < before / 2, "5 s at 4× the RTT: {before} → {shrunk:?}");
         for _ in 0..200 {
-            advance().await;
-            windows(&limiter, 1, ms(400), 4_096);
+            window(&limiter, ms(400), 4_096).await;
         }
         assert_eq!(limiter.limit(), FLOOR, "never below the floor");
 
         let floor = limiter.limit();
         for _ in 0..20 {
-            advance().await;
-            windows(&limiter, 1, ms(10), 4_096);
+            window(&limiter, ms(10), 4_096).await;
         }
         assert!(limiter.limit() > floor, "RTT recovered: grows again");
 
         // the open window still carries busy samples: closed once before measuring quiet
-        advance().await;
-        windows(&limiter, 1, ms(10), 1);
-        let quiet = limiter.limit();
+        let quiet = window(&limiter, ms(10), 1).await;
         for _ in 0..20 {
-            advance().await;
-            windows(&limiter, 1, ms(400), 1);
+            window(&limiter, ms(400), 1).await;
         }
         assert_eq!(limiter.limit(), quiet, "app-limited: unchanged");
 
         let fixed = Limiter::new(2048, false);
         for _ in 0..20 {
-            advance().await;
-            windows(&fixed, 1, ms(400), 4_096);
+            window(&fixed, ms(400), 4_096).await;
         }
         assert_eq!(fixed.limit(), 2048, "not adaptive: the ceiling");
     }

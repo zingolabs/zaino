@@ -16,6 +16,7 @@ let routes = Routes {
     network,                             // declared (GetLightdInfo.chainName)
     version: env!("CARGO_PKG_VERSION"),  // the daemon's (GetLightdInfo.version)
     max_address_rows,                    // receives one t-address request may walk
+    indexes,                             // Vec<IndexKind>: the configured ones
 };
 let bound = GrpcService::new(grpc_listen_address, limits)
     .with_routes(routes)
@@ -72,10 +73,11 @@ routing.route(routes);
 - `GetMempoolStream` ends once the **served** tip moves (after the NFS folds the
   new block), so the `GetLatestBlock` a wallet sends after the end already
   answers the new tip.
-- An index the snapshot lacks (`at.views().x()` = `None`) = disabled: its
-  methods are `UNIMPLEMENTED`, naming the index (`GetTreeState needs the
-  tree_state index, which is not enabled`). Compact-block is optional like the
-  rest. An unknown path is `UNIMPLEMENTED`.
+- An index missing from `Routes::indexes` = disabled: its methods are
+  `UNIMPLEMENTED` from routing on, served or not, naming the index
+  (`GetTreeState needs the tree_state index, which is not enabled`). A snapshot
+  lacking a configured index's view answers the same. Compact-block is optional
+  like the rest. An unknown path is `UNIMPLEMENTED`.
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
@@ -101,12 +103,35 @@ routing.route(routes);
 - `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
   its `[grpc]` config section.
 - `bind().await` takes the socket and returns a `BoundGrpcService`; await it at
-  boot so a bind failure is a boot failure (`GrpcServeError::Serve`), then
+  boot so a bind failure is a boot failure (`GrpcServeError::Bind`, the
+  `io::Error` as its source); `local_addr()` names the bound address (bind
+  port `0` to let the kernel pick), then
   `tokio::spawn(bound.run(cancel))`. Once `cancel` fires, `run` closes the
-  listener, sends every open connection an HTTP/2 GOAWAY, and returns `Ok(())`
+  listener, sends every open connection an HTTP/2 GOAWAY, and returns
   when they have all closed or `GrpcLimits::drain_timeout` has passed,
-  whichever is first. Connections still open then are dropped with the runtime.
-  The default `drain_timeout` is 10 s; zero returns at once.
+  whichever is first. `run` returns `()`: a bound server has no failure of its
+  own (accept errors back off and retry). Connections still open then are
+  dropped with the runtime. The default `drain_timeout` is 10 s; zero returns
+  at once.
+
+### Adding a method
+
+Every method lives in one registry, `ROUTES` in `service.rs`: one row per
+method with its wire name (also its `method` metric label), its admission
+`Class` (`Work`, or `Subscription` for a stream that idles between arrivals:
+own pool, never idled out, no latency recorded) and the index that enables it
+(`None` = always served). A new RPC is:
+
+1. a `Method` variant (rows stay in `Method` order: a const assertion checks it),
+2. its `ROUTES` row,
+3. its arm in `Routed::handle`, returning `Result<Response<Body>, Status>`
+   (built with `wire::unary_response`, `wire::streamed_response` or
+   `wire::streaming`, never by hand: `streaming` joins ready records into full
+   DATA frames).
+
+Path lookup, admission, the idle bound, metrics labels and the
+disabled-index answer all read the row; an `Err` becomes its status in one
+place (`Wired::answer`).
 
 ### Why `GetTransaction` forwards
 

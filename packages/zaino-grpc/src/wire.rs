@@ -1,5 +1,5 @@
-//! gRPC wire shared by every route: method paths, framing, bounded request decoding, response
-//! shapes, client-field parsing
+//! gRPC wire shared by every route: framing, bounded request decoding, response shapes,
+//! client-field parsing
 
 use std::fmt;
 
@@ -8,55 +8,6 @@ use tonic::{body::Body, Status};
 use zaino_index_compact_block::Pools;
 use zaino_primitives::types::Height;
 use zaino_proto::frame::{frame_into, split_frame, FRAME_HEADER};
-
-/// Every `CompactTxStreamer` method path, as `/{service}/{method}`, grouped by what answers it
-pub(crate) mod path {
-    pub(crate) const GET_LIGHTD_INFO: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLightdInfo";
-    pub(crate) const GET_TRANSACTION: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTransaction";
-
-    pub(crate) const GET_LATEST_BLOCK: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestBlock";
-    pub(crate) const GET_BLOCK: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlock";
-    pub(crate) const GET_BLOCK_RANGE: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockRange";
-    /// TODO: REMOVE THIS — deprecated alias of `GET_BLOCK_RANGE` (pepper-sync still calls it)
-    pub(crate) const GET_BLOCK_RANGE_NULLIFIERS: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetBlockRangeNullifiers";
-
-    pub(crate) const GET_TREE_STATE: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTreeState";
-    pub(crate) const GET_LATEST_TREE_STATE: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetLatestTreeState";
-    pub(crate) const GET_SUBTREE_ROOTS: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetSubtreeRoots";
-
-    pub(crate) const GET_ADDRESS_UTXOS: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetAddressUtxos";
-    pub(crate) const GET_ADDRESS_UTXOS_STREAM: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetAddressUtxosStream";
-    pub(crate) const GET_TADDRESS_BALANCE: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressBalance";
-    pub(crate) const GET_TADDRESS_BALANCE_STREAM: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressBalanceStream";
-
-    /// Both halves of the boundary: index names the txs, validator holds the bytes
-    /// (`docs/architecture.md` §1)
-    pub(crate) const GET_TADDRESS_TRANSACTIONS: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTransactions";
-    /// TODO: REMOVE THIS — deprecated alias of `GET_TADDRESS_TRANSACTIONS` (pepper-sync still
-    /// calls it)
-    pub(crate) const GET_TADDRESS_TXIDS: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxids";
-
-    /// One random entry per attempt, watched until it spreads (`docs/architecture.md` §6); marked
-    /// ours on acceptance (a wallet sees its own send before any listing)
-    pub(crate) const SEND_TRANSACTION: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction";
-    pub(crate) const GET_MEMPOOL_TX: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetMempoolTx";
-    pub(crate) const GET_MEMPOOL_STREAM: &str =
-        "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetMempoolStream";
-}
 
 /// No answer from this snapshot: retry (`UNAVAILABLE`, the reason as its message)
 pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
@@ -278,31 +229,70 @@ where
 {
     let collected = collect_limited(body, request_limit::MESSAGE).await?;
 
-    let mut messages = Vec::new();
-    let mut rest = &collected[..];
-    while !rest.is_empty() {
-        let (message, tail) = split_frame(rest)
-            .ok_or_else(|| Status::invalid_argument("request body ends mid-frame"))?;
-        messages.push(M::decode(message).map_err(|e| Status::invalid_argument(e.to_string()))?);
-        rest = tail;
-    }
-
-    Ok(messages)
+    messages(&collected)
+        .ok_or_else(|| Status::invalid_argument("request body ends mid-frame"))?
+        .into_iter()
+        .map(|message| M::decode(message).map_err(|e| Status::invalid_argument(e.to_string())))
+        .collect()
 }
 
-pub(super) fn status_response(status: Status) -> Response<Body> {
-    status.into_http()
+/// Each frame's message, in order (`None` = ends mid-frame)
+pub(crate) fn messages(mut framed: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut messages = Vec::new();
+    while !framed.is_empty() {
+        let (message, rest) = split_frame(framed)?;
+        messages.push(message);
+        framed = rest;
+    }
+    Some(messages)
 }
 
 #[cfg(test)]
 mod tests {
     use http::HeaderValue;
+    use zaino_index_compact_block::Pools;
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::FRAME_HEADER;
+    use zaino_proto::proto::service::PoolType;
 
-    use super::{path, request_limit};
-    use crate::service::Routes;
+    use super::request_limit;
+    use crate::service::{Method, Routes};
     use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
+
+    /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
+    /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
+    #[test]
+    fn pool_types_name_the_pools_empty_means_shielded_only_and_unknown_is_refused() {
+        let pools = |named: &[PoolType]| {
+            let raw: Vec<i32> = named.iter().map(|pool| *pool as i32).collect();
+            super::pools(&raw).expect("known pools")
+        };
+
+        for (raw, value) in [(vec![PoolType::Invalid as i32], 0), (vec![2, 99, 3], 99)] {
+            let refused = super::pools(&raw).expect_err("names no pool");
+            let expected = format!(
+                "poolTypes value {value} is not a pool \
+                 (TRANSPARENT=1, SAPLING=2, ORCHARD=3, IRONWOOD=4)"
+            );
+            let got = (refused.code(), refused.message());
+            assert_eq!(got, (tonic::Code::InvalidArgument, expected.as_str()), "{raw:?}");
+        }
+
+        let only = |sapling, orchard, ironwood, transparent| Pools {
+            sapling,
+            orchard,
+            ironwood,
+            transparent,
+        };
+        let (sapling_ironwood, every) = (
+            [PoolType::Sapling, PoolType::Ironwood],
+            [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood],
+        );
+        assert_eq!(pools(&[]), only(true, true, true, false), "none named = shielded only");
+        assert_eq!(pools(&[PoolType::Transparent]), only(false, false, false, true));
+        assert_eq!(pools(&sapling_ironwood), only(true, false, true, false), "exactly its members");
+        assert_eq!(pools(&every), Pools::ALL);
+    }
 
     /// A body over its method's cap is `RESOURCE_EXHAUSTED` before any decode; one byte under is
     /// decoded as usual (then refused for what it says: a hash is 32 bytes)
@@ -331,7 +321,7 @@ mod tests {
         let fits = request_limit::MESSAGE - FRAME_HEADER - 4;
         for (payload, code) in [(fits, "3"), (fits + 1, "8")] {
             let response = router
-                .call(framed_request(path::GET_BLOCK, block_id(payload)))
+                .call(framed_request(Method::GetBlock, block_id(payload)))
                 .await
                 .expect("router answers");
             let status = response.headers().get("grpc-status");

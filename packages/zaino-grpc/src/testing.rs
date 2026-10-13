@@ -3,9 +3,11 @@
 
 use std::{num::NonZeroUsize, sync::Arc};
 
-use http::Request;
+use bytes::Bytes;
+use http::{HeaderMap, Request, Response};
 use http_body_util::Full;
 use tokio::sync::watch;
+use tonic::body::Body;
 use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet, ObservationFold};
 use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
@@ -17,7 +19,7 @@ use zaino_snapshot::{Publisher, Snapshots};
 use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
 
-use crate::service::{Dispatch, Routes};
+use crate::service::{Dispatch, Method, Routes};
 
 /// Network the routes declare (the transparent tests' addresses are mainnet ones)
 pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
@@ -105,7 +107,7 @@ pub(super) fn snapshot(
     snapshot_held(chain, tip, views, EndpointSet::default(), &[])
 }
 
-/// The always-on routes over `node` (the balancer's driver + the view's poll fold back,
+/// Routes over `node`, every index configured (the balancer's driver + the view's poll fold back,
 /// unspawned); nothing verified, nothing served, never republished
 pub(super) fn routes_over(
     node: &Arc<MockValidator>,
@@ -126,6 +128,12 @@ pub(super) fn routes_over(
         network: MAINNET,
         version: "0.11.0-test",
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
+        indexes: vec![
+            IndexKind::CompactBlock,
+            IndexKind::TreeState,
+            IndexKind::TransparentAddress,
+            IndexKind::BlockHash,
+        ],
     };
     (routes, driver, fold)
 }
@@ -158,17 +166,43 @@ pub(super) fn dispatch(
     dispatch
 }
 
-pub(super) fn request(path: &str) -> Request<Full<bytes::Bytes>> {
-    framed_request(path, bytes::Bytes::new())
+/// `method`'s gRPC request, body = one framed message
+pub(super) fn framed_request(method: Method, message: Bytes) -> Request<Full<Bytes>> {
+    request_at(&method.path(), message)
 }
 
-/// gRPC request, body = one framed message
-pub(super) fn framed_request(path: &str, message: bytes::Bytes) -> Request<Full<bytes::Bytes>> {
+/// gRPC request at any `path`, body = one framed message
+pub(super) fn request_at(path: &str, message: Bytes) -> Request<Full<Bytes>> {
     let mut framed = Vec::with_capacity(FRAME_HEADER + message.len());
     frame_into(&mut framed, |out| out.extend_from_slice(&message));
 
     Request::builder()
         .uri(format!("http://localhost{path}"))
-        .body(Full::new(bytes::Bytes::from(framed)))
+        .body(Full::new(Bytes::from(framed)))
         .expect("request")
+}
+
+/// Data frames, then the trailers a streaming body ends in
+pub(super) async fn drained(response: Response<Body>) -> (Vec<Bytes>, HeaderMap) {
+    use http_body_util::BodyExt as _;
+
+    let mut body = std::pin::pin!(response.into_body());
+    let mut chunks = Vec::new();
+    let mut trailers = None;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.expect("frame");
+        assert!(trailers.is_none(), "trailers are the last frame");
+        match frame.into_data() {
+            Ok(chunk) => chunks.push(chunk),
+            Err(frame) => trailers = frame.into_trailers().ok(),
+        }
+    }
+
+    (chunks, trailers.expect("a streaming body ends in trailers"))
+}
+
+/// Each framed `M` of `framed`, in order
+pub(super) fn decode_frames<M: prost::Message + Default>(framed: &[u8]) -> Vec<M> {
+    let messages = crate::wire::messages(framed).expect("whole frames");
+    messages.into_iter().map(|message| M::decode(message).expect("decodes")).collect()
 }

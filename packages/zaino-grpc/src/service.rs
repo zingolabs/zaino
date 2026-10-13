@@ -1,11 +1,11 @@
-//! `CompactTxStreamer` service: every method dispatched by path, over [`Routes`]
+//! `CompactTxStreamer` service: the method registry ([`ROUTES`]) and the one dispatch over it
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
 //! - one global [`Snapshot`](zaino_snapshot::Snapshot) per request or stream (G1), pinned for
 //!   its life: no height named = its served tip; a height named = `At::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
-//! - a disabled `[index.*]` = its methods `UNIMPLEMENTED`, naming the index
+//! - a row whose index `Routes::indexes` lacks = `UNIMPLEMENTED`, naming the index
 //! - an unknown path = `UNIMPLEMENTED`
 
 use std::{
@@ -26,11 +26,118 @@ use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
+use crate::admission::Class;
 use crate::deadline::Bounds;
 use crate::limits::ReadLanes;
 use crate::routes::{blocks, chain, transparent_address, tree_state};
-use crate::wire::{self, frame, path, status_response, unary_response};
+use crate::wire::{self, frame, unary_response};
 use crate::GrpcLimits;
+
+/// Every row's path prefix (`/{service}/{method}`)
+const SERVICE: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/";
+
+/// One served method: its [`ROUTES`] row at `self as usize`, its handler in [`Routed::handle`]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Method {
+    GetLatestBlock,
+    GetBlock,
+    GetBlockRange,
+    GetBlockRangeNullifiers,
+    GetTreeState,
+    GetLatestTreeState,
+    GetSubtreeRoots,
+    GetAddressUtxos,
+    GetAddressUtxosStream,
+    GetTaddressBalance,
+    GetTaddressBalanceStream,
+    GetTaddressTransactions,
+    GetTaddressTxids,
+    SendTransaction,
+    GetMempoolTx,
+    GetMempoolStream,
+    GetTransaction,
+    GetLightdInfo,
+}
+
+/// One registry row: wire name (= the `method` metric label), admission pool, the index that
+/// enables it (`None` = always served)
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Route {
+    pub(crate) method: Method,
+    pub(crate) name: &'static str,
+    pub(crate) class: Class,
+    pub(crate) index: Option<IndexKind>,
+}
+
+const fn row(method: Method, name: &'static str, class: Class, index: Option<IndexKind>) -> Route {
+    Route { method, name, class, index }
+}
+
+/// The registry: every served method (a new RPC = a [`Method`], its row, its `handle` arm)
+pub(crate) const ROUTES: [Route; 18] = {
+    use Class::{Subscription, Work};
+    use IndexKind::{CompactBlock, TransparentAddress, TreeState};
+    use Method::*;
+
+    [
+        row(GetLatestBlock, "GetLatestBlock", Work, Some(CompactBlock)),
+        row(GetBlock, "GetBlock", Work, Some(CompactBlock)),
+        row(GetBlockRange, "GetBlockRange", Work, Some(CompactBlock)),
+        // TODO: REMOVE — deprecated alias of `GetBlockRange` (pepper-sync still calls it)
+        row(GetBlockRangeNullifiers, "GetBlockRangeNullifiers", Work, Some(CompactBlock)),
+        row(GetTreeState, "GetTreeState", Work, Some(TreeState)),
+        row(GetLatestTreeState, "GetLatestTreeState", Work, Some(TreeState)),
+        row(GetSubtreeRoots, "GetSubtreeRoots", Work, Some(TreeState)),
+        row(GetAddressUtxos, "GetAddressUtxos", Work, Some(TransparentAddress)),
+        row(GetAddressUtxosStream, "GetAddressUtxosStream", Work, Some(TransparentAddress)),
+        row(GetTaddressBalance, "GetTaddressBalance", Work, Some(TransparentAddress)),
+        row(GetTaddressBalanceStream, "GetTaddressBalanceStream", Work, Some(TransparentAddress)),
+        // index names the txs, a validator holds the bytes (`docs/architecture.md` §1)
+        row(GetTaddressTransactions, "GetTaddressTransactions", Work, Some(TransparentAddress)),
+        // TODO: REMOVE — deprecated alias of `GetTaddressTransactions` (pepper-sync calls it)
+        row(GetTaddressTxids, "GetTaddressTxids", Work, Some(TransparentAddress)),
+        // one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
+        row(SendTransaction, "SendTransaction", Work, None),
+        row(GetMempoolTx, "GetMempoolTx", Work, None),
+        // open until the served tip moves, silent between arrivals
+        row(GetMempoolStream, "GetMempoolStream", Subscription, None),
+        row(GetTransaction, "GetTransaction", Work, None),
+        row(GetLightdInfo, "GetLightdInfo", Work, None),
+    ]
+};
+
+// row `at` = `Method` discriminant `at` (`Method::route` indexes by it)
+const _: () = {
+    let mut at = 0;
+    while at < ROUTES.len() {
+        assert!(ROUTES[at].method as usize == at, "ROUTES rows out of `Method` order");
+        at += 1;
+    }
+};
+
+impl Method {
+    /// `/{service}/{method}` → its row's method (`None` = no row)
+    pub(crate) fn of(path: &str) -> Option<Self> {
+        let name = path.strip_prefix(SERVICE)?;
+        ROUTES.iter().find(|route| route.name == name).map(|route| route.method)
+    }
+
+    pub(crate) const fn route(self) -> Route {
+        ROUTES[self as usize]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn path(self) -> String {
+        format!("{SERVICE}{}", self.route().name)
+    }
+}
+
+impl Route {
+    /// Open until the next block, silent between arrivals: never idles out, no latency to time
+    pub(crate) fn is_subscription(self) -> bool {
+        self.class == Class::Subscription
+    }
+}
 
 /// What one `GrpcService` answers from
 ///
@@ -39,6 +146,7 @@ use crate::GrpcLimits;
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
 /// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
+/// - `indexes` = the configured ones: a [`ROUTES`] row needing another = `UNIMPLEMENTED`
 pub struct Routes<S: ChainDataSource, V> {
     pub snapshots: Snapshots<V>,
     pub submit: Arc<ChainView<S>>,
@@ -46,6 +154,7 @@ pub struct Routes<S: ChainDataSource, V> {
     pub network: NetworkType,
     pub version: &'static str,
     pub max_address_rows: NonZeroUsize,
+    pub indexes: Vec<IndexKind>,
 }
 
 /// Every method's answer before [`Routing::route`] (the listener serves health from bind on)
@@ -53,14 +162,20 @@ pub(crate) const STARTING: &str = "starting: not routed yet";
 
 /// Routes + what every request shares, one `Arc` (a request clones one pointer)
 ///
-/// - `routes` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
+/// - `routed` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
-/// - `idle` = `GrpcLimits::stall_timeout` (nothing to send that long = cut, `deadline.rs`)
+/// - `idle_limit` = `GrpcLimits::stall_timeout` (nothing to send that long = cut, `deadline.rs`)
 struct Wired<S: ChainDataSource, V> {
-    routes: OnceLock<Routes<S, V>>,
+    routed: OnceLock<Routed<S, V>>,
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
-    idle: Duration,
+    idle_limit: Duration,
+}
+
+/// [`Routes`] + each row's unconfigured index, fixed at [`Routing::route`] (`None` = served)
+struct Routed<S: ChainDataSource, V> {
+    routes: Routes<S, V>,
+    disabled_by: [Option<IndexKind>; ROUTES.len()],
 }
 
 /// Every `CompactTxStreamer` method, dispatched by path (the tower service each connection runs)
@@ -74,9 +189,9 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
 
 impl<S: ChainDataSource, V: CommittedView> Dispatch<S, V> {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
-        let (reads, idle) = (ReadLanes::new(limits), limits.stall_timeout);
-        let routes = OnceLock::new();
-        Self(Arc::new(Wired { routes, reads, tree_states: Arc::default(), idle }))
+        let (reads, idle_limit) = (ReadLanes::new(limits), limits.stall_timeout);
+        let routed = OnceLock::new();
+        Self(Arc::new(Wired { routed, reads, tree_states: Arc::default(), idle_limit }))
     }
 
     pub(crate) fn routing(&self) -> Routing<S, V> {
@@ -97,103 +212,110 @@ impl<S: ChainDataSource, V> Clone for Routing<S, V> {
 impl<S: ChainDataSource, V> Routing<S, V> {
     /// Every method answered from `routes` from here on; once per server (twice = a bug, panics)
     pub fn route(&self, routes: Routes<S, V>) {
-        assert!(self.0.routes.set(routes).is_ok(), "gRPC server routed twice");
+        let disabled_by = ROUTES.map(|row| row.index.filter(|kind| !routes.indexes.contains(kind)));
+        let routed = Routed { routes, disabled_by };
+        assert!(self.0.routed.set(routed).is_ok(), "gRPC server routed twice");
     }
 }
 
 impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
-    /// One request, answered by the route its path names
-    async fn answer<B>(&self, path: &str, body: B) -> Response<Body>
+    /// One request's response: every refusal folded into its status here, nowhere else
+    async fn answer<B>(&self, method: Option<Method>, path: &str, body: B) -> Response<Body>
     where
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
-        let Some(routes) = self.routes.get() else {
-            return status_response(Status::unavailable(STARTING));
+        let answered = match (self.routed.get(), method) {
+            (None, _) => Err(Status::unavailable(STARTING)),
+            (Some(_), None) => Err(Status::unimplemented(format!("{path}: no such method"))),
+            (Some(routed), Some(method)) => match routed.disabled_by[method as usize] {
+                Some(index) => Err(disabled(method, index)),
+                None => routed.handle(method, self, body).await,
+            },
         };
-        let reads = || self.reads.clone();
+        answered.unwrap_or_else(Status::into_http)
+    }
+}
+
+impl<S: ChainDataSource, V: CommittedView> Routed<S, V> {
+    /// The registry's handler column: one arm per [`Method`], off one snapshot
+    async fn handle<B>(
+        &self,
+        method: Method,
+        wired: &Wired<S, V>,
+        body: B,
+    ) -> Result<Response<Body>, Status>
+    where
+        B: http_body::Body,
+        B::Error: std::fmt::Display,
+    {
+        use Method::*;
+
+        let (routes, reads) = (&self.routes, wired.reads.clone());
         let snap = routes.snapshots.load();
-        let unavailable = |why: Unavailable| status_response(wire::unavailable(why));
-        match path {
-            path::GET_LATEST_BLOCK
-            | path::GET_BLOCK
-            | path::GET_BLOCK_RANGE
-            | path::GET_BLOCK_RANGE_NULLIFIERS => {
-                let at = match snap.served() {
-                    Ok(at) => at,
-                    Err(why) => return unavailable(why),
-                };
-                let Some(blocks) = at.views().compact_block() else {
-                    return absent(path, IndexKind::CompactBlock);
-                };
-                blocks::dispatch(at, blocks, path, body, reads()).await
+        let served = || snap.served().map_err(wire::unavailable);
+        let compact = || {
+            let at = served()?;
+            let blocks = view(at.views().compact_block(), method, IndexKind::CompactBlock)?;
+            Ok::<_, Status>((at, blocks))
+        };
+        let trees = || {
+            // the NFS publish itself: memo identity (`served()` = its served tip)
+            let nothing = || wire::unavailable(Unavailable::NothingServed);
+            let indexed = snap.indexed().ok_or_else(nothing)?;
+            let trees = view(indexed.served().views().tree_state(), method, IndexKind::TreeState)?;
+            let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&wired.tree_states));
+            Ok::<_, Status>(tree_state::Answering { indexed, trees, reads: reads.clone(), memos })
+        };
+        let addresses = || {
+            let at = served()?;
+            let index = at.views().transparent_address();
+            let reader = view(index, method, IndexKind::TransparentAddress)?;
+            let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
+            Ok::<_, Status>(transparent_address::Addresses { reader, network: at.params().network })
+        };
+
+        match method {
+            GetLatestBlock => Ok(blocks::latest(served()?)),
+            GetBlock => blocks::block(compact()?, body, &reads).await,
+            GetBlockRange => blocks::range(compact()?, body, reads).await,
+            GetBlockRangeNullifiers => blocks::range_nullifiers(compact()?, body, reads).await,
+            GetTreeState => tree_state::treestate(&trees()?, body).await,
+            GetLatestTreeState => tree_state::latest(&trees()?).await,
+            GetSubtreeRoots => tree_state::subtree_roots(&trees()?, body).await,
+            GetAddressUtxos => transparent_address::utxos(addresses()?, body, &reads).await,
+            GetAddressUtxosStream => {
+                transparent_address::utxos_stream(addresses()?, body, &reads).await
             }
-            path::GET_TREE_STATE | path::GET_LATEST_TREE_STATE | path::GET_SUBTREE_ROOTS => {
-                // the NFS publish itself: memo identity (`served()` = its served tip)
-                let Some(indexed) = snap.indexed() else {
-                    return unavailable(Unavailable::NothingServed);
-                };
-                let Some(trees) = indexed.served().views().tree_state() else {
-                    return absent(path, IndexKind::TreeState);
-                };
-                let (indexed, memos) = (Arc::clone(indexed), Arc::clone(&self.tree_states));
-                let answering = tree_state::Answering { indexed, trees, reads: reads(), memos };
-                tree_state::dispatch(answering, path, body).await
+            GetTaddressBalance => transparent_address::balance(addresses()?, body, &reads).await,
+            GetTaddressBalanceStream => {
+                transparent_address::balance_stream(addresses()?, body, &reads).await
             }
-            path::GET_ADDRESS_UTXOS
-            | path::GET_ADDRESS_UTXOS_STREAM
-            | path::GET_TADDRESS_BALANCE
-            | path::GET_TADDRESS_BALANCE_STREAM
-            | path::GET_TADDRESS_TRANSACTIONS
-            | path::GET_TADDRESS_TXIDS => {
-                let at = match snap.served() {
-                    Ok(at) => at,
-                    Err(why) => return unavailable(why),
-                };
-                let Some(reader) = at.views().transparent_address() else {
-                    return absent(path, IndexKind::TransparentAddress);
-                };
-                let reader = reader.as_of(at.tip().height).with_max_rows(routes.max_address_rows);
-                let index = transparent_address::Addresses { reader, network: at.params().network };
-                match path {
-                    path::GET_TADDRESS_TRANSACTIONS | path::GET_TADDRESS_TXIDS => {
-                        let validators = routes.validators.clone();
-                        transparent_address::transactions(index, validators, body, reads()).await
-                    }
-                    _ => transparent_address::dispatch(index, path, body, reads()).await,
-                }
+            GetTaddressTransactions | GetTaddressTxids => {
+                let validators = routes.validators.clone();
+                transparent_address::transactions(addresses()?, validators, body, &reads).await
             }
-            path::SEND_TRANSACTION => match chain::send(&routes.submit, body).await {
-                Ok(record) => unary_response(record),
-                Err(status) => status_response(status),
-            },
-            path::GET_MEMPOOL_TX => match chain::mempool_tx(&snap, body).await {
-                Ok(records) => wire::streamed_response(records),
-                Err(status) => status_response(status),
-            },
-            path::GET_MEMPOOL_STREAM => chain::mempool_stream(&snap),
-            path::GET_TRANSACTION => match chain::transaction(&routes.validators, body).await {
-                Ok(record) => unary_response(record),
-                Err(status) => status_response(status),
-            },
-            path::GET_LIGHTD_INFO => {
-                match chain::lightd_info(&snap, routes.network, routes.version) {
-                    Ok(info) => unary_response(frame(&info)),
-                    Err(status) => status_response(status),
-                }
+            SendTransaction => chain::send(&routes.submit, body).await,
+            GetMempoolTx => chain::mempool_tx(&snap, body).await,
+            GetMempoolStream => chain::mempool_stream(&snap),
+            GetTransaction => chain::transaction(&routes.validators, body).await,
+            GetLightdInfo => {
+                let info = chain::lightd_info(&snap, routes.network, routes.version)?;
+                Ok(unary_response(frame(&info)))
             }
-            unknown => status_response(Status::unimplemented(format!("{unknown}: no such method"))),
         }
     }
 }
 
-/// A method whose index the operator disabled
-fn absent(path: &str, kind: IndexKind) -> Response<Body> {
-    let method = path.rsplit('/').next().unwrap_or(path);
-    let index = kind.name();
-    status_response(Status::unimplemented(format!(
-        "{method} needs the {index} index, which is not enabled"
-    )))
+/// A configured index's view, absent = disabled (a snapshot built without it)
+fn view<T>(view: Option<T>, method: Method, index: IndexKind) -> Result<T, Status> {
+    view.ok_or_else(|| disabled(method, index))
+}
+
+/// `method` needs `index`, which the operator left off
+fn disabled(method: Method, index: IndexKind) -> Status {
+    let (method, index) = (method.route().name, index.name());
+    Status::unimplemented(format!("{method} needs the {index} index, which is not enabled"))
 }
 
 /// Never fails: every refusal is a gRPC status in the response
@@ -216,76 +338,76 @@ where
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
         let wired = Arc::clone(&self.0);
         let path = request.uri().path().to_owned();
-        // a mempool subscription stays silent until the next block: never idles out
-        let idle = (path != path::GET_MEMPOOL_STREAM).then_some(wired.idle);
-        let bounds = Bounds::of(request.headers(), idle);
-        Box::pin(async move { Ok(bounds.apply(wired.answer(&path, request.into_body())).await) })
+        let method = Method::of(&path);
+        let idles = method.is_none_or(|method| !method.route().is_subscription());
+        let bounds = Bounds::of(request.headers(), idles.then_some(wired.idle_limit));
+        Box::pin(
+            async move { Ok(bounds.apply(wired.answer(method, &path, request.into_body())).await) },
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderMap, HeaderValue, Response};
-    use tonic::{body::Body, Status};
+    use http::HeaderValue;
+    use tonic::Status;
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, MockChain};
 
-    use super::Routes;
+    use super::{Method, Routes, ROUTES};
     use crate::testing::{
-        dispatch, framed_request, indexed, request, routes, snapshot, snapshot_held, MAINNET,
+        decode_frames, dispatch, drained, framed_request, indexed, request_at, routes, snapshot,
+        snapshot_held, MAINNET,
     };
-    use crate::wire::path;
 
-    /// - Nothing published: every index method `UNAVAILABLE` (retry), `GetLightdInfo` without a
-    ///   verified tip too; unknown path `UNIMPLEMENTED`
-    /// - Compact-block-only snapshot: a disabled index = `UNIMPLEMENTED` naming it
+    /// Each row's path names its own method; any other path (another service, a typo) none
+    #[test]
+    fn a_path_names_its_row_or_no_method() {
+        let resolved: Vec<_> = ROUTES.iter().map(|row| Method::of(&row.method.path())).collect();
+        assert_eq!(resolved, ROUTES.map(|row| Some(row.method)));
+        let service = "/cash.z.wallet.sdk.rpc.CompactTxStreamer";
+        let others = ["/grpc.health.v1.Health/GetBlock", "/", "", &format!("{service}/GetBlocks")];
+        assert_eq!(others.map(Method::of), [None; 4]);
+    }
+
+    /// Routed with only compact_block configured, nothing served yet:
+    /// - an enabled method = `UNAVAILABLE` (retry); a disabled one = `UNIMPLEMENTED` naming its
+    ///   index, served or not
+    /// - an unknown path = `UNIMPLEMENTED`
     #[tokio::test]
-    async fn a_disabled_index_or_unknown_path_is_unimplemented_and_nothing_served_says_retry() {
+    async fn config_enables_each_method_and_an_unknown_path_is_unimplemented() {
         use tonic::Code::{Unavailable, Unimplemented};
         use tower::Service as _;
+        use Method::*;
 
-        let mut booting = dispatch(routes());
-        let unknown = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping";
-        let health = "/grpc.health.v1.Health/Check";
-        let syncing = "the indexes are syncing: nothing served yet".to_owned();
-        let cases = [
-            (path::GET_LATEST_BLOCK, (Unavailable, syncing.clone())),
-            (path::GET_TREE_STATE, (Unavailable, syncing.clone())),
-            (path::GET_ADDRESS_UTXOS, (Unavailable, syncing.clone())),
-            (unknown, (Unimplemented, format!("{unknown}: no such method"))),
-            (health, (Unimplemented, format!("{health}: no such method"))),
-            (path::GET_LIGHTD_INFO, (Unavailable, syncing)),
-        ];
-        for (path, want) in cases {
-            let response = booting.call(request(path)).await.expect("infallible");
-            let status = Status::from_header_map(response.headers()).expect("a status");
-            assert_eq!((status.code(), status.message().to_owned()), want, "{path}");
-        }
-
-        let mut chain = MockChain::regtest().network(MAINNET);
-        let tip = chain.mine_empty(1);
-        let compact = indexed(IndexKind::CompactBlock, &chain, tip);
-        let mut serving =
-            dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
-        let off = |method: &str, index: &str| {
+        let mut router = dispatch(Routes { indexes: vec![IndexKind::CompactBlock], ..routes() });
+        let syncing = || (Unavailable, "the indexes are syncing: nothing served yet".to_owned());
+        let off = |method: Method, index: &str| {
+            let method = method.route().name;
             (Unimplemented, format!("{method} needs the {index} index, which is not enabled"))
         };
+        let unknown = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/Ping";
+        let health = "/grpc.health.v1.Health/Check";
         let cases = [
-            (path::GET_TREE_STATE, off("GetTreeState", "tree_state")),
-            (path::GET_LATEST_TREE_STATE, off("GetLatestTreeState", "tree_state")),
-            (path::GET_SUBTREE_ROOTS, off("GetSubtreeRoots", "tree_state")),
-            (path::GET_ADDRESS_UTXOS, off("GetAddressUtxos", "transparent_address")),
-            (path::GET_TADDRESS_BALANCE, off("GetTaddressBalance", "transparent_address")),
-            (
-                path::GET_TADDRESS_TRANSACTIONS,
-                off("GetTaddressTransactions", "transparent_address"),
-            ),
+            (GetLatestBlock.path(), syncing()),
+            (GetBlockRange.path(), syncing()),
+            (GetLightdInfo.path(), syncing()),
+            (GetTreeState.path(), off(GetTreeState, "tree_state")),
+            (GetSubtreeRoots.path(), off(GetSubtreeRoots, "tree_state")),
+            (GetAddressUtxos.path(), off(GetAddressUtxos, "transparent_address")),
+            (GetTaddressTxids.path(), off(GetTaddressTxids, "transparent_address")),
+            (unknown.to_owned(), (Unimplemented, format!("{unknown}: no such method"))),
+            (health.to_owned(), (Unimplemented, format!("{health}: no such method"))),
         ];
-        for (path, want) in cases {
-            let response = serving.call(request(path)).await.expect("infallible");
-            let status = Status::from_header_map(response.headers()).expect("a status");
-            assert_eq!((status.code(), status.message().to_owned()), want, "{path}");
+
+        let mut answered = Vec::new();
+        for (path, _) in &cases {
+            let response = router.call(request_at(path, bytes::Bytes::new())).await;
+            let status = Status::from_header_map(response.expect("infallible").headers());
+            let status = status.expect("a status");
+            answered.push((status.code(), status.message().to_owned()));
         }
+        assert_eq!(answered, cases.map(|(_, expected)| expected));
     }
 
     /// G1, zingolib #2835: no height named = snapshot's tip; height named = that index's durable
@@ -298,12 +420,14 @@ mod tests {
     ///   fixed snapshot never moves on)
     #[tokio::test]
     async fn latest_rpcs_share_the_snapshot_tip_and_each_index_answers_its_own_durable() {
+        use http::HeaderMap;
         use prost::Message as _;
         use tower::Service as _;
         use zaino_chainview::EndpointSet;
-        use zaino_proto::frame::{split_frame, FRAME_HEADER};
+        use zaino_proto::frame::FRAME_HEADER;
         use zaino_proto::proto::compact_formats as cf;
         use zaino_proto::proto::service as proto;
+        use Method::*;
 
         let mut chain = MockChain::regtest().network(MAINNET);
         let tip = chain.mine_empty(3);
@@ -317,8 +441,8 @@ mod tests {
         let two = chain.at(h(2));
         let snapshots = snapshot_held(&chain, two, views, EndpointSet::at([0]), &ours);
         let mut router = dispatch(Routes { snapshots, ..routes() });
-        let mut call = |path: &'static str, message: Vec<u8>| {
-            let response = router.call(framed_request(path, message.into()));
+        let mut call = |method: Method, message: Vec<u8>| {
+            let response = router.call(framed_request(method, message.into()));
             async move {
                 use http_body_util::BodyExt as _;
                 let response = response.await.expect("router answers");
@@ -332,29 +456,25 @@ mod tests {
         };
         let at = |height| proto::BlockId { height, hash: Vec::new() };
 
-        let (_, latest, _) = call(path::GET_LATEST_BLOCK, Vec::new()).await;
+        let (_, latest, _) = call(GetLatestBlock, Vec::new()).await;
         let latest = proto::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
         let tip_hash = <[u8; 32]>::from(two.hash).to_vec();
         assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the snapshot's tip");
 
         let range = proto::BlockRange { start: Some(at(0)), end: Some(at(9)), pool_types: vec![] };
-        let (_, streamed, trailers) = call(path::GET_BLOCK_RANGE, range.encode_to_vec()).await;
+        let (_, streamed, trailers) = call(GetBlockRange, range.encode_to_vec()).await;
         let past = HeaderValue::from_static("11");
         assert_eq!(trailers.get("grpc-status"), Some(&past), "to the index tip, then OUT_OF_RANGE");
-        let mut rest = &streamed[..];
-        let mut served = Vec::new();
-        while !rest.is_empty() {
-            let (message, tail) = split_frame(rest).expect("whole frame");
-            let block = cf::CompactBlock::decode(message).expect("a CompactBlock");
-            served.push((block.height, block.hash));
-            rest = tail;
-        }
+        let served: Vec<_> = decode_frames::<cf::CompactBlock>(&streamed)
+            .into_iter()
+            .map(|block| (block.height, block.hash))
+            .collect();
         let expected: Vec<_> = (0..=3u32)
             .map(|at| (u64::from(at), <[u8; 32]>::from(chain.at(h(at)).hash).to_vec()))
             .collect();
         assert_eq!(served, expected, "through the compact-block index's durable, not the snapshot");
 
-        let (_, state, _) = call(path::GET_LATEST_TREE_STATE, Vec::new()).await;
+        let (_, state, _) = call(GetLatestTreeState, Vec::new()).await;
         let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("a TreeState");
         let mut display = tip_hash;
         display.reverse();
@@ -366,49 +486,48 @@ mod tests {
         let three = chain.at(h(3)).hash;
         let mut three_display = <[u8; 32]>::from(three).to_vec();
         three_display.reverse();
-        let (code, state, _) = call(path::GET_TREE_STATE, at(3).encode_to_vec()).await;
+        let (code, state, _) = call(GetTreeState, at(3).encode_to_vec()).await;
         let state = proto::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
         let answered = (code, state.height, state.hash);
         let ok = Some(tonic::Code::Ok);
         assert_eq!(answered, (ok, 3, const_hex::encode(three_display)), "3 durable, past the tip");
-        let (code, block, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
+        let (code, block, _) = call(GetBlock, at(3).encode_to_vec()).await;
         let block = cf::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
         let three = <[u8; 32]>::from(three).to_vec();
         assert_eq!((code, block.height, block.hash), (ok, 3, three), "GetBlock agrees");
-        for path in [path::GET_TREE_STATE, path::GET_BLOCK] {
-            let (code, _, _) = call(path, at(4).encode_to_vec()).await;
-            assert_eq!(code, Some(tonic::Code::NotFound), "{path}: 4 past every index");
+        for method in [GetTreeState, GetBlock] {
+            let (code, _, _) = call(method, at(4).encode_to_vec()).await;
+            assert_eq!(code, Some(tonic::Code::NotFound), "{method:?}: 4 past every index");
         }
 
-        let (_, info, _) = call(path::GET_LIGHTD_INFO, Vec::new()).await;
+        let (_, info, _) = call(GetLightdInfo, Vec::new()).await;
         let info = proto::LightdInfo::decode(&info[FRAME_HEADER..]).expect("a LightdInfo");
         let lightd = (info.block_height, info.estimated_height, info.consensus_branch_id.as_str());
         assert_eq!(lightd, (2, 2, "37a5165b"), "served height, best, the schedule's branch at 2");
 
         let every = vec![1, 2, 3, 4];
         let request = proto::GetMempoolTxRequest { pool_types: every, ..Default::default() };
-        let request = request.encode_to_vec();
-        let (_, listed, trailers) = call(path::GET_MEMPOOL_TX, request).await;
-        let (compact, rest) = split_frame(&listed).expect("one CompactTx");
-        let compact = cf::CompactTx::decode(compact).expect("a CompactTx");
+        let (_, listed, trailers) = call(GetMempoolTx, request.encode_to_vec()).await;
+        let listed: Vec<_> =
+            decode_frames::<cf::CompactTx>(&listed).into_iter().map(|tx| tx.txid).collect();
         let ours = <[u8; 32]>::from(txid).to_vec();
-        assert_eq!((compact.txid, rest.len()), (ours, 0), "held: our relay, compacted");
+        assert_eq!(listed, [ours], "held: our relay, compacted");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let (_, streamed, trailers) = call(path::GET_MEMPOOL_STREAM, Vec::new()).await;
-        let (opening, rest) = split_frame(&streamed).expect("the opening");
-        let opening = proto::RawTransaction::decode(opening).expect("a RawTransaction");
-        let opened = (opening.data.as_ref(), opening.height, rest.len());
-        assert_eq!(opened, (&raw[..], 0, 0), "our relay, unmined, then the end");
+        let (_, streamed, trailers) = call(GetMempoolStream, Vec::new()).await;
+        let opened = decode_frames::<proto::RawTransaction>(&streamed);
+        let unmined = proto::RawTransaction { data: raw.into(), height: 0 };
+        assert_eq!(opened, [unmined], "our relay, unmined, then the end");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
     }
 
-    /// Every index path on one router, each index enabled: each answers `OK` off its own index;
+    /// Every index method on one router, each index enabled: each answers `OK` off its own index;
     /// `GetSubtreeRoots` past the end = an empty stream (pepper-sync's probe), never a status
     #[tokio::test]
-    async fn every_index_claims_its_own_paths() {
+    async fn every_index_answers_its_own_methods() {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_proto::proto::service as proto;
+        use Method::*;
 
         let mut chain = MockChain::regtest().network(MAINNET);
         let tip = chain.mine_empty(1);
@@ -422,70 +541,41 @@ mod tests {
             end: Some(proto::BlockId { height: 1, hash: Vec::new() }),
             pool_types: Vec::new(),
         };
+        let utxos = proto::GetAddressUtxosArg {
+            addresses: vec![address.clone()],
+            start_height: 0,
+            max_entries: 0,
+        };
         let every = [
-            (path::GET_LATEST_BLOCK, proto::ChainSpec::default().encode_to_vec()),
-            (path::GET_BLOCK, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
-            (path::GET_BLOCK_RANGE, range.encode_to_vec()),
-            (path::GET_BLOCK_RANGE_NULLIFIERS, range.encode_to_vec()),
+            (GetLatestBlock, proto::ChainSpec::default().encode_to_vec()),
+            (GetBlock, proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec()),
+            (GetBlockRange, range.encode_to_vec()),
+            (GetBlockRangeNullifiers, range.encode_to_vec()),
             // 1 = Sapling's activation (below it: no tree state)
-            (path::GET_TREE_STATE, proto::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
-            (path::GET_LATEST_TREE_STATE, Vec::new()),
+            (GetTreeState, proto::BlockId { height: 1, hash: Vec::new() }.encode_to_vec()),
+            (GetLatestTreeState, Vec::new()),
+            (GetAddressUtxos, utxos.encode_to_vec()),
             (
-                path::GET_ADDRESS_UTXOS,
-                proto::GetAddressUtxosArg {
-                    addresses: vec![address.clone()],
-                    start_height: 0,
-                    max_entries: 0,
-                }
-                .encode_to_vec(),
-            ),
-            (
-                path::GET_TADDRESS_BALANCE,
+                GetTaddressBalance,
                 proto::AddressList { addresses: vec![address.clone()] }.encode_to_vec(),
             ),
-            (
-                path::GET_TADDRESS_BALANCE_STREAM,
-                proto::Address { address: address.clone() }.encode_to_vec(),
-            ),
+            (GetTaddressBalanceStream, proto::Address { address }.encode_to_vec()),
         ];
-        for (path, message) in every {
+        for (method, message) in every {
             let response =
-                router.call(framed_request(path, message.into())).await.expect("router answers");
-            let status = response.headers().get("grpc-status");
-            let ok = [None, Some(&HeaderValue::from_static("0"))];
-            assert!(ok.contains(&status), "{path}: {status:?}");
+                router.call(framed_request(method, message.into())).await.expect("router answers");
+            let (_, trailers) = drained(response).await;
+            let status = trailers.get("grpc-status");
+            assert_eq!(status, Some(&HeaderValue::from_static("0")), "{method:?}");
         }
 
-        async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
-            use http_body_util::BodyExt as _;
-
-            let mut body = std::pin::pin!(response.into_body());
-            let mut chunks = Vec::new();
-            let mut trailers = None;
-
-            while let Some(frame) = body.frame().await {
-                let frame = frame.expect("frame");
-                assert!(trailers.is_none(), "trailers are the last frame");
-                match frame.into_data() {
-                    Ok(chunk) => chunks.push(chunk),
-                    Err(frame) => trailers = frame.into_trailers().ok(),
-                }
-            }
-
-            (chunks, trailers.expect("a streaming body ends in trailers"))
-        }
-
+        let roots = proto::GetSubtreeRootsArg {
+            start_index: 0,
+            shielded_protocol: proto::ShieldedProtocol::Orchard as i32,
+            max_entries: 0,
+        };
         let response = router
-            .call(framed_request(
-                path::GET_SUBTREE_ROOTS,
-                proto::GetSubtreeRootsArg {
-                    start_index: 0,
-                    shielded_protocol: proto::ShieldedProtocol::Orchard as i32,
-                    max_entries: 0,
-                }
-                .encode_to_vec()
-                .into(),
-            ))
+            .call(framed_request(GetSubtreeRoots, roots.encode_to_vec().into()))
             .await
             .expect("router answers");
         assert_eq!(response.headers().get("grpc-status"), None, "status rides in the trailers");

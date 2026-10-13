@@ -14,16 +14,13 @@ use zcash_protocol::consensus::NetworkType;
 use zcash_script::script::Evaluable;
 use zcash_transparent::address::TransparentAddress;
 
-use http::{HeaderValue, Response};
+use http::Response;
 use http_body::Frame;
-use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
-use crate::wire::{
-    self, decode_request, frame, path, status_response, streamed_response, trailers, unary_response,
-};
+use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
 /// One request's index: the snapshot's reader (as of its tip, row-capped) + the network its
 /// addresses parse in
@@ -39,36 +36,32 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-pub(crate) async fn dispatch<V: CommittedView, B>(
+/// `GetAddressUtxos`: one list message
+pub(crate) async fn utxos<V: CommittedView, B>(
     index: Addresses<V>,
-    path: &str,
     body: B,
-    reads: ReadLanes,
-) -> Response<Body>
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let answer = match path {
-        path::GET_ADDRESS_UTXOS => utxos(index, body, &reads)
-            .await
-            .map(|address_utxos| wire::frame(&proto::GetAddressUtxosReplyList { address_utxos }))
-            .map(unary_response),
-        path::GET_ADDRESS_UTXOS_STREAM => utxos(index, body, &reads)
-            .await
-            .map(|replies| replies.iter().map(wire::frame).collect())
-            .map(streamed_response),
-        path::GET_TADDRESS_BALANCE => balance_of(index, body, &reads).await.map(unary_response),
-        path::GET_TADDRESS_BALANCE_STREAM => {
-            streamed_balance_of(index, body, &reads).await.map(unary_response)
-        }
-        _ => Err(Status::unimplemented("not a transparent-address method")),
-    };
+    let address_utxos = utxo_replies(index, body, reads).await?;
+    Ok(unary_response(wire::frame(&proto::GetAddressUtxosReplyList { address_utxos })))
+}
 
-    match answer {
-        Ok(response) => response,
-        Err(status) => status_response(status),
-    }
+/// `GetAddressUtxosStream`: one message per utxo
+pub(crate) async fn utxos_stream<V: CommittedView, B>(
+    index: Addresses<V>,
+    body: B,
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
+where
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    let replies = utxo_replies(index, body, reads).await?;
+    Ok(streamed_response(replies.iter().map(wire::frame).collect()))
 }
 
 /// `GetTaddressTransactions`: index names them, a validator supplies them
@@ -79,16 +72,13 @@ pub(crate) async fn transactions<S: ChainDataSource, V: CommittedView, B>(
     index: Addresses<V>,
     validators: TrafficBalancer<S>,
     body: B,
-    reads: ReadLanes,
-) -> Response<Body>
+    reads: &ReadLanes,
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
-    let found = match found_transactions(index, body, &reads).await {
-        Ok(found) => found,
-        Err(status) => return status_response(status),
-    };
+    let found = found_transactions(index, body, reads).await?;
 
     // `None` state ends the stream (trailer frame always last, always sent)
     let frames = futures::stream::unfold(Some(found.into_iter()), move |state| {
@@ -108,12 +98,7 @@ where
         }
     });
 
-    let mut response = Response::new(Body::new(StreamBody::new(frames)));
-    response
-        .headers_mut()
-        .insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
-
-    response
+    Ok(wire::streaming(frames))
 }
 
 /// Txids touching the address, height order
@@ -163,7 +148,7 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
 }
 
 /// `GetAddressUtxos` / `GetAddressUtxosStream`: one walk, two response shapes
-async fn utxos<V: CommittedView, B>(
+async fn utxo_replies<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
@@ -222,25 +207,26 @@ fn reply(
     })
 }
 
-async fn balance_of<V: CommittedView, B>(
+/// `GetTaddressBalance`: one `AddressList`, one total
+pub(crate) async fn balance<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
-) -> Result<Bytes, Status>
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
     let list: proto::AddressList = wire::decode_request(body).await?;
-    balance(index, &list.addresses, reads).await
+    total(index, &list.addresses, reads).await.map(unary_response)
 }
 
 /// `GetTaddressBalanceStream`: client-streaming (one framed `Address` each), reply = one total
-async fn streamed_balance_of<V: CommittedView, B>(
+pub(crate) async fn balance_stream<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
-) -> Result<Bytes, Status>
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -248,12 +234,12 @@ where
     let streamed: Vec<proto::Address> = wire::decode_request_stream(body).await?;
     let addresses: Vec<String> = streamed.into_iter().map(|one| one.address).collect();
 
-    balance(index, &addresses, reads).await
+    total(index, &addresses, reads).await.map(unary_response)
 }
 
 /// Deduped on the parsed address (a repeated address counts once)
 /// - distinct addresses' balances sum within the supply, so overflow = index corruption
-async fn balance<V: CommittedView>(
+async fn total<V: CommittedView>(
     index: Addresses<V>,
     addresses: &[String],
     reads: &ReadLanes,
@@ -274,16 +260,17 @@ async fn balance<V: CommittedView>(
 
 #[cfg(test)]
 mod tests {
-    use http::{HeaderMap, HeaderValue, Request, Response};
+    use http::{HeaderValue, Request, Response};
     use http_body_util::Full;
     use tonic::{body::Body, Status};
 
     use zaino_persistence::IndexKind;
     use zaino_proto::frame::{frame_into, FRAME_HEADER};
 
-    use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, routes_over, snapshot};
-    use crate::wire::path;
+    use crate::service::{Method, Routes};
+    use crate::testing::{
+        decode_frames, dispatch, drained, framed_request, indexed, routes, routes_over, snapshot,
+    };
 
     /// - All four methods off the same rows: utxo shapes agree, balance shapes agree
     /// - Unparseable address = bad request, never an empty answer (a gap-limit walk would read
@@ -331,29 +318,10 @@ mod tests {
             chunks.concat().into()
         }
 
-        async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
-            use http_body_util::BodyExt as _;
-
-            let mut body = std::pin::pin!(response.into_body());
-            let mut chunks = Vec::new();
-            let mut trailers = None;
-
-            while let Some(frame) = body.frame().await {
-                let frame = frame.expect("frame");
-                assert!(trailers.is_none(), "trailers are the last frame");
-                match frame.into_data() {
-                    Ok(chunk) => chunks.push(chunk),
-                    Err(frame) => trailers = frame.into_trailers().ok(),
-                }
-            }
-
-            (chunks, trailers.expect("a streaming body ends in trailers"))
-        }
-
         // GetAddressUtxos: one list message, height-ordered, script + address rebuilt
         let response = router
             .call(framed_request(
-                path::GET_ADDRESS_UTXOS,
+                Method::GetAddressUtxos,
                 proto::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
@@ -390,7 +358,7 @@ mod tests {
         // maxEntries caps the list (oldest kept)
         let response = router
             .call(framed_request(
-                path::GET_ADDRESS_UTXOS,
+                Method::GetAddressUtxos,
                 proto::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
@@ -410,7 +378,7 @@ mod tests {
         // one data frame: lightwalletd #593)
         let response = router
             .call(framed_request(
-                path::GET_ADDRESS_UTXOS_STREAM,
+                Method::GetAddressUtxosStream,
                 proto::GetAddressUtxosArg {
                     addresses: vec![ALICE.to_owned()],
                     start_height: 0,
@@ -426,20 +394,13 @@ mod tests {
         let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         assert_eq!(chunks.len(), 1, "two ready replies, one data frame");
-        let joined = chunks.concat();
-        let mut rest = &joined[..];
-        let mut streamed = Vec::new();
-        while !rest.is_empty() {
-            let (message, tail) = zaino_proto::frame::split_frame(rest).expect("whole frame");
-            streamed.push(proto::GetAddressUtxosReply::decode(message).expect("framed reply"));
-            rest = tail;
-        }
+        let streamed = decode_frames::<proto::GetAddressUtxosReply>(&chunks.concat());
         assert_eq!(streamed, list.address_utxos, "one reply per record, same as the list shape");
 
         // GetTaddressBalance, both addresses (alice repeated: counted once) + client-streaming
         let response = router
             .call(framed_request(
-                path::GET_TADDRESS_BALANCE,
+                Method::GetTaddressBalance,
                 proto::AddressList {
                     addresses: vec![ALICE.to_owned(), BOB.to_owned(), ALICE.to_owned()],
                 }
@@ -459,7 +420,7 @@ mod tests {
         let response = router
             .call(
                 Request::builder()
-                    .uri(format!("http://localhost{}", path::GET_TADDRESS_BALANCE_STREAM))
+                    .uri(format!("http://localhost{}", Method::GetTaddressBalanceStream.path()))
                     .body(Full::new(bytes::Bytes::from(streamed)))
                     .expect("request"),
             )
@@ -470,7 +431,7 @@ mod tests {
 
         let response = router
             .call(framed_request(
-                path::GET_TADDRESS_BALANCE,
+                Method::GetTaddressBalance,
                 proto::AddressList { addresses: vec!["not-an-address".to_owned()] }
                     .encode_to_vec()
                     .into(),
@@ -492,20 +453,17 @@ mod tests {
 
         // TODO: REMOVE the `GetTaddressTxids` half with the deprecated alias
         let mut answers = Vec::new();
-        for path in [path::GET_TADDRESS_TRANSACTIONS, path::GET_TADDRESS_TXIDS] {
+        for method in [Method::GetTaddressTransactions, Method::GetTaddressTxids] {
             let (chunks, trailing) = drained(
                 router
-                    .call(framed_request(path, filter.encode_to_vec().into()))
+                    .call(framed_request(method, filter.encode_to_vec().into()))
                     .await
                     .expect("router answers"),
             )
             .await;
-            assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")), "{path}");
-            let txs: Vec<proto::RawTransaction> = chunks
-                .iter()
-                .map(|chunk| proto::RawTransaction::decode(&chunk[FRAME_HEADER..]).expect("tx"))
-                .collect();
-            answers.push(txs);
+            let ok = Some(&HeaderValue::from_static("0"));
+            assert_eq!(trailing.get("grpc-status"), ok, "{method:?}");
+            answers.push(decode_frames::<proto::RawTransaction>(&chunks.concat()));
         }
         let alice_txs = vec![
             proto::RawTransaction { data: first_raw.into(), height: 2 },
@@ -547,11 +505,11 @@ mod tests {
             });
             [
                 (
-                    path::GET_TADDRESS_BALANCE,
+                    Method::GetTaddressBalance,
                     proto::AddressList { addresses: vec![address.to_owned()] }.encode_to_vec(),
                 ),
                 (
-                    path::GET_ADDRESS_UTXOS,
+                    Method::GetAddressUtxos,
                     proto::GetAddressUtxosArg {
                         addresses: vec![address.to_owned()],
                         start_height: 0,
@@ -560,7 +518,7 @@ mod tests {
                     .encode_to_vec(),
                 ),
                 (
-                    path::GET_TADDRESS_TRANSACTIONS,
+                    Method::GetTaddressTransactions,
                     proto::TransparentAddressBlockFilter { address: address.to_owned(), range }
                         .encode_to_vec(),
                 ),
@@ -569,7 +527,7 @@ mod tests {
 
         let response = router
             .call(framed_request(
-                path::GET_TADDRESS_BALANCE,
+                Method::GetTaddressBalance,
                 every_method(mainnet)[0].1.clone().into(),
             ))
             .await
@@ -578,13 +536,13 @@ mod tests {
         let status = body.trailers().and_then(|trailers| trailers.get("grpc-status").cloned());
         assert_eq!(status, Some(HeaderValue::from_static("0")), "own network's encoding answers");
 
-        for (path, request) in every_method(&testnet) {
+        for (method, request) in every_method(&testnet) {
             let response =
-                router.call(framed_request(path, request.into())).await.expect("router answers");
+                router.call(framed_request(method, request.into())).await.expect("router answers");
             let status = Status::from_header_map(response.headers()).expect("a status header");
             let named = format!("address {testnet}: a testnet address, and this index is mainnet");
             let got = (status.code(), status.message());
-            assert_eq!(got, (tonic::Code::InvalidArgument, named.as_str()), "{path}");
+            assert_eq!(got, (tonic::Code::InvalidArgument, named.as_str()), "{method:?}");
         }
     }
 }

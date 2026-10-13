@@ -116,7 +116,7 @@ async fn listen<S: ChainDataSource>(
     let span = component("Grpc");
     let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));
     span.in_scope(|| info!(%endpoint, network, "Listening"));
-    spawn(tasks, "grpc", span, server.run(cancel.child_token()));
+    spawn_infallible(tasks, "grpc", span, server.run(cancel.child_token()));
     Ok(serving)
 }
 
@@ -323,6 +323,7 @@ async fn pipeline<S: ChainDataSource>(
         network,
         version: env!("CARGO_PKG_VERSION"),
         max_address_rows: config.serve.max_address_rows,
+        indexes: opened.iter().map(|index| index.kind).collect(),
     });
     let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
     if let Some(polling) = inputs.view.peer_mempool(utxos) {

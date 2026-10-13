@@ -18,14 +18,14 @@ use zaino_proto::proto::service as proto;
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
 use crate::memo::PerView;
-use crate::wire::{self, path, status_response, streamed_response, unary_response};
+use crate::wire::{self, streamed_response, unary_response};
 
-/// Framed answers per NFS publish: the layer heights every synced wallet asks, the tip, and each
-/// pool's root list as of the tip (sliced per request)
+/// Framed answers per NFS publish: the layer heights every synced wallet asks (the tip among
+/// them), and each pool's root list as of the tip (sliced per request)
 ///
 /// - keyed on the `Indexed` publish, not the global snapshot (that one moves per chain-view fold)
 pub(crate) struct Memos<V> {
-    states: Memo<V, State, Result<Bytes, Status>>,
+    states: Memo<V, Height, Result<Bytes, Status>>,
     roots: Memo<V, ShieldedPool, Result<Arc<FramedRoots>, Status>>,
 }
 
@@ -36,12 +36,6 @@ impl<V> Default for Memos<V> {
     fn default() -> Self {
         Self { states: PerView::default(), roots: PerView::default() }
     }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-enum State {
-    Latest,
-    At(Height),
 }
 
 /// Everything one tree-state request is answered with (`trees` = `indexed`'s served tip's)
@@ -143,36 +137,30 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-pub(crate) async fn dispatch<V, B>(answering: Answering<V>, path: &str, body: B) -> Response<Body>
-where
-    V: CommittedView,
-    B: http_body::Body,
-    B::Error: std::fmt::Display,
-{
-    let answer = match path {
-        path::GET_TREE_STATE => treestate(&answering, body).await.map(unary_response),
-        path::GET_LATEST_TREE_STATE => latest(&answering).await.map(unary_response),
-        path::GET_SUBTREE_ROOTS => subtree_roots(&answering, body).await.map(|chunk| {
-            streamed_response((!chunk.is_empty()).then_some(chunk).into_iter().collect())
-        }),
-        _ => Err(Status::unimplemented("not a tree-state method")),
-    };
-
-    match answer {
-        Ok(response) => response,
-        Err(status) => status_response(status),
-    }
-}
-
-async fn latest<V: CommittedView>(answering: &Answering<V>) -> Result<Bytes, Status> {
-    let state = answering.state_at(answering.served().tip().height);
-    answering.once(|memos| &memos.states, State::Latest, state).await?
+pub(crate) async fn latest<V: CommittedView>(
+    answering: &Answering<V>,
+) -> Result<Response<Body>, Status> {
+    let tip = answering.served().tip().height;
+    let state = answering.once(|memos| &memos.states, tip, answering.state_at(tip)).await?;
+    state.map(unary_response)
 }
 
 /// - Hash wins when given (one block across a reorg): block-hash index locates, this index
 ///   answers only if it holds that same block
 /// - by height, in the snapshot's layer (the synced wallets' tip asks): once per snapshot
-async fn treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
+pub(crate) async fn treestate<V, B>(
+    answering: &Answering<V>,
+    body: B,
+) -> Result<Response<Body>, Status>
+where
+    V: CommittedView,
+    B: http_body::Body,
+    B::Error: std::fmt::Display,
+{
+    framed_treestate(answering, body).await.map(unary_response)
+}
+
+async fn framed_treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
     V: CommittedView,
     B: http_body::Body,
@@ -184,7 +172,7 @@ where
         let height = wire::height(id.height, "height")?;
         let state = answering.state_at(height);
         if answering.trees.is_non_finalized(height) {
-            return answering.once(|memos| &memos.states, State::At(height), state).await?;
+            return answering.once(|memos| &memos.states, height, state).await?;
         }
         let trees = answering.trees.clone();
         return answering.reads.read(Lane::Point, move || state(&trees)).await?;
@@ -233,7 +221,10 @@ fn reply(state: &Treestate, params: zaino_nfs::ChainParams) -> Bytes {
 /// - unknown pool = `UNIMPLEMENTED` (the one non-Sapling refusal the Android SDK survives with its
 ///   fast sync intact)
 /// - `startIndex` past the end = empty `OK` (pepper-sync resumes until it sees one)
-async fn subtree_roots<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
+pub(crate) async fn subtree_roots<V, B>(
+    answering: &Answering<V>,
+    body: B,
+) -> Result<Response<Body>, Status>
 where
     V: CommittedView,
     B: http_body::Body,
@@ -261,7 +252,8 @@ where
         Ok::<_, Status>(Arc::new(FramedRoots::of(&roots)))
     };
     let framed = answering.once(|memos| &memos.roots, pool, every).await?;
-    Ok(framed?.slice(start, max))
+    let chunk = framed?.slice(start, max);
+    Ok(streamed_response((!chunk.is_empty()).then_some(chunk).into_iter().collect()))
 }
 
 /// `completingBlockHash` in display order (lightwalletd reverses the internal-order hash)
@@ -283,13 +275,14 @@ mod tests {
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::{BlockRef, SubtreeRoot, UpgradeSchedule};
-    use zaino_proto::frame::{split_frame, FRAME_HEADER};
+    use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::service as proto;
     use zcash_protocol::consensus::NetworkUpgrade;
 
-    use crate::service::Routes;
-    use crate::testing::{dispatch, framed_request, indexed, routes, snapshot, MAINNET};
-    use crate::wire::path;
+    use crate::service::{Method, Routes};
+    use crate::testing::{
+        decode_frames, dispatch, framed_request, indexed, routes, snapshot, MAINNET,
+    };
 
     /// - `start..start + max` of the pre-framed list = exactly those roots, one frame each
     /// - Past the last root = empty (pepper-sync's probe), never a panic
@@ -306,15 +299,8 @@ mod tests {
             .collect();
         let framed = super::FramedRoots::of(&roots);
         let heights = |chunk: bytes::Bytes| {
-            let mut found = Vec::new();
-            let mut rest = &chunk[..];
-            while !rest.is_empty() {
-                let (message, tail) = split_frame(rest).expect("whole frame");
-                let root = proto::SubtreeRoot::decode(message).expect("decodes");
-                found.push(root.completing_block_height);
-                rest = tail;
-            }
-            found
+            let roots = decode_frames::<proto::SubtreeRoot>(&chunk);
+            roots.into_iter().map(|root| root.completing_block_height).collect::<Vec<_>>()
         };
 
         let cases: [((u32, u32), &[u64]); 9] = [
@@ -366,7 +352,7 @@ mod tests {
         for ((protocol, start_index, max_entries), expected) in cases {
             let arg =
                 proto::GetSubtreeRootsArg { start_index, shielded_protocol: protocol, max_entries };
-            let request = framed_request(path::GET_SUBTREE_ROOTS, arg.encode_to_vec().into());
+            let request = framed_request(Method::GetSubtreeRoots, arg.encode_to_vec().into());
             let response = router.call(request).await.expect("router answers");
             let status = |headers: &http::HeaderMap| {
                 headers.get("grpc-status").and_then(|s| s.to_str().ok()).map(str::to_owned)
@@ -399,8 +385,8 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![trees]), ..routes() });
 
-        let mut ask = |path: &'static str, body: Vec<u8>| {
-            let request = framed_request(path, body.into());
+        let mut ask = |method: Method, body: Vec<u8>| {
+            let request = framed_request(method, body.into());
             let call = router.call(request);
             async move {
                 use http_body_util::BodyExt as _;
@@ -409,7 +395,7 @@ mod tests {
                     .map(|status| status.code())
                     .unwrap_or(tonic::Code::Ok);
                 let body = response.into_body().collect().await.expect("body").to_bytes();
-                assert_eq!(code, tonic::Code::Ok, "{path}");
+                assert_eq!(code, tonic::Code::Ok, "{method:?}");
                 let s = proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one message");
                 let sapling = match s.sapling_tree.as_str() {
                     "" => "",
@@ -430,9 +416,9 @@ mod tests {
             (3, (3, display(3), "leaves", empty(), empty())),
         ];
         for (height, state) in expected.clone() {
-            assert_eq!(ask(path::GET_TREE_STATE, at(height)).await, state, "at {height}");
+            assert_eq!(ask(Method::GetTreeState, at(height)).await, state, "at {height}");
         }
-        let latest = ask(path::GET_LATEST_TREE_STATE, Vec::new()).await;
+        let latest = ask(Method::GetLatestTreeState, Vec::new()).await;
         assert_eq!(latest, expected[3].1, "the tip's");
     }
 
@@ -472,7 +458,7 @@ mod tests {
 
         let response = router
             .call(framed_request(
-                path::GET_TREE_STATE,
+                Method::GetTreeState,
                 proto::BlockId { height: 0, hash: Vec::new() }.encode_to_vec().into(),
             ))
             .await
@@ -492,7 +478,7 @@ mod tests {
             use http_body_util::BodyExt as _;
             let response = router
                 .clone()
-                .call(framed_request(path::GET_LATEST_TREE_STATE, Vec::new().into()))
+                .call(framed_request(Method::GetLatestTreeState, Vec::new().into()))
                 .await
                 .expect("router answers");
             let mut body = std::pin::pin!(response.into_body());
@@ -505,7 +491,7 @@ mod tests {
         // By hash: resolved through the block-hash index, so without it, unimplemented
         let by_hash = |hash: [u8; 32]| {
             framed_request(
-                path::GET_TREE_STATE,
+                Method::GetTreeState,
                 proto::BlockId { height: 0, hash: hash.to_vec() }.encode_to_vec().into(),
             )
         };

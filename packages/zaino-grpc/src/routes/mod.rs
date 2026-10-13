@@ -1,5 +1,4 @@
-//! One module per route group, each answering its claimed paths (dispatch table:
-//! [`crate::service`])
+//! One module per route group, its handlers (registry + dispatch: [`crate::service`])
 
 pub(super) mod blocks;
 pub(super) mod chain;

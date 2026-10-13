@@ -5,9 +5,8 @@
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = verified best tip, no validator call ("how far behind")
 
-use http::{HeaderValue, Response};
+use http::Response;
 use http_body::Frame;
-use http_body_util::StreamBody;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
@@ -20,7 +19,7 @@ use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::NetworkUpgrade;
 
-use crate::wire::{self, decode_request, frame, status_response, trailers};
+use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
 /// `GetMempoolTx`: servable mempool minus what the client holds, compacted
 ///
@@ -29,10 +28,7 @@ use crate::wire::{self, decode_request, frame, status_response, trailers};
 ///   pool); per request only the slot and the pool selection, over the cached bytes
 /// - a transaction the selection leaves with no component is dropped, as from a block
 ///   ([`project_tx_at`]); slots stay the listing's
-pub(crate) async fn mempool_tx<V, B>(
-    snap: &Snapshot<V>,
-    body: B,
-) -> Result<Vec<bytes::Bytes>, Status>
+pub(crate) async fn mempool_tx<V, B>(snap: &Snapshot<V>, body: B) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -47,7 +43,7 @@ where
         let rendered = entry.projection.get_or_render(|| project(&entry.raw, entry.fee))?;
         framed.extend(project_tx_at(&rendered, slot as u64, pools));
     }
-    Ok(framed)
+    Ok(streamed_response(framed))
 }
 
 /// One mempool transaction as a `CompactTx` (slot 0, every pool), encoded: the cached form
@@ -63,14 +59,14 @@ fn project(raw: &[u8], fee: Option<Zatoshis>) -> Result<bytes::Bytes, Status> {
 pub(crate) async fn send<S: ChainDataSource, B>(
     view: &ChainView<S>,
     body: B,
-) -> Result<bytes::Bytes, Status>
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
     let raw: proto::RawTransaction =
         wire::decode_request_within(body, wire::request_limit::TRANSACTION).await?;
-    send_reply(view.submit(raw.data.to_vec()).await).map(|reply| frame(&reply))
+    send_reply(view.submit(raw.data.to_vec()).await).map(|reply| unary_response(frame(&reply)))
 }
 
 /// Submission outcome as lightwalletd answers it
@@ -101,11 +97,9 @@ fn unmined(entry: &MempoolEntry) -> proto::RawTransaction {
 ///
 /// - end ⇒ the next load serves the new tip (`GetLatestBlock` ≥ it: G5)
 /// - each record encoded once (first subscriber to reach it); the rest share it by refcount
-pub(crate) fn mempool_stream<V>(snap: &Snapshot<V>) -> Response<Body> {
-    let tail = match snap.mempool_stream() {
-        Ok(tail) => tail,
-        Err(why) => return status_response(wire::unavailable(why)),
-    };
+///   (a burst ready at once = joined per stream, `Coalesced`)
+pub(crate) fn mempool_stream<V>(snap: &Snapshot<V>) -> Result<Response<Body>, Status> {
+    let tail = snap.mempool_stream().map_err(wire::unavailable)?;
     let opening = tail.opening_rendered(|entries| {
         wire::frame_all(&entries.iter().map(unmined).collect::<Vec<_>>())
     });
@@ -124,19 +118,14 @@ pub(crate) fn mempool_stream<V>(snap: &Snapshot<V>) -> Response<Body> {
     });
     let frames = futures::StreamExt::chain(futures::stream::iter(opening), arrivals);
 
-    let mut response = Response::new(Body::new(StreamBody::new(frames)));
-    response
-        .headers_mut()
-        .insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
-
-    response
+    Ok(wire::streaming(frames))
 }
 
 /// `GetTransaction`: `hash` arm only (`TxFilter`'s `(block, index)` = positional, no index maps it)
 pub(crate) async fn transaction<S: ChainDataSource, B>(
     validators: &TrafficBalancer<S>,
     body: B,
-) -> Result<bytes::Bytes, Status>
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -148,7 +137,7 @@ where
         .try_into()
         .map_err(|_| Status::invalid_argument("txid must be 32 bytes, in protocol order"))?;
     let found = raw_transaction(validators, txid.into()).await?;
-    Ok(frame(&found))
+    Ok(unary_response(frame(&found)))
 }
 
 /// Consensus bytes from whichever validator holds it (`GetTransaction`, `GetTaddressTransactions`
@@ -220,10 +209,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use zaino_index_compact_block::Pools;
     use zaino_primitives::types::{Height, UpgradeSchedule};
-    use zaino_proto::frame::split_frame;
-    use zaino_proto::proto::service::PoolType;
 
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
@@ -231,8 +217,10 @@ mod tests {
     use zaino_primitives::types::BlockRef;
     use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
 
-    use crate::testing::{dispatch, framed_request, indexed_at, published, routes_over};
-    use crate::wire::path;
+    use crate::service::Method;
+    use crate::testing::{
+        decode_frames, dispatch, framed_request, indexed_at, published, routes_over,
+    };
 
     /// Up to 10 poll rounds (paused clock: instant) until `done`
     async fn rounds(what: &str, done: impl Fn() -> bool) {
@@ -243,41 +231,6 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         panic!("never {what}");
-    }
-
-    /// - `poolTypes` → pools served (pruning itself = compact-block's projection); unknown refused
-    /// - Empty != all: wire pins it to the legacy shielded set (no transparent)
-    #[test]
-    fn pool_types_name_the_pools_empty_means_shielded_only_and_unknown_is_refused() {
-        let pools = |named: &[PoolType]| {
-            let raw: Vec<i32> = named.iter().map(|pool| *pool as i32).collect();
-            crate::wire::pools(&raw).expect("known pools")
-        };
-
-        for (raw, value) in [(vec![PoolType::Invalid as i32], 0), (vec![2, 99, 3], 99)] {
-            let refused = crate::wire::pools(&raw).expect_err("names no pool");
-            let expected = format!(
-                "poolTypes value {value} is not a pool \
-                 (TRANSPARENT=1, SAPLING=2, ORCHARD=3, IRONWOOD=4)"
-            );
-            let got = (refused.code(), refused.message());
-            assert_eq!(got, (tonic::Code::InvalidArgument, expected.as_str()), "{raw:?}");
-        }
-
-        let only = |sapling, orchard, ironwood, transparent| Pools {
-            sapling,
-            orchard,
-            ironwood,
-            transparent,
-        };
-        let (sapling_ironwood, every) = (
-            [PoolType::Sapling, PoolType::Ironwood],
-            [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood],
-        );
-        assert_eq!(pools(&[]), only(true, true, true, false), "none named = shielded only");
-        assert_eq!(pools(&[PoolType::Transparent]), only(false, false, false, true));
-        assert_eq!(pools(&sapling_ironwood), only(true, false, true, false), "exactly its members");
-        assert_eq!(pools(&every), Pools::ALL);
     }
 
     /// - Accepted = code 0 + quoted display-order txid (`sendrawtransaction`'s JSON result)
@@ -407,15 +360,14 @@ mod tests {
 
     /// 1,000 subscribers on one thread (a block of wallets), over a live publisher:
     /// - refused without a verified tip
-    /// - mempool at the served tip, then each arrival once, in order, same bytes (shared by
-    ///   refcount)
+    /// - mempool at the served tip, then each arrival once, in order, same bytes (a lone record
+    ///   shared by refcount, a ready burst joined per stream)
     /// - late subscriber = same log; a new best block alone ends nothing; the served tip moving
     ///   ends all in `OK` trailers, and the next load serves the new tip (G5)
     /// - resubscribe opens on the mempool as it now stands
     #[tokio::test(start_paused = true)]
     async fn a_thousand_mempool_streams_share_one_encoded_log_until_the_served_tip_moves() {
         use http_body_util::BodyExt as _;
-        use prost::Message as _;
         use tower::Service as _;
         use zaino_proto::proto::service as proto;
 
@@ -449,7 +401,7 @@ mod tests {
         let serve = |tip: BlockRef| {
             nfs.send_replace(Some(Arc::new(indexed_at(&chain, tip, Vec::new()))));
         };
-        let stream = || framed_request(path::GET_MEMPOOL_STREAM, bytes::Bytes::new());
+        let stream = || framed_request(Method::GetMempoolStream, bytes::Bytes::new());
 
         let below = router.call(stream()).await.expect("router answers");
         let status = below.headers().get("grpc-status");
@@ -465,58 +417,50 @@ mod tests {
         rounds("10 served", || snapshots.load().tips().served == Some(tip_10)).await;
 
         let decoded = |chunk: bytes::Bytes| {
-            let mut records = Vec::new();
-            let mut rest = &chunk[..];
-            while !rest.is_empty() {
-                let (message, tail) = split_frame(rest).expect("whole frame");
-                let record = proto::RawTransaction::decode(message).expect("decodes");
-                records.push((record.data.to_vec(), record.height));
-                rest = tail;
-            }
-            records
+            let records = decode_frames::<proto::RawTransaction>(&chunk);
+            let records = records.into_iter().map(|record| (record.data.to_vec(), record.height));
+            records.collect::<Vec<_>>()
         };
         let mut subscribers = Vec::with_capacity(SUBSCRIBERS);
         for _ in 0..SUBSCRIBERS {
             let response = router.call(stream()).await.expect("router answers");
             subscribers.push(Box::pin(response.into_body()));
         }
-        // Every subscriber's next record: one shared buffer (pointer), decoded once
-        async fn next_record<B>(subscribers: &mut [std::pin::Pin<Box<B>>]) -> bytes::Bytes
+        // Every subscriber's next data frame, the same bytes; `true` = one buffer shared by all
+        async fn next_frame<B>(subscribers: &mut [std::pin::Pin<Box<B>>]) -> (bytes::Bytes, bool)
         where
             B: http_body::Body<Data = bytes::Bytes, Error = Status>,
         {
             let mut first: Option<bytes::Bytes> = None;
+            let mut shared = true;
             for body in subscribers {
                 let frame = body.frame().await.expect("a frame").expect("ok");
                 let data = frame.into_data().expect("a record, not the end");
-                let shared = first.get_or_insert_with(|| data.clone());
-                assert_eq!(data.as_ptr(), shared.as_ptr(), "encoded once, shared by refcount");
+                let seen = first.get_or_insert_with(|| data.clone());
+                assert_eq!(data, *seen, "every subscriber, the same records");
+                shared &= data.as_ptr() == seen.as_ptr();
             }
-            first.expect("subscribers")
+            (first.expect("subscribers"), shared)
         }
-        let opening = next_record(&mut subscribers).await;
-        assert_eq!(decoded(opening), unmined(&[1, 2]), "the mempool at the block, unmined");
+        let (opening, shared) = next_frame(&mut subscribers).await;
+        let opened = (decoded(opening), shared);
+        assert_eq!(opened, (unmined(&[1, 2]), true), "the mempool at the block, encoded once");
 
-        // a burst of two (one poll: txid order), then one more: each once, in order, to every
-        // subscriber
+        // a burst of two (one poll: txid order) = one frame each (joined, `Coalesced`); then one
+        // more = the shared record
         hear(&[3, 4]);
-        let burst = [next_record(&mut subscribers).await, next_record(&mut subscribers).await];
-        let [first, second] = <[_; 2]>::try_from(unmined(&[3, 4])).expect("two");
-        assert_eq!(burst.map(decoded), [vec![first.clone()], vec![second.clone()]]);
+        let (burst, _) = next_frame(&mut subscribers).await;
+        assert_eq!(decoded(burst), unmined(&[3, 4]), "in order, once each");
         hear(&[5]);
-        assert_eq!(decoded(next_record(&mut subscribers).await), unmined(&[5]));
+        let (fifth, shared) = next_frame(&mut subscribers).await;
+        assert_eq!((decoded(fifth), shared), (unmined(&[5]), true), "encoded once");
 
-        // late subscriber: the same opening and the same log, by pointer
+        // late subscriber: the same opening and the same log, all ready = one frame
         let late = router.call(stream()).await.expect("router answers").into_body();
         let mut late = [Box::pin(late)];
-        let late_opening = next_record(&mut late).await;
-        assert_eq!(decoded(late_opening), unmined(&[1, 2]), "same block, same opening");
-        let late_log = [
-            next_record(&mut late).await,
-            next_record(&mut late).await,
-            next_record(&mut late).await,
-        ];
-        assert_eq!(late_log.map(decoded), [vec![first], vec![second], unmined(&[5])]);
+        let (log, _) = next_frame(&mut late).await;
+        let opening_then_log = [unmined(&[1, 2]), unmined(&[3, 4]), unmined(&[5])].concat();
+        assert_eq!(decoded(log), opening_then_log, "same block, same opening, same log");
 
         // block 11 verified and held, not yet served: every stream stays open
         node.follow(&chain, tip_11);
@@ -539,7 +483,7 @@ mod tests {
         }
         assert_eq!(snapshots.load().tips().served, Some(tip_11), "ended ⇒ the new tip served");
         let again = router.call(stream()).await.expect("router answers").into_body();
-        let reopened = next_record(&mut [Box::pin(again)]).await;
+        let (reopened, _) = next_frame(&mut [Box::pin(again)]).await;
         let now = unmined(&[1, 2, 3, 4, 5]);
         assert_eq!(decoded(reopened), now, "the new tip opens on the mempool as it stands");
         cancel.cancel();
@@ -618,19 +562,15 @@ mod tests {
         rounds("three servable", three).await;
 
         let mut ask = async |request: proto::GetMempoolTxRequest| {
-            let request = framed_request(path::GET_MEMPOOL_TX, request.encode_to_vec().into());
+            let request = framed_request(Method::GetMempoolTx, request.encode_to_vec().into());
             let body = router.call(request).await.expect("router answers").into_body();
             let chunk = body.collect().await.expect("ok").to_bytes();
-            let mut answer = Vec::new();
-            let mut rest = &chunk[..];
-            while !rest.is_empty() {
-                let (message, tail) = split_frame(rest).expect("whole frame");
-                let tx = CompactTx::decode(message).expect("decodes");
+            let txs = decode_frames::<CompactTx>(&chunk).into_iter();
+            let row = |tx: CompactTx| {
                 let parts = (tx.vin.len(), tx.outputs.len(), tx.actions.len());
-                answer.push((tx.txid, tx.index, parts));
-                rest = tail;
-            }
-            answer
+                (tx.txid, tx.index, parts)
+            };
+            txs.map(row).collect::<Vec<_>>()
         };
         // (txid, slot, (transparent inputs, sapling outputs, orchard actions)) as parsed
         let row = |slot: u64, tx: &Transaction, transparent: bool, sapling: bool, orchard: bool| {
