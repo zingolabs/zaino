@@ -33,11 +33,7 @@ impl From<TransactionId> for [u8; 32] {
 
 impl fmt::Debug for TransactionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "TxHash({:02x}{:02x}{:02x}{:02x}…)",
-            self.0[31], self.0[30], self.0[29], self.0[28]
-        )
+        display_order::debug("TransactionId", &self.0, f)
     }
 }
 
@@ -52,27 +48,5 @@ impl FromStr for TransactionId {
 
     fn from_str(hex: &str) -> Result<Self, Self::Err> {
         display_order::parse(hex).map(Self)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn roundtrip_bytes() {
-        let bytes = [0x42; 32];
-        let hash = TransactionId::from(bytes);
-        assert_eq!(<[u8; 32]>::from(hash), bytes);
-    }
-
-    #[test]
-    fn display_is_big_endian_hex() {
-        let mut bytes = [0u8; 32];
-        bytes[31] = 0xFF;
-        let hash = TransactionId::from(bytes);
-        let display = format!("{hash}");
-        assert!(display.starts_with("ff"), "got: {display}");
-        assert_eq!(display.len(), 64);
     }
 }

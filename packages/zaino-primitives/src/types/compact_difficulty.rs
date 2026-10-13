@@ -1,18 +1,29 @@
-//! Header `nBits`: 8-bit base-256 exponent + 24-bit signed mantissa → 256-bit target; work =
+//! Header `nBits`: 8-bit base-256 exponent + 24-bit signed mantissa → 256-bit [`Target`]; work =
 //! `floor(2^256 / (target + 1))` (protocol [§7.7.4] `ToTarget`, [§7.7.5] work)
 //!
 //! - Accepted (a validator's checks, before any hash compare): sign bit clear, target within 256
 //!   bits, target non-zero, work within 128 bits
-//! - Target stays private (`u256`): consumers reason about validity + work only
+//! - Port of zebra-chain v6.4.2 `src/work/difficulty.rs` on `uint`'s U256 (= zebra's type)
 //!
 //! [§7.7.4]: https://zips.z.cash/protocol/protocol.pdf#nbits
 //! [§7.7.5]: https://zips.z.cash/protocol/protocol.pdf#workdef
 
-mod u256;
-
 use core::fmt;
+use core::num::NonZeroU64;
+use core::str::FromStr;
 
-use u256::U256;
+use super::display_order::{self, ParseHashError};
+use super::BlockHash;
+
+// lints fire inside `uint`'s expansion (third-party code)
+#[allow(clippy::manual_div_ceil, clippy::assign_op_pattern)]
+mod wide {
+    uint::construct_uint! {
+        pub(super) struct U256(4);
+    }
+}
+
+use wide::U256;
 
 /// Mantissa bits, sign bit included
 const PRECISION: u32 = 24;
@@ -26,6 +37,10 @@ const EXPONENT_OFFSET: u32 = 3;
 /// 128 bits
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CompactDifficulty(u32);
+
+/// Threshold a header's hash must not exceed (zebra `ExpandedDifficulty`); ordered numerically
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Target(U256);
 
 /// One variant per broken acceptance rule
 ///
@@ -58,20 +73,72 @@ impl CompactDifficulty {
         self.0
     }
 
+    pub fn target(self) -> Target {
+        expand(self.0).expect("validated at construction: target expands")
+    }
+
     /// `2^256 / (target + 1)`
-    #[cfg(any(test, feature = "testing"))]
-    pub(crate) fn work(self) -> u128 {
-        expand(self.0)
-            .ok()
-            .and_then(U256::work)
-            .expect("validated at construction: work fits")
-            .get()
+    pub fn work(self) -> u128 {
+        self.target().work().expect("validated at construction: work fits")
+    }
+}
+
+impl Target {
+    /// `MeanTarget`: ⌊Σ / n⌋ as Σ quotients + ⌊Σ remainders / n⌋ (102 testnet targets overflow
+    /// U256); `None` = no targets
+    pub fn mean(targets: &[Self]) -> Option<Self> {
+        let count = U256::from(targets.len());
+        let (quotients, remainders) =
+            targets.iter().fold((U256::zero(), U256::zero()), |(quotients, remainders), target| {
+                let (quotient, remainder) = target.0.div_mod(count);
+                (quotients + quotient, remainders + remainder)
+            });
+        (!targets.is_empty()).then(|| Self(quotients + remainders / count))
+    }
+
+    /// `self / expected * actual`, saturating (zcashd `CalculateNextWorkRequired`: divide first)
+    pub fn rescale(self, actual: u64, expected: NonZeroU64) -> Self {
+        Self((self.0 / U256::from(expected.get())).saturating_mul(U256::from(actual)))
+    }
+
+    /// `hash` read as a little-endian integer, at most the target
+    pub fn is_met_by(self, hash: BlockHash) -> bool {
+        U256::from_little_endian(&<[u8; 32]>::from(hash)) <= self.0
+    }
+
+    /// `ExpandedDifficulty::to_compact` (bitcoin `GetCompact`): raw nBits, never negative
+    ///
+    /// - Unvalidated: a target below `2^128` encodes work past [`CompactDifficulty`]'s width
+    pub fn to_compact(self) -> u32 {
+        let size = self.0.bits() / 8 + 1;
+        let mantissa = match self.0 <= U256::from(UNSIGNED_MANTISSA_MASK) {
+            true => self.0 << (8 * (3 - size)),
+            false => self.0 >> (8 * (size - 3)),
+        };
+        let size = u32::try_from(size).expect("a 256-bit target's byte length fits u32");
+        mantissa.low_u32() + (size << PRECISION)
+    }
+
+    /// `floor(2^256 / (self + 1))` as `!self / (self + 1) + 1`; `None` past 128 bits
+    fn work(self) -> Option<u128> {
+        let divisor = self.0.checked_add(U256::one())?;
+        let work = (!self.0 / divisor).checked_add(U256::one())?;
+        (work <= U256::from(u128::MAX)).then(|| work.as_u128())
+    }
+}
+
+/// Display-order (big-endian) hex, as zcashd `uint256S` (`chainparams.cpp` `powLimit`)
+impl FromStr for Target {
+    type Err = ParseHashError;
+
+    fn from_str(hex: &str) -> Result<Self, Self::Err> {
+        display_order::parse(hex).map(|bytes| Self(U256::from_little_endian(&bytes)))
     }
 }
 
 /// nBits → 256-bit target, validator check order: sign bit, exponent normalised (> 256 bits
 /// refused), zero target
-fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
+fn expand(bits: u32) -> Result<Target, CompactDifficultyError> {
     if bits & SIGN_BIT == SIGN_BIT {
         return Err(CompactDifficultyError::NegativeTarget { bits });
     }
@@ -79,7 +146,7 @@ fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
     let mantissa = bits & UNSIGNED_MANTISSA_MASK;
     let raw_exponent = bits >> PRECISION;
 
-    // - Normalised: scaling alone never passes 256 bits
+    // - Normalised: mantissa <= 24 bits, exponent <= 29 → <= 256 bits (the shift drops nothing)
     // - Two boundary exponents: spare mantissa bytes absorb the shift (overflowing bits all zero
     //   = accepted, any set = refused)
     // - Raw exponent < offset → mantissa shifted right
@@ -101,11 +168,11 @@ fn expand(bits: u32) -> Result<U256, CompactDifficultyError> {
         (mantissa, raw_exponent - EXPONENT_OFFSET)
     };
 
-    let target = U256::target(mantissa, exponent);
+    let target = U256::from(mantissa) << (8 * exponent);
     if target.is_zero() {
         return Err(CompactDifficultyError::ZeroTarget { bits });
     }
-    Ok(target)
+    Ok(Target(target))
 }
 
 impl fmt::Debug for CompactDifficulty {
@@ -147,16 +214,48 @@ mod tests {
         }
     }
 
-    /// Work pinned against known limits (mainnet genesis 2^13, testnet 32, classic minimum);
-    /// rendered as the wire's 8-digit hex
+    /// Mainnet genesis (2^13), testnet limit, classic minimum (2^32 + 2^16 + 1), a mainnet block,
+    /// regtest limit: each recompresses to itself, its work pinned
     #[test]
-    fn work_matches_known_limits_and_display_is_wire_hex() {
-        for (bits, work) in [(0x1f07_ffff, 8192), (0x2007_ffff, 32), (0x1d00_ffff, 0x1_0001_0001)] {
-            let computed = expand(bits).expect("valid").work().expect("fits").get();
-            assert_eq!(computed, work, "{bits:#010x}");
+    fn known_nbits_recompress_to_themselves_and_pin_their_work() {
+        for (bits, work) in [
+            (0x1f07_ffff, 8_192),
+            (0x2007_ffff, 32),
+            (0x1d00_ffff, 0x1_0001_0001),
+            (0x1c01_e1ab, 0x88_0f7f_03cf),
+            (0x200f_0f0f, 17),
+        ] {
+            let difficulty = CompactDifficulty::try_from_bits(bits).expect("valid");
+            let read = (difficulty.target().to_compact(), difficulty.work());
+            assert_eq!(read, (bits, work), "{bits:#010x}");
         }
-        let cd = CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid");
-        assert_eq!(cd.to_string(), "1d00ffff");
-        assert_eq!(format!("{cd:?}"), "CompactDifficulty(0x1d00ffff)");
+    }
+
+    #[test]
+    fn mean_floors_without_overflowing_256_bits() {
+        let target = |bits| CompactDifficulty::try_from_bits(bits).expect("valid").target();
+        let testnet_limit = target(0x2007_ffff);
+        assert_eq!(Target::mean(&[testnet_limit; 102]), Some(testnet_limit), "Σ past 2^256");
+        let small = [7u32, 8, 10].map(|n| Target(U256::from(n)));
+        assert_eq!(Target::mean(&small), Some(Target(U256::from(8u32))), "⌊25 / 3⌋");
+        assert_eq!(Target::mean(&[]), None);
+    }
+
+    /// 0x2007ffff = 0x07ffff · 256^29: bytes 29..=31 little-endian
+    #[test]
+    fn a_hash_meets_a_target_read_little_endian_up_to_equality() {
+        let target = CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid").target();
+        let mut at_target = [0u8; 32];
+        at_target[29..].copy_from_slice(&[0xff, 0xff, 0x07]);
+        let mut above = at_target;
+        above[0] = 1;
+        assert_eq!([at_target, above].map(|hash| target.is_met_by(hash.into())), [true, false]);
+    }
+
+    #[test]
+    fn displays_as_wire_hex() {
+        let difficulty = CompactDifficulty::try_from_bits(0x1d00_ffff).expect("valid");
+        assert_eq!(difficulty.to_string(), "1d00ffff");
+        assert_eq!(format!("{difficulty:?}"), "CompactDifficulty(0x1d00ffff)");
     }
 }

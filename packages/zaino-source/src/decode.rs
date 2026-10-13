@@ -97,7 +97,7 @@ pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
     Ok(Prepared {
         txid: TransactionId::from(*tx.txid().as_ref()),
         expiry_height: (expiry != 0).then(|| Height::try_from(expiry)).transpose()?,
-        branch: embeds_branch.then(|| ConsensusBranchId::new(u32::from(tx.consensus_branch_id()))),
+        branch: embeds_branch.then(|| ConsensusBranchId::from(tx.consensus_branch_id())),
     })
 }
 
@@ -444,7 +444,7 @@ mod tests {
                 (actions, i64::from(pool.value_balance))
             };
             let sapling = tx.sapling_bundle();
-            let vout: Vec<_> = decoded.transparent.outputs.iter().map(|o| u64::from(o.value)).collect();
+            let vout: Vec<_> = decoded.transparent.outputs.iter().map(|o| o.value.as_u64()).collect();
             let source_vout: Vec<_> = tx
                 .transparent_bundle()
                 .map_or(vec![], |b| b.vout.iter().map(|o| o.value().into_u64()).collect());
@@ -505,7 +505,7 @@ mod tests {
 
             prop_assert_eq!(<[u8; 32]>::from(prepared.txid), *reference.txid().as_ref());
             prop_assert_eq!(prepared.expiry_height.map(u32::from), (expiry != 0).then_some(expiry));
-            let branch = embeds.then(|| ConsensusBranchId::new(u32::from(tx.consensus_branch_id())));
+            let branch = embeds.then(|| ConsensusBranchId::from(tx.consensus_branch_id()));
             prop_assert_eq!(prepared.branch, branch);
             let mut padded = raw.clone();
             padded.push(0);

@@ -1,4 +1,4 @@
-use zcash_protocol::consensus::{BranchId, NetworkUpgrade};
+use zcash_protocol::consensus::NetworkUpgrade;
 
 use super::*;
 use crate::testing::TxBuilder;
@@ -10,10 +10,6 @@ use crate::types::{
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn branch(id: BranchId) -> ConsensusBranchId {
-    ConsensusBranchId::new(u32::from(id))
 }
 
 /// M1–M4 on every block handed out, and what reads them back:
@@ -97,7 +93,9 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     assert_eq!(statuses.last(), Some(&("Nu7".into(), h(5), pending)));
     assert_eq!(statuses.len(), 11, "every scheduled upgrade, NU7 included");
     let consensus = (info.consensus.chain_tip, info.consensus.next_block);
-    assert_eq!(consensus, (branch(BranchId::Nu6_3), branch(BranchId::Nu7)), "NU7 activates next");
+    let (nu6_3, nu7) = (NetworkUpgrade::Nu6_3, NetworkUpgrade::Nu7);
+    let expected = (ConsensusBranchId::of(nu6_3), ConsensusBranchId::of(nu7));
+    assert_eq!(consensus, expected, "NU7 activates next");
 }
 
 /// M6 + M7 accepted: Alice's 50 000 coinbase funds a block whose txs spend in order, one of them
@@ -163,62 +161,62 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
 
 // constructions no real chain holds: each panics naming the rule it breaks
 
-/// Regtest + block 1 whose coinbase `[0x10; 32]` pays alice 50 000
-fn funded() -> MockChain {
-    let mut chain = MockChain::regtest();
-    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
-    chain
-}
-
-/// Spends block 1's coinbase output
-fn spend(t: TxBuilder) -> TxBuilder {
-    t.spend(outpoint([0x10; 32], 0))
-}
-
 #[test]
 #[should_panic(expected = "not unspent on this branch")]
 fn spending_an_output_never_mined_panics() {
-    funded().mine(|b| b.tx(|t| t.spend(outpoint([0x99; 32], 0))));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x99; 32], 0))));
 }
 
 #[test]
 #[should_panic(expected = "not unspent on this branch")]
 fn spending_an_output_a_block_before_spent_panics() {
-    let mut chain = funded();
-    chain.mine(|b| b.tx(spend));
-    chain.mine(|b| b.tx(spend));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
+    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
+    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
 }
 
 #[test]
 #[should_panic(expected = "not unspent on this branch")]
 fn spending_an_output_twice_in_one_block_panics() {
-    funded().mine(|b| b.tx(spend).tx(spend));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
+    let spend = |t: TxBuilder| t.spend(outpoint([0x10; 32], 0));
+    chain.mine(|b| b.tx(spend).tx(spend));
 }
 
 #[test]
 #[should_panic(expected = "not unspent on this branch")]
 fn spending_an_output_off_its_branch_panics() {
-    let mut chain = funded();
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
     let genesis = chain.genesis();
-    chain.branch(genesis).mine(|b| b.tx(spend));
+    chain.branch(genesis).mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
 }
 
 #[test]
 #[should_panic(expected = "overspends by 1")]
 fn paying_past_the_inputs_panics() {
-    funded().mine(|b| b.tx(|t| spend(t).pay(&p2pkh([0xaa; 20]), 50_001)));
+    let (alice, mut chain) = (p2pkh([0xaa; 20]), MockChain::regtest());
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 50_001)));
 }
 
 #[test]
-#[should_panic(expected = "stated fee")]
+#[should_panic(expected = "stated fee 500 != inputs − outputs + balances (1000)")]
 fn a_stated_fee_off_the_derived_one_panics() {
-    funded().mine(|b| b.tx(|t| spend(t).pay(&p2pkh([0xaa; 20]), 49_000).fee(500)));
+    let (alice, mut chain) = (p2pkh([0xaa; 20]), MockChain::regtest());
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000).fee(500)));
 }
 
 #[test]
 #[should_panic(expected = "txid repeated on this branch")]
 fn a_txid_repeated_on_its_branch_panics() {
-    funded().mine(|b| b.tx(|t| t.txid([0x10; 32])));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32])));
+    chain.mine(|b| b.tx(|t| t.txid([0x10; 32])));
 }
 
 #[test]
@@ -264,43 +262,51 @@ fn an_orchard_nullifier_revealed_twice_panics() {
 #[should_panic(expected = "ZIP 209")]
 fn a_pool_driven_below_zero_panics() {
     let drained = |t: TxBuilder| t.sapling_spend([5; 32]).value_balance(ShieldedPool::Sapling, 1);
-    funded().mine(|b| b.tx(drained));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.tx(drained));
 }
 
 #[test]
 #[should_panic(expected = "a coinbase spends nothing")]
 fn a_coinbase_spending_panics() {
-    funded().mine(|b| b.coinbase(spend));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.spend(outpoint([0x10; 32], 0))));
 }
 
 #[test]
 #[should_panic(expected = "a coinbase pays no fee")]
 fn a_coinbase_paying_a_fee_panics() {
-    funded().mine(|b| b.coinbase(|c| c.fee(1)));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.fee(1)));
 }
 
 #[test]
 #[should_panic(expected = "past the supply")]
 fn a_coinbase_past_the_supply_panics() {
-    funded().mine(|b| b.coinbase(|c| c.pay(&p2pkh([0xaa; 20]), 21_000_000 * 100_000_000 + 1)));
+    let past_supply = Zatoshis::MAX.as_u64() + 1;
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.pay(&p2pkh([0xaa; 20]), past_supply)));
 }
 
 #[test]
 #[should_panic(expected = "not after the median time past")]
 fn a_time_at_or_before_the_median_time_past_panics() {
-    funded().mine(|b| b.time(GENESIS_TIME));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.time(GENESIS_TIME));
 }
 
 #[test]
 #[should_panic(expected = "bits() under Work::Limit")]
 fn stated_bits_under_limit_work_panic() {
-    funded().mine(|b| b.bits(REGTEST_BITS));
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.bits(REGTEST_BITS));
 }
 
 #[test]
 #[should_panic(expected = "outweigh() under Work::Limit")]
 fn outweighing_under_limit_work_panics() {
-    funded().fork(h(0)).outweigh();
+    let mut chain = MockChain::regtest();
+    chain.fork(h(0)).outweigh();
 }
 
 #[test]
@@ -313,7 +319,9 @@ fn stated_bits_on_an_outweighing_block_panic() {
 #[test]
 #[should_panic(expected = "configured after its first mine")]
 fn configuring_after_the_first_mine_panics() {
-    funded().varied_work();
+    let mut chain = MockChain::regtest();
+    chain.mine_empty(1);
+    chain.varied_work();
 }
 
 #[test]
@@ -326,7 +334,7 @@ fn upgrades_out_of_order_panic() {
 #[test]
 #[should_panic(expected = "above the best tip")]
 fn a_height_above_the_best_tip_panics() {
-    funded().at(h(2));
+    MockChain::regtest().at(h(1));
 }
 
 /// M5: `outweigh()` = the best right after its first block, by the least work that wins

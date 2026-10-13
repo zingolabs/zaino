@@ -107,7 +107,7 @@ pub fn compact_tx(
             .outputs
             .iter()
             .map(|output| compact_formats::TxOut {
-                value: u64::from(output.value),
+                value: output.value.as_u64(),
                 script_pub_key: output.script.as_bytes().to_vec(),
             })
             .collect(),

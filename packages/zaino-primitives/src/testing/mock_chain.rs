@@ -18,14 +18,12 @@ use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
 use super::build::{BlockBuilder, Planned, TxBuilder};
 use super::ledger::{Ledger, Unmined};
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
+use crate::protocol::median_time_past;
 use crate::types::{
     Block, BlockFees, BlockHash, BlockHeader, BlockRef, BlockchainInfo, CompactDifficulty,
     ConsensusBranchIds, EquihashSolution, Fee, Height, MerkleRoot, Transaction, TransactionId,
     UpgradeSchedule,
 };
-
-/// zebra-state `check.rs`: a header's time must pass the median of this many ancestors' times
-const MEDIAN_SPAN: usize = 11;
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
 /// `Varied` = `Branch::outweigh` / `BlockBuilder::bits` allowed (header views accept any nBits)
@@ -406,14 +404,11 @@ impl MockChain {
         let Some(parent) = parent else { return stated.unwrap_or(GENESIS_TIME) };
         let parent_time = self.block(parent.hash).header().time;
         let time = stated.unwrap_or(parent_time + self.schedule.upgrades.spacing(height));
-        let mut times: Vec<u32> = Vec::with_capacity(MEDIAN_SPAN);
-        let mut at = Some(parent.hash);
-        while let Some(block) = at.and_then(|hash| self.blocks.get(&hash)).map(|m| &m.block) {
-            times.push(block.header().time);
-            at = (times.len() < MEDIAN_SPAN).then_some(block.header().prev_hash);
-        }
-        times.sort_unstable();
-        let median = times[times.len() / 2];
+        let ancestors = std::iter::successors(Some(self.block(parent.hash)), |block| {
+            self.blocks.get(&block.header().prev_hash).map(|mined| &mined.block)
+        });
+        let times = ancestors.map(|block| block.header().time);
+        let median = median_time_past(times).expect("a parent holds a time");
         assert!(time > median, "time {time} at {height}: not after the median time past {median}");
         time
     }

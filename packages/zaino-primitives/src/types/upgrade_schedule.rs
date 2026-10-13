@@ -1,10 +1,15 @@
 //! Network-upgrade activation heights
 
 use zcash_protocol::consensus::{
-    MainNetwork, NetworkType, NetworkUpgrade, Parameters, TestNetwork,
+    BranchId, MainNetwork, NetworkType, NetworkUpgrade, Parameters, TestNetwork,
 };
 
 use super::{BlockchainInfo, ConsensusBranchId, Height};
+
+const PRE_BLOSSOM_SPACING: u32 = 150;
+const POST_BLOSSOM_SPACING: u32 = 75;
+/// ZIP 218
+const POST_NU7_SPACING: u32 = 25;
 
 /// Protocol order (`NetworkUpgrade` derives neither `Ord` nor `Hash`)
 pub(crate) const ORDER: [NetworkUpgrade; 11] = [
@@ -40,8 +45,8 @@ impl UpgradeSchedule {
     /// `getblockchaininfo` `upgrades`, keyed by branch id
     pub fn reported(info: &BlockchainInfo) -> Self {
         Self(ORDER.map(|upgrade| {
-            let branch_id = u32::from(upgrade.branch_id());
-            let reported = info.upgrades.iter().find(|nu| u32::from(nu.branch_id) == branch_id);
+            let branch_id = ConsensusBranchId::of(upgrade);
+            let reported = info.upgrades.iter().find(|nu| nu.branch_id == branch_id);
             reported.map(|nu| nu.activation_height)
         }))
     }
@@ -54,16 +59,29 @@ impl UpgradeSchedule {
         self.activation(upgrade).is_some_and(|from| from <= at)
     }
 
-    /// Branch in force at `at` (Sprout = 0)
+    /// Branch in force at `at`
     pub fn branch_at(&self, at: Height) -> ConsensusBranchId {
         let latest = ORDER.iter().rev().find(|upgrade| self.active(**upgrade, at));
-        ConsensusBranchId::new(latest.map_or(0, |upgrade| u32::from(upgrade.branch_id())))
+        ConsensusBranchId::from(latest.map_or(BranchId::Sprout, |upgrade| upgrade.branch_id()))
     }
 
     /// First upgrade scheduled above `at`
     pub fn next_after(&self, at: Height) -> Option<(NetworkUpgrade, Height)> {
-        let scheduled = ORDER.iter().zip(self.0).filter_map(|(nu, from)| Some((*nu, from?)));
-        scheduled.filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
+        self.scheduled().filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
+    }
+
+    /// `PoWTargetSpacing(at)`, seconds
+    pub fn spacing(&self, at: Height) -> u32 {
+        match (self.active(NetworkUpgrade::Nu7, at), self.active(NetworkUpgrade::Blossom, at)) {
+            (true, _) => POST_NU7_SPACING,
+            (false, true) => POST_BLOSSOM_SPACING,
+            (false, false) => PRE_BLOSSOM_SPACING,
+        }
+    }
+
+    /// Each scheduled upgrade + its height, protocol order
+    pub(crate) fn scheduled(&self) -> impl Iterator<Item = (NetworkUpgrade, Height)> + '_ {
+        ORDER.iter().zip(self.0).filter_map(|(upgrade, at)| Some((*upgrade, at?)))
     }
 
     fn of(params: &impl Parameters) -> Self {
@@ -119,12 +137,13 @@ mod tests {
             estimated_height: h(tip),
             best_block_hash: BlockHash::from([0; 32]),
             sapling_activation: at(schedule, Sapling).expect("sapling"),
-            upgrades: ORDER
-                .iter()
-                .filter_map(|upgrade| Some((*upgrade, at(schedule, *upgrade)?)))
+            upgrades: schedule
+                .scheduled()
+                .collect::<Vec<_>>()
+                .into_iter()
                 .rev() // listed in no particular order: keyed by branch id
                 .map(|(upgrade, activation_height)| NetworkUpgradeInfo {
-                    branch_id: ConsensusBranchId::new(u32::from(upgrade.branch_id())),
+                    branch_id: ConsensusBranchId::of(upgrade),
                     name: "label only".to_owned(),
                     activation_height,
                     status: match activation_height <= h(tip) {
@@ -143,8 +162,7 @@ mod tests {
         assert_eq!(UpgradeSchedule::reported(&report(&mainnet, 3_500_000)), mainnet);
 
         let mut no_nu5 = report(&mainnet, 3_500_000);
-        let nu5 = ConsensusBranchId::new(u32::from(Nu5.branch_id()));
-        no_nu5.upgrades.retain(|upgrade| upgrade.branch_id != nu5);
+        no_nu5.upgrades.retain(|upgrade| upgrade.branch_id != ConsensusBranchId::of(Nu5));
         assert_eq!(UpgradeSchedule::reported(&no_nu5).activation(Nu5), None, "unlisted = never");
     }
 
@@ -153,8 +171,7 @@ mod tests {
     #[test]
     fn the_branch_and_next_upgrade_switch_exactly_at_an_activation_height() {
         let mainnet = UpgradeSchedule::compiled(NetworkType::Main).expect("mainnet compiled in");
-        let branch =
-            |upgrade: NetworkUpgrade| ConsensusBranchId::new(u32::from(upgrade.branch_id()));
+        let branch = ConsensusBranchId::of;
         let read = |at: u32| {
             let at = h(at);
             (mainnet.active(Nu6_3, at), mainnet.branch_at(at), mainnet.next_after(at))

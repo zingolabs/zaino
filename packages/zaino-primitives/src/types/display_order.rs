@@ -35,6 +35,12 @@ pub(crate) fn write(bytes: &[u8; 32], f: &mut fmt::Formatter<'_>) -> fmt::Result
     Ok(())
 }
 
+/// `name(` + first 4 display-order bytes + `…)` (log readability)
+pub(crate) fn debug(name: &str, bytes: &[u8; 32], f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    let [.., a, b, c, d] = *bytes;
+    write!(f, "{name}({d:02x}{c:02x}{b:02x}{a:02x}…)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +58,16 @@ mod tests {
         assert_eq!(display[2..].parse::<BlockHash>(), Err(ParseHashError::Length(62)));
         assert_eq!(display.replace('c', "g").parse::<BlockHash>(), Err(ParseHashError::NotHex));
         assert_eq!("é".repeat(32).parse::<TransactionId>(), Err(ParseHashError::NotHex));
+    }
+
+    #[test]
+    fn debug_names_the_type_and_its_first_four_display_bytes() {
+        let display = "deadbeef00000000000000000000000000000000000000000000000000000001";
+        let hash: BlockHash = display.parse().expect("64 hex digits");
+        let txid: TransactionId = display.parse().expect("64 hex digits");
+        assert_eq!(
+            [format!("{hash:?}"), format!("{txid:?}")],
+            ["BlockHash(deadbeef…)", "TransactionId(deadbeef…)"]
+        );
     }
 }

@@ -1,19 +1,15 @@
 //! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
 
-use zaino_primitives::types::{BlockHash, Height, UpgradeSchedule};
+use zaino_primitives::types::{BlockHash, CompactDifficulty, Height, Target, UpgradeSchedule};
 use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
-
-use crate::target::{expand, to_compact, U256};
 
 /// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
 /// or [`regtest`](Self::regtest); `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Params {
-    pub(crate) network: NetworkType,
     pub(crate) genesis: BlockHash,
-    pub(crate) blossom: Height,
-    pub(crate) nu7: Option<Height>,
-    pub(crate) pow_limit: U256,
+    pub(crate) schedule: UpgradeSchedule,
+    pub(crate) pow_limit: Target,
     pub(crate) pow: bool,
     pub(crate) difficulty: Difficulty,
     pub(crate) min_difficulty_from: Option<Height>,
@@ -29,11 +25,7 @@ pub(crate) enum Difficulty {
     Any,
 }
 
-const PRE_BLOSSOM_SPACING: i64 = 150;
-const POST_BLOSSOM_SPACING: i64 = 75;
-/// ZIP 218
-const POST_NU7_SPACING: i64 = 25;
-const AVERAGING_WINDOW: usize = 17;
+pub(crate) const AVERAGING_WINDOW: usize = 17;
 /// ZIP 218 `PostNU7PoWAveragingWindow`
 const POST_NU7_AVERAGING_WINDOW: usize = 102;
 pub(crate) const MAX_AVERAGING_WINDOW: usize = POST_NU7_AVERAGING_WINDOW;
@@ -44,26 +36,20 @@ const MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 6;
 const POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 18;
 
 impl Params {
-    /// `network`'s rules; regtest's heights from `schedule` (`None` = a regtest without Blossom)
-    pub fn for_network(network: NetworkType, schedule: &UpgradeSchedule) -> Option<Self> {
+    /// `network`'s rules; regtest's heights from `schedule`
+    pub fn for_network(network: NetworkType, schedule: &UpgradeSchedule) -> Self {
         match network {
-            NetworkType::Main => Some(Self::mainnet()),
-            NetworkType::Test => Some(Self::testnet()),
-            NetworkType::Regtest => {
-                let blossom = schedule.activation(NetworkUpgrade::Blossom)?;
-                Some(Self::regtest(blossom, schedule.activation(NetworkUpgrade::Nu7)))
-            }
+            NetworkType::Main => Self::mainnet(),
+            NetworkType::Test => Self::testnet(),
+            NetworkType::Regtest => Self::regtest(*schedule),
         }
     }
 
     pub fn mainnet() -> Self {
-        let (blossom, nu7) = blossom_nu7(NetworkType::Main);
         Self {
-            network: NetworkType::Main,
             genesis: display("00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08"),
-            blossom,
-            nu7,
-            pow_limit: compact_rounded((U256::one() << 243) - 1),
+            schedule: compiled(NetworkType::Main),
+            pow_limit: limit("0007ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
             pow: true,
             difficulty: Difficulty::Adjusted,
             min_difficulty_from: None,
@@ -75,13 +61,10 @@ impl Params {
 
     /// Default testnet (`network_upgrade.rs`: min difficulty from 299,188, max time from 653,606)
     pub fn testnet() -> Self {
-        let (blossom, nu7) = blossom_nu7(NetworkType::Test);
         Self {
-            network: NetworkType::Test,
             genesis: display("05a60a92d99d85997cce3b87616c089f6124d7342af37106edc76126334a2c38"),
-            blossom,
-            nu7,
-            pow_limit: compact_rounded((U256::one() << 251) - 1),
+            schedule: compiled(NetworkType::Test),
+            pow_limit: limit("07ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
             pow: true,
             difficulty: Difficulty::Adjusted,
             min_difficulty_from: Some(height(299_188)),
@@ -93,14 +76,12 @@ impl Params {
     /// work still enforced (`testnet.rs` `new_regtest`: a configured testnet, so testnet's
     /// max-time height applies too)
     ///
-    /// - `nu7` only moves the spacing (nBits = the limit at every height)
-    pub fn regtest(blossom: Height, nu7: Option<Height>) -> Self {
+    /// - `schedule` only moves the averaging window at NU7 (nBits = the limit at every height)
+    pub fn regtest(schedule: UpgradeSchedule) -> Self {
         Self {
-            network: NetworkType::Regtest,
             genesis: display("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327"),
-            blossom,
-            nu7,
-            pow_limit: compact_rounded(U256::from_big_endian(&[0x0f; 32])),
+            schedule,
+            pow_limit: limit("0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"),
             pow: false,
             difficulty: Difficulty::Limit,
             min_difficulty_from: None,
@@ -120,22 +101,13 @@ impl Params {
         Self { difficulty: Difficulty::Any, ..self }
     }
 
-    #[cfg(test)]
-    pub(crate) fn genesis(&self) -> BlockHash {
-        self.genesis
-    }
-
     fn nu7_active(&self, at: Height) -> bool {
-        self.nu7.is_some_and(|nu7| at >= nu7)
+        self.schedule.active(NetworkUpgrade::Nu7, at)
     }
 
     /// `PoWTargetSpacing(height)`, seconds
     pub(crate) fn spacing(&self, at: Height) -> i64 {
-        match (at < self.blossom, self.nu7_active(at)) {
-            (_, true) => POST_NU7_SPACING,
-            (true, false) => PRE_BLOSSOM_SPACING,
-            (false, false) => POST_BLOSSOM_SPACING,
-        }
+        i64::from(self.schedule.spacing(at))
     }
 
     /// `PoWAveragingWindow(height)` (ZIP 218: every use in §7.7.3 takes the checked height's)
@@ -162,19 +134,20 @@ impl Params {
 
     /// Limit as compact nBits (regtest's every block, testnet's minimum)
     pub(crate) fn limit_bits(&self) -> u32 {
-        to_compact(self.pow_limit)
+        self.pow_limit.to_compact()
     }
 }
 
-fn compact_rounded(limit: U256) -> U256 {
-    expand(to_compact(limit)).expect("a network's limit is a valid target")
+/// zcashd `chainparams.cpp` `powLimit` (display-order hex), compact-rounded
+fn limit(pow_limit: &str) -> Target {
+    let exact: Target = pow_limit.parse().expect("powLimit: constant display-order hex");
+    let rounded = CompactDifficulty::try_from_bits(exact.to_compact());
+    rounded.expect("a network's limit is a valid target").target()
 }
 
-/// From the compiled schedule (`zcash_protocol`'s, = the pool activations')
-fn blossom_nu7(network: NetworkType) -> (Height, Option<Height>) {
-    let schedule = UpgradeSchedule::compiled(network).expect("mainnet + testnet compiled in");
-    let blossom = schedule.activation(NetworkUpgrade::Blossom);
-    (blossom.expect("Blossom active"), schedule.activation(NetworkUpgrade::Nu7))
+/// `zcash_protocol`'s tables (= the pool activations')
+fn compiled(network: NetworkType) -> UpgradeSchedule {
+    UpgradeSchedule::compiled(network).expect("mainnet + testnet compiled in")
 }
 
 fn height(height: u32) -> Height {
@@ -187,6 +160,8 @@ fn display(hex: &str) -> BlockHash {
 
 #[cfg(test)]
 mod tests {
+    use zaino_primitives::testing::h;
+
     use super::*;
 
     /// Limits as zcashd's chainparams encode them (`powLimit` → nBits): mainnet 0x1f07ffff,
@@ -194,32 +169,34 @@ mod tests {
     /// spacing, window and testnet's minimum-difficulty gap switch at Blossom and NU7
     #[test]
     fn each_network_carries_zcashd_limits_genesis_and_upgrade_switches() {
-        let regtest = Params::regtest(height(1), None);
+        let regtest = Params::regtest(UpgradeSchedule::all_at(h(1)));
         let bits = [Params::mainnet(), Params::testnet(), regtest].map(|p| p.limit_bits());
         assert_eq!(bits, [0x1f07_ffff, 0x2007_ffff, 0x200f_0f0f]);
         assert_eq!(
-            Params::mainnet().genesis().to_string(),
+            Params::mainnet().genesis.to_string(),
             "00040fe8ec8471911baa1db1266ea15dd06b4a8a5c453883c000b031973dce08"
         );
 
         let rules = |params: Params, at: u32| {
-            let at = height(at);
+            let at = h(at);
             (params.spacing(at), params.averaging_window(at), params.min_difficulty_gap(at))
         };
+        let regtest_nu7 =
+            Params::regtest(UpgradeSchedule::all_at(h(1)).with(NetworkUpgrade::Nu7, h(10)));
         #[rustfmt::skip]
         let cases = [
-            (Params::mainnet(), 653_599,   (150, 17, None)),
-            (Params::mainnet(), 653_600,   (75, 17, None)),
-            (Params::mainnet(), 9_999_999, (75, 17, None)),
-            (Params::testnet(), 299_187,   (150, 17, None)),
-            (Params::testnet(), 299_188,   (150, 17, Some(900))),
-            (Params::testnet(), 584_000,   (75, 17, Some(450))),
-            (Params::testnet(), 4_465_025, (75, 17, Some(450))),
-            (Params::testnet(), 4_465_026, (25, 102, Some(450))),
-            (Params::regtest(height(1), Some(height(10))), 10, (25, 102, None)),
+            ("mainnet", Params::mainnet(), 653_599,   (150, 17, None)),
+            ("mainnet", Params::mainnet(), 653_600,   (75, 17, None)),
+            ("mainnet", Params::mainnet(), 9_999_999, (75, 17, None)),
+            ("testnet", Params::testnet(), 299_187,   (150, 17, None)),
+            ("testnet", Params::testnet(), 299_188,   (150, 17, Some(900))),
+            ("testnet", Params::testnet(), 584_000,   (75, 17, Some(450))),
+            ("testnet", Params::testnet(), 4_465_025, (75, 17, Some(450))),
+            ("testnet", Params::testnet(), 4_465_026, (25, 102, Some(450))),
+            ("regtest", regtest_nu7,       10,        (25, 102, None)),
         ];
-        for (params, at, expected) in cases {
-            assert_eq!(rules(params, at), expected, "{:?} at {at}", params.network);
+        for (network, params, at, expected) in cases {
+            assert_eq!(rules(params, at), expected, "{network} at {at}");
         }
     }
 }

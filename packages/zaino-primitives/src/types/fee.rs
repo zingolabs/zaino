@@ -28,17 +28,30 @@ impl Transaction {
         if self.transparent.coinbase {
             return Ok(Fee::Coinbase);
         }
-        let outputs = self.transparent.outputs.iter().map(|out| out.value);
-        let paid = Zatoshis::sum_balances(outputs).ok_or(FeeError::Overflow)?;
-        // every term within ±MAX_MONEY (ZIP 209) → Σ of six fits i64
-        let remaining = spent.as_i64() - paid.as_i64()
-            + i64::from(self.sprout.value_balance)
-            + i64::from(self.sapling.value_balance)
-            + i64::from(self.orchard.value_balance)
-            + i64::from(self.ironwood.value_balance);
+        let remaining = self.value_left(spent).ok_or(FeeError::Overflow)?;
         // MUST be nonnegative (protocol.pdf §3.4 consensus rule)
         let remaining = u64::try_from(remaining).map_err(|_| FeeError::Negative)?;
         Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| FeeError::Overflow)?))
+    }
+
+    /// `spent` − Σ outputs + each pool's value balance, negative = overspent (`None`: outputs past
+    /// the supply)
+    pub(crate) fn value_left(&self, spent: Zatoshis) -> Option<i64> {
+        let outputs = self.transparent.outputs.iter().map(|out| out.value);
+        let paid = Zatoshis::sum_balances(outputs)?;
+        // every term within ±MAX_MONEY (ZIP 209) → Σ of six fits i64
+        Some(spent.as_i64() - paid.as_i64() + self.pool_balances().iter().sum::<i64>())
+    }
+
+    /// Sprout, Sapling, Orchard, Ironwood (+ = out of that pool)
+    pub(crate) fn pool_balances(&self) -> [i64; 4] {
+        [
+            self.sprout.value_balance,
+            self.sapling.value_balance,
+            self.orchard.value_balance,
+            self.ironwood.value_balance,
+        ]
+        .map(i64::from)
     }
 }
 
@@ -71,8 +84,6 @@ mod tests {
         TransparentData, TransparentOutput,
     };
 
-    const SUPPLY: u64 = 21_000_000 * 100_000_000;
-
     /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
     /// one zatoshi apiece, so a dropped or flipped term shows); a coinbase pays none; below 0 =
     /// `Negative`, past the supply = `Overflow`
@@ -98,6 +109,7 @@ mod tests {
             }
         };
         let paid = |n: u64| Ok(Fee::Paid(Zatoshis::new(n).expect("in supply")));
+        let supply = Zatoshis::MAX.as_u64();
         let rows: [(&str, Transaction, u64, Result<Fee, FeeError>); 7] = [
             ("transparent only", tx(false, &[6_000, 3_000], [0; 4]), 10_000, paid(1_000)),
             ("every pool adds", tx(false, &[9_000], [1, 10, 100, 1_000]), 10_000, paid(2_111)),
@@ -105,7 +117,7 @@ mod tests {
             ("pays exactly in", tx(false, &[10_000], [0; 4]), 10_000, paid(0)),
             ("pays more", tx(false, &[10_001], [0; 4]), 10_000, Err(FeeError::Negative)),
             ("coinbase", tx(true, &[50_000], [0; 4]), 0, Ok(Fee::Coinbase)),
-            ("past the supply", tx(false, &[], [1, 0, 0, 0]), SUPPLY, Err(FeeError::Overflow)),
+            ("past the supply", tx(false, &[], [1, 0, 0, 0]), supply, Err(FeeError::Overflow)),
         ];
         for (row, tx, spent, expected) in rows {
             let spent = Zatoshis::new(spent).expect("in supply");

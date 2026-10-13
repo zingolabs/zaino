@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use zaino_primitives::testing::{encode_header, MockChain, Work};
 use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth};
-use zcash_protocol::consensus::NetworkUpgrade;
 
 use crate::{decode_header, HeaderChain, Params, Rejected, VerifiedChain};
 
@@ -23,11 +22,7 @@ pub trait HeaderViews {
 impl HeaderViews for MockChain {
     fn header_params(&self) -> Params {
         let schedule = self.schedule();
-        let never = Height::try_from(u32::MAX >> 1).expect("the protocol's maximum height");
-        let blossom = schedule.upgrades.activation(NetworkUpgrade::Blossom).unwrap_or(never);
-        let nu7 = schedule.upgrades.activation(NetworkUpgrade::Nu7);
-        let regtest = Params::regtest(blossom, nu7).with_genesis(self.genesis().hash);
-        let params = Params { network: schedule.network, ..regtest };
+        let params = Params::regtest(schedule.upgrades).with_genesis(self.genesis().hash);
         match schedule.work {
             Work::Limit => params,
             Work::Varied => params.any_bits(),

@@ -20,11 +20,6 @@ pub enum IndexerError {
         reserved = crate::fd_limit::RESERVED
     )]
     FdLimit { max_connections: NonZeroUsize, needed: u64, limit: u64 },
-    #[error(
-        "p2p.enabled on a regtest whose validator never activates Blossom: peers' headers cannot \
-         be checked"
-    )]
-    NoHeaderRules,
     #[error(transparent)]
     ValidatorEndpoint(#[from] zaino_source::EndpointError),
     #[error(transparent)]

@@ -1085,7 +1085,7 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));
     let reader = view.subscriber();
-    let rules = Params::regtest(h(1), None);
+    let rules = Params::regtest(regtest());
     let sync = view.header_sync(HeaderChain::new(depth())).with_peers(rules);
     let verified = sync.subscribe();
     tokio::spawn(sync.run(cancel.clone()));
@@ -1150,7 +1150,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         tokio::spawn(driver.run(cancel.clone()));
         tokio::spawn(view.observation_fold().run(cancel.clone()));
         let sync =
-            view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(h(1), None));
+            view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
         let verified = sync.subscribe();
         tokio::spawn(sync.run(cancel.clone()));
         let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));
@@ -1199,7 +1199,7 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));
     tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
-    let sync = view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(h(1), None));
+    let sync = view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
     let verified = sync.subscribe();
     tokio::spawn(sync.run(cancel.clone()));
     let published = || verified.borrow().clone().map(|v| (v.best(), v.final_tip()));

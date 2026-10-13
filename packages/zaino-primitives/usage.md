@@ -4,13 +4,14 @@ Zaino's domain vocabulary: Zcash chain types in Zaino's own terms, independent
 of how they are transported or stored. Every other Zaino crate that needs a
 height, hash, block or amount depends on this one.
 
-## Dependencies: `thiserror`, `zcash_protocol` and `sha2` only
+## Dependencies: `thiserror`, `zcash_protocol`, `sha2` and `uint` only
 
 Anything added here lands in every crate above it. `zcash_protocol` is there
 for `NetworkType`, which every crate above already speaks; `sha2` for
 `sha256d`: block hashes (`HeaderBytes::hash`) and `MerkleRoot::of_txids`, the
 consensus merkle root a block's transactions must rebuild (the NFS's body
-check, and the chain builder's headers). In particular there is no serde:
+check, and the chain builder's headers); `uint` for the 256-bit `Target`
+arithmetic (zebra's own U256). In particular there is no serde:
 formats are owned by the boundary that speaks them.
 
 | Direction | Owner |
@@ -57,7 +58,11 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   activations and the header rules' Blossom / NU7 heights both read it.
   `active(upgrade, at)`, `branch_at(at)` (the consensus branch in force, Sprout =
   0) and `next_after(at)` (the next scheduled upgrade) answer `GetLightdInfo`
-  with no validator.
+  with no validator. `spacing(at)` = `PoWTargetSpacing` (150 s, 75 s from
+  Blossom, 25 s from NU7): the header rules' adjustment and the chain builder's
+  default times both read it.
+- `ConsensusBranchId` — `of(NetworkUpgrade)` and `From<BranchId>`; never
+  rebuilt from a raw `u32` of `branch_id()`.
 - `Block::check_body()` — its transactions are the ones its header commits to:
   `BodyMismatch::MerkleRoot` (txids rebuild another root) or `Mutated` (a repeated
   txid pair, CVE-2012-2459). With the hash matched, a body passing it is the one
@@ -66,9 +71,11 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
   `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and
   messages). Every surface uses one of these, never its own match.
-- `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000) and `MAX_BLOCK_BYTES`
-  (2,000,000, the spec's `MAX_BLOCK_SIZE`). Stated as protocol facts, not
-  borrowed from a node. Restating them elsewhere is a bug.
+- `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000), `MAX_BLOCK_BYTES`
+  (2,000,000, the spec's `MAX_BLOCK_SIZE`), `MEDIAN_TIME_SPAN` (11, the spec's
+  `PoWMedianBlockSpan`) and `median_time_past(newest_first)` (upper median of
+  the newest 11 times; `None` = none). Stated as protocol facts, not borrowed
+  from a node. Restating them elsewhere is a bug.
 - `sha256d` — SHA-256 twice, the one implementation (block hashes, merkle
   nodes, pre-v5 txids).
 
@@ -113,10 +120,18 @@ Coexisting balances cannot exceed the supply, so `sum_balances` lands back in
 `CompactDifficulty` is a header's nBits once validated. `try_from_bits(u32)`
 applies a validator's acceptance rules (sign bit clear, target within 256 bits,
 non-zero) plus the target's work fitting 128 bits, and reports each rejection
-as its own `CompactDifficultyError` variant. The work
-(`floor(2^256 / (target + 1))`) is computed for that check only and never
-exposed: chain work and the most-work rule live in `zaino-header-chain`
+as its own `CompactDifficultyError` variant. A validated value gives its
+`target()` and its `work()` (`floor(2^256 / (target + 1))`, always within
+`u128`). This is the one nBits → target → work implementation; chain work and
+the most-work rule built on it live in `zaino-header-chain`
 ([architecture §4](../../docs/architecture.md#4-the-best-chain)).
+
+`Target` is the 256-bit threshold (zebra's `ExpandedDifficulty`), ordered
+numerically: `is_met_by(hash)` (the hash read little-endian, ≤ target),
+`to_compact()` (raw nBits, unvalidated: a target below `2^128` has no
+`CompactDifficulty`), `mean(&[Target])` (overflow-free), `rescale(actual,
+expected)` (`/ expected × actual`, divide first, saturating) and `FromStr` over
+display-order hex (zcashd's `powLimit` literals).
 
 ## Byte order
 

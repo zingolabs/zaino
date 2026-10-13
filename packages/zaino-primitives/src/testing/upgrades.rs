@@ -7,11 +7,6 @@ use crate::types::{
     ORDER,
 };
 
-const PRE_BLOSSOM_SPACING: u32 = 150;
-const POST_BLOSSOM_SPACING: u32 = 75;
-/// ZIP 218
-const POST_NU7_SPACING: u32 = 25;
-
 impl UpgradeSchedule {
     /// Overwinter ..= NU6.3 at `height`, NU7 off
     pub fn all_at(height: Height) -> Self {
@@ -39,9 +34,8 @@ impl UpgradeSchedule {
 
     /// Scheduled heights non-decreasing in protocol order (zebrad refuses any other config)
     pub(super) fn assert_ordered(&self) {
-        let scheduled = ORDER.iter().zip(self.0).filter_map(|(nu, at)| Some((nu, at?)));
-        let mut previous: Option<(&NetworkUpgrade, Height)> = None;
-        for (upgrade, at) in scheduled {
+        let mut previous: Option<(NetworkUpgrade, Height)> = None;
+        for (upgrade, at) in self.scheduled() {
             if let Some((before, from)) = previous {
                 assert!(from <= at, "{upgrade} at {at} activates before {before} at {from}");
             }
@@ -49,21 +43,11 @@ impl UpgradeSchedule {
         }
     }
 
-    /// `PoWTargetSpacing(at)`, seconds
-    pub(super) fn spacing(&self, at: Height) -> u32 {
-        match (self.active(NetworkUpgrade::Nu7, at), self.active(NetworkUpgrade::Blossom, at)) {
-            (true, _) => POST_NU7_SPACING,
-            (false, true) => POST_BLOSSOM_SPACING,
-            (false, false) => PRE_BLOSSOM_SPACING,
-        }
-    }
-
     /// `getblockchaininfo` `upgrades` at `tip`: every scheduled upgrade, active or pending
     pub(super) fn info(&self, tip: Height) -> Vec<NetworkUpgradeInfo> {
-        let scheduled = ORDER.iter().zip(self.0).filter_map(|(nu, at)| Some((*nu, at?)));
-        scheduled
+        self.scheduled()
             .map(|(upgrade, activation_height)| NetworkUpgradeInfo {
-                branch_id: ConsensusBranchId::new(u32::from(upgrade.branch_id())),
+                branch_id: ConsensusBranchId::of(upgrade),
                 name: upgrade.to_string(),
                 activation_height,
                 status: match activation_height <= tip {

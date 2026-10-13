@@ -135,7 +135,7 @@ pub(crate) fn parse_blockchain_info(
 ) -> Result<BlockchainInfo, ParseError> {
     let consensus = field(value, "consensus")?;
     let upgrades = parse_upgrades(field(value, "upgrades")?)?;
-    let sapling = ConsensusBranchId::new(u32::from(BranchId::Sapling));
+    let sapling = ConsensusBranchId::from(BranchId::Sapling);
     let sapling_activation = upgrades
         .iter()
         .find(|upgrade| upgrade.branch_id == sapling)
