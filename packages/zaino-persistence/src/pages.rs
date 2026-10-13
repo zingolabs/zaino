@@ -562,9 +562,51 @@ mod tests {
     use super::*;
     use crate::fs::SimFs;
 
+    #[test]
+    #[should_panic(expected = "page 1: checksum mismatch")]
+    fn a_read_of_a_flipped_committed_byte_panics_naming_its_page() {
+        let fs = SimFs::new();
+        let path = Path::new("/p/data");
+        fs.create_dir_all(Path::new("/p")).expect("dir");
+        let bytes: Vec<u8> = (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect();
+        let mut file =
+            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
+        file.append(&bytes).expect("append");
+        let sealed = file.seal(Durability::PerFile).expect("seal");
+        fs.corrupt(path, |data| data[PAGE + 5] ^= 1);
+        let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal).expect("lengths intact");
+
+        pages.read(PAGE..PAGE + 1);
+    }
+
+    /// Checksum index = page index: a page moved with its checksum fails at its new place
+    #[test]
+    #[should_panic(expected = "page 0: checksum mismatch")]
+    fn a_page_swapped_with_its_checksum_still_panics() {
+        let fs = SimFs::new();
+        let path = Path::new("/p/data");
+        fs.create_dir_all(Path::new("/p")).expect("dir");
+        let bytes: Vec<u8> = (0..3 * PAGE + 100).map(|n| (n * 7 % 251) as u8).collect();
+        let mut file =
+            PagedFile::open(fs.as_ref(), path, Sealed::EMPTY, FileKind::Segment).expect("open");
+        file.append(&bytes).expect("append");
+        let mut sealed = file.seal(Durability::PerFile).expect("seal");
+        let swap = |data: &mut Vec<u8>, width: usize| {
+            let (first, second) = data.split_at_mut(width);
+            first.swap_with_slice(&mut second[..width]);
+        };
+        fs.corrupt(path, |data| swap(data, PAGE));
+        fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
+        sealed.sums = crc32fast::hash(&fs.contents(&sums_path(path)).expect("sums"));
+        let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal).expect("digest");
+
+        pages.read(0..PAGE);
+    }
+
     /// - appends across page boundaries seal to a from-scratch hash's CRCs
     /// - reopen continues the tail
-    /// - flipped committed byte = panic on first touch + scrub fault
+    /// - flipped committed byte passes open (lengths only); forged checksum, torn tail, short file
+    ///   refused
     #[test]
     fn seals_reopen_and_every_committed_byte_is_checked() {
         let fs = SimFs::new();
@@ -606,17 +648,9 @@ mod tests {
         fs.corrupt(path, |data| data[PAGE + 5] ^= 1);
         let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal).expect("lengths intact");
         assert_eq!(pages.read(0..PAGE), &bytes[..PAGE], "untouched page");
-        let touched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            pages.read(PAGE..PAGE + 1).to_vec()
-        }));
-        let message = touched
-            .expect_err("a corrupt page never serves")
-            .downcast::<String>()
-            .expect("formatted");
-        assert!(message.contains("page 1: checksum mismatch"), "{message}");
         fs.corrupt(path, |data| data[PAGE + 5] ^= 1);
 
-        // pages 0 and 1 swapped together with their checksums: each still fails at its new index
+        // pages 0 and 1 swapped together with their checksums: digest pins the checksum order
         let swap = |data: &mut Vec<u8>, width: usize| {
             let (first, second) = data.split_at_mut(width);
             first.swap_with_slice(&mut second[..width]);
@@ -625,12 +659,6 @@ mod tests {
         fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
         let pages = Pages::open(fs.as_ref(), path, sealed, Access::Normal);
         assert!(matches!(pages, Err(PageError::Sums { .. })), "digest pins the checksum order");
-        let mut transposed = sealed;
-        transposed.sums = crc32fast::hash(&fs.contents(&sums_path(path)).expect("sums"));
-        let pages = Pages::open(fs.as_ref(), path, transposed, Access::Normal).expect("digest");
-        let moved =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pages.read(0..PAGE).to_vec()));
-        assert!(moved.is_err(), "a page and its checksum moved together still fail");
         fs.corrupt(path, |data| swap(data, PAGE));
         fs.corrupt(&sums_path(path), |sums| swap(sums, SUM));
 

@@ -12,8 +12,8 @@ homepage.workspace = true
 description = "The persistence port every Zaino index stores through, and DiskEngine behind it: positional files for sequences, an LSM for maps, one manifest commit."
 
 [features]
-# `fs::SimFs` (crash-state enumeration) + `conformance` (the suite every engine runs)
-testing = ["dep:proptest"]
+# `fs::SimFs` (crash-state enumeration)
+testing = []
 
 [dependencies]
 thiserror = { workspace = true }
@@ -27,7 +27,6 @@ xorf.workspace = true
 rayon.workspace = true
 metrics = { workspace = true }
 tracing.workspace = true
-proptest = { workspace = true, optional = true }
 imbl.workspace = true
 hashbrown.workspace = true
 rustix = { version = "1.1", features = ["fs"] }

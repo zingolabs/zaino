@@ -11,8 +11,6 @@ use std::{
     path::Path,
 };
 
-#[cfg(any(test, feature = "testing"))]
-pub mod conformance;
 mod dir;
 mod disk;
 mod emit;
@@ -79,34 +77,32 @@ impl StoreError {
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{self, AssertUnwindSafe};
-
     use super::*;
 
     #[test]
-    fn commit_failed_names_the_index_and_disk_and_spots_a_full_disk_at_any_depth() {
+    fn a_full_disk_is_spotted_at_any_depth_of_the_error() {
         let io = |kind| io::Error::from(kind);
         let cases = [
-            (StoreError::Io(io(ErrorKind::StorageFull)), "tb index commit failed: disk /idx full"),
-            (
-                StoreError::Io(io(ErrorKind::QuotaExceeded)),
-                "tb index commit failed: disk /idx full",
-            ),
-            (
-                StoreError::Manifest(manifest::ManifestError::Io(io(ErrorKind::StorageFull))),
-                "tb index commit failed: disk /idx full",
-            ),
-            (
-                StoreError::Io(io::Error::other("EIO")),
-                "tb index commit failed at /idx: index io: EIO",
-            ),
+            (StoreError::Io(io(ErrorKind::StorageFull)), true),
+            (StoreError::Io(io(ErrorKind::QuotaExceeded)), true),
+            (StoreError::Manifest(manifest::ManifestError::Io(io(ErrorKind::StorageFull))), true),
+            (StoreError::Io(io::Error::other("EIO")), false),
         ];
-        for (error, expected) in cases {
-            let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
-                error.commit_failed("tb", Path::new("/idx"));
-            }));
-            let payload = panicked.expect_err("commit_failed always panics");
-            assert_eq!(payload.downcast_ref::<String>().map(String::as_str), Some(expected));
+        for (error, full) in cases {
+            assert_eq!(error.disk_full(), full, "{error:?}");
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "tb index commit failed: disk /idx full")]
+    fn a_commit_failed_on_a_full_disk_names_the_disk() {
+        StoreError::Io(io::Error::from(ErrorKind::StorageFull))
+            .commit_failed("tb", Path::new("/idx"));
+    }
+
+    #[test]
+    #[should_panic(expected = "tb index commit failed at /idx: index io: EIO")]
+    fn a_commit_failed_otherwise_names_the_cause() {
+        StoreError::Io(io::Error::other("EIO")).commit_failed("tb", Path::new("/idx"));
     }
 }

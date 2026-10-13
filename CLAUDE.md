@@ -143,39 +143,16 @@ other. Purely internal refactors need no guide edit.
 
 Every index's durability rests on `packages/zaino-persistence`. After **any**
 change inside it (code, tests, `SimFs`, even a refactor), and before reporting
-the work as done, run the heavy validation below. The default `cargo test` run
-is deliberately light (64 model-test cases, ~2 s) and is not enough.
+the work as done, run the heavy run in
+[`docs/testing.md`](docs/testing.md#heavy-run) with `crate=zaino-persistence`: the
+3-minute loop, then every crate built on it (`rdeps(zaino-persistence)`). The default
+run is deliberately light (64 model-test cases, ~2 s) and is not enough.
 
-```bash
-# 1. heavy: fresh random seeds, round after round, for at least 3 minutes
-end=$((SECONDS + 180)); round=0
-while [ $SECONDS -lt $end ]; do
-  round=$((round + 1))
-  PROPTEST_CASES=1000 cargo test -p zaino-persistence --features testing \
-    || { echo "FAILED in round $round"; break; }
-done
-
-# 2. every crate built on it (`cargo tree -i zaino-persistence --workspace`)
-cargo test -p zaino-internal-block-hash-to-height -p zaino-internal-value-balance \
-  -p zaino-index-transparent-address -p zaino-index-compact-block -p zaino-index-tree-state \
-  -p zaino-header-chain -p zaino-sync -p zaino-nfs -p zaino-chainview -p zaino-grpc -p zainod
-```
-
-- Step 1 re-runs the whole persistence suite each round, so the thread-timing
-  sensitive tests (background merges, failed I/O, crash states) repeat too, and
-  the model test (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`)
-  runs 1000 fresh random histories per round.
-- The model test is `conformance::history`, generic over `PersistenceEngine`. A
-  new engine implements `conformance::Subject` and runs `history` + `contract`
-  (`packages/zaino-persistence/usage.md` "Testing"). The same loop is its heavy run.
-- Env overrides (proptest 1.6): `PROPTEST_CASES` (cases per proptest; overrides
-  the in-code 64), `PROPTEST_MAX_SHRINK_ITERS` (shrink harder on a failure),
-  `PROPTEST_VERBOSE=1` (print each case). Lengthen the run by raising the `180`
-  (seconds); never shorten it.
-- Keep debug assertions on: use the default test profile, not `--release`.
-  Some invariant checks (`Pages::read_unchecked`) are `debug_assert!`.
+- The model test (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`)
+  lives in `packages/zaino-persistence/src/disk/tests.rs` and is `DiskEngine`'s own. A new engine
+  writes its own tests; it does not share or edit `DiskEngine`'s.
 - A failure writes the shrunk case to
   `packages/zaino-persistence/proptest-regressions/`. Commit that file (it
   replays on every future run), fix the bug, and rerun the whole block. Never
-  lower case counts, loosen an assertion, or skip a test to get green.
+  shorten the run, lower case counts, loosen an assertion, or skip a test to get green.
 - Report the rounds completed and the result in your summary.

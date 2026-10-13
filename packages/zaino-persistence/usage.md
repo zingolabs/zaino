@@ -213,12 +213,16 @@ tests. `SimFs` tracks what is durable versus merely written, and enumerates ever
 could leave: unsynced writes dropped, reordered, torn on 512-byte sector boundaries, or lost in one
 file while kept in others. `fail_from(n)` returns `EIO` from the nth mutating call on.
 
-- **Conformance suite** (`conformance`, feature `testing`): any engine implements
-  `conformance::Subject` and runs `conformance::history` under proptest and `conformance::contract`
-  as a plain test. `history` drives random blocks, reorgs, commits, merges, reopens and power loss
-  against `Vec` / `BTreeMap` models; `contract` pins the port's edge cases and every precondition
-  panic. `DiskEngine` runs both on `SimFs` in `src/disk/tests.rs`.
-- **Engine-only tests** in the same file: every crash state of a commit history, every failed I/O
-  call, open's trimming and refusals, the manifest body's golden bytes, and `verify`.
+`DiskEngine`'s tests live in `src/disk/tests.rs` and are its own. Each `PersistenceEngine`
+implementation writes and owns its tests; there is no shared harness.
 
-After any change to this crate, run the heavy proptest loop in the root `CLAUDE.md`.
+- **Model test** (`random_histories_answer_like_a_btreemap_through_merges_reopens_and_power_loss`):
+  random blocks, reorgs, commits, merges, reopens and power loss on `SimFs`, checked against
+  `Vec` / `BTreeMap` models after every step.
+- **Port contract** (`the_disk_engine_keeps_the_port_contract`): the port's edge cases and every
+  precondition panic.
+- **Files-only tests**: every crash state of a commit history, every failed I/O call, open's
+  trimming and refusals, the manifest body's golden bytes, and `verify`.
+
+After any change to this crate: the [heavy run](../../docs/testing.md#heavy-run) (required
+before the change is done; `CLAUDE.md`).

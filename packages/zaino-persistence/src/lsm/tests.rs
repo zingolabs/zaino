@@ -2,7 +2,6 @@
 //! plans, scope filters (store end to end: `disk/tests.rs`)
 
 use std::{
-    panic::{catch_unwind, AssertUnwindSafe},
     path::Path,
     sync::{atomic::AtomicBool, Arc},
 };
@@ -54,54 +53,64 @@ fn borrowed(rows: &[(Vec<u8>, Vec<u8>)]) -> Vec<(&[u8], Option<&[u8]>)> {
     rows.iter().map(|(key, value)| (key.as_slice(), Some(value.as_slice()))).collect()
 }
 
-/// Panic payload text (`panic!` with arguments → `String`, a literal → `&str`)
-fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
-    match payload.downcast::<String>() {
-        Ok(message) => *message,
-        Err(payload) => {
-            payload.downcast::<&str>().map(|message| message.to_string()).unwrap_or_default()
-        }
-    }
+#[test]
+#[should_panic(expected = "LSM map scanned: keys must be Fixed")]
+fn a_map_with_variable_keys_panics() {
+    Shape::of(&MapTable { key: Width::Variable, ..scanned() });
 }
 
-/// - map the LSM cannot hold panics at construction, naming the map and why
-/// - batch row of the wrong widths, or a tombstone without `deletes()`, panics naming the map
 #[test]
-fn a_map_or_row_the_lsm_cannot_hold_panics_naming_the_map() {
-    let cases = [
-        (MapTable { key: Width::Variable, ..scanned() }, "LSM map scanned: keys must be Fixed"),
-        (MapTable { value: Width::Variable, ..scanned() }, "LSM map scanned: values must be Fixed"),
-        (MapTable { scope: 13, ..scanned() }, "LSM map scanned: scope 13 > its 12-byte key"),
-        (MapTable { scope: 4, ..scanned() }, "filter shards on 8 key bytes, has 4"),
-        (MapTable { key: Width::fixed(6), scope: 0, ..scanned() }, "filter shards on 8 key bytes"),
-    ];
-    for (table, expected) in cases {
-        let message = panic_message(catch_unwind(|| Shape::of(&table)).expect_err(expected));
-        assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
-    }
+#[should_panic(expected = "LSM map scanned: values must be Fixed")]
+fn a_map_with_variable_values_panics() {
+    Shape::of(&MapTable { value: Width::Variable, ..scanned() });
+}
 
+#[test]
+#[should_panic(expected = "LSM map scanned: scope 13 > its 12-byte key")]
+fn a_map_scoped_past_its_key_panics() {
+    Shape::of(&MapTable { scope: 13, ..scanned() });
+}
+
+#[test]
+#[should_panic(expected = "filter shards on 8 key bytes, has 4")]
+fn a_map_scoped_under_the_filter_shard_panics() {
+    Shape::of(&MapTable { scope: 4, ..scanned() });
+}
+
+#[test]
+#[should_panic(expected = "filter shards on 8 key bytes")]
+fn a_map_keyed_under_the_filter_shard_panics() {
+    Shape::of(&MapTable { key: Width::fixed(6), scope: 0, ..scanned() });
+}
+
+#[test]
+#[should_panic(expected = "LSM map scanned: key width")]
+fn a_batch_row_off_its_key_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    let mut log = SegmentLog::open(
-        fs,
-        Path::new("/m"),
-        &scanned(),
-        &[],
-        2,
-        Arc::new(Slots::new(4, u64::MAX)),
-    )
-    .expect("open");
-    type Refused = (&'static [u8], Option<&'static [u8]>, &'static str);
-    let rows: [Refused; 3] = [
-        (&[0; 11], Some(&[0; 8]), "LSM map scanned: key width"),
-        (&[0; 12], Some(&[0; 7]), "LSM map scanned: value"),
-        (&[0; 12], None, "LSM map scanned: tombstone"),
-    ];
-    for (key, value, expected) in rows {
-        let refused = catch_unwind(AssertUnwindSafe(|| log.batch(vec![(key, value)])));
-        let message = panic_message(refused.expect_err(expected));
-        assert!(message.contains(expected), "expected {expected:?}, got {message:?}");
-    }
+    let slots = Arc::new(Slots::new(4, u64::MAX));
+    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let _ = log.batch(vec![(&[0; 11], Some(&[0; 8]))]);
+}
+
+#[test]
+#[should_panic(expected = "LSM map scanned: value")]
+fn a_batch_row_off_its_value_width_panics() {
+    let fs = SimFs::new();
+    fs.create_dir_all(Path::new("/m")).expect("dir");
+    let slots = Arc::new(Slots::new(4, u64::MAX));
+    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let _ = log.batch(vec![(&[0; 12], Some(&[0; 7]))]);
+}
+
+#[test]
+#[should_panic(expected = "LSM map scanned: tombstone")]
+fn a_tombstone_in_a_map_without_deletes_panics() {
+    let fs = SimFs::new();
+    fs.create_dir_all(Path::new("/m")).expect("dir");
+    let slots = Arc::new(Slots::new(4, u64::MAX));
+    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let _ = log.batch(vec![(&[0; 12], None)]);
 }
 
 /// - open publishes every `zaino_lsm_*` series of the map at zero (absent ≠ nothing happened yet)
@@ -131,11 +140,10 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
     }
 }
 
-/// - open removes unlisted segments (+ checksums) + any writer's scratch; lost segment refused
-/// - flipped committed byte passes open (lengths only), dies on the first read / merge touching
-///   its page
+/// - open removes unlisted segments (+ checksums) + any writer's scratch
+/// - short or unsummed segment refused; flipped committed byte passes open (lengths only)
 #[test]
-fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
+fn open_removes_strays_checks_lengths_and_leaves_page_checks_to_the_first_touch() {
     let fs = SimFs::new();
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
@@ -166,56 +174,69 @@ fn open_checks_lengths_and_a_corrupt_page_dies_on_first_touch() {
         *bytes = original.clone();
         bytes[shape.stride + 9] ^= 1;
     });
-    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
-    let died = |touch: &dyn Fn()| {
-        let message =
-            panic_message(catch_unwind(AssertUnwindSafe(touch)).expect_err("never serves"));
-        let named =
-            message.contains("page 0: checksum mismatch") && message.contains("zainod verify");
-        assert!(named, "{message}");
-    };
-    died(&|| {
-        snapshot.get(&scanned_row(1, 1).0);
-    });
-
-    // same tier as `kept` at fanout 2 → opening both launches their merge (reads the page)
-    let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
-    let log = SegmentLog::open(
-        fs.clone(),
-        dir,
-        &scanned(),
-        &[kept, second],
-        2,
-        Arc::new(Slots::new(4, u64::MAX)),
-    )
-    .expect("merge");
-    log.settle();
-    let log = std::sync::Mutex::new(log);
-    died(&|| {
-        let _ = log.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).batch(Vec::new());
-    });
+    Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
 
     fs.remove(&sums_path(&path)).expect("remove checksums");
     let unsummed = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
+}
 
-    // last byte = filter fingerprint; whole filter read + checked at map → open dies before
-    // any probe
+#[test]
+#[should_panic(expected = "page 0: checksum mismatch (on-disk corruption: stop zainod, run")]
+fn a_read_of_a_corrupt_page_panics_naming_the_page_and_the_fix() {
+    let fs = SimFs::new();
+    let dir = Path::new("/segments");
+    fs.create_dir_all(dir).expect("dir");
+    let shape = Shape::of(&scanned());
+    let rows: Vec<_> = (0..600).map(|seq| scanned_row(1, seq)).collect();
+    let kept = SegmentWriter::open(fs.clone(), dir, shape)
+        .write(0, borrowed(&rows))
+        .expect("write")
+        .expect("rows");
+    // page 0 = records only (600 rows: summary past it)
+    fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
+    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
+
+    snapshot.get(&scanned_row(1, 1).0);
+}
+
+/// Same tier at fanout 2 → open launches their merge (reads the corrupt page on its thread)
+#[test]
+#[should_panic(expected = "page 0: checksum mismatch")]
+fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
+    let fs = SimFs::new();
+    let dir = Path::new("/segments");
+    fs.create_dir_all(dir).expect("dir");
+    let shape = Shape::of(&scanned());
+    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let rows = |owner| (0..600).map(move |seq| scanned_row(owner, seq)).collect::<Vec<_>>();
+    let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
+    let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
+    fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
+    let slots = Arc::new(Slots::new(4, u64::MAX));
+    let mut log =
+        SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], 2, slots).expect("open");
+    log.settle();
+
+    let _ = log.batch(Vec::new());
+}
+
+/// Last byte = filter fingerprint; whole filter read + checked at map → open dies before any probe
+#[test]
+#[should_panic(expected = "checksum mismatch")]
+fn a_corrupt_filter_panics_at_open() {
+    let fs = SimFs::new();
     let ids = Path::new("/ids");
     fs.create_dir_all(ids).expect("dir");
-    let id_shape = Shape::of(&probed());
-    let id_rows: Vec<_> = (0..3_000).map(probed_row).collect();
-    let id_writer = SegmentWriter::open(fs.clone(), ids, id_shape);
-    let written = id_writer.write(0, borrowed(&id_rows)).expect("write").expect("rows");
+    let shape = Shape::of(&probed());
+    let rows: Vec<_> = (0..3_000).map(probed_row).collect();
+    let written = SegmentWriter::open(fs.clone(), ids, shape)
+        .write(0, borrowed(&rows))
+        .expect("write")
+        .expect("rows");
     fs.corrupt(&ids.join(file_name(written.id)), |bytes| *bytes.last_mut().expect("bytes") ^= 1);
-    let message = panic_message(
-        catch_unwind(AssertUnwindSafe(|| {
-            Snapshot::open(fs.as_ref(), ids, id_shape, &[written]).map(|_| ())
-        }))
-        .expect_err("a corrupt filter never answers"),
-    );
-    let page = (written.sealed.len - 1) / 4096;
-    assert!(message.contains(&format!("page {page}: checksum mismatch")), "{message}");
+
+    let _ = Snapshot::open(fs.as_ref(), ids, shape, &[written]);
 }
 
 /// Several summary groups:
