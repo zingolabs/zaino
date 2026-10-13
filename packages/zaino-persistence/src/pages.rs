@@ -133,11 +133,18 @@ fn extend_digest(digest: u32, more: &[u8]) -> u32 {
     hasher.finalize()
 }
 
-/// `<file>.crc`
+/// Checksum file of `<file>`: `<file>.crc`
+const SUMS_SUFFIX: &str = ".crc";
+
 pub(crate) fn sums_path(path: &Path) -> PathBuf {
     let mut name = path.as_os_str().to_owned();
-    name.push(".crc");
+    name.push(SUMS_SUFFIX);
     PathBuf::from(name)
+}
+
+/// Data file whose checksums `name` holds; `None` = not a checksum file
+pub(crate) fn sums_of(name: &str) -> Option<&str> {
+    name.strip_suffix(SUMS_SUFFIX)
 }
 
 #[derive(Debug, thiserror::Error)]

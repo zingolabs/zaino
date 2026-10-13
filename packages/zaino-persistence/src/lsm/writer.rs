@@ -5,26 +5,22 @@
 use std::{
     cmp::Reverse,
     collections::BinaryHeap,
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use rayon::slice::ParallelSliceMut as _;
 
 use super::{
+    dir::SegmentDir,
     file::SegmentFile,
-    file_name,
     filter::FilterError,
     layout::{encode_row, Navigation, Row, Shape},
     slots::Slot,
     Result, SegmentError, SegmentMeta,
 };
 use crate::{
-    fs::{Access, Durability, Fs},
-    pages::{sums_path, FileKind, PagedFile, Sealed},
+    fs::{Access, Durability},
+    pages::{FileKind, PagedFile, Sealed},
 };
 
 /// Records buffered to this before each append
@@ -44,8 +40,7 @@ pub(crate) struct Merged {
 /// Writes one map's segments into its directory; ids allocated by the caller (one writer per id)
 #[derive(Debug, Clone)]
 pub(crate) struct SegmentWriter {
-    fs: Arc<dyn Fs>,
-    dir: PathBuf,
+    dir: SegmentDir,
     shape: Shape,
 }
 
@@ -93,14 +88,22 @@ fn navigation_error(segment: u32, error: FilterError) -> SegmentError {
 }
 
 impl SegmentWriter {
-    pub(crate) fn open(fs: Arc<dyn Fs>, dir: &Path, shape: Shape) -> Self {
-        Self { fs, dir: dir.to_path_buf(), shape }
+    pub(crate) fn new(dir: SegmentDir, shape: Shape) -> Self {
+        Self { dir, shape }
+    }
+
+    pub(crate) fn dir(&self) -> &SegmentDir {
+        &self.dir
+    }
+
+    pub(crate) fn shape(&self) -> Shape {
+        self.shape
     }
 
     /// Sorts `rows` (`(key, value)`, `None` = tombstone) and writes them as segment `id`, sealed;
     /// `None` for none
     ///
-    /// - uncommitted until listed in a manifest, unlinked until [`sync_dir`](Self::sync_dir)
+    /// - uncommitted until listed in a manifest, unlinked until [`SegmentDir::sync`]
     /// - duplicate keys panic (the buffer holds one row per key: a cancelled pair writes neither)
     /// - unique keys → unstable sort exact; parallel on the CPU pool
     pub(crate) fn write(
@@ -145,9 +148,7 @@ impl SegmentWriter {
         assert!(inputs.len() >= 2, "merge of {} segments", inputs.len());
         let sources = inputs
             .iter()
-            .map(|meta| {
-                SegmentFile::open(self.fs.as_ref(), &self.dir, meta, self.shape, Access::Sequential)
-            })
+            .map(|meta| SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential))
             .collect::<Result<Vec<_>>>()?;
         let total: u64 = inputs.iter().map(|meta| meta.records).sum();
 
@@ -232,8 +233,7 @@ impl SegmentWriter {
     /// Sealed segment re-read from disk: record count, strictly ascending keys, no filter false
     /// negative, same row digest as written (TigerBeetle pair assertion: checked writing + reading)
     fn verify(&self, meta: &SegmentMeta, written: u32) -> Result<()> {
-        let file =
-            SegmentFile::open(self.fs.as_ref(), &self.dir, meta, self.shape, Access::Sequential)?;
+        let file = SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential)?;
         assert_eq!(file.records() as u64, meta.records, "segment {}: record count", meta.id);
         file.warm_filter();
         let mut digest = crc32fast::Hasher::new();
@@ -251,30 +251,13 @@ impl SegmentWriter {
         Ok(())
     }
 
-    /// Segments written since the last call → durably linked
-    pub(crate) fn sync_dir(&self) -> Result<()> {
-        Ok(self.fs.sync_dir(&self.dir)?)
-    }
-
-    /// Unlinks segments (and their checksums) no committed manifest lists any more
-    ///
-    /// - no dir sync: unlink lost to a crash = unlisted segment, removed at open
-    pub(crate) fn remove(&self, segments: &[SegmentMeta]) -> Result<()> {
-        for segment in segments {
-            let path = self.dir.join(file_name(segment.id));
-            self.fs.remove(&sums_path(&path))?;
-            self.fs.remove(&path)?;
-        }
-        Ok(())
-    }
-
     fn create(&self, id: u32, records: u64) -> Result<SegmentOut> {
-        let path = self.dir.join(file_name(id));
-        let file = PagedFile::open(self.fs.as_ref(), &path, Sealed::EMPTY, FileKind::Segment)?;
+        let path = self.dir.segment(id);
+        let file = PagedFile::open(self.dir.fs(), &path, Sealed::EMPTY, FileKind::Segment)?;
         Ok(SegmentOut {
             id,
             file,
-            navigation: Navigation::new(self.shape, records, &self.fs, &self.dir, id),
+            navigation: Navigation::new(self.shape, records, &self.dir, id),
             chunk: Vec::with_capacity(CHUNK + self.shape.stride),
             digest: crc32fast::Hasher::new(),
         })

@@ -5,20 +5,19 @@
 //! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
 //!   (insert-once / remove-once: at most one value + one tombstone exist)
 
-use std::{ops::Range, path::Path, sync::Arc};
+use std::{ops::Range, sync::Arc};
 
 use bytes::Bytes;
 use rayon::prelude::*;
 
 use super::{
+    dir::SegmentDir,
     file::{Prefetch, SegmentFile},
     layout::{Row, Shape},
-    parse_file_name,
-    spill::is_scratch,
     Result, SegmentMeta,
 };
 use crate::{
-    fs::{Access, Fs},
+    fs::Access,
     pages::{Pages, PAGE},
 };
 
@@ -39,10 +38,10 @@ impl std::fmt::Debug for Snapshot {
 }
 
 /// `meta`'s segment mapped for reads, its filter read and checked up front
-fn mapped(fs: &dyn Fs, dir: &Path, shape: Shape, meta: &SegmentMeta) -> Result<Arc<SegmentFile>> {
+fn mapped(dir: &SegmentDir, shape: Shape, meta: &SegmentMeta) -> Result<Arc<SegmentFile>> {
     // probed = point lookups on hash-like keys, else range scans
     let access = if shape.probed { Access::Random } else { Access::Normal };
-    let file = SegmentFile::open(fs, dir, meta, shape, access)?;
+    let file = SegmentFile::open(dir, meta, shape, access)?;
     file.warm_filter();
     Ok(Arc::new(file))
 }
@@ -64,42 +63,20 @@ fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
 }
 
 impl Snapshot {
-    /// `dir` holding exactly `listed`: every other segment file (and its checksums) and any
-    /// writer's scratch removed, every listed one mapped (lengths only; pages checked on touch)
-    pub(crate) fn open(
-        fs: &dyn Fs,
-        dir: &Path,
-        shape: Shape,
-        listed: &[SegmentMeta],
-    ) -> Result<Self> {
-        let mut removed = false;
-        for name in fs.list(dir)? {
-            // scratch never listed: whatever is left of one was cut short
-            let unlisted = match parse_file_name(&name) {
-                Some(id) => !listed.iter().any(|segment| segment.id == id),
-                None => is_scratch(&name),
-            };
-            if unlisted {
-                fs.remove(&dir.join(name))?;
-                removed = true;
-            }
-        }
-        if removed {
-            fs.sync_dir(dir)?;
-        }
-        let segments =
-            listed.iter().map(|meta| mapped(fs, dir, shape, meta)).collect::<Result<_>>()?;
+    /// Every listed segment mapped (lengths only; pages checked on touch)
+    pub(crate) fn open(dir: &SegmentDir, shape: Shape, listed: &[SegmentMeta]) -> Result<Self> {
+        let segments = listed.iter().map(|meta| mapped(dir, shape, meta)).collect::<Result<_>>()?;
         Ok(Self { shape, segments })
     }
 
     /// `listed` mapped, sharing the segments this snapshot already maps
-    pub(crate) fn next(&self, fs: &dyn Fs, dir: &Path, listed: &[SegmentMeta]) -> Result<Self> {
+    pub(crate) fn next(&self, dir: &SegmentDir, listed: &[SegmentMeta]) -> Result<Self> {
         let mut segments = Vec::with_capacity(listed.len());
         for meta in listed {
             let reused = self.segments.iter().find(|file| file.meta == *meta).map(Arc::clone);
             segments.push(match reused {
                 Some(file) => file,
-                None => mapped(fs, dir, self.shape, meta)?,
+                None => mapped(dir, self.shape, meta)?,
             });
         }
         Ok(Self { shape: self.shape, segments })

@@ -9,6 +9,7 @@ use std::{
 use bytes::Bytes;
 
 use super::{
+    dir::SegmentDir,
     file::{Prefetch, SegmentFile},
     file_name,
     layout::{Row, Shape},
@@ -140,15 +141,15 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
     }
 }
 
-/// - open removes unlisted segments (+ checksums) + any writer's scratch
+/// - retain removes unlisted segments (+ checksums) + any writer's scratch
 /// - short or unsummed segment refused; flipped committed byte passes open (lengths only)
 #[test]
-fn open_removes_strays_checks_lengths_and_leaves_page_checks_to_the_first_touch() {
+fn retain_removes_strays_and_open_checks_lengths_leaving_pages_to_the_first_touch() {
     let fs = SimFs::new();
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
     // enough rows that page 0 holds records only (open reads the summary, past them)
     let rows = |owner| (0..600).map(move |seq| scanned_row(owner, seq)).collect::<Vec<_>>();
     let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
@@ -157,9 +158,9 @@ fn open_removes_strays_checks_lengths_and_leaves_page_checks_to_the_first_touch(
     for leftover in ["0000000000.fences.scratch", "0000000009.filter.scratch"] {
         fs.open(&dir.join(leftover)).expect("scratch").write_all_at(&[1; 9], 0).expect("write");
     }
-    writer.sync_dir().expect("sync");
+    writer.dir().sync().expect("sync");
 
-    Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("open");
+    writer.dir().retain(&[kept]).expect("retain");
     let path = dir.join(file_name(kept.id));
     let mut kept_files = vec![file_name(kept.id), format!("{}.crc", file_name(kept.id))];
     kept_files.sort();
@@ -167,17 +168,17 @@ fn open_removes_strays_checks_lengths_and_leaves_page_checks_to_the_first_touch(
 
     let original = fs.contents(&path).expect("segment bytes");
     fs.corrupt(&path, |bytes| bytes.truncate(10));
-    let short = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
+    let short = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
     assert!(matches!(short, Err(SegmentError::Page(PageError::Lost { have: 10, .. }))));
 
     fs.corrupt(&path, |bytes| {
         *bytes = original.clone();
         bytes[shape.stride + 9] ^= 1;
     });
-    Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
+    Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).expect("lengths intact");
 
     fs.remove(&sums_path(&path)).expect("remove checksums");
-    let unsummed = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).map(|_| ());
+    let unsummed = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
 }
 
@@ -189,13 +190,14 @@ fn a_read_of_a_corrupt_page_panics_naming_the_page_and_the_fix() {
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
     let rows: Vec<_> = (0..600).map(|seq| scanned_row(1, seq)).collect();
-    let kept = SegmentWriter::open(fs.clone(), dir, shape)
+    let kept = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape)
         .write(0, borrowed(&rows))
         .expect("write")
         .expect("rows");
     // page 0 = records only (600 rows: summary past it)
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
-    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &[kept]).expect("lengths intact");
+    let snapshot =
+        Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).expect("lengths intact");
 
     snapshot.get(&scanned_row(1, 1).0);
 }
@@ -208,7 +210,7 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     let dir = Path::new("/segments");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
     let rows = |owner| (0..600).map(move |seq| scanned_row(owner, seq)).collect::<Vec<_>>();
     let kept = writer.write(0, borrowed(&rows(1))).expect("write").expect("rows");
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
@@ -230,13 +232,13 @@ fn a_corrupt_filter_panics_at_open() {
     fs.create_dir_all(ids).expect("dir");
     let shape = Shape::of(&probed());
     let rows: Vec<_> = (0..3_000).map(probed_row).collect();
-    let written = SegmentWriter::open(fs.clone(), ids, shape)
+    let written = SegmentWriter::new(SegmentDir::new(fs.clone(), ids), shape)
         .write(0, borrowed(&rows))
         .expect("write")
         .expect("rows");
     fs.corrupt(&ids.join(file_name(written.id)), |bytes| *bytes.last_mut().expect("bytes") ^= 1);
 
-    let _ = Snapshot::open(fs.as_ref(), ids, shape, &[written]);
+    let _ = Snapshot::open(&SegmentDir::new(fs.clone(), ids), shape, &[written]);
 }
 
 /// Several summary groups:
@@ -255,11 +257,12 @@ fn seek_crosses_summary_groups_to_the_right_slot_and_prefetch_names_its_pages() 
     let rows = 3 * group_rows + 999;
     // even seqs only: every odd seq sits in a gap
     let written: Vec<_> = (0..rows).map(|n| scanned_row(7, 2 * n as u32)).collect();
-    let meta = SegmentWriter::open(fs.clone(), dir, shape)
+    let meta = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape)
         .write(0, borrowed(&written))
         .expect("write")
         .expect("rows");
-    let file = SegmentFile::open(fs.as_ref(), dir, &meta, shape, Access::Normal).expect("open");
+    let file = SegmentFile::open(&SegmentDir::new(fs.clone(), dir), &meta, shape, Access::Normal)
+        .expect("open");
 
     let key = |seq: u32| scanned_row(7, seq).0;
     let (below, above) = (account(7).to_vec(), [&account(7)[..], &[0xff; 4]].concat());
@@ -293,7 +296,7 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
     let dir = Path::new("/probed");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&probed());
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
     let spans = [0..20_000u32, 20_000..40_000, 40_000..60_000];
     let metas: Vec<_> = (0u32..)
         .zip(&spans)
@@ -302,11 +305,13 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
             writer.write(id, borrowed(&rows)).expect("write").expect("rows")
         })
         .collect();
-    writer.sync_dir().expect("sync");
-    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &metas).expect("open");
+    writer.dir().sync().expect("sync");
+    let snapshot = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &metas).expect("open");
     let files: Vec<SegmentFile> = metas
         .iter()
-        .map(|meta| SegmentFile::open(fs.as_ref(), dir, meta, shape, Access::Normal))
+        .map(|meta| {
+            SegmentFile::open(&SegmentDir::new(fs.clone(), dir), meta, shape, Access::Normal)
+        })
         .collect::<Result<_, _>>()
         .expect("each segment, mapped on its own");
 
@@ -345,7 +350,7 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     let dir = Path::new("/accounts");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&scanned());
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
     // account 0 in every segment, accounts 100·s + 1 .. 100·s + 49 only in segment s
     let segments: Vec<_> = (0u64..6)
         .map(|s| {
@@ -356,9 +361,10 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
             writer.write(s as u32, borrowed(&rows)).expect("write").expect("rows")
         })
         .collect();
-    writer.sync_dir().expect("sync");
+    writer.dir().sync().expect("sync");
 
-    let snapshot = Snapshot::open(fs.as_ref(), dir, shape, &segments).expect("open");
+    let snapshot =
+        Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &segments).expect("open");
     let range = |a: u64| {
         let (start, end) = (account(a).to_vec(), [&account(a)[..], &[0xff; 4]].concat());
         snapshot.range(&start, &end, usize::MAX).expect("unbounded")
@@ -368,7 +374,8 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     assert!(range(7_777).is_empty(), "an account no segment holds");
 
     let file =
-        SegmentFile::open(fs.as_ref(), dir, &segments[0], shape, Access::Normal).expect("open");
+        SegmentFile::open(&SegmentDir::new(fs.clone(), dir), &segments[0], shape, Access::Normal)
+            .expect("open");
     file.warm_filter();
     assert!((1..50).all(|a| file.may_contain(&account(a))), "no false negative");
     let absent = 10_000u64;
@@ -410,7 +417,7 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
         let fs = SimFs::new();
         let dir = Path::new("/removable");
         fs.create_dir_all(dir).expect("dir");
-        let writer = SegmentWriter::open(fs.clone(), dir, shape);
+        let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
         let segments: Vec<_> = (0u32..)
             .zip(inputs)
             .map(|(id, rows)| {
@@ -425,8 +432,13 @@ fn a_merge_cancels_value_tombstone_pairs_keeps_lone_tombstones_and_refuses_other
         let merged = writer.merge(99, &segments, &cancel, &slot).map(|merged| {
             let merged = merged.expect("never cancelled");
             let rows: Vec<(Vec<u8>, Option<Vec<u8>>)> = merged.output.map_or(Vec::new(), |meta| {
-                let file = SegmentFile::open(fs.as_ref(), dir, &meta, shape, Access::Sequential)
-                    .expect("output");
+                let file = SegmentFile::open(
+                    &SegmentDir::new(fs.clone(), dir),
+                    &meta,
+                    shape,
+                    Access::Sequential,
+                )
+                .expect("output");
                 (0..file.records())
                     .map(|slot| match file.content(slot) {
                         Row::Value(value) => (file.key(slot).to_vec(), Some(value.to_vec())),
@@ -465,7 +477,7 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let dir = Path::new("/removable");
     fs.create_dir_all(dir).expect("dir");
     let shape = Shape::of(&probed().deletes());
-    let writer = SegmentWriter::open(fs.clone(), dir, shape);
+    let writer = SegmentWriter::new(SegmentDir::new(fs.clone(), dir), shape);
     let (removed, kept, other) = (probed_row(1), probed_row(2), probed_row(3));
     let held_rows = [removed.clone(), kept.clone()];
     let held = writer.write(0, borrowed(&held_rows)).expect("write").expect("rows");
@@ -483,7 +495,7 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     let held_unrelated = merge(3, &[held, unrelated]);
     let unrelated_tombstone = merge(4, &[unrelated, tombstone]);
     let held_tombstone = merge(5, &[held, tombstone]);
-    writer.sync_dir().expect("sync");
+    writer.dir().sync().expect("sync");
 
     let mut live = vec![(kept.0.clone(), kept.1.clone()), (other.0.clone(), other.1.clone())];
     live.sort();
@@ -498,10 +510,10 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     ];
     // every segment kept on disk (`open` removes what its list leaves out), each list mapped next
     let every = [held, unrelated, tombstone, held_unrelated, unrelated_tombstone, held_tombstone];
-    let mapped = Snapshot::open(fs.as_ref(), dir, shape, &every).expect("open");
+    let mapped = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &every).expect("open");
     for listed in lists {
         let ids: Vec<u32> = listed.iter().map(|meta| meta.id).collect();
-        let snapshot = mapped.next(fs.as_ref(), dir, listed).expect("map");
+        let snapshot = mapped.next(&SegmentDir::new(fs.clone(), dir), listed).expect("map");
         assert_eq!(snapshot.get(&removed.0), None, "{ids:?}: get");
         let asked = [removed.0.as_slice(), kept.0.as_slice(), removed.0.as_slice()];
         let expected = vec![None, Some(Bytes::from(kept.1.clone())), None];

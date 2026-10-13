@@ -6,7 +6,7 @@
 
 use std::{
     fmt, panic,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -16,6 +16,7 @@ use std::{
 };
 
 use super::{
+    dir::SegmentDir,
     emit,
     layout::Shape,
     meta::{merge_candidates, tier_of, tier_shape},
@@ -37,10 +38,7 @@ const STALL_WINDOWS: usize = 2;
 ///   small merges never queue behind a large one)
 /// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
-    fs: Arc<dyn Fs>,
-    dir: PathBuf,
     name: String,
-    shape: Shape,
     snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
     fanout: usize,
@@ -71,7 +69,7 @@ impl SegmentLog {
     /// `table`'s segments in `dir`, at the committed `listed`
     ///
     /// - panics on a `table` the LSM cannot hold ([`Shape::of`])
-    /// - unlisted files removed ([`Snapshot::open`])
+    /// - unlisted files removed ([`SegmentDir::retain`])
     /// - merges launched on every idle tier holding `fanout` segments (reopen cancelled the last
     ///   process's: else no stall bounds a tier until the next commit)
     pub(crate) fn open(
@@ -83,18 +81,17 @@ impl SegmentLog {
         slots: Arc<Slots>,
     ) -> Result<Self> {
         let shape = Shape::of(table);
-        let snapshot = Arc::new(Snapshot::open(fs.as_ref(), dir, shape, listed)?);
+        let dir = SegmentDir::new(fs, dir);
+        dir.retain(listed)?;
+        let snapshot = Arc::new(Snapshot::open(&dir, shape, listed)?);
         let next = listed
             .iter()
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
             .max()
             .unwrap_or(0);
         let mut log = Self {
-            writer: SegmentWriter::open(Arc::clone(&fs), dir, shape),
-            fs,
-            dir: dir.to_path_buf(),
+            writer: SegmentWriter::new(dir, shape),
             name: table.name.to_owned(),
-            shape,
             snapshot,
             fanout,
             slots,
@@ -122,13 +119,14 @@ impl SegmentLog {
     ///   (checked after landing + the new segment, repeated: a landed output joins the tier above)
     pub(crate) fn batch(&mut self, rows: Vec<(&[u8], Option<&[u8]>)>) -> Result<Vec<SegmentMeta>> {
         assert!(self.staged.is_none(), "{}: batch before the last one was committed", self.name);
+        let shape = self.writer.shape();
         for (key, value) in &rows {
-            assert_eq!(key.len(), self.shape.key_len, "LSM map {}: key width", self.name);
+            assert_eq!(key.len(), shape.key_len, "LSM map {}: key width", self.name);
             match value {
                 Some(value) => {
-                    assert_eq!(value.len(), self.shape.value_len, "LSM map {}: value", self.name)
+                    assert_eq!(value.len(), shape.value_len, "LSM map {}: value", self.name)
                 }
-                None => assert!(self.shape.deletes, "LSM map {}: tombstone", self.name),
+                None => assert!(shape.deletes, "LSM map {}: tombstone", self.name),
             }
         }
         let mut staged =
@@ -137,7 +135,7 @@ impl SegmentLog {
 
         let id = self.allocate();
         if let Some(segment) = self.writer.write(id, rows)? {
-            self.writer.sync_dir()?;
+            self.writer.dir().sync()?;
             emit::batched(&self.name, &segment);
             staged.segments.push(segment);
         }
@@ -167,10 +165,9 @@ impl SegmentLog {
     pub(crate) fn committed(&mut self) -> Result<()> {
         let staged = self.staged.take().expect("committed follows batch");
         self.segments = staged.segments;
-        self.snapshot =
-            Arc::new(self.snapshot.next(self.fs.as_ref(), &self.dir, &self.segments)?);
+        self.snapshot = Arc::new(self.snapshot.next(self.writer.dir(), &self.segments)?);
         assert_eq!(self.snapshot.segments(), self.segments, "{}: readers see the list", self.name);
-        self.writer.remove(&staged.retired)?;
+        self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
             report::swapped(&self.name, landed);
         }
@@ -222,7 +219,7 @@ impl SegmentLog {
                     let Some(merged) = writer.merge(id, &inputs, &cancel, &slot)? else {
                         return Ok(None);
                     };
-                    writer.sync_dir()?;
+                    writer.dir().sync()?;
                     let took = started.elapsed();
                     emit::merged(&name, tier, &merged, took);
                     Ok(Some((merged, took)))

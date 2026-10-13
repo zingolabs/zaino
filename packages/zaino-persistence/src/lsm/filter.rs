@@ -186,7 +186,6 @@ mod tests {
     use super::*;
     use crate::{
         fs::{Fs, SimFs},
-        lsm::spill::scratch_path,
         pages::{FileKind, PagedFile, Sealed},
     };
 
@@ -215,7 +214,7 @@ mod tests {
         let dir = Path::new("/f");
         fs.create_dir_all(dir).expect("dir");
         let written = |keys: &[Vec<u8>], id: u32| {
-            let spill = Spill::new(fs.clone(), scratch_path(dir, id, "filter"));
+            let spill = Spill::new(fs.clone(), dir.join(format!("{id}.filter.scratch")));
             let mut writer = FilterWriter::new(keys.len() as u64, spill);
             for key in keys {
                 writer.push(key).expect("push");

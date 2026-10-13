@@ -15,6 +15,7 @@
 //!
 //! [`DiskEngine`]: crate::DiskEngine
 
+mod dir;
 mod emit;
 mod file;
 mod filter;
@@ -30,6 +31,9 @@ mod writer;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+pub(crate) use dir::file_name;
+pub(crate) use dir::files;
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use log::SegmentLog;
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
@@ -80,13 +84,3 @@ pub enum SegmentError {
 }
 
 type Result<T> = std::result::Result<T, SegmentError>;
-
-/// `<id:010>.seg`, zero-padded so a listing sorts by id
-pub(crate) fn file_name(segment: u32) -> String {
-    format!("{segment:010}.seg")
-}
-
-/// Id of a segment file or its checksums; `None` for anything else in the directory
-fn parse_file_name(name: &str) -> Option<u32> {
-    name.strip_suffix(".crc").unwrap_or(name).strip_suffix(".seg")?.parse().ok()
-}

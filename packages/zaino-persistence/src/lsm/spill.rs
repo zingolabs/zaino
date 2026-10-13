@@ -5,11 +5,7 @@
 //! - small batch never reaches [`SPILL_AT`], never touches a scratch file
 //! - scratch files never listed, always removed when a set opens (crash can leave one)
 
-use std::{
-    io,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{io, path::PathBuf, sync::Arc};
 
 use crate::{
     fs::{FileHandle, Fs},
@@ -82,18 +78,10 @@ impl Spill {
     }
 }
 
-/// Scratch file of segment `id`'s `part`
-pub(crate) fn scratch_path(dir: &Path, id: u32, part: &str) -> PathBuf {
-    dir.join(format!("{id:010}.{part}.scratch"))
-}
-
-/// Scratch file (removed whenever a set opens)
-pub(crate) fn is_scratch(name: &str) -> bool {
-    name.ends_with(".scratch")
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
     use crate::{
         fs::SimFs,
@@ -109,7 +97,7 @@ mod tests {
         fs.create_dir_all(dir).expect("dir");
         let pushed: Vec<u8> = (0..3 * SPILL_AT + 77).map(|n| (n % 251) as u8).collect();
 
-        let path = scratch_path(dir, 7, "fences");
+        let path = dir.join("0000000007.fences.scratch");
         let mut spill = Spill::new(fs.clone(), path.clone());
         for piece in pushed.chunks(1000) {
             spill.push(piece).expect("push");
@@ -124,9 +112,9 @@ mod tests {
         assert_eq!(fs.contents(&target).expect("segment"), pushed);
         assert!(fs.contents(&path).is_none(), "scratch removed");
 
-        let small = Spill::new(fs.clone(), scratch_path(dir, 8, "fences"));
-        assert!(fs.contents(&scratch_path(dir, 8, "fences")).is_none(), "never spilled");
-        drop(small);
-        assert!(is_scratch("0000000008.filter.scratch") && !is_scratch("0000000008.seg"));
+        let small_path = dir.join("0000000008.fences.scratch");
+        let mut small = Spill::new(fs.clone(), small_path.clone());
+        small.push(&[1; 1000]).expect("push");
+        assert!(fs.contents(&small_path).is_none(), "never spilled");
     }
 }

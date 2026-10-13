@@ -13,14 +13,14 @@
 //!   (0 = value, 1 = tombstone with zeroed value bytes; [`encode_row`] / [`decode_row`])
 //! - integrity = the file's page checksums (`crate::pages`); nothing here re-proven on read
 
-use std::{cmp::Ordering, ops::Range, path::Path, sync::Arc};
+use std::{cmp::Ordering, ops::Range, sync::Arc};
 
 use super::{
+    dir::SegmentDir,
     filter::{FilterError, FilterLayout, FilterWriter},
-    spill::{scratch_path, Spill},
+    spill::Spill,
 };
 use crate::{
-    fs::Fs,
     pages::PagedFile,
     port::{MapTable, Width},
 };
@@ -216,8 +216,8 @@ impl Navigation {
     /// - `records` = most it will be pushed (sizes the filter's shards; a merge cancelling pairs
     ///   pushes fewer)
     /// - scratch files, if any, beside segment `id` in `dir`
-    pub(crate) fn new(shape: Shape, records: u64, fs: &Arc<dyn Fs>, dir: &Path, id: u32) -> Self {
-        let spill = |part| Spill::new(Arc::clone(fs), scratch_path(dir, id, part));
+    pub(crate) fn new(shape: Shape, records: u64, dir: &SegmentDir, id: u32) -> Self {
+        let spill = |part| Spill::new(Arc::clone(dir.shared_fs()), dir.scratch(id, part));
         Self {
             shape,
             records: 0,

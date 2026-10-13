@@ -1,19 +1,16 @@
 //! Listed segment, mapped: what readers and merges hold
 
-use std::{ops::Range, path::Path};
+use std::ops::Range;
 
 use bytes::Bytes;
 
 use super::{
-    file_name,
+    dir::SegmentDir,
     filter::FilterLayout,
     layout::{decode_row, Row, Sections, Shape},
     Result, SegmentMeta,
 };
-use crate::{
-    fs::{Access, Fs},
-    pages::Pages,
-};
+use crate::{fs::Access, pages::Pages};
 
 /// Seek's two reads, in order: fence group, then block of records
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,13 +32,12 @@ impl SegmentFile {
     /// Maps `meta`'s segment (lengths and checksum digest checked, the summary read into memory;
     /// every other page checked as reads touch it)
     pub(crate) fn open(
-        fs: &dyn Fs,
-        dir: &Path,
+        dir: &SegmentDir,
         meta: &SegmentMeta,
         shape: Shape,
         access: Access,
     ) -> Result<Self> {
-        let pages = Pages::open(fs, &dir.join(file_name(meta.id)), meta.sealed, access)?;
+        let pages = Pages::open(dir.fs(), &dir.segment(meta.id), meta.sealed, access)?;
         let len = pages.len();
         let sections = Sections::new(shape, meta.records, |at| {
             FilterLayout::parse(|range| pages.read(at + range.start..at + range.end), len - at)

@@ -28,9 +28,7 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     dir::IndexDir,
     fs::{Durability, Fs},
-    lsm::{
-        decode_list, encode_list, file_name, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
-    },
+    lsm::{self, decode_list, encode_list, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot},
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, PageError, Sealed},
@@ -142,11 +140,8 @@ impl Body {
             .iter()
             .zip(&self.sequences)
             .flat_map(|(table, seals)| sequence::files(table, seals));
-        let maps = schema.maps().iter().zip(&self.maps).flat_map(|(table, list)| {
-            list.iter().map(|segment| {
-                (format!("{}/{}", table.name, file_name(segment.id)), segment.sealed)
-            })
-        });
+        let maps =
+            schema.maps().iter().zip(&self.maps).flat_map(|(table, list)| lsm::files(table, list));
         sequences.chain(maps).collect()
     }
 }

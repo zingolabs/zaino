@@ -15,6 +15,7 @@ use zcash_protocol::consensus::NetworkType;
 use super::*;
 use crate::{
     fs::{RealFs, SimFs},
+    lsm::file_name,
     manifest::IndexKind,
     overlay::Overlay,
     port::{MapTable, SequenceTable, Tables, Width},
