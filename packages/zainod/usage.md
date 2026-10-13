@@ -156,7 +156,7 @@ or tailnet name:
 ```json
 {
   "state": "serving", "detail": null, "progress": null, "notes": [],
-  "version": "0.11.0-alpha.1", "network": "mainnet",
+  "version": "0.11.0-alpha.2", "network": "mainnet",
   "tip": { "height": 3515406, "hash": "0000…" },
   "served": 3515400,
   "validators": { "configured": 2, "connected": 1 },
