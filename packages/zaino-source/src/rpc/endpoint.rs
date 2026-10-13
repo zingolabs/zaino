@@ -14,6 +14,9 @@ pub enum EndpointError {
     #[error("cannot read validator cookie {path}: {source}")]
     Cookie { path: String, source: std::io::Error },
 
+    #[error("cannot read indexer TLS {role} {path}: {source}")]
+    TlsFile { role: &'static str, path: String, source: std::io::Error },
+
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
 }

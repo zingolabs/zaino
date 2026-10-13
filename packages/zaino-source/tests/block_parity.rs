@@ -340,7 +340,7 @@ async fn both_clients_decode_every_block_to_the_explorers_facts() {
     let legacy = || ZcashLegacyRpcClient::at(&rpc_address, None, None, None, timeouts, limits);
     let legacy_client = legacy().expect("host:port");
     let grpc =
-        ZcashGrpcClient::at(legacy().expect("host:port"), &indexer_address, timeouts, limits)
+        ZcashGrpcClient::at(legacy().expect("host:port"), &indexer_address, None, timeouts, limits)
             .expect("host:port");
     assert_explorer_parity(&legacy_client, "legacy").await;
     assert_explorer_parity(&grpc, "grpc").await;

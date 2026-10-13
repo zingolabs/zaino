@@ -10,11 +10,12 @@
 //! - an event carries nothing the poll relies on: a hint to read now, never data
 //! - zebrad ends a stream on lag rather than drop events, so any end = reconnect + poll at once
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use futures::stream::{self, StreamExt};
 use tokio_util::sync::CancellationToken;
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tracing::{debug, info, warn};
 use zaino_proto::proto::zebra_indexer::indexer_client::IndexerClient;
 use zaino_proto::proto::zebra_indexer::Empty;
@@ -31,7 +32,57 @@ pub enum Change {
     Mempool,
 }
 
-/// One validator's indexer endpoint (`indexer_listen_addr`; no auth on zebrad's side)
+/// Mutual TLS to a validator's indexer (zakurad refuses plaintext off loopback: `[rpc.indexer_tls]`)
+///
+/// - `ca` verifies the server; `cert` + `key` = this client, signed by the server's client CA
+/// - `server_name` = the name on the server's certificate (`None` = the address's host)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerTls {
+    pub ca: PathBuf,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+    pub server_name: Option<String>,
+}
+
+/// `address`'s indexer endpoint, plaintext or mutual TLS; unprobed (PEMs read here: unreadable
+/// = refused at boot, a rotated file = read on restart)
+pub(crate) fn indexer_endpoint(
+    address: &str,
+    tls: Option<&IndexerTls>,
+    timeouts: Timeouts,
+) -> Result<Endpoint, EndpointError> {
+    let invalid = |reason: String| EndpointError::Address { address: address.to_owned(), reason };
+    let plain = validator_url(address)?;
+    let endpoint = match tls {
+        None => Endpoint::from_shared(plain).map_err(|e| invalid(e.to_string()))?,
+        Some(tls) => {
+            let read = |role: &'static str, path: &Path| {
+                std::fs::read(path).map_err(|source| EndpointError::TlsFile {
+                    role,
+                    path: path.display().to_string(),
+                    source,
+                })
+            };
+            // validator_url's host:port only (no path, no query)
+            let authority = &plain["http://".len()..];
+            let host = authority.rsplit_once(':').map_or(authority, |(host, _)| host);
+            let host = host.trim_start_matches('[').trim_end_matches(']');
+            let config = ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(read("CA", &tls.ca)?))
+                .identity(Identity::from_pem(
+                    read("certificate", &tls.cert)?,
+                    read("key", &tls.key)?,
+                ))
+                .domain_name(tls.server_name.as_deref().unwrap_or(host));
+            let endpoint = Endpoint::from_shared(format!("https://{authority}"))
+                .map_err(|e| invalid(e.to_string()))?;
+            endpoint.tls_config(config).map_err(|e| invalid(format!("TLS: {e}")))?
+        }
+    };
+    Ok(endpoint.connect_timeout(timeouts.connect).tcp_nodelay(true))
+}
+
+/// One validator's indexer endpoint (`indexer_listen_addr`)
 pub struct IndexerWatch {
     address: String,
     endpoint: Endpoint,
@@ -39,13 +90,12 @@ pub struct IndexerWatch {
 
 impl IndexerWatch {
     /// Unprobed (a validator without its indexer up is the run loop's retry)
-    pub fn at(address: &str, timeouts: Timeouts) -> Result<Self, EndpointError> {
-        let url = validator_url(address)?;
-        let endpoint = Endpoint::from_shared(url).map_err(|e| EndpointError::Address {
-            address: address.to_owned(),
-            reason: e.to_string(),
-        })?;
-        let endpoint = endpoint.connect_timeout(timeouts.connect).tcp_nodelay(true);
+    pub fn at(
+        address: &str,
+        tls: Option<&IndexerTls>,
+        timeouts: Timeouts,
+    ) -> Result<Self, EndpointError> {
+        let endpoint = indexer_endpoint(address, tls, timeouts)?;
         Ok(Self { address: address.to_owned(), endpoint })
     }
 
@@ -206,7 +256,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let (changes, links) = (Arc::clone(&seen), Arc::clone(&seen));
         let cancel = CancellationToken::new();
-        let watch = IndexerWatch::at(&address, Timeouts::default()).expect("address");
+        let watch = IndexerWatch::at(&address, None, Timeouts::default()).expect("address");
         let watching = tokio::spawn(watch.run(
             cancel.clone(),
             move |change| changes.lock().expect("seen").push(format!("{change:?}")),
@@ -264,5 +314,106 @@ mod tests {
 
         cancel.cancel();
         watching.await.expect("only cancel ends the watch");
+    }
+
+    /// zakurad's `[rpc.indexer_tls]` (mutual TLS):
+    /// - a client certificate from another CA = refused in the handshake, never linked
+    /// - one the server's client CA signed, server verified by our CA = linked, events flow
+    /// - an unreadable PEM = refused at construction, naming the file
+    #[tokio::test]
+    async fn mutual_tls_links_only_with_a_client_certificate_the_server_trusts() {
+        use rcgen::{BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa};
+        use rcgen::{Issuer, KeyPair};
+        use tonic::transport::server::TcpIncoming;
+        use tonic::transport::{Server, ServerTlsConfig};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let write = |name: &str, pem: String| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, pem).expect(name);
+            path
+        };
+        let ca = |name: &str| {
+            let mut params = CertificateParams::new(Vec::<String>::new()).expect("ca params");
+            params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+            let key = KeyPair::generate().expect("ca key");
+            let cert = params.self_signed(&key).expect("ca cert");
+            (write(&format!("{name}.pem"), cert.pem()), Issuer::new(params, key))
+        };
+        let leaf = |name: &str, usage: ExtendedKeyUsagePurpose, issuer: &Issuer<'_, KeyPair>| {
+            let mut params = CertificateParams::new(vec!["localhost".to_owned()]).expect("params");
+            params.extended_key_usages = vec![usage];
+            let key = KeyPair::generate().expect("leaf key");
+            let cert = params.signed_by(&key, issuer).expect("leaf cert");
+            let cert = write(&format!("{name}.pem"), cert.pem());
+            (cert, write(&format!("{name}-key.pem"), key.serialize_pem()))
+        };
+        let (ca_path, ours) = ca("ca");
+        let (_, theirs) = ca("stranger-ca");
+        let (server_cert, server_key) = leaf("server", ExtendedKeyUsagePurpose::ServerAuth, &ours);
+        let (client_cert, client_key) = leaf("client", ExtendedKeyUsagePurpose::ClientAuth, &ours);
+        let (stranger_cert, stranger_key) =
+            leaf("stranger", ExtendedKeyUsagePurpose::ClientAuth, &theirs);
+
+        let (tip_tx, tip_rx) = mpsc::channel(8);
+        let (_pool_tx, pool_rx) = mpsc::channel(8);
+        let indexer =
+            FakeIndexer { tips: Mutex::new(Some(tip_rx)), mempool: Mutex::new(Some(pool_rx)) };
+        let pem = |path: &PathBuf| std::fs::read(path).expect("pem");
+        let server_tls = ServerTlsConfig::new()
+            .identity(Identity::from_pem(pem(&server_cert), pem(&server_key)))
+            .client_ca_root(Certificate::from_pem(pem(&ca_path)));
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = socket.local_addr().expect("bound").to_string();
+        let mut server = Server::builder().tls_config(server_tls).expect("server tls");
+        let server = server
+            .add_service(IndexerServer::new(indexer))
+            .serve_with_incoming(TcpIncoming::from(socket));
+        tokio::spawn(server);
+
+        let client = |cert: &PathBuf, key: &PathBuf| IndexerTls {
+            ca: ca_path.clone(),
+            cert: cert.clone(),
+            key: key.clone(),
+            server_name: Some("localhost".to_owned()),
+        };
+        let watch = |tls: IndexerTls| {
+            let (seen_tx, seen_rx) = mpsc::unbounded_channel::<String>();
+            let links = seen_tx.clone();
+            let cancel = CancellationToken::new();
+            let watch = IndexerWatch::at(&address, Some(&tls), Timeouts::default()).expect("pems");
+            let watching = tokio::spawn(watch.run(
+                cancel.clone(),
+                move |change| seen_tx.send(format!("{change:?}")).expect("test listening"),
+                move |up| links.send(format!("link {up}")).expect("test listening"),
+            ));
+            (seen_rx, cancel, watching)
+        };
+
+        let (mut stranger_seen, cancel, watching) = watch(client(&stranger_cert, &stranger_key));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        cancel.cancel();
+        watching.await.expect("only cancel ends the watch");
+        let stranger = stranger_seen.try_recv().ok();
+        assert_eq!(stranger, None, "another CA's client: no link, no event");
+
+        let (mut seen, cancel, watching) = watch(client(&client_cert, &client_key));
+        let in_time = Duration::from_secs(10);
+        let linked = tokio::time::timeout(in_time, seen.recv()).await.expect("linked in time");
+        assert_eq!(linked.as_deref(), Some("link true"), "our CA's client: linked");
+        tip_tx.send(Ok(BlockHashAndHeight { hash: vec![1; 32], height: 7 })).await.expect("open");
+        let tip = tokio::time::timeout(in_time, seen.recv()).await.expect("the tip in time");
+        assert_eq!(tip.as_deref(), Some("Tip"), "events flow over TLS");
+        cancel.cancel();
+        watching.await.expect("only cancel ends the watch");
+
+        let missing =
+            IndexerTls { ca: dir.path().join("missing.pem"), ..client(&client_cert, &client_key) };
+        let refused = IndexerWatch::at(&address, Some(&missing), Timeouts::default());
+        let named = matches!(
+            refused,
+            Err(EndpointError::TlsFile { role: "CA", ref path, .. }) if path.ends_with("missing.pem")
+        );
+        assert!(named, "an unreadable PEM names itself at construction");
     }
 }

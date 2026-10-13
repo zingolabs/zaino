@@ -11,13 +11,14 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tonic::transport::{Channel, Endpoint};
+use tonic::transport::Channel;
 use tonic::{Code, Status};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 use zaino_proto::proto::zebra_indexer::indexer_client::IndexerClient;
 use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
 
-use crate::rpc::{emit, validator_url, EndpointError, LinkLimits, Timeouts};
+use crate::indexer::{indexer_endpoint, IndexerTls};
+use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
 use crate::{
     decode, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
     MempoolListed, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
@@ -54,22 +55,19 @@ pub struct ZcashGrpcClient {
 }
 
 impl ZcashGrpcClient {
-    /// Blocks from the indexer at `indexer_address` (`host:port`), the rest through `rpc`; unprobed
+    /// Blocks from the indexer at `indexer_address` (`host:port`; `tls` = mutual TLS), the rest
+    /// through `rpc`; unprobed
     ///
     /// - connections = `max_connections` streams at zebrad's 20 per connection; each opens on its
     ///   first call (inside a tokio runtime)
     pub fn at(
         rpc: ZcashLegacyRpcClient,
         indexer_address: &str,
+        tls: Option<&IndexerTls>,
         timeouts: Timeouts,
         limits: LinkLimits,
     ) -> Result<Self, EndpointError> {
-        let endpoint = Endpoint::from_shared(validator_url(indexer_address)?).map_err(|e| {
-            EndpointError::Address { address: indexer_address.to_owned(), reason: e.to_string() }
-        })?;
-        let endpoint = endpoint
-            .connect_timeout(timeouts.connect)
-            .tcp_nodelay(true)
+        let endpoint = indexer_endpoint(indexer_address, tls, timeouts)?
             .initial_stream_window_size(STREAM_WINDOW)
             .initial_connection_window_size(CONNECTION_WINDOW)
             .http2_keep_alive_interval(KEEPALIVE_INTERVAL)

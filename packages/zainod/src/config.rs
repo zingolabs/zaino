@@ -69,6 +69,8 @@ pub(crate) struct TrustedValidatorConfig {
     /// - Tip + mempool push streams wake the poller at once; polling → 15 s reconcile while up
     /// - Unset = poll every second
     pub(crate) indexer_address: Option<String>,
+    /// Mutual TLS to `indexer_address` (unset = plaintext; zakurad requires it off loopback)
+    pub(crate) indexer_tls: Option<IndexerTlsConfig>,
     /// Tier: every 0 asked before any 1, 1 before 2, … (a lower tier = overflow + hedges only)
     ///
     /// - e.g. ours on the LAN = 0, a partner's across an ocean = 1
@@ -91,9 +93,25 @@ impl Default for TrustedValidatorConfig {
             max_connections: limits.max_connections,
             max_mib_per_sec: None,
             indexer_address: None,
+            indexer_tls: None,
             priority: 0,
         }
     }
+}
+
+/// `[trusted_validators.indexer_tls]`: PEM files for zakurad's `[rpc.indexer_tls]` (its
+/// `client_ca_file` signs `cert_path`), read at boot
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct IndexerTlsConfig {
+    /// CA that signed the validator's indexer certificate
+    pub(crate) ca_path: PathBuf,
+    /// This zainod's client certificate chain, leaf first
+    pub(crate) cert_path: PathBuf,
+    /// Its private key (PKCS#8, PKCS#1 or SEC1)
+    pub(crate) key_path: PathBuf,
+    /// Name on the validator's certificate (unset = the `indexer_address` host)
+    pub(crate) server_name: Option<String>,
 }
 
 impl TrustedValidatorConfig {
@@ -108,6 +126,15 @@ impl TrustedValidatorConfig {
         let mib = NonZeroU32::new(1 << 20).expect("2^20 is non-zero");
         let max_bytes_per_sec = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
         zaino_source::LinkLimits { max_connections: self.max_connections, max_bytes_per_sec }
+    }
+
+    pub(crate) fn indexer_tls(&self) -> Option<zaino_source::IndexerTls> {
+        self.indexer_tls.as_ref().map(|tls| zaino_source::IndexerTls {
+            ca: tls.ca_path.clone(),
+            cert: tls.cert_path.clone(),
+            key: tls.key_path.clone(),
+            server_name: tls.server_name.clone(),
+        })
     }
 }
 
@@ -646,6 +673,12 @@ impl DaemonConfig {
                     validator.jsonrpc_address
                 )));
             }
+            if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
+                return Err(IndexerError::ConfigError(format!(
+                    "[[trusted_validators]] {} sets indexer_tls but no indexer_address",
+                    validator.jsonrpc_address
+                )));
+            }
             if self.validator_client == ValidatorClient::Grpc && validator.indexer_address.is_none()
             {
                 return Err(IndexerError::ConfigError(format!(
@@ -1045,9 +1078,9 @@ path = "/tmp/zaino-compact-block"
         assert!(err.to_string().contains("unknown field"), "{err}");
     }
 
-    /// - Entries equal, auth + limits optional
-    /// - Refused: empty list, one validator twice, fewer connections than poll + lanes + 1, every removed
-    ///   key
+    /// - Entries equal, auth + limits + indexer mutual TLS optional
+    /// - Refused: empty list, one validator twice, fewer connections than poll + lanes + 1, TLS
+    ///   with no indexer, every removed key
     #[test]
     fn trusted_validators_parse_and_removed_keys_are_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1064,6 +1097,11 @@ max_mib_per_sec = 4
 indexer_address = "zebra-eu:8230"
 priority = 1
 
+[trusted_validators.indexer_tls]
+ca_path = "/etc/zaino/indexer-ca.pem"
+cert_path = "/etc/zaino/indexer-client.pem"
+key_path = "/etc/zaino/indexer-client-key.pem"
+
 [index.compact_block]
 path = "/tmp/zaino-compact-block"
 "#;
@@ -1079,6 +1117,12 @@ path = "/tmp/zaino-compact-block"
             max_connections: n(8),
             max_mib_per_sec: Some(n(4)),
             indexer_address: Some("zebra-eu:8230".to_owned()),
+            indexer_tls: Some(IndexerTlsConfig {
+                ca_path: "/etc/zaino/indexer-ca.pem".into(),
+                cert_path: "/etc/zaino/indexer-client.pem".into(),
+                key_path: "/etc/zaino/indexer-client-key.pem".into(),
+                server_name: None,
+            }),
             priority: 1,
             ..entry("zebra-eu:8232")
         };
@@ -1088,6 +1132,14 @@ path = "/tmp/zaino-compact-block"
         let link =
             zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
         assert_eq!(eu.link(), link, "the transport's");
+        let tls = zaino_source::IndexerTls {
+            ca: "/etc/zaino/indexer-ca.pem".into(),
+            cert: "/etc/zaino/indexer-client.pem".into(),
+            key: "/etc/zaino/indexer-client-key.pem".into(),
+            server_name: None,
+        };
+        assert_eq!(eu.indexer_tls(), Some(tls), "the indexer client's");
+        assert_eq!(entry("127.0.0.1:18232").indexer_tls(), None, "absent = plaintext");
 
         let refused = |config: DaemonConfig| config.validate().expect_err("refused").to_string();
         let none = DaemonConfig { trusted_validators: Vec::new(), ..config.clone() };
@@ -1098,6 +1150,9 @@ path = "/tmp/zaino-compact-block"
         let starved = vec![TrustedValidatorConfig { max_connections: n(4), ..eu.clone() }];
         let starved = DaemonConfig { trusted_validators: starved, ..config.clone() };
         assert!(refused(starved).contains("max_connections = 4 is below 5"));
+        let unaddressed = vec![TrustedValidatorConfig { indexer_address: None, ..eu.clone() }];
+        let unaddressed = DaemonConfig { trusted_validators: unaddressed, ..config.clone() };
+        assert!(refused(unaddressed).contains("sets indexer_tls but no indexer_address"));
 
         assert_eq!(config.validator_client, ValidatorClient::LegacyRpc, "the default");
         let grpc =

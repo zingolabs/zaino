@@ -24,14 +24,27 @@ use zaino_source::{LinkLimits, Timeouts, ZcashGrpcClient, ZcashLegacyRpcClient};
 let link = LinkLimits { max_connections, max_bytes_per_sec };
 let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
-let grpc = ZcashGrpcClient::at(legacy, indexer_address, Timeouts::default(), link)?;
+let grpc = ZcashGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `Trusted` member
 ```
 
 `at` builds the client from config without contacting the validator. An
 unreachable validator is the caller's retry, never a construction failure;
-`EndpointError` means a bad address, an unreadable cookie, or a client that
-cannot be built. zainod picks one for every validator (`validator_client`).
+`EndpointError` means a bad address, an unreadable cookie or TLS file, or a
+client that cannot be built. zainod picks one for every validator
+(`validator_client`).
+
+## The indexer gRPC: plaintext or mutual TLS
+
+`ZcashGrpcClient::at` and `IndexerWatch::at` (the push streams) take
+`Option<&IndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
+zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
+
+- `ca` verifies the server's certificate; `cert` + `key` are this client's, signed by the
+  server's `client_ca_file`.
+- `server_name` = the name on the server's certificate (`None` = the address's host).
+- The PEM files are read in `at`: an unreadable one is `EndpointError::TlsFile`, naming it. A
+  rotated file is read on the next restart.
 
 - `ZcashLegacyRpcClient`: JSON-RPC over HTTP/1.1 (zebrad or zcashd). A block
   arrives as hex inside JSON: the body buffer is sized once from `Content-Length`,

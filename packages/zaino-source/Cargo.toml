@@ -27,7 +27,7 @@ zcash_primitives.workspace = true
 zcash_protocol.workspace = true
 governor = { version = "0.10.4", default-features = false, features = ["std"] }
 zaino-proto.workspace = true
-tonic.workspace = true
+tonic = { workspace = true, features = ["tls-ring"] }
 tokio-util.workspace = true
 const-hex.workspace = true
 zcash_transparent = { workspace = true, optional = true }
@@ -42,6 +42,7 @@ tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zcash_transparent.workspace = true
+rcgen.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

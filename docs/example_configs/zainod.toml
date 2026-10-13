@@ -45,6 +45,14 @@ jsonrpc_address = "127.0.0.1:18232"
 # indexer_address = "127.0.0.1:8230"
 # Tier: every 0 asked before any 1 (a farther validator = 1: overflow + hedges only)
 # priority = 0
+# Mutual TLS to indexer_address (zakurad requires it off loopback: its [rpc.indexer_tls], whose
+# client_ca_file signs cert_path). Unset = plaintext.
+# [trusted_validators.indexer_tls]
+# ca_path = "/etc/zaino/indexer-ca.pem"
+# cert_path = "/etc/zaino/indexer-client.pem"
+# key_path = "/etc/zaino/indexer-client-key.pem"
+# Name on the validator's certificate (unset = the indexer_address host)
+# server_name = "zakura-1.internal"
 
 # [[trusted_validators]]
 # jsonrpc_address = "127.0.0.1:18242"

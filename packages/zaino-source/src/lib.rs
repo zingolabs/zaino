@@ -17,7 +17,7 @@ mod rpc;
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZcashGrpcClient;
-pub use indexer::{Change, IndexerWatch};
+pub use indexer::{Change, IndexerTls, IndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,

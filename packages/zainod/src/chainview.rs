@@ -64,7 +64,9 @@ pub(crate) fn connect<S: ChainDataSource>(
     let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
         let address = validator.indexer_address.as_ref()?;
         let member = ValidatorId::new(index)?;
-        Some(IndexerWatch::at(address, validator.into()).map(|watch| (member, watch)))
+        let tls = validator.indexer_tls();
+        let watch = IndexerWatch::at(address, tls.as_ref(), validator.into());
+        Some(watch.map(|watch| (member, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
     let p2p = p2p.map(|(port, start)| (port, start.boxed()));
@@ -128,6 +130,7 @@ pub(crate) fn grpc_client(
         IndexerError::ConfigError(format!("{}: no indexer_address", validator.jsonrpc_address))
     })?;
     let legacy = legacy_client(validator)?;
-    ZcashGrpcClient::at(legacy, indexer, validator.into(), validator.link())
+    let tls = validator.indexer_tls();
+    ZcashGrpcClient::at(legacy, indexer, tls.as_ref(), validator.into(), validator.link())
         .map_err(IndexerError::from)
 }
