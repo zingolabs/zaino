@@ -14,13 +14,16 @@ use super::{
     file_name,
     layout::Shape,
     writer::SegmentWriter,
-    SegmentError, SegmentLog, Slots, Snapshot,
+    Fanout, SegmentError, SegmentLog, Slots, Snapshot,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
     pages::{sums_path, PageError},
     port::{MapTable, Width},
 };
+
+/// Two same-tier segments merge (a merge in a handful of writes)
+const FANOUT: Fanout = Fanout(2);
 
 /// `account ‖ seq → seq · 1000`, ranges read per account (scope = the account)
 fn scanned() -> MapTable {
@@ -90,7 +93,8 @@ fn a_batch_row_off_its_key_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let mut log =
+        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
     let _ = log.batch(vec![(&[0; 11], Some(&[0; 8]))]);
 }
 
@@ -100,7 +104,8 @@ fn a_batch_row_off_its_value_width_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let mut log =
+        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
     let _ = log.batch(vec![(&[0; 12], Some(&[0; 7]))]);
 }
 
@@ -110,7 +115,8 @@ fn a_tombstone_in_a_map_without_deletes_panics() {
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log = SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, slots).expect("open");
+    let mut log =
+        SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], FANOUT, slots).expect("open");
     let _ = log.batch(vec![(&[0; 12], None)]);
 }
 
@@ -123,8 +129,15 @@ fn open_publishes_every_lsm_series_at_zero_before_any_batch_merge_or_stall() {
 
     let fs = SimFs::new();
     fs.create_dir_all(Path::new("/m")).expect("dir");
-    SegmentLog::open(fs, Path::new("/m"), &scanned(), &[], 2, Arc::new(Slots::new(4, u64::MAX)))
-        .expect("open");
+    SegmentLog::open(
+        fs,
+        Path::new("/m"),
+        &scanned(),
+        &[],
+        FANOUT,
+        Arc::new(Slots::new(4, u64::MAX)),
+    )
+    .expect("open");
 
     let scrape = rendered.render();
     let expected = [
@@ -216,8 +229,8 @@ fn a_merge_over_a_corrupt_page_panics_at_the_next_batch() {
     let second = writer.write(2, borrowed(&rows(4))).expect("write").expect("rows");
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
     let slots = Arc::new(Slots::new(4, u64::MAX));
-    let mut log =
-        SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], 2, slots).expect("open");
+    let mut log = SegmentLog::open(fs.clone(), dir, &scanned(), &[kept, second], FANOUT, slots)
+        .expect("open");
     log.settle();
 
     let _ = log.batch(Vec::new());

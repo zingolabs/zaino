@@ -145,7 +145,6 @@ impl SegmentWriter {
         cancel: &AtomicBool,
         slot: &Slot<'_>,
     ) -> Result<Option<Merged>> {
-        assert!(inputs.len() >= 2, "merge of {} segments", inputs.len());
         let sources = inputs
             .iter()
             .map(|meta| SegmentFile::open(&self.dir, meta, self.shape, Access::Sequential))

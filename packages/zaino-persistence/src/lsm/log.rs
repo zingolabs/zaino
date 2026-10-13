@@ -23,7 +23,7 @@ use super::{
     reader::Snapshot,
     slots::Slots,
     writer::{Merged, SegmentWriter},
-    Result, SegmentMeta,
+    Fanout, Result, SegmentMeta,
 };
 use crate::{fs::Fs, port::MapTable};
 
@@ -40,7 +40,7 @@ pub(crate) struct SegmentLog {
     name: String,
     snapshot: Arc<Snapshot>,
     writer: SegmentWriter,
-    fanout: usize,
+    fanout: Fanout,
     slots: Arc<Slots>,
     next: u32,
     segments: Vec<SegmentMeta>,
@@ -84,7 +84,7 @@ impl SegmentLog {
         dir: &Path,
         table: &MapTable,
         listed: &[SegmentMeta],
-        fanout: usize,
+        fanout: Fanout,
         slots: Arc<Slots>,
     ) -> Result<Self> {
         let shape = Shape::of(table);
@@ -202,7 +202,8 @@ impl SegmentLog {
     }
 
     fn launch(&mut self, tier: u32, inputs: Vec<SegmentMeta>) -> Result<Merge> {
-        assert_eq!(inputs.len(), self.fanout, "{}: merge of {} segments", self.name, inputs.len());
+        let name = &self.name;
+        assert_eq!(inputs.len(), self.fanout.get(), "{name}: merge of {} segments", inputs.len());
         for input in &inputs {
             assert_eq!(tier_of(input, self.fanout), tier, "{}: {input:?}", self.name);
         }
@@ -265,14 +266,14 @@ impl SegmentLog {
 }
 
 /// `segments` lists [`stall_at`] of `merge`'s tier
-fn behind(merge: &Merge, segments: &[SegmentMeta], fanout: usize) -> bool {
+fn behind(merge: &Merge, segments: &[SegmentMeta], fanout: Fanout) -> bool {
     let listed = segments.iter().filter(|segment| tier_of(segment, fanout) == merge.tier).count();
     listed >= stall_at(fanout)
 }
 
 /// Merging tier's segment count a commit waits at: `fanout` inputs + `STALL_WINDOWS` idle windows
-fn stall_at(fanout: usize) -> usize {
-    (1 + STALL_WINDOWS) * fanout
+fn stall_at(fanout: Fanout) -> usize {
+    (1 + STALL_WINDOWS) * fanout.get()
 }
 
 impl Staged {

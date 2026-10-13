@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
-use zaino_persistence::{IndexKind, LsmConfig};
+use zaino_persistence::{Fanout, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
 use zcash_protocol::consensus::NetworkType;
 
@@ -422,7 +422,7 @@ impl Default for SyncConfig {
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct LsmStoreConfig {
     /// Same-tier segments merged into one (>= 2; higher = less rewriting, larger merges)
-    pub(crate) fanout: usize,
+    pub(crate) fanout: Fanout,
     /// Merges doing disk I/O at once (the rest wait, smallest first)
     pub(crate) merge_slots: NonZeroUsize,
     /// MiB/s every merge together may read + write (commits never paced: the rest of the disk)
@@ -705,12 +705,6 @@ impl DaemonConfig {
                 "p2p.enabled on regtest with no p2p.initial_peers: regtest has no DNS seeders"
                     .to_string(),
             ));
-        }
-        if self.sync.lsm_store.fanout < 2 {
-            return Err(IndexerError::ConfigError(format!(
-                "sync.lsm_store.fanout = {}: a merge needs at least 2 segments",
-                self.sync.lsm_store.fanout
-            )));
         }
         let depth = self.sync.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
@@ -1049,13 +1043,13 @@ path = "/tmp/zaino-compact-block"
         let config =
             parsed("fanout = 4\nmerge_slots = 1\nmerge_mib_per_sec = 300\n").expect("deserialise");
         let merge_mib_per_sec = NonZeroU32::new(300).expect("non-zero");
-        let expected = LsmConfig { fanout: 4, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
+        let fanout = Fanout::new(4).expect(">= 2");
+        let expected = LsmConfig { fanout, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
         assert_eq!(LsmConfig::from(&config.sync.lsm_store), expected);
         assert!(config.validate().is_ok());
 
-        let refused =
-            parsed("fanout = 1\n").expect("deserialise").validate().expect_err("fanout 1");
-        assert!(refused.to_string().contains("sync.lsm_store.fanout = 1"), "{refused}");
+        let refused = parsed("fanout = 1\n").expect_err("fanout 1");
+        assert!(refused.to_string().contains("fanout 1: a merge needs 2 segments"), "{refused}");
         assert!(parsed("merge_slots = 0\n").is_err(), "merge_slots non-zero");
         assert!(parsed("merge_mib_per_sec = 0\n").is_err(), "merge_mib_per_sec non-zero");
         assert!(parsed("fan_out = 4\n").is_err(), "unknown key");

@@ -41,24 +41,58 @@ pub(crate) use slots::Slots;
 
 use std::num::{NonZeroU32, NonZeroUsize};
 
+use serde::{Deserialize, Serialize};
+
 use crate::pages::PageError;
 
 /// Map tables' merge policy, one per [`crate::DiskEngine`] (its stores share `merge_slots`)
 ///
-/// - `fanout` (>= 2) same-tier segments merge into one: write amplification `log_fanout(rows)`
+/// - `fanout` same-tier segments merge into one: write amplification `log_fanout(rows)`
 /// - `merge_slots` = merges doing I/O at once (the rest wait, lowest tier first)
 /// - `merge_mib_per_sec` = their read + written bytes per second, shared (commits never paced)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LsmConfig {
-    pub fanout: usize,
+    pub fanout: Fanout,
     pub merge_slots: NonZeroUsize,
     pub merge_mib_per_sec: NonZeroU32,
+}
+
+/// Same-tier segments one merge takes, >= 2 (a merge of one segment = no merge)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "usize", into = "usize")]
+pub struct Fanout(usize);
+
+impl Fanout {
+    pub const fn new(segments: usize) -> Option<Self> {
+        match segments >= 2 {
+            true => Some(Self(segments)),
+            false => None,
+        }
+    }
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl TryFrom<usize> for Fanout {
+    type Error = String;
+
+    fn try_from(segments: usize) -> std::result::Result<Self, String> {
+        Self::new(segments).ok_or_else(|| format!("fanout {segments}: a merge needs 2 segments"))
+    }
+}
+
+impl From<Fanout> for usize {
+    fn from(fanout: Fanout) -> Self {
+        fanout.0
+    }
 }
 
 impl Default for LsmConfig {
     fn default() -> Self {
         Self {
-            fanout: 16,
+            fanout: Fanout(16),
             merge_slots: NonZeroUsize::new(4).expect("4 is non-zero"),
             merge_mib_per_sec: NonZeroU32::new(200).expect("200 is non-zero"),
         }

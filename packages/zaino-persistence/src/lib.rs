@@ -27,7 +27,7 @@ mod write_buffer;
 pub use dir::disk_bytes;
 pub use disk::{DiskEngine, DiskStore, DiskView, TableFootprint};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
-pub use lsm::{LsmConfig, SegmentError};
+pub use lsm::{Fanout, LsmConfig, SegmentError};
 pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{Entry, Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;

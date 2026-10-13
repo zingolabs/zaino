@@ -28,7 +28,9 @@ use zaino_primitives::types::BlockRef;
 use crate::{
     dir::IndexDir,
     fs::{Durability, Fs},
-    lsm::{self, decode_list, encode_list, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot},
+    lsm::{
+        self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
+    },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, PageError, Sealed},
@@ -45,14 +47,12 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct DiskEngine {
     fs: Arc<dyn Fs>,
-    fanout: usize,
+    fanout: Fanout,
     slots: Arc<Slots>,
 }
 
 impl DiskEngine {
-    /// Panics: `lsm.fanout` < 2 (a merge of one segment = no merge)
     pub fn new(fs: Arc<dyn Fs>, lsm: LsmConfig) -> Self {
-        assert!(lsm.fanout >= 2, "lsm fanout {} < 2", lsm.fanout);
         let bytes_per_sec = u64::from(lsm.merge_mib_per_sec.get()) << 20;
         let slots = Arc::new(Slots::new(lsm.merge_slots.get(), bytes_per_sec));
         Self { fs, fanout: lsm.fanout, slots }

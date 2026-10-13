@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use super::Fanout;
 use crate::{
     manifest::{BodyReader, ManifestError},
     pages::Sealed,
@@ -56,9 +57,8 @@ pub(crate) fn decode_list(body: &mut BodyReader<'_>) -> Result<Vec<SegmentMeta>,
 
 /// Size tier `⌊log_fanout(records)⌋`: `fanout` peers merge into the tier above
 /// (write amplification `log_fanout(N)`)
-pub(crate) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
-    assert!(fanout >= 2, "merge fanout {fanout} < 2");
-    segment.records.ilog(u64::try_from(fanout).expect("fanout fits u64"))
+pub(crate) fn tier_of(segment: &SegmentMeta, fanout: Fanout) -> u32 {
+    segment.records.ilog(fanout.get() as u64)
 }
 
 /// Next size-tiered merge: lowest tier outside `busy` listing `fanout` segments → its oldest
@@ -68,7 +68,7 @@ pub(crate) fn tier_of(segment: &SegmentMeta, fanout: usize) -> u32 {
 /// - lowest first: cheapest merge, most segments retired per byte
 pub(crate) fn merge_candidates(
     segments: &[SegmentMeta],
-    fanout: usize,
+    fanout: Fanout,
     busy: &[u32],
 ) -> Option<(u32, Vec<SegmentMeta>)> {
     let mut peers = BTreeMap::<u32, Vec<SegmentMeta>>::new();
@@ -79,8 +79,8 @@ pub(crate) fn merge_candidates(
         }
     }
     peers.into_iter().find_map(|(tier, mut segments)| {
-        (segments.len() >= fanout).then(|| {
-            segments.truncate(fanout);
+        (segments.len() >= fanout.get()).then(|| {
+            segments.truncate(fanout.get());
             (tier, segments)
         })
     })
@@ -90,7 +90,7 @@ pub(crate) fn merge_candidates(
 pub(crate) fn tier_shape(
     segments: &[SegmentMeta],
     merging: &[u32],
-    fanout: usize,
+    fanout: Fanout,
     floor: usize,
 ) -> Vec<(usize, bool)> {
     let tiers: Vec<usize> =
@@ -164,9 +164,11 @@ mod tests {
             (vec![4, 5, 6, 7, 1, 1, 1, 1], vec![0, 1], None),
             (vec![16, 1, 20, 1, 30, 40], vec![], Some((2, vec![0, 2, 4, 5]))),
         ] {
-            let picked = merge_candidates(&sizes(&records), 4, &busy).map(|(tier, segments)| {
-                (tier, segments.iter().map(|segment| segment.id).collect::<Vec<_>>())
-            });
+            let fanout = Fanout::new(4).expect(">= 2");
+            let picked =
+                merge_candidates(&sizes(&records), fanout, &busy).map(|(tier, segments)| {
+                    (tier, segments.iter().map(|segment| segment.id).collect::<Vec<_>>())
+                });
             assert_eq!(picked, expected, "{records:?} busy {busy:?}");
         }
     }
@@ -188,7 +190,8 @@ mod tests {
             (vec![1], vec![2], 0, vec![(1, false), (0, false), (0, true)]),
             (vec![20, 1], vec![], 4, vec![(1, false), (0, false), (1, false), (0, false)]),
         ] {
-            let shape = tier_shape(&sizes(&records), &merging, 4, floor);
+            let shape =
+                tier_shape(&sizes(&records), &merging, Fanout::new(4).expect(">= 2"), floor);
             assert_eq!(shape, expected, "{records:?} merging {merging:?} floor {floor}");
         }
     }

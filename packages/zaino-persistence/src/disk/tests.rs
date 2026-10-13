@@ -44,6 +44,7 @@ fn open(engine: &DiskEngine) -> DiskStore {
 impl DiskEngine {
     /// Merges after `fanout` same-tier segments (small = merges in a handful of commits)
     fn with_fanout(fs: Arc<dyn Fs>, fanout: usize) -> Self {
+        let fanout = Fanout::new(fanout).expect("fanout >= 2");
         Self::new(fs, LsmConfig { fanout, ..LsmConfig::default() })
     }
 }
