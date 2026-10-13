@@ -5329,6 +5329,7 @@ dependencies = [
  "futures",
  "metrics",
  "metrics-util",
+ "proptest",
  "rayon",
  "thiserror 2.0.18",
  "tokio",
