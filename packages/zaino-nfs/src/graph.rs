@@ -119,11 +119,11 @@ impl<F> Graph<F> {
 
     /// Best, or side from its first ancestor on `chain`'s best (a best node or the root: N2)
     fn branch(&self, chain: &VerifiedChain, node: &Node<F>) -> Branch {
-        if on_best(chain, node.at) {
+        if chain.on_best(node.at) {
             return Branch::Best;
         }
         let mut lowest = node;
-        while let Some(parent) = self.nodes.get(&lowest.parent).filter(|p| !on_best(chain, p.at)) {
+        while let Some(parent) = self.nodes.get(&lowest.parent).filter(|p| !chain.on_best(p.at)) {
             lowest = parent;
         }
         let height = lowest.at.height.checked_sub(1).expect("a side node sits above the root");
@@ -147,8 +147,4 @@ impl<F> Graph<F> {
             assert!(held, "G8: every node on the best chain or a side branch it holds");
         }
     }
-}
-
-pub(crate) fn on_best(chain: &VerifiedChain, at: BlockRef) -> bool {
-    chain.on_best(at)
 }

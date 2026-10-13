@@ -21,12 +21,11 @@ use std::time::{Duration, Instant};
 use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
-use zaino_primitives::testing::{encode_header, MockChain};
+use zaino_primitives::testing::{encode_header, h, MockChain};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_sync::{check_block, Checked};
 
 use super::{Indexes, Input, NfsCore, Output, SnapshotTip};
-use crate::graph::on_best;
 use crate::snapshot::Branch;
 
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
@@ -191,7 +190,7 @@ impl Sim {
         let lowest = self.told.iter().map(|tip| tip.map_or(0, |tip| u32::from(tip.height) + 1));
         let next = lowest.min().unwrap_or(0);
         let best = u32::from(chain.best().height);
-        let headed = next > best || chain.header_at(height(next)).is_some();
+        let headed = next > best || chain.header_at(h(next)).is_some();
         headed && (best + 1).saturating_sub(next) <= WINDOW
     }
 
@@ -211,7 +210,7 @@ impl Sim {
             }
             Change::Reorg { depth, len } => {
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
-                let parent = self.builder.ancestor(best, height(at));
+                let parent = self.builder.ancestor(best, h(at));
                 (parent.height, self.builder.branch(parent).outweigh().mine_empty(len).tip())
             }
             Change::Revive { pick } => {
@@ -344,7 +343,7 @@ impl Sim {
     /// - G7: `at` of every node, the root and the decoy = the naive answer
     fn served(&mut self, tip: SnapshotTip<Toys>, context: &str) {
         let at = tip.tip;
-        assert!(on_best(&tip.chain, at), "{context}: N4 served {at:?} off its best");
+        assert!(tip.chain.on_best(at), "{context}: N4 served {at:?} off its best");
         let toys = tip.graph.at(&tip.chain, tip.root, &at.hash).and_then(|base| base.folded);
         let expected = Some(self.oracle(at.hash));
         for index in 0..self.writers.len() {
@@ -375,7 +374,7 @@ impl Sim {
         tip.graph.get(&hash)?;
         let blocks = self.builder.blocks(self.builder.block(hash).at());
         let path: Vec<BlockRef> = blocks.iter().map(|block| block.at()).collect();
-        let shared = path.iter().take_while(|at| on_best(&tip.chain, **at)).count();
+        let shared = path.iter().take_while(|at| tip.chain.on_best(**at)).count();
         let branch = match path.get(shared) {
             None => Branch::Best,
             Some(_) => Branch::Side { from: path[shared - 1] },
@@ -387,7 +386,7 @@ impl Sim {
     fn verify(&mut self, context: &str) {
         let chain = Arc::clone(self.given.as_ref().expect("a chain before any step"));
         let served = self.published;
-        assert!(served.is_none_or(|tip| on_best(&chain, tip)), "{context}: N4 served off best");
+        assert!(served.is_none_or(|tip| chain.on_best(tip)), "{context}: N4 served off best");
         let nodes: Vec<(BlockRef, Toys)> =
             self.core.graph.nodes().map(|node| (node.at, (*node.folded).clone())).collect();
         assert!(nodes.is_empty() || self.active(), "{context}: N5 nodes outside the window");
@@ -503,10 +502,6 @@ impl Sim {
             self.published
         );
     }
-}
-
-fn height(h: u32) -> Height {
-    Height::try_from(h).expect("small chain")
 }
 
 fn run(moves: &[Move], delays: &[u64], lookahead: usize, seed: u64) {

@@ -16,7 +16,7 @@ use zaino_header_chain::{Record, VerifiedChain};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height};
 use zaino_sync::Checked;
 
-use crate::graph::{on_best, Graph, Node};
+use crate::graph::{Graph, Node};
 
 /// - `wanted` = heights fetching (each one [`Output::Fetch`] until its body or an `Abandon`)
 /// - `folding` = block + the indexes its fold covers, per fold in flight
@@ -187,7 +187,7 @@ impl<F> NfsCore<F> {
     fn forget(&mut self, chain: &VerifiedChain, out: &mut Vec<Output<F>>) {
         let (next, active, graph) = (self.next_root(), self.active(chain), &self.graph);
         let needed = |at: BlockRef| {
-            active && at.height >= next && on_best(chain, at) && !graph.contains(&at.hash)
+            active && at.height >= next && chain.on_best(at) && !graph.contains(&at.hash)
         };
         self.ready.retain(|height, block| {
             needed(BlockRef { hash: block.header().hash, height: *height })
@@ -225,7 +225,7 @@ impl<F> NfsCore<F> {
     fn served(&self, chain: &VerifiedChain) -> Option<Shown> {
         let root = self.root();
         let top = self.graph.best_top(chain, root).map(|top| top.at);
-        let tip = top.or(root).filter(|tip| on_best(chain, *tip))?;
+        let tip = top.or(root).filter(|tip| chain.on_best(*tip))?;
         Some(Shown { tip, durable: self.durable.clone() })
     }
 
@@ -289,7 +289,7 @@ impl<F> NfsCore<F> {
         for (height, block) in &self.ready {
             let at = BlockRef { hash: block.header().hash, height: *height };
             assert!(*height >= next, "fetch: ready bodies above the root");
-            assert!(on_best(chain, at), "N1: every ready body is best");
+            assert!(chain.on_best(at), "N1: every ready body is best");
             assert!(!self.graph.contains(&at.hash), "fetch: a folded block is not ready");
             assert!(!self.wanted.contains_key(height), "fetch: a ready body is not wanted");
         }

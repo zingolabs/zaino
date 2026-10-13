@@ -197,6 +197,8 @@ mod tests {
         BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height, PeerInfo,
     };
 
+    use zaino_primitives::testing::h;
+
     use super::*;
 
     #[test]
@@ -223,7 +225,6 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, (state, tip, estimated, outbound, inbound))| {
-                    let height = |h: u32| Height::try_from(h).expect("h");
                     let peer = |inbound: bool| {
                         move |addr: &&str| PeerInfo { addr: (*addr).to_owned(), inbound }
                     };
@@ -231,8 +232,8 @@ mod tests {
                     meta.health = *state;
                     let branch = ConsensusBranchId::new(0);
                     meta.info = Some(BlockchainInfo {
-                        blocks: height(*tip),
-                        estimated_height: height(*estimated),
+                        blocks: h(*tip),
+                        estimated_height: h(*estimated),
                         best_block_hash: BlockHash::ZERO,
                         sapling_activation: Height::GENESIS,
                         upgrades: Vec::new(),

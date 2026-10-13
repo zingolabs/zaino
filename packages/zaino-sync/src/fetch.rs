@@ -52,7 +52,7 @@ pub fn check_block(block: Block, height: Height, record: &Record) -> Result<Chec
 
 /// `block` = the one at `height` (a trusted member's by-height answer: its body trusted, not
 /// re-hashed; the batch is paired with `heights` by position, so the coinbase height is checked)
-pub fn check_block_at(block: Block, height: Height) -> Result<Checked, Misanswer> {
+fn check_block_at(block: Block, height: Height) -> Result<Checked, Misanswer> {
     let labelled = block.header().height;
     if labelled != height {
         return Err(Misanswer::WrongHeight { got: labelled });
@@ -78,7 +78,7 @@ pub async fn fetch<S: ChainDataSource>(
 
 /// Until one trusted member's batch at `heights` passes [`check_block_at`] block by block
 /// (`heights` order; drop = abandon)
-pub async fn fetch_at<S: ChainDataSource>(
+pub(crate) async fn fetch_at<S: ChainDataSource>(
     balancer: TrafficBalancer<S>,
     heights: Arc<[Height]>,
     urgency: Urgency,

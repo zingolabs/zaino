@@ -109,8 +109,7 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
         for (position, handle) in positions.into_iter().enumerate() {
             commits.spawn(next_commit(position, handle));
         }
-        let count = self.indexes.iter().count();
-        let mut core = NfsCore::new(self.lookahead.get(), count, self.window);
+        let mut core = NfsCore::new(self.lookahead.get(), self.indexes.len(), self.window);
         let mut work = JoinSet::new();
         let mut fetches = Fetches::default();
         let chain = self.chain.borrow_and_update().clone();
@@ -137,7 +136,7 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
                 Some(commit) = commits.join_next() => {
                     let (position, handle, open) = joined(commit);
                     if !open {
-                        let (kind, _) = self.indexes.at_mut(position);
+                        let (kind, _) = self.indexes.at(position);
                         return Err(NfsError::IndexGone(kind.name()));
                     }
                     commits.spawn(next_commit(position, handle));
