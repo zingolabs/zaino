@@ -5101,7 +5101,6 @@ dependencies = [
  "reqwest",
  "serde_json",
  "thiserror 2.0.18",
- "uint 0.9.5",
  "zaino-primitives",
  "zcash_protocol",
 ]
@@ -5252,6 +5251,7 @@ version = "0.11.0-alpha.2"
 dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.18",
+ "uint 0.9.5",
  "zcash_protocol",
 ]
 

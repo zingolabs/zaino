@@ -41,7 +41,7 @@ pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
 pub use blockchain_info::BlockchainInfo;
 pub use compact_ciphertext::CompactCiphertext;
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, Target};
 pub use display_order::ParseHashError;
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;

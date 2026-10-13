@@ -103,7 +103,7 @@ pub fn compact_tx(index: u64, tx: &Transaction, fee: Option<Zatoshis>) -> cf::Co
             .outputs
             .iter()
             .map(|output| cf::TxOut {
-                value: u64::from(output.value),
+                value: output.value.as_u64(),
                 script_pub_key: output.script.as_bytes().to_vec(),
             })
             .collect(),

@@ -5,7 +5,6 @@ mod chain;
 mod header;
 mod params;
 mod rules;
-mod target;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod verified;

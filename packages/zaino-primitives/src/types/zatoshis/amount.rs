@@ -42,9 +42,7 @@ impl Zatoshis {
     pub fn sum_balances(mut values: impl Iterator<Item = Zatoshis>) -> Option<Zatoshis> {
         values.try_fold(Zatoshis::ZERO, Zatoshis::checked_add)
     }
-}
 
-impl Zatoshis {
     pub const fn as_u64(self) -> u64 {
         self.0
     }
@@ -52,12 +50,6 @@ impl Zatoshis {
     /// Total: the supply (2.1e15) is far below `i64::MAX`
     pub const fn as_i64(self) -> i64 {
         self.0 as i64
-    }
-}
-
-impl From<Zatoshis> for u64 {
-    fn from(z: Zatoshis) -> Self {
-        z.as_u64()
     }
 }
 
@@ -71,55 +63,23 @@ impl fmt::Display for Zatoshis {
 mod tests {
     use super::*;
 
+    /// A total built three ways (`new`, two halves added, two halves summed): exactly the supply
+    /// = every coin in one set, one past it = double-counted inputs
     #[test]
-    fn zero() {
-        assert_eq!(u64::from(Zatoshis::ZERO), 0);
-    }
-
-    #[test]
-    fn max_is_valid() {
-        assert!(Zatoshis::new(MAX_ZATOSHIS).is_ok());
-    }
-
-    #[test]
-    fn above_max_rejected() {
-        assert!(Zatoshis::new(MAX_ZATOSHIS + 1).is_err());
-    }
-
-    #[test]
-    fn checked_add_overflow() {
-        let a = Zatoshis::new(MAX_ZATOSHIS).expect("valid");
-        assert!(a.checked_add(Zatoshis::new(1).expect("valid")).is_none());
-    }
-
-    fn zatoshis(value: u64) -> Zatoshis {
-        Zatoshis::new(value).expect("a valid amount")
-    }
-
-    #[test]
-    fn sum_balances_of_nothing_is_zero() {
-        assert_eq!(Zatoshis::sum_balances(core::iter::empty()), Some(Zatoshis::ZERO));
-    }
-
-    #[test]
-    fn sum_balances_within_the_supply_sums() {
-        let total = Zatoshis::sum_balances([100, 50, 30].map(zatoshis).into_iter());
-
-        assert_eq!(total.map(u64::from), Some(180));
-    }
-
-    /// Exactly the supply = extreme legitimate case (all coins in the set)
-    #[test]
-    fn sum_balances_at_the_supply_is_allowed() {
-        let half = MAX_ZATOSHIS / 2;
-        let total = Zatoshis::sum_balances([half, MAX_ZATOSHIS - half].map(zatoshis).into_iter());
-
-        assert_eq!(total.map(u64::from), Some(MAX_ZATOSHIS));
-    }
-
-    /// Past the supply = overlapping / double-counted inputs
-    #[test]
-    fn sum_balances_past_the_supply_is_refused() {
-        assert_eq!(Zatoshis::sum_balances([MAX_ZATOSHIS, 1].map(zatoshis).into_iter()), None);
+    fn amounts_reach_the_supply_and_never_pass_it() {
+        for (total, expected) in [
+            (0, Some(Zatoshis(0))),
+            (MAX_ZATOSHIS, Some(Zatoshis(MAX_ZATOSHIS))),
+            (MAX_ZATOSHIS + 1, None),
+        ] {
+            let half = |n: u64| Zatoshis::new(n).expect("half the total within the supply");
+            let (low, high) = (half(total / 2), half(total - total / 2));
+            let built = (
+                Zatoshis::new(total).ok(),
+                low.checked_add(high),
+                Zatoshis::sum_balances([low, high].into_iter()),
+            );
+            assert_eq!(built, (expected, expected, expected), "{total}");
+        }
     }
 }

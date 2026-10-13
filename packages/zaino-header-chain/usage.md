@@ -51,6 +51,11 @@ gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`).
 `insert_untrusted` runs it before `insert`; `zaino-chainview` feeds it peers' headers. On regtest
 nBits is fixed at the limit and the solution must be 36 bytes.
 
+`Params::for_network(network, &schedule)` picks the rules: `mainnet()` / `testnet()` read the
+compiled `UpgradeSchedule`, `regtest(schedule)` its validator's (only NU7 matters there: it widens
+the averaging window). Spacing comes from `UpgradeSchedule::spacing`; nBits → target → work from
+`zaino_primitives::types::CompactDifficulty`.
+
 A solution length must be a minimal compactSize (`decode_header` refuses `fd 24 00` for 36 bytes
 as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
 

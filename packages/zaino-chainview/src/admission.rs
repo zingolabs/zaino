@@ -100,8 +100,8 @@ mod tests {
     fn each_consensus_rule_refuses_by_name_and_only_an_unknown_prevout_is_retried() {
         let mainnet = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
         let next = NextBlock::above(h(3_428_142), &mainnet);
-        let branch = |id: BranchId| ConsensusBranchId::new(u32::from(id));
-        assert_eq!(next, NextBlock { height: h(3_428_143), branch: branch(BranchId::Nu6_3) });
+        let branch = ConsensusBranchId::from(BranchId::Nu6_3);
+        assert_eq!(next, NextBlock { height: h(3_428_143), branch });
 
         let alice = p2pkh([0xaa; 20]);
         let known = OutPoint { txid: TransactionId::from([1; 32]), vout: 0 };
@@ -138,7 +138,7 @@ mod tests {
             (
                 "signed for NU6.2",
                 &nu6_2,
-                Err(Refused::Branch { built: branch(BranchId::Nu6_2), next: next.branch }),
+                Err(Refused::Branch { built: BranchId::Nu6_2.into(), next: next.branch }),
             ),
             ("one byte short", &pays[..pays.len() - 1], Err(Refused::Malformed(String::new()))),
         ];

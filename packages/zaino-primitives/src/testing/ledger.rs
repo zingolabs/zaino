@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 
 use zcash_protocol::consensus::NetworkUpgrade;
 
-use super::{balances, fee_left};
 use crate::types::{
     Fee, Height, Nullifier, OutPoint, ShieldedPool, Transaction, TransactionId, UpgradeSchedule,
     Zatoshis,
@@ -51,6 +50,8 @@ pub enum Refused {
     Drained(i64),
     #[error("overspends by {0}")]
     Overspends(i64),
+    #[error("inputs or outputs summing past the supply")]
+    PastSupply,
     #[error("stated fee {stated} != inputs − outputs + balances ({derived})")]
     StatedFee { stated: u64, derived: u64 },
 }
@@ -108,7 +109,7 @@ impl Ledger {
         if self.txids.contains(&txid) {
             return Err(Refused::Repeated);
         }
-        let balances = balances(tx);
+        let balances = tx.pool_balances();
         let pools = [
             (NetworkUpgrade::Sapling, tx.sapling.spends.len() + tx.sapling.outputs.len()),
             (NetworkUpgrade::Nu5, tx.orchard.actions.len()),
@@ -137,11 +138,12 @@ impl Ledger {
             return Err(Refused::CoinbaseFee);
         }
 
-        let mut spent: i64 = 0;
+        let mut spent = Zatoshis::ZERO;
         let mut inputs = HashSet::new();
         for prevout in &tx.transparent.inputs {
             let value = self.unspent.get(prevout).filter(|_| inputs.insert(*prevout));
-            spent += value.ok_or(Refused::Unspent(*prevout))?.as_i64();
+            let value = value.ok_or(Refused::Unspent(*prevout))?;
+            spent = spent.checked_add(*value).ok_or(Refused::PastSupply)?;
         }
         let mut pools = self.pools;
         for (pool, balance) in pools.iter_mut().zip(balances) {
@@ -153,7 +155,7 @@ impl Ledger {
         let fee = match coinbase {
             true => Fee::Coinbase,
             false => {
-                let remaining = fee_left(tx, spent);
+                let remaining = tx.value_left(spent).ok_or(Refused::PastSupply)?;
                 let derived =
                     u64::try_from(remaining).map_err(|_| Refused::Overspends(-remaining))?;
                 if let Some(stated) = stated.filter(|stated| *stated != derived) {

@@ -3,14 +3,18 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{
+    BlockHash, BlockRef, HeaderError, Height, ReorgDepth, UpgradeSchedule,
+};
+use zcash_protocol::consensus::NetworkUpgrade;
 
-use crate::rules::{equihash_valid, expected_bits, in_context, MEDIAN_SPAN};
+use crate::params::AVERAGING_WINDOW;
+use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
 use crate::testing::{insert, HeaderViews};
 use crate::{decode_header, validate, Ancestor, Header, HeaderChain, Inserted, Params};
 use crate::{DecodeError, Rejected};
-use zaino_primitives::types::HeaderError;
 
 const HEADER_LEN: usize = 1487;
 const GENESIS_RANGE: &[u8] = include_bytes!("../tests/fixtures/mainnet_0.headers");
@@ -42,7 +46,7 @@ fn context(headers: &[Header], at: usize) -> Vec<Ancestor> {
 ///   links to the one before by hash
 #[test]
 fn every_captured_header_passes_and_its_nbits_is_reproduced() {
-    let window = 17 + MEDIAN_SPAN;
+    let window = AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
     #[rustfmt::skip]
     let ranges = [
         (Params::mainnet(), 0,         GENESIS_RANGE,                1,      0),
@@ -106,12 +110,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     assert_eq!(chain.insert(&headers[50]), Err(Rejected::Orphan), "below the finals kept");
     assert_eq!(chain.finals_kept(), crate::rules::CONTEXT, "depth 10: the rules' context wins");
     let best = chain.best().expect("anchored");
-    let work: u128 = headers[1..=200]
-        .iter()
-        .map(|h| {
-            crate::target::work(crate::target::expand(h.bits()).expect("valid")).expect("fits")
-        })
-        .sum();
+    let work: u128 = headers[1..=200].iter().map(|h| header_work(h.bits()).expect("valid")).sum();
     assert_eq!((best.block, best.cumulative_work), (at(200), work), "work from the anchor");
 
     let verified = chain.verified().expect("anchored");
@@ -153,7 +152,8 @@ fn untrusted_headers_extend_the_chain_only_when_every_rule_holds() {
     let mut chain = HeaderChain::new(ReorgDepth::new(NonZeroU32::new(10).expect("nz")));
     chain.anchor(&headers[0], at(0).height);
     let short = chain.insert_untrusted(&headers[1], &mainnet, now);
-    assert_eq!(short, Err(Rejected::ShortContext { held: 1, needed: 17 + MEDIAN_SPAN }));
+    let needed = AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
+    assert_eq!(short, Err(Rejected::ShortContext { held: 1, needed }));
     for header in &headers[1..28] {
         assert_eq!(chain.insert(header), Ok(Inserted::Best { reorg: false }));
     }
@@ -208,11 +208,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let (real, at_height) = (&headers[at], height(3_508_500 + at as u32));
     let context = context(&headers, at);
     let now = i64::from(real.time());
-    let median_time_past = {
-        let mut times: Vec<u32> = context.iter().take(11).map(|a| a.time).collect();
-        times.sort_unstable();
-        times[5]
-    };
+    let median_time_past = median_time_past(context.iter().map(|a| a.time)).expect("held");
     let mutated = |edit: &dyn Fn(&mut Vec<u8>)| {
         let mut raw = real.bytes().to_vec();
         edit(&mut raw);
@@ -222,9 +218,8 @@ fn each_mutation_is_refused_by_its_own_rule() {
         move |raw: &mut Vec<u8>| raw[at..at + 4].copy_from_slice(&value.to_le_bytes())
     };
     let alone = |header: &Header| crate::rules::alone(&mainnet, header);
-    let in_place = |header: &Header, now: i64| {
-        in_context(&mainnet, header, at_height, &context, now).map(|_| ())
-    };
+    let in_place =
+        |header: &Header, now: i64| in_context(&mainnet, header, at_height, &context, now);
 
     assert_eq!((alone(real), in_place(real, now)), (Ok(()), Ok(())));
     assert!(equihash_valid(real).is_ok());
@@ -255,7 +250,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let invalid_bits = mutated(&set_u32(104, 0x0180_0000));
     assert_eq!(alone(&invalid_bits), Err(Rejected::Bits { bits: 0x0180_0000 }));
 
-    let regtest = Params::regtest(height(1), None);
+    let regtest = Params::regtest(UpgradeSchedule::all_at(height(1)));
     let mut builder = MockChain::regtest();
     let raw = builder.header_bytes(builder.genesis().hash);
     let versioned = |version: u32| {
@@ -271,7 +266,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     assert_eq!(decode_header(&padded), Err(DecodeError::Header(non_minimal)));
 
     let testnet = Params::testnet();
-    let pre_nu7 = Params { nu7: None, ..testnet };
+    let pre_nu7 = Params { schedule: testnet.schedule.without(NetworkUpgrade::Nu7), ..testnet };
     let nu7 = height(4_465_026 + 50);
     // 113 ancestors 25 s apart, 0x1d00ffff then a harder 0x1c7fffff for the newest 40
     let ancestors: Vec<Ancestor> = (0..crate::rules::CONTEXT as u32)
@@ -324,7 +319,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
 fn decode_takes_exactly_one_header() {
     let raw = &GENESIS_RANGE[..HEADER_LEN];
     let header = decode_header(raw).expect("genesis");
-    assert_eq!(header.hash(), Params::mainnet().genesis(), "hash recomputed from the bytes");
+    assert_eq!(header.hash(), Params::mainnet().genesis, "hash recomputed from the bytes");
     assert_eq!(header.prev_hash(), BlockHash::ZERO);
     let truncated = |len| Err(DecodeError::Header(HeaderError::Truncated { len }));
     assert_eq!(decode_header(&raw[..140]), truncated(140));

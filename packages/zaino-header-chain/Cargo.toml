@@ -13,7 +13,6 @@ description = "Validated Header tree: the most-work tip above a trusted anchor"
 equihash = "0.3"
 imbl.workspace = true
 thiserror.workspace = true
-uint = "0.9"
 zaino-primitives.workspace = true
 zcash_protocol.workspace = true
 

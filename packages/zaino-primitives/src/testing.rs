@@ -12,29 +12,11 @@ pub use build::{outpoint, p2pkh, BlockBuilder, TxBuilder};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 
-use crate::types::{BlockHash, BlockHeader, EquihashSolution, Height, Transaction};
+use crate::types::{BlockHash, BlockHeader, EquihashSolution, Height};
 
 /// `Height` from a literal (`chain.fork(h(9))`)
 pub fn h(height: u32) -> Height {
     Height::try_from(height).expect("a test height below 2^31")
-}
-
-/// Transparent value `tx` leaves the miner: `spent` (its inputs' sum) − outputs + each pool's
-/// balance (protocol.pdf#transactions §3.4; negative = overspent)
-fn fee_left(tx: &Transaction, spent: i64) -> i64 {
-    let paid: i64 = tx.transparent.outputs.iter().map(|output| output.value.as_i64()).sum();
-    spent - paid + balances(tx).iter().sum::<i64>()
-}
-
-/// Sprout, Sapling, Orchard, Ironwood (+ = out of that pool)
-fn balances(tx: &Transaction) -> [i64; 4] {
-    [
-        tx.sprout.value_balance,
-        tx.sapling.value_balance,
-        tx.orchard.value_balance,
-        tx.ironwood.value_balance,
-    ]
-    .map(i64::from)
 }
 
 /// zcashd regtest `powLimit` as nBits (the only nBits regtest accepts)

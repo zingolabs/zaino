@@ -26,8 +26,7 @@ use zaino_primitives::types::{BlockHash, BlockRef, Height, MerkleRoot, ReorgDept
 
 use crate::header::Header;
 use crate::params::Params;
-use crate::rules::{validate, Ancestor, Rejected, CONTEXT};
-use crate::target::{expand, work};
+use crate::rules::{header_work, validate, Ancestor, Rejected, CONTEXT};
 use crate::verified::VerifiedChain;
 
 /// Side-branch tips held beside the best (H4)
@@ -130,11 +129,7 @@ impl HeaderChain {
         self.nodes = imbl::HashMap::new();
         self.leaves = imbl::HashSet::new();
         self.best_path = imbl::Vector::new();
-        self.last_vouched = own_work(header.bits()).map(|work| (height, work));
-    }
-
-    pub fn depth(&self) -> ReorgDepth {
-        self.depth
+        self.last_vouched = header_work(header.bits()).ok().map(|work| (height, work));
     }
 
     /// `None` = no anchor yet
@@ -218,7 +213,7 @@ impl HeaderChain {
         let (height, parent_work) = self.parent(prev)?;
 
         let bits = header.bits();
-        let own = own_work(bits).ok_or(Rejected::Bits { bits })?;
+        let own = header_work(bits)?;
         let cumulative_work = parent_work.checked_add(own).ok_or(Rejected::WorkOverflow)?;
         let record = Record {
             hash,
@@ -260,7 +255,7 @@ impl HeaderChain {
             return;
         };
         if self.last_vouched.is_none_or(|(height, _)| block.height > height) {
-            self.last_vouched = own_work(node.record.bits).map(|work| (block.height, work));
+            self.last_vouched = header_work(node.record.bits).ok().map(|work| (block.height, work));
         }
         while let Some(node) = self.nodes.get_mut(&at).filter(|node| !node.vouched) {
             node.vouched = true;
@@ -384,7 +379,7 @@ impl HeaderChain {
                 }
                 (None, None) => unreachable!("H2: nothing held before an anchor"),
             };
-            let own = own_work(node.record.bits).expect("nBits checked on insert");
+            let own = header_work(node.record.bits).expect("nBits checked on insert");
             assert_eq!(parent_work + own, node.record.cumulative_work, "tree: cumulative work");
             let parent_vouched = self.nodes.get(&node.parent).is_none_or(|parent| parent.vouched);
             assert!(!node.vouched || parent_vouched, "H6: {hash:?} vouched, its parent not");
@@ -558,11 +553,6 @@ impl HeaderChain {
         let finals = self.finals.iter().rev().map(|(_, record)| ancestor(record));
         tree.map(|node| ancestor(&node.record)).chain(finals).take(CONTEXT).collect()
     }
-}
-
-/// One block's work from its nBits (`None` = an invalid target)
-fn own_work(bits: u32) -> Option<u128> {
-    expand(bits).and_then(work)
 }
 
 #[cfg(test)]

@@ -25,11 +25,12 @@ use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU32;
 
 use proptest::prelude::*;
+use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth, UpgradeSchedule};
 
-use crate::rules::{median_time, Rejected, CONTEXT, MEDIAN_SPAN};
-use crate::target::{expand, work};
+use crate::params::AVERAGING_WINDOW;
+use crate::rules::{header_work, Rejected, CONTEXT};
 use crate::{
     decode_header, BestTip, Fork, Header, HeaderChain, Inserted, Params, Record, VerifiedChain,
 };
@@ -175,14 +176,10 @@ impl Model {
 
     /// Median time past of a child of `prev` (the builder's: a valid MockChain time)
     fn median_time_past(&self, prev: BlockHash) -> u32 {
-        let mut times = Vec::new();
-        let mut at = prev;
-        while times.len() < MEDIAN_SPAN && at != BlockHash::ZERO {
-            let header = &self.by_hash[&at];
-            times.push(header.time());
-            at = header.prev_hash();
-        }
-        median_time(times.into_iter())
+        let ancestors = std::iter::successors(self.by_hash.get(&prev), |header| {
+            self.by_hash.get(&header.prev_hash())
+        });
+        median_time_past(ancestors.map(Header::time)).expect("`prev` mined")
     }
 
     /// Ancestors of a child of `prev` the chain holds: live ones down to the final tip, then the
@@ -205,8 +202,10 @@ impl Model {
             || self.tail().iter().any(|record| record.hash == header.hash());
         let parent = self.parent(prev);
         if let (false, Ok((at, _))) = (known, parent) {
-            let (held, needed) =
-                (self.held_ancestors(prev), (u32::from(at) as usize).min(17 + MEDIAN_SPAN));
+            let (held, needed) = (
+                self.held_ancestors(prev),
+                (u32::from(at) as usize).min(AVERAGING_WINDOW + MEDIAN_TIME_SPAN),
+            );
             if held < needed {
                 return Err(Rejected::ShortContext { held, needed });
             }
@@ -226,7 +225,7 @@ impl Model {
             return Ok(Inserted::Known);
         }
         let (at, parent_work) = self.parent(header.prev_hash())?;
-        let own = work(expand(header.bits()).expect("palette bits")).expect("fits");
+        let own = header_work(header.bits()).expect("palette bits");
         let record = Record {
             hash,
             merkle_root: header.merkle_root(),
@@ -279,7 +278,8 @@ impl Model {
             return;
         };
         if block.height > self.last_vouched.0 {
-            self.last_vouched = (block.height, header_work(alive.record.bits));
+            let work = header_work(alive.record.bits).expect("palette bits");
+            self.last_vouched = (block.height, work);
         }
         self.vouched.insert(block.hash);
     }
@@ -293,7 +293,8 @@ impl Model {
         let path = self.best_path();
         let reference = self.last_vouched.1;
         let unfinal = &path[self.finals.len()..];
-        let collapsed = unfinal.iter().any(|record| header_work(record.bits) * 2 < reference);
+        let own = |record: &Record| header_work(record.bits).expect("palette bits");
+        let collapsed = unfinal.iter().any(|record| own(record) * 2 < reference);
         let hash = path[boundary].hash;
         (!collapsed).then_some(BlockRef { hash, height: height(boundary as u32) })
     }
@@ -407,10 +408,6 @@ fn height(h: u32) -> Height {
     Height::try_from(h).expect("in range")
 }
 
-fn header_work(bits: u32) -> u128 {
-    expand(bits).and_then(work).expect("the palette's nBits are valid")
-}
-
 /// Headers as the chain receives them: `MockChain` bytes, decoded and hashed here
 ///
 /// - `templates[hash]` = block whose bytes `hash`'s header was cut from (itself unless edited)
@@ -490,13 +487,14 @@ fn run(moves: Vec<Move>) {
         vouched: HashSet::new(),
         finals: vec![anchor],
         received: 0,
-        last_vouched: (Height::GENESIS, header_work(genesis.bits())),
+        last_vouched: (Height::GENESIS, header_work(genesis.bits()).expect("regtest limit")),
     };
     // (published chain, the model's path then, the lowest height it answered by height, forks)
     let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
 
     // the driver's: nothing above the ceiling offered (H9); untrusted = every rule run first
-    let params = Params::regtest(height(1), None).with_genesis(genesis.hash()).any_bits();
+    let params = Params::regtest(UpgradeSchedule::all_at(height(1)));
+    let params = params.with_genesis(genesis.hash()).any_bits();
     let offer = |chain: &mut HeaderChain,
                  model: &mut Model,
                  header: &Header,

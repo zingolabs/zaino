@@ -2,6 +2,8 @@
 //!
 //! [`UpgradeSchedule`]: super::UpgradeSchedule
 
+use zcash_protocol::consensus::{BranchId, NetworkUpgrade};
+
 use super::Height;
 
 /// Protocol identity of a network upgrade (fixed by consensus: the stable key, unlike a name)
@@ -11,6 +13,16 @@ pub struct ConsensusBranchId(u32);
 impl ConsensusBranchId {
     pub const fn new(id: u32) -> Self {
         Self(id)
+    }
+
+    pub fn of(upgrade: NetworkUpgrade) -> Self {
+        upgrade.branch_id().into()
+    }
+}
+
+impl From<BranchId> for ConsensusBranchId {
+    fn from(id: BranchId) -> Self {
+        Self(u32::from(id))
     }
 }
 

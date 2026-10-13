@@ -7,16 +7,18 @@
 //! - cheap rules first, Equihash last (156 µs: a junk header never costs it)
 
 use std::cmp::{max, min};
+use std::num::NonZeroU64;
 
-use zaino_primitives::types::{Height, REGTEST_SOLUTION, STANDARD_SOLUTION};
+use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
+use zaino_primitives::types::{
+    CompactDifficulty, Height, Target, REGTEST_SOLUTION, STANDARD_SOLUTION,
+};
 
 use crate::header::Header;
 use crate::params::{Difficulty, Params, MAX_AVERAGING_WINDOW};
-use crate::target::{expand, mean, meets, to_compact, work, U256};
 
-pub(crate) const MEDIAN_SPAN: usize = 11;
 /// Ancestors [`validate`] reads: the largest averaging window, then one more median span below it
-pub const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_SPAN;
+pub const CONTEXT: usize = MAX_AVERAGING_WINDOW + MEDIAN_TIME_SPAN;
 
 const DAMPING_FACTOR: i64 = 4;
 const MAX_ADJUST_UP_PERCENT: i64 = 16;
@@ -84,7 +86,16 @@ pub fn validate(
     now_unix: i64,
 ) -> Result<(), Rejected> {
     alone(params, header)?;
-    in_context(params, header, height, ancestors, now_unix).map(drop)
+    in_context(params, header, height, ancestors, now_unix)
+}
+
+/// One header's work from its nBits (`2^256 / (target + 1)`)
+pub(crate) fn header_work(bits: u32) -> Result<u128, Rejected> {
+    difficulty(bits).map(CompactDifficulty::work)
+}
+
+fn difficulty(bits: u32) -> Result<CompactDifficulty, Rejected> {
+    CompactDifficulty::try_from_bits(bits).map_err(|_| Rejected::Bits { bits })
 }
 
 /// What `header` alone decides (version, nBits, solution, proof of work)
@@ -93,15 +104,14 @@ pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
         return Err(Rejected::Version { version: header.version() });
     }
     let bits = header.bits();
-    let target = expand(bits).ok_or(Rejected::Bits { bits })?;
-    work(target).ok_or(Rejected::Bits { bits })?;
+    let difficulty = difficulty(bits)?;
     let len = header.solution().len();
     let expected = if params.pow { STANDARD_SOLUTION } else { REGTEST_SOLUTION };
     if len != expected {
         return Err(Rejected::SolutionSize { len, expected });
     }
     if params.pow {
-        if !meets(header.hash().into(), target) {
+        if !difficulty.target().is_met_by(header.hash()) {
             return Err(Rejected::AboveTarget { bits });
         }
         equihash_valid(header)?;
@@ -111,7 +121,6 @@ pub(crate) fn alone(params: &Params, header: &Header) -> Result<(), Rejected> {
 
 /// `header` at `height` after `context` (ancestors, newest first; empty for genesis) and the clock
 ///
-/// - returns the header's own work (`2^256 / (target + 1)`)
 /// - `context` = every ancestor near genesis, else the window + one median span
 ///   ([`Rejected::ShortContext`]: the caller holds too few, never the header's fault)
 pub(crate) fn in_context(
@@ -120,17 +129,18 @@ pub(crate) fn in_context(
     height: Height,
     context: &[Ancestor],
     now_unix: i64,
-) -> Result<u128, Rejected> {
+) -> Result<(), Rejected> {
     let bits = header.bits();
-    let own = expand(bits).and_then(work).expect("`alone` checked nBits");
     let time = header.time();
-    let needed = (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_SPAN);
+    let needed =
+        (u32::from(height) as usize).min(params.averaging_window(height) + MEDIAN_TIME_SPAN);
     if context.len() < needed {
         return Err(Rejected::ShortContext { held: context.len(), needed });
     }
 
     if let Some(parent) = context.first() {
-        let median_time_past = median_time(context.iter().take(MEDIAN_SPAN).map(|a| a.time));
+        let median_time_past =
+            median_time_past(context.iter().map(|a| a.time)).expect("a parent holds a time");
         if time <= median_time_past {
             return Err(Rejected::TimeTooEarly { time, median_time_past });
         }
@@ -147,7 +157,7 @@ pub(crate) fn in_context(
     if i64::from(time) > horizon {
         return Err(Rejected::FromTheFuture { time, max: horizon });
     }
-    Ok(own)
+    Ok(())
 }
 
 /// Equihash (200, 9) over the bytes before the nonce, the nonce, the solution
@@ -182,34 +192,31 @@ pub(crate) fn expected_bits(
     if u32::from(height) as usize <= window {
         return Some(params.limit_bits());
     }
-    let targets: Vec<U256> = context[..window]
+    let targets: Vec<Target> = context[..window]
         .iter()
-        .map(|a| expand(a.bits).expect("ancestors' nBits were verified"))
+        .map(|a| difficulty(a.bits).expect("ancestors' nBits were verified").target())
         .collect();
-    let newer = median_time(context.iter().take(MEDIAN_SPAN).map(|a| a.time));
-    let older = median_time(context.iter().skip(window).take(MEDIAN_SPAN).map(|a| a.time));
+    let mean = Target::mean(&targets).expect("a window holds at least 17 targets");
+    let times = |from: usize| context.iter().skip(from).map(|a| a.time);
+    let newer = median_time_past(times(0)).expect("a parent holds a time");
+    let older = median_time_past(times(window)).expect("height > window: ancestors below it");
     let timespan = i64::from(newer) - i64::from(older);
-    Some(threshold(params, mean(&targets), timespan, height))
+    Some(threshold(params, mean, timespan, height))
 }
 
 /// `CalculateNextWorkRequired(mean, timespan, height)`: the timespan damped by 4, clamped to
 /// −16 % / +32 % of the window's, then mean / window timespan × bounded, at most the limit
-pub(crate) fn threshold(params: &Params, mean: U256, timespan: i64, height: Height) -> u32 {
+pub(crate) fn threshold(params: &Params, mean: Target, timespan: i64, height: Height) -> u32 {
     let window = params.spacing(height) * params.averaging_window(height) as i64;
     // integer division truncates toward zero, as C++ `int64_t /`
     let damped = window + (timespan - window) / DAMPING_FACTOR;
     let lowest = window * (100 - MAX_ADJUST_UP_PERCENT) / 100;
     let highest = window * (100 + MAX_ADJUST_DOWN_PERCENT) / 100;
     let bounded = max(lowest, min(highest, damped));
-    let threshold = (mean / U256::from(window)) * U256::from(bounded);
-    to_compact(min(params.pow_limit, threshold))
-}
-
-/// `median_time`: the upper median (index len / 2 of the sorted times)
-pub(crate) fn median_time(times: impl Iterator<Item = u32>) -> u32 {
-    let mut times: Vec<u32> = times.collect();
-    times.sort_unstable();
-    times[times.len() / 2]
+    let expected = u64::try_from(window).ok().and_then(NonZeroU64::new);
+    let actual = u64::try_from(bounded).expect("clamped to at least 84 % of a positive window");
+    let threshold = mean.rescale(actual, expected.expect("spacing × window > 0 s"));
+    min(params.pow_limit, threshold).to_compact()
 }
 
 #[cfg(test)]
@@ -227,7 +234,7 @@ mod tests {
     #[test]
     fn threshold_reproduces_zcashds_pow_vectors() {
         let mainnet = Params::mainnet();
-        let mean = |bits: u32| expand(bits).expect("valid");
+        let mean = |bits: u32| difficulty(bits).expect("valid").target();
         #[rustfmt::skip]
         let cases = [
             ("get_next_work",                   mainnet,            0,         0x1d00_ffff, 3_570,      0x1d01_1998),

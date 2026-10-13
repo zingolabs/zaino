@@ -132,17 +132,6 @@ async fn upgrade_schedule<S: ChainDataSource>(
     }
 }
 
-/// The rules a peer's header meets on `network`
-fn header_rules(network: NetworkType, schedule: &UpgradeSchedule) -> Result<Params, IndexerError> {
-    Params::for_network(network, schedule).ok_or_else(|| {
-        IndexerError::ConfigError(
-            "p2p.enabled on a regtest whose validator never activates Blossom: peers' headers \
-             cannot be checked"
-                .to_owned(),
-        )
-    })
-}
-
 /// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
 async fn regtest_schedule<S: ChainDataSource>(
     balancer: &TrafficBalancer<S>,
@@ -204,7 +193,7 @@ async fn boot_over<S: ChainDataSource>(
     let mut tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks).await?;
 
     let header_sync = match config.p2p.enabled {
-        true => viewed.header_sync.with_peers(header_rules(config.network, &schedule)?),
+        true => viewed.header_sync.with_peers(Params::for_network(config.network, &schedule)),
         false => viewed.header_sync,
     };
     let run = header_sync.run(cancel.child_token());
