@@ -77,6 +77,37 @@ impl Sealed {
     fn full_pages(&self) -> u64 {
         self.len / PAGE as u64
     }
+
+    /// Bytes of `<file>.crc` this seal covers
+    fn sums_len(&self) -> u64 {
+        self.full_pages() * SUM as u64
+    }
+
+    /// `sums` = the checksums this seal committed
+    fn digest_matches(&self, sums: &[u8]) -> bool {
+        crc32fast::hash(sums) == self.sums
+    }
+}
+
+/// Page `index` (`bytes`: a full page, or the tail) against its CRC in `sums`, or `tail`
+fn page_intact(index: u64, bytes: &[u8], sums: &[u8], tail: u32) -> bool {
+    let expected = match bytes.len() == PAGE {
+        true => {
+            let at = usize::try_from(index).expect("page index fits usize") * SUM;
+            u32::from_le_bytes(sums[at..at + SUM].try_into().expect("SUM bytes"))
+        }
+        false => tail,
+    };
+    page_sum(index, bytes) == expected
+}
+
+/// `file`'s length, refused when short of `need` (committed bytes lost)
+fn committed_len(file: &dyn FileHandle, path: &Path, need: u64) -> Result<u64, PageError> {
+    let have = file.len()?;
+    match have < need {
+        true => Err(PageError::Lost { path: path.to_owned(), have, need }),
+        false => Ok(have),
+    }
 }
 
 /// Page `index`'s checksum: CRC-32 of the index (u64 LE), then the page's bytes
@@ -203,7 +234,7 @@ impl PagedFile {
         if kind == FileKind::Log && created {
             fs.sync_dir(path.parent().unwrap_or(Path::new("")))?;
         }
-        let sums_len = sealed.full_pages() * SUM as u64;
+        let sums_len = sealed.sums_len();
         truncate(data.as_ref(), path, sealed.len)?;
         truncate(sums.as_ref(), &sums_path(path), sums_len)?;
 
@@ -216,7 +247,7 @@ impl PagedFile {
         tail_page.reserve(PAGE - tail_page.len());
         let mut committed_sums = vec![0; usize::try_from(sums_len).expect("sums fit usize")];
         sums.read_exact_at(&mut committed_sums, 0)?;
-        if crc32fast::hash(&committed_sums) != sealed.sums {
+        if !sealed.digest_matches(&committed_sums) {
             return Err(PageError::Sums { path: path.to_owned() });
         }
 
@@ -311,11 +342,7 @@ impl PagedFile {
 }
 
 fn truncate(file: &dyn FileHandle, path: &Path, need: u64) -> Result<(), PageError> {
-    let have = file.len()?;
-    if have < need {
-        return Err(PageError::Lost { path: path.to_owned(), have, need });
-    }
-    if have > need {
+    if committed_len(file, path, need)? > need {
         file.set_len(need)?;
     }
     Ok(())
@@ -371,17 +398,10 @@ impl Pages {
         let data = fs.open_existing(path)?.ok_or_else(|| missing(path))?;
         let sums_at = sums_path(path);
         let sums = fs.open_existing(&sums_at)?.ok_or_else(|| missing(&sums_at))?;
-        for (file, at, need) in [
-            (&data, path, sealed.len),
-            (&sums, sums_at.as_path(), sealed.full_pages() * SUM as u64),
-        ] {
-            let have = file.len()?;
-            if have < need {
-                return Err(PageError::Lost { path: at.to_owned(), have, need });
-            }
-        }
+        committed_len(data.as_ref(), path, sealed.len)?;
+        committed_len(sums.as_ref(), &sums_at, sealed.sums_len())?;
         let pages = Self::map(path, data.as_ref(), sums.as_ref(), sealed, None, access)?;
-        if crc32fast::hash(&pages.inner.sums) != sealed.sums {
+        if !sealed.digest_matches(&pages.inner.sums) {
             return Err(PageError::Sums { path: path.to_owned() });
         }
         Ok(pages)
@@ -480,13 +500,7 @@ impl Pages {
             }
             let at = page * PAGE;
             let bytes = &inner.data[at..(at + PAGE).min(inner.data.len())];
-            let expected = match bytes.len() == PAGE {
-                true => u32::from_le_bytes(
-                    inner.sums[page * SUM..page * SUM + SUM].try_into().expect("SUM bytes"),
-                ),
-                false => inner.tail,
-            };
-            if page_sum(page as u64, bytes) != expected {
+            if !page_intact(page as u64, bytes, &inner.sums, inner.tail) {
                 let path = inner.path.display();
                 panic!("{path} page {page}: checksum mismatch ({CORRUPTION})");
             }
@@ -503,7 +517,7 @@ pub(crate) fn scrub(
     dir: &Path,
     relative: &str,
     sealed: Sealed,
-) -> io::Result<Checked> {
+) -> Result<Checked, PageError> {
     let path = dir.join(relative);
     let mut report = Checked {
         name: relative.to_owned(),
@@ -519,27 +533,26 @@ pub(crate) fn scrub(
         report.lost = true;
         return Ok(report);
     };
-    let (len, sums) = (data.len()?, sums.read_all()?);
-    if len < sealed.len || (sums.len() as u64) < sealed.full_pages() * SUM as u64 {
-        report.lost = true;
-        return Ok(report);
-    }
+    let lengths = committed_len(data.as_ref(), &path, sealed.len)
+        .and_then(|len| Ok((len, committed_len(sums.as_ref(), &path, sealed.sums_len())?)));
+    let len = match lengths {
+        Ok((len, _)) => len,
+        Err(PageError::Lost { .. }) => {
+            report.lost = true;
+            return Ok(report);
+        }
+        Err(error) => return Err(error),
+    };
     report.orphaned_bytes = len - sealed.len;
-    let committed_sums = &sums[..usize::try_from(sealed.full_pages()).expect("fits") * SUM];
-    report.bad_sums = crc32fast::hash(committed_sums) != sealed.sums;
+    let mut committed_sums = vec![0; usize::try_from(sealed.sums_len()).expect("sums fit usize")];
+    sums.read_exact_at(&mut committed_sums, 0)?;
+    report.bad_sums = !sealed.digest_matches(&committed_sums);
 
     let mut page = vec![0u8; PAGE];
     for index in 0..sealed.len.div_ceil(PAGE as u64) {
         let size = (sealed.len - index * PAGE as u64).min(PAGE as u64) as usize;
         data.read_exact_at(&mut page[..size], index * PAGE as u64)?;
-        let expected = match size == PAGE {
-            true => {
-                let at = usize::try_from(index).expect("page index fits usize") * SUM;
-                u32::from_le_bytes(sums[at..at + SUM].try_into().expect("SUM bytes"))
-            }
-            false => sealed.tail,
-        };
-        if page_sum(index, &page[..size]) != expected {
+        if !page_intact(index, &page[..size], &committed_sums, sealed.tail) {
             report.bad_pages.push(index);
         }
     }

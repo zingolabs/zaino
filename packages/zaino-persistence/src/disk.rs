@@ -33,7 +33,7 @@ use crate::{
     },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
-    pages::{footprint, scrub, Sealed},
+    pages::{footprint, scrub, PageError, Sealed},
     port::{
         table_slot, BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema,
         SequenceId, SequenceRead, Store, Verification, View,
@@ -256,7 +256,7 @@ fn verify_committed(
             .files(schema)
             .into_iter()
             .map(|(name, sealed)| scrub(fs, path, &name, sealed))
-            .collect::<io::Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>, PageError>>()?;
         if units.iter().any(|unit| unit.lost) {
             let newer = committed()?;
             if newer != manifest {
