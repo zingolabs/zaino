@@ -408,8 +408,8 @@ zainod dies rather than serve from a state it cannot vouch for
 ## Logging
 
 `zainodlib::logging::init()` installs the global `tracing` subscriber and the
-panic hook; `zainod start` calls it, `zainod verify` does not (stdout carries
-only the JSON report). Everything is read from the environment:
+panic hook; `zainod start` calls it before `zainodlib::run` (which installs
+none of its own), `zainod verify` does not (stdout carries only the JSON report). Everything is read from the environment:
 
 | Variable | Effect |
 |---|---|

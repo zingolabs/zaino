@@ -238,8 +238,9 @@ pub(crate) struct Bootstrap {
     pub(crate) rate: Option<u64>,
 }
 
+/// Declared in pipeline order (`Ord`: earliest = slowest)
 #[cfg(feature = "snapshot")]
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Phase {
     Downloading,
@@ -253,16 +254,24 @@ static BOOTSTRAP: std::sync::Mutex<Option<Bootstrap>> = std::sync::Mutex::new(No
 /// `None` = bootstrap over (the indexer's own status takes over)
 #[cfg(feature = "snapshot")]
 pub(crate) fn bootstrap(progress: Option<Bootstrap>) {
-    // Poison-tolerant: the lock only guards a value swap
-    *BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = progress;
+    *bootstrap_lock() = progress;
+}
+
+/// Poison-tolerant: the lock only guards a value swap
+#[cfg(feature = "snapshot")]
+fn bootstrap_lock() -> std::sync::MutexGuard<'static, Option<Bootstrap>> {
+    BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(feature = "snapshot")]
+fn current_bootstrap() -> Option<Bootstrap> {
+    bootstrap_lock().clone()
 }
 
 /// While a bootstrap runs: its bytes (`rate` downloading only)
 fn bootstrap_bytes() -> Option<Progress> {
     #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) =
-        BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-    {
+    if let Some(bootstrap) = current_bootstrap() {
         return Some(Progress {
             done: bootstrap.done,
             total: bootstrap.total,
@@ -276,9 +285,7 @@ fn bootstrap_bytes() -> Option<Progress> {
 /// While a bootstrap runs: its phase, source, height and archive count, verbatim
 pub(crate) fn bootstrap_report() -> Option<serde_json::Value> {
     #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) =
-        BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
-    {
+    if let Some(bootstrap) = current_bootstrap() {
         return serde_json::to_value(bootstrap).ok();
     }
     None
@@ -520,9 +527,7 @@ pub(crate) fn startup(live: bool) -> Startup {
 
 fn bootstrap_progress() -> Vec<Option<u64>> {
     #[cfg(feature = "snapshot")]
-    if let Some(bootstrap) =
-        BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()
-    {
+    if let Some(bootstrap) = current_bootstrap() {
         return vec![Some(bootstrap.phase as u64), Some(bootstrap.done)];
     }
     Vec::new()

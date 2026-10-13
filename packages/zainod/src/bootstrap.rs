@@ -82,12 +82,17 @@ fn error(message: impl std::fmt::Display) -> IndexerError {
     IndexerError::Bootstrap(message.to_string())
 }
 
+/// `map_err` adapter: failure → `<path>: <error>`
+fn at<E: std::fmt::Display>(path: &Path) -> impl FnOnce(E) -> IndexerError + '_ {
+    move |e| error(format!("{}: {e}", path.display()))
+}
+
 /// Fills every enabled index whose directory is missing or empty; a no-op once none is
 pub(crate) async fn bootstrap(
     snapshot: &SnapshotConfig,
     config: &DaemonConfig,
 ) -> Result<(), IndexerError> {
-    let empty: Vec<(IndexKind, PathBuf)> = SNAPSHOTTED
+    let empty: Vec<(IndexKind, PathBuf)> = zaino_nfs::INDEXES
         .into_iter()
         .filter_map(|kind| Some((kind, config.enabled(kind)?.path)))
         .filter(|(_, path)| is_empty(path))
@@ -151,15 +156,6 @@ pub(crate) async fn bootstrap(
     Ok(())
 }
 
-/// Archive per index (`kind.name()`)
-const SNAPSHOTTED: [IndexKind; 5] = [
-    IndexKind::CompactBlock,
-    IndexKind::ValueBalance,
-    IndexKind::BlockHash,
-    IndexKind::TreeState,
-    IndexKind::TransparentAddress,
-];
-
 fn is_empty(path: &Path) -> bool {
     std::fs::read_dir(path).map_or(true, |mut entries| entries.next().is_none())
 }
@@ -205,8 +201,8 @@ fn space_needed(fetches: &[Fetch]) -> Result<BTreeMap<u64, (PathBuf, u64)>, Inde
     let mut need = BTreeMap::new();
     for fetch in fetches.iter().filter(|fetch| !fetch.unpacked()) {
         let dir = fetch.staging.parent().ok_or_else(|| error("staging has no parent"))?;
-        std::fs::create_dir_all(dir).map_err(|e| error(format!("{}: {e}", dir.display())))?;
-        let dev = std::fs::metadata(dir).map_err(|e| error(format!("{}: {e}", dir.display())))?;
+        std::fs::create_dir_all(dir).map_err(at(dir))?;
+        let dev = std::fs::metadata(dir).map_err(at(dir))?;
         let staged = disk_bytes(&fetch.staging).unwrap_or(0);
         let bytes = fetch.archive.archive_bytes + fetch.archive.installed_bytes;
         need.entry(dev.dev()).or_insert_with(|| (dir.to_owned(), 0)).1 +=
@@ -218,8 +214,7 @@ fn space_needed(fetches: &[Fetch]) -> Result<BTreeMap<u64, (PathBuf, u64)>, Inde
 /// Refused before any download (`f_bavail`: root's reserve is not ours)
 fn check_space(fetches: &[Fetch]) -> Result<(), IndexerError> {
     for (dir, bytes) in space_needed(fetches)?.into_values() {
-        let stat =
-            rustix::fs::statvfs(&dir).map_err(|e| error(format!("{}: {e}", dir.display())))?;
+        let stat = rustix::fs::statvfs(&dir).map_err(at(&dir))?;
         let free = stat.f_bavail.saturating_mul(stat.f_frsize);
         if bytes > free {
             return Err(error(format!(
@@ -255,32 +250,29 @@ async fn install(
         let _ = std::fs::remove_file(fetch.staging.join(ARCHIVE));
     }
     rename_into(&fetch.staging.join(UNPACKED), &fetch.path)?;
-    std::fs::remove_dir_all(&fetch.staging)
-        .map_err(|e| error(format!("{}: {e}", fetch.staging.display())))?;
+    std::fs::remove_dir_all(&fetch.staging).map_err(at(&fetch.staging))?;
     board.installed(slot);
     debug!(index = fetch.kind.name(), "Index snapshot installed");
     Ok(())
 }
 
 fn marker(path: &Path) -> Result<(), IndexerError> {
-    std::fs::write(path, b"").map_err(|e| error(format!("{}: {e}", path.display())))
+    std::fs::write(path, b"").map_err(at(path))
 }
 
 /// `src` (unpacked) → `index` path; an empty directory there is replaced
 fn rename_into(src: &Path, index: &Path) -> Result<(), IndexerError> {
     if index.exists() {
-        std::fs::remove_dir(index).map_err(|e| error(format!("{}: {e}", index.display())))?;
+        std::fs::remove_dir(index).map_err(at(index))?;
     }
     std::fs::rename(src, index)
         .map_err(|e| error(format!("{} → {}: {e}", src.display(), index.display())))
 }
 
-/// Per-archive step, slowest = `/statusz` `phase`
+/// Per-archive step, slowest active one = `/statusz` `phase`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Step {
-    Downloading,
-    Verifying,
-    Unpacking,
+    Active(Phase),
     Installed,
 }
 
@@ -296,17 +288,13 @@ struct Slot {
 /// Slowest step's bytes (archives past it counted whole); `None` = every archive installed
 fn overall(slots: &[Slot], source: &str, height: u32) -> Option<Bootstrap> {
     let slowest = slots.iter().map(|slot| slot.step).min()?;
-    let phase = match slowest {
-        Step::Downloading => Phase::Downloading,
-        Step::Verifying => Phase::Verifying,
-        Step::Unpacking => Phase::Unpacking,
-        Step::Installed => return None,
-    };
+    let Step::Active(phase) = slowest else { return None };
     let done = |slot: &Slot| match slot.step > slowest {
         true => slot.bytes,
         false => slot.done.load(Ordering::Relaxed).min(slot.bytes),
     };
-    let rate = slots.iter().filter(|slot| slot.step == Step::Downloading).map(|slot| slot.rate);
+    let downloading = |slot: &&Slot| slot.step == Step::Active(Phase::Downloading);
+    let rate = slots.iter().filter(downloading).map(|slot| slot.rate);
     Some(Bootstrap {
         phase,
         source: source.to_owned(),
@@ -328,10 +316,11 @@ struct Board {
 impl Board {
     fn new(fetches: &[Fetch], source: String, height: u32) -> Self {
         let slot = |fetch: &Fetch| {
-            let (step, done) = match fetch.unpacked() {
-                true => (Step::Unpacking, fetch.archive.archive_bytes),
-                false => (Step::Downloading, 0),
+            let (phase, done) = match fetch.unpacked() {
+                true => (Phase::Unpacking, fetch.archive.archive_bytes),
+                false => (Phase::Downloading, 0),
             };
+            let step = Step::Active(phase);
             let (bytes, done) = (fetch.archive.archive_bytes, Arc::new(AtomicU64::new(done)));
             Slot { step, bytes, rate: 0, done }
         };
@@ -354,14 +343,14 @@ impl Board {
     /// `verifiedLength` present = aria2c hashing (else downloading)
     fn aria2(&self, slot: usize, state: State) {
         let _ = match state.verified {
-            Some(verified) => self.set(slot, Step::Verifying, verified, 0),
-            None => self.set(slot, Step::Downloading, state.done, state.rate),
+            Some(verified) => self.set(slot, Step::Active(Phase::Verifying), verified, 0),
+            None => self.set(slot, Step::Active(Phase::Downloading), state.done, state.rate),
         };
     }
 
     /// Unpack's byte counter (compressed bytes read)
     fn unpacking(&self, slot: usize) -> Arc<AtomicU64> {
-        self.set(slot, Step::Unpacking, 0, 0).unwrap_or_default()
+        self.set(slot, Step::Active(Phase::Unpacking), 0, 0).unwrap_or_default()
     }
 
     fn installed(&self, slot: usize) {
@@ -423,11 +412,10 @@ impl<R: Read> Read for Counted<R> {
 /// escaping `into`
 fn unpack(archive: &Path, into: &Path, read: Arc<AtomicU64>) -> Result<(), IndexerError> {
     if into.exists() {
-        std::fs::remove_dir_all(into).map_err(|e| error(format!("{}: {e}", into.display())))?;
+        std::fs::remove_dir_all(into).map_err(at(into))?;
     }
-    std::fs::create_dir_all(into).map_err(|e| error(format!("{}: {e}", into.display())))?;
-    let file =
-        std::fs::File::open(archive).map_err(|e| error(format!("{}: {e}", archive.display())))?;
+    std::fs::create_dir_all(into).map_err(at(into))?;
+    let file = std::fs::File::open(archive).map_err(at(archive))?;
     let file = io::BufReader::with_capacity(1 << 20, Counted { inner: file, read });
     let zstd = zstd::Decoder::with_buffer(file).map_err(|e| error(format!("unpack: {e}")))?;
     tar::Archive::new(zstd).unpack(into).map_err(|e| error(format!("unpack: {e}")))
@@ -533,7 +521,7 @@ impl Aria2 {
         out: &str,
         sha256: Option<&str>,
     ) -> Result<Value, IndexerError> {
-        std::fs::create_dir_all(dir).map_err(|e| error(format!("{}: {e}", dir.display())))?;
+        std::fs::create_dir_all(dir).map_err(at(dir))?;
         let mut options = json!({ "dir": dir.display().to_string(), "out": out });
         if let Some(sha256) = sha256 {
             options["checksum"] = json!(format!("sha-256={sha256}"));
@@ -610,7 +598,12 @@ mod tests {
     /// `None` once every archive is installed
     #[test]
     fn progress_folds_every_archive_into_the_slowest_phase() {
-        use Step::{Downloading, Installed, Unpacking, Verifying};
+        let (downloading, verifying, unpacking, installed) = (
+            Step::Active(Phase::Downloading),
+            Step::Active(Phase::Verifying),
+            Step::Active(Phase::Unpacking),
+            Step::Installed,
+        );
         let slot = |step, done, rate, bytes| Slot {
             step,
             bytes,
@@ -630,54 +623,54 @@ mod tests {
             (
                 "all queued",
                 [
-                    slot(Downloading, 0, 0, 100),
-                    slot(Downloading, 0, 0, 200),
-                    slot(Downloading, 0, 0, 300),
+                    slot(downloading, 0, 0, 100),
+                    slot(downloading, 0, 0, 200),
+                    slot(downloading, 0, 0, 300),
                 ],
                 Some(at(Phase::Downloading, 0, Some(0))),
             ),
             (
                 "first unpacking while the second downloads",
                 [
-                    slot(Unpacking, 10, 0, 100),
-                    slot(Downloading, 150, 9, 200),
-                    slot(Downloading, 0, 0, 300),
+                    slot(unpacking, 10, 0, 100),
+                    slot(downloading, 150, 9, 200),
+                    slot(downloading, 0, 0, 300),
                 ],
                 Some(at(Phase::Downloading, 100 + 150, Some(9))),
             ),
             (
                 "completedLength past the manifest's bytes",
                 [
-                    slot(Installed, 0, 0, 100),
-                    slot(Downloading, 999, 4, 200),
-                    slot(Downloading, 0, 0, 300),
+                    slot(installed, 0, 0, 100),
+                    slot(downloading, 999, 4, 200),
+                    slot(downloading, 0, 0, 300),
                 ],
                 Some(at(Phase::Downloading, 100 + 200, Some(4))),
             ),
             (
                 "last hashing in aria2",
                 [
-                    slot(Installed, 0, 0, 100),
-                    slot(Unpacking, 50, 0, 200),
-                    slot(Verifying, 120, 0, 300),
+                    slot(installed, 0, 0, 100),
+                    slot(unpacking, 50, 0, 200),
+                    slot(verifying, 120, 0, 300),
                 ],
                 Some(at(Phase::Verifying, 100 + 200 + 120, None)),
             ),
             (
                 "last unpacking",
                 [
-                    slot(Installed, 0, 0, 100),
-                    slot(Installed, 0, 0, 200),
-                    slot(Unpacking, 30, 0, 300),
+                    slot(installed, 0, 0, 100),
+                    slot(installed, 0, 0, 200),
+                    slot(unpacking, 30, 0, 300),
                 ],
                 Some(at(Phase::Unpacking, 100 + 200 + 30, None)),
             ),
             (
                 "all installed",
                 [
-                    slot(Installed, 0, 0, 100),
-                    slot(Installed, 0, 0, 200),
-                    slot(Installed, 0, 0, 300),
+                    slot(installed, 0, 0, 100),
+                    slot(installed, 0, 0, 200),
+                    slot(installed, 0, 0, 300),
                 ],
                 None,
             ),

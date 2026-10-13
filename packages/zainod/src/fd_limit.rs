@@ -9,13 +9,11 @@ use crate::error::IndexerError;
 
 /// fds besides client sockets: index files (~290 measured on a syncing mainnet node, bounded by
 /// tree levels + LSM segment caps), validator RPC pools, metrics, logs
-const RESERVED: u64 = 1024;
+pub(crate) const RESERVED: u64 = 1024;
 
 /// Raises the soft limit to the hard one, then refuses a `max_connections` it cannot hold
 pub(crate) fn raise_for(max_connections: NonZeroUsize) -> Result<(), IndexerError> {
-    let limit = rlimit::increase_nofile_limit(u64::MAX).map_err(|error| {
-        IndexerError::ConfigError(format!("raising the open-file limit: {error}"))
-    })?;
+    let limit = rlimit::increase_nofile_limit(u64::MAX).map_err(IndexerError::RaiseFdLimit)?;
     fits(max_connections, limit)?;
     info!(limit, "Open-file limit");
     Ok(())
@@ -25,11 +23,7 @@ fn fits(max_connections: NonZeroUsize, limit: u64) -> Result<(), IndexerError> {
     let needed = u64::try_from(max_connections.get()).unwrap_or(u64::MAX).saturating_add(RESERVED);
     match needed <= limit {
         true => Ok(()),
-        false => Err(IndexerError::ConfigError(format!(
-            "grpc.max_connections = {max_connections} needs {needed} open files ({RESERVED} kept \
-             for indexes and the validator) and the limit is {limit}: raise the hard limit \
-             (systemd LimitNOFILE=, docker --ulimit nofile=) or lower grpc.max_connections"
-        ))),
+        false => Err(IndexerError::FdLimit { max_connections, needed, limit }),
     }
 }
 

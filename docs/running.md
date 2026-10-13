@@ -25,7 +25,8 @@ zainod verify -c /path/to/zainod.toml    # read-only page-checksum scrub
 zainod hold -c /path/to/zainod.toml      # out of rotation until `zainod resume`
 ```
 
-`generate-config` writes to the default config path unless given `-o <FILE>`.
+`-c, --config <FILE>` works before or after any subcommand. `generate-config` writes to
+`-o <FILE>` if given, else to the `--config` path, else to the default config path.
 [`verify`](../packages/zainod/usage.md#zainod-verify) is safe beside a live daemon;
 [`hold` / `resume`](../packages/zainod/usage.md#operator-hold) drain a node behind a load
 balancer.

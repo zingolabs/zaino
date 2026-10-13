@@ -102,7 +102,7 @@ pub(crate) fn view<S: ChainDataSource>(
 
 /// [`DaemonConfig::validate`] refuses it first
 fn too_few_connections(validator: &TrustedValidatorConfig) -> IndexerError {
-    IndexerError::ConfigError(format!("{}: max_connections too low", validator.jsonrpc_address))
+    IndexerError::Config(format!("{}: max_connections too low", validator.jsonrpc_address))
 }
 
 /// `validator_client = "legacy_rpc"`: every question over its JSON-RPC
@@ -127,7 +127,7 @@ pub(crate) fn grpc_client(
     validator: &TrustedValidatorConfig,
 ) -> Result<ZcashGrpcClient, IndexerError> {
     let indexer = validator.indexer_address.as_deref().ok_or_else(|| {
-        IndexerError::ConfigError(format!("{}: no indexer_address", validator.jsonrpc_address))
+        IndexerError::Config(format!("{}: no indexer_address", validator.jsonrpc_address))
     })?;
     let legacy = legacy_client(validator)?;
     let tls = validator.indexer_tls();

@@ -32,14 +32,14 @@ mod stores;
 mod utxos;
 pub mod verify;
 
+pub use crate::config::generate_config;
+
 /// Until a shutdown signal (`Ok`) or the first failure (`Err`)
 ///
 /// - no in-process restart: failure ends the process, the service manager restarts it, next boot
 ///   proves its state from disk (`zaino-persistence/usage.md` "The commit and crash contract")
-/// - logging initialised by the caller
+/// - caller installs logging first ([`logging::init`]; none installed = every line dropped)
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
-    crate::logging::try_init()
-        .map_err(|error| IndexerError::ConfigError(format!("logging: {error}")))?;
     daemon(config_path).instrument(crate::logging::component("Zainod")).await
 }
 

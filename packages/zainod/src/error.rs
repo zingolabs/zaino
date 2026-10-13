@@ -1,11 +1,30 @@
 //! zainod daemon errors
 
+use std::num::NonZeroUsize;
+use std::path::PathBuf;
+
 /// Configuring, booting or running the daemon (`TaskEnded` = a task ended cleanly before any
 /// shutdown signal: never expected, a fault)
 #[derive(Debug, thiserror::Error)]
 pub enum IndexerError {
     #[error("configuration error: {0}")]
-    ConfigError(String),
+    Config(String),
+    #[error("writing {}: {source}", path.display())]
+    ConfigFile { path: PathBuf, source: std::io::Error },
+    #[error("raising the open-file limit: {0}")]
+    RaiseFdLimit(std::io::Error),
+    #[error(
+        "grpc.max_connections = {max_connections} needs {needed} open files ({reserved} kept for \
+         indexes and the validator) and the limit is {limit}: raise the hard limit (systemd \
+         LimitNOFILE=, docker --ulimit nofile=) or lower grpc.max_connections",
+        reserved = crate::fd_limit::RESERVED
+    )]
+    FdLimit { max_connections: NonZeroUsize, needed: u64, limit: u64 },
+    #[error(
+        "p2p.enabled on a regtest whose validator never activates Blossom: peers' headers cannot \
+         be checked"
+    )]
+    NoHeaderRules,
     #[error(transparent)]
     ValidatorEndpoint(#[from] zaino_source::EndpointError),
     #[error(transparent)]
@@ -23,9 +42,9 @@ pub enum IndexerError {
     #[error(transparent)]
     Tls(#[from] zaino_grpc::TlsError),
     #[error(transparent)]
-    TokioJoinError(#[from] tokio::task::JoinError),
+    Join(#[from] tokio::task::JoinError),
     #[error("metrics error: {0}")]
-    MetricsError(String),
+    Metrics(String),
     #[cfg(feature = "snapshot")]
     #[error("index snapshot: {0}")]
     Bootstrap(String),

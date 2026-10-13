@@ -21,9 +21,9 @@
 //! - Every stage = one plain task in a `JoinSet`; the first to end ends the daemon
 
 use std::future::Future;
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use futures::future::BoxFuture;
 use tokio::sync::{mpsc, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -39,9 +39,7 @@ use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
 use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
-use zaino_persistence::{
-    DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine, Schema,
-};
+use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine};
 use zaino_primitives::network::network_name;
 use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth, UpgradeSchedule};
 use zaino_snapshot::Publisher;
@@ -134,13 +132,7 @@ async fn upgrade_schedule<S: ChainDataSource>(
 
 /// The rules a peer's header meets on `network`
 fn header_rules(network: NetworkType, schedule: &UpgradeSchedule) -> Result<Params, IndexerError> {
-    Params::for_network(network, schedule).ok_or_else(|| {
-        IndexerError::ConfigError(
-            "p2p.enabled on a regtest whose validator never activates Blossom: peers' headers \
-             cannot be checked"
-                .to_owned(),
-        )
-    })
+    Params::for_network(network, schedule).ok_or(IndexerError::NoHeaderRules)
 }
 
 /// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
@@ -185,7 +177,6 @@ async fn boot_over<S: ChainDataSource>(
     mut tasks: JoinSet<TaskExit>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
-    let fs = RealFs::shared();
     let chainview_span = component("ChainView");
     let wiring = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
     let balancing = wiring.balancing.run(cancel.child_token());
@@ -196,12 +187,14 @@ async fn boot_over<S: ChainDataSource>(
     let viewed = chainview_span
         .in_scope(|| crate::chainview::view(&config, &wiring.balancer, wiring.p2p, schedule))?;
     let inputs = Inputs {
+        fs: RealFs::shared(),
+        started,
         chain: viewed.header_sync.subscribe(),
         view: Arc::clone(&viewed.view),
         balancer: wiring.balancer.clone(),
         schedule,
     };
-    let mut tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks).await?;
+    let mut tasks = pipeline(&config, inputs, serving, &cancel, tasks)?;
 
     let header_sync = match config.p2p.enabled {
         true => viewed.header_sync.with_peers(header_rules(config.network, &schedule)?),
@@ -232,86 +225,95 @@ async fn boot_over<S: ChainDataSource>(
     Ok(tokio::spawn(supervise(tasks, cancel, shutdown_signals())))
 }
 
-/// Pipeline inputs (production: header sync + trusted validators; tests: mocks)
+/// Pipeline inputs (production: header sync + trusted validators on disk; tests: mocks on `SimFs`)
 struct Inputs<S: ChainDataSource> {
+    fs: Arc<dyn Fs>,
+    started: std::time::Instant,
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
     balancer: TrafficBalancer<S>,
     schedule: UpgradeSchedule,
 }
 
-/// The NFS, every enabled index's writer, the global snapshot's publisher, the gRPC server:
-/// opened, subscribed, bound, spawned into `tasks`
-///
-/// - an early `Err` leaves nothing running (`tasks` dropped before the NFS: no writer sees its
-///   stream end)
-async fn pipeline<S: ChainDataSource>(
+/// The NFS, every enabled index's writer, the global snapshot's publisher, the gRPC routes:
+/// [`open_indexes`], then [`run_pipeline`] (an `Err` = nothing of it spawned)
+fn pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
-    fs: Arc<dyn Fs>,
     inputs: Inputs<S>,
     serving: Serving<S>,
     cancel: &CancellationToken,
-    started: std::time::Instant,
     tasks: JoinSet<TaskExit>,
 ) -> Result<JoinSet<TaskExit>, IndexerError> {
-    let network = config.network;
+    let indexes = open_indexes(config, &inputs)?;
+    Ok(run_pipeline(config, indexes, inputs, serving, cancel, tasks))
+}
+
+/// Every enabled index opened, subscribed to the final stream, added to the NFS
+fn open_indexes<S: ChainDataSource>(
+    config: &DaemonConfig,
+    inputs: &Inputs<S>,
+) -> Result<Indexes<S>, IndexerError> {
+    let (network, lookahead) = (config.network, config.sync.concurrency);
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let params = ChainParams { network, schedule: inputs.schedule };
-    let (chain, balancer, lookahead) =
-        (inputs.chain, inputs.balancer.clone(), config.sync.concurrency);
-    let follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
-    let nfs = Nfs::new(chain, balancer, params, depth, lookahead);
-    let mut indexes = Indexes { follower, nfs, opened: Vec::new() };
-    // declared after the follower: dropped first
-    let mut tasks = tasks;
-    let engine = DiskEngine::new(fs, LsmConfig::from(&config.sync.lsm_store));
-
+    let (chain, balancer) = (&inputs.chain, &inputs.balancer);
+    let mut indexes = Indexes {
+        follower: FinalFollower::new(chain.clone(), balancer.clone(), lookahead),
+        nfs: Nfs::new(chain.clone(), balancer.clone(), params, depth, lookahead),
+        engine: DiskEngine::new(Arc::clone(&inputs.fs), LsmConfig::from(&config.sync.lsm_store)),
+        network,
+        opened: Vec::new(),
+        writers: Vec::new(),
+    };
     if let Some((cb, vb)) = config.compact_block()? {
         // compact-block folds after value-balance (its fees)
         let mut fee_sink = FeeSink::new();
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
-        let schema = stores::schema(IndexKind::ValueBalance, network);
-        let buffer = zaino_internal_value_balance::WRITE_BUFFER;
-        let (span, writer) = open(&engine, &vb, schema, ValueBalanceIndexWriter::new, buffer)?;
-        let blocks = indexes.add(IndexKind::ValueBalance, writer.handle(), &vb, &span);
-        let run = writer.run(blocks, fee_sink);
-        spawn_infallible(&mut tasks, IndexKind::ValueBalance.name(), span, run);
-        let schema = stores::schema(IndexKind::CompactBlock, network);
-        let buffer = zaino_index_compact_block::WRITE_BUFFER;
-        let (span, writer) = open(&engine, &cb, schema, CompactBlockIndexWriter::new, buffer)?;
-        let blocks = indexes.add(IndexKind::CompactBlock, writer.handle(), &cb, &span);
-        let run = writer.run(blocks, fees);
-        spawn_infallible(&mut tasks, IndexKind::CompactBlock.name(), span, run);
+        let (vb_new, vb_handle) = (ValueBalanceIndexWriter::new, ValueBalanceIndexWriter::handle);
+        indexes.open(IndexKind::ValueBalance, &vb, vb_new, vb_handle, |writer, blocks| {
+            writer.run(blocks, fee_sink)
+        })?;
+        let (cb_new, cb_handle) = (CompactBlockIndexWriter::new, CompactBlockIndexWriter::handle);
+        indexes.open(IndexKind::CompactBlock, &cb, cb_new, cb_handle, |writer, blocks| {
+            writer.run(blocks, fees)
+        })?;
     }
     if let Some(bh) = config.enabled(IndexKind::BlockHash) {
-        let schema = stores::schema(IndexKind::BlockHash, network);
-        let buffer = zaino_internal_block_hash_to_height::WRITE_BUFFER;
-        let (span, writer) = open(&engine, &bh, schema, BlockHashIndexWriter::new, buffer)?;
-        let blocks = indexes.add(IndexKind::BlockHash, writer.handle(), &bh, &span);
-        spawn_infallible(&mut tasks, IndexKind::BlockHash.name(), span, writer.run(blocks));
+        use BlockHashIndexWriter as W;
+        indexes.open(IndexKind::BlockHash, &bh, W::new, W::handle, W::run)?;
     }
     if let Some(ts) = config.enabled(IndexKind::TreeState) {
-        let schema = stores::schema(IndexKind::TreeState, network);
-        let buffer = zaino_index_tree_state::WRITE_BUFFER;
-        let (span, writer) = open(&engine, &ts, schema, TreeStateIndexWriter::new, buffer)?;
-        let blocks = indexes.add(IndexKind::TreeState, writer.handle(), &ts, &span);
-        spawn_infallible(&mut tasks, IndexKind::TreeState.name(), span, writer.run(blocks));
+        use TreeStateIndexWriter as W;
+        indexes.open(IndexKind::TreeState, &ts, W::new, W::handle, W::run)?;
     }
     if let Some(ta) = config.enabled(IndexKind::TransparentAddress) {
-        let kind = IndexKind::TransparentAddress;
-        let schema = stores::schema(kind, network);
-        let buffer = zaino_index_transparent_address::WRITE_BUFFER;
-        let (span, writer) =
-            open(&engine, &ta, schema, TransparentAddressIndexWriter::new, buffer)?;
-        let blocks = indexes.add(kind, writer.handle(), &ta, &span);
-        spawn_infallible(&mut tasks, kind.name(), span, writer.run(blocks));
+        use TransparentAddressIndexWriter as W;
+        indexes.open(IndexKind::TransparentAddress, &ta, W::new, W::handle, W::run)?;
     }
-    let publisher = Publisher::new(indexes.nfs.indexed(), inputs.view.subscriber(), depth);
+    Ok(indexes)
+}
+
+/// Every opened index's writer, the follower, NFS, publisher, progress + egress spawned into
+/// `tasks`; gRPC routed; `/statusz` sources published
+fn run_pipeline<S: ChainDataSource>(
+    config: &DaemonConfig,
+    indexes: Indexes<S>,
+    inputs: Inputs<S>,
+    serving: Serving<S>,
+    cancel: &CancellationToken,
+    mut tasks: JoinSet<TaskExit>,
+) -> JoinSet<TaskExit> {
+    let network = config.network;
+    let depth = ReorgDepth::new(config.sync.finalised_depth);
+    let Indexes { follower, nfs, opened, writers, .. } = indexes;
+    for (kind, span, writer) in writers {
+        spawn_infallible(&mut tasks, kind.name(), span, writer);
+    }
+    let publisher = Publisher::new(nfs.indexed(), inputs.view.subscriber(), depth);
     let snapshots = publisher.handle();
     let members = inputs.balancer.members();
 
     // --- run: every gRPC answer off one snapshot from here on
-    let Indexes { follower, nfs, opened } = indexes;
     let progress = follower.progress();
     spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
@@ -326,7 +328,7 @@ async fn pipeline<S: ChainDataSource>(
     });
     let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
     if let Some(polling) = inputs.view.peer_mempool(utxos) {
-        if config.compact_block()?.is_none() {
+        if config.enabled(IndexKind::CompactBlock).is_none() {
             warn!(
                 "p2p.enabled without index.compact_block: no UTXO set, peers admit no transaction"
             );
@@ -350,7 +352,7 @@ async fn pipeline<S: ChainDataSource>(
     spawn(&mut tasks, "egress", component("Grpc"), measuring);
     crate::status::publish(crate::status::Sources {
         network: network_name(network),
-        started,
+        started: inputs.started,
         snapshots,
         progress,
         members,
@@ -359,49 +361,47 @@ async fn pipeline<S: ChainDataSource>(
         grpc_load: serving.load,
         egress: egress_windows,
     });
-    Ok(tasks)
+    tasks
 }
 
-/// The final path + the tip overlay + every index added so far (each reported on once spawned)
+/// Final path + tip overlay + every index opened so far (its writer queued, spawned by
+/// [`run_pipeline`])
 struct Indexes<S> {
     follower: FinalFollower<S>,
     nfs: Nfs<S, DiskView>,
+    engine: DiskEngine,
+    network: NetworkType,
     opened: Vec<crate::progress::Index>,
+    writers: Vec<(IndexKind, Span, BoxFuture<'static, ()>)>,
 }
 
 impl<S: ChainDataSource> Indexes<S> {
-    /// `kind` enabled: its handle to the NFS, its final stream out
-    fn add(
+    /// `config.path` opened as `kind`'s store (at its crate's write buffer) under its component
+    /// span → `writer`'s handle to the follower + NFS, its `run` over the final stream queued
+    fn open<W, F>(
         &mut self,
         kind: IndexKind,
-        handle: IndexHandle<DiskView>,
         config: &IndexConfig,
-        span: &Span,
-    ) -> Subscription<Block> {
+        writer: impl FnOnce(DiskStore) -> W,
+        handle: impl FnOnce(&W) -> IndexHandle<DiskView>,
+        run: impl FnOnce(W, Subscription<Block>) -> F,
+    ) -> Result<(), IndexerError>
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let (schema, write_buffer) = stores::schema(kind, self.network);
+        let span = crate::logging::index_component(kind.name());
+        let writer = span.in_scope(|| {
+            debug!("Opening from {}", crate::logging::shown_path(&config.path));
+            self.engine.open(&config.path, &schema, write_buffer).map(writer)
+        })?;
+        let handle = handle(&writer);
         let blocks = self.follower.subscribe(kind, handle.tip(), config.queue_bytes);
         self.nfs.add(kind, handle.clone());
-        let (span, dir) = (span.clone(), config.path.clone());
-        self.opened.push(crate::progress::Index { kind, span, dir, handle });
-        blocks
+        self.writers.push((kind, span.clone(), Box::pin(run(writer, blocks))));
+        self.opened.push(crate::progress::Index { kind, span, dir: config.path.clone(), handle });
+        Ok(())
     }
-}
-
-/// `config.path` opened as `schema`'s store (committing at the index's own write buffer) and
-/// handed to `writer`, under the index's component span (logged); the span then carries the
-/// index's task
-fn open<W>(
-    engine: &DiskEngine,
-    config: &IndexConfig,
-    schema: Schema,
-    writer: impl FnOnce(DiskStore) -> W,
-    write_buffer: NonZeroUsize,
-) -> Result<(Span, W), IndexerError> {
-    let span = crate::logging::index_component(schema.kind.name());
-    let opened = span.in_scope(|| {
-        debug!("Opening from {}", crate::logging::shown_path(&config.path));
-        engine.open(&config.path, &schema, write_buffer).map(writer)
-    })?;
-    Ok((span, opened))
 }
 
 /// Signal → `Ok(())`; else the first failure (ending cleanly before shutdown is one)
@@ -432,7 +432,7 @@ async fn supervise(
             }
             Err(error) => {
                 error!(%error, "Task panicked");
-                failure.get_or_insert(IndexerError::TokioJoinError(error));
+                failure.get_or_insert(IndexerError::Join(error));
             }
         }
     }
@@ -447,7 +447,7 @@ fn first_failure(exit: Result<TaskExit, tokio::task::JoinError>) -> IndexerError
             error!(task, %error, "Task failed");
             error
         }
-        Err(error) => IndexerError::TokioJoinError(error),
+        Err(error) => IndexerError::Join(error),
     }
 }
 
@@ -522,7 +522,7 @@ mod tests {
         type Run = Pin<Box<dyn Future<Output = Result<(), IndexerError>> + Send>>;
         let early: [(&str, Run); 3] = [
             ("ends ok", Box::pin(async { Ok(()) })),
-            ("fails", Box::pin(async { Err(IndexerError::ConfigError("boom".into())) })),
+            ("fails", Box::pin(async { Err(IndexerError::Config("boom".into())) })),
             ("panics", Box::pin(async { panic!("boom") })),
         ];
 
@@ -545,10 +545,10 @@ mod tests {
             let named = match case {
                 "ends ok" => matches!(outcome, Err(IndexerError::TaskEnded { task: "early" })),
                 "fails" => {
-                    matches!(outcome, Err(IndexerError::ConfigError(ref boom)) if boom == "boom")
+                    matches!(outcome, Err(IndexerError::Config(ref boom)) if boom == "boom")
                 }
                 _ => {
-                    matches!(outcome, Err(IndexerError::TokioJoinError(ref join)) if join.is_panic())
+                    matches!(outcome, Err(IndexerError::Join(ref join)) if join.is_panic())
                 }
             };
             assert!(named, "{case}: {outcome:?}");
@@ -630,7 +630,9 @@ mod tests {
         let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth, schedule);
         let view = Arc::new(view.expect("one endpoint"));
         let fold = view.observation_fold();
-        let inputs = Inputs { chain, view: Arc::clone(&view), balancer, schedule };
+        let fs = zaino_persistence::fs::SimFs::new();
+        let started = std::time::Instant::now();
+        let inputs = Inputs { fs, started, chain, view: Arc::clone(&view), balancer, schedule };
         let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
         let address = probe.local_addr().expect("local addr");
         drop(probe);
@@ -640,15 +642,12 @@ mod tests {
         };
         config.sync.finalised_depth = NonZeroU32::new(3).expect("non-zero");
         config.serve.grpc_listen_address = address;
-        let fs = zaino_persistence::fs::SimFs::new();
         let cancel = CancellationToken::new();
-        let started = std::time::Instant::now();
         let mut tasks = JoinSet::new();
         let serving = listen(&config, &cancel, &mut tasks).await.expect("the gRPC listener binds");
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
         spawn_infallible(&mut tasks, "chainview", Span::none(), fold.run(cancel.child_token()));
-        let tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks);
-        let mut tasks = tasks.await.expect("pipeline up");
+        let mut tasks = pipeline(&config, inputs, serving, &cancel, tasks).expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");

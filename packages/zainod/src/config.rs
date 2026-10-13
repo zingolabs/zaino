@@ -6,7 +6,8 @@
 
 use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 use zaino_grpc::GrpcLimits;
 
@@ -44,36 +45,22 @@ pub(crate) const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct TrustedValidatorConfig {
-    /// JSON-RPC listen address (`host:port`)
     pub(crate) jsonrpc_address: String,
-    /// Auth cookie path (cookie auth only)
     pub(crate) cookie_path: Option<PathBuf>,
-    /// Basic-auth user
     pub(crate) user: Option<String>,
-    /// Basic-auth password
     pub(crate) password: Option<String>,
-    /// Seconds to open a connection
     pub(crate) connect_timeout_secs: NonZeroU64,
-    /// Seconds of silence before a request fails (silence, not total duration: a multi-MB block
-    /// over a slow link takes as long as it takes)
+    /// Silence, not total duration (a multi-MB block over a slow link takes as long as it takes)
     pub(crate) read_timeout_secs: NonZeroU64,
-    /// Requests in flight, >= 5: one for the poll, one reserved per lane (control, interactive,
-    /// bulk) + one shared; the rest go to whichever lane waits
-    ///
-    /// - One connection each; zebrad admits 100 total (shared validator: `instances × this` < 100)
+    /// >= 5: poll + one per lane + one shared (zebrad admits 100 across every instance)
     pub(crate) max_connections: NonZeroU32,
-    /// MiB per second read, paced as read (unset = unlimited; set for a remote/shared validator)
+    /// Unset = unlimited (set for a remote/shared validator)
     pub(crate) max_mib_per_sec: Option<NonZeroU32>,
-    /// zebrad indexer gRPC (`indexer_listen_addr`, `host:port`)
-    ///
-    /// - Tip + mempool push streams wake the poller at once; polling → 15 s reconcile while up
-    /// - Unset = poll every second
+    /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
     pub(crate) indexer_address: Option<String>,
-    /// Mutual TLS to `indexer_address` (unset = plaintext; zakurad requires it off loopback)
+    /// Unset = plaintext (zakurad requires it off loopback)
     pub(crate) indexer_tls: Option<IndexerTlsConfig>,
-    /// Tier: every 0 asked before any 1, 1 before 2, … (a lower tier = overflow + hedges only)
-    ///
-    /// - e.g. ours on the LAN = 0, a partner's across an ocean = 1
+    /// Every 0 asked before any 1 (higher tier = overflow + hedges only)
     pub(crate) priority: u8,
 }
 
@@ -104,13 +91,12 @@ impl Default for TrustedValidatorConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct IndexerTlsConfig {
-    /// CA that signed the validator's indexer certificate
     pub(crate) ca_path: PathBuf,
-    /// This zainod's client certificate chain, leaf first
+    /// Leaf first
     pub(crate) cert_path: PathBuf,
-    /// Its private key (PKCS#8, PKCS#1 or SEC1)
+    /// PKCS#8, PKCS#1 or SEC1
     pub(crate) key_path: PathBuf,
-    /// Name on the validator's certificate (unset = the `indexer_address` host)
+    /// Unset = the `indexer_address` host
     pub(crate) server_name: Option<String>,
 }
 
@@ -173,12 +159,11 @@ impl Default for Indexes {
     }
 }
 
-/// One `[index.<name>]` table
+/// One `[index.<name>]` table (`path` created if absent)
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct IndexTable {
-    /// Build this index and serve the methods it backs (off = they answer `UNIMPLEMENTED`)
+    /// Off = its methods answer `UNIMPLEMENTED`
     enabled: bool,
-    /// Storage directory, created if absent
     path: PathBuf,
 }
 
@@ -233,20 +218,15 @@ fn mib(value: NonZeroU32) -> NonZeroUsize {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct ServeConfig {
-    /// `CompactTxStreamer` listen address
     pub(crate) grpc_listen_address: SocketAddr,
-    /// Max transparent receives one request walks, across all its addresses
-    ///
-    /// - Over it = `RESOURCE_EXHAUSTED`, never a short list or partial balance
-    /// - Every address method walks the whole history, whatever height range it asks
+    /// Across one request's addresses, whole history (over = `RESOURCE_EXHAUSTED`, never partial)
     pub(crate) max_address_rows: NonZeroUsize,
-    /// TLS on the gRPC listener (absent = plaintext HTTP/2, for a TLS-terminating proxy)
+    /// Absent = plaintext HTTP/2 (for a TLS-terminating proxy)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tls: Option<TlsConfig>,
-    /// zainod's own state, kept across restarts (`zainod hold` writes its marker here)
+    /// Kept across restarts (`zainod hold` writes its marker here)
     pub(crate) state_dir: PathBuf,
-    /// Seconds a held node keeps serving open connections before GOAWAY'ing them (>= load
-    /// balancer's mark-down time + DNS TTL)
+    /// >= load balancer's mark-down time + DNS TTL
     pub(crate) hold_goaway_delay_secs: u64,
 }
 
@@ -256,9 +236,9 @@ pub(crate) struct ServeConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TlsConfig {
-    /// Certificate chain, leaf first
+    /// Leaf first
     pub(crate) cert_path: PathBuf,
-    /// Private key (PKCS#8, PKCS#1 or SEC1)
+    /// PKCS#8, PKCS#1 or SEC1
     pub(crate) key_path: PathBuf,
 }
 
@@ -287,52 +267,35 @@ impl ServeConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct GrpcConfig {
-    /// Connections at once, further accepts closed (one fd each: must fit the open-file limit,
-    /// else zainod refuses to start)
+    /// One fd each (must fit the open-file limit, else zainod refuses to start)
     pub(crate) max_connections: NonZeroUsize,
-    /// Connections per client (one wallet != whole cap; client = peer address, or the PROXY
-    /// header's behind a `trusted_proxies` entry)
+    /// Client = peer address, or the PROXY header's behind a `trusted_proxies` entry
     pub(crate) max_connections_per_ip: NonZeroUsize,
-    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS`, per connection
+    /// HTTP/2 `SETTINGS_MAX_CONCURRENT_STREAMS`
     pub(crate) max_streams_per_connection: NonZeroU32,
-    /// Work streams (every method but `GetMempoolStream`), across all connections
+    /// Every method but `GetMempoolStream`, across all connections
     pub(crate) max_streams: NonZeroUsize,
-    /// `GetMempoolStream` subscriptions, across all connections (apart from `max_streams`: idle
-    /// until the next block, one per connected wallet)
+    /// `GetMempoolStream`, apart from `max_streams` (idle until the next block)
     pub(crate) max_subscriptions: NonZeroUsize,
-    /// Point reads (block, tree state, subtree-root list) in flight on the blocking pool (warm =
-    /// CPU-bound: ~core count)
+    /// Block, tree state, subtree roots on the blocking pool (warm = CPU-bound: ~core count)
     pub(crate) max_point_reads: NonZeroUsize,
-    /// `GetBlockRange` windows (<= 1 MiB each) in flight (= device queue depth)
+    /// `GetBlockRange` windows, <= 1 MiB each (= device queue depth)
     pub(crate) max_range_reads: NonZeroUsize,
-    /// Transparent-address history scans in flight (few: each walks a whole history, bounded by
-    /// `serve.max_address_rows`)
+    /// Transparent-address history scans (few: each walks a whole history)
     pub(crate) max_scan_reads: NonZeroUsize,
-    /// Seconds a stream may make no progress, never a cap on its length: unread data that long
-    /// closes its connection (else a never-reading client keeps its permits forever); nothing to
-    /// send that long ends it `UNAVAILABLE` (`GetMempoolStream` exempt). The client's own
-    /// `grpc-timeout` is honoured as its deadline.
+    /// - No progress, never a length cap (unread → connection closed, unsent → `UNAVAILABLE`)
+    /// - `GetMempoolStream` exempt (client's own `grpc-timeout` = its deadline)
     pub(crate) stall_timeout_secs: NonZeroU64,
-    /// Seconds a connection lives (±10% each) before a GOAWAY makes its client reconnect and
-    /// re-resolve DNS, so a load balancer or a replaced node moves long-held wallet connections
-    /// (gRPC A9). 0 = never.
+    /// 0 = never (±10% each, then GOAWAY → client reconnects + re-resolves DNS, gRPC A9)
     pub(crate) max_connection_age_secs: u64,
-    /// Seconds a GOAWAY'd connection's in-flight streams get to finish before it closes
     pub(crate) max_connection_age_grace_secs: u64,
-    /// Seconds a connection may hold no open stream before a GOAWAY closes it (frees its slot
-    /// in the per-client cap). 0 = never.
+    /// 0 = never (no open stream that long → GOAWAY, per-client slot freed)
     pub(crate) max_connection_idle_secs: u64,
-    /// Work streams admitted at once follow measured latency (Gradient2), `max_streams` the
-    /// ceiling: a saturated node refuses new work (`UNAVAILABLE` + retry hint) within seconds
-    /// while admitted work stays fast. `false` = always `max_streams`.
+    /// Gradient2 limit under `max_streams` (`false` = always `max_streams`)
     pub(crate) adaptive_streams: bool,
-    /// Proxy CIDRs opening every connection with a PROXY header (v1/v2) naming the client
-    ///
-    /// - From one of them without a header = closed
-    /// - Empty = no proxy (peer address = client)
+    /// Each connection from one opens with a PROXY v1/v2 header (none = closed, empty = no proxy)
     pub(crate) trusted_proxies: Vec<ipnet::IpNet>,
-    /// Seconds open connections get once SIGTERM / SIGINT closes the listener (GOAWAY sent; an
-    /// idle `GetMempoolStream` never finishes: dropped at the deadline)
+    /// After SIGTERM / SIGINT (idle `GetMempoolStream` dropped at the deadline)
     pub(crate) shutdown_grace_secs: u64,
 }
 
@@ -394,12 +357,11 @@ fn secs_or_never(secs: u64) -> Option<std::time::Duration> {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SyncConfig {
-    /// Blocks below the tip kept reorg-able (in memory + served, written once buried this deep;
-    /// default + minimum off regtest = Zebra's reorg bound, 1000)
+    /// >= Zebra's reorg bound (1000) off regtest (reorg-able in memory, written once this deep)
     pub(crate) finalised_depth: NonZeroU32,
-    /// Block fetches (and folds) in flight ahead of the next block needed
+    /// Block fetches + folds in flight ahead of the next block needed
     pub(crate) concurrency: NonZeroUsize,
-    /// MiB of final blocks one index may trail the fetch before it throttles the pipeline
+    /// Per index: final blocks it may trail the fetch by before the pipeline throttles
     queue_mib: NonZeroU32,
     pub(crate) lsm_store: LsmStoreConfig,
 }
@@ -421,11 +383,11 @@ impl Default for SyncConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct LsmStoreConfig {
-    /// Same-tier segments merged into one (>= 2; higher = less rewriting, larger merges)
+    /// >= 2 (higher = less rewriting, larger merges)
     pub(crate) fanout: Fanout,
-    /// Merges doing disk I/O at once (the rest wait, smallest first)
+    /// Rest wait, smallest first
     pub(crate) merge_slots: NonZeroUsize,
-    /// MiB/s every merge together may read + write (commits never paced: the rest of the disk)
+    /// Every merge together, read + write (commits never paced)
     pub(crate) merge_mib_per_sec: NonZeroU32,
 }
 
@@ -449,10 +411,9 @@ impl From<&LsmStoreConfig> for LsmConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SubmissionConfig {
-    /// Seconds to be seen beyond the nodes relayed to, before relaying again
+    /// Unseen beyond the nodes relayed to this long → relay again
     pub(crate) propagation_threshold_secs: NonZeroU64,
-    /// Max relays per transaction (with peers: then one trusted validator relays it, when still
-    /// unspread)
+    /// With peers: then one trusted validator relays it, when still unspread
     pub(crate) max_attempts: std::num::NonZeroU8,
 }
 
@@ -464,11 +425,11 @@ pub(crate) struct SubmissionConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct P2pConfig {
-    /// Join the network (off = every submission attempt → a trusted validator)
+    /// Off = every submission attempt → a trusted validator
     pub(crate) enabled: bool,
-    /// Outbound peers kept (mainnet peers allow one connection per IP: keep it modest)
+    /// Mainnet peers allow one connection per IP (keep it modest)
     pub(crate) peer_target: NonZeroUsize,
-    /// Peers dialled first (empty = the network's DNS seeders; regtest has none: list them)
+    /// Empty = the network's DNS seeders (regtest has none)
     pub(crate) initial_peers: Vec<String>,
     /// zebra-network peer address cache (restart dials known peers, not only seeders)
     pub(crate) cache_dir: PathBuf,
@@ -522,7 +483,7 @@ impl From<&SubmissionConfig> for zaino_chainview::SubmitPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct MetricsConfig {
-    /// Bind address (`0.0.0.0` = every interface; access = the host's firewall)
+    /// `0.0.0.0` = every interface (access = the host's firewall)
     pub(crate) listen_address: Option<SocketAddr>,
 }
 
@@ -532,9 +493,9 @@ pub(crate) struct MetricsConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotConfig {
-    /// Manifest URL: `{archive, bytes, sha256, height, network}` (`archive` relative to it)
+    /// Manifest URL (each archive's URL relative to it)
     pub(crate) manifest: String,
-    /// Parallel download connections (aria2c `--split`, <= 16)
+    /// <= 16 (aria2c `--split`)
     #[serde(default = "SnapshotConfig::connections_default")]
     pub(crate) connections: NonZeroU32,
 }
@@ -556,35 +517,21 @@ pub(crate) enum ValidatorClient {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct DaemonConfig {
-    /// Chain served: `mainnet`, `testnet` or `regtest`
-    ///
-    /// - Declared, never derived (regtest Zebra reports `"test"` over `getblockchaininfo`)
+    /// Declared, never derived (regtest Zebra reports `"test"` over `getblockchaininfo`)
     #[serde(with = "NetworkDef")]
     pub(crate) network: NetworkType,
-    /// How Zaino talks to every `[[trusted_validators]]` entry: `legacy_rpc` (JSON-RPC for
-    /// everything; zebrad or zcashd) or `grpc` (blocks over zebrad's indexer gRPC at each
-    /// validator's `indexer_address`, as stored bytes with no hex or JSON; the rest over JSON-RPC)
+    /// `grpc` = blocks over each validator's `indexer_address` (zcashd has none: `legacy_rpc`)
     pub(crate) validator_client: ValidatorClient,
-    /// Admin listener (`/metrics` + probes)
     pub(crate) metrics: MetricsConfig,
-    /// `[[trusted_validators]]`, >= 1
-    ///
-    /// - Headers → verified chain, served while any holds its tip; one listing admits a mempool tx
-    /// - Two = first set surviving a failure
+    /// >= 1 (two = first set surviving a failure)
     pub(crate) trusted_validators: Vec<TrustedValidatorConfig>,
-    /// Wallet-facing gRPC server
     pub(crate) serve: ServeConfig,
-    /// gRPC caps
     pub(crate) grpc: GrpcConfig,
-    /// Transaction submission into the network
     pub(crate) submission: SubmissionConfig,
-    /// Zaino's own peers (`[p2p]`, off by default)
     pub(crate) p2p: P2pConfig,
-    /// Shared block-fetch pipeline + index budgets
     pub(crate) sync: SyncConfig,
-    /// Indexes built and served
     pub(crate) index: Indexes,
-    /// Empty indexes bootstrapped from a snapshot (absent = synced from the validator)
+    /// Absent = synced from the validator
     pub(crate) snapshot: Option<SnapshotConfig>,
 }
 
@@ -632,7 +579,7 @@ impl DaemonConfig {
     pub(crate) fn compact_block(&self) -> Result<Option<(IndexConfig, IndexConfig)>, IndexerError> {
         let Some(compact_block) = self.enabled(IndexKind::CompactBlock) else { return Ok(None) };
         if compact_block.path.file_name().is_none() {
-            return Err(IndexerError::ConfigError(format!(
+            return Err(IndexerError::Config(format!(
                 "index.compact_block.path = {}: no final directory name (value_balance sits \
                  beside it)",
                 compact_block.path.display()
@@ -644,89 +591,102 @@ impl DaemonConfig {
 
     /// `Err` = no pipeline composes from it
     pub(crate) fn validate(&self) -> Result<(), IndexerError> {
+        self.validate_indexes()?;
+        self.validate_validators()?;
+        self.validate_p2p()?;
+        self.validate_snapshot()
+    }
+
+    fn validate_indexes(&self) -> Result<(), IndexerError> {
         self.compact_block()?;
-        let served = [IndexKind::CompactBlock, IndexKind::BlockHash, IndexKind::TreeState];
-        let served = served.into_iter().chain([IndexKind::TransparentAddress]);
-        if served.into_iter().all(|kind| self.enabled(kind).is_none()) {
-            return Err(IndexerError::ConfigError(
+        if zaino_nfs::INDEXES.into_iter().all(|kind| self.enabled(kind).is_none()) {
+            return Err(IndexerError::Config(
                 "every [index.*] disabled: nothing to build or serve".to_string(),
-            ));
-        }
-        if self.trusted_validators.is_empty() {
-            return Err(IndexerError::ConfigError(
-                "no [[trusted_validators]]: at least one validator is needed".to_string(),
-            ));
-        }
-        let mut addresses = std::collections::HashSet::new();
-        for validator in &self.trusted_validators {
-            if validator.limits().is_none() {
-                return Err(IndexerError::ConfigError(format!(
-                    "[[trusted_validators]] {}: max_connections = {} is below {} (one for the \
-                     poll, one reserved per lane + one shared)",
-                    validator.jsonrpc_address,
-                    validator.max_connections,
-                    zaino_traffic::Limits::MIN_CONNECTIONS
-                )));
-            }
-            if !addresses.insert(&validator.jsonrpc_address) {
-                return Err(IndexerError::ConfigError(format!(
-                    "[[trusted_validators]] lists {} twice: one validator counted as two",
-                    validator.jsonrpc_address
-                )));
-            }
-            if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
-                return Err(IndexerError::ConfigError(format!(
-                    "[[trusted_validators]] {} sets indexer_tls but no indexer_address",
-                    validator.jsonrpc_address
-                )));
-            }
-            if self.validator_client == ValidatorClient::Grpc && validator.indexer_address.is_none()
-            {
-                return Err(IndexerError::ConfigError(format!(
-                    "validator_client = \"grpc\" but [[trusted_validators]] {} has no \
-                     indexer_address (zebrad's indexer_listen_addr)",
-                    validator.jsonrpc_address
-                )));
-            }
-        }
-        let peer_target = self.p2p.peer_target.get();
-        if self.p2p.enabled && peer_target < zaino_traffic::Peers::MIN_IN_FLIGHT as usize {
-            return Err(IndexerError::ConfigError(format!(
-                "p2p.peer_target = {peer_target} is below {}: the peer set carries one request \
-                 per lane at once (headers, tip blocks, bulk blocks)",
-                zaino_traffic::Peers::MIN_IN_FLIGHT
-            )));
-        }
-        if self.p2p.enabled
-            && self.network == NetworkType::Regtest
-            && self.p2p.initial_peers.is_empty()
-        {
-            return Err(IndexerError::ConfigError(
-                "p2p.enabled on regtest with no p2p.initial_peers: regtest has no DNS seeders"
-                    .to_string(),
             ));
         }
         let depth = self.sync.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
-            return Err(IndexerError::ConfigError(format!(
+            return Err(IndexerError::Config(format!(
                 "sync.finalised_depth = {depth} is below the validator's reorg bound \
                  {MAX_BLOCK_REORG_HEIGHT}: a reorg it accepts could reach committed blocks \
                  (only regtest may set less)"
             )));
         }
-        if let Some(snapshot) = &self.snapshot {
-            if !cfg!(feature = "snapshot") {
-                return Err(IndexerError::ConfigError(
-                    "[snapshot] is set, but zainod was built without the `snapshot` feature"
-                        .to_string(),
-                ));
-            }
-            if snapshot.connections.get() > 16 {
-                return Err(IndexerError::ConfigError(format!(
-                    "snapshot.connections = {}: aria2c allows at most 16 per server",
-                    snapshot.connections
+        Ok(())
+    }
+
+    fn validate_validators(&self) -> Result<(), IndexerError> {
+        if self.trusted_validators.is_empty() {
+            return Err(IndexerError::Config(
+                "no [[trusted_validators]]: at least one validator is needed".to_string(),
+            ));
+        }
+        let mut addresses = std::collections::HashSet::new();
+        for validator in &self.trusted_validators {
+            let address = &validator.jsonrpc_address;
+            if validator.limits().is_none() {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] {address}: max_connections = {} is below {} (one for \
+                     the poll, one reserved per lane + one shared)",
+                    validator.max_connections,
+                    zaino_traffic::Limits::MIN_CONNECTIONS
                 )));
             }
+            if !addresses.insert(address) {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] lists {address} twice: one validator counted as two"
+                )));
+            }
+            if validator.indexer_tls.is_some() && validator.indexer_address.is_none() {
+                return Err(IndexerError::Config(format!(
+                    "[[trusted_validators]] {address} sets indexer_tls but no indexer_address"
+                )));
+            }
+            if self.validator_client == ValidatorClient::Grpc && validator.indexer_address.is_none()
+            {
+                return Err(IndexerError::Config(format!(
+                    "validator_client = \"grpc\" but [[trusted_validators]] {address} has no \
+                     indexer_address (zebrad's indexer_listen_addr)"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_p2p(&self) -> Result<(), IndexerError> {
+        if !self.p2p.enabled {
+            return Ok(());
+        }
+        let peer_target = self.p2p.peer_target.get();
+        if peer_target < zaino_traffic::Peers::MIN_IN_FLIGHT as usize {
+            return Err(IndexerError::Config(format!(
+                "p2p.peer_target = {peer_target} is below {}: the peer set carries one request \
+                 per lane at once (headers, tip blocks, bulk blocks)",
+                zaino_traffic::Peers::MIN_IN_FLIGHT
+            )));
+        }
+        if self.network == NetworkType::Regtest && self.p2p.initial_peers.is_empty() {
+            return Err(IndexerError::Config(
+                "p2p.enabled on regtest with no p2p.initial_peers: regtest has no DNS seeders"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_snapshot(&self) -> Result<(), IndexerError> {
+        let Some(snapshot) = &self.snapshot else { return Ok(()) };
+        if !cfg!(feature = "snapshot") {
+            return Err(IndexerError::Config(
+                "[snapshot] is set, but zainod was built without the `snapshot` feature"
+                    .to_string(),
+            ));
+        }
+        if snapshot.connections.get() > 16 {
+            return Err(IndexerError::Config(format!(
+                "snapshot.connections = {}: aria2c allows at most 16 per server",
+                snapshot.connections
+            )));
         }
         Ok(())
     }
@@ -756,36 +716,40 @@ fn is_private_listen_addr(addr: &SocketAddr) -> bool {
 }
 
 /// Defaults as TOML, behind [`GENERATED_CONFIG_HEADER`]
-pub(crate) fn generate_default_config() -> Result<String, IndexerError> {
+fn generate_default_config() -> Result<String, IndexerError> {
     let toml = toml::to_string_pretty(&DaemonConfig::default())
-        .map_err(|e| IndexerError::ConfigError(format!("serialising default config: {e}")))?;
+        .map_err(|e| IndexerError::Config(format!("serialising default config: {e}")))?;
     Ok(format!("{GENERATED_CONFIG_HEADER}{toml}"))
 }
 
-/// `file_path` + `ZAINO_CONFIG_` env overrides
-pub(crate) fn load_config(file_path: &std::path::Path) -> Result<DaemonConfig, IndexerError> {
-    load_config_with_env(file_path, "ZAINO_CONFIG")
+/// `zainod generate-config`: defaults → `path` (parent directories created)
+pub fn generate_config(path: &Path) -> Result<ExitCode, IndexerError> {
+    let content = generate_default_config()?;
+    let failed = |source| IndexerError::ConfigFile { path: path.to_owned(), source };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(failed)?;
+    }
+    std::fs::write(path, content).map_err(failed)?;
+    eprintln!("Generated config file: {}", path.display());
+    Ok(ExitCode::SUCCESS)
 }
 
-/// Defaults → TOML file → env (`<env_prefix>_`, `__` nesting)
-pub(crate) fn load_config_with_env(
-    file_path: &std::path::Path,
-    env_prefix: &str,
-) -> Result<DaemonConfig, IndexerError> {
+/// Defaults → `file_path` (TOML) → env (`ZAINO_CONFIG_`, `__` nesting)
+pub(crate) fn load_config(file_path: &Path) -> Result<DaemonConfig, IndexerError> {
     let settings = config::Config::builder()
         .add_source(config::File::from(file_path).format(config::FileFormat::Toml).required(true))
         .add_source(
-            config::Environment::with_prefix(env_prefix)
+            config::Environment::with_prefix("ZAINO_CONFIG")
                 .prefix_separator("_")
                 .separator("__")
                 .try_parsing(true),
         )
         .build()
-        .map_err(|e| IndexerError::ConfigError(format!("loading configuration: {e}")))?;
+        .map_err(|e| IndexerError::Config(format!("loading configuration: {e}")))?;
 
     let parsed: DaemonConfig = settings
         .try_deserialize()
-        .map_err(|e| IndexerError::ConfigError(format!("parsing configuration: {e}")))?;
+        .map_err(|e| IndexerError::Config(format!("parsing configuration: {e}")))?;
 
     info!(path = %file_path.display(), "Config loaded");
     Ok(parsed)
@@ -801,11 +765,10 @@ mod tests {
         path
     }
 
-    /// - Per index: file over defaults, env over file, `[sync]` budgets in each, value_balance
-    ///   beside compact_block
-    /// - Stale or misspelt key fails the load
+    /// Per index: file over defaults, env over file, `[sync]` budgets in each, value_balance
+    /// beside compact_block (and off with it)
     #[test]
-    fn a_config_resolves_every_index_through_defaults_file_and_env_and_refuses_stale_keys() {
+    fn layers_resolve_every_index_through_defaults_file_and_env() {
         let dir = tempfile::tempdir().expect("tempdir");
         let toml = r#"
 network = "regtest"
@@ -833,7 +796,6 @@ enabled = false
         std::env::remove_var("ZAINO_CONFIG_SYNC__QUEUE_MIB");
         std::env::remove_var("ZAINO_CONFIG_INDEX__TREE_STATE__ENABLED");
         let config = loaded.expect("load");
-        assert!(config.validate().is_ok());
 
         let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
         let sync =
@@ -861,30 +823,173 @@ enabled = false
             config.compact_block().expect("a valid path").expect("enabled");
         assert_eq!([Some(compact_block), Some(value_balance)], expected[..2]);
 
-        let mut off = config.clone();
+        let mut off = config;
         off.index.compact_block.enabled = false;
-        off.validate().expect("compact_block off, block_hash still served");
         let pair = off.compact_block().expect("nothing to check").map(|_| ());
         assert_eq!((pair, off.enabled(IndexKind::ValueBalance)), (None, None), "both off");
-        off.index.block_hash.enabled = false;
-        let err = off.validate().expect_err("every index off").to_string();
-        assert!(err.contains("every [index.*] disabled"), "{err}");
-        let mut root = config;
-        root.index.compact_block.path = "/".into();
-        let err = root.validate().expect_err("no sibling for value_balance").to_string();
-        assert!(err.contains("index.compact_block.path = /"), "{err}");
+    }
 
-        let in_sync = toml.replace("[sync]\n", "[sync]\nbatch_mib = 64\n");
-        for (stale, key) in [
-            (format!("{toml}\n[index.value_balance]\npath = \"/srv/zaino/vb\"\n"), "value_balance"),
-            (format!("{toml}\n[fetch]\nconcurrency = 8\n"), "fetch"),
-            (format!("{toml}\n[index.block_hash]\nqueue_mib = 256\n"), "queue_mib"),
-            (in_sync, "batch_mib"),
-            (format!("{toml}\n[index.header_chain]\npath = \"/srv/zaino/hc\"\n"), "header_chain"),
+    /// Each row = one rule over an otherwise valid default config (`None` = accepted)
+    #[test]
+    fn validate_refuses_every_config_no_pipeline_composes_from() {
+        type Edit = fn(&mut DaemonConfig);
+        let snapshot_refusal = match cfg!(feature = "snapshot") {
+            true => "snapshot.connections = 17: aria2c allows at most 16",
+            false => "built without the `snapshot` feature",
+        };
+        let cases: [(&str, Edit, Option<&str>); 17] = [
+            ("defaults", |_| {}, None),
+            (
+                "compact_block off, block_hash still served",
+                |c| c.index.compact_block.enabled = false,
+                None,
+            ),
+            (
+                "every index off",
+                |c| {
+                    c.index.compact_block.enabled = false;
+                    c.index.block_hash.enabled = false;
+                    c.index.tree_state.enabled = false;
+                    c.index.transparent_address.enabled = false;
+                },
+                Some("every [index.*] disabled"),
+            ),
+            (
+                "no sibling for value_balance",
+                |c| c.index.compact_block.path = "/".into(),
+                Some("index.compact_block.path = /"),
+            ),
+            (
+                "finalised inside the reorg bound on mainnet",
+                |c| c.sync.finalised_depth = NonZeroU32::new(999).expect("non-zero"),
+                Some("sync.finalised_depth = 999 is below the validator's reorg bound"),
+            ),
+            (
+                "finalised inside the reorg bound on testnet",
+                |c| {
+                    c.network = NetworkType::Test;
+                    c.sync.finalised_depth = NonZeroU32::new(999).expect("non-zero");
+                },
+                Some("sync.finalised_depth = 999 is below the validator's reorg bound"),
+            ),
+            (
+                "regtest may finalise sooner",
+                |c| {
+                    c.network = NetworkType::Regtest;
+                    c.sync.finalised_depth = NonZeroU32::new(100).expect("non-zero");
+                },
+                None,
+            ),
+            ("no validator", |c| c.trusted_validators.clear(), Some("no [[trusted_validators]]")),
+            (
+                "one validator twice",
+                |c| c.trusted_validators.push(TrustedValidatorConfig::default()),
+                Some("lists 127.0.0.1:8232 twice"),
+            ),
+            (
+                "fewer connections than poll + lanes + 1",
+                |c| c.trusted_validators[0].max_connections = NonZeroU32::new(4).expect("4"),
+                Some("max_connections = 4 is below 5"),
+            ),
+            (
+                "indexer TLS with no indexer",
+                |c| {
+                    c.trusted_validators[0].indexer_tls = Some(IndexerTlsConfig {
+                        ca_path: "/ca.pem".into(),
+                        cert_path: "/cert.pem".into(),
+                        key_path: "/key.pem".into(),
+                        server_name: None,
+                    })
+                },
+                Some("sets indexer_tls but no indexer_address"),
+            ),
+            (
+                "grpc client, validator without an indexer",
+                |c| c.validator_client = ValidatorClient::Grpc,
+                Some("127.0.0.1:8232 has no indexer_address"),
+            ),
+            (
+                "grpc client, every indexer set",
+                |c| {
+                    c.validator_client = ValidatorClient::Grpc;
+                    c.trusted_validators[0].indexer_address = Some("127.0.0.1:8230".to_owned());
+                },
+                None,
+            ),
+            (
+                "p2p with fewer peers than lanes",
+                |c| {
+                    c.p2p.enabled = true;
+                    c.p2p.peer_target = NonZeroUsize::new(2).expect("2");
+                },
+                Some("p2p.peer_target = 2 is below 3"),
+            ),
+            (
+                "regtest p2p with nobody to dial",
+                |c| {
+                    c.network = NetworkType::Regtest;
+                    c.p2p.enabled = true;
+                },
+                Some("regtest has no DNS seeders"),
+            ),
+            (
+                "snapshot past aria2c's connection cap",
+                |c| {
+                    c.snapshot = Some(SnapshotConfig {
+                        manifest: "https://snapshots.example/manifest.json".to_owned(),
+                        connections: NonZeroU32::new(17).expect("17"),
+                    })
+                },
+                Some(snapshot_refusal),
+            ),
+            (
+                "p2p off ignores its peer target",
+                |c| c.p2p.peer_target = NonZeroUsize::new(2).expect("2"),
+                None,
+            ),
+        ];
+        for (case, edit, refusal) in cases {
+            let mut config = DaemonConfig::default();
+            edit(&mut config);
+            let refused = config.validate().err().map(|error| error.to_string());
+            match (refusal, &refused) {
+                (Some(expected), Some(refused)) => {
+                    assert!(refused.contains(expected), "{case}: {refused}")
+                }
+                _ => assert_eq!(refused.as_deref(), refusal, "{case}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_table_refuses_an_unknown_key() {
+        let tls = "ca_path = \"/ca\"\ncert_path = \"/c\"\nkey_path = \"/k\"\n";
+        for (table, toml) in [
+            ("top level", "bogus = 1\n".to_owned()),
+            ("[[trusted_validators]]", "[[trusted_validators]]\nbogus = 1\n".to_owned()),
+            (
+                "[trusted_validators.indexer_tls]",
+                format!(
+                    "[[trusted_validators]]\n[trusted_validators.indexer_tls]\n{tls}bogus = 1\n"
+                ),
+            ),
+            ("[serve]", "[serve]\nbogus = 1\n".to_owned()),
+            (
+                "[serve.tls]",
+                "[serve.tls]\ncert_path = \"/c\"\nkey_path = \"/k\"\nbogus = 1\n".to_owned(),
+            ),
+            ("[grpc]", "[grpc]\nbogus = 1\n".to_owned()),
+            ("[submission]", "[submission]\nbogus = 1\n".to_owned()),
+            ("[p2p]", "[p2p]\nbogus = 1\n".to_owned()),
+            ("[metrics]", "[metrics]\nbogus = 1\n".to_owned()),
+            ("[sync]", "[sync]\nbogus = 1\n".to_owned()),
+            ("[sync.lsm_store]", "[sync.lsm_store]\nbogus = 1\n".to_owned()),
+            ("[index]", "[index.bogus]\npath = \"/i\"\n".to_owned()),
+            ("[index.block_hash]", "[index.block_hash]\nbogus = 1\n".to_owned()),
+            ("[snapshot]", "[snapshot]\nmanifest = \"https://m\"\nbogus = 1\n".to_owned()),
         ] {
-            let path = write(&dir, &format!("{key}.toml"), &stale);
-            let err = load_config(&path).expect_err(key).to_string();
-            assert!(err.contains(&format!("unknown field `{key}`")), "{key}: {err}");
+            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err(table).to_string();
+            assert!(refused.contains("unknown field `bogus`"), "{table}: {refused}");
         }
     }
 
@@ -918,6 +1023,16 @@ enabled = false
         let example = include_str!("../../../docs/example_configs/zainod.toml");
         let example = toml::from_str::<DaemonConfig>(example).expect("example parses");
         assert!(example.validate().is_ok());
+    }
+
+    /// `generate-config` into a missing directory: created, file = the defaults
+    #[test]
+    fn generate_config_writes_the_defaults_under_a_new_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("new/zainod.toml");
+        assert_eq!(generate_config(&path).expect("writes"), ExitCode::SUCCESS);
+        let written = std::fs::read_to_string(&path).expect("written");
+        assert_eq!(written, generate_default_config().expect("generate"));
     }
 
     /// - Caps parse per field: naming one keeps the server's own defaults for the rest
@@ -968,7 +1083,7 @@ path = "/tmp/zaino-compact-block"
         assert_eq!(parsed, (None, secs(60), Some(secs(120)), false), "0 = never, the rest as set");
     }
 
-    /// Stop grace → the gRPC server's drain; hold delay → the hold; `[grpc.shutdown]` refused
+    /// Stop grace → the gRPC server's drain; hold delay → the hold
     #[test]
     fn stop_grace_and_hold_delay_reach_the_server_and_the_hold() {
         let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml);
@@ -982,9 +1097,6 @@ path = "/tmp/zaino-compact-block"
         };
         assert_eq!(read(&defaults), (secs(10), secs(0)), "defaults");
         assert_eq!(read(&set), (secs(600), secs(155)), "set");
-
-        let removed = toml::from_str::<DaemonConfig>("[grpc.shutdown]\nenabled = true\n");
-        assert!(removed.is_err(), "[grpc.shutdown] accepted");
     }
 
     /// Declared chain: every spelling round-trips, default mainnet, `regtest` its own value (the
@@ -1010,28 +1122,6 @@ path = "/tmp/zaino-compact-block"
         assert!(toml::from_str::<DaemonConfig>(r#"network = "main""#).is_err());
     }
 
-    /// Mainnet/testnet never finalise inside the reorg bound (an accepted reorg would reach
-    /// committed blocks); regtest may (fast tests)
-    #[test]
-    fn a_finalised_depth_below_the_reorg_bound_is_refused_except_on_regtest() {
-        let validated = |network: &str, depth: u32| {
-            toml::from_str::<DaemonConfig>(&format!(
-                "network = \"{network}\"\n[sync]\nfinalised_depth = {depth}\n"
-            ))
-            .expect("deserialise")
-            .validate()
-        };
-
-        let below = "sync.finalised_depth = 999 is below the validator's reorg bound";
-        for network in ["mainnet", "testnet"] {
-            let err = validated(network, MAX_BLOCK_REORG_HEIGHT - 1).expect_err(network);
-            assert!(err.to_string().contains(below), "{network}: {err}");
-            assert!(validated(network, MAX_BLOCK_REORG_HEIGHT).is_ok(), "{network}");
-            assert!(validated(network, MAX_BLOCK_REORG_HEIGHT + 1).is_ok(), "{network}");
-        }
-        assert!(validated("regtest", 100).is_ok());
-    }
-
     #[test]
     fn sync_lsm_store_parses_into_the_engine_config_and_a_fanout_below_two_or_a_zero_is_refused() {
         let parsed = |table: &str| {
@@ -1046,40 +1136,28 @@ path = "/tmp/zaino-compact-block"
         let fanout = Fanout::new(4).expect(">= 2");
         let expected = LsmConfig { fanout, merge_slots: NonZeroUsize::MIN, merge_mib_per_sec };
         assert_eq!(LsmConfig::from(&config.sync.lsm_store), expected);
-        assert!(config.validate().is_ok());
 
         let refused = parsed("fanout = 1\n").expect_err("fanout 1");
         assert!(refused.to_string().contains("fanout 1: a merge needs 2 segments"), "{refused}");
         assert!(parsed("merge_slots = 0\n").is_err(), "merge_slots non-zero");
         assert!(parsed("merge_mib_per_sec = 0\n").is_err(), "merge_mib_per_sec non-zero");
-        assert!(parsed("fan_out = 4\n").is_err(), "unknown key");
     }
 
     #[test]
-    fn serve_tls_parses_and_rejects_unknown_keys() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let base = "network = \"mainnet\"\n[[trusted_validators]]\n\
-                    jsonrpc_address = \"127.0.0.1:8232\"\n[serve]\n";
-        let plain = load_config(&write(&dir, "plain.toml", base)).expect("no tls table");
-        assert_eq!(plain.serve.tls, None, "absent = plaintext");
-
-        let tls = format!("{base}[serve.tls]\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n");
-        let config = load_config(&write(&dir, "tls.toml", &tls)).expect("tls table");
+    fn serve_tls_absent_is_plaintext_and_present_names_its_pem_pair() {
+        let parse = |toml: &str| toml::from_str::<DaemonConfig>(toml).expect(toml).serve.tls;
+        assert_eq!(parse("[serve]\n"), None, "absent = plaintext");
+        let tls = parse("[serve.tls]\ncert_path = \"/c.pem\"\nkey_path = \"/k.pem\"\n");
         let expected = TlsConfig { cert_path: "/c.pem".into(), key_path: "/k.pem".into() };
-        assert_eq!(config.serve.tls, Some(expected));
-
-        let typo = tls.replace("key_path", "keyfile");
-        let err = load_config(&write(&dir, "typo.toml", &typo)).expect_err("typo");
-        assert!(err.to_string().contains("unknown field"), "{err}");
+        assert_eq!(tls, Some(expected));
     }
 
-    /// - Entries equal, auth + limits + indexer mutual TLS optional
-    /// - Refused: empty list, one validator twice, fewer connections than poll + lanes + 1, TLS
-    ///   with no indexer, every removed key
+    /// Entries parsed as written (auth + limits + indexer mutual TLS optional), each → the
+    /// balancer's limits, the transport's link, the indexer client's TLS
     #[test]
-    fn trusted_validators_parse_and_removed_keys_are_refused() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let toml = r#"
+    fn trusted_validators_convert_into_limits_link_and_indexer_tls() {
+        let config: DaemonConfig = toml::from_str(
+            r#"
 [[trusted_validators]]
 jsonrpc_address = "127.0.0.1:18232"
 
@@ -1096,17 +1174,16 @@ priority = 1
 ca_path = "/etc/zaino/indexer-ca.pem"
 cert_path = "/etc/zaino/indexer-client.pem"
 key_path = "/etc/zaino/indexer-client-key.pem"
-
-[index.compact_block]
-path = "/tmp/zaino-compact-block"
-"#;
-        let config = load_config(&write(&dir, "rpc.toml", toml)).expect("load");
+"#,
+        )
+        .expect("parses");
         let n = |n: u32| NonZeroU32::new(n).expect("non-zero");
-        let entry = |address: &str| TrustedValidatorConfig {
-            jsonrpc_address: address.to_owned(),
+        let local = TrustedValidatorConfig {
+            jsonrpc_address: "127.0.0.1:18232".to_owned(),
             ..TrustedValidatorConfig::default()
         };
         let eu = TrustedValidatorConfig {
+            jsonrpc_address: "zebra-eu:8232".to_owned(),
             user: Some("zaino".to_owned()),
             password: Some("secret".to_owned()),
             max_connections: n(8),
@@ -1119,10 +1196,10 @@ path = "/tmp/zaino-compact-block"
                 server_name: None,
             }),
             priority: 1,
-            ..entry("zebra-eu:8232")
+            ..TrustedValidatorConfig::default()
         };
-        assert_eq!(config.trusted_validators, [entry("127.0.0.1:18232"), eu.clone()]);
-        assert!(config.validate().is_ok());
+        assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
+
         assert_eq!(eu.limits(), zaino_traffic::Limits::new(8), "the balancer's");
         let link =
             zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
@@ -1134,59 +1211,15 @@ path = "/tmp/zaino-compact-block"
             server_name: None,
         };
         assert_eq!(eu.indexer_tls(), Some(tls), "the indexer client's");
-        assert_eq!(entry("127.0.0.1:18232").indexer_tls(), None, "absent = plaintext");
-
-        let refused = |config: DaemonConfig| config.validate().expect_err("refused").to_string();
-        let none = DaemonConfig { trusted_validators: Vec::new(), ..config.clone() };
-        assert!(refused(none).contains("no [[trusted_validators]]"));
-        let twice = vec![entry("zebra-eu:8232"), entry("zebra-eu:8232")];
-        let twice = DaemonConfig { trusted_validators: twice, ..config.clone() };
-        assert!(refused(twice).contains("twice"));
-        let starved = vec![TrustedValidatorConfig { max_connections: n(4), ..eu.clone() }];
-        let starved = DaemonConfig { trusted_validators: starved, ..config.clone() };
-        assert!(refused(starved).contains("max_connections = 4 is below 5"));
-        let unaddressed = vec![TrustedValidatorConfig { indexer_address: None, ..eu.clone() }];
-        let unaddressed = DaemonConfig { trusted_validators: unaddressed, ..config.clone() };
-        assert!(refused(unaddressed).contains("sets indexer_tls but no indexer_address"));
-
-        assert_eq!(config.validator_client, ValidatorClient::LegacyRpc, "the default");
-        let grpc =
-            load_config(&write(&dir, "grpc.toml", &format!("validator_client = \"grpc\"\n{toml}")));
-        let grpc = grpc.expect("load");
-        assert_eq!(grpc.validator_client, ValidatorClient::Grpc);
-        assert!(
-            refused(grpc.clone()).contains("127.0.0.1:18232 has no indexer_address"),
-            "grpc: every validator needs its indexer"
-        );
-        let indexed = DaemonConfig { trusted_validators: vec![eu], ..grpc };
-        assert!(indexed.validate().is_ok(), "grpc with every indexer_address set");
-        let unknown = format!("validator_client = \"rest\"\n{toml}");
-        assert!(load_config(&write(&dir, "unknown.toml", &unknown)).is_err(), "unknown client");
-
-        for (name, removed) in [
-            ("source.toml", "[source]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
-            ("peers.toml", "[[chainview_peers]]\njsonrpc_address = \"127.0.0.1:8232\"\n"),
-            ("primary.toml", "[fetch]\nprimary_validator = \"127.0.0.1:18232\"\n"),
-            ("mode.toml", "[[trusted_validators]]\nmode = \"direct\"\n"),
-            ("noderpc.toml", "[serve]\njsonrpc_listen_address = \"0.0.0.0:8232\"\n"),
-            ("rate.toml", "[[trusted_validators]]\nmax_requests_per_sec = 200\n"),
-        ] {
-            let stale = format!("{toml}\n{removed}");
-            let err = load_config(&write(&dir, name, &stale)).expect_err(name);
-            assert!(err.to_string().contains("unknown field"), "{name}: {err}");
-        }
+        assert_eq!(local.indexer_tls(), None, "absent = plaintext");
     }
 
-    /// - `[submission]`, `[p2p]` → policy, peer config
-    /// - p2p off unless asked; regtest p2p with nobody to dial refused
+    /// `[submission]`, `[p2p]` → policy, peer config (p2p off and DNS-seeded unless asked)
     #[test]
     fn submission_and_p2p_become_what_the_daemon_runs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let toml = r#"
+        let config: DaemonConfig = toml::from_str(
+            r#"
 network = "testnet"
-
-[[trusted_validators]]
-jsonrpc_address = "127.0.0.1:18232"
 
 [submission]
 propagation_threshold_secs = 30
@@ -1197,9 +1230,9 @@ enabled = true
 peer_target = 12
 initial_peers = ["203.0.113.7:18233"]
 cache_dir = "/var/cache/zaino/peers"
-"#;
-        let config = load_config(&write(&dir, "p2p.toml", toml)).expect("load");
-        assert!(config.validate().is_ok());
+"#,
+        )
+        .expect("parses");
         assert_eq!(
             zaino_chainview::SubmitPolicy::from(&config.submission),
             zaino_chainview::SubmitPolicy {
@@ -1221,12 +1254,5 @@ cache_dir = "/var/cache/zaino/peers"
         let defaults = DaemonConfig::default();
         assert!(!defaults.p2p.enabled, "off unless asked");
         assert_eq!(defaults.p2p.peers(NetworkType::Main).initial_peers, None, "DNS seeders");
-        let seedless = DaemonConfig {
-            network: NetworkType::Regtest,
-            p2p: P2pConfig { initial_peers: Vec::new(), ..config.p2p.clone() },
-            ..config
-        };
-        let refused = seedless.validate().expect_err("regtest has no seeders").to_string();
-        assert!(refused.contains("no DNS seeders"), "{refused}");
     }
 }

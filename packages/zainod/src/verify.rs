@@ -6,12 +6,11 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    process::ExitCode,
 };
 
 use serde::Serialize;
-use zaino_persistence::{
-    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, StoreError, Verification,
-};
+use zaino_persistence::{fs::RealFs, DiskEngine, PersistenceEngine, StoreError, Verification};
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
 use crate::stores::schema;
@@ -24,8 +23,9 @@ struct Report {
     indexes: BTreeMap<&'static str, Option<Verification>>,
 }
 
+/// `Err` = indexes unreadable (exit 2)
 #[derive(Debug, thiserror::Error)]
-enum VerifyError {
+pub enum VerifyError {
     #[error(transparent)]
     Config(#[from] crate::error::IndexerError),
 
@@ -36,46 +36,29 @@ enum VerifyError {
     Render(#[from] serde_json::Error),
 }
 
-/// Verifies the indexes `config_path` enables; exit status 0 clean, 1 corrupt, 2 unreadable
-pub fn run(config_path: &Path) -> i32 {
-    let outcome = load_config(config_path)
-        .map_err(VerifyError::from)
-        .and_then(|config| verify(&config))
-        .and_then(|report| Ok((serde_json::to_string_pretty(&report)?, report)));
-
-    match outcome {
-        Ok((json, report)) => {
-            println!("{json}");
-            eprint!("{}", report.summary());
-            match report.clean {
-                true => 0,
-                false => 1,
-            }
-        }
-        Err(error) => {
-            eprintln!("zainod verify: {error}");
-            2
-        }
-    }
+/// Verifies the indexes `config_path` enables; exit status 0 clean, 1 corrupt
+pub fn run(config_path: &Path) -> Result<ExitCode, VerifyError> {
+    let report = verify(&load_config(config_path)?)?;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    eprint!("{}", report.summary());
+    Ok(match report.clean {
+        true => ExitCode::SUCCESS,
+        false => ExitCode::FAILURE,
+    })
 }
 
 fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
-    let indexes = [
-        IndexKind::CompactBlock,
-        IndexKind::ValueBalance,
-        IndexKind::BlockHash,
-        IndexKind::TreeState,
-        IndexKind::TransparentAddress,
-    ];
-
     let engine = DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default());
     let mut reports = BTreeMap::new();
-    for kind in indexes {
+    for kind in zaino_nfs::INDEXES {
         let index = kind.name();
         let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
-            engine
-                .verify(&path, &schema(kind, config.network))
-                .map_err(|source| VerifyError::Index { index, path, source })
+            let (schema, _) = schema(kind, config.network);
+            engine.verify(&path, &schema).map_err(|source| VerifyError::Index {
+                index,
+                path,
+                source,
+            })
         });
         reports.insert(index, report.transpose()?);
     }
@@ -128,7 +111,7 @@ mod tests {
     use zaino_index_tree_state::TreeStateIndexWriter;
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
-    use zaino_persistence::fs::RealFs;
+    use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::UpgradeSchedule;
 
@@ -173,7 +156,8 @@ mod tests {
         let tree_blocks = subscribe(IndexKind::TreeState);
         let transparent_blocks = subscribe(IndexKind::TransparentAddress);
         let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
-        let open = |path: &Path, kind| engine.open(path, &schema(kind, net), batch).expect("open");
+        let open =
+            |path: &Path, kind| engine.open(path, &schema(kind, net).0, batch).expect("open");
         let value_balance_store = open(&vb, IndexKind::ValueBalance);
         let compact_block_store = open(&cb, IndexKind::CompactBlock);
         let block_hash_store = open(&bh, IndexKind::BlockHash);
@@ -237,7 +221,7 @@ mod tests {
             Value::Null,
             "the header chain = memory, nothing to scrub"
         );
-        assert_eq!(run(&config_path), 0, "clean → exit 0");
+        assert_eq!(run(&config_path).expect("readable"), ExitCode::SUCCESS, "clean → exit 0");
 
         let heights = ts.join("heights.dat");
         let mut records = std::fs::read(&heights).expect("read");
@@ -246,7 +230,8 @@ mod tests {
         let corrupt = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let bad_pages = &corrupt["tree_state"]["units"][0]["bad_pages"];
         assert_eq!((&corrupt["clean"], bad_pages), (&json!(false), &json!([0])));
-        assert_eq!(run(&config_path), 1, "any corruption → exit 1");
+        let corrupt_exit = run(&config_path).expect("readable");
+        assert_eq!(corrupt_exit, ExitCode::FAILURE, "any corruption → exit 1");
         records[3] ^= 0x01;
         std::fs::write(&heights, &records).expect("restore");
 
@@ -278,6 +263,7 @@ mod tests {
         assert_eq!((&partial["clean"], disabled), (&json!(true), [&Value::Null; 3]));
         assert!(!absent.exists(), "verify created {}", absent.display());
 
-        assert_eq!(run(&root.path().join("missing.toml")), 2, "unreadable → exit 2");
+        let unreadable = run(&root.path().join("missing.toml"));
+        assert!(matches!(unreadable, Err(VerifyError::Config(_))), "{unreadable:?}");
     }
 }
