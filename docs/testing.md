@@ -40,12 +40,14 @@ checked against an independent oracle.
 Every in-repo test takes its blocks, headers, verified chains and validators from one builder,
 `zaino_primitives::testing::MockChain` ([guide](../packages/zaino-primitives/usage.md)): every
 block it hands out passes our own checks (real header bytes, linkage, merkle root, spends,
-fees, pool activations). The simulated validators are `zaino_source::testing::MockValidator`,
+fees, pool activations), and its mempool holds only transactions its best chain admits. The
+simulated validators are `zaino_source::testing::MockValidator` (`chain.validator(tip)`),
 each following one tip of a shared `MockChain` and answering the way zebrad does: blocks by
 hash and headers by height come from the best chain only, nothing is served above the tip,
-a sent transaction is listed at the fee its bytes leave, and a mined transaction is served
-only from the real bytes it was mined with. A test that relies on a lookup zebrad would
-refuse fails here rather than on a cluster.
+a node lists only what it heard from the chain's mempool or accepted itself, each at the fee
+its bytes leave on its tip, and a mined transaction is served only from the real bytes it was
+mined with. A test that relies on a lookup zebrad would refuse fails here rather than on a
+cluster.
 
 ### Model tests in bulk
 

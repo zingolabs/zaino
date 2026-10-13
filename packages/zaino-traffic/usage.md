@@ -139,6 +139,18 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 
 ## Tests
 
+- Feature `testing`: `testing::PeerSetViews` on a `MockChain` gives the peer set as a
+  `PeerTransport` over one path, as `ZebraPeers` answers: headers after the first locator hash
+  held (`FindHeaders`, ≤ 160), blocks by hash, an unheld block = `Connection`.
+
+  ```rust,ignore
+  use zaino_traffic::testing::PeerSetViews;
+
+  let peer_set = Arc::new(chain.peer_set(at_60));   // genesis ..= 60 held
+  peer_set.hold(h(40));                             // the network not past 40 yet
+  let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
+  ```
+
 - `core/model.rs` (proptest): members `Honest`, `Slow`, `Lying`, `Lagging`, `Flapping`, `Down`,
   `Silent`, the peer set present or not; random asks, abandons, reports, clock advances against an
   oracle with its own lanes and permits. A bound matrix pins each class's end time to its hedge

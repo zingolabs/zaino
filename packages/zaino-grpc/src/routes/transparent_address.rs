@@ -295,7 +295,7 @@ mod tests {
         use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
         use zaino_primitives::types::Script;
         use zaino_proto::proto::service as proto;
-        use zaino_source::testing::{decoded, raw_transparent, MockValidator};
+        use zaino_source::testing::{decoded, raw_transparent, ValidatorViews};
 
         // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
@@ -317,7 +317,7 @@ mod tests {
         let index = indexed(IndexKind::TransparentAddress, &chain, tip);
 
         // the validator serves the same chain the index holds
-        let node = std::sync::Arc::new(MockValidator::following(&chain, tip));
+        let node = std::sync::Arc::new(chain.validator(tip));
         let (routes, balancing, _) = routes_over(&node);
         let routes = Routes { snapshots: snapshot(&chain, tip, vec![index]), ..routes };
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));

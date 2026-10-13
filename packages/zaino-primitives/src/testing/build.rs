@@ -81,7 +81,7 @@ pub struct TxBuilder {
 }
 
 impl TxBuilder {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             txid: None,
             spends: Vec::new(),

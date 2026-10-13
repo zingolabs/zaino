@@ -1,5 +1,5 @@
 //! [`MockPeers`]: the Zcash p2p network as a script (mempools and block `inv`s the test sets,
-//! pushes recorded); [`MockUtxos`]: a UTXO set the test names
+//! pushes recorded); a `MockChain` [`Ledger`] as the UTXO set
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
@@ -10,6 +10,7 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
+use zaino_primitives::testing::Ledger;
 use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId, Zatoshis};
 use zaino_source::{FailureMode, NonDomainError};
 
@@ -118,20 +119,9 @@ impl ValidatorP2pSource for MockPeers {
     }
 }
 
-/// UTXO set of exactly these outpoints (`None` = no set yet: nothing served)
-#[derive(Debug, Default)]
-pub struct MockUtxos(Mutex<Option<BTreeMap<OutPoint, Zatoshis>>>);
-
-impl MockUtxos {
-    pub fn of(unspent: impl IntoIterator<Item = (OutPoint, Zatoshis)>) -> Self {
-        Self(Mutex::new(Some(unspent.into_iter().collect())))
-    }
-}
-
-impl UnspentOutputs for MockUtxos {
+/// One `MockChain` tip's UTXO set (`chain.ledger(tip)`)
+impl UnspentOutputs for Ledger {
     fn values(&self, outpoints: &[OutPoint]) -> Option<Vec<Option<Zatoshis>>> {
-        let set = self.0.lock().expect("MockUtxos mutex poisoned");
-        let set = set.as_ref()?;
-        Some(outpoints.iter().map(|at| set.get(at).copied()).collect())
+        Some(outpoints.iter().map(|at| self.unspent(at)).collect())
     }
 }

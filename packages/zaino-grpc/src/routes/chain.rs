@@ -229,7 +229,7 @@ mod tests {
     use zaino_header_chain::testing::HeaderViews;
     use zaino_primitives::testing::{h, MockChain};
     use zaino_primitives::types::BlockRef;
-    use zaino_source::testing::{raw_transaction, MockValidator, Port};
+    use zaino_source::testing::{decoded, raw_transaction, Port, ValidatorViews};
 
     use crate::testing::{dispatch, framed_request, indexed_at, published, routes_over};
     use crate::wire::path;
@@ -369,7 +369,7 @@ mod tests {
     async fn lightd_info_answers_once_served_with_no_validator_holding_the_tip() {
         let mut chain = MockChain::regtest();
         let tip_7 = chain.mine_empty(7);
-        let node = Arc::new(MockValidator::following(&chain, tip_7));
+        let node = Arc::new(chain.validator(tip_7));
         let (mut routes, _balancing, _fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let snapshots = routes.snapshots.clone();
@@ -429,7 +429,11 @@ mod tests {
         let mut chain = MockChain::regtest();
         let tip_10 = chain.mine_empty(10);
         let tip_11 = chain.mine_empty(1);
-        let node = Arc::new(MockValidator::following(&chain, chain.genesis()));
+        let seeded: Vec<TransactionId> =
+            (1..=5).map(|seed| chain.submit(decoded(raw_transaction(seed, 0).1))).collect();
+        let node = Arc::new(chain.validator(chain.genesis()));
+        let hear =
+            |seeds: &[usize]| seeds.iter().for_each(|seed| node.hear(&chain, seeded[seed - 1]));
         node.reachable(&Port::ALL, false);
         let (mut routes, balancing, fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
@@ -452,9 +456,7 @@ mod tests {
         assert_eq!(status, Some(&HeaderValue::from_static("14")), "no verified tip: UNAVAILABLE");
 
         node.follow(&chain, tip_10);
-        for seed in [1, 2] {
-            node.mempool_insert(raw_transaction(seed, 0).1, 1_000);
-        }
+        hear(&[1, 2]);
         node.reachable(&Port::ALL, true);
         verified(tip_10);
         let listed = || reader.current().mempool().is_some_and(|m| m.entries().count() == 2);
@@ -497,13 +499,11 @@ mod tests {
 
         // a burst of two (one poll: txid order), then one more: each once, in order, to every
         // subscriber
-        for seed in [3, 4] {
-            node.mempool_insert(raw_transaction(seed, 0).1, 1_000);
-        }
+        hear(&[3, 4]);
         let burst = [next_record(&mut subscribers).await, next_record(&mut subscribers).await];
         let [first, second] = <[_; 2]>::try_from(unmined(&[3, 4])).expect("two");
         assert_eq!(burst.map(decoded), [vec![first.clone()], vec![second.clone()]]);
-        node.mempool_insert(raw_transaction(5, 0).1, 1_000);
+        hear(&[5]);
         assert_eq!(decoded(next_record(&mut subscribers).await), unmined(&[5]));
 
         // late subscriber: the same opening and the same log, by pointer
@@ -552,8 +552,10 @@ mod tests {
     async fn get_mempool_tx_parses_each_transaction_once_and_shapes_each_answer() {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
+        use std::collections::BTreeMap;
         use tower::Service as _;
-        use zaino_primitives::types::Transaction;
+        use zaino_primitives::testing::{p2pkh, TxBuilder};
+        use zaino_primitives::types::{ShieldedPool, Transaction};
         use zaino_proto::proto::compact_formats::CompactTx;
         use zaino_proto::proto::service as proto;
 
@@ -577,11 +579,31 @@ mod tests {
         chosen.sort_by_key(|(tx, _)| <[u8; 32]>::from(tx.txid)); // the view's (txid) order
         let txid = |tx: &Transaction| <[u8; 32]>::from(tx.txid);
 
+        // their prevouts: one coinbase per spent txid (1,000 ZEC each vout), shielded pools funded
+        let (alice, zec) = (p2pkh([0xaa; 20]), 100_000_000u64);
         let mut chain = MockChain::regtest();
-        let tip = chain.mine_empty(10);
-        let node = Arc::new(MockValidator::following(&chain, tip));
-        for (_, raw) in &chosen {
-            node.mempool_insert(raw.clone(), 1_000);
+        chain.mine(|b| {
+            let deposit = -100_000 * zec as i64;
+            b.coinbase(|c| {
+                c.value_balance(ShieldedPool::Sapling, deposit)
+                    .value_balance(ShieldedPool::Orchard, deposit)
+            })
+        });
+        let mut spent: BTreeMap<[u8; 32], u32> = BTreeMap::new();
+        for prevout in chosen.iter().flat_map(|(tx, _)| &tx.transparent.inputs) {
+            let last = spent.entry(prevout.txid.into()).or_default();
+            *last = (*last).max(prevout.vout);
+        }
+        for (txid, last) in spent {
+            let paid =
+                |c: TxBuilder| (0..=last).fold(c.txid(txid), |c, _| c.pay(&alice, 1_000 * zec));
+            chain.mine(|b| b.coinbase(paid));
+        }
+        let tip = chain.mine_empty(1);
+        let node = Arc::new(chain.validator(tip));
+        for (tx, raw) in &chosen {
+            chain.submit((tx.clone(), raw.clone()));
+            node.hear(&chain, tx.txid);
         }
         let (mut routes, balancing, fold) = routes_over(&node);
         let (publisher, _nfs) = published(&mut routes);

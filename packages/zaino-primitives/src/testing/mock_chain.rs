@@ -3,25 +3,25 @@
 //! Every block handed out passes M1–M7 (else panic naming the rule; `usage.md` § Invariants):
 //! - M1: hash = SHA-256d(`encode_header`)
 //! - M2: linked to parent, height + 1, time > parent's median time past (`time()`)
-//! - M3: merkle root = `MerkleRoot::of_txids`, txids distinct per branch (`Ledger::admit`)
-//! - M4: one coinbase, slot 0, spends nothing, states no fee (`plan()`, `Ledger::admit`)
+//! - M3: merkle root = `MerkleRoot::of_txids`, txids distinct per branch (`Ledger::apply`)
+//! - M4: one coinbase, slot 0, spends nothing, states no fee (`plan()`, `Ledger::apply`)
 //! - M5: nBits = regtest limit, or `outweigh()` = least work that becomes best (`bits()`)
 //! - M6: spends unspent on own branch, nullifiers fresh, pools >= 0 (ZIP 209), fee = derived
 //! - M7: pool data only once its upgrade active (Sapling, NU5 = Orchard, NU6.3 = Ironwood)
+//! - Mempool: each entry admitted (M6, M7) on the best after the ones before it (`repool()`)
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
-use super::{
-    balances, encode_header, fee_left, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS,
-};
+use super::ledger::{Ledger, Unmined};
+use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::types::{
     Block, BlockFees, BlockHash, BlockHeader, BlockRef, BlockchainInfo, CompactDifficulty,
-    ConsensusBranchIds, EquihashSolution, Fee, Height, MerkleRoot, Nullifier, OutPoint,
-    ShieldedPool, Transaction, TransactionId, UpgradeSchedule, Zatoshis,
+    ConsensusBranchIds, EquihashSolution, Fee, Height, MerkleRoot, Transaction, TransactionId,
+    UpgradeSchedule,
 };
 
 /// zebra-state `check.rs`: a header's time must pass the median of this many ancestors' times
@@ -52,6 +52,7 @@ pub struct MockChain {
     genesis: BlockHash,
     best: BlockHash,
     bytes: HashMap<TransactionId, Vec<u8>>,
+    mempool: Vec<Unmined>,
     nonces: u64,
     txids: u64,
 }
@@ -107,11 +108,28 @@ impl MockChain {
     pub fn at(&self, height: Height) -> BlockRef {
         let tip = self.tip();
         assert!(height <= tip.height, "{height} above the best tip {}", tip.height);
+        self.ancestor(tip, height)
+    }
+
+    /// `tip`'s path at `height` (≤ `tip.height`)
+    pub fn ancestor(&self, tip: BlockRef, height: Height) -> BlockRef {
+        assert!(height <= tip.height, "{height} above the tip {}", tip.height);
         let mut at = tip;
         while at.height > height {
             at = self.reference(self.block(at.hash).header().prev_hash);
         }
         at
+    }
+
+    /// Highest block on both `a`'s and `b`'s paths (`a` itself when `b` extends it)
+    pub fn fork_point(&self, a: BlockRef, b: BlockRef) -> BlockRef {
+        let low = a.height.min(b.height);
+        let (mut a, mut b) = (self.ancestor(a, low), self.ancestor(b, low));
+        while a != b {
+            a = self.reference(self.block(a.hash).header().prev_hash);
+            b = self.reference(self.block(b.hash).header().prev_hash);
+        }
+        a
     }
 
     /// On `tip()`
@@ -189,6 +207,49 @@ impl MockChain {
         self.schedule
     }
 
+    /// Unspent outputs, txids, nullifiers and pool values on genesis ..= `tip`
+    pub fn ledger(&self, tip: BlockRef) -> Ledger {
+        let mut ledger = Ledger::empty(self.schedule.upgrades, Height::GENESIS);
+        for block in self.blocks(tip) {
+            for tx in block.transactions() {
+                ledger.apply(tx, None).expect("a held block passed M3–M7 when mined");
+            }
+            ledger.advance();
+        }
+        ledger
+    }
+
+    /// Held for the next block on the best: admitted after every entry before it (M6, M7), else
+    /// panic naming the refusal
+    pub fn submit(&mut self, (tx, bytes): (Transaction, Vec<u8>)) -> TransactionId {
+        let mut pool = self.pool_ledger();
+        let fee = pool.admit(&tx).unwrap_or_else(|refused| panic!("submit {}: {refused}", tx.txid));
+        let txid = tx.txid;
+        self.mempool.push(Unmined { tx, bytes, fee });
+        txid
+    }
+
+    /// Submission order
+    pub fn mempool(&self) -> &[Unmined] {
+        &self.mempool
+    }
+
+    /// Out of the mempool, with every entry spending its outputs
+    pub fn evict(&mut self, txid: TransactionId) {
+        self.mempool.retain(|unmined| unmined.tx.txid != txid);
+        let best = self.best;
+        self.repool(best);
+    }
+
+    /// One block on `tip()` carrying every mempool entry, in submission order
+    pub fn mine_mempool(&mut self) -> BlockRef {
+        let held = self.mempool.clone();
+        let carried = |block: BlockBuilder| {
+            held.into_iter().fold(block, |block, unmined| block.raw_tx((unmined.tx, unmined.bytes)))
+        };
+        self.mine(carried)
+    }
+
     fn over(schedule: Schedule, genesis_spec: BlockBuilder) -> Self {
         schedule.upgrades.assert_ordered();
         let mut chain = Self {
@@ -198,6 +259,7 @@ impl MockChain {
             genesis: BlockHash::ZERO,
             best: BlockHash::ZERO,
             bytes: HashMap::new(),
+            mempool: Vec::new(),
             nonces: 0,
             txids: 0,
         };
@@ -227,11 +289,13 @@ impl MockChain {
         let bits = self.bits(parent, spec.bits, outweigh);
         let mut ledger = match (parent, spec.reads_history()) {
             (Some(parent), true) => self.ledger(parent),
-            _ => Ledger::default(),
+            _ => Ledger::empty(self.schedule.upgrades, height),
         };
         let planned = self.plan(spec);
-        let upgrades = self.schedule.upgrades;
-        let fees = planned.iter().map(|(tx, stated)| ledger.admit(tx, *stated, height, &upgrades));
+        let fees = planned.iter().map(|(tx, stated)| {
+            let fee = ledger.apply(tx, *stated);
+            fee.unwrap_or_else(|refused| panic!("{} at {height}: {refused}", tx.txid))
+        });
         let fees: Vec<Fee> = fees.collect();
         let transactions: Vec<Transaction> = planned.into_iter().map(|(tx, _)| tx).collect();
         let txids: Vec<TransactionId> = transactions.iter().map(|tx| tx.txid).collect();
@@ -262,9 +326,46 @@ impl MockChain {
             Mined { block: Arc::new(Block::new(header, transactions)), fees, cumulative_work };
         assert!(self.blocks.insert(block.hash, mined).is_none(), "{} mined twice", block.hash);
         if parent.is_some() && cumulative_work > self.mined(self.best).cumulative_work {
-            self.best = block.hash;
+            let old = std::mem::replace(&mut self.best, block.hash);
+            self.repool(old);
         }
         block
+    }
+
+    /// Best ledger + every mempool entry
+    fn pool_ledger(&self) -> Ledger {
+        let mut pool = self.ledger(self.tip());
+        for unmined in &self.mempool {
+            pool.admit(&unmined.tx).expect("mempool entries admitted in order (repool)");
+        }
+        pool
+    }
+
+    /// Mempool re-admitted on the best after it left `old`
+    ///
+    /// - `old`'s transactions above the fork come back first, block order (coinbases and
+    ///   `TxBuilder` ones never: no bytes); mined, conflicting or orphaned entries leave
+    fn repool(&mut self, old: BlockHash) {
+        let old = self.reference(old);
+        let fork = self.fork_point(old, self.tip());
+        let mut above_fork = Vec::new();
+        let mut at = old;
+        while at != fork {
+            let block = self.block(at.hash);
+            above_fork.push(Arc::clone(block));
+            at = self.reference(block.header().prev_hash);
+        }
+        let unmined = above_fork.iter().rev().flat_map(|block| block.transactions().iter().skip(1));
+        let returned =
+            unmined.filter_map(|tx| Some((tx.clone(), self.bytes.get(&tx.txid)?.clone())));
+        let returned: Vec<(Transaction, Vec<u8>)> = returned.collect();
+        if returned.is_empty() && self.mempool.is_empty() {
+            return;
+        }
+        let held = std::mem::take(&mut self.mempool).into_iter();
+        let candidates =
+            returned.into_iter().chain(held.map(|unmined| (unmined.tx, unmined.bytes)));
+        self.mempool = self.ledger(self.tip()).readmit(candidates);
     }
 
     /// Coinbase first, each beside its stated fee; default txids minted
@@ -343,18 +444,6 @@ impl MockChain {
             (None, _, _) => valid(REGTEST_BITS),
         }
     }
-
-    /// Unspent outputs, txids, nullifiers and pool values on genesis ..= `tip`
-    fn ledger(&self, tip: BlockRef) -> Ledger {
-        let mut ledger = Ledger::default();
-        for block in self.blocks(tip) {
-            let height = block.header().height;
-            for tx in block.transactions() {
-                ledger.admit(tx, None, height, &self.schedule.upgrades);
-            }
-        }
-        ledger
-    }
 }
 
 /// Mining on one block of a [`MockChain`], each `mine` moving it to the new block
@@ -412,86 +501,6 @@ fn lightest_over(over: u128) -> CompactDifficulty {
         }
     }
     bits(beats)
-}
-
-/// One branch's state at a block: what the next transaction may spend and reveal
-#[derive(Default)]
-struct Ledger {
-    unspent: HashMap<OutPoint, Zatoshis>,
-    txids: HashSet<TransactionId>,
-    nullifiers: HashSet<(ShieldedPool, Nullifier)>,
-    /// ZIP 209 chain value pools: sprout, sapling, orchard, ironwood
-    pools: [i64; 4],
-}
-
-impl Ledger {
-    /// M3 (distinct txids), M4 (coinbase spends nothing), M6 (spends, conservation, fee), M7 (pools)
-    fn admit(
-        &mut self,
-        tx: &Transaction,
-        stated: Option<u64>,
-        at: Height,
-        upgrades: &UpgradeSchedule,
-    ) -> Fee {
-        let txid = tx.txid;
-        assert!(self.txids.insert(txid), "{txid} at {at}: txid repeated on this branch");
-        let balances = balances(tx);
-        let pools = [
-            (NetworkUpgrade::Sapling, tx.sapling.spends.len() + tx.sapling.outputs.len()),
-            (NetworkUpgrade::Nu5, tx.orchard.actions.len()),
-            (NetworkUpgrade::Nu6_3, tx.ironwood.actions.len()),
-        ];
-        for ((upgrade, data), balance) in pools.into_iter().zip(&balances[1..]) {
-            let used = data > 0 || *balance != 0;
-            let active = upgrades.active(upgrade, at);
-            assert!(!used || active, "{txid} at {at}: pool data before {upgrade}");
-        }
-        for (pool, nullifier) in nullifiers(tx) {
-            let fresh = self.nullifiers.insert((pool, nullifier));
-            assert!(fresh, "{txid} at {at}: {pool} nullifier revealed twice on this branch");
-        }
-
-        let coinbase = tx.transparent.coinbase;
-        let withdraws = balances.iter().any(|balance| *balance > 0);
-        let spends = !tx.transparent.inputs.is_empty() || !tx.sapling.spends.is_empty();
-        assert!(!coinbase || !(spends || withdraws), "{txid} at {at}: a coinbase spends nothing");
-        assert!(!coinbase || stated.is_none(), "{txid} at {at}: a coinbase pays no fee");
-
-        let mut spent: i64 = 0;
-        for prevout in &tx.transparent.inputs {
-            let (from, vout) = (prevout.txid, prevout.vout);
-            let value = self.unspent.remove(prevout).unwrap_or_else(|| {
-                panic!("{txid} at {at}: spends {from}:{vout}, not unspent on this branch")
-            });
-            spent += value.as_i64();
-        }
-        for (pool, balance) in self.pools.iter_mut().zip(balances) {
-            *pool -= balance;
-            let held = *pool >= 0;
-            assert!(held, "{txid} at {at}: takes {balance} from a pool holding less (ZIP 209)");
-        }
-        for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-            self.unspent.insert(OutPoint { txid, vout }, output.value);
-        }
-        if coinbase {
-            return Fee::Coinbase;
-        }
-        let remaining = fee_left(tx, spent);
-        let fee = u64::try_from(remaining)
-            .unwrap_or_else(|_| panic!("{txid} at {at}: overspends by {}", -remaining));
-        if let Some(stated) = stated {
-            assert_eq!(stated, fee, "{txid} at {at}: stated fee != inputs − outputs + balances");
-        }
-        Fee::Paid(Zatoshis::new(fee).expect("a fee within the supply"))
-    }
-}
-
-fn nullifiers(tx: &Transaction) -> impl Iterator<Item = (ShieldedPool, Nullifier)> + '_ {
-    let sapling = tx.sapling.spends.iter().map(|spend| (ShieldedPool::Sapling, spend.nullifier));
-    let orchard = tx.orchard.actions.iter().map(|action| (ShieldedPool::Orchard, action.nullifier));
-    let ironwood =
-        tx.ironwood.actions.iter().map(|action| (ShieldedPool::Ironwood, action.nullifier));
-    sapling.chain(orchard).chain(ironwood)
 }
 
 #[cfg(test)]

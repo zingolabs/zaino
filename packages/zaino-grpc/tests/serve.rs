@@ -10,14 +10,14 @@ use zaino_grpc::{GrpcLimits, GrpcService, Routes};
 use zaino_persistence::DiskView;
 use zaino_primitives::testing::MockChain;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zaino_source::testing::MockValidator;
+use zaino_source::testing::{MockValidator, ValidatorViews};
 
 /// Nothing served, chain view never polled → every `GetLightdInfo` = `UNAVAILABLE` (what these
 /// transport tests read back)
 fn routes() -> Routes<MockValidator, DiskView> {
     let network = zcash_protocol::consensus::NetworkType::Test;
     let chain = MockChain::regtest();
-    let validator = Arc::new(MockValidator::following(&chain, chain.genesis()));
+    let validator = Arc::new(chain.validator(chain.genesis()));
     let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);

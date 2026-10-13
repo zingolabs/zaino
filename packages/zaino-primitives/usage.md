@@ -128,11 +128,11 @@ digits); that pair is the one display-order conversion.
 ## Testing: `MockChain`
 
 The `testing` feature exposes `MockChain`: the one chain builder every test below the
-live suite takes its blocks, headers, fees and validator from. Enable it from
+live suite takes its blocks, headers, fees, mempool and validators from. Enable it from
 `[dev-dependencies]` only.
 
 ```rust,ignore
-use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+use zaino_primitives::testing::{h, outpoint, p2pkh, Ledger, MockChain, Unmined};
 use zaino_primitives::types::UpgradeSchedule;
 use zcash_protocol::consensus::NetworkUpgrade;
 
@@ -160,6 +160,15 @@ let retreat = varied.fork(h(10)).outweigh().mine_empty(1).tip(); // 12 → 11, n
 let revived = varied.branch(twelve).outweigh().mine_empty(1).tip();
 let later = MockChain::regtest()
     .upgrades(UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3)));
+
+let fork = varied.ancestor(revived, h(9));           // any tip's path at a height
+let met = varied.fork_point(twelve, retreat);        // highest block on both paths
+
+let txid = chain.submit(decoded(raw));               // mempool: admitted on the best, else panic
+let held: &[Unmined] = chain.mempool();              // submission order, each with bytes + fee
+chain.evict(txid);                                   // and every entry spending its outputs
+let mined = chain.mine_mempool();                    // one block on tip() carrying all of it
+let utxos: Ledger = chain.ledger(tip);               // a tip's unspent outputs, txids, nullifiers
 ```
 
 - **Who writes what.** The builder owns hashes, nonces, times, nBits, merkle roots,
@@ -177,6 +186,13 @@ let later = MockChain::regtest()
 - **Real transactions.** `raw_tx(decoded(bytes))` (`decoded` is in `zaino-source`'s
   `testing`) mines a real transaction and keeps its bytes (`tx_bytes(txid)`).
   `TxBuilder` transactions have no bytes, so a validator double never invents a body.
+- **Mempool.** The network's unmined transactions, real bytes only. `submit` admits each on
+  the best chain after every entry before it, through the same `Ledger` mining uses (unspent
+  inputs, fresh nullifiers, pool activations, fee ≥ 0), and panics with the `Refused` rule
+  otherwise. Whenever the best moves, the mempool is re-admitted on the new best: transactions
+  only the old best mined come back first (block order; coinbases and `TxBuilder` ones never,
+  having no bytes), and mined, conflicting or orphaned entries leave. `Ledger::admit` is the
+  non-panicking check a validator double gives its verdicts with.
 
 ### Views in other crates
 
@@ -185,8 +201,10 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 | View | Crate | Gives |
 |---|---|---|
 | `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_final(tip, final_at)` |
-| `MockValidator` | `zaino-source` | a `ChainDataSource` serving `following(&chain, tip)`; `follow` another tip to extend, reorg or retreat; scripted mempool, latency, failures and `Lie`s |
+| `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
+| `PeerSetViews` (trait on `MockChain`) | `zaino-traffic` | `peer_set(tip)`: a `MockPeerSet` (`PeerTransport`) over one path, `hold(height)` to move its tip |
 | `MockPeers` | `zaino-chainview` | a `ValidatorP2pSource`: live peers list mempools and take pushes, dead ones refuse |
+| `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
 | `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
 
 Finality is the header chain's, never the builder's: ask for it with `verified_final`.
@@ -209,7 +227,8 @@ workspace.
 | M8 | every path inserts into `HeaderViews::header_chain`, and `MockChain::tip` = `HeaderChain::best` (`zaino-header-chain` proptest) |
 | M9 | `MockValidator` serves its best chain only, by height and by hash; each `Lie` fails the body check (`zaino-sync` fetch tests) |
 
-M1–M7 are enforced in `src/testing/mock_chain.rs` and tested in its `tests` module.
+M1–M7 are enforced in `src/testing/mock_chain.rs` (the transaction rules in `ledger.rs`) and
+tested in its `tests` module.
 
 `encode_header` (`chain.header_bytes(hash)` wraps it) and `header_hash` = the consensus header
 bytes and their SHA-256d: `merkle_root` = the Bitcoin merkle tree over the txids

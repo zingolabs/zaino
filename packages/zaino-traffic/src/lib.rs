@@ -8,6 +8,8 @@ mod balancer;
 mod class;
 mod core;
 mod member;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
 pub use balancer::{
     Answered, HeaderAsk, Observation, PeerTransport, Peers, TrafficBalancer, TrafficDriver,

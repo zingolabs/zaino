@@ -180,12 +180,6 @@ impl Sim {
         toy
     }
 
-    /// Genesis ..= the header chain's best, from the builder (the chain keeps no deep history)
-    fn best_path(&self) -> Vec<BlockHash> {
-        let best = self.headers.best().expect("anchored at genesis").block;
-        self.builder.blocks(best).iter().map(|block| block.header().hash).collect()
-    }
-
     fn durable(&self) -> Vec<Option<BlockRef>> {
         self.writers.iter().map(|writer| writer.durable).collect()
     }
@@ -217,28 +211,25 @@ impl Sim {
             }
             Change::Reorg { depth, len } => {
                 let at = u32::from(best.height).saturating_sub(depth).max(floor);
-                let parent = self.builder.block(self.best_path()[at as usize]).at();
-                (height(at), self.builder.branch(parent).outweigh().mine_empty(len).tip())
+                let parent = self.builder.ancestor(best, height(at));
+                (parent.height, self.builder.branch(parent).outweigh().mine_empty(len).tip())
             }
             Change::Revive { pick } => {
                 let Some(&old) = self.tips.get(usize::from(pick) % self.tips.len().max(1)) else {
                     return;
                 };
-                let path = self.best_path();
-                let branch = self.builder.blocks(self.builder.block(old).at());
-                let shared = branch.iter().zip(&path).take_while(|(b, p)| b.header().hash == **p);
-                let fork = shared.count() - 1;
-                if (fork as u32) < floor || fork + 1 == branch.len() {
+                let old = self.builder.block(old).at();
+                let fork = self.builder.fork_point(old, best);
+                if u32::from(fork.height) < floor || fork == old {
                     return;
                 }
-                let old = self.builder.block(old).at();
                 let heavy = self.builder.branch(old).outweigh().mine_empty(1).tip();
-                let mined = &self.builder.blocks(heavy)[fork + 1..];
+                let mined = &self.builder.blocks(heavy)[u32::from(fork.height) as usize + 1..];
                 // a long side branch re-entering past the header chain's side bound: evicted (H4)
                 if let Err(Rejected::Orphan) = insert(&mut self.headers, mined) {
                     return;
                 }
-                (height(fork as u32), heavy)
+                (fork.height, heavy)
             }
             Change::Finalize => {
                 if let Some(boundary) = self.headers.finalizable() {
@@ -468,8 +459,7 @@ impl Sim {
         if reset {
             // re-anchored like HeaderSync: one header `DEPTH` below best, nothing beneath (may
             // sit above every durable tip: the final path closes that gap by height)
-            let tip = self.builder.block(*self.best_path().last().expect("genesis")).at();
-            let path = self.builder.blocks(tip);
+            let path = self.builder.blocks(self.headers.best().expect("anchored").block);
             let anchor = path.len().saturating_sub(1 + DEPTH.get() as usize);
             let header = path[anchor].header();
             let decoded = decode_header(&encode_header(header)).expect("MockChain headers decode");

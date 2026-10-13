@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockHash, BlockRef, Height, ReorgDepth};
-use zaino_source::testing::{within, MockValidator, Port};
+use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 
 use crate::{ChainView, EndpointSet};
@@ -137,7 +137,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let depth = ReorgDepth::new(NonZeroU32::new(DEPTH).expect("nz"));
     let mut headers = chain.header_chain(depth);
     let nodes = (0..n).map(|_| {
-        let validator = Arc::new(MockValidator::following(&chain, shared));
+        let validator = Arc::new(chain.validator(shared));
         Node { validator, tip: shared }
     });
     let mut sim = Sim { nodes: nodes.collect(), chain };
@@ -175,9 +175,8 @@ async fn run(n: usize, moves: Vec<Move>) {
             Move::Fork { node, drop, mine } => {
                 let node = node % n;
                 let tip = sim.nodes[node].tip;
-                let kept = (u32::from(tip.height) + 1).saturating_sub(drop).max(1) - 1;
-                let base = sim.chain.blocks(tip)[kept as usize].header().hash;
-                let base = BlockRef { hash: base, height: Height::try_from(kept).expect("small") };
+                let kept = u32::from(tip.height).saturating_sub(drop);
+                let base = sim.chain.ancestor(tip, Height::try_from(kept).expect("small"));
                 sim.mine(node, base, mine);
             }
             Move::Reachable { node, reachable } => {

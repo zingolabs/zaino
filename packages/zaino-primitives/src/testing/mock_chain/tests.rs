@@ -5,7 +5,10 @@ use zcash_protocol::consensus::{BranchId, NetworkUpgrade};
 use super::*;
 use crate::testing::TxBuilder;
 use crate::testing::{outpoint, p2pkh};
-use crate::types::{ConsensusBranchId, NetworkUpgradeStatus, NoteCommitment, TransparentOutput};
+use crate::types::{
+    ConsensusBranchId, NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool,
+    TransparentOutput, Zatoshis,
+};
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -307,4 +310,81 @@ fn outweigh_takes_the_best_with_the_least_work_that_wins() {
     assert_eq!(limit.tip(), longer, "Work::Limit: the longer fork wins");
     let bits: Vec<u32> = limit.blocks(longer).iter().map(|b| b.header().bits.bits()).collect();
     assert_eq!(bits, [REGTEST_BITS; 5]);
+}
+
+/// Mempool on Alice's 50 000 coinbase: `parent` (fee 1 000), `child` spending it (fee 500)
+/// - each held at the fee its spends leave; evicting `parent` drops `child` (orphaned)
+/// - `mine_mempool` carries both in order at those fees, bytes kept; the mempool then empty
+#[test]
+fn the_mempool_holds_what_the_best_admits_until_mined() {
+    let alice = p2pkh([0xaa; 20]);
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+    let parent = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+    let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
+    let child = TxBuilder::new().spend(outpoint([0x20; 32], 0)).pay(&alice, 48_500);
+    let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
+    let held = |chain: &MockChain| -> Vec<(TransactionId, u64)> {
+        chain.mempool().iter().map(|unmined| (unmined.tx.txid, unmined.fee.as_u64())).collect()
+    };
+
+    chain.submit((parent.clone(), vec![0x20]));
+    chain.submit((child.clone(), vec![0x21]));
+    assert_eq!(held(&chain), [(parent.txid, 1_000), (child.txid, 500)]);
+    chain.evict(parent.txid);
+    assert_eq!(held(&chain), [], "the child leaves with its parent");
+
+    chain.submit((parent.clone(), vec![0x20]));
+    chain.submit((child.clone(), vec![0x21]));
+    let mined = chain.mine_mempool();
+    let carried = chain.block(mined.hash).transactions().iter().skip(1).map(|tx| tx.txid);
+    assert_eq!(carried.collect::<Vec<_>>(), [parent.txid, child.txid]);
+    let paid = |zats: u64| Fee::Paid(Zatoshis::new(zats).expect("in supply"));
+    assert_eq!(chain.fees(mined.hash).fees, [Fee::Coinbase, paid(1_000), paid(500)]);
+    assert_eq!(chain.tx_bytes(child.txid), Some(&[0x21][..]));
+    assert_eq!(held(&chain), [], "mined = out of the mempool");
+}
+
+/// Reorgs around a block mining `parent` + `child` (Alice's coinbase at 1 funds `parent`):
+/// - its branch outweighed: both back, block order; it revived: both mined again, gone
+/// - a winner spending `parent`'s prevout first: `parent` conflicts, `child` orphaned, both gone
+#[test]
+fn a_reorg_returns_what_the_best_no_longer_mines_and_drops_conflicts() {
+    let alice = p2pkh([0xaa; 20]);
+    let mut chain = MockChain::regtest().varied_work();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+    let parent = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+    let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
+    let child = TxBuilder::new().spend(outpoint([0x20; 32], 0)).pay(&alice, 48_500);
+    let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
+    chain.submit((parent.clone(), vec![0x20]));
+    chain.submit((child.clone(), vec![0x21]));
+    let mined = chain.mine_mempool();
+    let held = |chain: &MockChain| -> Vec<TransactionId> {
+        chain.mempool().iter().map(|unmined| unmined.tx.txid).collect()
+    };
+
+    chain.fork(h(1)).outweigh().mine_empty(1);
+    assert_eq!(held(&chain), [parent.txid, child.txid], "unmined by the reorg: back, in order");
+    let revived = chain.branch(mined).outweigh().mine_empty(1).tip();
+    assert_eq!((chain.tip(), held(&chain)), (revived, vec![]), "mined again: gone");
+
+    let rival = |t: TxBuilder| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 40_000);
+    chain.fork(h(1)).outweigh().mine(|b| b.tx(rival));
+    assert_eq!(held(&chain), [], "its prevout spent by the winner: dropped, its child too");
+}
+
+/// A double spend of a held entry's prevout: never held beside it
+#[test]
+#[should_panic(expected = "not unspent on this branch")]
+fn submitting_a_rival_to_a_held_spend_panics() {
+    let alice = p2pkh([0xaa; 20]);
+    let mut chain = MockChain::regtest();
+    chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
+    let spend = |txid: u8| {
+        let tx = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+        (tx.into_transaction(TransactionId::from([txid; 32]), false), vec![txid])
+    };
+    chain.submit(spend(0x20));
+    chain.submit(spend(0x30));
 }

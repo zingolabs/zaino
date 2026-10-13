@@ -603,7 +603,7 @@ mod tests {
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
-        use zaino_source::testing::MockValidator;
+        use zaino_source::testing::ValidatorViews;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -621,7 +621,7 @@ mod tests {
         let depth = ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
         let mut headers = blocks.header_chain(depth);
         let (verified, chain) = watch::channel(None);
-        let validator = Arc::new(MockValidator::following(&blocks, a8));
+        let validator = Arc::new(blocks.validator(a8));
         let schedule = blocks.schedule().upgrades;
         let limits = zaino_traffic::Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
         let trusted =
