@@ -2219,3 +2219,186 @@ mod transaction_view_reads {
         );
     }
 }
+
+/// The mempool reads answered from a retained set.
+///
+/// The engine's validator here is a [`MockChain`], whose mempool is empty. The
+/// retained set is not. So any transaction these reads return came from the
+/// retained set, and an empty answer means the read went to the validator —
+/// which is what makes this a test of *where* each read is answered.
+mod retained_mempool {
+    use std::num::NonZeroU64;
+    use std::time::Duration;
+
+    use zaino_mempool::MempoolConfig;
+    use zaino_mempool_service::MempoolService;
+    use zaino_primitives::types::{BlockHash, Height, TransactionId, Zatoshis};
+    use zaino_service::{MempoolContent, MempoolListing};
+    use zaino_source::{
+        GetMempoolMetadataError, GetMempoolTxidsError, GetRawMempoolTransactionError,
+        MempoolTxMeta, NonDomainError, QueryError, ValidatorSource,
+    };
+
+    use super::{engine_with, height};
+    use zaino_source::mock::MockChain;
+
+    const TX: [u8; 32] = [7u8; 32];
+    const BYTES: &[u8] = b"a retained transaction";
+
+    /// The fixture transaction's serialized length, as the wire fields carry it.
+    fn tx_len() -> u64 {
+        u64::try_from(BYTES.len()).expect("the fixture transaction's length is a u64")
+    }
+
+    /// A validator whose mempool holds exactly one transaction.
+    #[derive(Clone)]
+    struct OneTxMempool {
+        tip: (BlockHash, Height),
+    }
+
+    impl ValidatorSource for OneTxMempool {
+        type NonDomain = NonDomainError;
+    }
+
+    impl zaino_source::OneShotGetMempoolTxids for OneTxMempool {
+        async fn get_mempool_txids(
+            &self,
+        ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError, Self::NonDomain>> {
+            Ok(vec![TransactionId::from(TX)])
+        }
+    }
+
+    impl zaino_source::OneShotGetMempoolMetadata for OneTxMempool {
+        async fn get_mempool_metadata(
+            &self,
+        ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError, Self::NonDomain>>
+        {
+            Ok(vec![MempoolTxMeta {
+                txid: TransactionId::from(TX),
+                entry_height: height(1),
+                entry_time: None,
+                size: tx_len(),
+                fee: Zatoshis::ZERO,
+            }])
+        }
+    }
+
+    impl zaino_source::OneShotGetRawMempoolTransaction for OneTxMempool {
+        async fn get_raw_mempool_transaction(
+            &self,
+            _txid: TransactionId,
+        ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError, Self::NonDomain>> {
+            Ok(BYTES.to_vec())
+        }
+    }
+
+    impl zaino_source::OneShotGetMempoolSourceTip for OneTxMempool {
+        async fn get_mempool_source_tip(
+            &self,
+        ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible, Self::NonDomain>>
+        {
+            Ok(self.tip)
+        }
+    }
+
+    impl zaino_source::SubscribeBlocks for OneTxMempool {}
+
+    /// Spawn the component over [`OneTxMempool`] and wait for its first set.
+    async fn retained() -> zaino_mempool_service::MempoolSubscriber {
+        let mut config = MempoolConfig::default();
+        config.set_poll_interval_ms(NonZeroU64::new(5).expect("non-zero test interval"));
+        config.set_metadata_min_interval(config.poll_interval());
+
+        let service = MempoolService::spawn(
+            OneTxMempool {
+                tip: (BlockHash::from([1u8; 32]), height(1)),
+            },
+            config,
+            tokio_util::sync::CancellationToken::new(),
+        );
+        let subscriber = service.subscriber();
+        for _ in 0..200 {
+            if !subscriber.get_txids().is_empty() {
+                return subscriber;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the component never published its first set");
+    }
+
+    #[tokio::test]
+    async fn the_txid_listing_is_answered_from_the_retained_set() {
+        let engine = engine_with(MockChain::new()).with_mempool(retained().await);
+        assert_eq!(
+            engine.mempool_txids().await.expect("a listing"),
+            vec![TransactionId::from(TX)],
+            "the listing carries the retained transaction, so it was not answered \
+             by the validator, whose mempool is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_summary_is_answered_from_the_retained_set() {
+        let engine = engine_with(MockChain::new()).with_mempool(retained().await);
+        let summary = engine.mempool_summary().await.expect("a summary");
+        assert_eq!(summary.size, 1, "one retained transaction is counted");
+        assert_eq!(
+            summary.bytes,
+            tx_len(),
+            "the retained transaction's bytes are totalled"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_raw_transaction_is_answered_from_the_retained_set() {
+        let engine = engine_with(MockChain::new()).with_mempool(retained().await);
+        assert_eq!(
+            engine
+                .mempool_raw_transaction(TransactionId::from(TX))
+                .await
+                .expect("a read"),
+            Some(BYTES.to_vec())
+        );
+    }
+
+    /// A transaction the retained set does not hold is a served `None`, not a
+    /// fetch from the validator: the retained set is this engine's mempool view.
+    #[tokio::test]
+    async fn a_transaction_outside_the_retained_set_is_a_served_none() {
+        let engine = engine_with(MockChain::new()).with_mempool(retained().await);
+        assert!(
+            engine
+                .mempool_raw_transaction(TransactionId::from([9u8; 32]))
+                .await
+                .expect("a read")
+                .is_none()
+        );
+    }
+
+    /// The verbose listing needs a per-entry fee, which the retained entry does
+    /// not carry, so it is answered by the validator whether or not a set is
+    /// retained — here an empty one, from the mock.
+    #[tokio::test]
+    async fn the_verbose_listing_is_answered_by_the_validator() {
+        let engine = engine_with(MockChain::new()).with_mempool(retained().await);
+        assert!(
+            engine.mempool_entries().await.expect("a listing").is_empty(),
+            "the verbose listing comes from the validator, whose mempool is empty"
+        );
+    }
+
+    /// Without a retained set every mempool read is the validator's to answer,
+    /// so an engine composed without one still serves the capability.
+    #[tokio::test]
+    async fn without_a_retained_set_the_validator_answers() {
+        let engine = engine_with(MockChain::new());
+        assert!(engine.mempool_txids().await.expect("a listing").is_empty());
+        assert!(
+            engine
+                .mempool_raw_transaction(TransactionId::from(TX))
+                .await
+                .expect("a read")
+                .is_none()
+        );
+    }
+}

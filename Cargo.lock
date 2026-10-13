@@ -6071,6 +6071,8 @@ dependencies = [
  "zaino-indexer",
  "zaino-indexes",
  "zaino-logging",
+ "zaino-mempool",
+ "zaino-mempool-service",
  "zaino-persistence",
  "zaino-primitives",
  "zaino-runtime",

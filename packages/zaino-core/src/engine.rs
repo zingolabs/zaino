@@ -166,6 +166,8 @@ use zaino_source::{
     SendRawTransaction,
 };
 
+use zaino_mempool_service::MempoolSubscriber;
+
 use crate::passthrough::PassthroughProvider;
 
 /// The engine: the local chain tiers and the validator, composed under the
@@ -179,6 +181,7 @@ use crate::passthrough::PassthroughProvider;
 pub struct Engine<Fs, Nfs, Src, R> {
     view: ChainView<Fs, Nfs>,
     passthrough: PassthroughProvider<Src>,
+    mempool: Option<MempoolSubscriber>,
     routing: PhantomData<R>,
 }
 
@@ -187,6 +190,7 @@ impl<Fs: Clone, Nfs: Clone, Src: Clone, R> Clone for Engine<Fs, Nfs, Src, R> {
         Self {
             view: self.view.clone(),
             passthrough: self.passthrough.clone(),
+            mempool: self.mempool.clone(),
             routing: PhantomData,
         }
     }
@@ -207,8 +211,30 @@ where
         Self {
             view: ChainView::new(fs, nfs),
             passthrough: PassthroughProvider::new(source),
+            mempool: None,
             routing: PhantomData,
         }
+    }
+
+    /// Answer the mempool reads from `mempool`'s retained set.
+    ///
+    /// The retained set is the validator's mempool as this deployment last read
+    /// it, held locally and refreshed by the component's own poll loop. Reading
+    /// it costs a load; the alternative is a validator walk per request, which
+    /// `getrawmempool` and `getmempoolinfo` make a client-triggered cost.
+    ///
+    /// Without a retained set each mempool read goes to the validator, so an
+    /// engine composed without one still answers every mempool capability. That
+    /// is the honest answer for a deployment running no mempool component, and
+    /// it is why this is a separate step rather than a constructor argument.
+    ///
+    /// Two reads stay on the validator either way, because the retained entry
+    /// does not carry what they need: the verbose listing needs a per-entry fee,
+    /// and the compact projection needs the validator's chain library. Both are
+    /// named at their call sites.
+    pub fn with_mempool(mut self, mempool: MempoolSubscriber) -> Self {
+        self.mempool = Some(mempool);
+        self
     }
 }
 
@@ -291,8 +317,18 @@ where
         &self,
         txid: TransactionId,
     ) -> Result<Option<Vec<u8>>, MempoolReadError> {
-        // Live passthrough to the mempool's own source — never the finalised
-        // secondary, which holds no mempool. Routing lives in the source adapter.
+        // The retained set holds each entry's serialized bytes, so a hit is a
+        // load. A miss is `Ok(None)`: the retained set is this deployment's
+        // mempool view, and "not in the view" is the answer, not a reason to ask
+        // the validator — which would restore the per-request fetch this read
+        // exists to avoid.
+        if let Some(mempool) = self.mempool.as_ref() {
+            return Ok(mempool
+                .get_transaction(&txid)
+                .map(|entry| entry.serialized_tx.to_vec()));
+        }
+        // No retained set: the mempool's own source answers, never the finalised
+        // secondary, which holds no mempool.
         self.passthrough.raw_mempool_transaction(txid).await
     }
 
@@ -313,16 +349,34 @@ where
     R: Routing,
 {
     async fn mempool_txids(&self) -> Result<Vec<TransactionId>, MempoolReadError> {
-        // Live passthrough to the mempool's own source — never the finalised
-        // secondary, which holds no mempool. Routing lives in the source adapter.
+        // The listing a client asks for most, and the one a validator answers by
+        // walking its whole mempool. Served from the retained set, it is a load.
+        if let Some(mempool) = self.mempool.as_ref() {
+            return Ok(mempool.get_txids().to_vec());
+        }
+        // No retained set: the mempool's own source answers, never the finalised
+        // secondary, which holds no mempool.
         self.passthrough.mempool_txids().await
     }
 
     async fn mempool_entries(&self) -> Result<Vec<MempoolEntry>, MempoolReadError> {
+        // The validator answers this one whether or not a set is retained: a
+        // verbose entry carries a per-transaction fee, and the retained entry
+        // holds bytes and arrival metadata, not fee — the mempool read model
+        // does not model fee policy.
         self.passthrough.mempool_entries().await
     }
 
     async fn mempool_summary(&self) -> Result<MempoolSummary, MempoolReadError> {
+        // The retained set keeps its own count and byte total, so this needs
+        // neither a walk nor a sum.
+        if let Some(mempool) = self.mempool.as_ref() {
+            let info = mempool.get_mempool_info();
+            return Ok(MempoolSummary {
+                size: info.size,
+                bytes: info.bytes,
+            });
+        }
         self.passthrough.mempool_summary().await
     }
 }

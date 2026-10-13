@@ -15,13 +15,19 @@ testing = []
 zaino-service = { path = "../zaino-service" }
 zaino-primitives = { path = "../zaino-primitives" }
 zaino-source = { version = "0.2.0", path = "../zaino-source" }
+# The retained mempool read model. The engine answers the mempool reads from
+# the held set rather than walking the validator per request.
+zaino-mempool-service = { workspace = true }
 futures = { workspace = true }
 zaino-consensus = { version = "0.1.0", path = "../zaino-consensus" }
 zaino-address = { version = "0.1.0", path = "../zaino-address" }
 
 [dev-dependencies]
 zaino-core = { path = ".", features = ["testing"] }
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "time"] }
+# The retained-mempool tests run the real component over a stub source.
+zaino-mempool = { workspace = true }
+zaino-mempool-service = { workspace = true }
 zaino-service = { path = "../zaino-service", features = ["testing"] }
 zaino-source = { path = "../zaino-source", features = ["testing"] }
 # The wiring proofs in the crate docs and the seam tests compose the real
