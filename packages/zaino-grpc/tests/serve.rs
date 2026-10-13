@@ -35,6 +35,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
         submit: Arc::new(chain),
         validators,
         network,
+        version: "0.11.0-test",
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     }
 }

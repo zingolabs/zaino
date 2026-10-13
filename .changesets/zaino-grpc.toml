@@ -191,3 +191,16 @@ description = """
 GOAWAY, its in-flight streams given `max_connection_age_grace` (\
 `zaino_grpc_retired_connections_total{reason="retired"}`); later connections are untouched.
 """
+
+[[changes]]
+crate = "zaino-grpc"
+kind = "breaking"
+section = "changed"
+description = """
+`Routes.version` and `lightd_info(snap, network, version)`: `GetLightdInfo.version` = the \
+serving daemon's version, no longer this crate's own `CARGO_PKG_VERSION`.
+"""
+migration = """
+Pass the binary's version: `Routes { version: env!("CARGO_PKG_VERSION"), .. }`, \
+`lightd_info(snap, network, env!("CARGO_PKG_VERSION"))`.
+"""

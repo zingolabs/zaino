@@ -56,8 +56,10 @@ snapshots.changed().await?;                            // next publish
   (`changed()` errs, a tail ends after its opening): route tests over `Indexed::fixed` +
   `ChainViewSnapshot::fixed`.
 
-- `synced` opens once the served tip **is** the best block (hash, not height) and stays open
-  while the served tip is on the best chain and at most `depth` below it.
+- `synced` opens once the served tip **is** the best block (hash, not height) and no validator
+  claims past it (`ChainViewSnapshot::claimed_past_best`: header sync short of the network, e.g.
+  anchored `depth` below that claim at boot), and stays open while the served tip is on the best
+  chain and at most `depth` below it (`standing` = `Syncing` until it opens).
 
 ## `GetMempoolStream`: one epoch per served tip
 
@@ -116,7 +118,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 | G1 | a request or stream reads one `Snapshot` (routes get `&Snapshot` / `&At`, never the handle) | types; route tests |
 | G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
 | G3 | `best`, `final_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
-| G4 | `synced` opens only at served == best; stays only on best and ≤ depth behind | `compose::check`; model |
+| G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |
 | G5 | epoch key = `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
 | G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
 | G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |

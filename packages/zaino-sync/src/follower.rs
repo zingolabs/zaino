@@ -80,7 +80,7 @@ impl<S: ChainDataSource> FinalFollower<S> {
         self.progress.clone()
     }
 
-    /// - Cancel → `Ok`
+    /// - Cancel → `Ok` (the chain gone after it included: header sync stops on the same cancel)
     /// - Either way: the stream ends with `Shutdown` (every writer commits, stops)
     pub async fn run(self, cancel: CancellationToken) -> Result<(), FollowError> {
         let Self { chain, balancer, lookahead, sink, durable, progress } = self;
@@ -88,7 +88,10 @@ impl<S: ChainDataSource> FinalFollower<S> {
             .run_until_cancelled(follow(chain, &balancer, lookahead, &sink, durable, &progress))
             .await;
         sink.shutdown();
-        followed.unwrap_or(Ok(()))
+        match followed {
+            Some(Err(FollowError::ChainGone)) if cancel.is_cancelled() => Ok(()),
+            followed => followed.unwrap_or(Ok(())),
+        }
     }
 }
 

@@ -1,11 +1,12 @@
 //! One progress task: every [`REPORT_INTERVAL`], read from the global snapshot + `SyncProgress`
 //!
-//! - `Syncing blocks` (handed, final tip, bps, eta) while the blocks handed trail the final tip; a
-//!   stall warning when a whole interval hands over nothing
+//! - one line per tick for the [`Phase`] still outstanding: `Syncing blocks` (final, to the
+//!   writers), then `Fetching non-finalized blocks` (the NFS window up to best); a stall warning
+//!   once it has not moved for [`REPORT_INTERVAL`]
 //! - one `Syncing` line per enabled index (applied + durable off its writer's handle, size) while
 //!   not synced
 //! - disk walked at most every [`WALK_EVERY`] (`size` here + `/statusz` `disk`)
-//! - blocks/s over the last two intervals (`/statusz` `progress.rate`)
+//! - the phase's blocks/s over the last two intervals (`/statusz` `progress.rate`)
 
 use std::{
     collections::BTreeMap,
@@ -19,7 +20,7 @@ use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
 use zaino_persistence::{disk_bytes, DiskView, IndexKind};
 use zaino_primitives::types::BlockRef;
-use zaino_snapshot::Snapshots;
+use zaino_snapshot::{Snapshots, Tips};
 use zaino_sync::{ByteSize, Human};
 use zaino_sync::{IndexHandle, SyncProgress};
 
@@ -47,11 +48,54 @@ pub(crate) struct Usage {
 /// Last walk per index name (unreadable = absent)
 pub(crate) type Disk = BTreeMap<&'static str, Usage>;
 
-/// Blocks handed so far, when
+/// Blocks handed since boot + the served height (0 before any), when
 #[derive(Clone, Copy)]
 struct Sample {
     at: Instant,
-    blocks: u64,
+    handed: u64,
+    served: u32,
+}
+
+impl Sample {
+    /// `phase`'s blocks since `before` (a reorg lowering the served tip = none)
+    fn advanced(&self, before: &Sample, phase: Phase) -> u64 {
+        match phase {
+            Phase::Final { .. } => self.handed - before.handed,
+            Phase::Window { .. } => u64::from(self.served.saturating_sub(before.served)),
+        }
+    }
+}
+
+/// Outstanding work, final blocks first (the NFS window opens above the writers' durable tips)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// handed, else the lowest durable tip (`None` = no block anywhere yet) → the final tip
+    Final { done: Option<u32>, target: u32 },
+    /// served → best, each counted above the final tip
+    Window { fetched: u32, total: u32 },
+}
+
+impl Phase {
+    /// `None` = nothing outstanding (synced, or no chain yet)
+    fn of(tips: &Tips, handed: Option<u32>, durable: Option<u32>) -> Option<Self> {
+        let final_tip = u32::from(tips.final_tip?.height);
+        let done = handed.max(durable);
+        if done.is_none_or(|done| done < final_tip) {
+            return Some(Self::Final { done, target: final_tip });
+        }
+        let (served, best) = (u32::from(tips.served?.height), u32::from(tips.best?.height));
+        (!tips.synced && served < best).then(|| Self::Window {
+            fetched: served.saturating_sub(final_tip),
+            total: best - final_tip,
+        })
+    }
+
+    fn remaining(self) -> u32 {
+        match self {
+            Self::Final { done, target } => target - done.unwrap_or(0),
+            Self::Window { fetched, total } => total - fetched,
+        }
+    }
 }
 
 /// Until `cancel`; each walk lands in `disk`, each tick's blocks/s over the last two in `rate`
@@ -65,8 +109,13 @@ pub(crate) async fn run(
 ) -> Result<(), IndexerError> {
     let mut ticks = tokio::time::interval_at(Instant::now() + REPORT_INTERVAL, REPORT_INTERVAL);
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut last = Sample { at: Instant::now(), blocks: progress.blocks() };
+    let sample = |tips: &Tips| {
+        let served = tips.served.map_or(0, |served| served.height.into());
+        Sample { at: Instant::now(), handed: progress.blocks(), served }
+    };
+    let mut last = sample(&snapshots.load().tips());
     let mut before_last = last;
+    let (mut last_phase, mut moved_at) = (None::<Phase>, last.at);
     let mut walked: Option<Instant> = None;
     loop {
         tokio::select! {
@@ -83,16 +132,21 @@ pub(crate) async fn run(
         }
         let views = crate::disk_monitor::views(&indexes);
         tokio::task::spawn_blocking(move || crate::disk_monitor::sample(&views)).await?;
-        let now = Sample { at: Instant::now(), blocks: progress.blocks() };
-        let elapsed = (now.at - before_last.at).as_secs_f64();
-        rate.send_replace(Some((now.blocks - before_last.blocks) as f64 / elapsed));
-        let snap = snapshots.load();
-        let tips = snap.tips();
-        // the follower hands final blocks only: its ceiling = the final tip, never best
-        if let (Some(final_tip), handed) = (tips.final_tip, progress.handed()) {
-            summarise(last, now, handed.map_or(0, u32::from), u32::from(final_tip.height));
+        let tips = snapshots.load().tips();
+        let now = sample(&tips);
+        let height = |tip: BlockRef| u32::from(tip.height);
+        let durable = indexes.iter().map(|index| index.handle.tip().map(height)).min().flatten();
+        let phase = Phase::of(&tips, progress.handed().map(u32::from), durable);
+        let over_two = (now.at - before_last.at).as_secs_f64();
+        rate.send_replace(phase.map(|phase| now.advanced(&before_last, phase) as f64 / over_two));
+        if let Some(phase) = phase {
+            let kind = |phase: Option<Phase>| phase.as_ref().map(std::mem::discriminant);
+            if kind(last_phase) != kind(Some(phase)) || now.advanced(&last, phase) > 0 {
+                moved_at = now.at;
+            }
+            report(phase, now.advanced(&last, phase), now.at - last.at, now.at - moved_at);
         }
-        if !tips.synced {
+        if matches!(phase, Some(Phase::Final { .. })) {
             let sizes = disk.borrow();
             let column = |tip: Option<BlockRef>| HeightCol(tip.map(|tip| tip.height.into()));
             for index in &indexes {
@@ -103,25 +157,33 @@ pub(crate) async fn run(
                 index.span.in_scope(|| info!(%applied, %durable, size, "Syncing"));
             }
         }
-        (before_last, last) = (last, now);
+        (before_last, last, last_phase) = (last, now, phase);
     }
 }
 
-/// One line per interval while handed trails `target` (the final tip): a rate + eta, or a stall
-fn summarise(last: Sample, now: Sample, handed: u32, target: u32) {
-    if handed >= target {
-        return;
+/// One line per tick: `advanced` blocks `over` the interval (rate + eta), or a stall once `idle`
+/// (unmoved) for a whole [`REPORT_INTERVAL`]
+fn report(phase: Phase, advanced: u64, over: Duration, idle: Duration) {
+    let bps = per_second(advanced, over);
+    let eta = (advanced > 0).then(|| {
+        let secs_per_block = over.as_secs_f64() / advanced as f64;
+        display(Human(Duration::from_secs_f64(f64::from(phase.remaining()) * secs_per_block)))
+    });
+    let stalled = (idle >= REPORT_INTERVAL).then(|| display(Human(idle)));
+    match (phase, stalled) {
+        (Phase::Final { done, target }, None) => {
+            info!(height = %HeightCol(done), target, bps, eta, "Syncing blocks");
+        }
+        (Phase::Final { done, target }, Some(stalled)) => {
+            warn!(height = %HeightCol(done), target, %stalled, "Block fetch stalled");
+        }
+        (Phase::Window { fetched, total }, None) => {
+            info!(fetched, total, bps, eta, "Fetching non-finalized blocks");
+        }
+        (Phase::Window { fetched, total }, Some(stalled)) => {
+            warn!(fetched, total, %stalled, "Non-finalized block fetch stalled");
+        }
     }
-    let elapsed = now.at - last.at;
-    let blocks = now.blocks - last.blocks;
-    if blocks == 0 {
-        warn!(height = handed, target, stalled = %Human(elapsed), "Block fetch stalled");
-        return;
-    }
-    let rate = blocks as f64 / elapsed.as_secs_f64();
-    let bps = per_second(blocks, elapsed);
-    let eta = Human(Duration::from_secs_f64(f64::from(target - handed) / rate));
-    info!(height = handed, target, bps, eta = %eta, "Syncing blocks");
 }
 
 /// Whole units per second
@@ -191,6 +253,81 @@ mod tests {
         let tables = [("receives".to_owned(), 120), ("spent".to_owned(), 300)];
         let expected = Usage { size_bytes: 430, tables: tables.into_iter().collect() };
         assert_eq!(usage(root.path()).expect("walk"), expected);
+    }
+
+    /// Final blocks first (handed, else the lowest durable tip), then the window up to best; the
+    /// us-west-1 restart (durable = final = anchor 3,515,519, best 1,003 above) = the window
+    #[test]
+    fn the_phase_is_final_blocks_then_the_non_finalized_window_then_nothing() {
+        use zaino_primitives::types::{BlockHash, Height};
+        let at = |height: u32| BlockRef {
+            hash: BlockHash::from([0; 32]),
+            height: Height::try_from(height).expect("in range"),
+        };
+        let tips = |final_tip: u32, served: u32, best: u32, synced: bool| Tips {
+            best: Some(at(best)),
+            final_tip: Some(at(final_tip)),
+            served: Some(at(served)),
+            held_by: zaino_chainview::EndpointSet::default(),
+            synced,
+        };
+        let restart = tips(3_515_519, 3_515_519, 3_516_522, false);
+        let cases = [
+            (
+                "fresh: nothing handed or durable",
+                restart,
+                None,
+                None,
+                Some(Phase::Final { done: None, target: 3_515_519 }),
+            ),
+            (
+                "durable below final, follower idle",
+                restart,
+                None,
+                Some(3_515_000),
+                Some(Phase::Final { done: Some(3_515_000), target: 3_515_519 }),
+            ),
+            (
+                "handed past the durable tip",
+                restart,
+                Some(3_515_100),
+                Some(3_515_000),
+                Some(Phase::Final { done: Some(3_515_100), target: 3_515_519 }),
+            ),
+            (
+                "restart: durable = final, handed none",
+                restart,
+                None,
+                Some(3_515_519),
+                Some(Phase::Window { fetched: 0, total: 1_003 }),
+            ),
+            (
+                "window part fetched",
+                tips(3_515_519, 3_515_859, 3_516_522, false),
+                None,
+                Some(3_515_519),
+                Some(Phase::Window { fetched: 340, total: 1_003 }),
+            ),
+            (
+                "served = best, synced",
+                tips(3_515_522, 3_516_522, 3_516_522, true),
+                Some(3_515_522),
+                Some(3_515_522),
+                None,
+            ),
+            (
+                "synced, a block behind",
+                tips(3_515_523, 3_516_522, 3_516_523, true),
+                Some(3_515_523),
+                Some(3_515_523),
+                None,
+            ),
+        ];
+        for (case, tips, handed, durable, expected) in cases {
+            assert_eq!(Phase::of(&tips, handed, durable), expected, "{case}");
+        }
+        let no_chain = Tips { best: None, final_tip: None, ..restart };
+        assert_eq!(Phase::of(&no_chain, None, None), None, "no chain yet: nothing to report");
     }
 
     #[test]

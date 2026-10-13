@@ -46,3 +46,12 @@ description = """
 first (its own path, never side nodes). Feature `testing`: `Indexed::fixed_above(chain, root, \
 &blocks, params, durable)` folds those blocks above a root, serving the last.
 """
+
+[[changes]]
+crate = "zaino-nfs"
+kind = "fix"
+section = "fixed"
+description = """
+`Nfs::run` returns `Ok` when an input's sender drops after the cancel (header sync or an index \
+writer stops on the same cancel), not `NfsError::ChainGone` / `IndexGone`.
+"""

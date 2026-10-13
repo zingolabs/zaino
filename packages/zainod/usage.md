@@ -64,7 +64,9 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
     - `done` is the served height, or the handed one before anything is served.
     - `total` is the verified best height, or a catching-up validator's network estimate when
       that is higher.
-    - `rate` is blocks handed per second over the last ~60 s.
+    - `rate` is blocks per second over the last ~60 s of the phase still outstanding: final
+      blocks handed to the indexes, then the served height climbing through the non-finalized
+      window.
   - `progress` is `null` before the first verified header.
 - `notes` holds one sentence per raised alarm (partition, eclipse, finality paused, validators
   on a stale tip, releases reaching end of service within a week), or `[]` when none.
@@ -451,12 +453,13 @@ What an operator sees at `info`:
 | `Grpc` | `High load` | warn | In place of `Serving` while any cap (`streams`, `subs`, `conns`) is past 25% held: those caps as `used/max`. |
 | `Grpc` | `Request failed` | error | A request's first server fault in a minute (`method`, `code`, `error`); later ones only counted. |
 | `Grpc` | `Request unavailable` | warn | The first refusal in a minute other than a full admission pool (nothing served yet, validator unreachable: `method`, `error`). |
-| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the final blocks handed to the indexes trail the header chain's final tip (`height` handed, `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
-| `ZainoNFS` | `Block fetch stalled` | warn | A whole 30 s interval behind the final tip handed over no block. |
+| `ZainoNFS` | `Syncing blocks` | info | Every 30 s (the progress task) while the indexes trail the header chain's final tip (`height` = the last block handed, else the lowest durable index tip, `—` when neither exists; `target` = the final tip, `bps`, `eta`). Blocks above the final tip are folded by the NFS, not handed. |
+| `ZainoNFS` | `Fetching non-finalized blocks` | info | Every 30 s once the indexes reach the final tip, while the served tip trails best and is not synced (after a restart: the window up to `depth` blocks the NFS fetches again). `fetched` / `total` = blocks above the final tip served / to best, `bps`, `eta`. `Serving the verified tip` marks the end. |
+| `ZainoNFS` | `Block fetch stalled` / `Non-finalized block fetch stalled` | warn | The phase above has not moved for 30 s or more (`stalled` = for how long). |
 | `ZainoNFS` | `Chain tip advanced` | info | Each published served tip at the verified best (`height`, `hash`, block `age`, `finalized` = the header chain's final tip). |
 | `ZainoNFS` | `Chain reorg detected` | warn | The served tip left the best chain (`from` = its height, `to` = the new served tip). |
 | `Snapshot` | `Serving the verified tip` / `Behind the verified tip, syncing` | info | The `synced` judgement flips between two publishes (`height` = the served tip). |
-| index | `Syncing` | info | Every 30 s while not synced (the progress task): `durable` (committed, from the snapshot), `size` (bytes on disk, 3 significant figures, decimal units). |
+| index | `Syncing` | info | Every 30 s while the indexes trail the final tip (the progress task): `durable` (committed, from the snapshot), `size` (bytes on disk, 3 significant figures, decimal units). |
 | index | `Index size unreadable` | warn | A directory walk failed (`error`); `size` is left out until the next one succeeds. |
 | index | `Commit waited on compaction` | warn | A commit blocked on a merge that fell two windows behind. |
 

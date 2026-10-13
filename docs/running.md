@@ -115,7 +115,10 @@ or SIGTERM cancels them all and waits for each index to commit what it holds bef
 0. If the NFS, the publisher or the gRPC server stops on its own, it stops the rest the same
 way and zainod exits 1. While syncing, `GetLatestBlock` reports the served tip (`/statusz`
 `tips.served`, the lowest index tip), a request naming a height answers up to its own index's
-tip, and `/readyz` reports state `syncing` until the served tip is the verified best. A
+tip, and `/readyz` reports state `syncing` (and systemd's `READY=1` waits) until the served tip
+is the verified best and no trusted validator claims a tip past it. After a restart the NFS
+fetches up to `depth` non-finalized blocks again first, logged every 30 s as `Fetching
+non-finalized blocks`. A
 trusted validator going away never stops zainod: its poller retries until it answers.
 
 ## Status

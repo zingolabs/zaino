@@ -38,8 +38,9 @@ pub use zaino_proto::proto::service::LightdInfo;
 pub fn lightd_info<V>(
     snap: &zaino_snapshot::Snapshot<V>,
     network: zcash_protocol::consensus::NetworkType,
+    version: &str,
 ) -> Option<LightdInfo> {
-    routes::chain::lightd_info(snap, network).ok()
+    routes::chain::lightd_info(snap, network, version).ok()
 }
 pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use limits::GrpcLimits;

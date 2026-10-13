@@ -156,7 +156,8 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let validator =
         |address: &str, state: &str, latency_ms: u64, failures: u32, at: Option<u32>| {
             serde_json::json!({
-                "address": address, "state": state, "agreement": "unknown", "height": at,
+                "address": address, "state": state, "height": at,
+                "agreement": if at.is_some() { "agreed" } else { "unknown" },
                 "stale_blocks": at.map(|_| 0), "latency_ms": latency_ms, "failures": failures,
                 "observed_s_ago": null, "streaming": false, "release": null, "peers": [],
             })
@@ -215,7 +216,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         "zaino_chainview_mempool_transactions{state=\"quorum\"} 0".to_owned(),
         "zaino_chainview_mempool_transactions{state=\"ours_unverified\"} 1".to_owned(),
         format!("zaino_chainview_endpoint_state{{endpoint=\"{first}\",state=\"live\"}} 1"),
-        format!("zaino_chainview_agreement{{endpoint=\"{first}\",agreement=\"unknown\"}} 1"),
+        format!("zaino_chainview_agreement{{endpoint=\"{first}\",agreement=\"agreed\"}} 1"),
         format!("zaino_chainview_push_stream{{endpoint=\"{first}\"}} 0"),
         format!("zaino_chainview_tip_height{{endpoint=\"{first}\"}} 5"),
     ] {
@@ -397,6 +398,21 @@ fn every_check_fires_on_its_planted_bug() {
         (
             "G4: synced opens only at served = best",
             Box::new(|| (copy(&prev), serving(at(&a[5]), true))),
+        ),
+        (
+            // boot race: validator 0's claim past best, its hash at best not polled yet
+            "no validator claiming past it",
+            Box::new(|| {
+                let mut planted = serving(at(&a[6]), true);
+                let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
+                let holders = EndpointSet::at([0, 1]);
+                let view =
+                    ChainViewSnapshot::fixed(Some(Arc::clone(&chain)), holders, &addresses, &[]);
+                let view = view.ahead(0, 1, false);
+                planted.tips.held_by = view.held_by();
+                planted.view = Arc::new(view);
+                (copy(&prev), planted)
+            }),
         ),
         ("G4: synced stays on best", Box::new(|| (synced_prev(), serving(s5, true)))),
         ("G4: synced stays within", Box::new(|| (synced_prev(), serving(at(&a[2]), true)))),

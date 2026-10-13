@@ -145,10 +145,12 @@ impl<V> Publisher<V> {
         self.core.handle()
     }
 
-    /// Cancel → `Ok`; the NFS gone → `IndexedGone`
+    /// Cancel → `Ok`; the NFS gone before it → `IndexedGone`
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), SnapshotError> {
         loop {
             tokio::select! {
+                // cancel first (the NFS stops on the same cancel)
+                biased;
                 () = cancel.cancelled() => return Ok(()),
                 changed = self.indexed.changed() => {
                     changed.map_err(|_| SnapshotError::IndexedGone)?;

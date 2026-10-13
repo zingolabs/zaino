@@ -37,12 +37,14 @@ use crate::GrpcLimits;
 /// - `snapshots` = every read (chain, indexes, mempool, validator facts)
 /// - `submit` = `SendTransaction` only; `validators` = `GetTransaction` + address tx bytes
 /// - `network` = declared, never read off a validator (zebra on regtest reports `"test"`)
+/// - `version` = the serving daemon's (`GetLightdInfo`), not this crate's
 /// - `max_address_rows` = receives one transparent-address request may walk
 pub struct Routes<S: ChainDataSource, V> {
     pub snapshots: Snapshots<V>,
     pub submit: Arc<ChainView<S>>,
     pub validators: TrafficBalancer<S>,
     pub network: NetworkType,
+    pub version: &'static str,
     pub max_address_rows: NonZeroUsize,
 }
 
@@ -174,10 +176,12 @@ impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
                 Ok(record) => unary_response(record),
                 Err(status) => status_response(status),
             },
-            path::GET_LIGHTD_INFO => match chain::lightd_info(&snap, routes.network) {
-                Ok(info) => unary_response(frame(&info)),
-                Err(status) => status_response(status),
-            },
+            path::GET_LIGHTD_INFO => {
+                match chain::lightd_info(&snap, routes.network, routes.version) {
+                    Ok(info) => unary_response(frame(&info)),
+                    Err(status) => status_response(status),
+                }
+            }
             unknown => status_response(Status::unimplemented(format!("{unknown}: no such method"))),
         }
     }

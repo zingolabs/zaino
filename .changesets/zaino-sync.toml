@@ -39,3 +39,12 @@ Index progress comes from each writer, not the served snapshot: `zaino_index_app
 `zaino_index_finalized_height` = the committed tip (moved from zaino-snapshot), all `{index}`; \
 `IndexHandle::applied()`.
 """
+
+[[changes]]
+crate = "zaino-sync"
+kind = "fix"
+section = "fixed"
+description = """
+`FinalFollower::run` returns `Ok` when the verified chain's sender drops after the cancel (header \
+sync stops on the same cancel), not `FollowError::ChainGone`.
+"""

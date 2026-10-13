@@ -96,6 +96,7 @@ Cheap to clone; cannot drive polling or submit.
 | `chain()` | the `VerifiedChain` every standing was judged under |
 | `best()` | the verified best, held or not |
 | `held_by()` | `EndpointSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain |
+| `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
 | `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
 | `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
 | `validator_info()` | the first holder's `BlockchainInfo`; `None` without a holder |
@@ -208,7 +209,9 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 
 - `ChainView::set_verified(Some(chain.verified(tip)))` stands in for header sync
   (`zaino_header_chain::testing::HeaderViews`).
-- `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView`.
+- `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
+  holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
+  (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).
 - `testing::MockPeers` (`ValidatorP2pSource` as a script) and `testing::MockUtxos`, beside
   `zaino_source::testing::MockValidator`:
 

@@ -20,7 +20,7 @@ use zaino_primitives::types::{
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::config::FINALITY_STALL;
-use crate::endpoints::{EndpointSet, ValidatorMetadata};
+use crate::endpoints::{Agreement, EndpointSet, ValidatorMetadata};
 use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
 
@@ -275,7 +275,8 @@ impl ChainViewSnapshot {
     /// Consumers' tests: `chain` as header sync's word, `held_by` holding its best, one fresh
     /// endpoint per address; `ours` served (our relay)
     ///
-    /// - each holder `Live`, its `getblockchaininfo` = the best block, no upgrade, branch id 0
+    /// - each holder `Live` + `Agreed`, its `getblockchaininfo` = the best block, no upgrade,
+    ///   branch id 0
     #[cfg(any(test, feature = "testing"))]
     pub fn fixed(
         chain: Option<Arc<VerifiedChain>>,
@@ -303,6 +304,7 @@ impl ChainViewSnapshot {
                 if let Some(meta) = view.endpoints.get_mut(at) {
                     meta.info = Some(info.clone());
                     meta.health = Health::Live;
+                    meta.agreement = Agreement::Agreed;
                 }
             }
         }
@@ -325,6 +327,35 @@ impl ChainViewSnapshot {
         }
         self.alarms = crate::telemetry::alarms(&self.endpoints, self.alarms.finality_paused());
         self
+    }
+
+    /// Consumers' tests: holder `at` claims `by` blocks past best (header sync short of its tip)
+    ///
+    /// - `read` = its hash at best polled: `Ahead`, still a holder; else no poll since the chain
+    ///   moved: `Diverged`, no longer a holder (as a fold would)
+    #[cfg(any(test, feature = "testing"))]
+    pub fn ahead(mut self, at: usize, by: u32, read: bool) -> Self {
+        let best = self.best().expect("ahead of a verified best");
+        let id = ValidatorId::new(at).expect("a small position");
+        assert!(self.held_by.contains(id), "{at}: not a holder");
+        let meta = self.endpoints.get_mut(at).expect("a holder = a configured endpoint");
+        let info = meta.info.as_mut().expect("a holder answered");
+        info.blocks = best.height.checked_add(by).expect("claim below u32::MAX");
+        info.estimated_height = info.blocks;
+        info.best_block_hash = BlockHash::from([0xA0; 32]);
+        meta.held = read.then_some(best);
+        meta.agreement = meta.agreement_with(self.chain.as_deref());
+        if !read {
+            self.held_by.remove(id);
+        }
+        self
+    }
+
+    /// An answering validator claims past best, not shown off our chain (best ≠ the network's
+    /// tip yet: header sync short of it, e.g. anchored `depth` below its claim at boot)
+    pub fn claimed_past_best(&self) -> bool {
+        let Some(chain) = self.chain.as_deref() else { return false };
+        self.endpoints.iter().any(|meta| meta.claims_past(chain))
     }
 
     /// Fresh peers listing `txid` in their mempool, held here or not (submission's watch)

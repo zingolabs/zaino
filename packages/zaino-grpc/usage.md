@@ -14,6 +14,7 @@ let routes = Routes {
     submit: Arc::clone(&view),           // Arc<ChainView<S>>: SendTransaction
     validators,                          // zaino_traffic::TrafficBalancer<S>: GetTransaction
     network,                             // declared (GetLightdInfo.chainName)
+    version: env!("CARGO_PKG_VERSION"),  // the daemon's (GetLightdInfo.version)
     max_address_rows,                    // receives one t-address request may walk
 };
 let bound = GrpcService::new(grpc_listen_address, limits)
@@ -135,7 +136,8 @@ accept ─ total cap ─ client identity ─ per-client cap ─ h2 / HTTP/1.1 co
   - Without `with_health`, those paths go to the gRPC stack like any other.
 - `load()` → `Load::report()` also carries `overloaded`: ≥ 10% of work refused (at ≥ 1/s,
   averaged over 60 s) for 5 minutes straight, cleared after 5 minutes under 2%.
-- `lightd_info(snap, network)` = `GetLightdInfo`'s answer off a snapshot (`None` = `UNAVAILABLE`).
+- `lightd_info(snap, network, version)` = `GetLightdInfo`'s answer off a snapshot, `version` the
+  daemon's (`None` = `UNAVAILABLE`).
 
 Every cap refuses; none queues except the read lanes:
 

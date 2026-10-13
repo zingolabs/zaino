@@ -418,3 +418,49 @@ needed: without it zainod warns at boot and peers admit nothing). `SendTransacti
 once that quorum lists the transaction. The chain view is built once the upgrade schedule is \
 known (regtest's: a validator's first poll).
 """
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "fixed"
+description = """
+SIGTERM / SIGINT exits 0 again. The NFS and the final follower each read header sync's watch, \
+and `run_until_cancelled` polls its future before the token, so header sync's sender dropping \
+on the same cancel surfaced as `header sync stopped publishing the verified chain` and exit 1 \
+(seen after `zainod hold`, 2026-10-13).
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "fixed"
+description = """
+After a restart, `/readyz`, `/statusz` and `READY=1` wait for the served tip to reach the \
+network's tip. Header sync anchors `depth` below a trusted validator's claim, and the NFS served \
+that anchor at once, so the node reported `serving` (and systemd `READY=1`) ~1,000 blocks \
+behind while it fetched the window. It now reports `syncing` (unit `block`, `done` = served, \
+`total` = best) until no trusted validator claims past best and the served tip is best.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "fixed"
+description = """
+Sync progress logs name the phase still outstanding: `Syncing blocks` (final blocks to the \
+indexes; `height` = handed, else the lowest durable index tip, `—` when neither exists, never \
+`0`), then `Fetching non-finalized blocks` (`fetched` / `total` above the final tip, `bps`, \
+`eta`) while the NFS fills the window to best. `Block fetch stalled` / `Non-finalized block \
+fetch stalled` only once that phase has not moved for 30 s, so a node whose indexes sit at the \
+final tip no longer warns `height=0` every 30 s. `/statusz` `progress.rate` = the same phase's \
+blocks/s. The per-index `Syncing` lines only while the indexes trail the final tip.
+"""
+
+[[changes]]
+crate = "zainod"
+kind = "fix"
+section = "fixed"
+description = """
+`GetLightdInfo.version` (and `/statusz` `info.version`) = zainod's version, not zaino-grpc's \
+`0.1.0`.
+"""

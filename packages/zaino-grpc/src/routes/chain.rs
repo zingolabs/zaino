@@ -190,16 +190,17 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
 pub(crate) fn lightd_info<V>(
     snap: &Snapshot<V>,
     network: NetworkType,
+    version: &str,
 ) -> Result<LightdInfo, Status> {
-    snap.lightd().map(|lightd| render_lightd(lightd, network)).map_err(wire::unavailable)
+    snap.lightd().map(|lightd| render_lightd(lightd, network, version)).map_err(wire::unavailable)
 }
 
-fn render_lightd(lightd: Lightd, network: NetworkType) -> LightdInfo {
+fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
     let schedule = lightd.schedule;
     let next = schedule.next_after(lightd.served);
     let sapling = schedule.activation(NetworkUpgrade::Sapling);
     LightdInfo {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: version.to_string(),
         vendor: "zaino".to_string(),
         taddr_support: true,
         chain_name: chain_name(network).to_string(),
@@ -317,15 +318,16 @@ mod tests {
 
     /// Mainnet's compiled schedule: branch at the served height (NU6.2 from 3,364,600 below
     /// NU6.3, NU6.3 from it), the next upgrade above it (none once NU6.3 is in: NU7
-    /// unscheduled), the best as the estimate, the chain from config
+    /// unscheduled), the best as the estimate, the chain + version from the daemon
     #[test]
     fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
         let at = |h: u32| Height::try_from(h).expect("in range");
         let schedule = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
         let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
         let rendered = |served: u32| {
-            let info = render_lightd(lightd(served), NetworkType::Main);
+            let info = render_lightd(lightd(served), NetworkType::Main, "0.11.0-alpha.2");
             (
+                info.version,
                 info.chain_name,
                 info.sapling_activation_height,
                 info.consensus_branch_id,
@@ -333,10 +335,11 @@ mod tests {
                 (info.upgrade_name, info.upgrade_height),
             )
         };
-        let main = || "main".to_owned();
+        let (version, main) = (|| "0.11.0-alpha.2".to_owned(), || "main".to_owned());
         assert_eq!(
             rendered(3_400_000),
             (
+                version(),
                 main(),
                 419_200,
                 "5437f330".to_owned(),
@@ -346,7 +349,14 @@ mod tests {
         );
         assert_eq!(
             rendered(3_428_143),
-            (main(), 419_200, "37a5165b".to_owned(), (3_428_143, 3_500_000), (String::new(), 0)),
+            (
+                version(),
+                main(),
+                419_200,
+                "37a5165b".to_owned(),
+                (3_428_143, 3_500_000),
+                (String::new(), 0)
+            ),
             "NU6.3 in force, nothing scheduled after"
         );
     }
@@ -363,7 +373,7 @@ mod tests {
         let (mut routes, _balancing, _fold) = routes_over(&node);
         let (publisher, nfs) = published(&mut routes);
         let snapshots = routes.snapshots.clone();
-        let info = || lightd_info(&snapshots.load(), NetworkType::Main);
+        let info = || lightd_info(&snapshots.load(), NetworkType::Main, routes.version);
         let refused = |why: &str| {
             let refused = info().map_err(|status| (status.code(), status.message().to_owned()));
             refused.err() == Some((tonic::Code::Unavailable, why.to_owned()))
@@ -379,7 +389,7 @@ mod tests {
         nfs.send_replace(Some(Arc::new(indexed_at(&chain, chain.at(h(5)), Vec::new()))));
         rounds("served", || info().is_ok()).await;
         let expected = LightdInfo {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: "0.11.0-test".to_owned(),
             vendor: "zaino".to_owned(),
             taddr_support: true,
             chain_name: "main".to_owned(),

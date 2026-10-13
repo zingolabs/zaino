@@ -233,8 +233,11 @@ one and reads only it, so no answer mixes two moments.
 
 - No height named → the served tip, which every enabled index holds. A height named → up to that
   index's own durable tip.
-- `synced` opens when the served tip **is** the best block and stays while it is on the best chain
-  within `depth` of it.
+- `synced` opens when the served tip **is** the best block and no answering trusted validator
+  claims a higher tip (`ChainViewSnapshot::claimed_past_best`: one already shown off our chain
+  does not count, one not polled since best moved does), and stays while it is on the best chain
+  within `depth` of it. At boot, header sync anchors `depth` below a validator's claim, so it
+  stays shut until the header chain reaches that claim and the NFS has fetched the window.
 - `/readyz` state (`Snapshot::standing`): `Serving`, `Syncing`, `Down` (every trusted validator
   down, or none holds the best block), or `Degraded` = that same cause while synced to a best block
   under 30 min old (peers carry the tip).

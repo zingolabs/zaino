@@ -149,6 +149,15 @@ impl ValidatorMetadata {
         self.answering() && self.tip().is_some_and(above)
     }
 
+    /// Answering, its claim above `chain`'s best, not shown off it (`held` unread yet = maybe
+    /// ahead: no poll since the chain moved)
+    pub(crate) fn claims_past(&self, chain: &VerifiedChain) -> bool {
+        let best = chain.best();
+        let forked =
+            self.held.is_some_and(|held| held.height <= best.height && !chain.on_best(held));
+        self.answering() && self.tip().is_some_and(|claim| claim.height > best.height) && !forked
+    }
+
     /// In order: claim = best; claims higher, `held` verified; claim verified, below; else
     pub(crate) fn agreement_with(&self, chain: Option<&VerifiedChain>) -> Agreement {
         let (Some(chain), Some(claim), true) = (chain, self.tip(), self.answering()) else {

@@ -23,18 +23,27 @@ pub(crate) fn compose<V>(
         final_tip: chain.map(VerifiedChain::final_tip),
         served,
         held_by: view.held_by(),
-        synced: chain.is_some_and(|chain| synced(was_synced, served, chain, depth)),
+        synced: chain.is_some_and(|chain| {
+            synced(was_synced, served, chain, depth, view.claimed_past_best())
+        }),
     }
 }
 
-/// Opens at the best block (hash, not height); stays while on the best and ≤ `depth` behind it
-fn synced(was: bool, served: Option<BlockRef>, chain: &VerifiedChain, depth: ReorgDepth) -> bool {
+/// Opens at the best block (hash, not height), no validator claiming past it (`ahead`); stays
+/// while on the best and ≤ `depth` behind it
+fn synced(
+    was: bool,
+    served: Option<BlockRef>,
+    chain: &VerifiedChain,
+    depth: ReorgDepth,
+    ahead: bool,
+) -> bool {
     let Some(served) = served else { return false };
     let best = chain.best();
     let on_best = chain.on_best(served);
     let behind = u32::from(best.height).saturating_sub(served.height.into());
     match was {
-        false => served == best,
+        false => served == best && !ahead,
         true => on_best && behind <= depth.get(),
     }
 }
@@ -57,8 +66,8 @@ pub(crate) fn check<V>(prev: &Snapshot<V>, next: &Snapshot<V>, depth: ReorgDepth
     if tips.synced {
         let chain = chain.expect("G4: synced under a chain");
         let (best, served) = (chain.best(), tips.served.expect("G4: synced = something served"));
-        let opened = prev.tips.synced || served == best;
-        assert!(opened, "G4: synced opens only at served = best");
+        let opened = prev.tips.synced || (served == best && !next.view.claimed_past_best());
+        assert!(opened, "G4: synced opens only at served = best, no validator claiming past it");
         assert!(chain.on_best(served), "G4: synced stays on best");
         let behind = u32::from(best.height) - u32::from(served.height);
         assert!(behind <= depth.get(), "G4: synced stays within {depth:?} of best");

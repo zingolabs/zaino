@@ -321,6 +321,7 @@ async fn pipeline<S: ChainDataSource>(
         submit: Arc::clone(&inputs.view),
         validators: inputs.balancer,
         network,
+        version: env!("CARGO_PKG_VERSION"),
         max_address_rows: config.serve.max_address_rows,
     });
     let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
@@ -583,12 +584,13 @@ mod tests {
 
     /// Whole pipeline over a mock validator (indexes on `SimFs`, gRPC on localhost, depth 3):
     /// - A 0..=8 at once (0..=5 final: bulk, committed on idle; 6..=8 folded at the tip)
-    /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's
+    /// - then B7 (heavier, off A6) + B8 → reorged heights serve B's, `GetLightdInfo` B8 under
+    ///   zainod's version (not zaino-grpc's)
     /// - before + after: `GetLatestBlock`, `GetBlockRange`'s last, `GetTreeState` = one block
     /// - a `GetMempoolStream` opened at A8 ends on the reorg; the `GetLatestBlock` right after it
     ///   is never A8 (G5: the race one global snapshot closes)
     /// - a scrape then renders every ztest family this process emits
-    /// - cancel stops every task cleanly
+    /// - SIGTERM stops every task cleanly (header sync's sender gone mid-drain included)
     #[tokio::test]
     async fn the_pipeline_follows_a_reorg_and_every_rpc_agrees_on_the_served_tip() {
         use std::num::NonZeroU32;
@@ -646,7 +648,7 @@ mod tests {
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
         spawn_infallible(&mut tasks, "chainview", Span::none(), fold.run(cancel.child_token()));
         let tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks);
-        let tasks = tasks.await.expect("pipeline up");
+        let mut tasks = tasks.await.expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await
             .expect("the gRPC listener is bound");
@@ -725,6 +727,9 @@ mod tests {
         let reorged = wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
         let reorged = reorged.expect("block 7").into_inner().hash;
         assert_eq!(reorged, <[u8; 32]>::from(hash(&b[7])).to_vec(), "7 = B7 now");
+        let lightd = wallet.get_lightd_info(Empty {}).await.expect("served").into_inner();
+        let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
+        assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");
 
         let scrape = crate::metrics::scrape(&rendered);
         let per_index = |family: &'static str| {
@@ -754,8 +759,14 @@ mod tests {
             assert!(found, "ztest family {family:?} not in the scrape:\n{scrape}");
         }
 
-        cancel.cancel();
-        let (_no_signal, signals) = mpsc::channel(1);
-        supervise(tasks, cancel, signals).await.expect("clean stop");
+        // header sync's sender drops on the same cancel (NFS + follower see it close mid-drain)
+        let token = cancel.child_token();
+        spawn_infallible(&mut tasks, "header-sync", Span::none(), async move {
+            token.cancelled().await;
+            drop(verified);
+        });
+        let (signal, signals) = mpsc::channel(1);
+        signal.send("SIGTERM").await.expect("supervise receives");
+        supervise(tasks, cancel, signals).await.expect("SIGTERM = clean stop");
     }
 }

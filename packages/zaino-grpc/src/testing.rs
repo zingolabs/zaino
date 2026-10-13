@@ -124,6 +124,7 @@ pub(super) fn routes_over(
         submit: Arc::new(view),
         validators,
         network: MAINNET,
+        version: "0.11.0-test",
         max_address_rows: zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS,
     };
     (routes, driver, fold)

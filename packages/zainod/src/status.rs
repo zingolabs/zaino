@@ -400,7 +400,8 @@ impl Chain {
         let answering = |meta: &&zaino_chainview::ValidatorMetadata| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
-        let info = configured_network().and_then(|network| zaino_grpc::lightd_info(snap, network));
+        let info = configured_network()
+            .and_then(|network| zaino_grpc::lightd_info(snap, network, env!("CARGO_PKG_VERSION")));
         Self {
             tip: tips.best.map(|best| PublicBlock {
                 height: u32::from(best.height),

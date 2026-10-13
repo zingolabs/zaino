@@ -92,9 +92,14 @@ impl<S: ChainDataSource, V: CommittedView> Nfs<S, V> {
         self.published.subscribe()
     }
 
-    /// Cancel → `Ok`
+    /// Cancel → `Ok` (an input gone after it included: its owner stops on the same cancel)
     pub async fn run(mut self, cancel: CancellationToken) -> Result<(), NfsError> {
-        cancel.run_until_cancelled(self.follow()).await.unwrap_or(Ok(()))
+        match cancel.run_until_cancelled(self.follow()).await {
+            Some(Err(NfsError::ChainGone | NfsError::IndexGone(_))) if cancel.is_cancelled() => {
+                Ok(())
+            }
+            followed => followed.unwrap_or(Ok(())),
+        }
     }
 
     async fn follow(&mut self) -> Result<(), NfsError> {

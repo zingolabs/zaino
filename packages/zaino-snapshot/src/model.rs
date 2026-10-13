@@ -1,8 +1,9 @@
 //! Publisher model (`usage.md`): random inputs through [`Core::publish`], `check()`
 //! after every publish (inside it), every snapshot against a naive model
 //!
-//! - Chain view: header moves (extend, reorg above final, finalize), holders, mempool (relays,
-//!   drops), a block mining a held tx while the view still lists it (listings lag a block)
+//! - Chain view: header moves (extend, reorg above final, finalize), holders (some claiming past
+//!   best), mempool (relays, drops), a block mining a held tx while the view still lists it
+//!   (listings lag a block)
 //! - NFS: served tip on the best (lagging), on an old best (a reorg in flight), or nothing yet;
 //!   root = genesis (every served block above it nonfinalized)
 //! - Each move published or coalesced with the next (the run loop's `watch`es keep the latest)
@@ -31,6 +32,8 @@ const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
 const ADDRESSES: [&str; 2] = ["10.0.0.1:8232", "10.0.0.2:8232"];
 
 /// - `Reorg`: top `depth` (above final) replaced by `len` blocks, the first outweighing them
+/// - `Ahead` = holders in `mask` claim a block past best (header sync short of them); `read` =
+///   their hash at best polled (still holders), else not yet (no longer holders)
 /// - `Relay` = ours (held, served); `Mine` = one block on best carrying that txid (kept held)
 /// - `ServeBest` = NFS `lag` below the best; `ServeOld` = an earlier best tip (reorg in flight)
 /// - paired `bool` = published now (else coalesced with the next)
@@ -40,6 +43,7 @@ enum Input {
     Reorg { depth: u32, len: u32 },
     Finalize,
     Hold(u8),
+    Ahead { mask: u8, read: bool },
     Relay(u8),
     Mine(u8),
     Drop(u8),
@@ -54,6 +58,7 @@ fn moves() -> impl Strategy<Value = Vec<(Input, bool)>> {
         2 => (1u32..=5, 1u32..=4).prop_map(|(depth, len)| Input::Reorg { depth, len }),
         1 => Just(Input::Finalize),
         2 => (0u8..4).prop_map(Input::Hold),
+        2 => (0u8..4, any::<bool>()).prop_map(|(mask, read)| Input::Ahead { mask, read }),
         4 => (0u8..8).prop_map(Input::Relay),
         3 => (0u8..8).prop_map(Input::Mine),
         1 => (0u8..8).prop_map(Input::Drop),
@@ -89,12 +94,15 @@ struct Tailed {
     ended: bool,
 }
 
-/// `held` = bitmask over `ADDRESSES`; `mempool` = our relays still held
+/// `held` / `ahead` = bitmasks over `ADDRESSES` (ahead counts for holders only, `read` = `Ahead`'s);
+/// `mempool` = our relays still held
 struct Model {
     builder: MockChain,
     headers: HeaderChain,
     old_tips: Vec<BlockRef>,
     held: u8,
+    ahead: u8,
+    read: bool,
     mempool: BTreeSet<TransactionId>,
     served: Option<BlockRef>,
     synced: bool,
@@ -106,15 +114,23 @@ impl Model {
         Arc::new(self.headers.verified().expect("genesis verified"))
     }
 
+    fn set(mask: u8) -> EndpointSet {
+        EndpointSet::at((0..ADDRESSES.len()).filter(|at| mask & (1 << at) != 0))
+    }
+
+    /// Holders past an unread claim drop out (as a fold's `holds` would)
     fn held_by(&self) -> EndpointSet {
-        EndpointSet::at((0..ADDRESSES.len()).filter(|at| self.held & (1 << at) != 0))
+        let unread = if self.read { 0 } else { self.ahead };
+        Self::set(self.held & !unread)
     }
 
     fn view(&self) -> Arc<ChainViewSnapshot> {
         let raw = |txid: &TransactionId| (*txid, Bytes::copy_from_slice(&<[u8; 32]>::from(*txid)));
         let ours: Vec<(TransactionId, Bytes)> = self.mempool.iter().map(raw).collect();
         let chain = Some(self.chain());
-        Arc::new(ChainViewSnapshot::fixed(chain, self.held_by(), &ADDRESSES, &ours))
+        let view = ChainViewSnapshot::fixed(chain, Self::set(self.held), &ADDRESSES, &ours);
+        let ahead = Self::set(self.held & self.ahead).positions();
+        Arc::new(ahead.fold(view, |view, at| view.ahead(at, 1, self.read)))
     }
 
     fn indexed(&self) -> Option<Arc<Indexed<DiskView>>> {
@@ -164,6 +180,7 @@ impl Model {
                 }
             }
             Input::Hold(mask) => self.held = mask,
+            Input::Ahead { mask, read } => (self.ahead, self.read) = (mask, read),
             Input::Relay(pick) => drop(self.mempool.insert(txid(pick))),
             Input::Mine(pick) => {
                 let path = self.builder.blocks(best);
@@ -196,7 +213,7 @@ impl Model {
         let best = chain.best();
         let synced = match (self.served, self.synced) {
             (None, _) => false,
-            (Some(served), false) => served == best,
+            (Some(served), false) => served == best && self.held & self.ahead == 0,
             (Some(served), true) => {
                 let behind = |at: BlockRef| u32::from(best.height) - u32::from(at.height);
                 self.on_best(served) && behind(served) <= DEPTH.get()
@@ -231,6 +248,8 @@ fn run(moves: Vec<(Input, bool)>) {
         headers,
         old_tips: Vec::new(),
         held: 0,
+        ahead: 0,
+        read: false,
         mempool: BTreeSet::new(),
         served: None,
         synced: false,
