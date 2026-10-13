@@ -377,7 +377,8 @@ description = """
 `zainod hold` / `zainod resume [--config FILE]`: an operator hold that survives restarts, \
 deploys and reboots. The marker lives in the new `[serve] state_dir` (default \
 `<data dir>/zaino/state`); the running zainod reads it every second. Held = state `held` on \
-`/statusz`, `/readyz` (503) and `/status`, above every rule but `draining`; after \
+`/statusz`, `/readyz` (503) and `/status`, above every other state, `draining` included (a \
+planned stop's last answer is `held`); after \
 `[grpc.shutdown]`'s delay every open gRPC connection is sent GOAWAY, while health and admin keep \
 answering. A stopped zainod is never reported held. Under systemd a node started held completes \
 its start. Both commands are idempotent, print the resulting state and exit 0 (1 on a config or \

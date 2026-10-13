@@ -56,7 +56,8 @@ pub(crate) fn draining() -> bool {
     DRAINING.load(Ordering::Relaxed)
 }
 
-/// Operator hold (`hold.rs`, from its marker): `held` above everything but draining
+/// Operator hold (`hold.rs`, from its marker): `held` above everything, draining included (last
+/// answer before a planned stop's exit = `held`, not `draining`)
 static HELD: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn hold(held: bool) {
@@ -90,7 +91,8 @@ pub(crate) struct Sources {
     pub(crate) egress: watch::Receiver<Option<Egress>>,
 }
 
-/// Closed set; first match: draining, not booted, runtime stalled, the snapshot's [`Standing`]
+/// Closed set; first match: held, draining, not booted, runtime stalled, the snapshot's
+/// [`Standing`]
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum State {
@@ -199,10 +201,10 @@ impl Booted {
     }
 }
 
-/// Pure: the state rules over the process flags + stage (draining > held > the rest)
+/// Pure: the state rules over the process flags + stage (held > draining > the rest)
 fn readiness(draining: bool, held: bool, live: bool, stage: Stage) -> Readiness {
     let at = |state, progress, detail, notes| Readiness { state, progress, detail, notes };
-    if held && !draining {
+    if held {
         let notes = match stage {
             Stage::Booted(booted) => booted.notes,
             Stage::Starting { .. } => Vec::new(),
@@ -777,7 +779,7 @@ mod tests {
             assert!(readiness.progress.is_none() || progressing, "{case}: progress off-state");
         }
 
-        // held: the operator's intent over every condition but draining, notes kept
+        // held: the operator's intent over every condition, draining included, notes kept
         let held = |notes| serde_json::json!({ "state": "held", "progress": null, "detail": null, "notes": notes });
         let held_cases = [
             (
@@ -810,11 +812,18 @@ mod tests {
                 held(serde_json::json!([])),
             ),
             (
-                "draining beats held",
+                "held beats draining",
                 true,
                 true,
                 booted(Standing::Serving, None, None),
-                serde_json::json!({ "state": "draining", "progress": null, "detail": null, "notes": stale }),
+                held(stale.clone()),
+            ),
+            (
+                "held beats draining before boot",
+                true,
+                true,
+                starting(None, false),
+                held(serde_json::json!([])),
             ),
         ];
         for (case, draining, live, stage, expected) in held_cases {

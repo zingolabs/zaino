@@ -23,8 +23,8 @@ would measure that runtime's queue, and a timed-out liveness probe gets the pod 
 
 | `state`        | When                                                                                     |
 | -------------- | ---------------------------------------------------------------------------------------- |
+| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold)), even while draining |
 | `draining`     | a shutdown signal arrived (see [systemd](#systemd))                                      |
-| `held`         | an operator ran `zainod hold` (see [Operator hold](#operator-hold)); above every rule below |
 | `provisioning` | not booted yet: a snapshot bootstrap, or plain startup                                   |
 | `down`         | boot waiting on its first validator answer, the serving runtime stalled (no heartbeat for 30 s), overloaded (below), or no trusted validator vouching (every one down, or none holding the verified tip) while not `degraded` |
 | `degraded`     | no trusted validator vouching, but synced to a fresh verified best (its block time within 30 min of the clock: p2p peers carried the tip) |
@@ -102,8 +102,9 @@ It persists across restarts, deploys and reboots.
   holding a node requires write access to its state directory.
 - The running zainod checks the marker every second. Held:
   - `state` becomes `held`: `/readyz` answers `503` and `detail` is `null`.
-  - Only `draining` outranks it, so a held node that is also overloaded or has lost its
-    validators still reports `held`.
+  - It outranks every other state, `draining` included. A held node that is overloaded, has
+    lost its validators, or is draining after a shutdown signal still reports `held`, so a
+    planned stop's last answer before exit is `held`.
   - After `[grpc.shutdown] delay_secs` (zero when shutdown draining is off), every open gRPC
     connection gets a GOAWAY, and its in-flight streams get `max_connection_age_grace`.
   - The process keeps running and answering `/readyz`, `/status` and the admin listener. New
