@@ -16,12 +16,26 @@ let routes = Routes {
     network,                             // declared (GetLightdInfo.chainName)
     max_address_rows,                    // receives one t-address request may walk
 };
-let bound = GrpcService::new(routes, grpc_listen_address, limits)
+let bound = GrpcService::new(grpc_listen_address, limits)
+    .with_routes(routes)
     .with_trusted_proxies(proxies)
     .with_tls(tls)
     .bind()
     .await?;
 tokio::spawn(bound.run(cancel.child_token()));
+```
+
+A server can bind and run before its routes exist (an owner still booting or downloading a
+snapshot): `GrpcService::new` alone answers health from the start and every method
+`UNAVAILABLE` (`starting: not routed yet`). Take its `routing()` handle before `bind()` and
+call `route(routes)` once they exist. Routing twice panics.
+
+```rust
+let server = GrpcService::new(grpc_listen_address, limits).with_health(health);
+let routing = server.routing();
+tokio::spawn(server.bind().await?.run(cancel.child_token()));
+// … boot …
+routing.route(routes);
 ```
 
 | Method | Answered by (one snapshot) |

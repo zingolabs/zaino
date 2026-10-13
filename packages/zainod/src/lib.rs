@@ -62,15 +62,7 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     if let Some(endpoint) = config.metrics.listen_address {
         crate::logging::component("Metrics").in_scope(|| crate::metrics::init(endpoint))?;
     }
-    // After the admin listener (`/statusz` reports the bootstrap), before any index opens
-    #[cfg(feature = "snapshot")]
-    if let Some(snapshot) = &config.snapshot {
-        crate::bootstrap::bootstrap(snapshot, &config)
-            .instrument(crate::logging::component("Snapshot"))
-            .await
-            .inspect_err(|error| error!(%error, "Startup failed"))?;
-    }
-
+    // After the admin listener (`/statusz` reports the snapshot bootstrap inside)
     let running = start_indexer(config).await.inspect_err(|error| {
         error!(%error, "Startup failed");
     })?;

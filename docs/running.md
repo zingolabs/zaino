@@ -102,8 +102,9 @@ directory and let it resync.
 
 ## Stopping and restarts
 
-Boot fails with exit code 1 if the validator does not answer, the gRPC address cannot
-be bound, or an index cannot open. An index refuses to open when another zainod holds
+Boot fails with exit code 1 if the gRPC address cannot be bound (checked first, before any
+snapshot download) or an index cannot open. No validator needs to answer for boot to finish.
+An index refuses to open when another zainod holds
 its directory lock, when it was built for another network or format, when its files
 are shorter than its `MANIFEST` seals (committed bytes were lost), or when its last
 page fails its checksum.

@@ -141,6 +141,9 @@ listener are up:
 | `/readyz` | `{"state", "detail"}` as on the admin listener; `200` only when `serving` or `degraded`, else `503` |
 | `/status` | the public projection below, always `200` |
 
+- The listener binds at process start, before a snapshot bootstrap or boot, so these paths
+  answer `provisioning` (with progress) or `down` from the first second. Until boot finishes,
+  every gRPC method answers `UNAVAILABLE`. A port already in use fails startup at once.
 - They are answered before admission, so they never take a gRPC work permit.
 - Each connection may send 10 at once and regains one per second; past that the answer is
   `429`. A client is therefore bounded by `max_connections_per_ip` × that.

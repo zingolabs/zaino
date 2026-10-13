@@ -43,6 +43,6 @@ pub fn lightd_info<V>(
 }
 pub use emit::{describe_metrics, sent_bytes_total, METRIC_BUCKETS};
 pub use limits::GrpcLimits;
-pub use service::Routes;
+pub use service::{Routes, Routing};
 pub use tls::{Tls, TlsError, TlsFiles};
 pub use transport::{BoundGrpcService, GrpcServeError, GrpcService};

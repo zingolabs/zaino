@@ -1,7 +1,7 @@
 //! zainod daemon config: the one operator surface
 //!
 //! - Runtime crates ([`zaino_sync`], [`zaino_grpc`], source adapters) take typed params, no config
-//!   (→ [`crate::indexer::spawn_indexer`] translates at boot)
+//!   (→ [`crate::indexer::start_indexer`] translates at boot)
 //! - Layered highest-priority-first: env (`ZAINO_CONFIG_` prefix, `__` nesting) → TOML → defaults
 
 use std::net::SocketAddr;

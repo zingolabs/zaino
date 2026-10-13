@@ -50,7 +50,6 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
 
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
     let server = GrpcService::new(
-        routes(),
         bind,
         GrpcLimits {
             max_connections: non_zero(64),
@@ -60,6 +59,7 @@ async fn a_wallet_is_served_and_a_second_connection_from_one_address_is_refused(
             ..GrpcLimits::default()
         },
     )
+    .with_routes(routes())
     .bind()
     .await
     .expect("the freed port binds");
@@ -115,7 +115,8 @@ async fn behind_a_trusted_proxy_the_per_address_cap_counts_the_named_client() {
 
     let non_zero = |value| NonZeroUsize::new(value).expect("non-zero");
     let limits = GrpcLimits { max_connections_per_ip: non_zero(1), ..GrpcLimits::default() };
-    let server = GrpcService::new(routes(), bind, limits)
+    let server = GrpcService::new(bind, limits)
+        .with_routes(routes())
         .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
             .parse()
             .expect("loopback net")]))
@@ -199,7 +200,8 @@ async fn cancel_closes_the_listener_then_waits_for_open_connections_at_most_the_
         drop(probe);
 
         let limits = GrpcLimits { drain_timeout, ..GrpcLimits::default() };
-        let server = GrpcService::new(routes(), bind, limits)
+        let server = GrpcService::new(bind, limits)
+            .with_routes(routes())
             .with_trusted_proxies(zaino_grpc::TrustedProxies::new(vec!["127.0.0.0/8"
                 .parse()
                 .expect("loopback net")]))
@@ -250,7 +252,7 @@ async fn binding_a_held_port_fails_before_anything_is_served() {
     let held = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
     let bind = held.local_addr().expect("local addr");
 
-    let outcome = GrpcService::new(routes(), bind, GrpcLimits::default()).bind().await;
+    let outcome = GrpcService::new(bind, GrpcLimits::default()).with_routes(routes()).bind().await;
 
     use zaino_grpc::GrpcServeError::Serve;
     let error = outcome.err();

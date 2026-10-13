@@ -12,7 +12,7 @@ use std::{
     future::Future,
     num::NonZeroUsize,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, OnceLock},
     task::{Context, Poll},
     time::Duration,
 };
@@ -46,12 +46,16 @@ pub struct Routes<S: ChainDataSource, V> {
     pub max_address_rows: NonZeroUsize,
 }
 
+/// Every method's answer before [`Routing::route`] (the listener serves health from bind on)
+pub(crate) const STARTING: &str = "starting: not routed yet";
+
 /// Routes + what every request shares, one `Arc` (a request clones one pointer)
 ///
+/// - `routes` set once, after bind (empty = every method `UNAVAILABLE` [`STARTING`])
 /// - `reads` process-wide (every index read on the blocking pool under its lane's permit)
 /// - `idle` = `GrpcLimits::stall_timeout` (nothing to send that long = cut, `deadline.rs`)
 struct Wired<S: ChainDataSource, V> {
-    routes: Routes<S, V>,
+    routes: OnceLock<Routes<S, V>>,
     reads: ReadLanes,
     tree_states: Arc<tree_state::Memos<V>>,
     idle: Duration,
@@ -67,9 +71,31 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
 }
 
 impl<S: ChainDataSource, V: CommittedView> Dispatch<S, V> {
-    pub(crate) fn new(routes: Routes<S, V>, limits: &GrpcLimits) -> Self {
+    pub(crate) fn new(limits: &GrpcLimits) -> Self {
         let (reads, idle) = (ReadLanes::new(limits), limits.stall_timeout);
+        let routes = OnceLock::new();
         Self(Arc::new(Wired { routes, reads, tree_states: Arc::default(), idle }))
+    }
+
+    pub(crate) fn routing(&self) -> Routing<S, V> {
+        Routing(Arc::clone(&self.0))
+    }
+}
+
+/// Sets a server's [`Routes`] once they exist (a server binds + answers health before its owner
+/// has a chain to route to)
+pub struct Routing<S: ChainDataSource, V>(Arc<Wired<S, V>>);
+
+impl<S: ChainDataSource, V> Clone for Routing<S, V> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<S: ChainDataSource, V> Routing<S, V> {
+    /// Every method answered from `routes` from here on; once per server (twice = a bug, panics)
+    pub fn route(&self, routes: Routes<S, V>) {
+        assert!(self.0.routes.set(routes).is_ok(), "gRPC server routed twice");
     }
 }
 
@@ -80,7 +106,9 @@ impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
-        let routes = &self.routes;
+        let Some(routes) = self.routes.get() else {
+            return status_response(Status::unavailable(STARTING));
+        };
         let reads = || self.reads.clone();
         let snap = routes.snapshots.load();
         let unavailable = |why: Unavailable| status_response(wire::unavailable(why));

@@ -34,7 +34,7 @@ use crate::health::{Health, HealthRoute};
 use crate::lifetime::{Activity, Retire, Retirement};
 use crate::observe::Measured;
 use crate::report::{self, Held, INTERVAL};
-use crate::service::{Dispatch, Routes};
+use crate::service::{Dispatch, Routes, Routing};
 use crate::{emit, GrpcLimits};
 
 /// Per-stream send buffer (flow control paces from here: a slow wallet backs up itself, not the
@@ -86,12 +86,24 @@ pub enum GrpcServeError {
 }
 
 impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
-    pub fn new(routes: Routes<S, V>, bind: SocketAddr, limits: GrpcLimits) -> Self {
-        let dispatch = Dispatch::new(routes, &limits);
+    /// Unrouted: health answered, every method `UNAVAILABLE` until [`Routing::route`]
+    pub fn new(bind: SocketAddr, limits: GrpcLimits) -> Self {
+        let dispatch = Dispatch::new(&limits);
         let load = Arc::new(Load::new(&limits));
         let proxies = TrustedProxies::default();
         let retire = Retire::default();
         Self { dispatch, bind, limits, proxies, tls: None, load, health: None, retire }
+    }
+
+    /// Routes these methods once its owner has them, before or after `run`
+    pub fn routing(&self) -> Routing<S, V> {
+        self.dispatch.routing()
+    }
+
+    /// Routed from the start
+    pub fn with_routes(self, routes: Routes<S, V>) -> Self {
+        self.routing().route(routes);
+        self
     }
 
     /// GOAWAYs every connection open at the time of each `retire_all` (an operator hold)
@@ -449,7 +461,7 @@ mod tests {
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
         let bind = probe.local_addr().expect("local addr");
         drop(probe);
-        let server = GrpcService::new(routes, bind, crate::GrpcLimits::default());
+        let server = GrpcService::new(bind, crate::GrpcLimits::default()).with_routes(routes);
         let bound = server.bind().await.expect("the freed port binds");
         let cancel = tokio_util::sync::CancellationToken::new();
         tokio::spawn(bound.run(cancel.clone()));
@@ -513,7 +525,8 @@ mod tests {
                 let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
                 let bind = probe.local_addr().expect("local addr");
                 drop(probe);
-                let bound = GrpcService::new(routes, bind, limits).bind().await.expect("binds");
+                let server = GrpcService::new(bind, limits).with_routes(routes);
+                let bound = server.bind().await.expect("binds");
                 tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
                 bind
             }
@@ -604,7 +617,7 @@ mod tests {
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let bind = probe.local_addr().expect("local addr");
         drop(probe);
-        let server = GrpcService::new(routes, bind, forever);
+        let server = GrpcService::new(bind, forever).with_routes(routes);
         let retire = server.retire();
         let bound = server.bind().await.expect("binds");
         tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
@@ -626,11 +639,13 @@ mod tests {
     }
 
     /// One TLS listener, as a load balancer's HTTPS/1.1 monitor and a wallet each see it:
+    /// - bound before routed (an owner still booting): health answered, every method
+    ///   `UNAVAILABLE` [`crate::service::STARTING`]; routed later = the routes' own answer
     /// - ALPN `http/1.1`: `GET /readyz` = 200 + the health body, `/status` = 200, a gRPC path =
     ///   404; ALPN `h2`: `GetLightdInfo` reaches the gRPC stack (`UNAVAILABLE`: nothing served)
     /// - a monitor's `/readyz` never takes a work permit (`load.in_flight` stays 0)
     #[tokio::test]
-    async fn one_tls_listener_answers_health_over_http1_and_grpc_over_h2() {
+    async fn one_tls_listener_answers_health_from_bind_and_grpc_once_routed() {
         use std::sync::Arc;
 
         use bytes::Bytes;
@@ -662,10 +677,10 @@ mod tests {
         let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let bind = probe.local_addr().expect("local addr");
         drop(probe);
-        let server = GrpcService::new(routes(), bind, crate::GrpcLimits::default())
+        let server = GrpcService::new(bind, crate::GrpcLimits::default())
             .with_tls(crate::Tls::load(files).expect("pair loads"))
             .with_health(Arc::new(Serving));
-        let load = server.load();
+        let (load, routing) = (server.load(), server.routing());
         let bound = server.bind().await.expect("binds");
         tokio::spawn(bound.run(tokio_util::sync::CancellationToken::new()));
 
@@ -703,25 +718,39 @@ mod tests {
             (status, body)
         };
 
+        // (grpc-status, grpc-message) of one `GetLightdInfo` over its own h2 connection
+        let lightd_info = || async move {
+            let (client, connection) = h2::client::handshake(tls(b"h2").await).await.expect("h2");
+            tokio::spawn(connection);
+            let mut client = client.ready().await.expect("ready");
+            let request = http::Request::post(format!("https://{host}{}", path::GET_LIGHTD_INFO))
+                .header("content-type", "application/grpc")
+                .header("te", "trailers")
+                .body(())
+                .expect("request");
+            let (response, mut body) = client.send_request(request, false).expect("sent");
+            body.send_data(Bytes::from_static(b"\0\0\0\0\0"), true).expect("empty Empty");
+            let response = response.await.expect("answered");
+            let header = |name| {
+                let value = response.headers().get(name).map(|value| value.to_str());
+                value.and_then(Result::ok).unwrap_or_default().to_owned()
+            };
+            (header("grpc-status"), header("grpc-message"))
+        };
+
         let readyz = get("/readyz").await;
         let healthy = ("200".to_owned(), r#"{"state":"serving","detail":null}"#.to_owned());
-        assert_eq!(readyz, healthy, "monitor's /readyz");
-        assert_eq!(get("/status").await.0, "200");
+        assert_eq!(readyz, healthy, "monitor's /readyz, unrouted");
+        assert_eq!(get("/status").await.0, "200", "/status, unrouted");
         assert_eq!(get(path::GET_LIGHTD_INFO).await.0, "404", "gRPC needs h2");
         assert_eq!(load.report().in_flight, 0, "health never holds a work permit");
+        let (status, message) = lightd_info().await;
+        assert_eq!(status, "14", "unrouted: UNAVAILABLE");
+        assert!(message.starts_with("starting"), "unrouted: {message}");
 
-        let (client, connection) = h2::client::handshake(tls(b"h2").await).await.expect("h2");
-        tokio::spawn(connection);
-        let mut client = client.ready().await.expect("ready");
-        let request = http::Request::post(format!("https://{host}{}", path::GET_LIGHTD_INFO))
-            .header("content-type", "application/grpc")
-            .header("te", "trailers")
-            .body(())
-            .expect("request");
-        let (response, mut body) = client.send_request(request, false).expect("sent");
-        body.send_data(Bytes::from_static(b"\0\0\0\0\0"), true).expect("empty Empty");
-        let response = response.await.expect("answered");
-        let status = response.headers().get("grpc-status").map(|value| value.as_bytes());
-        assert_eq!(status, Some(&b"14"[..]), "the gRPC stack answered: UNAVAILABLE");
+        routing.route(routes());
+        let (status, message) = lightd_info().await;
+        assert_eq!(status, "14", "routed, nothing served: UNAVAILABLE");
+        assert!(!message.starts_with("starting"), "routed, still answered as unrouted");
     }
 }

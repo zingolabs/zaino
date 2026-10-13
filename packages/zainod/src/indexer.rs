@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
 use zaino_chainview::ChainView;
-use zaino_grpc::{GrpcLimits, GrpcService, Routes, Tls, TlsFiles, TrustedProxies};
+use zaino_grpc::{GrpcLimits, GrpcService, Load, Routes, Routing, Tls, TlsFiles, TrustedProxies};
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
@@ -60,20 +60,64 @@ type TaskExit = (&'static str, Result<(), IndexerError>);
 
 /// Handle → `Ok(())` on a shutdown signal, else the first task's failure (process exits; nothing
 /// restarts in-process)
+///
+/// - gRPC listener first: health answers through the snapshot bootstrap, a taken port fails
+///   before any download
+/// - then the bootstrap, then boot (no validator needs to answer first)
 pub(crate) async fn start_indexer(
     config: DaemonConfig,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     warn!("In development, not for production mainnet use");
-    spawn_indexer(config).await
+    crate::fd_limit::raise_for(config.grpc.max_connections)?;
+    match config.validator_client {
+        ValidatorClient::LegacyRpc => start_over(config, crate::chainview::legacy_client).await,
+        ValidatorClient::Grpc => start_over(config, crate::chainview::grpc_client).await,
+    }
 }
 
-/// Config validated, then boot (no validator needs to answer first)
-pub(crate) async fn spawn_indexer(
+async fn start_over<S: ChainDataSource>(
     config: DaemonConfig,
+    client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    config.validate()?;
-    crate::fd_limit::raise_for(config.grpc.max_connections)?;
-    boot(config).await
+    let cancel = CancellationToken::new();
+    let mut tasks = JoinSet::new();
+    let serving = listen(&config, &cancel, &mut tasks).await?;
+    #[cfg(feature = "snapshot")]
+    if let Some(snapshot) = &config.snapshot {
+        crate::bootstrap::bootstrap(snapshot, &config).instrument(component("Snapshot")).await?;
+    }
+    boot_over(config, client, serving, cancel, tasks).await
+}
+
+/// Bound gRPC server's handles: where the pipeline's routes go, its load for `/statusz`
+struct Serving<S: ChainDataSource> {
+    routing: Routing<S, DiskView>,
+    load: Arc<Load>,
+}
+
+/// gRPC bound + serving: health from here on, every method `UNAVAILABLE` until the pipeline
+/// routes it (EADDRINUSE = boot failure)
+async fn listen<S: ChainDataSource>(
+    config: &DaemonConfig,
+    cancel: &CancellationToken,
+    tasks: &mut JoinSet<TaskExit>,
+) -> Result<Serving<S>, IndexerError> {
+    let limits = GrpcLimits::from(&config.grpc);
+    let mut server = GrpcService::new(config.serve.grpc_listen_address, limits)
+        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
+        .with_health(Arc::new(crate::status::PublicHealth));
+    if let Some(tls) = &config.serve.tls {
+        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
+        server = server.with_tls(Tls::load(files)?);
+    }
+    let serving = Serving { routing: server.routing(), load: server.load() };
+    crate::hold::serving(server.retire());
+    let server = server.bind().await?;
+    let span = component("Grpc");
+    let (endpoint, network) = (config.serve.grpc_listen_address, network_name(config.network));
+    span.in_scope(|| info!(%endpoint, network, "Listening"));
+    spawn(tasks, "grpc", span, server.run(cancel.child_token()));
+    Ok(serving)
 }
 
 /// Mainnet/testnet: compiled in (no validator needed to boot); regtest: its validator's
@@ -129,28 +173,21 @@ async fn regtest_schedule<S: ChainDataSource>(
     }
 }
 
-/// [`boot_over`] the configured `validator_client`
-async fn boot(config: DaemonConfig) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
-    match config.validator_client {
-        ValidatorClient::LegacyRpc => boot_over(config, crate::chainview::legacy_client).await,
-        ValidatorClient::Grpc => boot_over(config, crate::chainview::grpc_client).await,
-    }
-}
-
-/// Chain view over the trusted validators (one `client` each) → pipeline over it → every task
-/// spawned
+/// Chain view over the trusted validators (one `client` each) → pipeline over it, routed into
+/// `serving` → every task spawned beside the gRPC server's
 ///
 /// - One balancer over every validator; its driver first (regtest's upgrade schedule is a poll's)
 async fn boot_over<S: ChainDataSource>(
     config: DaemonConfig,
     client: fn(&TrustedValidatorConfig) -> Result<S, IndexerError>,
+    serving: Serving<S>,
+    cancel: CancellationToken,
+    mut tasks: JoinSet<TaskExit>,
 ) -> Result<JoinHandle<Result<(), IndexerError>>, IndexerError> {
     let started = std::time::Instant::now();
     let fs = RealFs::shared();
     let chainview_span = component("ChainView");
     let wiring = chainview_span.in_scope(|| crate::chainview::connect(&config, client))?;
-    let cancel = CancellationToken::new();
-    let mut tasks = JoinSet::new();
     let balancing = wiring.balancing.run(cancel.child_token());
     spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
@@ -164,7 +201,7 @@ async fn boot_over<S: ChainDataSource>(
         balancer: wiring.balancer.clone(),
         schedule,
     };
-    let mut tasks = pipeline(&config, fs, inputs, &cancel, started, tasks).await?;
+    let mut tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks).await?;
 
     let header_sync = match config.p2p.enabled {
         true => viewed.header_sync.with_peers(header_rules(config.network, &schedule)?),
@@ -212,6 +249,7 @@ async fn pipeline<S: ChainDataSource>(
     config: &DaemonConfig,
     fs: Arc<dyn Fs>,
     inputs: Inputs<S>,
+    serving: Serving<S>,
     cancel: &CancellationToken,
     started: std::time::Instant,
     tasks: JoinSet<TaskExit>,
@@ -272,36 +310,19 @@ async fn pipeline<S: ChainDataSource>(
     let snapshots = publisher.handle();
     let members = inputs.balancer.members();
 
-    // --- serving: bound here (EADDRINUSE = boot failure), every answer off one snapshot
-    let routes = Routes {
-        snapshots: snapshots.clone(),
-        submit: Arc::clone(&inputs.view),
-        validators: inputs.balancer,
-        network,
-        max_address_rows: config.serve.max_address_rows,
-    };
-    let limits = GrpcLimits::from(&config.grpc);
-    let mut server = GrpcService::new(routes, config.serve.grpc_listen_address, limits)
-        .with_trusted_proxies(TrustedProxies::new(config.grpc.trusted_proxies.clone()))
-        .with_health(Arc::new(crate::status::PublicHealth));
-    if let Some(tls) = &config.serve.tls {
-        let files = TlsFiles { cert_path: tls.cert_path.clone(), key_path: tls.key_path.clone() };
-        server = server.with_tls(Tls::load(files)?);
-    }
-    let grpc_load = server.load();
-    crate::hold::serving(server.retire());
-    let server = server.bind().await?;
-    let grpc_span = component("Grpc");
-    let endpoint = config.serve.grpc_listen_address;
-    grpc_span.in_scope(|| info!(%endpoint, network = network_name(network), "Listening"));
-
-    // --- run: nothing fallible left
+    // --- run: every gRPC answer off one snapshot from here on
     let Indexes { follower, nfs, opened } = indexes;
     let progress = follower.progress();
     spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
     spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
-    spawn(&mut tasks, "grpc", grpc_span, server.run(cancel.child_token()));
+    serving.routing.route(Routes {
+        snapshots: snapshots.clone(),
+        submit: Arc::clone(&inputs.view),
+        validators: inputs.balancer,
+        network,
+        max_address_rows: config.serve.max_address_rows,
+    });
     let utxos = Arc::new(crate::utxos::ServedUtxos(snapshots.clone()));
     if let Some(polling) = inputs.view.peer_mempool(utxos) {
         if config.compact_block()?.is_none() {
@@ -334,7 +355,7 @@ async fn pipeline<S: ChainDataSource>(
         members,
         disk: walked,
         block_rate,
-        grpc_load,
+        grpc_load: serving.load,
         egress: egress_windows,
     });
     Ok(tasks)
@@ -621,9 +642,10 @@ mod tests {
         let cancel = CancellationToken::new();
         let started = std::time::Instant::now();
         let mut tasks = JoinSet::new();
+        let serving = listen(&config, &cancel, &mut tasks).await.expect("the gRPC listener binds");
         spawn_infallible(&mut tasks, "traffic", Span::none(), balancing.run(cancel.child_token()));
         spawn_infallible(&mut tasks, "chainview", Span::none(), fold.run(cancel.child_token()));
-        let tasks = pipeline(&config, fs, inputs, &cancel, started, tasks);
+        let tasks = pipeline(&config, fs, inputs, serving, &cancel, started, tasks);
         let tasks = tasks.await.expect("pipeline up");
         let mut wallet = CompactTxStreamerClient::connect(format!("http://{address}"))
             .await

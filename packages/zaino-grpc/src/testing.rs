@@ -152,7 +152,9 @@ pub(super) fn routes() -> Routes<MockValidator, DiskView> {
 pub(super) fn dispatch(
     routes: Routes<MockValidator, DiskView>,
 ) -> Dispatch<MockValidator, DiskView> {
-    Dispatch::new(routes, &crate::GrpcLimits::default())
+    let dispatch = Dispatch::new(&crate::GrpcLimits::default());
+    dispatch.routing().route(routes);
+    dispatch
 }
 
 pub(super) fn request(path: &str) -> Request<Full<bytes::Bytes>> {
