@@ -339,34 +339,38 @@ struct Inner {
     locks: HashSet<PathBuf>,
     tag: u64,
     recorded: Option<Vec<CrashPoint>>,
-    mutations: u64,
-    fail_from: Option<u64>,
-    reads: u64,
-    fail_reads_from: Option<u64>,
+    mutations: Faults,
+    reads: Faults,
 }
 
-impl Inner {
-    /// Counts one positional read; `EIO` from `SimFs::fail_reads_from`'s read on
-    fn read(&mut self, path: &Path) -> io::Result<()> {
-        let at = self.reads;
-        self.reads += 1;
-        match self.fail_reads_from.is_some_and(|from| at >= from) {
-            true => Err(io::Error::other(format!(
-                "sim: injected read EIO at read {at}: {}",
-                path.display()
-            ))),
+/// Calls of one kind so far + the call `EIO` starts at (disk gone, not flaky)
+#[derive(Debug, Default)]
+struct Faults {
+    calls: u64,
+    fail_from: Option<u64>,
+}
+
+impl Faults {
+    /// One call counted; `EIO` naming `what` (given its index) from `fail_from` on
+    fn count(&mut self, what: impl FnOnce(u64) -> String) -> io::Result<()> {
+        let at = self.calls;
+        self.calls += 1;
+        match self.fail_from.is_some_and(|from| at >= from) {
+            true => Err(io::Error::other(format!("sim: injected {}", what(at)))),
             false => Ok(()),
         }
     }
+}
 
-    /// Counts one mutating call; `EIO` from [`SimFs::fail_from`]'s op on (disk gone, not flaky)
+impl Inner {
+    /// One positional read; `EIO` from [`SimFs::fail_reads_from`]'s read on
+    fn read(&mut self, path: &Path) -> io::Result<()> {
+        self.reads.count(|at| format!("read EIO at read {at}: {}", path.display()))
+    }
+
+    /// One mutating call; `EIO` from [`SimFs::fail_from`]'s op on
     fn mutate(&mut self, op: impl FnOnce() -> String) -> io::Result<()> {
-        let at = self.mutations;
-        self.mutations += 1;
-        match self.fail_from.is_some_and(|from| at >= from) {
-            true => Err(io::Error::other(format!("sim: injected EIO at op {at}: {}", op()))),
-            false => Ok(()),
-        }
+        self.mutations.count(|at| format!("EIO at op {at}: {}", op()))
     }
 
     fn record(&mut self, op: impl FnOnce() -> String) {
@@ -465,7 +469,7 @@ impl SimFs {
     /// Mutating call `op` (0-based, [`SimFs::mutations`] order) and every later one fail with
     /// `EIO`, nothing applied (Pebble `errorfs.OnIndex`: loop `op` until a workload succeeds)
     pub fn fail_from(&self, op: u64) {
-        self.lock_inner().fail_from = Some(op);
+        self.lock_inner().mutations.fail_from = Some(op);
     }
 
     /// `EIO` from the nth positional read on (failing disk surfacing on read)
@@ -473,12 +477,12 @@ impl SimFs {
     /// - mapped reads = copies here, never fail (real disk: `SIGBUS` kills the process, untestable
     ///   in-process)
     pub fn fail_reads_from(&self, read: u64) {
-        self.lock_inner().fail_reads_from = Some(read);
+        self.lock_inner().reads.fail_from = Some(read);
     }
 
     /// Mutating calls so far (creates, writes, truncates, syncs, renames, removes)
     pub fn mutations(&self) -> u64 {
-        self.lock_inner().mutations
+        self.lock_inner().mutations.calls
     }
 
     /// Same image after a process exit (volatile state kept, no power loss), healthy again
