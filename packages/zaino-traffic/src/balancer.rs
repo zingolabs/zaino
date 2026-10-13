@@ -41,7 +41,6 @@ pub struct Trusted<S> {
 #[derive(Debug)]
 pub struct Answered<T> {
     pub value: T,
-    pub from: MemberId,
     pub ticket: Ticket,
 }
 
@@ -408,7 +407,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
                             let (class, open_for) = (class.label(), opened.elapsed());
                             info!(class, ?open_for, from = ?ticket.member, "Stalled ask answered");
                         }
-                        return Ok(Answered { value, from: ticket.member, ticket });
+                        return Ok(Answered { value, ticket });
                     }
                     Event::Unanswered => {
                         open.ended = true;

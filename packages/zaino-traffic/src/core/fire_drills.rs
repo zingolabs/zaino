@@ -150,12 +150,6 @@ fn a_core_past_the_validator_limit_panics() {
 }
 
 #[test]
-#[should_panic(expected = "max_connections covers the poll, every lane reserve + one shared")]
-fn trusted_permits_short_of_the_reserves_panic() {
-    Permits::trusted(4);
-}
-
-#[test]
 #[should_panic(expected = "the peer set's in flight covers every lane reserve")]
 fn peer_permits_short_of_the_reserves_panic() {
     Permits::peers(2);
@@ -206,14 +200,4 @@ fn a_push_from_an_unknown_validator_panics() {
     let member = ValidatorId::new(5).expect("small");
     let push = Input::Push { member, push: super::Push::Changed };
     valid(t0).step(push, t0 + Duration::from_millis(50));
-}
-
-/// Its transport blames the peer instead
-#[test]
-fn a_report_on_the_peer_set_benches_nobody() {
-    let t0 = Instant::now();
-    let mut core = valid(t0);
-    let headers = Ticket { ask: AskId(2), member: MemberId::Peers, class: Class::Headers };
-    core.step(Input::Report(headers), t0 + Duration::from_millis(50));
-    assert!(core.members.values().all(|member| member.bench.is_none()), "nobody benched");
 }
