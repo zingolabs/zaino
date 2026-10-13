@@ -318,9 +318,11 @@ mod tests {
             async move {
                 use http_body_util::BodyExt as _;
                 let response = response.await.expect("router answers");
-                let code = Status::from_header_map(response.headers()).map(|s| s.code());
+                // refusal = Trailers-Only (headers); an answer = status in its trailers
+                let headed = Status::from_header_map(response.headers()).map(|s| s.code());
                 let body = response.into_body().collect().await.expect("body");
                 let trailers = body.trailers().cloned().unwrap_or_else(HeaderMap::new);
+                let code = headed.or_else(|| Status::from_header_map(&trailers).map(|s| s.code()));
                 (code, body.to_bytes(), trailers)
             }
         };

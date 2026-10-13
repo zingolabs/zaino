@@ -432,23 +432,21 @@ mod tests {
         let mut router =
             dispatch(Routes { snapshots: snapshot(&chain, tip, vec![compact]), ..routes() });
 
-        async fn body_of(response: Response<Body>) -> bytes::Bytes {
-            response.into_body().collect().await.expect("body").to_bytes()
-        }
-
         let id = proto::BlockId { height: 3, hash: Vec::new() };
         let response = router
             .call(framed_request(path::GET_BLOCK, id.encode_to_vec().into()))
             .await
             .expect("router answers");
-        assert_eq!(response.headers().get("grpc-status"), Some(&HeaderValue::from_static("0")));
-
-        let body = body_of(response).await;
+        // unary too: a body + `grpc-status` in headers = malformed Trailers-Only (grpc-go refuses)
+        assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
+        let (records, trailing) = drained(response).await;
+        assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")), "unary");
+        let body = records.concat();
         let decoded = cf::CompactBlock::decode(&body[FRAME_HEADER..]).expect("one framed message");
         assert_eq!(decoded.height, 3);
         assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
 
-        // Data frames, then trailers (streamed `grpc-status` = trailers only: undrained = none)
+        // Data frames, then trailers (`grpc-status` = trailers only: undrained = none)
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
             let mut body = std::pin::pin!(response.into_body());
             let mut chunks = Vec::new();

@@ -323,9 +323,12 @@ mod tests {
         tokio::spawn(balancing.run(tokio_util::sync::CancellationToken::new()));
         let mut router = dispatch(routes);
 
+        // A unary answer: data, then `OK` trailers (status in headers beside a body = malformed)
         async fn body_of(response: Response<Body>) -> bytes::Bytes {
-            use http_body_util::BodyExt as _;
-            response.into_body().collect().await.expect("body").to_bytes()
+            assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
+            let (chunks, trailing) = drained(response).await;
+            assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")), "unary");
+            chunks.concat().into()
         }
 
         async fn drained(response: Response<Body>) -> (Vec<bytes::Bytes>, HeaderMap) {
@@ -361,7 +364,6 @@ mod tests {
             ))
             .await
             .expect("router answers");
-        assert_eq!(response.headers().get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let list =
             proto::GetAddressUtxosReplyList::decode(&body_of(response).await[FRAME_HEADER..])
                 .expect("one framed message");
@@ -572,8 +574,9 @@ mod tests {
             ))
             .await
             .expect("router answers");
-        let status = response.headers().get("grpc-status");
-        assert_eq!(status, Some(&HeaderValue::from_static("0")), "own network's encoding answers");
+        let body = http_body_util::BodyExt::collect(response.into_body()).await.expect("body");
+        let status = body.trailers().and_then(|trailers| trailers.get("grpc-status").cloned());
+        assert_eq!(status, Some(HeaderValue::from_static("0")), "own network's encoding answers");
 
         for (path, request) in every_method(&testnet) {
             let response =

@@ -4,7 +4,6 @@
 use std::fmt;
 
 use http::{HeaderMap, HeaderValue, Response};
-use http_body_util::Full;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::Pools;
 use zaino_primitives::types::Height;
@@ -159,19 +158,12 @@ pub(super) mod request_limit {
     pub(super) const DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 }
 
-/// Unary response, body = one already-framed record
+/// Unary response, body = one already-framed record, then `OK` trailers
 ///
-/// - `grpc-status` in headers (legal: body complete when headers written → one write, the point
-///   of wire-shaped records; streams can't, [`streamed_response`])
+/// - never `grpc-status` in headers beside a body (= Trailers-Only, body forbidden: grpc-go,
+///   grpc-java, grpcio fail it "closed the stream without sending trailers"; tonic tolerates it)
 pub(super) fn unary_response(record: bytes::Bytes) -> Response<Body> {
-    let mut response = Response::new(Body::new(Full::new(record)));
-
-    response
-        .headers_mut()
-        .insert(http::header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
-    response.headers_mut().insert("grpc-status", HeaderValue::from_static("0"));
-
-    response
+    streamed_response(vec![record])
 }
 
 /// Final `grpc-status` trailers, as tonic's encoder emits them

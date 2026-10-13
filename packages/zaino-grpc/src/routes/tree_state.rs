@@ -459,9 +459,14 @@ mod tests {
             ..routes()
         });
 
+        // A unary answer: data, then `OK` trailers (status in headers beside a body = malformed)
         async fn tree_state_of(response: Response<Body>) -> proto::TreeState {
             use http_body_util::BodyExt as _;
-            let body = response.into_body().collect().await.expect("body").to_bytes();
+            assert_eq!(response.headers().get("grpc-status"), None, "unary status in headers");
+            let body = response.into_body().collect().await.expect("body");
+            let status = body.trailers().and_then(|trailers| trailers.get("grpc-status").cloned());
+            assert_eq!(status, Some(HeaderValue::from_static("0")), "unary");
+            let body = body.to_bytes();
             proto::TreeState::decode(&body[FRAME_HEADER..]).expect("one framed message")
         }
 
@@ -472,7 +477,6 @@ mod tests {
             ))
             .await
             .expect("router answers");
-        assert_eq!(response.headers().get("grpc-status"), Some(&HeaderValue::from_static("0")));
 
         let state = tree_state_of(response).await;
         assert_eq!(state.height, 0);

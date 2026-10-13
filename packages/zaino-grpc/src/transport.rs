@@ -570,11 +570,12 @@ mod tests {
         assert!(!closed.is_finished(), "the in-flight stream holds the connection open");
         request.send_data(Bytes::new(), true).expect("request ended");
         let response = response.await.expect("answered");
-        let status = response.headers().get("grpc-status").map(|value| value.as_bytes());
-        assert_eq!(status, Some(&b"0"[..]), "answered OK (unary: status in the headers)");
         let mut body = response.into_body();
         let balance = body.data().await.expect("one message").expect("readable");
         assert!(!balance.is_empty(), "the balance");
+        let trailers = body.trailers().await.expect("trailers").expect("unary: status trails");
+        let status = trailers.get("grpc-status").map(|value| value.as_bytes());
+        assert_eq!(status, Some(&b"0"[..]), "answered OK");
         let (_, lived) =
             tokio::time::timeout(second, closed).await.expect("closed").expect("joins");
         assert!(lived < Duration::from_secs(3), "closed once the stream ended: {lived:?}");
