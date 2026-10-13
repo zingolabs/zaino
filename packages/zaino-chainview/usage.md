@@ -158,12 +158,15 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 - Precheck (skipped before a verified best exists): undecodable → `Rejected` code −22; expired
   (`next height > expiry`, expiry 0 = none) or wrong v5+ branch → `Rejected` code −25.
-- `SubmitError::Rejected` = the first trusted rejection; `SubmitError::Unreachable { attempted,
-  cause }` = never accepted, no rejection (cause = the last push failure).
-- Candidate lists are taken once at job start: peers = `ValidatorP2pSource::entries(tip)`, trusted
-  = `TrafficBalancer::entries()` (`Live`, not benched).
-- A trusted entry's own listing counts for acceptance, not for spread; once a trusted validator
-  was tried, spread through peers needs ≥ 2 outside listers (its p2p address is unknown).
+- Check: `TrafficBalancer::check_admission` on `entries()` ∩ `held_by()`, shuffled; the first
+  `CheckAdmissionError::Refused` = `SubmitError::Rejected` at once (outcome `rejected`, 0
+  attempts), the first `Ok` = the answer; `Unsupported` / no answer = the next.
+- `SubmitError::Rejected` = the check's refusal, else the first trusted rejection;
+  `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
+  push failure).
+- Job inputs, taken once at its start: peers = `ValidatorP2pSource::live()` non-empty, trusted =
+  `TrafficBalancer::entries()` (`Live`, not benched), checked = the check admitted it.
+- A trusted entry's own listing counts for acceptance, not for spread.
 - Job end: `spread`, `unconfirmed`, `rejected`, `unreachable`. Nothing ties it to mining or expiry.
 - `SubmitPolicy { propagation_threshold, max_attempts }` = 15 s, 4; zainod sets it from
   `[submission]`.
@@ -171,7 +174,8 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 ## Ports
 
 - Validators: members of a `zaino_traffic::TrafficBalancer<S: ChainDataSource>`. The view folds
-  their polls (`observe`), asks `bytes(..)` and `submit(..)`; header sync asks `headers(..)`.
+  their polls (`observe`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`; header sync
+  asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
 - `ValidatorP2pSource` (`dyn`, given by `with_peers`):
 
@@ -179,8 +183,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 |---|---|
 | `heard()` | a fresh stream of every block `inv` (`Heard { peer, hash }`) |
 | `live()` | connected outbound peers (each one's mempool polled) |
-| `entries(tip)` | submission entry candidates: live, on a protocol accepted at `tip` |
-| `push(entry, raw)` | one isolated push; `Ok` = delivered (a peer answers nothing) |
+| `push(raw)` | one relay to ~⅓ of them, unattributed; `Ok` = delivered (a peer answers nothing) |
 | `mempool(peer)` | `peer`'s whole mempool, that peer alone answering (`PeerTxId`s) |
 | `transactions(ids)` | each id's bytes in order (`None` = no peer supplied it) |
 
@@ -216,14 +219,14 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
   `zaino_source::testing::MockValidator`:
 
 ```rust,ignore
-let peers = Arc::new(MockPeers::new(live, dead));     // dead entries refuse a push or a listing
+let peers = Arc::new(MockPeers::new(live, dead));     // dead refuse a listing; no live = no relay
 let view = view.with_peers(peers.clone());
 let utxos = Arc::new(MockUtxos::of([(outpoint, value)]));
 tokio::spawn(view.peer_mempool(utxos).expect("peers").run(cancel));
 peers.hold(id, raw);                                 // bytes served for `id`
 peers.list(peer, vec![id]);                          // `peer`'s mempool from its next listing
 peers.announce_block(peer, hash);                    // one block `inv` (after peer_watch subscribed)
-let entered: Vec<SocketAddr> = peers.pushes();       // entries pushed to, in order
+let relays: usize = peers.pushes();                  // relays asked for so far
 ```
 
 - `mempool_model.rs`: the quorum against a naive oracle. Guarantee: rivals never both held with

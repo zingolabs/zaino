@@ -443,21 +443,22 @@ impl From<&LsmStoreConfig> for LsmConfig {
     }
 }
 
-/// `SendTransaction` → network: one random entry per attempt (a peer with `[p2p]` on, else a
-/// trusted validator), resubmitted through another when not spread in time
+/// `SendTransaction` → network: a trusted `checkadmission` first, then one relay per attempt
+/// (through the peers with `[p2p]` on, else a random trusted validator), again when not spread in
+/// time
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub(crate) struct SubmissionConfig {
-    /// Seconds to be seen beyond the nodes sent to, before resubmitting through another
+    /// Seconds to be seen beyond the nodes relayed to, before relaying again
     pub(crate) propagation_threshold_secs: NonZeroU64,
-    /// Max entries per transaction (with peers: one trusted validator's verdict follows when
-    /// none got it listed)
+    /// Max relays per transaction (with peers: then one trusted validator relays it, when still
+    /// unspread)
     pub(crate) max_attempts: std::num::NonZeroU8,
 }
 
 /// Zaino's own p2p peers: headers + blocks (checked, never vouched), finality on their word
 /// (> 5 netgroups, no difficulty collapse), the mempool quorum (each peer's listing polled),
-/// submission entries
+/// submission relays
 ///
 /// - Serves no peer (listener on loopback, no services advertised)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]

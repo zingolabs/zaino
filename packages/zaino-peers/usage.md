@@ -14,9 +14,7 @@ let blocks = peers.blocks_by_hash(&hashes).await?;                       // (has
 let listed = peers.mempool_of(peers.live()[0]).await?;                   // that peer's whole mempool
 let txs = peers.transactions_by_id(&listed).await?;                      // (id, Option<bytes>)
 let mut heard = peers.announcements();                                   // Announced { peer, hash }
-
-let entries = peers.entries(Some(tip));                                  // submission candidates
-let txid = peers.push_isolated(entries[0], &raw).await?;                 // the bytes' own txid
+let txid = peers.push(&raw).await?;                                      // the bytes' own txid
 ```
 
 ## Dependency
@@ -53,7 +51,8 @@ they require `NODE_NETWORK` only from peers they dial themselves, and only while
 ## Requests
 
 All go through zebra's peer set, which picks the peer (power of two choices over its
-ready peers), except `mempool_of`, which names it.
+ready peers), except `mempool_of`, which names it, and `push`, which zebra sends to
+several.
 
 | Method | Request | Returns |
 |---|---|---|
@@ -61,6 +60,7 @@ ready peers), except `mempool_of`, which names it.
 | `blocks_by_hash(hashes)` | `BlocksByHash` | `(hash, Some(bytes) / None)` in request order |
 | `mempool_of(peer)` | `MempoolTransactionIdsFrom(peer)` | that peer's whole mempool: `PeerTxId`s (txid + v5 auth digest) |
 | `transactions_by_id(ids)` | `TransactionsById` | `(id, Some(bytes) / None)` in request order |
+| `push(raw)` | `PushTransaction` | the bytes' own txid |
 
 - `mempool_of(peer)`: that peer alone answers (`mempool` → `inv`); a peer not ready
   (busy, gone, never connected) = `PeerError::Network`, never another peer's listing.
@@ -78,6 +78,12 @@ ready peers), except `mempool_of`, which names it.
   and are asked again later.
 - `PeerError::Timeout` / `Network` = the request failed (no ready peer, a transport
   error).
+- `push(raw)`: parses `raw` (zebra's parse-time checks and point rules; `PushError::Wire`
+  otherwise, nothing sent), then zebra relays it as zebrad relays its own: to ⌈ready/3⌉
+  random ready peers (all of them on regtest), over the peer set's existing connections.
+  A second connection from our IP would be dropped by a zebrad peer's one-per-IP limit.
+  Zebra names no recipient and a peer answers a push with nothing, so this is delivery,
+  not a verdict. `PushError::Peers` = no ready peer within `request_timeout`.
 
 ## Announcements: the chain each peer carries
 
@@ -93,17 +99,7 @@ Mempool membership is each peer's own listing (`mempool_of`).
 A subscriber that falls 4,096 announcements behind gets `RecvError::Lagged` and
 knows it missed some.
 
-## Submission entries and the isolated push
-
-- `live()`: outbound peers live in the last few minutes (the ones the chain view polls)
-- `entries(tip)`: the live ones whose negotiated protocol version zebra accepts at
-  `tip` (`Version::min_remote_for_height`). Which one an attempt goes to, and the
-  one-netgroup-per-attempt rule, is `zaino-chainview`'s submission job
-- `push_isolated(addr, raw)`: parses `raw` (zebra's parse-time checks and point
-  rules), opens a fresh `connect_isolated_tcp_direct` connection to `addr` sharing no
-  state with the peer set, sends `PushTransaction`, and closes it. It returns the
-  bytes' own txid. A peer answers a push with nothing, so this is delivery, not a
-  verdict. Errors: `Wire` (never connected), `Connect`, `Push`, `Timeout`
+`live()`: outbound peers live in the last few minutes (the ones the chain view polls).
 
 ## Tests
 
@@ -113,6 +109,6 @@ knows it missed some.
   for one of them. It admits Zaino and records it with no services. Headers and blocks
   arrive byte-identical, its mempool asked by address lists its three ids (a stranger's
   = a failure), the lie never labels the asked id, a transaction `inv` is ignored and a
-  block `inv` arrives attributed to the sender, and a push lands byte-identical at
-  exactly the chosen address
+  block `inv` arrives attributed to the sender. A push lands byte-identical at a peer
+  the peer set already holds; without a ready peer it fails
 - Real mainnet blocks 1 and 1,687,107 round-trip through every wire conversion

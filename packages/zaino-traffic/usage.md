@@ -54,7 +54,7 @@ Every answer is `Answered { value, from, ticket }`: `from` names the member that
 | `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
 | `transaction(txid)` | `Lookup` (interactive) | trusted only, absent → next | unanswered once every one is tried |
-| `submit(member, raw)` | `Submit` (control) | that trusted member only | one attempt |
+| `submit(member, raw)` / `check_admission(member, raw)` | `Submit` (control) | that trusted member only | one attempt (`sendrawtransaction` / `checkadmission`) |
 
 - Within the best tier with room: the route's preferred member, else the least in flight (ties:
   configured order). A freed permit goes to the control lane first, then interactive, then bulk.

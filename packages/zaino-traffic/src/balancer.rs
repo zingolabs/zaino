@@ -18,9 +18,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
 use zaino_source::{
-    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError,
-    GetTransactionError, MempoolListed, NonDomainError, PollReading, QueryError,
-    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
+    GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
+    QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 
 use crate::class::Class;
@@ -291,11 +291,37 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         member: ValidatorId,
         raw: Vec<u8>,
     ) -> Result<Answered<TransactionId>, Unanswered<SendRawTransactionError>> {
-        let shared = Arc::clone(&self.shared);
-        let send = move |to| {
-            let (source, raw) = (shared.trusted_only(to), raw.clone());
+        self.on_alone(member, move |source| {
+            let raw = raw.clone();
             async move { source.send_raw_transaction(raw).await }.boxed()
-        };
+        })
+        .await
+    }
+
+    /// `checkadmission` on `member` alone: the send's verdict, nothing relayed; one attempt
+    pub async fn check_admission(
+        &self,
+        member: ValidatorId,
+        raw: Vec<u8>,
+    ) -> Result<Answered<TransactionId>, Unanswered<CheckAdmissionError>> {
+        self.on_alone(member, move |source| {
+            let raw = raw.clone();
+            async move { source.check_admission(raw).await }.boxed()
+        })
+        .await
+    }
+
+    /// A `Submit`-class ask of trusted `member` alone
+    async fn on_alone<T, E>(
+        &self,
+        member: ValidatorId,
+        ask: impl Fn(Arc<S>) -> BoxFuture<'static, Result<T, QueryError<E>>>,
+    ) -> Result<Answered<T>, Unanswered<E>>
+    where
+        E: fmt::Debug + fmt::Display,
+    {
+        let shared = Arc::clone(&self.shared);
+        let send = move |to| ask(shared.trusted_only(to));
         self.ask(Class::Submit, Route::Only(MemberId::Trusted(member)), send).await
     }
 

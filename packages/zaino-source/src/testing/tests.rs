@@ -97,7 +97,8 @@ async fn a_validator_serves_its_best_chain_reorgs_mid_poll_and_lies_as_scripted(
 /// Paused clock, one validator at height 1:
 /// - mempool: inserted at its stated fee, a relayed tx at the fee its bytes leave, a mined or
 ///   evicted tx gone
-/// - verdicts: an unknown input refused, a scripted refusal, garbage = `Malformed`
+/// - verdicts: an unknown input refused, a scripted refusal, garbage = `Malformed`; a check =
+///   the send's verdict, nothing listed
 /// - listing refusal, metadata timeouts, the estimate; latency + reachability per port; injected
 ///   failures; every call counted
 #[tokio::test(start_paused = true)]
@@ -109,9 +110,14 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     let (listed, listed_raw) = raw_transaction(1, 0);
     assert_eq!(validator.mempool_insert(listed_raw.clone(), 2_000), listed);
     let (sent, sent_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
-    assert_eq!(validator.send_raw_transaction(sent_raw.clone()).await.expect("relayed"), sent);
     let fee = |zats: u64| Zatoshis::new(zats).expect("in supply");
     let len = |raw: &[u8]| u32::try_from(raw.len()).expect("a small transaction");
+    assert_eq!(validator.check_admission(sent_raw.clone()).await.expect("admissible"), sent);
+    let checked = validator.get_poll_reading(false, &[]).await.expect("reachable").listing;
+    let only_listed =
+        MempoolListed { txid: listed, fee: fee(2_000), encoded_len: len(&listed_raw) };
+    assert_eq!(checked, Ok(vec![only_listed]), "a check lists nothing");
+    assert_eq!(validator.send_raw_transaction(sent_raw.clone()).await.expect("relayed"), sent);
     let mut both = vec![
         MempoolListed { txid: listed, fee: fee(2_000), encoded_len: len(&listed_raw) },
         MempoolListed { txid: sent, fee: fee(1_000), encoded_len: len(&sent_raw) },
@@ -138,6 +144,16 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
         SendRawTransactionError::Rejected { code: -25, message: "fee too low".into() };
     validator.relay(Err(fee_too_low));
     assert!(rejected(validator.send_raw_transaction(raw_transaction(3, 0).1).await, "fee too low"));
+    let checked = validator.check_admission(raw_transaction(3, 0).1).await;
+    let send_verdict = |refused: &SendRawTransactionError| refused.message() == "fee too low";
+    assert!(
+        matches!(&checked, Err(QueryError::Domain(CheckAdmissionError::Refused(r))) if send_verdict(r)),
+        "the send's verdict: {checked:?}"
+    );
+    validator.checks_admission(false);
+    let unsupported = validator.check_admission(raw_transaction(3, 0).1).await;
+    assert!(matches!(unsupported, Err(QueryError::Domain(CheckAdmissionError::Unsupported))));
+    validator.checks_admission(true);
     validator.relay(Ok(()));
     let garbage = validator.send_raw_transaction(vec![9; 8]).await;
     assert!(matches!(garbage, Err(QueryError::Domain(SendRawTransactionError::Malformed(_)))));
@@ -191,5 +207,6 @@ async fn a_validators_mempool_relay_metadata_and_failures_follow_the_script() {
     validator.reachable(&Port::ALL, true);
     let back = validator.send_raw_transaction(raw_transaction(4, 0).1).await;
     assert_eq!(back.expect("reachable again on every port"), raw_transaction(4, 0).0);
-    assert_eq!(validator.calls(), Calls { polls: 7, links: 4, blocks: 0, sends: 6 });
+    let calls = Calls { polls: 8, links: 4, blocks: 0, sends: 6, checks: 3 };
+    assert_eq!(validator.calls(), calls);
 }

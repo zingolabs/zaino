@@ -77,7 +77,7 @@ counts until Zaino has checked it.
 | Mempool                 | ✓ (listing + fees)            | ✓ (quorum of listings)                 | txid recomputed; §5                       |
 | Mined tx by id          | ✓ **only source**             | —                                      | txid recomputed                           |
 | Finality                | ✓ (vouch)                     | ✓ (> 5 netgroups, no difficulty drop)  | §4                                        |
-| Submission              | verdict                       | ✓ entries (random)                     | §6                                        |
+| Submission              | ✓ check (`checkadmission`)    | ✓ relays (zebra's, ~⅓ of peers)        | §6                                        |
 
 **Why peers never decide the tip.** A peer count proves nothing an attacker cannot buy: anyone can
 run ninety. Proof of work costs real mining however many peers present it. So peers are safe
@@ -169,32 +169,40 @@ peers, once, so silence means nothing.
 
 ## 6. Submission
 
-`SendTransaction` submits through **one random entry at a time** and watches the transaction
-spread. Sending every wallet transaction through the same validators would tell any observer
-which transactions came through Zaino, and let one validator censor every wallet behind it. The
-rule is Dandelion++'s originator with its fail-safe timer.
+`SendTransaction` asks one trusted validator for a **verdict without a broadcast**, answers the
+wallet from it, then **relays through the peers** and watches the transaction spread. Relaying
+every wallet transaction through the same validators would tell any observer which transactions
+came through Zaino, and let one validator censor every wallet behind it. The relay follows
+Dandelion++'s originator with its fail-safe timer.
 
 ```text
 precheck (nothing contacted): decodes (-22); expiry ≥ next block, v5+ branch = next block's (-25)
-attempt: peer entry — random, untried, netgroup unused — fresh isolated connection, push, close
-         then trusted entries (sendrawtransaction) when peers run out, or as the verdict
-accepted = trusted sendrawtransaction Ok | any trusted listing | peer quorum admits it
-         → wallet answered Ok(txid); transaction becomes `ours` (servable)
-no acceptance within propagation_threshold → next attempt, up to max_attempts
-never accepted → one trusted verdict push; wallet gets its rejection, else UNAVAILABLE
+check: checkadmission on a random Live trusted validator holding the verified best
+       refused → wallet gets that refusal at once, nothing relayed
+       admissible → wallet answered Ok(txid) at once; transaction becomes `ours` (servable)
+       unsupported / unanswered → next holder; none → unchecked (below)
+attempt: peers — zebra's own relay, PushTransaction to ⌈ready/3⌉ random ready peers
+         (no peers: a random untried trusted validator, sendrawtransaction)
+unseen past propagation_threshold → next attempt, up to max_attempts
+then, still unspread: one trusted sendrawtransaction (the fail-safe)
+unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer quorum);
+           never accepted → that trusted push is the verdict; else UNAVAILABLE
 ```
 
-- A peer push gets no reply, so only a trusted `sendrawtransaction` can reject. A rejection is
-  returned to the wallet as gRPC `OK` carrying the validator's code and message.
-- An entry's own listing never counts as spread (a black-holing entry can keep it to itself).
-- After acceptance the job keeps pushing fresh entries until a non-entry source lists the
-  transaction (`spread`), nothing outside the entries can be watched, or attempts run out
-  (`unconfirmed`).
+- `checkadmission` (Zaino's zebra fork) runs `sendrawtransaction`'s checks, the fee policy and
+  mempool conflicts included, without admitting or relaying: a refusal reaches the wallet in one
+  call. It goes to a holder of the verified best only (a validator behind it refuses what spends a
+  fresh output). A refusal is returned as gRPC `OK` carrying the validator's code and message.
+- A validator without `checkadmission` (zcashd, stock zebrad) answers `-32601`: taken as its
+  answer, never a failure (it stays `Live`), and the next holder is asked.
+- A peer relay gets no reply and zebra names no recipient. **Spread** = a trusted validator never
+  pushed to lists it, or a peer quorum admits it (> 2/3 of fresh listings: past the ~⅓ one relay
+  reaches). The job ends at spread, when nothing outside its trusted entries can be watched, or
+  when attempts run out (`unconfirmed`).
+- Relays ride the peer set's existing connections: a zebrad peer drops a second connection from
+  our IP, so a fresh connection per push would never deliver.
 - `[p2p]` off: every attempt is a trusted `sendrawtransaction`.
 - `[submission]`: `propagation_threshold_secs = 15`, `max_attempts = 4` (defaults).
-
-Peer pushes use `zebra_network::connect_isolated_tcp_direct`: no address book, no shared state,
-nothing linking attempts to each other or to Zaino's standing peers.
 
 ## 7. Indexing
 

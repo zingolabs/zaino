@@ -15,6 +15,7 @@ what its test asks and `unimplemented!()`s the rest.
 | `get_raw_mempool_transactions(listed)` | `getrawtransaction <txid> 0`, batched | JSON-RPC, as legacy | bytes per entry |
 | `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
 | `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
+| `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, `CheckAdmissionError::Refused` (the send's verdict), or `Unsupported` (`-32601`: zcashd, stock zebrad) |
 
 ## Building a client: one per validator
 
@@ -160,7 +161,8 @@ let txid = validator.mempool_insert(raw, 2_000);     // listed from the next pol
 validator.mempool_remove(txid);                      // evicted: unlisted from the next poll
 validator.listing(Err(GetMempoolListingError::Inactive));
 let fee = SendRawTransactionError::Rejected { code: -26, message: "fee".into() };
-validator.relay(Err(fee));                           // sendrawtransaction verdict
+validator.relay(Err(fee));                           // sendrawtransaction + checkadmission verdict
+validator.checks_admission(false);                   // checkadmission = Unsupported (zcashd)
 validator.metadata(None, Some(release));             // peers read times out
 validator.latency(&[Port::Block], Duration::from_secs(2)); // before each answer there (tokio::time)
 validator.fail_next(2, FailureMode::Timeout);         // any port
@@ -168,7 +170,7 @@ validator.reachable(&[Port::Send], false);           // refused in transport the
 validator.lie(Some(Lie::Poisoned));                  // WrongBlock | Poisoned | Mutated | WrongHeight
 let served = Lie::Mutated.told(&honest);             // the same shape, no validator (sans-IO models)
 validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
-assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1 });
+assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1, checks: 0 });
 let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
 let (txid, raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]); // a real spend
 chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: get_transaction serves them

@@ -1,32 +1,27 @@
-//! Submission: one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
+//! Submission: relayed by attempts, watched until it spreads (`docs/architecture.md` §6)
 //!
 //! ```text
-//!   step ─▶ Push(peer: untried, netgroup unused, random)   while budget left + not spread
-//!     │     Push(trusted: untried, random)                  peers gone / spread / verdict due
+//!   step ─▶ Push(Peers: zebra's relay to ~⅓ of the peers)  while budget left
+//!     │     Push(Trusted: untried, random)                 no peers, or past the budget once
 //!     │        accepted / delivered ─▶ Wait(push + threshold) ─▶ spread? done : next attempt
 //!     │        rejected / unreachable ─▶ next attempt at once
 //!     └─▶ Done: spread │ accepted, nothing left to observe │ rejected │ unreachable │ exhausted
 //! ```
 //!
 //! - pure: time and observations come in, steps go out (the driver in `view.rs` executes them)
-//! - peers first (no trusted validator sees a transaction first); a peer answers with nothing,
-//!   so a trusted validator's `sendrawtransaction` = the verdict, one push past the budget
-//! - wallet answer = first acceptance (a trusted entry's, or any trusted listing); a rejection or
-//!   a failure only once every attempt is spent (one validator's refusal may be local policy)
-//! - Dandelion++'s originator rule (one stem hop picked by the sender) + its fail-safe timer
+//! - `checked` = a trusted `checkadmission` accepted it first (the wallet's answer, already given)
+//! - peers first: a trusted validator relays it only past the budget, unspread (Dandelion++'s
+//!   fail-safe); unchecked, that one trusted push = the verdict (a peer answers with nothing)
 
-use std::net::SocketAddr;
 use std::num::NonZeroU8;
 use std::time::Duration;
 
-use imbl::OrdSet;
 use tokio::time::Instant;
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
 use zaino_traffic::ValidatorId;
 
 use crate::endpoints::EndpointSet;
-use crate::netgroup::Netgroup;
 
 /// How hard Zaino pushes one transaction into the network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,14 +39,14 @@ impl Default for SubmitPolicy {
     }
 }
 
-/// Where one attempt goes
+/// Where one attempt goes (`Peers` = zebra picks them, names none)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Entry {
-    Peer(SocketAddr),
+    Peers,
     Trusted(ValidatorId),
 }
 
-/// One push's answer: `Accepted` = trusted validator admitted it; `Delivered` = a peer took the
+/// One push's answer: `Accepted` = trusted validator admitted it; `Delivered` = the peers took the
 /// bytes (a peer answers nothing either way)
 #[derive(Debug)]
 pub(crate) enum Pushed {
@@ -64,8 +59,10 @@ pub(crate) enum Pushed {
 /// What the view shows of the transaction now
 ///
 /// - `listed` = a trusted validator lists it, or a peer quorum admitted it (each verified it)
-/// - `spread` = some source never an entry has it
-/// - `observable` = some source never an entry is being read (else spread = unknowable)
+/// - `spread` = a trusted validator never pushed to lists it, or a peer quorum (> 2/3 of fresh
+///   listings: past the ~⅓ one relay reaches)
+/// - `observable` = a trusted validator never pushed to is read, or the peers are quorate (else
+///   spread = unknowable)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Seen {
     pub(crate) listed: bool,
@@ -74,34 +71,25 @@ pub(crate) struct Seen {
 }
 
 impl Seen {
-    /// `listing` ⊆ `readers`; `quorum` = a peer quorum admitted it; `listers` = peers whose
-    /// mempool lists it, of `polled`
-    ///
-    /// - a peer entry's own listing = nothing (a black hole can keep it to itself)
-    /// - trusted entry's p2p address unknown: once one tried, peers need two listers
+    /// `listing` ⊆ `readers`; `quorum` = a peer quorum admitted it; `quorate` = the peers'
+    /// listings can make one
     pub(crate) fn of(
         listing: EndpointSet,
         quorum: bool,
         readers: EndpointSet,
-        listers: &OrdSet<SocketAddr>,
-        polled: &OrdSet<SocketAddr>,
+        quorate: bool,
         tried: &[Entry],
     ) -> Self {
         let mut tried_trusted = EndpointSet::default();
-        let mut tried_peers = OrdSet::new();
         for entry in tried {
-            match *entry {
-                Entry::Trusted(index) => tried_trusted.insert(index),
-                Entry::Peer(addr) => drop(tried_peers.insert(addr)),
+            if let Entry::Trusted(index) = *entry {
+                tried_trusted.insert(index);
             }
         }
-        let needed = if tried_trusted.is_empty() { 1 } else { 2 };
-        let outsiders = listers.iter().filter(|peer| !tried_peers.contains(*peer)).count();
         Self {
             listed: !listing.is_empty() || quorum,
-            spread: !listing.without(tried_trusted).is_empty() || outsiders >= needed,
-            observable: !readers.without(tried_trusted).is_empty()
-                || polled.iter().any(|peer| !tried_peers.contains(peer)),
+            spread: !listing.without(tried_trusted).is_empty() || quorum,
+            observable: !readers.without(tried_trusted).is_empty() || quorate,
         }
     }
 }
@@ -128,10 +116,9 @@ pub(crate) enum Ended {
 pub(crate) struct Job {
     policy: SubmitPolicy,
     rng: fastrand::Rng,
-    peers: Vec<SocketAddr>,
+    peers: bool,
     trusted: Vec<ValidatorId>,
     tried: Vec<Entry>,
-    used: Vec<Netgroup>,
     deadline: Option<Instant>,
     accepted: bool,
     rejection: Option<SendRawTransactionError>,
@@ -140,10 +127,12 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    /// `peers` = entry candidates (none = trusted entries only, the pre-peers form)
+    /// `peers` = live peers to relay through (none = trusted entries only); `checked` = a trusted
+    /// `checkadmission` accepted it
     pub(crate) fn new(
-        peers: Vec<SocketAddr>,
+        peers: bool,
         trusted: Vec<ValidatorId>,
+        checked: bool,
         policy: SubmitPolicy,
         rng: fastrand::Rng,
     ) -> Self {
@@ -153,9 +142,8 @@ impl Job {
             peers,
             trusted,
             tried: Vec::new(),
-            used: Vec::new(),
             deadline: None,
-            accepted: false,
+            accepted: checked,
             rejection: None,
             failure: None,
             ended: false,
@@ -167,18 +155,21 @@ impl Job {
         &self.tried
     }
 
-    /// `true` once a trusted validator accepted or lists it (the wallet's answer)
+    /// `true` once checked, or a trusted validator accepted or lists it (the wallet's answer)
     pub(crate) fn accepted(&self) -> bool {
         self.accepted
     }
 
     /// Next move, given what the view shows at `now`
+    ///
+    /// - never done unpushed while unspread (a checked transaction is still relayed)
     pub(crate) fn step(&mut self, now: Instant, seen: Seen) -> Step {
         if self.ended {
             return Step::Done;
         }
         self.accepted |= seen.listed;
-        if self.accepted && (seen.spread || !seen.observable) {
+        let unobservable = !self.tried.is_empty() && !seen.observable;
+        if self.accepted && (seen.spread || unobservable) {
             return self.end();
         }
         if let Some(deadline) = self.deadline {
@@ -188,14 +179,11 @@ impl Job {
             self.deadline = None;
         }
         let budget = self.tried.len() < usize::from(self.policy.max_attempts.get());
-        if budget && !seen.spread {
-            if let Some(peer) = self.sample_peer() {
-                return self.push(Entry::Peer(peer));
-            }
+        if budget && self.peers {
+            return self.push(Entry::Peers);
         }
         let tried_trusted = self.tried.iter().any(|entry| matches!(entry, Entry::Trusted(_)));
-        let verdict_due = !self.accepted && !tried_trusted;
-        if (budget || verdict_due) && !self.trusted.is_empty() {
+        if (budget || !tried_trusted) && !self.trusted.is_empty() {
             let index = self.trusted.swap_remove(self.rng.usize(..self.trusted.len()));
             return self.push(Entry::Trusted(index));
         }
@@ -227,19 +215,6 @@ impl Job {
         }
     }
 
-    /// Uniform over untried peers outside every used netgroup
-    fn sample_peer(&mut self) -> Option<SocketAddr> {
-        let open: Vec<usize> = (0..self.peers.len())
-            .filter(|&at| !self.used.contains(&Netgroup::of(self.peers[at])))
-            .collect();
-        if open.is_empty() {
-            return None;
-        }
-        let peer = self.peers.swap_remove(open[self.rng.usize(..open.len())]);
-        self.used.push(Netgroup::of(peer));
-        Some(peer)
-    }
-
     fn push(&mut self, entry: Entry) -> Step {
         self.tried.push(entry);
         Step::Push(entry)
@@ -253,8 +228,7 @@ impl Job {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-    use std::net::Ipv4Addr;
+    use std::collections::BTreeMap;
 
     use proptest::prelude::*;
 
@@ -263,14 +237,13 @@ mod tests {
     /// One simulated node's behaviour toward the transaction
     ///
     /// - `Relays` = gossips to every honest node after `delay_ms`
-    /// - `BlackHoles` = never gossips; `Echoes` (peer) = never gossips, lists it to us alone
+    /// - `BlackHoles` = never gossips (a peer: still lists it once pushed to)
     /// - `Rejects` (trusted) = domain rejection (stricter local policy, or a bad tx for it)
     /// - `Unread` (trusted) = running, mempool not read (catching up, down)
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Node {
         Relays { delay_ms: u64 },
         BlackHoles,
-        Echoes,
         Rejects,
         Unreachable,
         Unread,
@@ -290,34 +263,38 @@ mod tests {
         prop_oneof![
             4 => (0u64..30_000).prop_map(|delay_ms| Node::Relays { delay_ms }),
             1 => Just(Node::BlackHoles),
-            1 => Just(Node::Echoes),
-            1 => Just(Node::Unreachable),
-        ]
-    }
-
-    /// Peers drawn from 3 /16s (collisions on purpose) + IPv4-mapped IPv6
-    fn peer_addr() -> impl Strategy<Value = SocketAddr> {
-        prop_oneof![
-            (0u8..3, any::<u8>(), 1u16..)
-                .prop_map(|(b, d, port)| { SocketAddr::from((Ipv4Addr::new(10, b, 0, d), port)) }),
-            (0u8..3, any::<u8>(), 1u16..).prop_map(|(b, d, port)| {
-                SocketAddr::from((Ipv4Addr::new(10, b, 1, d).to_ipv6_mapped(), port))
-            }),
         ]
     }
 
     /// Who holds the transaction at `at`, from who took it when (one gossip hop from a relaying
     /// holder reaches everyone honest; a second hop adds nobody)
+    ///
+    /// - one `Peers` push = ⌈n/3⌉ peers, the next ⌈n/3⌉ on each push (zebra samples at random)
+    /// - every peer in its own netgroup: quorate from 6 peers, quorum = > 2/3 of them hold it
     struct World {
         trusted: Vec<Node>,
-        peers: BTreeMap<SocketAddr, Node>,
-        took: BTreeMap<Entry, Instant>,
+        peers: Vec<Node>,
+        took: BTreeMap<Holder, Instant>,
+        relays: usize,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Holder {
+        Trusted(usize),
+        Peer(usize),
     }
 
     impl World {
-        fn holds(&self, entry: Entry, node: Node, at: Instant) -> bool {
-            let honest = !matches!(node, Node::Unreachable | Node::Rejects);
-            let direct = self.took.get(&entry).is_some_and(|&t| t <= at);
+        fn node(&self, holder: Holder) -> Node {
+            match holder {
+                Holder::Trusted(i) => self.trusted[i],
+                Holder::Peer(i) => self.peers[i],
+            }
+        }
+
+        fn holds(&self, holder: Holder, at: Instant) -> bool {
+            let honest = !matches!(self.node(holder), Node::Unreachable | Node::Rejects);
+            let direct = self.took.get(&holder).is_some_and(|&t| t <= at);
             let gossiped = honest
                 && self.took.iter().any(|(from, &t)| {
                     matches!(self.node(*from), Node::Relays { delay_ms }
@@ -326,11 +303,15 @@ mod tests {
             direct || gossiped
         }
 
-        fn node(&self, entry: Entry) -> Node {
-            match entry {
-                Entry::Trusted(index) => self.trusted[index.get()],
-                Entry::Peer(addr) => self.peers[&addr],
+        /// The peers the next `Peers` push reaches
+        fn relay(&mut self, at: Instant) {
+            let n = self.peers.len();
+            let third = n.div_ceil(3);
+            for k in 0..third {
+                let peer = (self.relays * third + k) % n;
+                self.took.entry(Holder::Peer(peer)).or_insert(at);
             }
+            self.relays += 1;
         }
 
         fn seen(&self, tried: &[Entry], at: Instant) -> Seen {
@@ -341,22 +322,13 @@ mod tests {
                 .collect();
             let listing: EndpointSet = readers
                 .positions()
-                .filter(|&i| self.holds(Entry::Trusted(index(i)), self.trusted[i], at))
+                .filter(|&i| self.holds(Holder::Trusted(i), at))
                 .map(index)
                 .collect();
-            let polled: OrdSet<SocketAddr> = self
-                .peers
-                .iter()
-                .filter(|(_, node)| **node != Node::Unreachable)
-                .map(|(addr, _)| *addr)
-                .collect();
-            let listers: OrdSet<SocketAddr> = polled
-                .iter()
-                .filter(|addr| self.holds(Entry::Peer(**addr), self.peers[*addr], at))
-                .copied()
-                .collect();
-            // peers span 3 /16s: never a quorum (> 5 netgroups), the trusted verdict stands
-            Seen::of(listing, false, readers, &listers, &polled, tried)
+            let quorate = self.peers.len() >= 6;
+            let holding = (0..self.peers.len()).filter(|&i| self.holds(Holder::Peer(i), at));
+            let quorum = quorate && holding.count() * 3 > self.peers.len() * 2;
+            Seen::of(listing, quorum, readers, quorate, tried)
         }
     }
 
@@ -365,19 +337,21 @@ mod tests {
 
         /// Simulated peers + trusted validators (every `Node`), virtual clock until `Done`
         ///
-        /// - privacy: any peer candidate → first entry a peer; peer entries never share a
-        ///   netgroup; no entry twice
-        /// - bounded: <= max_attempts pushes, + 1 only for the trusted verdict (none tried,
-        ///   nothing accepted); ends within (max_attempts + 1) × threshold
+        /// - privacy: with peers, the budget all relays through them; at most one trusted push,
+        ///   past the budget; no trusted validator pushed twice
+        /// - bounded: <= max_attempts pushes, + 1 only for that trusted push; ends within
+        ///   (max_attempts + 1) × threshold
         /// - patience: no push inside a delivered / accepted push's threshold; none once spread
-        ///   + accepted
-        /// - answer: accepted iff a trusted entry accepted or a trusted reader listed it;
-        ///   rejected only from a trusted rejection; unreachable only when no trusted answered
+        ///   + accepted; a checked transaction pushed at least once
+        /// - answer: accepted iff checked, a trusted entry accepted or it was listed; rejected only
+        ///   from a trusted rejection; unreachable only when no trusted validator answered
         /// - fast honest relay pushed + honest reader outside the entries = spread
         #[test]
-        fn a_job_samples_peers_first_waits_out_each_threshold_and_ends_on_a_trusted_verdict(
+        fn a_job_relays_through_peers_first_waits_out_each_threshold_and_ends_on_a_trusted_verdict(
             trusted in prop::collection::vec(trusted_node(), 1..5),
-            peers in prop::collection::btree_map(peer_addr(), peer_node(), 0..8),
+            peers in prop::collection::vec(peer_node(), 0..9),
+            peers_up in any::<bool>(),
+            checked in any::<bool>(),
             threshold_ms in 1_000u64..20_000,
             max_attempts in 1u8..6,
             seed in any::<u64>(),
@@ -389,10 +363,13 @@ mod tests {
             let index = |i: usize| ValidatorId::new(i).expect("< MAX");
             let start = Instant::now();
             let mut now = start;
-            let mut world = World { trusted: trusted.clone(), peers: peers.clone(), took: BTreeMap::new() };
+            let mut world =
+                World { trusted: trusted.clone(), peers: peers.clone(), took: BTreeMap::new(), relays: 0 };
+            let has_peers = !peers.is_empty();
             let mut job = Job::new(
-                peers.keys().copied().collect(),
+                has_peers,
                 (0..trusted.len()).map(index).collect(),
+                checked,
                 policy,
                 fastrand::Rng::with_seed(seed),
             );
@@ -403,25 +380,31 @@ mod tests {
                 listed_ever |= observed.listed;
                 match job.step(now, observed) {
                     Step::Push(entry) => {
-                        prop_assert!(!pushes.iter().any(|(_, e, _)| *e == entry), "entry reused");
                         if let Some((at, _, waits)) = pushes.last() {
                             prop_assert!(!*waits || now >= *at + policy.propagation_threshold,
                                 "resubmitted inside the threshold");
                         }
                         prop_assert!(!(observed.spread && job.accepted()), "pushed after spreading");
-                        let outcome = match (entry, world.node(entry)) {
-                            (_, Node::Unreachable) => Pushed::Unreachable(NonDomainError::new(
-                                zaino_source::FailureMode::Connection, "down")),
-                            (Entry::Trusted(_), Node::Rejects) => {
-                                let policy = "policy".into();
-                                Pushed::Rejected(SendRawTransactionError::Rejected { code: -26, message: policy })
+                        let outcome = match entry {
+                            Entry::Peers if peers_up => {
+                                world.relay(now);
+                                Pushed::Delivered
                             }
-                            (Entry::Trusted(_), _) => Pushed::Accepted,
-                            (Entry::Peer(_), _) => Pushed::Delivered,
+                            Entry::Peers => Pushed::Unreachable(NonDomainError::new(
+                                zaino_source::FailureMode::Timeout, "no ready peer")),
+                            Entry::Trusted(i) => match trusted[i.get()] {
+                                Node::Unreachable => Pushed::Unreachable(NonDomainError::new(
+                                    zaino_source::FailureMode::Connection, "down")),
+                                Node::Rejects => {
+                                    let policy = "policy".into();
+                                    Pushed::Rejected(SendRawTransactionError::Rejected { code: -26, message: policy })
+                                }
+                                _ => {
+                                    world.took.insert(Holder::Trusted(i.get()), now);
+                                    Pushed::Accepted
+                                }
+                            },
                         };
-                        if !matches!(outcome, Pushed::Unreachable(_) | Pushed::Rejected(_)) {
-                            world.took.insert(entry, now);
-                        }
                         let waits = matches!(outcome, Pushed::Accepted | Pushed::Delivered);
                         pushes.push((now, entry, waits));
                         job.pushed(outcome, now);
@@ -437,20 +420,22 @@ mod tests {
             }
 
             let tried: Vec<Entry> = pushes.iter().map(|(_, e, _)| *e).collect();
-            if !peers.is_empty() {
-                prop_assert!(matches!(tried.first(), Some(Entry::Peer(_))), "a peer goes first");
-            }
-            let groups: Vec<Netgroup> = tried.iter().filter_map(|e| match e {
-                Entry::Peer(addr) => Some(Netgroup::of(*addr)),
-                Entry::Trusted(_) => None,
-            }).collect();
-            prop_assert_eq!(groups.len(), groups.iter().collect::<BTreeSet<_>>().len(), "netgroup reused");
+            let trusted_tried: Vec<Entry> =
+                tried.iter().copied().filter(|e| matches!(e, Entry::Trusted(_))).collect();
+            let distinct: std::collections::BTreeSet<Entry> = trusted_tried.iter().copied().collect();
+            prop_assert_eq!(distinct.len(), trusted_tried.len(), "a trusted validator pushed twice");
             let budget = usize::from(max_attempts);
             prop_assert!(tried.len() <= budget + 1);
+            if has_peers {
+                prop_assert!(tried.iter().take(budget).all(|e| *e == Entry::Peers), "peers first: {:?}", tried);
+                prop_assert!(trusted_tried.len() <= 1, "one trusted push at most: {:?}", tried);
+            }
             if tried.len() == budget + 1 {
-                let last_is_first_trusted = matches!(tried[budget], Entry::Trusted(_))
-                    && tried[..budget].iter().all(|e| matches!(e, Entry::Peer(_)));
-                prop_assert!(last_is_first_trusted, "only the verdict goes past the budget: {:?}", tried);
+                prop_assert!(matches!(tried[budget], Entry::Trusted(_)), "only a trusted push past the budget");
+            }
+            let final_seen = world.seen(&tried, now);
+            if checked && !final_seen.spread {
+                prop_assert!(!tried.is_empty(), "checked, unspread, never relayed");
             }
 
             let trusted_took = tried.iter().any(|e| matches!(e, Entry::Trusted(i)
@@ -458,10 +443,9 @@ mod tests {
             let trusted_rejected = tried.iter().any(|e| matches!(e, Entry::Trusted(i)
                 if trusted[i.get()] == Node::Rejects));
             let accepted = job.accepted();
-            prop_assert_eq!(accepted, trusted_took || listed_ever);
-            prop_assert!(accepted || tried.iter().any(|e| matches!(e, Entry::Trusted(_))),
+            prop_assert_eq!(accepted, checked || trusted_took || listed_ever);
+            prop_assert!(accepted || !trusted_tried.is_empty(),
                 "a refusal or failure answered without asking a trusted validator: {:?}", tried);
-            let final_seen = world.seen(&tried, now);
             let ended = job.ended(final_seen);
             match &ended {
                 Ended::Spread => prop_assert!(accepted && final_seen.spread),
@@ -470,14 +454,13 @@ mod tests {
                 Ended::Unreachable(_) => prop_assert!(!accepted && !trusted_rejected),
             }
 
-            let fast_relay = tried.iter().any(|e| {
-                matches!(world.node(*e), Node::Relays { delay_ms } if delay_ms + 500 < threshold_ms)
-            });
+            let fast_trusted = tried.iter().any(|e| matches!(e, Entry::Trusted(i)
+                if matches!(trusted[i.get()], Node::Relays { delay_ms } if delay_ms + 500 < threshold_ms)));
             let honest_reader_outside = (0..trusted.len()).any(|i| {
                 matches!(trusted[i], Node::Relays { .. } | Node::BlackHoles)
                     && !tried.contains(&Entry::Trusted(index(i)))
             });
-            if fast_relay && honest_reader_outside {
+            if fast_trusted && honest_reader_outside {
                 prop_assert!(matches!(ended, Ended::Spread),
                     "a fast relay with an honest reader outside = spread, got {:?}", ended);
             }
@@ -486,137 +469,109 @@ mod tests {
 
     /// `Seen::of` case by case
     ///
-    /// - entries never count as spread; a peer entry's own listing = nothing
-    /// - tried trusted entry (p2p address unknown) → two outside listers needed
-    /// - a peer quorum's admission = listed, no trusted validator needed
+    /// - a trusted entry's own listing = listed, never spread; an untried trusted listing = both
+    /// - a peer quorum = listed + spread, no trusted validator needed; quorate peers = observable
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
         let t = |i: usize| ValidatorId::new(i).expect("< MAX");
-        let p = |n: u8| SocketAddr::from(([10, n, 0, 1], 8233));
         let set = |of: &[usize]| of.iter().map(|&i| t(i)).collect::<EndpointSet>();
-        let peers = |of: &[u8]| of.iter().map(|&n| p(n)).collect::<OrdSet<SocketAddr>>();
         let readers = set(&[0, 1]);
-        struct Case {
-            name: &'static str,
-            listing: EndpointSet,
-            quorum: bool,
-            listers: OrdSet<SocketAddr>,
-            polled: OrdSet<SocketAddr>,
-            tried: Vec<Entry>,
-            want: Seen,
-        }
         let seen = |listed, spread, observable| Seen { listed, spread, observable };
-        let cases = [
-            Case {
-                name: "nothing yet",
-                listing: set(&[]),
-                quorum: false,
-                listers: peers(&[]),
-                polled: peers(&[1, 2]),
-                tried: vec![Entry::Peer(p(1))],
-                want: seen(false, false, true),
-            },
-            Case {
-                name: "entry lists it only",
-                listing: set(&[]),
-                quorum: false,
-                listers: peers(&[1]),
-                polled: peers(&[1, 2]),
-                tried: vec![Entry::Peer(p(1))],
-                want: seen(false, false, true),
-            },
-            Case {
-                name: "outside peer lists it",
-                listing: set(&[]),
-                quorum: false,
-                listers: peers(&[1, 2]),
-                polled: peers(&[1, 2]),
-                tried: vec![Entry::Peer(p(1))],
-                want: seen(false, true, true),
-            },
-            Case {
-                name: "peer quorum admits, every trusted validator down",
-                listing: set(&[]),
-                quorum: true,
-                listers: peers(&[2, 3, 4, 5, 6, 7]),
-                polled: peers(&[1, 2, 3, 4, 5, 6, 7]),
-                tried: vec![Entry::Peer(p(1))],
-                want: seen(true, true, true),
-            },
-            Case {
-                name: "trusted entry lists, alone",
-                listing: set(&[0]),
-                quorum: false,
-                listers: peers(&[]),
-                polled: peers(&[]),
-                tried: vec![Entry::Trusted(t(0))],
-                want: seen(true, false, true),
-            },
-            Case {
-                name: "outside trusted lists",
-                listing: set(&[0, 1]),
-                quorum: false,
-                listers: peers(&[]),
-                polled: peers(&[]),
-                tried: vec![Entry::Trusted(t(0))],
-                want: seen(true, true, true),
-            },
-            Case {
-                name: "trusted entry + one lister",
-                listing: set(&[0]),
-                quorum: false,
-                listers: peers(&[2]),
-                polled: peers(&[2]),
-                tried: vec![Entry::Trusted(t(0)), Entry::Trusted(t(1))],
-                want: seen(true, false, true),
-            },
-            Case {
-                name: "every source an entry",
-                listing: set(&[0]),
-                quorum: false,
-                listers: peers(&[3, 4]),
-                polled: peers(&[1]),
-                tried: vec![Entry::Peer(p(1)), Entry::Trusted(t(0)), Entry::Trusted(t(1))],
-                want: seen(true, true, false),
-            },
+        type Case = (&'static str, EndpointSet, bool, EndpointSet, bool, Vec<Entry>, Seen);
+        let cases: [Case; 7] = [
+            (
+                "nothing yet",
+                set(&[]),
+                false,
+                readers,
+                false,
+                vec![Entry::Peers],
+                seen(false, false, true),
+            ),
+            (
+                "peer quorum, every trusted validator down",
+                set(&[]),
+                true,
+                set(&[]),
+                true,
+                vec![Entry::Peers],
+                seen(true, true, true),
+            ),
+            (
+                "trusted entry lists, alone",
+                set(&[0]),
+                false,
+                readers,
+                false,
+                vec![Entry::Trusted(t(0))],
+                seen(true, false, true),
+            ),
+            (
+                "outside trusted lists",
+                set(&[0, 1]),
+                false,
+                readers,
+                false,
+                vec![Entry::Trusted(t(0))],
+                seen(true, true, true),
+            ),
+            (
+                "every reader an entry, peers not quorate",
+                set(&[0]),
+                false,
+                set(&[0]),
+                false,
+                vec![Entry::Peers, Entry::Trusted(t(0))],
+                seen(true, false, false),
+            ),
+            (
+                "every reader an entry, peers quorate",
+                set(&[0]),
+                false,
+                set(&[0]),
+                true,
+                vec![Entry::Trusted(t(0))],
+                seen(true, false, true),
+            ),
+            (
+                "no readers, no peers",
+                set(&[]),
+                false,
+                set(&[]),
+                false,
+                vec![],
+                seen(false, false, false),
+            ),
         ];
-        for case in cases {
-            let (listers, polled) = (&case.listers, &case.polled);
-            let got = Seen::of(case.listing, case.quorum, readers, listers, polled, &case.tried);
-            assert_eq!(got, case.want, "{}", case.name);
+        for (name, listing, quorum, readers, quorate, tried, want) in cases {
+            assert_eq!(Seen::of(listing, quorum, readers, quorate, &tried), want, "{name}");
         }
     }
 
+    /// - Peers → the first attempt relays through them, never a trusted validator
     /// - No peers → first entry uniform over the trusted validators
-    /// - Peers → uniform over the peers, never a trusted validator (none singled out)
+    /// - Checked + nothing observable yet → still a first push (never done unrelayed)
     #[test]
-    fn the_first_entry_is_uniform_and_a_peer_whenever_one_exists() {
+    fn the_first_attempt_is_the_peers_else_a_uniform_trusted_validator() {
         let index = |i: usize| ValidatorId::new(i).expect("< MAX");
-        let peers: Vec<SocketAddr> =
-            (0..4).map(|i| SocketAddr::from((Ipv4Addr::new(10, i, 0, 1), 8233))).collect();
-        let seen = Seen { listed: false, spread: false, observable: true };
-        for with_peers in [false, true] {
-            let mut first: BTreeMap<String, u32> = BTreeMap::new();
-            for seed in 0..8_000 {
-                let candidates = if with_peers { peers.clone() } else { Vec::new() };
-                let trusted = (0..4).map(index).collect();
-                let mut job = Job::new(
-                    candidates,
-                    trusted,
-                    SubmitPolicy::default(),
-                    fastrand::Rng::with_seed(seed),
-                );
-                let Step::Push(entry) = job.step(Instant::now(), seen) else {
-                    panic!("first step pushes")
-                };
-                assert_eq!(matches!(entry, Entry::Peer(_)), with_peers, "{entry:?}");
-                *first.entry(format!("{entry:?}")).or_default() += 1;
-            }
-            assert_eq!(first.len(), 4, "every candidate drawn: {first:?}");
-            assert!(
-                first.values().all(|&n| (1_800..=2_200).contains(&n)),
-                "≈ 2,000 each: {first:?}"
-            );
+        let blind = Seen { listed: false, spread: false, observable: false };
+        for (peers, checked) in [(true, false), (true, true)] {
+            let trusted = (0..4).map(index).collect();
+            let rng = fastrand::Rng::with_seed(7);
+            let mut job = Job::new(peers, trusted, checked, SubmitPolicy::default(), rng);
+            assert_eq!(job.step(Instant::now(), blind), Step::Push(Entry::Peers), "{checked}");
         }
+        let mut first: BTreeMap<String, u32> = BTreeMap::new();
+        for seed in 0..8_000 {
+            let trusted = (0..4).map(index).collect();
+            let rng = fastrand::Rng::with_seed(seed);
+            let mut job = Job::new(false, trusted, true, SubmitPolicy::default(), rng);
+            let Step::Push(entry) = job.step(Instant::now(), blind) else {
+                panic!("first step pushes")
+            };
+            *first.entry(format!("{entry:?}")).or_default() += 1;
+        }
+        assert_eq!(first.len(), 4, "every trusted validator drawn: {first:?}");
+        assert!(first.values().all(|&n| (1_800..=2_200).contains(&n)), "≈ 2,000 each: {first:?}");
     }
 }

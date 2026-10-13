@@ -15,10 +15,10 @@ use zaino_primitives::types::{
 };
 
 use crate::{
-    BlockLink, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
-    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, FailureMode, GetAtHeightError,
+    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
+    GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
+    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 
 /// `waited` within 60 s of tokio time, else the test fails naming `what`
@@ -53,11 +53,19 @@ pub enum Port {
     MempoolBytes,
     Transaction,
     Send,
+    Check,
 }
 
 impl Port {
-    pub const ALL: [Port; 6] =
-        [Port::Poll, Port::Links, Port::Block, Port::MempoolBytes, Port::Transaction, Port::Send];
+    pub const ALL: [Port; 7] = [
+        Port::Poll,
+        Port::Links,
+        Port::Block,
+        Port::MempoolBytes,
+        Port::Transaction,
+        Port::Send,
+        Port::Check,
+    ];
 }
 
 /// Calls answered or refused, by port (`links` = heights asked)
@@ -67,6 +75,7 @@ pub struct Calls {
     pub links: usize,
     pub blocks: usize,
     pub sends: usize,
+    pub checks: usize,
 }
 
 pub struct MockValidator {
@@ -80,6 +89,7 @@ struct State {
     mempool: BTreeMap<TransactionId, (Vec<u8>, Zatoshis)>,
     listing: Result<(), GetMempoolListingError>,
     relay: Result<(), SendRawTransactionError>,
+    checks: bool,
     peers: Option<Vec<PeerInfo>>,
     release: Option<NodeRelease>,
     latency: BTreeMap<Port, Duration>,
@@ -122,6 +132,7 @@ impl MockValidator {
             mempool: BTreeMap::new(),
             listing: Ok(()),
             relay: Ok(()),
+            checks: true,
             peers: Some(Vec::new()),
             release: Some(release),
             latency: BTreeMap::new(),
@@ -180,9 +191,15 @@ impl MockValidator {
         self.state().listing = answer;
     }
 
-    /// `sendrawtransaction` verdict (default `Ok`: listed at the fee its bytes leave over the best)
+    /// `sendrawtransaction` + `checkadmission` verdict (default `Ok`: the fee its bytes leave over
+    /// the best; only a send lists it)
     pub fn relay(&self, verdict: Result<(), SendRawTransactionError>) {
         self.state().relay = verdict;
+    }
+
+    /// `checkadmission` answered (default) or `Unsupported` (zcashd, stock zebrad)
+    pub fn checks_admission(&self, supported: bool) {
+        self.state().checks = supported;
     }
 
     /// `getpeerinfo` / `getinfo` answers (`None` = that read times out)
@@ -280,15 +297,14 @@ impl State {
         }
     }
 
-    /// zebrad's verdict on `raw` over its best chain: listed at its fee, or refused
-    fn admit(&mut self, raw: Vec<u8>) -> Result<TransactionId, SendRawTransactionError> {
+    /// zebrad's verdict on `raw` over its best chain: its txid + fee, or refused
+    fn verdict(&self, raw: &[u8]) -> Result<(TransactionId, Zatoshis), SendRawTransactionError> {
+        self.relay.clone()?;
         let malformed =
             |error: crate::DecodeError| SendRawTransactionError::Malformed(error.to_string());
-        let txid = crate::prepare_transaction(&raw).map_err(malformed)?.txid;
-        let tx = crate::decode_transaction(&raw).map_err(malformed)?;
-        let fee = fee_over(&self.followed.best, &tx)?;
-        self.mempool.insert(txid, (raw, fee));
-        Ok(txid)
+        let txid = crate::prepare_transaction(raw).map_err(malformed)?.txid;
+        let tx = crate::decode_transaction(raw).map_err(malformed)?;
+        Ok((txid, fee_over(&self.followed.best, &tx)?))
     }
 }
 
@@ -459,8 +475,23 @@ impl ChainDataSource for MockValidator {
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
         self.enter(Port::Send, |calls| calls.sends += 1).await?;
         let mut state = self.state();
-        state.relay.clone().map_err(QueryError::Domain)?;
-        state.admit(transaction).map_err(QueryError::Domain)
+        let (txid, fee) = state.verdict(&transaction).map_err(QueryError::Domain)?;
+        state.mempool.insert(txid, (transaction, fee));
+        Ok(txid)
+    }
+
+    async fn check_admission(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<CheckAdmissionError>> {
+        self.enter(Port::Check, |calls| calls.checks += 1).await?;
+        let state = self.state();
+        if !state.checks {
+            return Err(QueryError::Domain(CheckAdmissionError::Unsupported));
+        }
+        let refused = |refused| QueryError::Domain(CheckAdmissionError::Refused(refused));
+        let (txid, _) = state.verdict(&transaction).map_err(refused)?;
+        Ok(txid)
     }
 }
 

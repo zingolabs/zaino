@@ -20,10 +20,10 @@ pub use grpc_client::ZcashGrpcClient;
 pub use indexer::{Change, IndexerTls, IndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use queries::{
-    BlockLink, BlockLinks, ChainDataSource, GetAtHeightError, GetBlockByHashError,
-    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, PollReading, RawMempoolTransactions, SendRawTransactionError,
-    TransactionResponse,
+    BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
+    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
+    GetTransactionError, MempoolListed, MetadataReading, PollReading, RawMempoolTransactions,
+    SendRawTransactionError, TransactionResponse,
 };
 pub use rpc::{describe_metrics, METRIC_BUCKETS};
 pub use rpc::{EndpointError, LinkLimits, RpcClient, RpcClientConfig, RpcError, Timeouts};

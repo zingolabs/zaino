@@ -24,7 +24,7 @@ consensus objects are forwarded to the validator.
 | `GetTaddressBalance`, `GetTaddressBalanceStream`        | transparent-address index                                                                                                                      |
 | `GetTaddressTransactions`                               | transparent-address index for the `{height, txid}` set, the validator for the bytes                                                            |
 | `GetTransaction`                                        | validator                                                                                                                                      |
-| `SendTransaction`                                       | chain view [submission](./architecture.md#6-submission): one random entry per attempt                                                          |
+| `SendTransaction`                                       | chain view [submission](./architecture.md#6-submission): a trusted `checkadmission` answers, then relayed through the peers                    |
 | `GetMempoolTx`, `GetMempoolStream`                      | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |
 | `GetLightdInfo`                                         | the served snapshot: its tip, the verified best, the upgrade schedule (no validator call)                                                      |
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)*  | compact-block index, re-projected to nullifiers                                                                                                |

@@ -4,9 +4,9 @@
 //!   requests ──▶ peer set (zebra's p2c over ready peers) ──▶ FindHeaders · BlocksByHash
 //!                                                            TransactionsById
 //!   mempool_of(peer) ──▶ that peer alone ──▶ its whole mempool listing
+//!   push(raw) ──▶ PushTransaction ──▶ ⌈ready/3⌉ random ready peers (zebra's relay)
 //!   peers ──▶ inbound service ──▶ AdvertiseBlock(hash, peer) ──▶ announcements (broadcast)
 //!                                  everything else ──▶ Nil (Zaino serves no peer)
-//!   push_isolated(addr) ──▶ fresh connection, no node state ──▶ PushTransaction ──▶ closed
 //! ```
 //!
 //! - every id or hash handed out = zebra's own from the bytes; a peer answering with something
@@ -23,15 +23,14 @@ use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use tracing::debug;
-use zaino_primitives::types::{BlockHash, Height, PeerTxId, TransactionId};
+use zaino_primitives::types::{BlockHash, PeerTxId, TransactionId};
 use zcash_protocol::consensus::NetworkType;
-use zebra_chain::block;
 use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
 use zebra_network::types::PeerServices;
 use zebra_network::{
     AddressBook, BoxError, CacheDir, Config, InventoryResponse, PeerSocketAddr, Request, Response,
-    SharedPeerError, Version,
+    SharedPeerError,
 };
 
 use crate::wire::{self, WireError};
@@ -103,25 +102,19 @@ pub enum PeerError {
 pub enum PushError {
     #[error(transparent)]
     Wire(#[from] WireError),
-    #[error("isolated connection to {addr}: {cause}")]
-    Connect { addr: SocketAddr, cause: BoxError },
-    #[error("push to {addr}: {cause}")]
-    Push { addr: SocketAddr, cause: SharedPeerError },
-    #[error("push to {addr} took over {timeout:?}")]
-    Timeout { addr: SocketAddr, timeout: Duration },
+    #[error(transparent)]
+    Peers(#[from] PeerError),
 }
 
 type PeerSet = Buffer<BoxService<Request, Response, BoxError>, Request>;
 
 /// One running zebra-network peer set
 pub struct PeerNetwork {
-    network: Network,
     peers: PeerSet,
     address_book: Arc<std::sync::Mutex<AddressBook>>,
     misbehaved: mpsc::Sender<(PeerSocketAddr, u32)>,
     announced: broadcast::Sender<Announced>,
     timeout: Duration,
-    user_agent: String,
 }
 
 impl PeerNetwork {
@@ -136,7 +129,7 @@ impl PeerNetwork {
             NetworkType::Regtest => Network::new_regtest(Default::default()),
         };
         let mut zebra = Config {
-            network: network.clone(),
+            network,
             listen_addr: config.listen_addr,
             cache_dir: config.cache_dir.map_or(CacheDir::disabled(), CacheDir::custom_path),
             peerset_initial_target_size: config.peer_target.get(),
@@ -153,12 +146,12 @@ impl PeerNetwork {
             zebra,
             inbound(announced.clone()),
             NoChainTip,
-            user_agent.clone(),
+            user_agent,
             PeerServices::empty(),
         )
         .await;
         let timeout = config.request_timeout;
-        Self { network, peers, address_book, misbehaved, announced, timeout, user_agent }
+        Self { peers, address_book, misbehaved, announced, timeout }
     }
 
     /// Every block `inv` a connected peer sends from now on
@@ -168,24 +161,10 @@ impl PeerNetwork {
 
     /// Outbound peers live in the last few minutes (the ones whose `inv` arrives)
     pub fn live(&self) -> Vec<SocketAddr> {
-        self.live_where(|_| true)
-    }
-
-    /// Submission entry candidates: [`live`](Self::live) peers on a protocol version zebra
-    /// accepts at `tip` (`None` = the network's initial minimum)
-    pub fn entries(&self, tip: Option<Height>) -> Vec<SocketAddr> {
-        let minimum = Version::min_remote_for_height(&self.network, tip.map(zebra_height));
-        self.live_where(|meta| meta.negotiated_version().is_some_and(|version| version >= minimum))
-    }
-
-    fn live_where(
-        &self,
-        keep: impl Fn(&zebra_network::types::MetaAddr) -> bool,
-    ) -> Vec<SocketAddr> {
         let now = chrono::Utc::now();
         let book = self.address_book.lock().expect("zebra address book mutex poisoned");
         book.peers()
-            .filter(|meta| !meta.is_inbound() && meta.was_recently_live(now) && keep(meta))
+            .filter(|meta| !meta.is_inbound() && meta.was_recently_live(now))
             .map(|meta| *meta.addr())
             .collect()
     }
@@ -280,31 +259,16 @@ impl PeerNetwork {
         Ok(ids.iter().map(|id| (*id, found.remove(id))).collect())
     }
 
-    /// Per-attempt push: fresh connection to `addr` (no state shared with this peer set),
-    /// `PushTransaction`, closed; txid = the bytes' own (a peer answers a push with nothing)
-    pub async fn push_isolated(
-        &self,
-        addr: SocketAddr,
-        raw: &[u8],
-    ) -> Result<TransactionId, PushError> {
+    /// `raw` relayed as zebrad relays: `PushTransaction` over the peer set's own connections to
+    /// ⌈ready/3⌉ random ready peers; txid = the bytes' own
+    ///
+    /// - unattributed: zebra names no recipient, and a peer answers a push with nothing
+    /// - no ready peer within the timeout = `Peers(Timeout)`
+    pub async fn push(&self, raw: &[u8]) -> Result<TransactionId, PushError> {
         let tx = wire::unmined_tx(raw)?;
         let txid = wire::peer_tx_id(tx.id).txid;
-        let push = async {
-            let connect = zebra_network::connect_isolated_tcp_direct(
-                &self.network,
-                addr,
-                self.user_agent.clone(),
-            );
-            let mut client = connect.await.map_err(|cause| PushError::Connect { addr, cause })?;
-            let pushed = client.ready().await.map_err(|cause| PushError::Push { addr, cause })?;
-            let request = Request::PushTransaction(tx, None);
-            pushed.call(request).await.map_err(|cause| PushError::Push { addr, cause })
-        };
-        match tokio::time::timeout(self.timeout, push).await {
-            Ok(Ok(_)) => Ok(txid),
-            Ok(Err(failed)) => Err(failed),
-            Err(_) => Err(PushError::Timeout { addr, timeout: self.timeout }),
-        }
+        self.call(Request::PushTransaction(tx, None)).await?;
+        Ok(txid)
     }
 
     /// Inventory request; `None` = nothing asked for supplied
@@ -355,10 +319,6 @@ fn inbound(
         }
         std::future::ready(Ok(Response::Nil))
     })
-}
-
-fn zebra_height(height: Height) -> block::Height {
-    block::Height(u32::from(height))
 }
 
 fn unexpected(asked: &'static str, got: &Response) -> PeerError {

@@ -2,7 +2,6 @@
 //!
 //! - Each poll = the balancer's (every second, or woken); [`polled`] waits out one per member
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -281,20 +280,19 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     cancel.cancel();
 }
 
-/// One rejecting, one unreachable (sends only), one accepting validator
+/// Three validators holding the verified tip, no peers
 ///
-/// - random entries until one accepts, each pushed at most once
-/// - accepted tx = `ours` (servable before any listing, unpriced)
-/// - unanimous rejection = the rejection; none reachable = no answer; expired = refused, no push
+/// - expired = refused by the precheck: nothing checked, nothing pushed
+/// - one holder's `checkadmission` decides: admissible = `Ok` at once, `ours` (servable before
+///   any listing, unpriced), then pushed to a trusted entry; refused = that refusal, nothing pushed
+/// - no check answers (zcashd, stock zebrad): random entries until one accepts; unanimous
+///   rejection = the rejection; none reachable = no answer
 #[tokio::test(start_paused = true)]
-async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servable_at_once() {
+async fn a_checked_submission_answers_at_once_and_an_unchecked_one_tries_random_entries() {
     let mut chain = MockChain::regtest();
     let agreed = chain.mine_empty(50);
     let validators: Vec<Arc<MockValidator>> =
         (0..3).map(|_| Arc::new(MockValidator::following(&chain, agreed))).collect();
-    let message = "tx unpaid action limit exceeded".to_owned();
-    validators[1].relay(Err(SendRawTransactionError::Rejected { code: -26, message }));
-    validators[2].reachable(&[Port::Send], false);
 
     let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
     let reader = view.subscriber();
@@ -303,6 +301,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     view.set_verified(Some(chain.verified(agreed)));
     assert!(!reader.current().held_by().is_empty(), "every one holds the verified tip");
     let pushes = || -> Vec<usize> { validators.iter().map(|v| v.calls().sends).collect() };
+    let checks = || -> usize { validators.iter().map(|v| v.calls().checks).sum() };
 
     let (expired_txid, expired) = raw_transaction(1, 50);
     let refused = view.submit(expired).await;
@@ -311,15 +310,23 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
         panic!("expiry 50 at tip 50 = invalid in block 51: {refused:?}");
     };
     assert!(code == -25 && message.contains("expiry height 50"), "{code}: {message}");
-    assert_eq!(pushes(), [0, 0, 0], "precheck refuses before any push");
+    assert_eq!((pushes(), checks()), (vec![0, 0, 0], 0), "precheck refuses before any ask");
     assert!(reader.current().spread(&expired_txid).is_none());
 
+    // a 5 s `sendrawtransaction` never delays the answer: it comes off the check
+    for validator in &validators {
+        validator.latency(&[Port::Send], Duration::from_secs(5));
+    }
     let (txid, sent) = raw_transaction(9, 0);
+    let asked = tokio::time::Instant::now();
     let accepted = view.submit(sent.clone()).await;
-    assert_eq!(accepted.expect("one accept is enough; a refusal may be local policy"), txid);
-    let tried = pushes();
-    assert_eq!(tried[0], 1, "the accepting validator, once");
-    assert!(tried.iter().all(|&n| n <= 1), "no validator pushed twice: {tried:?}");
+    assert_eq!(accepted.expect("one holder's check admits it"), txid);
+    assert_eq!((asked.elapsed(), checks()), (Duration::ZERO, 1), "answered on the check");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(pushes().iter().sum::<usize>(), 1, "then relayed: one trusted entry (no peers)");
+    for validator in &validators {
+        validator.latency(&[Port::Send], Duration::ZERO);
+    }
 
     let pinned = reader.current();
     let spread = pinned.spread(&txid).expect("the submission recorded it");
@@ -355,15 +362,24 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     assert!(timeline.first_trusted.is_some_and(|at| at >= timeline.first_seen), "{timeline:?}");
     assert_eq!(timeline.all_trusted, None, "b, c have not listed it");
 
-    // unanimous domain rejection = the real one, after every validator tried once
+    // a refused check = the refusal at once: one check, nothing pushed
     for validator in &validators {
         let message = "too low fee".to_owned();
         validator.relay(Err(SendRawTransactionError::Rejected { code: -26, message }));
-        validator.reachable(&[Port::Send], true);
+    }
+    let too_low = SendRawTransactionError::Rejected { code: -26, message: "too low fee".into() };
+    let before = (pushes(), checks());
+    let rejected = view.submit(raw_transaction(8, 0).1).await;
+    assert!(matches!(rejected, Err(SubmitError::Rejected(r)) if r == too_low), "the validator's");
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!((pushes(), checks()), (before.0, before.1 + 1), "never relayed");
+
+    // no `checkadmission` anywhere: unanimous domain rejection = the real one, each tried once
+    for validator in &validators {
+        validator.checks_admission(false);
     }
     let before = pushes();
-    let rejected = view.submit(raw_transaction(8, 0).1).await;
-    let too_low = SendRawTransactionError::Rejected { code: -26, message: "too low fee".into() };
+    let rejected = view.submit(raw_transaction(7, 0).1).await;
     assert!(matches!(rejected, Err(SubmitError::Rejected(r)) if r == too_low), "the validator's");
     let tried: Vec<usize> = pushes().iter().zip(&before).map(|(now, then)| now - then).collect();
     assert_eq!(tried, [1, 1, 1]);
@@ -372,7 +388,7 @@ async fn a_submission_tries_random_entries_until_one_accepts_and_ours_is_servabl
     for validator in &validators {
         validator.reachable(&[Port::Send], false);
     }
-    let sent = view.submit(raw_transaction(7, 0).1).await;
+    let sent = view.submit(raw_transaction(6, 0).1).await;
     assert!(matches!(sent, Err(SubmitError::Unreachable { attempted: 3, .. })), "{sent:?}");
 
     let garbage = view.submit(vec![9u8; 8]).await;
@@ -428,11 +444,11 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
 ///
 /// - each peer's mempool polled: `peers: x/4` = its listers; four netgroups = no quorum, so a
 ///   peer listing alone holds nothing (a trusted listing does: `peers: 2/4, trusted: 1/2`)
-/// - submission → a peer first, never a trusted validator; black hole waited out, next entry in
-///   another netgroup; outside lister + trusted listing = the wallet's answer, no trusted push
-/// - every peer a black hole (or dead): budget spent on peers, then one trusted verdict
+/// - checked submission → `Ok` at once, then relayed through the peers, never pushed to a trusted
+///   validator; unseen past the threshold = relayed again; a trusted listing = spread, job over
+/// - unchecked + nobody relays: the budget spent on peer relays, then one trusted verdict
 #[tokio::test(start_paused = true)]
-async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdict() {
+async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchecked() {
     let chain = MockChain::regtest();
     let validators: Vec<Arc<MockValidator>> =
         (0..2).map(|_| Arc::new(MockValidator::following(&chain, chain.genesis()))).collect();
@@ -465,32 +481,23 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
         (Count { seen: 2, of: 4 }, Count { seen: 1, of: 2 })
     );
 
-    // submitted through peers: a black hole waited out, a relay answers the wallet
+    // checked by a holder: answered at once, then relayed through the peers only
+    view.set_verified(Some(chain.verified(chain.genesis())));
+    polled(&balancer).await;
     let (txid, sent) = raw_transaction(2, 0);
-    let submitting = Arc::clone(&view);
-    let answer = tokio::spawn(async move { submitting.submit(sent).await });
+    let answered = view.submit(sent.clone()).await;
+    assert_eq!(answered.expect("a holder's check admits it"), txid);
     tokio::task::yield_now().await;
-    let first = peers.pushes();
-    assert_eq!(
-        (first.len(), validator_pushes()),
-        (1, 0),
-        "one peer entry, no validator: {first:?}"
-    );
+    let checks = validators.iter().map(|v| v.calls().checks).sum::<usize>();
+    assert_eq!((checks, peers.pushes(), validator_pushes()), (1, 1, 0), "one check, one relay");
     tokio::time::sleep(Duration::from_secs(9)).await;
-    assert_eq!(peers.pushes().len(), 1, "inside the threshold: no resubmit");
+    assert_eq!(peers.pushes(), 1, "inside the threshold: no relay again");
     tokio::time::sleep(Duration::from_secs(2)).await;
-    let second = peers.pushes();
-    assert_eq!(second.len(), 2, "threshold passed unseen: a second peer");
-    let group = crate::netgroup::Netgroup::of;
-    assert_ne!(group(second[0]), group(second[1]), "another netgroup");
-    let outsider = (0..4).map(peer).find(|p| !second.contains(p)).expect("two untried");
-    peers.list(outsider, vec![id(txid)]);
-    validators[1].mempool_insert(raw_transaction(2, 0).1, 1_000);
+    assert_eq!(peers.pushes(), 2, "threshold passed unseen: relayed again");
+    peers.list(peer(3), vec![id(txid)]);
+    validators[1].mempool_insert(sent, 1_000);
     round().await;
     polled(&balancer).await;
-    let answered = within("the wallet answered", answer).await.expect("submission task");
-    assert_eq!(answered.expect("listed by a trusted validator"), txid);
-    assert_eq!(validator_pushes(), 0, "no trusted validator saw it first, or at all from us");
     let spread = view.subscriber().current().spread(&txid).expect("held");
     assert!(spread.ours);
     assert_eq!(
@@ -498,18 +505,20 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
         (Count { seen: 1, of: 4 }, Count { seen: 1, of: 2 })
     );
     tokio::time::sleep(Duration::from_secs(60)).await;
-    assert_eq!(peers.pushes().len(), 2, "spread past its entries: nothing more pushed");
+    assert_eq!(peers.pushes(), 2, "a trusted validator never pushed to lists it: nothing more");
+    assert_eq!(validator_pushes(), 0, "no trusted validator relayed it");
 
-    // nobody relays: the budget spent on peers, then one trusted verdict
+    // no `checkadmission` + nobody relays: the budget spent on peer relays, then one trusted verdict
+    for validator in &validators {
+        validator.checks_admission(false);
+    }
     let (silent, sent) = raw_transaction(3, 0);
     let submitting = Arc::clone(&view);
     let answer = tokio::spawn(async move { submitting.submit(sent).await });
     tokio::time::sleep(Duration::from_secs(31)).await;
     let answered = within("the wallet answered", answer).await.expect("submission task");
     assert_eq!(answered.expect("the verdict accepts"), silent);
-    let tried = peers.pushes().split_off(2);
-    assert_eq!(tried.len(), 3, "max_attempts peers first: {tried:?}");
-    assert_eq!(tried.iter().map(|p| group(*p)).collect::<BTreeSet<_>>().len(), 3, "3 netgroups");
+    assert_eq!(peers.pushes(), 2 + 3, "max_attempts relays through the peers first");
     assert_eq!(validator_pushes(), 1, "then exactly one trusted verdict");
     cancel.cancel();
 }
@@ -524,8 +533,8 @@ async fn peers_list_first_entries_first_and_a_trusted_validator_gives_the_verdic
 ///   `bad` never (a negative fee: refused once, never re-fetched while it stays listed)
 /// - listed by 3 of 7 = kept (> 1/3), by 2 = gone from the view; the quorum still reads: an empty
 ///   mempool served
-/// - a submission with no trusted validator: a peer entry, answered once 6 of 7 list it; no
-///   longer listed = still served (ours) until the next block, then gone
+/// - a submission with no trusted validator: nothing to check with, one peer relay, answered once
+///   6 of 7 list it; no longer listed = still served (ours) until the next block, then gone
 #[tokio::test(start_paused = true)]
 async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_takes_sends() {
     let mut chain = MockChain::regtest();
@@ -630,11 +639,9 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let submitting = Arc::clone(&view);
     let answer = tokio::spawn(async move { submitting.submit(sent_raw).await });
     tokio::task::yield_now().await;
-    let entry = peers.pushes();
-    assert_eq!((entry.len(), validator.calls().sends), (1, 0), "one peer entry: {entry:?}");
-    let others: Vec<std::net::SocketAddr> =
-        seven.iter().copied().filter(|peer| *peer != entry[0]).collect();
-    listing(&[sent], &others);
+    let asked = (peers.pushes(), validator.calls().sends, validator.calls().checks);
+    assert_eq!(asked, (1, 0, 0), "no holder to check with: one peer relay");
+    listing(&[sent], &seven[1..]);
     round().await;
     let answered = within("the wallet answered", answer).await.expect("submission task");
     assert_eq!(answered.expect("a peer quorum admitted it"), sent);

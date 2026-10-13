@@ -72,6 +72,15 @@ pub trait ChainDataSource: Send + Sync + 'static {
         &self,
         transaction: Vec<u8>,
     ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
+
+    /// `checkadmission`: `sendrawtransaction`'s verdict, nothing admitted or relayed
+    ///
+    /// - a validator without it (zcashd, stock zebrad) = `Unsupported`, its answer (never a
+    ///   transport failure: it stays healthy)
+    fn check_admission(
+        &self,
+        transaction: Vec<u8>,
+    ) -> impl Future<Output = Result<TransactionId, QueryError<CheckAdmissionError>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -152,6 +161,15 @@ pub struct TransactionResponse {
 pub enum GetTransactionError {
     #[error("transaction not found: {0}")]
     NotFound(TransactionId),
+}
+
+/// `checkadmission`'s answer other than the txid
+#[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+pub enum CheckAdmissionError {
+    #[error(transparent)]
+    Refused(SendRawTransactionError),
+    #[error("no checkadmission on this validator")]
+    Unsupported,
 }
 
 /// A verdict on the transaction, as the validator's JSON-RPC error spelled it (`code` = its own)

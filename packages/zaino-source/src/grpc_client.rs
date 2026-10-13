@@ -248,4 +248,11 @@ impl ChainDataSource for ZcashGrpcClient {
     ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
         self.rpc.send_raw_transaction(transaction).await
     }
+
+    async fn check_admission(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<crate::CheckAdmissionError>> {
+        self.rpc.check_admission(transaction).await
+    }
 }

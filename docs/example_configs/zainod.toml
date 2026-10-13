@@ -57,19 +57,22 @@ jsonrpc_address = "127.0.0.1:18232"
 # [[trusted_validators]]
 # jsonrpc_address = "127.0.0.1:18242"
 
-# SendTransaction: one random trusted validator per attempt (defaults shown)
+# SendTransaction: a trusted validator's checkadmission answers the wallet (refused = that
+# refusal, nothing sent); then one relay per attempt, through a random trusted validator, or
+# the peers with [p2p] on (defaults shown)
 [submission]
-# Seconds an accepted transaction gets to be seen beyond its entries before another is tried
+# Seconds an accepted transaction gets to be seen beyond the nodes relayed to before relaying again
 propagation_threshold_secs = 15
-# Validators one transaction is sent to at most; the wallet is answered at the first acceptance
+# Relays per transaction at most; without a check, the wallet is answered at the first acceptance
 max_attempts = 4
 
 # Zaino's own peers on the Zcash p2p network (zebra-network), off by default: headers and blocks
 # (checked by proof of work and merkle root: the tip keeps up while every trusted validator is
 # down; finality too, once peers in more than 5 netgroups carry the chain), each peer's mempool
 # polled (a transaction > 2/3 of them list from > 5 netgroups is served after Zaino's consensus
-# checks: needs index.compact_block), and SendTransaction entries (a random peer per attempt,
-# then one trusted verdict). Zaino serves no peer (listener on loopback, no services advertised).
+# checks: needs index.compact_block), and SendTransaction relays (zebra's own, to a third of the
+# peers per attempt; then one trusted validator if still unseen). Zaino serves no peer (listener
+# on loopback, no services advertised).
 # [p2p]
 # enabled = true
 # Each peer holds one inbound slot on a public node: keep it modest

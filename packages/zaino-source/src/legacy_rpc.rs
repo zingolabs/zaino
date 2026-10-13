@@ -11,10 +11,10 @@ use crate::rpc::{
     RpcError, Timeouts,
 };
 use crate::{
-    decode, parse, BlockLink, BlockLinks, FailureMode, GetAtHeightError, GetBlockByHashError,
-    GetMempoolListingError, GetRawMempoolTransactionError, GetTransactionError, MempoolListed,
-    MetadataReading, NonDomainError, PollReading, QueryError, RawMempoolTransactions,
-    SendRawTransactionError, TransactionResponse,
+    decode, parse, BlockLink, BlockLinks, CheckAdmissionError, FailureMode, GetAtHeightError,
+    GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
+    GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
+    RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 
 /// One validator's link; single attempt per call (retries, concurrency = the caller's balancer)
@@ -142,6 +142,18 @@ fn submission_rejection(error: &NonDomainError) -> Option<SendRawTransactionErro
             rejected(code)
         }
         _ => None,
+    }
+}
+
+/// `checkadmission`'s error: `-32601` = no such method here (zcashd, stock zebrad), an answer
+/// (never a failure: the validator stays healthy); else [`submission_rejection`]'s verdicts
+fn admission_check_answer(error: NonDomainError) -> QueryError<CheckAdmissionError> {
+    if error.mode == FailureMode::RpcError(METHOD_NOT_FOUND) {
+        return QueryError::Domain(CheckAdmissionError::Unsupported);
+    }
+    match submission_rejection(&error) {
+        Some(refused) => QueryError::Domain(CheckAdmissionError::Refused(refused)),
+        None => QueryError::NonDomain(error),
     }
 }
 
@@ -307,6 +319,17 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         .await
     }
 
+    async fn check_admission(
+        &self,
+        transaction: Vec<u8>,
+    ) -> Result<TransactionId, QueryError<CheckAdmissionError>> {
+        let params = vec![const_hex::encode(transaction).into()];
+        self.call_parsed("checkadmission", params, parse::as_txid, |error| {
+            admission_check_answer(error.into())
+        })
+        .await
+    }
+
     /// Verbosity 1: the height places it (mined vs mempool)
     async fn get_transaction(
         &self,
@@ -446,6 +469,30 @@ mod tests {
         ];
         for (code, message, expected) in cases {
             assert_eq!(submission_rejection(&rpc(code, message).into()), expected, "{code}");
+        }
+    }
+
+    /// `checkadmission` (zebra fork; zcashd + stock zebrad have none)
+    ///
+    /// - `-32601` = unsupported, an answer (the validator stays healthy)
+    /// - `-25` / a `-1` mempool verdict = refused, verbatim; any other `-1` (inactive mempool,
+    ///   verifier timeout) = no verdict, a failure
+    #[test]
+    fn admission_checks_are_a_missing_method_a_refusal_or_no_verdict() {
+        let missing = admission_check_answer(rpc(METHOD_NOT_FOUND, "Method not found").into());
+        assert!(matches!(missing, QueryError::Domain(CheckAdmissionError::Unsupported)));
+        let bad = "failed to validate tx: bad-txns-inputs-missingorspent";
+        let refused = admission_check_answer(rpc(-25, bad).into());
+        let verbatim = SendRawTransactionError::Rejected { code: -25, message: bad.into() };
+        assert!(
+            matches!(&refused, QueryError::Domain(CheckAdmissionError::Refused(r)) if *r == verbatim),
+            "{refused:?}"
+        );
+        let non_standard = admission_check_answer(rpc(-1, "transaction is non-standard").into());
+        assert!(matches!(non_standard, QueryError::Domain(CheckAdmissionError::Refused(_))));
+        for message in ["mempool is not active: wait for Zebra to sync to the tip", "timeout"] {
+            let no_verdict = admission_check_answer(rpc(-1, message).into());
+            assert!(matches!(no_verdict, QueryError::NonDomain(_)), "{message}");
         }
     }
 

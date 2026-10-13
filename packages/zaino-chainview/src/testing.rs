@@ -10,19 +10,20 @@ use futures::future::BoxFuture;
 use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
-use zaino_primitives::types::{BlockHash, Height, OutPoint, PeerTxId, Zatoshis};
+use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId, Zatoshis};
 use zaino_source::{FailureMode, NonDomainError};
 
 use crate::{Heard, UnspentOutputs, ValidatorP2pSource};
 
-/// `live` list their mempools, announce and take pushes (answering nothing, as a peer does);
+/// `live` list their mempools, announce and take relays (answering nothing, as a peer does);
 /// `dead` refuse a connection
 ///
-/// - a pushed transaction lands in no mempool by itself: the test lists it where it spread
+/// - a relayed transaction lands in no mempool by itself: the test lists it where it spread
+/// - no live peer = a relay fails (zebra's peer set, nobody ready)
 pub struct MockPeers {
     live: Vec<SocketAddr>,
     dead: BTreeSet<SocketAddr>,
-    pushes: Mutex<Vec<SocketAddr>>,
+    pushes: Mutex<usize>,
     mempools: Mutex<BTreeMap<SocketAddr, Vec<PeerTxId>>>,
     bytes: Mutex<BTreeMap<PeerTxId, Bytes>>,
     fetched: Mutex<Vec<PeerTxId>>,
@@ -37,7 +38,7 @@ impl MockPeers {
         Self {
             live: live.into_iter().collect(),
             dead: dead.into_iter().collect(),
-            pushes: Mutex::new(Vec::new()),
+            pushes: Mutex::new(0),
             mempools: Mutex::new(BTreeMap::new()),
             bytes: Mutex::new(BTreeMap::new()),
             fetched: Mutex::new(Vec::new()),
@@ -61,9 +62,9 @@ impl MockPeers {
         self.announce.send(heard).expect("a peer watch subscribed before the announcement");
     }
 
-    /// Entries pushed to, in order
-    pub fn pushes(&self) -> Vec<SocketAddr> {
-        self.pushes.lock().expect("MockPeers mutex poisoned").clone()
+    /// Relays asked for so far
+    pub fn pushes(&self) -> usize {
+        *self.pushes.lock().expect("MockPeers mutex poisoned")
     }
 
     /// Ids whose bytes were asked for, each time, in order
@@ -83,15 +84,12 @@ impl ValidatorP2pSource for MockPeers {
         self.live.clone()
     }
 
-    fn entries(&self, _: Option<Height>) -> Vec<SocketAddr> {
-        self.live.clone()
-    }
-
-    fn push(&self, entry: SocketAddr, _: Bytes) -> BoxFuture<'static, Result<(), NonDomainError>> {
-        self.pushes.lock().expect("MockPeers mutex poisoned").push(entry);
-        let refused = self.dead.contains(&entry);
+    /// Counted, never placed: the test lists it where it spread (`list`)
+    fn push(&self, _: Bytes) -> BoxFuture<'static, Result<(), NonDomainError>> {
+        *self.pushes.lock().expect("MockPeers mutex poisoned") += 1;
+        let refused = self.live.is_empty();
         Box::pin(std::future::ready(match refused {
-            true => Err(NonDomainError::new(FailureMode::Connection, "MockPeers: dead peer")),
+            true => Err(NonDomainError::new(FailureMode::Timeout, "MockPeers: no ready peer")),
             false => Ok(()),
         }))
     }

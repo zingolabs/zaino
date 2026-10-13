@@ -358,16 +358,6 @@ impl ChainViewSnapshot {
         self.endpoints.iter().any(|meta| meta.claims_past(chain))
     }
 
-    /// Fresh peers listing `txid` in their mempool, held here or not (submission's watch)
-    pub(crate) fn listers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
-        self.listings.listers(txid)
-    }
-
-    /// Peers whose mempool listing counts now
-    pub(crate) fn polled(&self) -> OrdSet<SocketAddr> {
-        self.listings.polled()
-    }
-
     /// Answering validators (`Live` or catching up) whose last poll holds the verified best block
     /// (empty = no chain yet)
     pub fn held_by(&self) -> EndpointSet {

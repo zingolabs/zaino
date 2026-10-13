@@ -9,8 +9,8 @@ use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::{ReorgDepth, TransactionId, UpgradeSchedule};
 use zaino_source::{
-    prepare_transaction, ChainDataSource, FailureMode, NonDomainError, Prepared, QueryError,
-    SendRawTransactionError,
+    prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
+    Prepared, QueryError, SendRawTransactionError,
 };
 use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
 
@@ -124,16 +124,23 @@ impl<S: ChainDataSource> ChainView<S> {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
 
-    /// Submit one transaction: precheck, then one random entry per attempt, watched
+    /// Submit one transaction: precheck, a trusted `checkadmission`, then relayed by attempts,
+    /// watched
     ///
-    /// - answers at the first acceptance (the transaction is `ours` from then); a rejection or
-    ///   a failure only once every attempt is spent
-    /// - the job outlives the answer: it keeps resubmitting until the transaction spreads
+    /// - check refused = that refusal at once, nothing relayed; check passed = `Ok` at once (`ours`
+    ///   from then)
+    /// - no check answered: `Ok` at the first acceptance; a rejection or a failure only once every
+    ///   attempt is spent
+    /// - the job outlives the answer: it keeps relaying until the transaction spreads
     pub async fn submit(&self, raw: Vec<u8>) -> Result<TransactionId, SubmitError> {
         let prepared = prepare_transaction(&raw).map_err(|malformed| {
             SubmitError::Rejected(SendRawTransactionError::Malformed(malformed.to_string()))
         })?;
         precheck(&self.core.current(), &self.schedule, &prepared).map_err(SubmitError::Rejected)?;
+        let checked = self.check(&raw).await.map_err(|refused| {
+            telemetry::submitted(&Ended::Rejected(refused.clone()), 0);
+            SubmitError::Rejected(refused)
+        })?;
 
         let (answer, answered) = oneshot::channel();
         let job = Submission {
@@ -143,11 +150,38 @@ impl<S: ChainDataSource> ChainView<S> {
             raw: Bytes::from(raw),
             txid: prepared.txid,
         };
-        tokio::spawn(job.run(self.policy, answer));
+        tokio::spawn(job.run(self.policy, checked, answer));
         answered.await.unwrap_or_else(|_| {
             let gone = NonDomainError::new(FailureMode::Connection, "submission ended");
             Err(SubmitError::Unreachable { attempted: 0, cause: gone })
         })
+    }
+
+    /// `checkadmission` on a random trusted validator holding the verified best, the next on no
+    /// verdict: `Ok(true)` admissible, `Ok(false)` none (none holds it, supports it or answered)
+    ///
+    /// - a holder only: one behind the tip refuses what spends a fresh output
+    /// - nothing relayed: the check alone is no broadcast
+    async fn check(&self, raw: &[u8]) -> Result<bool, SendRawTransactionError> {
+        let holders = self.core.current().held_by();
+        let mut members = self.balancer.entries();
+        members.retain(|member| holders.contains(*member));
+        fastrand::shuffle(&mut members);
+        for member in members {
+            match self.balancer.check_admission(member, raw.to_vec()).await {
+                Ok(_) => return Ok(true),
+                Err(unanswered) => match unanswered.last {
+                    Some(QueryError::Domain(CheckAdmissionError::Refused(refused))) => {
+                        return Err(refused)
+                    }
+                    Some(QueryError::Domain(CheckAdmissionError::Unsupported)) | None => {}
+                    Some(QueryError::NonDomain(cause)) => {
+                        debug!(?member, %cause, "Admission check unanswered")
+                    }
+                },
+            }
+        }
+        Ok(false)
     }
 }
 
@@ -180,13 +214,12 @@ struct Submission<S> {
 }
 
 impl<S: ChainDataSource> Submission<S> {
-    async fn run(self, policy: SubmitPolicy, answer: oneshot::Sender<SubmitAnswer>) {
+    async fn run(self, policy: SubmitPolicy, checked: bool, answer: oneshot::Sender<SubmitAnswer>) {
         let mut answer = Some(answer);
         let mut published = self.core.subscribe_published();
-        let tip = self.core.current().best().map(|best| best.height);
-        let entries = self.peers.as_ref().map(|peers| peers.entries(tip)).unwrap_or_default();
+        let peers = self.peers.as_ref().is_some_and(|peers| !peers.live().is_empty());
         let trusted = self.balancer.entries();
-        let mut job = Job::new(entries, trusted, policy, fastrand::Rng::new());
+        let mut job = Job::new(peers, trusted, checked, policy, fastrand::Rng::new());
         loop {
             let step = job.step(Instant::now(), self.seen(job.tried()));
             // after `step`: one observation can both accept and end the job
@@ -256,12 +289,12 @@ impl<S: ChainDataSource> Submission<S> {
                     },
                 }
             }
-            (Entry::Peer(addr), Some(peers)) => match peers.push(addr, self.raw.clone()).await {
+            (Entry::Peers, Some(peers)) => match peers.push(self.raw.clone()).await {
                 Ok(()) => Pushed::Delivered,
                 Err(cause) => Pushed::Unreachable(cause),
             },
-            (Entry::Peer(_), None) => {
-                unreachable!("peer entries come only from a ValidatorP2pSource")
+            (Entry::Peers, None) => {
+                unreachable!("peer relays come only from a ValidatorP2pSource")
             }
         }
     }
@@ -272,8 +305,7 @@ impl<S: ChainDataSource> Submission<S> {
         let sighting = view.sighting(&self.txid);
         let listing = sighting.map(|s| s.trusted()).unwrap_or_default();
         let quorum = sighting.is_some_and(|s| s.quorum());
-        let (listers, polled) = (view.listers(&self.txid), view.polled());
-        Seen::of(listing, quorum, view.mempool_readers(), &listers, &polled, tried)
+        Seen::of(listing, quorum, view.mempool_readers(), view.peers_quorate(), tried)
     }
 }
 

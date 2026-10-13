@@ -7,14 +7,15 @@
 //!   every 60 s, also `getpeerinfo` + `getinfo` + `getdeprecationinfo` (telemetry)
 //! - `bytes(..)`: `getrawtransaction <txid> 0` for what the diff added, fetched once per txid
 //! - `headers(Pinned)`: `getblockheader <h> false` batches (its headers)
-//! - `submit(..)`: `sendrawtransaction`, one submission attempt or the verdict
+//! - `check_admission(..)`: `checkadmission`, a submission's verdict before any push
+//! - `submit(..)`: `sendrawtransaction`, one submission attempt or the fail-safe
 
 use std::net::SocketAddr;
 
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use zaino_primitives::types::{BlockHash, Height, OutPoint, PeerTxId, Zatoshis};
+use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId, Zatoshis};
 use zaino_source::NonDomainError;
 
 /// One peer's block `inv`, attributed by the p2p layer: its new tip (peer finality counts the
@@ -25,7 +26,7 @@ pub struct Heard {
     pub hash: BlockHash,
 }
 
-/// Zcash p2p network as the view uses it: mempool listings, submission entries, and which
+/// Zcash p2p network as the view uses it: mempool listings, submission relays, and which
 /// chain each peer carries; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers
@@ -35,11 +36,9 @@ pub trait ValidatorP2pSource: Send + Sync + 'static {
     fn heard(&self) -> BoxStream<'static, Heard>;
     /// Outbound peers live now (each one's mempool polled, `peers: x/y`'s `y`)
     fn live(&self) -> Vec<SocketAddr>;
-    /// Submission entry candidates at `tip`: live, on a protocol version accepted there
-    fn entries(&self, tip: Option<Height>) -> Vec<SocketAddr>;
-    /// One isolated push (delivery only: a peer answers a push with nothing)
-    fn push(&self, entry: SocketAddr, raw: Bytes)
-        -> BoxFuture<'static, Result<(), NonDomainError>>;
+    /// One relay to ~a third of the live peers, unattributed (delivery only: a peer answers a
+    /// push with nothing)
+    fn push(&self, raw: Bytes) -> BoxFuture<'static, Result<(), NonDomainError>>;
     /// `peer`'s whole mempool, that peer alone answering (every transaction it admitted)
     fn mempool(
         &self,
