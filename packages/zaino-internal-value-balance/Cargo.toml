@@ -1,6 +1,6 @@
 [package]
 name = "zaino-internal-value-balance"
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -14,14 +14,14 @@ description = "Value-balance index: every transparent output's value, resolving 
 [dependencies]
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 zcash_protocol.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 
 [lints.rust]

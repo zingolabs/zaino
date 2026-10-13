@@ -1,6 +1,6 @@
 [package]
 name = "zaino-index-tree-state"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 readme.workspace = true
@@ -16,7 +16,7 @@ rayon.workspace = true
 sapling-crypto.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 zcash_primitives.workspace = true
@@ -24,7 +24,7 @@ zcash_protocol.workspace = true
 
 [dev-dependencies]
 zaino-primitives = { workspace = true, features = ["testing"] }
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 

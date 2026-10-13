@@ -1,6 +1,6 @@
 [package]
 name = "zaino-index-compact-block"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 readme.workspace = true
@@ -15,13 +15,13 @@ thiserror = { workspace = true }
 zaino-proto.workspace = true
 prost.workspace = true
 zaino-primitives = { workspace = true }
-zaino-sync = { version = "0.1.0", path = "../zaino-sync" }
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-sync.workspace = true
+zaino-persistence.workspace = true
 zcash_protocol.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }

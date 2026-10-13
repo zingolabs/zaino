@@ -1,7 +1,7 @@
 [package]
 name = "zaino-traffic"
 description = "Zaino's one traffic balancer: every request to trusted validators and peers, one scheduler."
-version = "0.1.0"
+version.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true

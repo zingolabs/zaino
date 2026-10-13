@@ -26,6 +26,8 @@ members = [
 resolver = "2"
 
 [workspace.package]
+# Lockstep: every crate ships at this version (the `zaino-*` entries below match it)
+version = "0.11.0-alpha.2"
 authors = ["Zingo Lab Cyan"]
 repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
@@ -104,30 +106,35 @@ dirs = "6"
 # Test
 tempfile = "3.2"
 # Domain vocabulary (heights, hashes, blocks, transactions)
-zaino-primitives = { path = "packages/zaino-primitives", version = "0.3.0" }
-zaino-sync = { path = "packages/zaino-sync", version = "0.1.0" }
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.11.0-alpha.2" }
+zaino-persistence = { path = "packages/zaino-persistence", version = "0.11.0-alpha.2" }
+zaino-sync = { path = "packages/zaino-sync", version = "0.11.0-alpha.2" }
 # Non-finalized state: fetch, folds above the durable root, the final stream, one snapshot
-zaino-nfs = { path = "packages/zaino-nfs", version = "0.1.0" }
+zaino-nfs = { path = "packages/zaino-nfs", version = "0.11.0-alpha.2" }
 # The best chain by proof of work: every header verified from genesis, most-work tip
-zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.1.0" }
+zaino-header-chain = { path = "packages/zaino-header-chain", version = "0.11.0-alpha.2" }
 # Validator JSON-RPC: `ChainDataSource` port, zebrad adapter, traffic balancer
-zaino-source = { path = "packages/zaino-source", version = "0.2.2" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.6.1" }
-zaino-peers = { path = "packages/zaino-peers", version = "0.1.0" }
+zaino-source = { path = "packages/zaino-source", version = "0.11.0-alpha.2" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.11.0-alpha.2" }
+zaino-peers = { path = "packages/zaino-peers", version = "0.11.0-alpha.2" }
+zaino-traffic = { path = "packages/zaino-traffic", version = "0.11.0-alpha.2" }
+zaino-chainview = { path = "packages/zaino-chainview", version = "0.11.0-alpha.2" }
+zaino-snapshot = { path = "packages/zaino-snapshot", version = "0.11.0-alpha.2" }
+zaino-grpc = { path = "packages/zaino-grpc", version = "0.11.0-alpha.2" }
 # p2p layer (zaino-peers): zebra main on the same librustzcash/orchard/sapling forks patched below
 zebra-chain = { git = "https://github.com/elicbarbieri/zebra.git", rev = "381a34a787ab9ae0a72e5c2ce493c53859da6ec1", version = "14.0.0" }
 zebra-network = { git = "https://github.com/elicbarbieri/zebra.git", rev = "381a34a787ab9ae0a72e5c2ce493c53859da6ec1", version = "14.0.0" }
 zebra-test = { git = "https://github.com/elicbarbieri/zebra.git", rev = "381a34a787ab9ae0a72e5c2ce493c53859da6ec1", version = "4.0.0" }
 # Height → gRPC-framed compact block, served as contiguous mmap spans
-zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.1.0" }
+zaino-index-compact-block = { path = "packages/zaino-index-compact-block", version = "0.11.0-alpha.2" }
 # Block hash <-> height: the locator every by-hash request resolves through.
-zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.1.0" }
+zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.2" }
 # Outpoint -> value: every transaction's value balance (fees), published for compact blocks.
-zaino-internal-value-balance = { path = "packages/zaino-internal-value-balance", version = "0.1.0" }
+zaino-internal-value-balance = { path = "packages/zaino-internal-value-balance", version = "0.11.0-alpha.2" }
 # Height → commitment-tree state, subtree roots (any historical frontier, no hashing)
-zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.1.0" }
+zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.11.0-alpha.2" }
 # Transparent address → receives + their spends (two maps, composed per query)
-zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.1.0" }
+zaino-index-transparent-address = { path = "packages/zaino-index-transparent-address", version = "0.11.0-alpha.2" }
 
 
 config = { version = "0.15", default-features = false, features = ["toml"] }

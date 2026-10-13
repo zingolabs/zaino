@@ -1,6 +1,6 @@
 [package]
 name = "zaino-persistence"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 authors.workspace = true
 license.workspace = true
@@ -17,7 +17,7 @@ testing = ["dep:proptest"]
 
 [dependencies]
 thiserror = { workspace = true }
-zaino-primitives = { version = "0.3.0", path = "../zaino-primitives" }
+zaino-primitives.workspace = true
 serde = { workspace = true, features = ["derive"] }
 bytes = { workspace = true }
 memmap2 = { workspace = true }

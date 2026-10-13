@@ -1,6 +1,6 @@
 [package]
 name = "zainod"
-version = "0.11.0-alpha.2"
+version.workspace = true
 description = "Crate containing the Zaino Indexer binary."
 authors = { workspace = true }
 repository = { workspace = true }
@@ -21,14 +21,14 @@ path = "src/lib.rs"
 
 [dependencies]
 # Runtime stack (config-agnostic; zainod translates its config into their typed
-# params at boot). Path deps for the ones not yet in [workspace.dependencies].
+# params at boot)
 zaino-sync = { workspace = true }
 zaino-index-compact-block = { workspace = true }
 zaino-index-tree-state = { workspace = true }
 zaino-index-transparent-address = { workspace = true }
 zaino-internal-block-hash-to-height = { workspace = true }
 zaino-internal-value-balance = { workspace = true }
-zaino-grpc = { version = "0.1.0", path = "../zaino-grpc" }
+zaino-grpc = { workspace = true }
 zaino-source = { workspace = true }
 
 
@@ -60,9 +60,9 @@ http-body-util = { workspace = true }
 thiserror = { workspace = true }
 zaino-primitives.workspace = true
 zcash_protocol = { workspace = true }
-zaino-chainview = { version = "0.1.0", path = "../zaino-chainview" }
+zaino-chainview.workspace = true
 serde_json.workspace = true
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-persistence.workspace = true
 tracing-subscriber.workspace = true
 time.workspace = true
 unicode-ellipsis.workspace = true
@@ -79,19 +79,19 @@ zaino-peers.workspace = true
 futures.workspace = true
 bytes.workspace = true
 zaino-nfs.workspace = true
-zaino-traffic = { version = "0.1.0", path = "../zaino-traffic" }
-zaino-snapshot = { version = "0.1.0", path = "../zaino-snapshot" }
+zaino-traffic.workspace = true
+zaino-snapshot.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
 zaino-primitives = { workspace = true, features = ["testing"] }
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["test-util"] }
 zaino-header-chain = { workspace = true, features = ["testing"] }
 zaino-proto.workspace = true
 tonic.workspace = true
 zaino-source = { workspace = true, features = ["testing"] }
-zaino-chainview = { path = "../zaino-chainview", features = ["testing"] }
+zaino-chainview = { workspace = true, features = ["testing"] }
 sha2 = "0.10"
 
 [features]

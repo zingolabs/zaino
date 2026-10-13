@@ -1,6 +1,6 @@
 [package]
 name = "zaino-internal-block-hash-to-height"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 readme.workspace = true
@@ -11,13 +11,13 @@ description = "Block hash <-> height index: the locator every by-hash request re
 
 [dependencies]
 tokio = { workspace = true, features = ["sync"] }
-zaino-persistence = { version = "0.1.0", path = "../zaino-persistence" }
+zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 zcash_protocol.workspace = true
 
 [dev-dependencies]
-zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
 
