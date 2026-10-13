@@ -52,6 +52,7 @@ impl EndpointSet {
     }
 
     /// Endpoints at `positions` in the configured list (each `< ValidatorId::MAX`, asserted)
+    #[cfg(any(test, feature = "testing"))]
     pub fn at(positions: impl IntoIterator<Item = usize>) -> Self {
         positions
             .into_iter()
@@ -102,11 +103,9 @@ impl Agreement {
     }
 }
 
-/// One configured validator as last observed (`peers` = telemetry only, never gates serving)
+/// One configured validator as of its last poll (`peers` = telemetry only, never gates serving)
 ///
-/// - `health` = the balancer's, as of its last poll (`Live` + `CatchingUp` answer)
-/// - `info` = its last `getblockchaininfo` (its tip, clock estimate, upgrade schedule, branch)
-/// - `held` = its last `getblockhash`, at the best the poll started under
+/// - `held` = last `getblockhash` answer, at the best its poll started under
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValidatorMetadata {
     pub address: String,

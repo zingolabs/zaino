@@ -57,41 +57,38 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     let covered = |kind: IndexKind| covers.contains(&kind);
 
     let mut fees = None;
-    if covered(IndexKind::ValueBalance) {
-        let reader = parent.value_balance().unwrap_or_else(|| absent(IndexKind::ValueBalance));
-        let mut out = open(IndexKind::ValueBalance);
-        fees = Some(value_balance::fold(&reader, block, &mut out)?);
-        push(IndexKind::ValueBalance, out);
-    }
-    if covered(IndexKind::CompactBlock) {
-        let fees = match fees {
-            Some(fees) => fees,
-            None => {
-                let reader =
-                    parent.value_balance().unwrap_or_else(|| absent(IndexKind::ValueBalance));
-                reader.block_fees(block)?
+    if covered(IndexKind::ValueBalance) || covered(IndexKind::CompactBlock) {
+        let reader = present(IndexKind::ValueBalance, parent.value_balance());
+        fees = Some(match covered(IndexKind::ValueBalance) {
+            true => {
+                let mut out = open(IndexKind::ValueBalance);
+                let fees = value_balance::fold(&reader, block, &mut out)?;
+                push(IndexKind::ValueBalance, out);
+                fees
             }
-        };
-        let reader = parent.compact_block().unwrap_or_else(|| absent(IndexKind::CompactBlock));
+            false => reader.block_fees(block)?,
+        });
+    }
+    if let Some(fees) = fees.filter(|_| covered(IndexKind::CompactBlock)) {
+        let reader = present(IndexKind::CompactBlock, parent.compact_block());
         let mut out = open(IndexKind::CompactBlock);
         compact_block::fold(&reader, block, &fees, &mut out)?;
         push(IndexKind::CompactBlock, out);
     }
     if covered(IndexKind::BlockHash) {
-        let reader = parent.block_hash().unwrap_or_else(|| absent(IndexKind::BlockHash));
+        let reader = present(IndexKind::BlockHash, parent.block_hash());
         let mut out = open(IndexKind::BlockHash);
         block_hash::fold(&reader, block, &mut out);
         push(IndexKind::BlockHash, out);
     }
     if covered(IndexKind::TreeState) {
-        let reader = parent.tree_state().unwrap_or_else(|| absent(IndexKind::TreeState));
+        let reader = present(IndexKind::TreeState, parent.tree_state());
         let mut out = open(IndexKind::TreeState);
         tree_state::fold(&reader, block, &mut out)?;
         push(IndexKind::TreeState, out);
     }
     if covered(IndexKind::TransparentAddress) {
-        let reader =
-            parent.transparent_address().unwrap_or_else(|| absent(IndexKind::TransparentAddress));
+        let reader = present(IndexKind::TransparentAddress, parent.transparent_address());
         let mut out = open(IndexKind::TransparentAddress);
         transparent_address::fold(&reader, block, &mut out);
         push(IndexKind::TransparentAddress, out);
@@ -99,8 +96,9 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     Ok(Folded { layers })
 }
 
-fn absent(kind: IndexKind) -> ! {
-    panic!("{}: covered, absent from the fold parent", kind.name())
+/// Covered `kind`'s reader from the fold parent (absent = a caller bug: panics)
+fn present<R>(kind: IndexKind, reader: Option<R>) -> R {
+    reader.unwrap_or_else(|| panic!("{}: covered, absent from the fold parent", kind.name()))
 }
 
 #[cfg(test)]

@@ -90,24 +90,26 @@ impl Listings {
             polled += 1;
             ids.iter().for_each(|id| listers.entry(*id).or_default().push(*peer));
         }
-        let admits = |peers: &Vec<SocketAddr>| {
-            peers.len() * 3 > polled * 2 && netgroups(peers.iter().copied()) > QUORUM_NETGROUPS
-        };
-        listers.into_iter().filter(|(_, peers)| admits(peers)).map(|(id, _)| id).collect()
+        let admitted = listers.into_iter().filter(|(_, peers)| quorum(peers, polled));
+        admitted.map(|(id, _)| id).collect()
     }
 
     /// One id's admission (the fold re-asks under its lock: the round may have moved on)
     pub(crate) fn admits(&self, id: &PeerTxId) -> bool {
         let peers: Vec<SocketAddr> =
             self.fresh().filter(|(_, ids)| ids.contains(id)).map(|(peer, _)| *peer).collect();
-        peers.len() * 3 > self.fresh().count() * 2
-            && netgroups(peers.into_iter()) > QUORUM_NETGROUPS
+        quorum(&peers, self.fresh().count())
     }
 
     /// > 1/3 of the fresh listings hold `txid`
     pub(crate) fn retains(&self, txid: &TransactionId) -> bool {
         self.listers(txid).len() * 3 > self.fresh().count()
     }
+}
+
+/// `listers` > 2/3 of `polled`, in > [`QUORUM_NETGROUPS`] netgroups
+fn quorum(listers: &[SocketAddr], polled: usize) -> bool {
+    listers.len() * 3 > polled * 2 && netgroups(listers.iter().copied()) > QUORUM_NETGROUPS
 }
 
 fn netgroups(peers: impl Iterator<Item = SocketAddr>) -> usize {

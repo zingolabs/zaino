@@ -44,7 +44,8 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
 
 ## Asking
 
-Every answer is `Answered { value, from, ticket }`: `from` names the member that sent it.
+Every answer is `Answered { value, ticket }`: `ticket` names the send that answered (`report` takes
+it).
 
 | Method | Class (lane) | Reaches | Ends |
 | --- | --- | --- | --- |
@@ -78,7 +79,7 @@ let checked = loop {
     let answered = balancer.block(hash, Urgency::Tip).await;
     match check_block(answered.value, height, &record) {
         Ok(checked) => break checked,
-        // benches `answered.from` alone; the re-ask never reaches it while benched
+        // benches the ticket's member alone; the re-ask never reaches it while benched
         Err(why) => balancer.report(answered.ticket, &why),
     }
 };

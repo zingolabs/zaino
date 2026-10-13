@@ -14,9 +14,7 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{
-    BlockHash, BlockRef, BlockchainInfo, ReorgDepth, TransactionId, Zatoshis,
-};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, TransactionId, Zatoshis};
 use zaino_traffic::{Health, ValidatorId};
 
 use crate::config::FINALITY_STALL;
@@ -175,7 +173,7 @@ impl Sighting {
         self.trusted
     }
 
-    /// Relayed by us, so known before it propagated anywhere.
+    /// Relayed by us (known before it propagated anywhere)
     pub(crate) fn ours(&self) -> bool {
         self.ours
     }
@@ -209,17 +207,9 @@ impl Sighting {
     }
 }
 
-/// One coherent answer: the verified chain, its holders, the mempool, every trusted validator's
-/// metadata
+/// One coherent answer: verified chain, its holders, mempool, each trusted validator's metadata
 ///
-/// - [`mempool`](Self::mempool) `None` while no live trusted validator holds the verified best
-///   and no peer quorum reads (no answer rather than a weak one)
-/// - `held_by` = `Live` validators whose last poll holds the best block, as of the last fold
-/// - `owed_since` = since when a block `depth` deep waits, final tip unmoved (stall alarm)
-/// - `mempool` ordered: two readers of one view walk it identically
-/// - `peers_live` = connected peers as of the last block-`inv` fold
 /// - `peers_carrying` = each live peer's latest announced block (peer finality's netgroup count)
-/// - `listings` = each live peer's last mempool listing (the quorum; `peers: x/y`)
 #[derive(Debug, Clone)]
 pub struct ChainViewSnapshot {
     pub(crate) chain: Option<Arc<VerifiedChain>>,
@@ -284,7 +274,9 @@ impl ChainViewSnapshot {
         addresses: &[&str],
         ours: &[(TransactionId, Bytes)],
     ) -> Self {
-        use zaino_primitives::types::{ConsensusBranchId, ConsensusBranchIds, Height};
+        use zaino_primitives::types::{
+            BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height,
+        };
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
@@ -397,14 +389,6 @@ impl ChainViewSnapshot {
         &self.endpoints
     }
 
-    /// `getblockchaininfo` of the first trusted validator holding the best block (`None` = none
-    /// holds it)
-    ///
-    /// - holders share the best block → one schedule, one branch
-    pub fn validator_info(&self) -> Option<&BlockchainInfo> {
-        self.held_by.positions().find_map(|at| self.endpoints.get(at)?.info.as_ref())
-    }
-
     /// Fewest outbound peers any two live validators share (`None` below two reporting any)
     pub fn shared_outbound_min(&self) -> Option<usize> {
         telemetry::shared_outbound_min(&telemetry::outbound(&self.endpoints))
@@ -467,15 +451,9 @@ impl MempoolView<'_> {
         self.0.mempool.iter().map(|(txid, sighting)| sighting.entry(*txid))
     }
 
-    /// `GetMempoolTx`'s filter: everything except the transactions a suffix identifies.
+    /// `GetMempoolTx`'s filter (`service.proto:293-305`): all but the entries a suffix identifies
     ///
-    /// `service.proto:293-305` — a suffix is matched against the txid's **protocol-order** bytes
-    /// (a truncated hex txid reverses into a byte suffix), and a suffix matching two or more
-    /// entries excludes none of them (ambiguous ⇒ the client keeps receiving both). A suffix
-    /// matching nothing is ignored; an empty suffix matches everything, so it excludes only a
-    /// single-entry mempool — fallout of the same rule, not a special case.
-    ///
-    /// `O(suffixes × entries)`, both mempool-bounded.
+    /// - suffix vs protocol-order txid bytes; one excluded only on a unique match (ambiguous → kept)
     pub fn excluding<B: AsRef<[u8]>>(&self, suffixes: &[B]) -> Vec<MempoolEntry> {
         let servable: Vec<MempoolEntry> = self.entries().collect();
         let mut excluded: Vec<TransactionId> = Vec::new();
@@ -494,4 +472,30 @@ impl MempoolView<'_> {
 
 fn ends_with(txid: &TransactionId, suffix: &[u8]) -> bool {
     <[u8; 32]>::from(*txid).ends_with(suffix)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_snapshot_of_a_sighting_shares_its_first_render() {
+        let txid = TransactionId::from([1; 32]);
+        let sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
+        let published = sighting.clone();
+        let first = sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>("first".into()));
+        let again = published.entry(txid).projection.get_or_render(|| Ok::<_, ()>("again".into()));
+        assert_eq!((first, again), (Ok("first".into()), Ok("first".into())));
+    }
+
+    #[test]
+    fn a_first_listed_fee_drops_the_unpriced_render() {
+        let txid = TransactionId::from([1; 32]);
+        let mut sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
+        let unpriced = sighting.entry(txid).projection;
+        let _ = unpriced.get_or_render(|| Ok::<_, ()>("unpriced".into()));
+        sighting.listed_fee(Zatoshis::ZERO);
+        let priced = sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>("priced".into()));
+        assert_eq!(priced, Ok(Bytes::from("priced")));
+    }
 }

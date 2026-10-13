@@ -44,7 +44,7 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 
 - `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more than
   `ValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted member of the
-  balancer (asserted).
+  balancer (`ConfigError::AddressCountMismatch` otherwise).
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
 
@@ -99,14 +99,13 @@ Cheap to clone; cannot drive polling or submit.
 | `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
 | `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
 | `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
-| `validator_info()` | the first holder's `BlockchainInfo`; `None` without a holder |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `spread(txid)` / `spreads()` | `Spread { peers: Count, trusted: Count, quorum, ours }` |
 | `endpoints()` | per-endpoint `ValidatorMetadata`, configured order |
 | `alarms()`, `shared_outbound_min()` | below |
 
 `EndpointSet` is a bitset over `ValidatorId`s: `positions()` yields configured positions,
-`EndpointSet::at(positions)` builds one.
+`EndpointSet::at(positions)` builds one (`testing` feature).
 
 `ValidatorMetadata`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
 last-observed time, peers (every 60 s), release (build, user agent, protocol, end-of-service

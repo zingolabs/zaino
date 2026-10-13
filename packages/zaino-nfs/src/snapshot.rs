@@ -290,23 +290,3 @@ impl<V: View> Indexed<V> {
         Self::new(chain, tip, Some(root), params, views, graph)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use zaino_primitives::testing::{h, MockChain};
-    use zcash_protocol::consensus::NetworkUpgrade;
-
-    use super::*;
-
-    /// The chain's schedule (pending ones included) under its label; its pools' first heights
-    #[test]
-    fn chain_params_are_the_chains_schedule_under_its_label() {
-        let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
-        let schedule = upgrades.without(NetworkUpgrade::Nu6_3);
-        let chain = MockChain::regtest().upgrades(schedule).network(NetworkType::Main);
-        let params = ChainParams::of(&chain);
-        assert_eq!(params, ChainParams { network: NetworkType::Main, schedule });
-        let activations = PoolActivations { sapling: h(1), orchard: Some(h(3)), ironwood: None };
-        assert_eq!(params.activations(), activations);
-    }
-}

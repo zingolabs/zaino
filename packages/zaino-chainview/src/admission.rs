@@ -119,37 +119,38 @@ mod tests {
         let (current, nu6_3) = raw_v5(BranchId::Nu6_3, 3, 0);
         let (_, nu6_2) = raw_v5(BranchId::Nu6_2, 4, 0);
         type Admitted = Result<(TransactionId, Zatoshis), Refused>;
-        let rows: [(&str, &[u8], Admitted); 9] = [
-            ("pays 9,000 of 10,000", &pays, Ok((paying, zats(1_000)))),
-            ("pays 11,000 of 10,000", &overpays, Err(Refused::Fee(FeeError::Negative))),
+        let malformed =
+            Refused::Malformed("malformed consensus bytes: failed to fill whole buffer".into());
+        let rows: [(&str, &[u8], Admitted, bool); 9] = [
+            ("pays 9,000 of 10,000", &pays, Ok((paying, zats(1_000))), false),
+            ("pays 11,000 of 10,000", &overpays, Err(Refused::Fee(FeeError::Negative)), false),
             (
                 "spends an unknown prevout",
                 &orphan,
                 Err(Refused::UnknownPrevout { txid: unknown.txid, vout: 3 }),
+                true,
             ),
-            ("a coinbase", &coinbase, Err(Refused::Coinbase)),
-            ("expires in the next block", &lasting, Ok((lasts, zats(0)))),
+            ("a coinbase", &coinbase, Err(Refused::Coinbase), false),
+            ("expires in the next block", &lasting, Ok((lasts, zats(0))), false),
             (
                 "expired below it",
                 &expired,
                 Err(Refused::Expired { expiry: 3_428_142, next: 3_428_143 }),
+                false,
             ),
-            ("signed for NU6.3", &nu6_3, Ok((current, zats(0)))),
+            ("signed for NU6.3", &nu6_3, Ok((current, zats(0))), false),
             (
                 "signed for NU6.2",
                 &nu6_2,
                 Err(Refused::Branch { built: BranchId::Nu6_2.into(), next: next.branch }),
+                false,
             ),
-            ("one byte short", &pays[..pays.len() - 1], Err(Refused::Malformed(String::new()))),
+            ("one byte short", &pays[..pays.len() - 1], Err(malformed), false),
         ];
-        for (row, raw, expected) in rows {
+        for (row, raw, expected, retried) in rows {
             let got = admissible(raw, next, utxos);
-            match (&got, &expected) {
-                (Err(Refused::Malformed(_)), Err(Refused::Malformed(_))) => {}
-                _ => assert_eq!(got, expected, "{row}"),
-            }
-            let retried = got.as_ref().err().is_some_and(Refused::retried);
-            assert_eq!(retried, matches!(expected, Err(Refused::UnknownPrevout { .. })), "{row}");
+            assert_eq!(got, expected, "{row}");
+            assert_eq!(got.err().is_some_and(|refused| refused.retried()), retried, "{row}");
         }
     }
 }

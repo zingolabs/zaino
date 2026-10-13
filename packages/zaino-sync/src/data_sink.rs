@@ -83,14 +83,11 @@ pub(crate) struct Queued<T> {
     _held: Option<OwnedSemaphorePermit>,
 }
 
-/// One delivered block of a [`Run`]
-pub type Applied<T> = (Height, Arc<T>);
-
 /// One batch of work off a [`Subscription`], in height order
 ///
 /// - `finalized` = its last block = `Step::Finalized` (the chain's final tip)
 pub struct Run<T> {
-    pub blocks: Vec<Applied<T>>,
+    pub blocks: Vec<(Height, Arc<T>)>,
     pub finalized: bool,
 }
 
@@ -246,11 +243,9 @@ impl<T: Weight> IndexerDataSink<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use zaino_primitives::testing::h;
 
-    fn h(n: u32) -> Height {
-        Height::try_from(n).expect("h")
-    }
+    use super::*;
 
     struct Blob(usize);
 

@@ -92,12 +92,8 @@ pub(crate) struct Permits {
 }
 
 impl Permits {
-    /// `max_connections` − the poll's own
+    /// `max_connections` − the poll's own (`>= MIN_CONNECTIONS`: `Limits::new`)
     pub(crate) fn trusted(max_connections: u32) -> Self {
-        assert!(
-            max_connections >= MIN_CONNECTIONS,
-            "max_connections covers the poll, every lane reserve + one shared"
-        );
         Self { max: max_connections - 1, reserve: 1 }
     }
 
@@ -126,14 +122,12 @@ impl Permits {
 mod tests {
     use super::*;
 
-    /// - MIN_CONNECTIONS = 5: of 8, the poll keeps 1; a lane fills the shared permits, never
-    ///   another lane's reserve
+    /// - of 8, the poll keeps 1; a lane fills the shared permits, never another lane's reserve
     /// - each lane still admits its reserved one with every shared permit taken
     /// - peers: same lanes, no poll's permit
     #[test]
     fn lanes_share_idle_permits_but_never_a_reserve() {
         let permits = Permits::trusted(8);
-        assert_eq!(MIN_CONNECTIONS, 5);
         let mut in_flight = [0; LANES];
         while permits.admits(&in_flight, Lane::Bulk) {
             in_flight[Lane::Bulk.index()] += 1;

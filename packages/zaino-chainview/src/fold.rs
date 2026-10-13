@@ -21,7 +21,7 @@ use crate::ports::Heard;
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
 
-/// What a fold compares against once it has changed the state
+/// State before a fold's change (settle's baseline)
 struct Before {
     best: Option<BlockRef>,
     readers: EndpointSet,
@@ -120,94 +120,86 @@ impl ChainViewCore {
         endpoint: ValidatorId,
         report: EndpointReport,
     ) -> Vec<TransactionId> {
-        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
-        let mut touched: Vec<TransactionId> = Vec::new();
-        let mut unadmitted: Vec<TransactionId> = Vec::new();
-        let before = Before::of(&guard);
-
-        let state = &mut *guard;
-        let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
-            return unadmitted;
-        };
-
-        match report {
-            EndpointReport::Read(reading) => {
-                meta.health = Health::Live;
-                read(meta, reading);
-            }
-            EndpointReport::Listed(listing) => {
-                for txid in &listing.removed {
-                    if let Some(sighting) = state.mempool.get_mut(txid) {
-                        sighting.unsight(endpoint);
-                        touched.push(*txid);
-                    }
+        self.fold(|state| {
+            let mut touched: Vec<TransactionId> = Vec::new();
+            let mut unadmitted: Vec<TransactionId> = Vec::new();
+            let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
+                return (None, unadmitted);
+            };
+            match report {
+                EndpointReport::Read(reading) => {
+                    meta.health = Health::Live;
+                    read(meta, reading);
                 }
-                for sighted in listing.added {
-                    match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
-                        (Some(sighting), _) => {
-                            let verified = sighting.timeline().first_trusted.is_some();
-                            sighting.sight(endpoint);
-                            sighting.listed_fee(sighted.fee);
-                            if !verified {
-                                telemetry::first_trusted(sighting);
+                EndpointReport::Listed(listing) => {
+                    for txid in &listing.removed {
+                        if let Some(sighting) = state.mempool.get_mut(txid) {
+                            sighting.unsight(endpoint);
+                            touched.push(*txid);
+                        }
+                    }
+                    for sighted in listing.added {
+                        match (state.mempool.get_mut(&sighted.txid), sighted.raw) {
+                            (Some(sighting), _) => {
+                                let verified = sighting.timeline().first_trusted.is_some();
+                                sighting.sight(endpoint);
+                                sighting.listed_fee(sighted.fee);
+                                if !verified {
+                                    telemetry::first_trusted(sighting);
+                                }
+                            }
+                            (None, Some(raw)) => {
+                                let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
+                                sighting.sight(endpoint);
+                                telemetry::first_trusted(&sighting);
+                                state.mempool.insert(sighted.txid, sighting);
+                            }
+                            // held at the fetch-once check, gone before the fold
+                            (None, None) => {
+                                unadmitted.push(sighted.txid);
+                                continue;
                             }
                         }
-                        (None, Some(raw)) => {
-                            let mut sighting = Sighting::new(raw, Some(sighted.fee), false);
-                            sighting.sight(endpoint);
-                            telemetry::first_trusted(&sighting);
-                            state.mempool.insert(sighted.txid, sighting);
-                        }
-                        // Held at the fetch-once check, gone by the time the fold ran.
-                        (None, None) => {
-                            unadmitted.push(sighted.txid);
-                            continue;
-                        }
+                        touched.push(sighted.txid);
                     }
-                    touched.push(sighted.txid);
+                }
+                EndpointReport::CatchingUp(reading) => {
+                    meta.health = Health::CatchingUp;
+                    read(meta, reading);
+                    touched.extend(retract(&mut state.mempool, endpoint));
+                }
+                EndpointReport::Failed => meta.health = Health::Degraded,
+                EndpointReport::Down => {
+                    meta.health = Health::Down;
+                    (meta.info, meta.held) = (None, None);
+                    meta.peers = Vector::new();
+                    touched.extend(retract(&mut state.mempool, endpoint));
                 }
             }
-            EndpointReport::CatchingUp(reading) => {
-                meta.health = Health::CatchingUp;
-                read(meta, reading);
-                touched.extend(retract(&mut state.mempool, endpoint));
-            }
-            EndpointReport::Failed => meta.health = Health::Degraded,
-            EndpointReport::Down => {
-                meta.health = Health::Down;
-                (meta.info, meta.held) = (None, None);
-                meta.peers = Vector::new();
-                touched.extend(retract(&mut state.mempool, endpoint));
-            }
-        }
-
-        self.settle(guard, before, touched);
-        unadmitted
+            (Some(touched), unadmitted)
+        })
     }
 
     /// One batch of block `inv`s + the live peer set; publishes only on a change
     ///
-    /// - only live (outbound) peers carry the chain: an inbound one is anyone who dialed us
+    /// - only live (outbound) peers carry the chain (inbound = anyone who dialed us)
     pub(crate) fn apply_heard(&self, batch: Vec<Heard>, live: Vec<SocketAddr>) {
-        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
-        let before = Before::of(&guard);
-        let state = &mut *guard;
-        let live: OrdSet<SocketAddr> = live.into_iter().collect();
-        let mut changed = live != state.peers_live;
-        let carrying = std::mem::take(&mut state.peers_carrying);
-        let carriers = carrying.len();
-        state.peers_carrying =
-            carrying.into_iter().filter(|(peer, _)| live.contains(peer)).collect();
-        changed |= state.peers_carrying.len() != carriers;
-        state.peers_live = live;
-        for Heard { peer, hash } in batch {
-            if state.peers_live.contains(&peer) {
-                changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
+        self.fold(|state| {
+            let live: OrdSet<SocketAddr> = live.into_iter().collect();
+            let mut changed = live != state.peers_live;
+            let carrying = std::mem::take(&mut state.peers_carrying);
+            let carriers = carrying.len();
+            state.peers_carrying =
+                carrying.into_iter().filter(|(peer, _)| live.contains(peer)).collect();
+            changed |= state.peers_carrying.len() != carriers;
+            state.peers_live = live;
+            for Heard { peer, hash } in batch {
+                if state.peers_live.contains(&peer) {
+                    changed |= state.peers_carrying.insert(peer, hash) != Some(hash);
+                }
             }
-        }
-        if changed {
-            self.settle(guard, before, Vec::new());
-        }
+            (changed.then(Vec::new), ())
+        })
     }
 
     /// One mempool poll round (each live peer's answer, `None` = failed) folded, published:
@@ -217,64 +209,75 @@ impl ChainViewCore {
         answers: Vec<(SocketAddr, Option<Vec<PeerTxId>>)>,
         now: Instant,
     ) -> Vec<Candidate> {
-        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
-        let before = Before::of(&guard);
-        let state = &mut *guard;
-        state.listings.round(answers, now);
-        let lost: Vec<TransactionId> = state
-            .mempool
-            .iter()
-            .filter(|(txid, sighting)| sighting.quorum() && !state.listings.retains(txid))
-            .map(|(txid, _)| *txid)
-            .collect();
-        for txid in &lost {
-            if let Some(sighting) = state.mempool.get_mut(txid) {
-                sighting.set_quorum(false);
+        self.fold(|state| {
+            state.listings.round(answers, now);
+            let lost: Vec<TransactionId> = state
+                .mempool
+                .iter()
+                .filter(|(txid, sighting)| sighting.quorum() && !state.listings.retains(txid))
+                .map(|(txid, _)| *txid)
+                .collect();
+            for txid in &lost {
+                if let Some(sighting) = state.mempool.get_mut(txid) {
+                    sighting.set_quorum(false);
+                }
             }
-        }
-        let candidates = state.listings.admitted().into_iter().filter_map(|id| {
-            match state.mempool.get(&id.txid) {
-                Some(sighting) if sighting.quorum() => None,
-                Some(sighting) => Some((id, Some(sighting.raw().clone()))),
-                None => Some((id, None)),
-            }
-        });
-        let candidates = candidates.collect();
-        self.settle(guard, before, lost);
-        candidates
+            let candidates = state.listings.admitted().into_iter().filter_map(|id| {
+                match state.mempool.get(&id.txid) {
+                    Some(sighting) if sighting.quorum() => None,
+                    Some(sighting) => Some((id, Some(sighting.raw().clone()))),
+                    None => Some((id, None)),
+                }
+            });
+            let candidates = candidates.collect();
+            (Some(lost), candidates)
+        })
     }
 
     /// Candidates that passed our checks (`admission.rs`), each still admitted by the quorum now
     pub(crate) fn admit_by_quorum(&self, admitted: Vec<(PeerTxId, Bytes, Zatoshis)>) {
-        let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
-        let before = Before::of(&guard);
-        let state = &mut *guard;
-        let mut touched = Vec::new();
-        for (id, raw, fee) in admitted {
-            if !state.listings.admits(&id) {
-                continue;
-            }
-            if !state.mempool.contains_key(&id.txid) {
-                state.mempool.insert(id.txid, Sighting::new(raw, Some(fee), false));
-            }
-            if let Some(sighting) = state.mempool.get_mut(&id.txid) {
-                sighting.listed_fee(fee);
-                if sighting.set_quorum(true) {
-                    touched.push(id.txid);
+        self.fold(|state| {
+            let mut touched = Vec::new();
+            for (id, raw, fee) in admitted {
+                if !state.listings.admits(&id) {
+                    continue;
+                }
+                if !state.mempool.contains_key(&id.txid) {
+                    state.mempool.insert(id.txid, Sighting::new(raw, Some(fee), false));
+                }
+                if let Some(sighting) = state.mempool.get_mut(&id.txid) {
+                    sighting.listed_fee(fee);
+                    if sighting.set_quorum(true) {
+                        touched.push(id.txid);
+                    }
                 }
             }
-        }
-        if !touched.is_empty() {
-            self.settle(guard, before, touched);
-        }
+            ((!touched.is_empty()).then_some(touched), ())
+        })
     }
 
     /// Header sync's word: the verified chain (`None` = nothing verified yet)
     pub(crate) fn apply_headers(&self, chain: Option<Arc<VerifiedChain>>) {
+        self.fold(|state| {
+            state.verified(chain, Instant::now());
+            (Some(Vec::new()), ())
+        })
+    }
+
+    /// Under the fold lock: `change`, then [`settle`](Self::settle) on its `Some(touched)`
+    ///
+    /// - `None` = nothing changed (no publish)
+    fn fold<T>(
+        &self,
+        change: impl FnOnce(&mut ChainViewSnapshot) -> (Option<Vec<TransactionId>>, T),
+    ) -> T {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let before = Before::of(&guard);
-        guard.verified(chain, Instant::now());
-        self.settle(guard, before, Vec::new());
+        let (touched, out) = change(&mut guard);
+        if let Some(touched) = touched {
+            self.settle(guard, before, touched);
+        }
+        out
     }
 
     /// After any change: holders, agreement, alarms, spreads, drops, publish
@@ -298,7 +301,7 @@ impl ChainViewCore {
         let stalled = state.finality_stalled(Instant::now());
         state.alarms = telemetry::alarms(&state.endpoints, stalled);
 
-        // a reader joining or leaving can complete anyone's spread; otherwise only `touched`
+        // reader joined / left → any spread may complete (else only `touched`)
         let readers = state.mempool_readers();
         let spreading: Vec<TransactionId> = match readers == before.readers {
             true => touched.clone(),
@@ -312,8 +315,7 @@ impl ChainViewCore {
             }
         }
 
-        // unlisted entries do not survive a new best block (an `ours` nobody lists after a block
-        // = mined or gone)
+        // unlisted dropped on a new best block (`ours` nobody lists after a block = mined or gone)
         let moved = state.best() != before.best;
         let dropped: Vec<TransactionId> = state
             .mempool
@@ -330,7 +332,7 @@ impl ChainViewCore {
         self.publish(guard);
     }
 
-    /// Mark a transaction as relayed by us, admitting it before it has propagated.
+    /// Relayed by us → served before it propagates
     pub(crate) fn mark_ours(&self, txid: TransactionId, raw: Bytes) {
         let mut state = self.state.lock().expect("chainview fold mutex poisoned");
 
@@ -371,7 +373,7 @@ fn read(meta: &mut ValidatorMetadata, reading: Reading) {
     }
 }
 
-/// Clear one endpoint's bit from every sighting, returning the txids it held.
+/// `endpoint`'s bit cleared from every sighting → the txids it held
 fn retract(
     mempool: &mut imbl::OrdMap<TransactionId, Sighting>,
     endpoint: ValidatorId,

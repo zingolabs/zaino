@@ -310,10 +310,10 @@ fn run(moves: Vec<(Input, bool)>) {
     }
 }
 
-/// From tips alone (a chain always verified; holders `Live`, the rest `Pending`)
-/// The clock the model reads standing at: before every block, so every best is fresh
+/// Clock the model reads standing at (before every block: every best fresh)
 const EPOCH: i64 = 0;
 
+/// From tips alone (a chain always verified; holders `Live`, the rest `Pending`)
 fn standing_of(tips: &Tips) -> Standing {
     match (tips.held_by.is_empty(), tips.synced) {
         (true, true) => Standing::Degraded(Down::TipNotHeld),

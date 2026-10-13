@@ -7,17 +7,13 @@ use std::sync::Arc;
 
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::testing::MockChain;
+use zaino_primitives::testing::{h, MockChain};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_source::testing::Lie;
 use zaino_sync::check_block;
 
 use super::{Indexes, Input, NfsCore, Output};
 use crate::graph::Node;
-
-fn h(n: u32) -> Height {
-    Height::try_from(n).expect("h")
-}
 
 fn both() -> Indexes {
     Indexes::one(0).union(Indexes::one(1))

@@ -29,10 +29,8 @@ fn v(index: usize) -> ValidatorId {
 /// - lookup: absent on ours → partner; unknown everywhere → unanswered with the absence
 /// - pinned headers, bytes from the best tier (ours: not listed there = `NotFound` item)
 /// - submit: pinned, accepted; garbage = unanswered with the rejection
-/// - block: ours first; reported → benched (table, entries), the re-ask served by partner, by
-///   hash and by height alike
 #[tokio::test(start_paused = true)]
-async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_another_serves() {
+async fn each_class_reaches_the_member_its_route_names() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine_empty(3);
     let blocks = chain.blocks(tip);
@@ -53,7 +51,7 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     tokio::spawn(driver.run(cancel.clone()));
 
     let found = within("a lookup", balancer.transaction(txid)).await.expect("partner holds it");
-    assert_eq!((found.from, found.value.bytes), (MemberId::Trusted(v(1)), raw.clone()));
+    assert_eq!((found.ticket.member, found.value.bytes), (MemberId::Trusted(v(1)), raw.clone()));
     let unknown = TransactionId::from([7; 32]);
     let absent =
         within("a lookup", balancer.transaction(unknown)).await.expect_err("nobody holds it").last;
@@ -64,29 +62,49 @@ async fn each_answer_names_its_sender_and_a_reported_liar_is_benched_until_anoth
     let links = within("headers", balancer.headers(pinned)).await.expect("ours answers");
     let link = |at: usize| Ok(BlockLink { header: chain.header_bytes(blocks[at].header().hash) });
     let expected = vec![link(0), link(3), Err(GetAtHeightError::HeightNotFound(h(4)))];
-    assert_eq!((links.from, links.value), (MemberId::Trusted(v(0)), expected));
+    assert_eq!((links.ticket.member, links.value), (MemberId::Trusted(v(0)), expected));
     let listed = MempoolListed { txid, fee: chain.mempool()[0].fee, encoded_len: raw.len() as u32 };
     let bytes = within("bytes", balancer.bytes(vec![listed], vec![MemberId::Trusted(v(1))]))
         .await
         .expect("answered");
     let not_listed = vec![Err(GetRawMempoolTransactionError::NotFound(txid))];
-    assert_eq!((bytes.from, bytes.value), (MemberId::Trusted(v(0)), not_listed), "best tier first");
+    let best_tier = (bytes.ticket.member, bytes.value);
+    assert_eq!(best_tier, (MemberId::Trusted(v(0)), not_listed), "best tier first");
 
     let accepted = within("a submit", balancer.submit(v(1), sent)).await.expect("well-formed");
-    assert_eq!((accepted.from, accepted.value), (MemberId::Trusted(v(1)), sent_id));
+    assert_eq!((accepted.ticket.member, accepted.value), (MemberId::Trusted(v(1)), sent_id));
     let refused =
         within("a submit", balancer.submit(v(0), vec![9; 8])).await.expect_err("malformed").last;
     assert!(matches!(refused, Some(QueryError::Domain(SendRawTransactionError::Malformed(_)))));
+    cancel.cancel();
+}
 
-    let hash = blocks[2].header().hash;
+/// Two members at one tip: ours answers a block first; reported → benched (table, entries), the
+/// re-ask served by partner, by hash and by height alike
+#[tokio::test(start_paused = true)]
+async fn a_reported_liar_is_benched_until_another_serves() {
+    let mut chain = MockChain::regtest();
+    let tip = chain.mine_empty(3);
+    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
+    let (balancer, driver) = TrafficBalancer::new(
+        vec![
+            Trusted { source: Arc::new(chain.validator(tip)), priority: 0, limits },
+            Trusted { source: Arc::new(chain.validator(tip)), priority: 1, limits },
+        ],
+        None,
+    );
+    let cancel = CancellationToken::new();
+    tokio::spawn(driver.run(cancel.clone()));
+
+    let hash = chain.at(h(2)).hash;
     let first = within("a block", balancer.block(hash, Urgency::Tip)).await;
-    assert_eq!((first.from, first.value.header().hash), (MemberId::Trusted(v(0)), hash));
+    assert_eq!((first.ticket.member, first.value.header().hash), (MemberId::Trusted(v(0)), hash));
     balancer.report(first.ticket, &std::io::Error::other("merkle root mismatch"));
     let again = within("a block", balancer.block(hash, Urgency::Bulk)).await;
-    assert_eq!(again.from, MemberId::Trusted(v(1)), "the reported member benched");
+    assert_eq!(again.ticket.member, MemberId::Trusted(v(1)), "the reported member benched");
     let by_height =
         within("blocks by height", balancer.blocks_at(Arc::from([h(2)]), Urgency::Bulk)).await;
-    let served = (by_height.from, by_height.value[0].header().hash);
+    let served = (by_height.ticket.member, by_height.value[0].header().hash);
     assert_eq!(served, (MemberId::Trusted(v(1)), hash), "by height: the benched member skipped");
     tokio::time::sleep(Duration::from_millis(1)).await;
     let table = balancer.members().borrow().clone();
@@ -121,7 +139,7 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     let started = Instant::now();
     let hedged = within("a hedged block", balancer.block(tip.hash, Urgency::Tip)).await;
     let waited = started.elapsed();
-    assert_eq!(hedged.from, MemberId::Trusted(v(1)));
+    assert_eq!(hedged.ticket.member, MemberId::Trusted(v(1)));
     assert!((Duration::from_secs(2)..Duration::from_millis(2_100)).contains(&waited), "{waited:?}");
 
     let mut polls = balancer.observe(v(0));
@@ -200,7 +218,8 @@ async fn a_block_no_member_serves_retries_forever_and_warns_each_minute() {
 
     ours.reachable(&[Port::Block], true);
     let served = within("the block served", asking).await.expect("ask task joins");
-    assert_eq!((served.from, served.value.header().hash), (MemberId::Trusted(v(0)), tip.hash));
+    let served = (served.ticket.member, served.value.header().hash);
+    assert_eq!(served, (MemberId::Trusted(v(0)), tip.hash));
     let answered = lines(&captured).into_iter().filter(|l| l.contains("Stalled ask answered"));
     assert_eq!(answered.count(), 1, "one line once served");
     cancel.cancel();
@@ -293,17 +312,17 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
 
     let hash = chain.at(h(1)).hash;
     let served = within("a block", balancer.block(hash, Urgency::Tip)).await;
-    assert_eq!((served.from, served.value.header().hash), (MemberId::Peers, hash));
+    assert_eq!((served.ticket.member, served.value.header().hash), (MemberId::Peers, hash));
     balancer.report(served.ticket, &std::fmt::Error);
     let after = within("a block", balancer.block(chain.at(h(2)).hash, Urgency::Tip)).await;
-    assert_eq!(after.from, MemberId::Peers, "a report never benches the peer set");
+    assert_eq!(after.ticket.member, MemberId::Peers, "a report never benches the peer set");
     let ask = HeaderAsk::Peers { locator: vec![chain.genesis().hash], stop: None };
     let headers =
         within("peer headers", balancer.headers(ask)).await.expect("the peer set answers");
     let header =
         |height: u32| Ok(BlockLink { header: chain.header_bytes(chain.at(h(height)).hash) });
     let held = vec![header(1), header(2)];
-    assert_eq!((headers.from, headers.value), (MemberId::Peers, held));
+    assert_eq!((headers.ticket.member, headers.value), (MemberId::Peers, held));
     let lookup = within("a lookup", balancer.transaction(TransactionId::from([1; 32])))
         .await
         .expect_err("trusted down");
@@ -324,8 +343,10 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     assert!(none.is_err(), "nobody holds it: pending, never unanswered");
     validator.reachable(&Port::ALL, true);
     let back = within("the block once reachable", pending).await;
-    assert_eq!((back.from, back.value.header().hash), (MemberId::Trusted(v(0)), lacking));
+    let back = (back.ticket.member, back.value.header().hash);
+    assert_eq!(back, (MemberId::Trusted(v(0)), lacking));
     let at_one = within("by height once reachable", by_height).await;
-    assert_eq!((at_one.from, at_one.value[0].header().hash), (MemberId::Trusted(v(0)), hash));
+    let at_one = (at_one.ticket.member, at_one.value[0].header().hash);
+    assert_eq!(at_one, (MemberId::Trusted(v(0)), hash));
     cancel.cancel();
 }

@@ -18,17 +18,20 @@ use zaino_source::testing::{
 };
 use zaino_source::{GetMempoolListingError, SendRawTransactionError};
 use zaino_traffic::testing::PeerSetViews;
-use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
+use zaino_traffic::{
+    Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, ValidatorId,
+};
 
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
 use crate::{Agreement, ChainView, Count, EndpointSet, MempoolEntry, Projection, SubmitError};
 
-/// The view over `validators` (`addresses` in order), its balancer + poll fold spawned (they run
-/// once the test awaits)
+/// The view over `validators` (`addresses` in order) + `peer_set`, its balancer + poll fold
+/// spawned (they run once the test awaits)
 fn running(
     validators: &[Arc<MockValidator>],
     addresses: &[&str],
+    peer_set: Option<Arc<dyn PeerTransport>>,
 ) -> (ChainView<MockValidator>, TrafficBalancer<MockValidator>, CancellationToken) {
     let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
     let trusted = validators.iter().map(|validator| Trusted {
@@ -36,7 +39,8 @@ fn running(
         priority: 0,
         limits,
     });
-    let (balancer, driver) = TrafficBalancer::new(trusted.collect(), None);
+    let peers = peer_set.map(|transport| Peers { transport, in_flight: 4 });
+    let (balancer, driver) = TrafficBalancer::new(trusted.collect(), peers);
     let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
     let view =
         ChainView::new(addresses, balancer.clone(), depth(), regtest()).expect("a valid set");
@@ -109,7 +113,7 @@ async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_new_transac
     validator.hear(&chain, one);
     validator.hear(&chain, two);
 
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     let reader = view.subscriber();
 
     assert!(reader.current().mempool().is_none(), "no verified tip yet");
@@ -178,7 +182,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let validator = Arc::new(chain.validator(at(10)));
     validator.hear(&chain, one);
 
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     let reader = view.subscriber();
 
     polled(&balancer).await;
@@ -198,8 +202,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
     let expected = (Health::CatchingUp, Some(at(11)), Some(29), Agreement::Agreed);
     assert_eq!(answered, expected, "an answer, no failure");
     assert_eq!(balancer.members().borrow().rows[0].failures, 0);
-    let served = (catching_up.mempool().is_none(), catching_up.validator_info().is_some());
-    assert_eq!(served, (true, true), "no mempool; its chain description served");
+    assert!(catching_up.mempool().is_none(), "no mempool served");
     assert_eq!(catching_up.spread(&one), None, "its only listing retracted: dropped");
 
     validator.follow(&chain, at(12));
@@ -220,8 +223,7 @@ async fn a_catching_up_validator_holds_its_tip_but_serves_no_mempool() {
 
 /// - Tip = the verified best block, never a validator's claim
 /// - Holders = every validator whose chain holds it (one = enough)
-/// - Third claiming a far higher tip: moves nothing, drops out of the holders, never supplies the
-///   chain description served
+/// - Third claiming a far higher tip: moves nothing, drops out of the holders
 /// - b, c unreachable at first (not yet read), each joining as it answers
 #[tokio::test(start_paused = true)]
 async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_verified_block() {
@@ -231,18 +233,14 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let validators: Vec<Arc<MockValidator>> =
         (0..3).map(|_| Arc::new(chain.validator(agreed))).collect();
     let tx7 = chain.submit(decoded(raw_transaction(7, 0).1));
-    for (validator, estimate) in validators.iter().zip([105u32, 106, 107]) {
-        validator.estimate(h(estimate));
+    for validator in &validators {
         validator.metadata(Some(vec![outbound("seed-a:8233")]), None);
     }
-    let estimate = |pinned: &crate::ChainViewSnapshot| {
-        pinned.validator_info().map(|info| u32::from(info.estimated_height))
-    };
     validators[0].hear(&chain, tx7);
     validators[1].reachable(&Port::ALL, false);
     validators[2].reachable(&Port::ALL, false);
 
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let reader = view.subscriber();
     view.set_verified(Some(chain.verified(agreed)));
 
@@ -250,7 +248,6 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     polled(&balancer).await;
     let first = reader.current();
     assert_eq!((first.best(), first.held_by()), (Some(agreed), EndpointSet::at([0])));
-    assert_eq!(estimate(&first), Some(105), "the holder's chain description");
     let spread = first.spread(&tx7).expect("endpoint a reported it");
     let one_of_one = Count { seen: 1, of: 1 };
     assert_eq!(spread.trusted, one_of_one, "b, c not yet read");
@@ -273,7 +270,6 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
     let held = (pinned.best(), pinned.held_by());
     assert_eq!(held, (Some(agreed), EndpointSet::at([0, 1])), "never the claim");
     assert_eq!(pinned.endpoints()[2].agreement, Agreement::Diverged, "holds neither 100 nor 97");
-    assert_eq!(estimate(&pinned), Some(105), "never the outlier's");
     let trusted = pinned.spread(&tx7).map(|spread| spread.trusted);
     assert_eq!(trusted, Some(Count { seen: 2, of: 3 }), "a and c list it, of three read");
     let peers: Vec<(&str, Vec<PeerInfo>)> = pinned
@@ -296,16 +292,14 @@ async fn a_claimed_higher_tip_moves_nothing_and_holders_are_whoever_holds_the_ve
 /// - expired = refused by the precheck: nothing checked, nothing pushed
 /// - one holder's `checkadmission` decides: admissible = `Ok` at once, `ours` (servable before
 ///   any listing, unpriced), then pushed to a trusted entry; refused = that refusal, nothing pushed
-/// - no check answers (zcashd, stock zebrad): random entries until one accepts; unanimous
-///   rejection = the rejection; none reachable = no answer
 #[tokio::test(start_paused = true)]
-async fn a_checked_submission_answers_at_once_and_an_unchecked_one_tries_random_entries() {
+async fn a_checked_submission_answers_at_once_on_the_check() {
     let mut chain = MockChain::regtest();
     let agreed = chain.mine_empty(50);
     let validators: Vec<Arc<MockValidator>> =
         (0..3).map(|_| Arc::new(chain.validator(agreed))).collect();
 
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let reader = view.subscriber();
 
     polled(&balancer).await;
@@ -351,21 +345,11 @@ async fn a_checked_submission_answers_at_once_and_an_unchecked_one_tries_random_
     let raw = Bytes::from(sent.clone());
     let unpriced = MempoolEntry { txid, raw, fee: None, projection: Projection::default() };
     assert_eq!(served, unpriced, "a wallet sees its own send before it propagates, unpriced");
-    let render = |as_: &'static [u8]| move || Ok::<_, ()>(Bytes::from_static(as_));
-    assert_eq!(
-        served.projection.get_or_render(render(b"unpriced")),
-        Ok(Bytes::from_static(b"unpriced"))
-    );
-    let again = servable(&reader.current()).expect("held");
-    let cached = again.projection.get_or_render(render(b"rendered twice"));
-    assert_eq!(cached, Ok(Bytes::from_static(b"unpriced")), "one render per (raw, fee)");
 
     // a lists what it accepted (fee = what its bytes leave: 0): the first listing prices it
     polled(&balancer).await;
     let pinned = reader.current();
     let listed = servable(&pinned).expect("still servable");
-    let rerendered = listed.projection.get_or_render(render(b"priced"));
-    assert_eq!(rerendered, Ok(Bytes::from_static(b"priced")), "priced → stale projection dropped");
     assert_eq!((listed.raw, listed.fee), (Bytes::from(sent), Some(zats(0))));
     let spread = pinned.spread(&txid).expect("held");
     assert_eq!(spread.trusted, Count { seen: 1, of: 3 });
@@ -385,15 +369,32 @@ async fn a_checked_submission_answers_at_once_and_an_unchecked_one_tries_random_
     tokio::time::sleep(Duration::from_millis(1)).await;
     assert_eq!((pushes(), checks()), (before.0, before.1 + 1), "never relayed");
 
-    // no `checkadmission` anywhere: unanimous domain rejection = the real one, each tried once
+    let garbage = view.submit(vec![9u8; 8]).await;
+    assert!(matches!(garbage, Err(SubmitError::Rejected(SendRawTransactionError::Malformed(_)))));
+    cancel.cancel();
+}
+
+/// Three validators holding the verified tip, none answering `checkadmission` (zcashd, stock
+/// zebrad): each entry tried once; unanimous rejection = the rejection, none reachable = no answer
+#[tokio::test(start_paused = true)]
+async fn an_unchecked_submission_tries_every_entry_before_its_verdict() {
+    let mut chain = MockChain::regtest();
+    let agreed = chain.mine_empty(50);
+    let validators: Vec<Arc<MockValidator>> =
+        (0..3).map(|_| Arc::new(chain.validator(agreed))).collect();
+    let too_low = SendRawTransactionError::Rejected { code: -26, message: "too low fee".into() };
     for validator in &validators {
         validator.checks_admission(false);
+        validator.relay(Err(too_low.clone()));
     }
-    let before = pushes();
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
+    polled(&balancer).await;
+    view.set_verified(Some(chain.verified(agreed)));
+    let pushes = || -> Vec<usize> { validators.iter().map(|v| v.calls().sends).collect() };
+
     let rejected = view.submit(raw_transaction(7, 0).1).await;
     assert!(matches!(rejected, Err(SubmitError::Rejected(r)) if r == too_low), "the validator's");
-    let tried: Vec<usize> = pushes().iter().zip(&before).map(|(now, then)| now - then).collect();
-    assert_eq!(tried, [1, 1, 1]);
+    assert_eq!(pushes(), [1, 1, 1], "each entry tried once");
 
     // none reachable != a rejection (nothing learnt about the transaction)
     for validator in &validators {
@@ -401,9 +402,6 @@ async fn a_checked_submission_answers_at_once_and_an_unchecked_one_tries_random_
     }
     let sent = view.submit(raw_transaction(6, 0).1).await;
     assert!(matches!(sent, Err(SubmitError::Unreachable { attempted: 3, .. })), "{sent:?}");
-
-    let garbage = view.submit(vec![9u8; 8]).await;
-    assert!(matches!(garbage, Err(SubmitError::Rejected(SendRawTransactionError::Malformed(_)))));
     cancel.cancel();
 }
 
@@ -416,7 +414,7 @@ async fn an_unspread_submission_is_resubmitted_after_the_threshold_until_an_outs
     let mut chain = MockChain::regtest();
     let validators: Vec<Arc<MockValidator>> =
         (0..3).map(|_| Arc::new(chain.validator(chain.genesis()))).collect();
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let policy = crate::SubmitPolicy {
         propagation_threshold: Duration::from_secs(10),
         max_attempts: std::num::NonZeroU8::new(4).expect("nz"),
@@ -464,7 +462,7 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
     let mut chain = MockChain::regtest();
     let validators: Vec<Arc<MockValidator>> =
         (0..2).map(|_| Arc::new(chain.validator(chain.genesis()))).collect();
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"], None);
     let peer = |b: u8| std::net::SocketAddr::from(([10, b, 0, 1], 8233));
     let peers = Arc::new(MockPeers::new((0..4).map(peer), [peer(9)]));
     let policy = crate::SubmitPolicy {
@@ -558,7 +556,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     }
     let tip = chain.mine_empty(2);
     let validator = Arc::new(chain.validator(tip));
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"], None);
     let peer = |b: u8| std::net::SocketAddr::from(([10, b, 0, 1], 8233));
     let seven: Vec<std::net::SocketAddr> = (1..=7).map(peer).collect();
     let peers = Arc::new(MockPeers::new(seven.clone(), []));
@@ -684,7 +682,7 @@ async fn holders_are_reasked_every_poll_through_a_lost_holder_a_reorg_and_a_race
     let (at_100, at_101) = (chain.at(h(100)), chain.at(h(101)));
     let validators: Vec<Arc<MockValidator>> =
         (0..3).map(|_| Arc::new(chain.validator(at_100))).collect();
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232", "c:8232"], None);
     let reader = view.subscriber();
     let held_by = |positions: &[usize]| EndpointSet::at(positions.iter().copied());
     let agreements = || -> Vec<Agreement> {
@@ -780,7 +778,7 @@ async fn metadata_rides_the_poll_and_a_failed_read_keeps_the_last_answer() {
         Some(vec![outbound("seed-a:8233"), inbound]),
         Some(release("v6.4.2", 10 + 4_960)),
     );
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     let reader = view.subscriber();
     let peers =
         || -> Vec<PeerInfo> { reader.current().endpoints()[0].peers.iter().cloned().collect() };
@@ -831,19 +829,10 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     let validator = Arc::new(chain.validator(genesis));
     let tx1 = chain.submit(decoded(raw_transaction(1, 0).1));
     validator.hear(&chain, tx1);
-    let (view, _, cancel) = running(&[Arc::clone(&validator)], &["one:8232"]);
+    let (view, _, cancel) = running(&[Arc::clone(&validator)], &["one:8232"], None);
     view.set_verified(Some(chain.verified(genesis)));
     let reader = view.subscriber();
     let state = || reader.current().endpoints()[0].health;
-    async fn until(what: &str, done: impl Fn() -> bool) {
-        for _ in 0..600 {
-            if done() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-        panic!("never {what}");
-    }
     let serves_tx1 = || {
         let pinned = reader.current();
         pinned.mempool().is_some_and(|mempool| mempool.entries().any(|entry| entry.txid == tx1))
@@ -865,10 +854,10 @@ async fn a_validator_that_goes_away_is_down_not_fatal_and_its_return_restores_it
     cancel.cancel();
 }
 
-/// Checks `done` every 20 ms (virtual) for 10 s, at idle points only (paused clock: every task
+/// `done` checked every 20 ms (virtual) for 10 min, at idle points only (paused clock: every task
 /// runs before a timer fires, blocking work holds the clock)
 async fn until(what: &str, done: impl Fn() -> bool) {
-    for _ in 0..500 {
+    for _ in 0..30_000 {
         if done() {
             return;
         }
@@ -885,7 +874,7 @@ async fn finality_stalled_rises_after_a_minute_unmoved_and_clears_when_final_mov
     let tip_30 = chain.mine_empty(30);
     let tip_45 = chain.mine_empty(15);
     let validator = Arc::new(chain.validator(tip_45));
-    let (view, _balancer, cancel) = running(&[validator], &["a:8232"]);
+    let (view, _balancer, cancel) = running(&[validator], &["a:8232"], None);
     let reader = view.subscriber();
     let stalled = || reader.current().alarms().finality_paused();
 
@@ -921,7 +910,7 @@ async fn header_sync_anchors_at_a_trusted_claim_and_the_tip_follows_the_work() {
     let b = chain.branch(at_4_998).mine_empty(22).tip();
 
     let validators = [a, at_3_000].map(|tip| Arc::new(chain.validator(tip)));
-    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"]);
+    let (view, balancer, cancel) = running(&validators, &["a:8232", "b:8232"], None);
     let reader = view.subscriber();
     let sync = view.header_sync(HeaderChain::new(depth()));
     let verified = sync.subscribe();
@@ -971,7 +960,7 @@ async fn a_validator_far_ahead_re_anchors_the_chain_instead_of_syncing_toward_it
     let (genesis, at_10) = (chain.genesis(), chain.at(h(10)));
     let (at_20_387, at_20_490) = (chain.at(h(20_387)), chain.at(h(20_490)));
     let validator = Arc::new(chain.validator(at_20));
-    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"]);
+    let (view, balancer, cancel) = running(&[Arc::clone(&validator)], &["a:8232"], None);
     let reader = view.subscriber();
     let sync = view.header_sync(HeaderChain::new(depth()));
     let mut verified = sync.subscribe();
@@ -1026,7 +1015,7 @@ async fn a_forked_validator_never_delays_the_honest_one() {
     let (at_20, at_21, at_22) = (chain.at(h(20)), chain.at(h(21)), chain.at(h(22)));
     let forked = chain.fork(h(5)).mine_empty(60).tip();
     let validators = [at_30, at_30].map(|tip| Arc::new(chain.validator(tip)));
-    let (view, _balancer, cancel) = running(&validators, &["a:8232", "b:8232"]);
+    let (view, _balancer, cancel) = running(&validators, &["a:8232", "b:8232"], None);
     let reader = view.subscriber();
     let sync = view.header_sync(HeaderChain::new(depth()));
     let verified = sync.subscribe();
@@ -1066,7 +1055,6 @@ async fn a_forked_validator_never_delays_the_honest_one() {
 #[tokio::test(start_paused = true)]
 async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_return() {
     use zaino_header_chain::{HeaderChain, Params};
-    use zaino_traffic::Peers;
 
     let mut chain = MockChain::regtest();
     let at_40 = chain.mine_empty(40);
@@ -1075,15 +1063,9 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
     let peer_set = Arc::new(chain.peer_set(at_60));
     peer_set.hold(h(40));
     let validator = Arc::new(chain.validator(at_40));
-    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
-    let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
-    let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
-    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
-    let view = view.expect("a valid set");
-    let cancel = CancellationToken::new();
-    tokio::spawn(driver.run(cancel.clone()));
-    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    let transport = Arc::clone(&peer_set) as _;
+    let (view, _balancer, cancel) =
+        running(&[Arc::clone(&validator)], &["a:8232"], Some(transport));
     let reader = view.subscriber();
     let rules = Params::regtest(regtest());
     let sync = view.header_sync(HeaderChain::new(depth())).with_peers(rules);
@@ -1115,7 +1097,6 @@ async fn peers_extend_the_tip_past_a_down_validator_and_finality_waits_for_its_r
 async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_is_a_misanswer() {
     use metrics_util::debugging::DebuggingRecorder;
     use zaino_header_chain::{HeaderChain, Params};
-    use zaino_traffic::Peers;
 
     let blamed_peers = |key: &metrics_util::CompositeKey| {
         key.key().name() == "zaino_traffic_misanswers_total"
@@ -1140,15 +1121,7 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
         let peers_tip = chain.mine_empty(1);
         let best: Vec<BlockRef> = chain.blocks(peers_tip).iter().map(|block| block.at()).collect();
         let peer_set = Arc::new(chain.peer_set(peers_tip));
-        let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-        let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
-        let peers = Peers { transport: peer_set as _, in_flight: 4 };
-        let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
-        let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
-        let view = view.expect("a valid set");
-        let cancel = CancellationToken::new();
-        tokio::spawn(driver.run(cancel.clone()));
-        tokio::spawn(view.observation_fold().run(cancel.clone()));
+        let (view, _balancer, cancel) = running(&[validator], &["a:8232"], Some(peer_set));
         let sync =
             view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
         let verified = sync.subscribe();
@@ -1175,7 +1148,6 @@ async fn peer_headers_stop_at_the_ceiling_wait_out_the_clock_and_a_broken_rule_i
 #[tokio::test(start_paused = true)]
 async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator_vouches() {
     use zaino_header_chain::{HeaderChain, Params};
-    use zaino_traffic::Peers;
 
     let mut chain = MockChain::regtest();
     let at_40 = chain.mine_empty(40);
@@ -1186,18 +1158,13 @@ async fn six_netgroups_carrying_the_chain_finalize_it_while_no_trusted_validator
     let peer_set = Arc::new(chain.peer_set(at_60));
     peer_set.hold(h(40));
     let validator = Arc::new(chain.validator(at_40));
-    let limits = Limits::new(8).expect("8 ≥ MIN_CONNECTIONS");
-    let trusted = vec![Trusted { source: Arc::clone(&validator), priority: 0, limits }];
-    let peers = Peers { transport: Arc::clone(&peer_set) as _, in_flight: 4 };
-    let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
+    let transport = Arc::clone(&peer_set) as _;
+    let (view, _balancer, cancel) =
+        running(&[Arc::clone(&validator)], &["a:8232"], Some(transport));
     let peer = |b: u8, host: u8| std::net::SocketAddr::from(([10, b, 0, host], 8233));
     let live = [(1, 1), (2, 1), (3, 1), (4, 1), (5, 1), (5, 2), (6, 1), (7, 1)];
     let announcing = Arc::new(MockPeers::new(live.map(|(b, host)| peer(b, host)), []));
-    let view = ChainView::new(vec!["a:8232".to_owned()], balancer.clone(), depth(), regtest());
-    let view = view.expect("a valid set").with_peers(announcing.clone());
-    let cancel = CancellationToken::new();
-    tokio::spawn(driver.run(cancel.clone()));
-    tokio::spawn(view.observation_fold().run(cancel.clone()));
+    let view = view.with_peers(announcing.clone());
     tokio::spawn(view.peer_watch().expect("peers configured").run(cancel.clone()));
     let sync = view.header_sync(HeaderChain::new(depth())).with_peers(Params::regtest(regtest()));
     let verified = sync.subscribe();

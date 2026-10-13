@@ -35,13 +35,6 @@ use super::*;
 
 const NETWORK: NetworkType = NetworkType::Regtest;
 const DEPTH: ReorgDepth = ReorgDepth::new(NonZeroU32::new(3).expect("nonzero"));
-const ALL: [IndexKind; 5] = [
-    IndexKind::ValueBalance,
-    IndexKind::CompactBlock,
-    IndexKind::BlockHash,
-    IndexKind::TreeState,
-    IndexKind::TransparentAddress,
-];
 
 /// Every record and row, table by table (engine-agnostic equality)
 type Tables = Vec<Vec<Vec<u8>>>;
@@ -119,7 +112,7 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let open =
         |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
-        ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
+        INDEXES.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
     let ((first, value_balance), others) = stores.split_first_mut().expect("indexes");
     assert_eq!(
         *first,
@@ -185,14 +178,10 @@ fn verify(
         };
         let block = at.tip();
         let path = blocks.blocks(blocks.block(*hash).at());
-        let path: Vec<BlockHash> = path.iter().map(|b| b.header().hash).collect();
-        let on_best = |h: usize| chain.on_best(BlockRef { hash: path[h], height: height(h) });
-        let shared = (0..path.len()).take_while(|&h| on_best(h));
-        let branch = match shared.count() {
+        let shared = path.iter().take_while(|block| chain.on_best(block.at())).count();
+        let branch = match shared {
             all if all == path.len() => Branch::Best,
-            shared => Branch::Side {
-                from: BlockRef { hash: path[shared - 1], height: height(shared - 1) },
-            },
+            shared => Branch::Side { from: path[shared - 1].at() },
         };
         assert_eq!((block.hash, at.branch()), (*hash, branch), "{context}: G7 at({hash:?})");
         for (kind, durable) in &durable {
@@ -215,10 +204,6 @@ fn verify(
             assert!(got == *expected, "{context}: N6 {name} at {through:?} != folded from genesis");
         }
     }
-}
-
-fn height(h: usize) -> Height {
-    Height::try_from(h as u32).expect("small chain")
 }
 
 /// One daemon's worth of pipeline over `engine`'s stores (infrastructure: no values under test)
@@ -388,15 +373,10 @@ fn mine(
     mined
 }
 
-/// Block tree (mined up front), then two pipelines over the same stores, each move settled
-/// (every index durable through final, served tip = best):
+/// Two pipelines over the same stores, each move settled (durable through final, served = best)
 ///
-/// - Run 0: A 1..=12 (final 9: bulk, then tip), B 10..=13 off A9 (longer, heavier), C13 off B12
-///   (same height), D12 off B11 (retreat), E 13..=16 (final 13), E 17..=20 (final 17)
-/// - Run 1: restart from those tips, E 21..=24 (final 21)
-/// - Bodies through the balancer: an honest member + a `Lie::Poisoned` liar (each lie reported,
-///   re-asked; never folded: the oracle would differ)
-/// - Final path: progress handed = the final tip after each move (none: nothing new since boot)
+/// - run 0: A1..=12, B10..=13 off A9, C13 off B12, D12 off B11, E13..=20; run 1: restart, E21..=24
+/// - bodies from an honest member + a `Lie::Poisoned` liar (each lie reported, never folded)
 #[tokio::test(start_paused = true)]
 async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finality_and_a_restart() {
     let miner = p2pkh([0xad; 20]);
@@ -449,7 +429,7 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     };
 
     for (run, moves) in runs.iter().enumerate() {
-        let mut pipeline = Pipeline::start(&engine, &ALL, &verified_rx, &balancer, params);
+        let mut pipeline = Pipeline::start(&engine, &INDEXES, &verified_rx, &balancer, params);
         let booted_at = pipeline.durable().into_iter().min().flatten();
         for (at, &(added, finalize)) in moves.iter().enumerate() {
             let context = format!("run {run} move {at}");

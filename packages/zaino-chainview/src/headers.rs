@@ -285,12 +285,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         if refused.is_none() {
             self.chain.vouch(top);
         }
-        self.finalize(&self.core.current());
-        // invariant pass: tests + `testing` builds only (never changes a result)
-        if cfg!(any(test, feature = "testing")) {
-            self.chain.check();
-        }
-        self.publish();
+        self.after_inserts();
         let verified = self.verified.borrow().clone();
         let holds = |at: BlockRef| verified.as_ref().is_some_and(|v| v.holds(at));
         let on_best = verified.as_ref().is_some_and(|v| v.hash_at(to) == Some(top.hash));
@@ -378,13 +373,19 @@ impl<S: ChainDataSource> HeaderSync<S> {
             }
         }
         if progressed {
-            self.finalize(&self.core.current());
-            if cfg!(any(test, feature = "testing")) {
-                self.chain.check();
-            }
-            self.publish();
+            self.after_inserts();
         }
         progressed
+    }
+
+    /// Finality against the current view, then publish
+    fn after_inserts(&mut self) {
+        self.finalize(&self.core.current());
+        // invariant pass: tests + `testing` builds only (never changes a result)
+        if cfg!(any(test, feature = "testing")) {
+            self.chain.check();
+        }
+        self.publish();
     }
 
     /// Final → min(vouched, best − depth); peers on and no vouch that deep → best − depth on the

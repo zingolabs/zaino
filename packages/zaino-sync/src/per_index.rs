@@ -27,9 +27,17 @@ impl<T> PerIndex<T> {
         self.0.iter().map(|(kind, value)| (*kind, value))
     }
 
-    /// `(kind, value)` at `position` (insert order)
-    pub fn at_mut(&mut self, position: usize) -> (IndexKind, &mut T) {
-        let (kind, value) = &mut self.0[position];
+    /// `(kind, value)` at `position` (insert order; panics past [`len`](Self::len))
+    pub fn at(&self, position: usize) -> (IndexKind, &T) {
+        let (kind, value) = &self.0[position];
         (*kind, value)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }

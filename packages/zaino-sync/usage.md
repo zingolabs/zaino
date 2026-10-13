@@ -73,7 +73,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
   index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
   moved). Either stops the follower; nothing is skipped.
 - Cancel → `Ok`; either way every queue ends with `Shutdown`.
-- `fetch_at(balancer, heights, urgency)` / `check_block_at`: one batch from a trusted member
+- By height (internal): one batch from a trusted member
   until every block's coinbase height matches its place in the batch (a misanswer `report`ed,
   the batch asked again). The body is the trusted member's word, not re-hashed; regressions in
   decoding are the job of the live sync test (`live-tests/sync`), which holds blocks, tree states
