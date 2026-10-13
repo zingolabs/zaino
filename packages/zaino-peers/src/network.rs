@@ -12,6 +12,8 @@
 //! - every id or hash handed out = zebra's own from the bytes; a peer answering with something
 //!   not asked for is dropped and scored as misbehaviour (zebra's address book bans on it)
 
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -197,20 +199,10 @@ impl PeerNetwork {
             Some(other) => return Err(unexpected("BlocksByHash", &other)),
             None => Vec::new(),
         };
-        let mut found = std::collections::HashMap::new();
-        for item in items {
-            let InventoryResponse::Available((block, peer)) = item else { continue };
-            let hash = wire::block_hash(block.hash());
-            match hashes.contains(&hash) {
-                true => {
-                    let supplied =
-                        Supplied { bytes: wire::block_bytes(&block), peer: peer.map(|p| *p) };
-                    drop(found.insert(hash, supplied));
-                }
-                false => self.lied(peer, "a block not asked for"),
-            }
-        }
-        Ok(hashes.iter().map(|hash| (*hash, found.remove(hash))).collect())
+        Ok(self.answered(hashes, items, "a block not asked for", |block, peer| {
+            let supplied = Supplied { bytes: wire::block_bytes(&block), peer: peer.map(|p| *p) };
+            (wire::block_hash(block.hash()), supplied)
+        }))
     }
 
     /// `peer` served something its own bytes refute (scored like any lie: zebra bans past its
@@ -247,16 +239,9 @@ impl PeerNetwork {
             Some(other) => return Err(unexpected("TransactionsById", &other)),
             None => Vec::new(),
         };
-        let mut found = std::collections::HashMap::new();
-        for item in items {
-            let InventoryResponse::Available((tx, peer)) = item else { continue };
-            let id = wire::peer_tx_id(tx.id);
-            match ids.contains(&id) {
-                true => drop(found.insert(id, wire::transaction_bytes(&tx))),
-                false => self.lied(peer, "a transaction not asked for"),
-            }
-        }
-        Ok(ids.iter().map(|id| (*id, found.remove(id))).collect())
+        Ok(self.answered(ids, items, "a transaction not asked for", |tx, _| {
+            (wire::peer_tx_id(tx.id), wire::transaction_bytes(&tx))
+        }))
     }
 
     /// `raw` relayed as zebrad relays: `PushTransaction` over the peer set's own connections to
@@ -283,6 +268,33 @@ impl PeerNetwork {
             }
             Err(failed) => Err(failed),
         }
+    }
+
+    /// Each `asked` key's value, `asked` order (`None` = not supplied)
+    ///
+    /// - `keyed` = key from the item's own bytes; key not asked for = dropped, sender scored
+    fn answered<K, A, M, V>(
+        &self,
+        asked: &[K],
+        items: Vec<InventoryResponse<(A, Option<PeerSocketAddr>), M>>,
+        what: &str,
+        keyed: impl Fn(A, Option<PeerSocketAddr>) -> (K, V),
+    ) -> Vec<(K, Option<V>)>
+    where
+        K: Copy + Eq + Hash,
+    {
+        let mut found = HashMap::new();
+        for item in items {
+            let InventoryResponse::Available((answer, peer)) = item else { continue };
+            let (key, value) = keyed(answer, peer);
+            match asked.contains(&key) {
+                true => {
+                    found.insert(key, value);
+                }
+                false => self.lied(peer, what),
+            }
+        }
+        asked.iter().map(|key| (*key, found.remove(key))).collect()
     }
 
     async fn call(&self, request: Request) -> Result<Response, PeerError> {
