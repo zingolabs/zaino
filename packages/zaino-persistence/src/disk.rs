@@ -32,11 +32,11 @@ use crate::{
         decode_list, encode_list, file_name, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
     },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
-    overlay::OverlayView,
+    overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, Sealed},
     port::{
-        BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema, SequenceId,
-        SequenceRead, Store, Verification, View,
+        table_slot, BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema,
+        SequenceId, SequenceRead, Store, Verification, View,
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
     write_buffer::{StagedView, WriteBuffer},
@@ -349,10 +349,7 @@ impl Store for DiskStore {
     }
 
     fn apply(&mut self, changes: BlockChanges) {
-        assert_eq!(changes.schema(), &self.schema, "changes built for another schema");
-        let last = self.buffer.tip().or(self.view.tip()).map(|tip| tip.height);
-        let tip = changes.block().height;
-        assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
+        self.buffer.assert_accepts(&changes, self.view.tip());
         self.buffer.push(&changes);
         if self.buffer.heap() >= self.write_buffer.get() {
             if let Err(error) = self.commit() {
@@ -409,13 +406,11 @@ impl DiskView {
     }
 
     fn sequence_pages(&self, table: SequenceId) -> &SequencePages {
-        let at = usize::from(table.0);
-        self.state.sequences.get(at).unwrap_or_else(|| panic!("{table:?} not in the schema"))
+        table_slot(&self.state.sequences, table)
     }
 
     fn map_snapshot(&self, table: MapId) -> &Snapshot {
-        let at = usize::from(table.0);
-        self.state.maps.get(at).unwrap_or_else(|| panic!("{table:?} not in the schema"))
+        table_slot(&self.state.maps, table).as_ref()
     }
 }
 

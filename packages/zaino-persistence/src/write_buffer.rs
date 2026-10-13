@@ -14,7 +14,8 @@ use zaino_primitives::types::{BlockRef, Height};
 use crate::{
     overlay::{Entry, OverlayView, Uncommitted},
     port::{
-        BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId, SequenceTable, Width,
+        table_slot, BlockChanges, Items, MapId, MapItems, MapTable, Schema, SequenceId,
+        SequenceTable, Width,
     },
 };
 
@@ -70,10 +71,8 @@ impl WriteBuffer {
         self.tip
     }
 
-    /// Panics before buffering anything: a map key held or inserted twice, removed twice, or
-    /// removed after its removal here
+    /// `changes` the caller checked with [`assert_accepts`](Uncommitted::assert_accepts)
     pub(crate) fn push(&mut self, changes: &BlockChanges) {
-        self.assert_new_keys(changes);
         for (&table, held) in self.schema.sequences().iter().zip(&mut self.sequences) {
             held.extend(changes.sequence_items(table));
         }
@@ -84,28 +83,14 @@ impl WriteBuffer {
         self.tip = Some(changes.block());
     }
 
-    fn assert_new_keys(&self, changes: &BlockChanges) {
-        changes.assert_distinct_keys();
-        for (&table, rows) in self.schema.maps().iter().zip(&self.maps) {
-            let name = table.name;
-            let held = |key: &[u8]| rows.find(table, key, &self.hasher);
-            let held_twice = changes.inserts(table).any(|(key, _)| held(key).is_some());
-            assert!(!held_twice, "{name}: a map key held twice");
-            let removed_twice = changes
-                .removes(table)
-                .any(|key| held(key).is_some_and(|row| rows.kinds[row] != Row::Value));
-            assert!(!removed_twice, "{name}: a map key removed twice");
-        }
-    }
-
     /// `table`'s records, oldest first (commit)
     pub(crate) fn records(&self, table: SequenceTable) -> impl Iterator<Item = &[u8]> {
-        self.sequences[usize::from(table.id.0)].items(table.record)
+        table_slot(&self.sequences, table.id).items(table.record)
     }
 
     /// `table`'s rows, arrival order (commit: the LSM sorts them); `None` = a tombstone
     pub(crate) fn map_rows(&self, table: MapTable) -> Vec<(&[u8], Option<&[u8]>)> {
-        let rows = &self.maps[usize::from(table.id.0)];
+        let rows = table_slot(&self.maps, table.id);
         let all = rows.keys.items(table.key).zip(rows.values.items(table.value)).zip(&rows.kinds);
         let written = all.filter_map(|((key, value), kind)| match kind {
             Row::Value => Some((key, Some(value))),
@@ -133,17 +118,11 @@ impl WriteBuffer {
     }
 
     fn sequence(&self, id: SequenceId) -> (SequenceTable, &Items) {
-        let at = usize::from(id.0);
-        let table = self.schema.sequences().get(at);
-        let table = table.unwrap_or_else(|| panic!("{id:?} not in the schema"));
-        (*table, &self.sequences[at])
+        (*table_slot(self.schema.sequences(), id), table_slot(&self.sequences, id))
     }
 
     fn map(&self, id: MapId) -> (MapTable, &MapRows) {
-        let at = usize::from(id.0);
-        let table = self.schema.maps().get(at);
-        let table = table.unwrap_or_else(|| panic!("{id:?} not in the schema"));
-        (*table, &self.maps[at])
+        (*table_slot(self.schema.maps(), id), table_slot(&self.maps, id))
     }
 }
 
@@ -158,7 +137,6 @@ impl MapRows {
         self.index(table, first, hasher);
         for key in items.removed.items(table.key) {
             if let Some(row) = self.find(table, key, hasher) {
-                assert_eq!(self.kinds[row], Row::Value, "{}: a map key removed twice", table.name);
                 self.kinds[row] = Row::Cancelled;
                 continue;
             }

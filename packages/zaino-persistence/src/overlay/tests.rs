@@ -71,14 +71,14 @@ impl View for Durable {
 }
 
 #[test]
-#[should_panic(expected = "not above its tip")]
+#[should_panic(expected = "apply at height 1, not above the last applied Some(Height(1))")]
 fn with_a_block_not_above_the_layer_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
     layer.with(&block(1));
 }
 
 #[test]
-#[should_panic(expected = "layer: another schema")]
+#[should_panic(expected = "changes built for another schema")]
 fn with_a_block_of_another_schema_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0));
     layer.with(&BlockChanges::new(block_ref(1), OTHER));

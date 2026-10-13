@@ -6,6 +6,7 @@
 //! - index declares its tables once (`const` handles); engine's `View` reads each kind it holds
 
 use std::{
+    fmt,
     num::{NonZeroU32, NonZeroUsize},
     ops::Range,
     path::Path,
@@ -197,6 +198,23 @@ pub struct SequenceId(pub(crate) u16);
 /// Map table's position among its schema's maps
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MapId(pub(crate) u16);
+
+impl From<SequenceId> for usize {
+    fn from(id: SequenceId) -> Self {
+        usize::from(id.0)
+    }
+}
+
+impl From<MapId> for usize {
+    fn from(id: MapId) -> Self {
+        usize::from(id.0)
+    }
+}
+
+/// `id`'s entry in a list held per table, schema order (panics: an id past the schema)
+pub(crate) fn table_slot<Id: Into<usize> + Copy + fmt::Debug, T>(per_table: &[T], id: Id) -> &T {
+    per_table.get(id.into()).unwrap_or_else(|| panic!("{id:?} not in the schema"))
+}
 
 /// Bytes per record, key or value
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

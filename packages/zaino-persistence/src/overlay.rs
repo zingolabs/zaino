@@ -15,7 +15,7 @@ use imbl::{OrdMap, Vector};
 use zaino_primitives::types::{BlockRef, Height};
 
 use crate::port::{
-    BlockChanges, CommittedView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
+    table_slot, BlockChanges, CommittedView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
 };
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
@@ -69,7 +69,7 @@ impl Overlay {
 
     /// This layer + `changes`, sharing structure with `self`
     ///
-    /// - panics: tip not above this one, another schema's tables, map key held twice
+    /// - panics: changes this layer does not [accept](Uncommitted::assert_accepts)
     pub fn with(&self, changes: &BlockChanges) -> Self {
         let mut next = self.clone();
         next.push(changes);
@@ -109,12 +109,7 @@ impl Overlay {
 
     /// [`with`](Self::with) in place
     fn push(&mut self, changes: &BlockChanges) {
-        let (tip, last) = (changes.block(), self.tip());
-        let above = last.is_none_or(|last| tip.height > last.height);
-        assert!(above, "layer: {tip:?} not above its tip {last:?}");
-        assert_eq!(changes.schema(), &self.schema, "layer: another schema");
-        self.assert_new_keys(changes);
-
+        self.assert_accepts(changes, None);
         let appends = (self.schema.sequences().iter())
             .zip(&mut self.sequences)
             .enumerate()
@@ -124,6 +119,7 @@ impl Overlay {
                 (held.len() > before).then(|| (at, held.len() - before))
             })
             .collect();
+        let tip = changes.block();
         let height = tip.height;
         let keys = (self.schema.maps().iter())
             .zip(&mut self.maps)
@@ -143,30 +139,14 @@ impl Overlay {
         self.deltas.push_back(Arc::new(Delta { tip, appends, keys }));
     }
 
-    /// Panics before any state moves: a key `changes` inserts twice, or this layer holds; a key it
-    /// removes twice, inserts too, or this layer already removed
-    fn assert_new_keys(&self, changes: &BlockChanges) {
-        changes.assert_distinct_keys();
-        for (&table, held) in self.schema.maps().iter().zip(&self.maps) {
-            let name = table.name;
-            let held_twice = changes.inserts(table).any(|(key, _)| held.contains_key(key));
-            assert!(!held_twice, "{name}: a map key held twice");
-            let removed = |key: &[u8]| held.get(key).is_some_and(|(_, e)| *e == Entry::Removed);
-            let removed_twice = changes.removes(table).any(removed);
-            assert!(!removed_twice, "{name}: a map key removed twice");
-        }
-    }
-
     /// `table`'s records past durable, oldest first
     pub(crate) fn records(&self, table: SequenceId) -> &Vector<Bytes> {
-        let found = self.sequences.get(usize::from(table.0));
-        found.unwrap_or_else(|| panic!("{table:?} not in the schema"))
+        table_slot(&self.sequences, table)
     }
 
     /// `table`'s entries above durable (each with the block that wrote it), in key order
     pub(crate) fn rows(&self, table: MapId) -> &OrdMap<Bytes, (Height, Entry)> {
-        let found = self.maps.get(usize::from(table.0));
-        found.unwrap_or_else(|| panic!("{table:?} not in the schema"))
+        table_slot(&self.maps, table)
     }
 }
 
@@ -198,6 +178,25 @@ pub trait Uncommitted: Clone {
 
     /// Every entry in `start..end`, key order (removals included: they mask durable)
     fn rows(&self, table: MapId, start: &[u8], end: &[u8]) -> Vec<(Bytes, Entry)>;
+
+    /// Panics before anything moves: another schema's changes, a tip not above this layer's (or
+    /// `floor`'s when empty), a key twice in `changes`, a key held here inserted again, a key
+    /// removed here removed again
+    fn assert_accepts(&self, changes: &BlockChanges, floor: Option<BlockRef>) {
+        assert_eq!(changes.schema(), self.schema(), "changes built for another schema");
+        let last = self.tip().or(floor).map(|tip| tip.height);
+        let tip = changes.block().height;
+        assert!(Some(tip) > last, "apply at height {tip}, not above the last applied {last:?}");
+        changes.assert_distinct_keys();
+        for &table in self.schema().maps() {
+            let name = table.name;
+            let held = |key: &[u8]| self.value(table.id, key);
+            let held_twice = changes.inserts(table).any(|(key, _)| held(key).is_some());
+            assert!(!held_twice, "{name}: a map key held twice");
+            let removed_twice = changes.removes(table).any(|key| held(key) == Some(Entry::Removed));
+            assert!(!removed_twice, "{name}: a map key removed twice");
+        }
+    }
 }
 
 impl Uncommitted for Overlay {
