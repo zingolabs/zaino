@@ -31,9 +31,12 @@ let grpc = ZcashGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::
 
 `at` builds the client from config without contacting the validator. An
 unreachable validator is the caller's retry, never a construction failure;
-`EndpointError` means a bad address, an unreadable cookie or TLS file, or a
-client that cannot be built. zainod picks one for every validator
-(`validator_client`).
+`EndpointError` means a bad address, an unreadable cookie or TLS file, a user
+without a password (or the reverse), or a client that cannot be built. zainod
+picks one for every validator (`validator_client`).
+
+Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
+`password` together are basic auth, and neither sends no `Authorization` header.
 
 ## The indexer gRPC: plaintext or mutual TLS
 
@@ -196,9 +199,10 @@ chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: ge
 - One double backs the traffic balancer, the chain view, the gRPC routes, the NFS and
   zainod's pipeline alike; reorgs = `follow` another tip of the same `MockChain`.
 
-`testing::fixtures::transactions(height)`: each transaction of a captured mainnet block
-from `tests/fixtures/` (419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000) as its own
-consensus bytes, for tests that need real transactions (every pool, every version).
+`testing::fixtures`: captured mainnet blocks from `tests/fixtures/` at `HEIGHTS`
+(419,200, 1,000,000, 1,687,104, 2,000,000, 2,500,000). `block(height)` = its consensus
+bytes; `transactions(height)` = each of its transactions as its own consensus bytes, for
+tests that need real transactions (every pool, every version).
 
 A mock module elsewhere must be gated `#[cfg(any(test, feature = "..."))]`: a
 bare feature gate that nothing enables compiles nothing, and its tests silently

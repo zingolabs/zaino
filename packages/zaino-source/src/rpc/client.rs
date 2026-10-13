@@ -16,7 +16,7 @@ use super::envelope;
 use super::error::RpcError;
 
 /// Largest body buffered (no OOM from one hostile reply; a full block = far below)
-pub(super) const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 /// - `read` = silence, never total duration (a multi-MB block over a slow link must finish; a
 ///   total deadline below its transfer time = retry livelock)
@@ -54,27 +54,15 @@ impl Default for LinkLimits {
 }
 
 /// `name` = metric label (the validator's configured address); `auth` = basic (user, password)
-pub struct RpcClientConfig {
-    pub url: String,
-    pub name: String,
-    pub auth: Option<(String, String)>,
-    pub timeouts: Timeouts,
-    pub limits: LinkLimits,
+pub(crate) struct RpcClientConfig {
+    pub(crate) url: String,
+    pub(crate) name: String,
+    pub(crate) auth: Option<(String, String)>,
+    pub(crate) timeouts: Timeouts,
+    pub(crate) limits: LinkLimits,
 }
 
-impl Default for RpcClientConfig {
-    fn default() -> Self {
-        Self {
-            url: "http://127.0.0.1:8232".to_string(),
-            name: "127.0.0.1:8232".to_string(),
-            auth: None,
-            timeouts: Timeouts::default(),
-            limits: LinkLimits::default(),
-        }
-    }
-}
-
-pub struct RpcClient {
+pub(crate) struct RpcClient {
     url: String,
     name: String,
     client: reqwest::Client,
@@ -84,7 +72,7 @@ pub struct RpcClient {
 }
 
 impl RpcClient {
-    pub fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
+    pub(crate) fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
         let limits = config.limits;
         let client = reqwest::Client::builder()
             .connect_timeout(config.timeouts.connect)
@@ -111,22 +99,19 @@ impl RpcClient {
         &self.name
     }
 
-    /// `n` received bytes against `max_bytes_per_sec` (unset = at once): waiting = reading stops,
-    /// the transport's flow control slows the sender
-    pub(crate) async fn pace(&self, n: usize) {
+    /// `n` bytes received: counted, then paced against `max_bytes_per_sec` (unset = at once)
+    ///
+    /// - waiting = reading stops, the transport's flow control slows the sender
+    pub(crate) async fn received(&self, n: usize) {
+        emit::received(&self.name, n);
         if let Some(bytes) = &self.bytes {
             charge(bytes, n).await;
         }
     }
 
-    /// `result` as a raw `Value`
-    pub async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
-        self.call_as(method, params).await
-    }
-
     /// `result` deserialized straight off the body as `T` (no `Value` hop: a multi-MB hex block
     /// is decoded from the body bytes once)
-    pub(crate) async fn call_as<T: DeserializeOwned>(
+    pub(crate) async fn call<T: DeserializeOwned>(
         &self,
         method: &str,
         params: Vec<Value>,
@@ -181,39 +166,31 @@ impl RpcClient {
         if !(200..300).contains(&status) {
             return Err(RpcError::Status(status));
         }
-        let body = read_body_capped(response, MAX_RESPONSE_BYTES, self.bytes.as_ref()).await?;
-        emit::received(&self.name, body.len());
+        self.read_body_capped(response).await
+    }
+
+    /// Chunk-wise (never allocates an oversized body; a lying `Content-Length` is caught by the
+    /// running total)
+    ///
+    /// - each chunk [`received`](Self::received) as read (pacing, not after-the-fact accounting)
+    async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<Vec<u8>, RpcError> {
+        let too_large = RpcError::ResponseBodyTooLarge { max: MAX_RESPONSE_BYTES };
+        let announced = response.content_length();
+        if announced.is_some_and(|len| len > MAX_RESPONSE_BYTES as u64) {
+            return Err(too_large);
+        }
+
+        // sized once from `Content-Length` (≤ max): no regrowth copies of a multi-MB body
+        let mut body = Vec::with_capacity(announced.map_or(0, |len| len as usize));
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                return Err(too_large);
+            }
+            self.received(chunk.len()).await;
+            body.extend_from_slice(&chunk);
+        }
         Ok(body)
     }
-}
-
-/// Chunk-wise (never allocates an oversized body; a lying `Content-Length` is caught by the
-/// running total)
-///
-/// - `bytes` charged per chunk as read: exhausted budget = reading stops, TCP backpressure slows
-///   the sender (pacing, not after-the-fact accounting)
-async fn read_body_capped(
-    mut response: reqwest::Response,
-    max: usize,
-    bytes: Option<&DefaultDirectRateLimiter>,
-) -> Result<Vec<u8>, RpcError> {
-    let announced = response.content_length();
-    if announced.is_some_and(|len| len > max as u64) {
-        return Err(RpcError::ResponseBodyTooLarge { max });
-    }
-
-    // sized once from `Content-Length` (≤ `max`): no regrowth copies of a multi-MB body
-    let mut body = Vec::with_capacity(announced.map_or(0, |len| len as usize));
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > max {
-            return Err(RpcError::ResponseBodyTooLarge { max });
-        }
-        if let Some(bytes) = bytes {
-            charge(bytes, chunk.len()).await;
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }
 
 /// `n` cells, in pieces no larger than the limiter's burst (one second's worth)
@@ -301,8 +278,14 @@ mod tests {
             (body, next.is_ok())
         });
 
-        let client =
-            RpcClient::new(RpcClientConfig { url, ..RpcClientConfig::default() }).expect("client");
+        let config = RpcClientConfig {
+            url,
+            name: "validator".to_owned(),
+            auth: None,
+            timeouts: Timeouts::default(),
+            limits: LinkLimits::default(),
+        };
+        let client = RpcClient::new(config).expect("client");
         let calls = ["x", "y", "z"]
             .map(|param| Call { method: "getrawtransaction", params: vec![Value::from(param)] })
             .to_vec();

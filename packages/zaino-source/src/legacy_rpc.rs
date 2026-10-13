@@ -47,25 +47,6 @@ impl ZcashLegacyRpcClient {
         Ok(Self { rpc })
     }
 
-    /// `getblock <id> 0` → bytes → [`decode::decode_block`]
-    async fn raw_block<E>(
-        &self,
-        id: String,
-        absent: impl FnOnce() -> E,
-    ) -> Result<Block, QueryError<E>>
-    where
-        E: std::fmt::Debug + std::fmt::Display,
-    {
-        let params = vec![id.into(), serde_json::Value::Number(0.into())];
-        let parse::HexBytes(raw) = self
-            .rpc
-            .call_as("getblock", params)
-            .await
-            .map_err(|error| absent_or_fetch(error, absent))?;
-        decode::decode_block(&raw)
-            .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
-    }
-
     /// Call + parse; `classify` decides which transport failures are the port's answer
     async fn call_parsed<T, E>(
         &self,
@@ -77,7 +58,7 @@ impl ZcashLegacyRpcClient {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call(method, params).await.map_err(classify)?;
+        let value = self.rpc.call::<serde_json::Value>(method, params).await.map_err(classify)?;
         parse(&value).map_err(|e| QueryError::NonDomain(from_parse(e)))
     }
 }
@@ -187,7 +168,13 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         &self,
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
-        self.raw_block(hash.to_string(), || GetBlockByHashError::NotFound(hash)).await
+        let params = vec![hash.to_string().into(), 0.into()];
+        let parse::HexBytes(raw) = self
+            .rpc
+            .call("getblock", params)
+            .await
+            .map_err(|error| absent_or_fetch(error, || GetBlockByHashError::NotFound(hash)))?;
+        decode::served_block(&raw)
     }
 
     async fn get_blocks_by_height(
@@ -203,8 +190,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         let decoded = heights.iter().zip(replies).map(|(height, reply)| {
             let absent = || GetAtHeightError::HeightNotFound(*height);
             let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
-            decode::decode_block(&raw)
-                .map_err(|e| NonDomainError::from_cause(FailureMode::Parse, e).into())
+            decode::served_block(&raw)
         });
         decoded.collect()
     }
@@ -223,10 +209,8 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             let replies = self.rpc.call_batch::<parse::HexBytes>(calls).await?;
             for (height, reply) in batch.iter().zip(replies) {
                 let absent = || GetAtHeightError::HeightNotFound(*height);
-                links.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
-                    Ok(parse::HexBytes(header)) => Ok(BlockLink { header }),
-                    Err(gone) => Err(gone),
-                });
+                let link = reply.map(|parse::HexBytes(header)| BlockLink { header });
+                links.push(split(link.map_err(|error| absent_or_fetch(error, absent)))?);
             }
         }
         Ok(links)
@@ -248,10 +232,10 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         let mut next = || replies.next().expect("a batch answers every call (parse_batch)");
 
         let info = parse::parse_blockchain_info(&next()?).map_err(from_parse)?;
-        let listing = match split(next().map_err(mempool_unavailable_or_fetch))? {
-            Ok(listing) => Ok(parse::parse_mempool_listing(&listing).map_err(from_parse)?),
-            Err(refused) => Err(refused),
-        };
+        let listing = next().map_err(mempool_unavailable_or_fetch).and_then(|listing| {
+            parse::parse_mempool_listing(&listing).map_err(|e| QueryError::NonDomain(from_parse(e)))
+        });
+        let listing = split(listing)?;
         let held = holds
             .iter()
             .map(|height| {
@@ -292,13 +276,11 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
                     params: vec![entry.txid.to_string().into(), 0.into()],
                 })
                 .collect();
-            let replies = self.rpc.call_batch(calls).await?;
+            let replies = self.rpc.call_batch::<parse::HexBytes>(calls).await?;
             for (entry, reply) in batch.iter().zip(replies) {
                 let absent = || GetRawMempoolTransactionError::NotFound(entry.txid);
-                fetched.push(match split(reply.map_err(|error| absent_or_fetch(error, absent)))? {
-                    Ok(value) => Ok(parse::parse_raw_transaction(&value).map_err(from_parse)?),
-                    Err(gone) => Err(gone),
-                });
+                let raw = reply.map(|parse::HexBytes(raw)| raw);
+                fetched.push(split(raw.map_err(|error| absent_or_fetch(error, absent)))?);
             }
         }
         Ok(fetched)

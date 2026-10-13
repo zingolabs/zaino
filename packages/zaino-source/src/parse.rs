@@ -223,11 +223,6 @@ fn as_zec(value: &serde_json::Value) -> Result<Zatoshis, ParseError> {
     Zatoshis::new(zats as u64).map_err(|_| ParseError::Zec(zec))
 }
 
-/// `getrawtransaction <txid> 0`: a bare hex string
-pub(crate) fn parse_raw_transaction(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
-    hex(value)
-}
-
 /// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best
 /// chain; any other negative refused (undefined, never folded into side chain)
 pub(crate) fn parse_transaction(
@@ -395,9 +390,9 @@ mod tests {
     }
 
     /// - All three placements pinned (side-chain tx reported as unmined = reads as pending)
-    /// - Undefined negative height refused; verbosity 0 = bare string
+    /// - Undefined negative height refused
     #[test]
-    fn transactions_place_themselves_and_raw_bytes_are_a_bare_string() {
+    fn transactions_place_themselves() {
         use TransactionLocation::{BestChain, Mempool, NonBestChain};
         let location = |value| parse_transaction(&value).map(|tx| tx.location);
         let mined = location(json!({ "hex": "00", "height": 12345 })).expect("mined");
@@ -406,11 +401,6 @@ mod tests {
         let height = Height::try_from(12345u32).expect("h");
         assert_eq!((mined, side, mempool), (BestChain(height), NonBestChain, Mempool));
         assert!(location(json!({ "hex": "00", "height": -7 })).is_err());
-
-        let raw = parse_raw_transaction(&json!("deadbeef")).expect("hex");
-        assert_eq!(raw, [0xde, 0xad, 0xbe, 0xef]);
-        let object = parse_raw_transaction(&json!({ "hex": "deadbeef" }));
-        assert!(matches!(object, Err(ParseError::UnexpectedType { .. })));
     }
 
     /// zebrad 6.4.2's shapes: mainnet → halt height; other networks → omitted; release before

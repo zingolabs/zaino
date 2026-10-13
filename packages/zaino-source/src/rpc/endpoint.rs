@@ -17,11 +17,14 @@ pub enum EndpointError {
     #[error("cannot read indexer TLS {role} {path}: {source}")]
     TlsFile { role: &'static str, path: String, source: std::io::Error },
 
+    #[error("validator basic auth needs both user and password")]
+    UnpairedCredentials,
+
     #[error("cannot build the validator RPC client: {0}")]
     Client(#[source] RpcError),
 }
 
-/// Credentials a validator expects, from the configured parts
+/// Basic-auth credentials a validator expects, from the configured parts (`None` = no auth)
 ///
 /// - cookie path wins over a user/password pair (a cookie-auth validator rejects the pair)
 /// - `__cookie__:` prefix stripped if present (older validators, some packagers omit it)
@@ -30,20 +33,18 @@ pub(crate) fn auth_from_parts(
     user: Option<String>,
     password: Option<String>,
 ) -> Result<Option<(String, String)>, EndpointError> {
-    match cookie_path {
-        Some(path) => {
-            let contents = std::fs::read_to_string(path).map_err(|source| {
-                EndpointError::Cookie { path: path.display().to_string(), source }
-            })?;
-            let token = contents.trim();
-            let token = token.strip_prefix("__cookie__:").unwrap_or(token);
-            Ok(Some(("__cookie__".to_string(), token.to_string())))
-        }
-        None => Ok(Some((
-            user.unwrap_or_else(|| "xxxxxx".to_string()),
-            password.unwrap_or_else(|| "xxxxxx".to_string()),
-        ))),
-    }
+    let Some(path) = cookie_path else {
+        return match (user, password) {
+            (Some(user), Some(password)) => Ok(Some((user, password))),
+            (None, None) => Ok(None),
+            _ => Err(EndpointError::UnpairedCredentials),
+        };
+    };
+    let contents = std::fs::read_to_string(path)
+        .map_err(|source| EndpointError::Cookie { path: path.display().to_string(), source })?;
+    let token = contents.trim();
+    let token = token.strip_prefix("__cookie__:").unwrap_or(token);
+    Ok(Some(("__cookie__".to_string(), token.to_string())))
 }
 
 /// `http://{address}`; hostname kept, not pre-resolved (reqwest resolves per connection →
@@ -72,7 +73,7 @@ mod tests {
 
     /// - Cookie wins over a configured pair; user always `__cookie__`
     /// - Token trimmed with or without its prefix (packagers write both)
-    /// - No cookie = the pair; unreadable cookie = error, never a silent pair
+    /// - No cookie = the pair, none, or a half pair refused; unreadable cookie = error
     #[test]
     fn credentials_come_from_the_cookie_first_then_the_pair() {
         let cookie = |contents: &str| {
@@ -92,6 +93,9 @@ mod tests {
         let (user, pass) = pair();
         let explicit = auth_from_parts(None, user, pass).expect("no file to read");
         assert_eq!(explicit, Some(("user".to_owned(), "pass".to_owned())));
+        assert_eq!(auth_from_parts(None, None, None).expect("no file to read"), None);
+        let half = auth_from_parts(None, Some("user".to_owned()), None);
+        assert!(matches!(half, Err(EndpointError::UnpairedCredentials)));
         let missing = auth_from_parts(Some(Path::new("/nonexistent/cookie")), None, None);
         assert!(matches!(missing, Err(EndpointError::Cookie { .. })));
     }

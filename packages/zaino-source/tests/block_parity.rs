@@ -1,6 +1,6 @@
 //! Canned zebrad blocks through both clients → decoded block = block-explorer data
 //!
-//! - `tests/fixtures/block_<height>.hex` = `examples/capture_fixtures.rs` output
+//! - `tests/fixtures/block_<height>.hex` = zebrad's `getblock <height> 0` hex
 //! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC; `ZcashGrpcClient` = the same
 //!   bytes over the indexer's `GetBlock` / `GetBlockRange`
 
@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use futures::Stream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use tonic::{Request, Response, Status};
 
 use zaino_primitives::types::{BlockHash, Height};
@@ -19,6 +19,7 @@ use zaino_proto::proto::zebra_indexer::{
     BlockAndHash, BlockHashAndHeight, BlockRangeRequest, BlockRequest, Empty, MempoolChangeMessage,
     NonFinalizedStateChangeRequest,
 };
+use zaino_source::testing::fixtures::block;
 use zaino_source::{
     ChainDataSource, FailureMode, GetAtHeightError, LinkLimits, QueryError, Timeouts,
     ZcashGrpcClient, ZcashLegacyRpcClient,
@@ -100,20 +101,34 @@ const FIXTURES: &[Expected] = &[
     },
 ];
 
-/// Display-hex hash → block hex
-fn load_fixtures() -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    for expected in FIXTURES {
-        let path =
-            format!("{}/tests/fixtures/block_{}.hex", env!("CARGO_MANIFEST_DIR"), expected.height,);
-        let hex = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
-            .trim()
-            .to_string();
-        map.insert(expected.height.to_string(), hex.clone());
-        map.insert(expected.hash.to_string(), hex);
+/// Decimal height and display-hex hash → block hex
+fn fixture_hex() -> HashMap<String, String> {
+    let ids = |f: &Expected| {
+        let hex = const_hex::encode(block(f.height));
+        [(f.height.to_string(), hex.clone()), (f.hash.to_owned(), hex)]
+    };
+    FIXTURES.iter().flat_map(ids).collect()
+}
+
+/// One HTTP request's body, read until its `Content-Length` (`None` = closed first)
+async fn request_body(stream: &mut TcpStream) -> Option<String> {
+    let mut request = Vec::new();
+    loop {
+        let mut chunk = [0u8; 64 * 1024];
+        let n = stream.read(&mut chunk).await.ok().filter(|n| *n > 0)?;
+        request.extend_from_slice(&chunk[..n]);
+        let text = String::from_utf8_lossy(&request);
+        let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
+        let length: usize = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase().strip_prefix("content-length: ")?.parse().ok()
+            })
+            .expect("content-length");
+        if body.len() >= length {
+            return Some(body.to_owned());
+        }
     }
-    map
 }
 
 /// Minimal HTTP server, single or batched JSON-RPC: `getblock <hash or height>` → canned fixture
@@ -126,15 +141,9 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
         };
         let fixtures = fixtures.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 1024 * 1024];
-            let n = match stream.read(&mut buf).await {
-                Ok(n) if n > 0 => n,
-                _ => return,
-            };
-            let body_str = String::from_utf8_lossy(&buf[..n]);
-            let json_body = body_str.split("\r\n\r\n").nth(1).unwrap_or(&body_str);
+            let Some(body) = request_body(&mut stream).await else { return };
             let req: serde_json::Value =
-                serde_json::from_str(json_body).expect("invalid JSON-RPC request");
+                serde_json::from_str(&body).expect("invalid JSON-RPC request");
 
             let reply = match req {
                 serde_json::Value::Array(calls) => serde_json::Value::Array(
@@ -310,23 +319,21 @@ async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
 ///   height past the indexer's tip = `HeightNotFound` for it; undecodable bytes = `Parse`
 #[tokio::test]
 async fn both_clients_decode_every_block_to_the_explorers_facts() {
-    let fixtures = load_fixtures();
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock server");
     let rpc_address = listener.local_addr().expect("local addr").to_string();
-    tokio::spawn(mock_zebra_rpc(listener, fixtures.clone()));
+    tokio::spawn(mock_zebra_rpc(listener, fixture_hex()));
 
-    let raw = |hex: &String| const_hex::decode(hex).expect("fixture hex");
     let mut by_height: HashMap<u32, Vec<u8>> =
-        FIXTURES.iter().map(|f| (f.height, raw(&fixtures[&f.height.to_string()]))).collect();
+        FIXTURES.iter().map(|f| (f.height, block(f.height))).collect();
     let by_hash = FIXTURES
         .iter()
         .map(|f| {
             let display: [u8; 32] = const_hex::decode_to_array(f.hash).expect("display hex");
-            (display, raw(&fixtures[f.hash]))
+            (display, block(f.height))
         })
         .collect();
     // three consecutive heights + a corrupt one, for the range cases below
-    let first = raw(&fixtures[&FIXTURES[0].height.to_string()]);
+    let first = block(FIXTURES[0].height);
     by_height.extend([(10, first.clone()), (11, first.clone()), (12, first), (30, vec![0xff; 8])]);
     let indexer = Arc::new(FakeIndexer { by_height, by_hash, ranges: Mutex::default() });
     let socket = TcpListener::bind("127.0.0.1:0").await.expect("bind fake indexer");
