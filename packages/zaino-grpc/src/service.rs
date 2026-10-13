@@ -302,7 +302,7 @@ mod tests {
         use tower::Service as _;
         use zaino_chainview::EndpointSet;
         use zaino_proto::frame::{split_frame, FRAME_HEADER};
-        use zaino_proto::proto::compact_formats as cf;
+        use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service as proto;
 
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -345,7 +345,7 @@ mod tests {
         let mut served = Vec::new();
         while !rest.is_empty() {
             let (message, tail) = split_frame(rest).expect("whole frame");
-            let block = cf::CompactBlock::decode(message).expect("a CompactBlock");
+            let block = compact_formats::CompactBlock::decode(message).expect("a CompactBlock");
             served.push((block.height, block.hash));
             rest = tail;
         }
@@ -372,7 +372,8 @@ mod tests {
         let ok = Some(tonic::Code::Ok);
         assert_eq!(answered, (ok, 3, const_hex::encode(three_display)), "3 durable, past the tip");
         let (code, block, _) = call(path::GET_BLOCK, at(3).encode_to_vec()).await;
-        let block = cf::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
+        let block =
+            compact_formats::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
         let three = <[u8; 32]>::from(three).to_vec();
         assert_eq!((code, block.height, block.hash), (ok, 3, three), "GetBlock agrees");
         for path in [path::GET_TREE_STATE, path::GET_BLOCK] {
@@ -390,7 +391,7 @@ mod tests {
         let request = request.encode_to_vec();
         let (_, listed, trailers) = call(path::GET_MEMPOOL_TX, request).await;
         let (compact, rest) = split_frame(&listed).expect("one CompactTx");
-        let compact = cf::CompactTx::decode(compact).expect("a CompactTx");
+        let compact = compact_formats::CompactTx::decode(compact).expect("a CompactTx");
         let ours = <[u8; 32]>::from(txid).to_vec();
         assert_eq!((compact.txid, rest.len()), (ours, 0), "held: our relay, compacted");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));

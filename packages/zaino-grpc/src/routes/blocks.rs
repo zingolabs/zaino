@@ -211,7 +211,7 @@ mod deprecated_nullifiers {
     use tonic::Status;
     use zaino_primitives::types::Height;
     use zaino_proto::frame::{frame_into, split_frame};
-    use zaino_proto::proto::compact_formats as cf;
+    use zaino_proto::proto::compact_formats;
     use zaino_proto::proto::service as proto;
 
     use super::{open_range, Blocks, Walk};
@@ -244,7 +244,8 @@ mod deprecated_nullifiers {
             let (message, tail) = split_frame(rest)
                 .ok_or_else(|| Status::internal("stored range chunk is not whole frames"))?;
             let block = nullifiers_only(
-                cf::CompactBlock::decode(message).map_err(|e| Status::internal(e.to_string()))?,
+                compact_formats::CompactBlock::decode(message)
+                    .map_err(|e| Status::internal(e.to_string()))?,
             );
             frame_into(&mut out, |out| block.encode_raw(out));
             rest = tail;
@@ -254,11 +255,11 @@ mod deprecated_nullifiers {
     }
 
     /// Spends whole (a spend = its nullifier record), actions cut to `nullifier`, rest emptied
-    fn nullifiers_only(mut block: cf::CompactBlock) -> cf::CompactBlock {
-        let cut = |actions: Vec<cf::CompactOrchardAction>| {
+    fn nullifiers_only(mut block: compact_formats::CompactBlock) -> compact_formats::CompactBlock {
+        let cut = |actions: Vec<compact_formats::CompactOrchardAction>| {
             actions
                 .into_iter()
-                .map(|action| cf::CompactOrchardAction {
+                .map(|action| compact_formats::CompactOrchardAction {
                     nullifier: action.nullifier,
                     ..Default::default()
                 })
@@ -273,7 +274,7 @@ mod deprecated_nullifiers {
             tx.ironwood_actions = cut(std::mem::take(&mut tx.ironwood_actions));
         }
         // proto: commitment tree sizes not included
-        block.chain_metadata = Some(cf::ChainMetadata::default());
+        block.chain_metadata = Some(compact_formats::ChainMetadata::default());
 
         block
     }
@@ -355,7 +356,7 @@ mod tests {
         use http_body_util::BodyExt as _;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_proto::proto::compact_formats as cf;
+        use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service as proto;
 
         let mut chain = MockChain::regtest().network(MAINNET);
@@ -390,7 +391,8 @@ mod tests {
             let mut heights = Vec::new();
             while !rest.is_empty() {
                 let (message, tail) = split_frame(rest).expect("whole frame");
-                heights.push(cf::CompactBlock::decode(message).expect("a block").height);
+                heights
+                    .push(compact_formats::CompactBlock::decode(message).expect("a block").height);
                 rest = tail;
             }
             let code = text("grpc-status").expect("a status");
@@ -407,7 +409,7 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh};
-        use zaino_proto::proto::compact_formats as cf;
+        use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service as proto;
 
         let alice = p2pkh([0xaa; 20]);
@@ -442,7 +444,8 @@ mod tests {
         let (records, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")), "unary");
         let body = records.concat();
-        let decoded = cf::CompactBlock::decode(&body[FRAME_HEADER..]).expect("one framed message");
+        let decoded = compact_formats::CompactBlock::decode(&body[FRAME_HEADER..])
+            .expect("one framed message");
         assert_eq!(decoded.height, 3);
         assert_eq!(decoded.vtx[1].vin.len(), 1, "GetBlock carries transparent (slot 1, the spend)");
 
@@ -490,7 +493,7 @@ mod tests {
         let mut heights = Vec::new();
         while !rest.is_empty() {
             let (message, tail) = split_frame(rest).expect("whole frame");
-            let block = cf::CompactBlock::decode(message).expect("framed message");
+            let block = compact_formats::CompactBlock::decode(message).expect("framed message");
 
             assert!(block.vtx[0].vin.is_empty(), "default prunes transparent");
             assert_eq!(block.vtx[0].actions.len(), 1, "shielded kept");
@@ -510,8 +513,8 @@ mod tests {
             .expect("router answers");
         let (chunks, trailing) = drained(response).await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let decoded =
-            cf::CompactBlock::decode(&chunks.concat()[FRAME_HEADER..]).expect("framed message");
+        let decoded = compact_formats::CompactBlock::decode(&chunks.concat()[FRAME_HEADER..])
+            .expect("framed message");
         assert_eq!(decoded.vtx.len(), 2, "transparent requested: the coinbase kept too");
         assert_eq!(decoded.vtx[1].vin.len(), 1, "transparent requested, so kept");
         assert!(decoded.vtx[1].actions.is_empty(), "orchard not requested");
@@ -528,7 +531,8 @@ mod tests {
             let mut blocks = Vec::new();
             while !rest.is_empty() {
                 let (message, tail) = split_frame(rest).expect("whole frame");
-                blocks.push(cf::CompactBlock::decode(message).expect("framed message"));
+                blocks
+                    .push(compact_formats::CompactBlock::decode(message).expect("framed message"));
                 rest = tail;
             }
             blocks
@@ -556,21 +560,21 @@ mod tests {
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let (full, nullifiers) =
             (decoded_all(full.concat().into()), decoded_all(nullifiers.concat().into()));
-        let expected: Vec<cf::CompactBlock> = full
+        let expected: Vec<compact_formats::CompactBlock> = full
             .iter()
-            .map(|block| cf::CompactBlock {
-                chain_metadata: Some(cf::ChainMetadata::default()),
+            .map(|block| compact_formats::CompactBlock {
+                chain_metadata: Some(compact_formats::ChainMetadata::default()),
                 vtx: block
                     .vtx
                     .iter()
-                    .map(|tx| cf::CompactTx {
+                    .map(|tx| compact_formats::CompactTx {
                         outputs: Vec::new(),
                         vin: Vec::new(),
                         vout: Vec::new(),
                         actions: tx
                             .actions
                             .iter()
-                            .map(|a| cf::CompactOrchardAction {
+                            .map(|a| compact_formats::CompactOrchardAction {
                                 nullifier: a.nullifier.clone(),
                                 ..Default::default()
                             })
@@ -578,7 +582,7 @@ mod tests {
                         ironwood_actions: tx
                             .ironwood_actions
                             .iter()
-                            .map(|a| cf::CompactOrchardAction {
+                            .map(|a| compact_formats::CompactOrchardAction {
                                 nullifier: a.nullifier.clone(),
                                 ..Default::default()
                             })
@@ -612,7 +616,7 @@ mod tests {
         )
         .await;
         assert_eq!(trailing.get("grpc-status"), Some(&HeaderValue::from_static("0")));
-        let reversed: Vec<cf::CompactBlock> = full.iter().rev().cloned().collect();
+        let reversed: Vec<compact_formats::CompactBlock> = full.iter().rev().cloned().collect();
         assert_eq!(decoded_all(descending.concat().into()), reversed, "4..=1 = 1..=4 reversed");
 
         // - Malformed ranges refused at the boundary (never reach the index's asserts)

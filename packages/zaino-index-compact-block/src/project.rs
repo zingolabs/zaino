@@ -11,7 +11,7 @@ use bytes::Bytes;
 use prost::Message as _;
 use zaino_primitives::types::{TreeSize, TreeSizes};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
-use zaino_proto::proto::compact_formats as cf;
+use zaino_proto::proto::compact_formats;
 
 use crate::HASH;
 
@@ -105,7 +105,8 @@ pub(crate) fn record_hash(record: &[u8]) -> Option<[u8; HASH]> {
 ///
 /// - follows `vtx`: each tx skipped by its length, never decoded
 pub(crate) fn record_sizes(record: &[u8]) -> Option<TreeSizes> {
-    let metadata = cf::ChainMetadata::decode(block_field(record, BLOCK_CHAIN_METADATA)?).ok()?;
+    let metadata =
+        compact_formats::ChainMetadata::decode(block_field(record, BLOCK_CHAIN_METADATA)?).ok()?;
     Some(TreeSizes {
         sapling: TreeSize::from(metadata.sapling_commitment_tree_size),
         orchard: TreeSize::from(metadata.orchard_commitment_tree_size),

@@ -175,7 +175,7 @@ mod tests {
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
     use zaino_primitives::types::UpgradeSchedule;
     use zaino_proto::frame::{framed_len, split_frame};
-    use zaino_proto::proto::compact_formats as cf;
+    use zaino_proto::proto::compact_formats;
     use zcash_protocol::consensus::NetworkType;
 
     /// Blocks 0..`count` (every upgrade from genesis), each: a coinbase paying 17 345, then one tx
@@ -262,12 +262,12 @@ mod tests {
     }
 
     /// Every framed record a chunk carries, decoded
-    fn decode(chunk: &[u8]) -> Vec<cf::CompactBlock> {
+    fn decode(chunk: &[u8]) -> Vec<compact_formats::CompactBlock> {
         let mut blocks = Vec::new();
         let mut rest = chunk;
         while !rest.is_empty() {
             let (message, tail) = split_frame(rest).expect("whole frame");
-            blocks.push(cf::CompactBlock::decode(message).expect("message"));
+            blocks.push(compact_formats::CompactBlock::decode(message).expect("message"));
             rest = tail;
         }
         blocks
@@ -448,7 +448,7 @@ mod tests {
         let shielded = drain(range(0, 2, Pools::default()).expect("filtered"));
         assert_eq!(shielded.len(), 1, "projected span still one window");
         let shielded = decode(&shielded.concat());
-        let stripped: Vec<cf::CompactBlock> = full
+        let stripped: Vec<compact_formats::CompactBlock> = full
             .into_iter()
             .map(|mut block| {
                 assert!(block.vtx[0].vin.is_empty() && !block.vtx[0].vout.is_empty(), "coinbase");

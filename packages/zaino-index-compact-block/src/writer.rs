@@ -121,7 +121,7 @@ mod tests {
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
     use zaino_primitives::types::{BlockRef, Height, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
-    use zaino_proto::proto::compact_formats as cf;
+    use zaino_proto::proto::compact_formats;
     use zaino_sync::{FeeSink, IndexerDataSink};
     use zcash_protocol::consensus::NetworkType;
 
@@ -304,7 +304,8 @@ mod tests {
     fn record(view: &DiskView, height: u32) -> ((u32, u32, u32), Vec<u32>) {
         let reader = CompactBlockReader::new(view.clone());
         let record = reader.block(h(height)).expect("record");
-        let decoded = cf::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
+        let decoded =
+            compact_formats::CompactBlock::decode(&record[FRAME_HEADER..]).expect("decodes");
         let meta = decoded.chain_metadata.expect("carries metadata");
         let sizes = (
             meta.sapling_commitment_tree_size,
@@ -470,7 +471,8 @@ mod tests {
             for height in 0..sent as u32 {
                 let (sizes, fees) = record(&view, height);
                 let stored = reader.block(h(height)).expect("record");
-                let decoded = cf::CompactBlock::decode(&stored[FRAME_HEADER..]).expect("decodes");
+                let decoded = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..])
+                    .expect("decodes");
                 let hash = <[u8; 32]>::from(chain[height as usize].0.header().hash);
                 assert_eq!(decoded.hash, hash.to_vec(), "{case}: record {height}");
                 assert_eq!(sizes, sizes_at(height as usize), "{case}: record {height}");
