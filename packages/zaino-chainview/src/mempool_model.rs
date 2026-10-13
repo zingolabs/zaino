@@ -206,10 +206,8 @@ impl Run {
                 self.core.apply(id, EndpointReport::Listed(Listing { added, removed }));
                 self.oracle.health[v] = Health::Live;
                 self.oracle.polled_since_block[v] = true;
-                let removed: Vec<usize> = before.difference(&listed).copied().collect();
                 self.oracle.listed[v] = listed.clone();
                 listed.iter().for_each(|tx| self.oracle.sight(*tx));
-                let _ = removed;
                 self.oracle.settle(false);
             }
             Move::Fail { validator } => {

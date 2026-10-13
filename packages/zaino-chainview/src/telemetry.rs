@@ -199,7 +199,6 @@ mod tests {
 
     use super::*;
 
-    /// - Isolated node (regtest) + inbound-only overlap → nothing raised
     #[test]
     fn alarms_rise_on_a_stale_tip_a_partition_and_a_thin_outbound_set() {
         type Endpoint = (Health, u32, u32, &'static [&'static str], &'static [&'static str]);

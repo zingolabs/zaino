@@ -1,4 +1,4 @@
-//! The aggregate: the write handle that submits transactions, and the read handles.
+//! Aggregate: submitting handle + read handles
 
 use std::sync::Arc;
 
@@ -27,10 +27,9 @@ use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
 
-/// One view over N validators.
+/// One view over N validators: owns submission and the runnables feeding it
 ///
-/// The *write* side: it owns submission, the only operation that mutates the chain. Everything
-/// else holds a [`ChainViewSubscriber`].
+/// - readers hold a [`ChainViewSubscriber`]
 pub struct ChainView<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
@@ -66,9 +65,12 @@ impl<S: ChainDataSource> ChainView<S> {
         if addresses.len() > ValidatorId::MAX {
             return Err(ConfigError::TooManyEndpoints { count: addresses.len() });
         }
-        let members = balancer.members().borrow().clone();
-        let trusted = members.rows.iter().filter(|row| matches!(row.id, MemberId::Trusted(_)));
-        assert_eq!(trusted.count(), addresses.len(), "an address per trusted member");
+        let trusted = (balancer.members().borrow().rows.iter())
+            .filter(|row| matches!(row.id, MemberId::Trusted(_)))
+            .count();
+        if trusted != addresses.len() {
+            return Err(ConfigError::AddressCountMismatch { addresses: addresses.len(), trusted });
+        }
         let endpoints = addresses.iter().map(|address| ValidatorMetadata::new(address.clone()));
         let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth));
         let asked = Arc::clone(&core);
@@ -119,7 +121,7 @@ impl<S: ChainDataSource> ChainView<S> {
         ObservationFold { core, balancer, addresses: self.addresses.clone() }
     }
 
-    /// A reader onto the same published cell and action channel.
+    /// Reader onto the same published cell
     pub fn subscriber(&self) -> ChainViewSubscriber {
         ChainViewSubscriber { core: Arc::clone(&self.core) }
     }
@@ -309,10 +311,7 @@ impl<S: ChainDataSource> Submission<S> {
     }
 }
 
-/// A cheap-to-clone reader for a running view.
-///
-/// Holds no way to drive polling or to relay a transaction — both stay on
-/// [`ChainView`](crate::ChainView).
+/// Cheap-to-clone reader of a running view (no polling, no relay: both on [`ChainView`])
 #[derive(Clone)]
 pub struct ChainViewSubscriber {
     core: Arc<ChainViewCore>,
@@ -325,8 +324,7 @@ impl std::fmt::Debug for ChainViewSubscriber {
 }
 
 impl ChainViewSubscriber {
-    /// The most recently published view. One atomic load — pin it once per request or stream
-    /// and ask it everything, rather than calling this per answer.
+    /// Latest published view (one atomic load: pin once per request or stream, not per answer)
     pub fn current(&self) -> Arc<ChainViewSnapshot> {
         self.core.current()
     }
