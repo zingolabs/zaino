@@ -51,9 +51,13 @@ impl<V> Views<V> {                                       // None = the index is 
 ## Rules
 
 1. **Root** = the lowest durable tip of every index.
-2. **Window.** The NFS folds only while the root is within `2 · depth` of best. Farther behind
-   (a first sync, an index enabled late) it folds and holds nothing: the final path does the
-   work and snapshots serve the committed data at the root.
+2. **Window.** The NFS folds only while the root is within `2 · depth` of best and the header
+   just above the root is held. Otherwise it folds and holds nothing: the final path does the
+   work, and snapshots serve the committed data at the root. That covers being farther behind
+   (a first sync, an index enabled late), and a header chain anchored above the root. HeaderSync
+   anchors `depth` below a trusted claim and holds nothing below that, so indexes installed from
+   an older snapshot, or a node down for a while, start below the anchor. The final path then
+   fetches the gap by height from a trusted validator.
 3. **What gets folded.** Every best-chain block above the root. A node at height `h` folds each
    index durable below `h`, in `fold_block` order (value-balance first: its fees feed
    compact-block; value-balance durable at `h` = fees from its committed view).

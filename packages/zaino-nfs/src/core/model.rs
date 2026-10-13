@@ -8,8 +8,9 @@
 //! - Fetches answered late (random delay), out of order, or after their abandon (a stale body)
 //! - Folds answered after a random delay, in random order
 //! - Each writer commits the final prefix after its own random delay (the final path)
-//! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too,
-//!   `wipe` = one index's directory deleted: it holds the served tip back until it catches up)
+//! - Restarts: fresh core from the writers' durable tips (`reset` = header store lost too, then
+//!   re-anchored `DEPTH` below best like HeaderSync, possibly above every durable tip; `wipe` =
+//!   one index's directory deleted: it holds the served tip back until it catches up)
 //! - Oracle ([`Toy`]) = fold from genesis along each block's own path
 
 use std::collections::{HashMap, HashSet};
@@ -19,8 +20,8 @@ use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
-use zaino_header_chain::{HeaderChain, Record, Rejected, VerifiedChain};
-use zaino_primitives::testing::MockChain;
+use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
+use zaino_primitives::testing::{encode_header, MockChain};
 use zaino_primitives::types::{Block, BlockHash, BlockRef, Height, ReorgDepth};
 use zaino_sync::{check_block, Checked};
 
@@ -189,12 +190,15 @@ impl Sim {
         self.writers.iter().map(|writer| writer.durable).collect()
     }
 
-    /// The core's rule, naively: the lowest durable tip within `WINDOW` of best
+    /// The core's rule, naively: the lowest durable tip within `WINDOW` of best, the header above
+    /// it held
     fn active(&self) -> bool {
         let Some(chain) = &self.given else { return false };
         let lowest = self.told.iter().map(|tip| tip.map_or(0, |tip| u32::from(tip.height) + 1));
         let next = lowest.min().unwrap_or(0);
-        (u32::from(chain.best().height) + 1).saturating_sub(next) <= WINDOW
+        let best = u32::from(chain.best().height);
+        let headed = next > best || chain.header_at(height(next)).is_some();
+        headed && (best + 1).saturating_sub(next) <= WINDOW
     }
 
     fn durable_floor(&self) -> u32 {
@@ -462,10 +466,16 @@ impl Sim {
     /// - `wipe` (mod the index count) = that index's store too
     fn restart(&mut self, reset: bool, wipe: Option<u8>, context: &str) {
         if reset {
+            // re-anchored like HeaderSync: one header `DEPTH` below best, nothing beneath (may
+            // sit above every durable tip: the final path closes that gap by height)
             let tip = self.builder.block(*self.best_path().last().expect("genesis")).at();
-            self.headers = self.builder.header_chain(DEPTH);
             let path = self.builder.blocks(tip);
-            insert(&mut self.headers, &path).expect("the best path verifies");
+            let anchor = path.len().saturating_sub(1 + DEPTH.get() as usize);
+            let header = path[anchor].header();
+            let decoded = decode_header(&encode_header(header)).expect("MockChain headers decode");
+            self.headers = HeaderChain::new(DEPTH);
+            self.headers.anchor(&decoded, header.height);
+            insert(&mut self.headers, &path[anchor + 1..]).expect("the best path verifies");
         }
         if let Some(wipe) = wipe {
             let count = self.writers.len();
