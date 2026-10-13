@@ -659,7 +659,7 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
         let engine = DiskEngine::with_fanout(fs.clone(), 2);
         let mut acked = 0;
         let error = match engine.open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX) {
-            Err(error) => error,
+            Err(error) => error.to_string(),
             Ok(mut store) => {
                 let mut failed = None;
                 for at in 0..batches.len() {
@@ -674,8 +674,8 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
                         }
                     }
                 }
-                match failed {
-                    Some(error) => error,
+                let failed = match failed {
+                    Some(failed) => failed,
                     None => {
                         store.settle();
                         if fs.mutations() <= fail_at {
@@ -686,12 +686,13 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
                         let next = store.commit();
                         next.expect_err("a failed background merge surfaces at the next commit")
                     }
-                }
+                };
+                failed.to_string()
             }
         };
         failures += 1;
         assert!(
-            error.to_string().contains("injected EIO"),
+            error.contains("injected EIO"),
             "flush_device {flush_device} op {fail_at}: {error}"
         );
 

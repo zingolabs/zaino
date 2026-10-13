@@ -51,8 +51,8 @@ pub fn apply<S: Store>(store: &mut S, changes: BlockChanges) -> Duration {
 /// - failure = panic naming the index and its directory (store poisoned)
 pub fn commit<S: Store>(store: &mut S) -> Duration {
     let started = Instant::now();
-    if let Err(error) = store.commit() {
-        error.commit_failed(store.schema().kind.name(), store.path());
+    if let Err(failed) = store.commit() {
+        failed.crash();
     }
     started.elapsed()
 }

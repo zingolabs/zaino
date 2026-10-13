@@ -116,7 +116,7 @@ mod tests {
     use prost::Message as _;
     use tokio::task::JoinHandle;
     use zaino_persistence::{
-        fs::SimFs, DiskEngine, DiskStore, DiskView, Overlay, PersistenceEngine, Schema,
+        fs::SimFs, DiskEngine, DiskStore, DiskView, PersistenceEngine, Schema,
     };
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
     use zaino_primitives::types::{Height, TreeSize, TreeSizes};
@@ -201,7 +201,7 @@ mod tests {
         // `one`'s record written claiming sapling = u32::MAX - 1: `two`'s 3 outputs overflow
         let mut seeded = open(&SimFs::new(), NonZeroUsize::MAX);
         seeded.apply(folded(&seeded, chain.block(chain.genesis().hash)).expect("bare"));
-        let mut changes = Overlay::empty(&SCHEMA).changes(one);
+        let mut changes = SCHEMA.changes(one);
         let near_full = sizes(u32::MAX - 1, 0, 0);
         let block = chain.block(one.hash);
         changes.sequence(BLOCKS).append(&encode_compact_block(block, &fees(block), &near_full));

@@ -1,15 +1,25 @@
-//! Store metrics, labelled `index` = the store's index kind (LSM sets: [`crate::lsm`])
+//! Store metrics, labelled `index` = the store's index kind (LSM sets: `lsm/emit.rs`)
 
 use std::time::Duration;
+
+use crate::lsm::metric_names as lsm;
 
 mod names {
     pub(super) const COMMIT_SECONDS: &str = "zaino.store.commit_seconds";
     pub(super) const COMMIT_BYTES_TOTAL: &str = "zaino.store.commit_bytes_total";
 }
 
-/// `(metric, bucket edges)` for the exporter (ms commits at the tip → minutes on a stalled disk)
-pub const METRIC_BUCKETS: &[(&str, &[f64])] =
-    &[(names::COMMIT_SECONDS, &[1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0])];
+/// `(metric, bucket edges)` for the exporter, every histogram this crate emits
+///
+/// - commits: ms at the tip → minutes on a stalled disk; merges: ms at tier 0 → an hour at the top
+pub const METRIC_BUCKETS: &[(&str, &[f64])] = &[
+    (names::COMMIT_SECONDS, &[1e-3, 5e-3, 1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0]),
+    (
+        lsm::MERGE_DURATION_SECONDS,
+        &[1e-2, 5e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0, 1200.0, 3600.0],
+    ),
+    (lsm::STALL_DURATION_SECONDS, &[1e-3, 1e-2, 0.1, 0.5, 1.0, 5.0, 15.0, 60.0, 300.0]),
+];
 
 /// `# HELP` registrations for every metric this crate emits (store + LSM)
 pub fn describe_metrics() {

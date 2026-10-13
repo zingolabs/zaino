@@ -7,7 +7,7 @@ use zaino_index_transparent_address as transparent_address;
 use zaino_index_tree_state as tree_state;
 use zaino_internal_block_hash_to_height as block_hash;
 use zaino_internal_value_balance as value_balance;
-use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead};
+use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};
 use zaino_primitives::types::{Block, TreeSizeOutOfRange};
 use zaino_sync::PerIndex;
 
@@ -50,7 +50,7 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     covers: &[IndexKind],
 ) -> Result<Folded, FoldError> {
     let mut layers = PerIndex::default();
-    let open = |kind: IndexKind| parent.layer(kind).changes(block.at());
+    let open = |kind: IndexKind| parent.layer(kind).schema().changes(block.at());
     let mut push = |kind: IndexKind, changes: BlockChanges| {
         layers.insert(kind, parent.layer(kind).with(&changes))
     };

@@ -88,7 +88,7 @@ fn with_a_block_of_another_schema_panics() {
 #[should_panic(expected = "ids: a map key held twice")]
 fn with_a_key_the_layer_holds_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0));
-    let mut again = layer.changes(block_ref(1));
+    let mut again = SCHEMA.changes(block_ref(1));
     again.map(IDS).insert(&[0; 16], &[9; 4]);
     layer.with(&again);
 }
@@ -99,7 +99,7 @@ fn with_a_key_the_layer_removed_panics() {
     let mut removal = BlockChanges::new(block_ref(0), SCHEMA);
     removal.map(IDS).remove(&[0; 16]);
     let layer = Overlay::empty(&SCHEMA).with(&removal);
-    let mut again = layer.changes(block_ref(1));
+    let mut again = SCHEMA.changes(block_ref(1));
     again.map(IDS).remove(&[0; 16]);
     layer.with(&again);
 }

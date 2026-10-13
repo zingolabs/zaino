@@ -17,7 +17,7 @@ use serde::Serialize;
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::{manifest::IndexKind, write_buffer::StagedView, StoreError};
+use crate::{manifest::IndexKind, write_buffer::StagedView, CommitFailed, StoreError};
 
 /// Storage backend: one store per index, verified offline
 pub trait PersistenceEngine: Send + Sync + 'static {
@@ -49,12 +49,9 @@ pub trait Store: Send + 'static {
     /// As opened
     fn schema(&self) -> &Schema;
 
-    /// As opened (named by a failed commit's panic)
-    fn path(&self) -> &Path;
-
     /// Empty delta for block `at`, one buffer per table of [`schema`](Self::schema)
     fn changes(&self, at: BlockRef) -> BlockChanges {
-        BlockChanges::new(at, *self.schema())
+        self.schema().changes(at)
     }
 
     /// `changes` buffered: in [`staged`](Self::staged), not in [`committed`](Self::committed),
@@ -62,18 +59,15 @@ pub trait Store: Send + 'static {
     ///
     /// - panics (nothing buffered): changes for another schema, a tip not above the last applied,
     ///   a map key the buffer already holds or `changes` inserts twice
-    /// - panics: that commit failing ([`StoreError::commit_failed`]: index + directory named)
+    /// - panics: that commit failing ([`CommitFailed::crash`])
     fn apply(&mut self, changes: BlockChanges);
-
-    /// Heap the buffer holds (≈ RAM, >= its item bytes; `write_buffer` of it = a commit)
-    fn buffered_bytes(&self) -> usize;
 
     /// Every buffered change + the last applied tip, durable together (one fsync), then in
     /// [`committed`](Self::committed)
     ///
     /// - nothing buffered = `Ok`, nothing written
     /// - `Err` poisons the store: every later commit panics (failed sync never retried)
-    fn commit(&mut self) -> Result<(), StoreError>;
+    fn commit(&mut self) -> Result<(), CommitFailed>;
 
     /// Committed only (what serving pins: no crash takes back what a reader saw)
     fn committed(&self) -> Self::View;
@@ -341,6 +335,11 @@ impl Schema {
         self.tables.maps
     }
 
+    /// Empty delta for block `at`, one buffer per table
+    pub fn changes(&self, at: BlockRef) -> BlockChanges {
+        BlockChanges::new(at, *self)
+    }
+
     /// `table`'s position (panics: another schema's)
     fn sequence_at(&self, table: SequenceTable) -> usize {
         let at = usize::from(table.id.0);
@@ -358,7 +357,7 @@ impl Schema {
     }
 }
 
-/// One block's delta: buffer per table, opened by [`Store::changes`] or `Overlay::changes`
+/// One block's delta: buffer per table, opened by [`Schema::changes`]
 ///
 /// - widths checked per item on arrival (wrong = panic naming the table)
 /// - fixed-width tables: bytes only; variable: + end offset per item

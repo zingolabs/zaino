@@ -54,13 +54,14 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **`cache_writes()`** marks a table a fold reads back (tree-state, value-balance's `outputs`).
   Everything else is dropped from page cache once synced, so bulk writes never evict hot tables.
 - **`apply` vs `commit`.** `apply` buffers in RAM; a writer folding the next block reads its parent
-  through `staged()` (committed + buffered). Once `buffered_bytes()` reaches the `write_buffer`
-  given to `open`, `apply` commits by itself. `commit` writes everything buffered at the last
-  applied tip.
+  through `staged()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
+  reaches the `write_buffer` given to `open`, `apply` commits by itself. `commit` writes everything
+  buffered at the last applied tip. `Schema::changes(at)` (or `store.changes(at)`) opens a block's
+  delta.
 - **A failed commit poisons the store.** Any later `commit` panics. Drop the store and reopen it:
   recovery is always a fresh `open` from the last durable manifest, never a retried `fsync`.
-  `StoreError::commit_failed` turns the error into a panic naming the index and directory, and
-  spots a full disk anywhere in the error chain.
+  `commit`'s `CommitFailed` names the index and its directory (a full disk anywhere in the error
+  chain reads as "disk … full"); `CommitFailed::crash` turns it into that panic.
 - **Reads never return errors.** Reading past what was committed is a bug, and a page that fails its
   checksum panics on first touch with the remedy (`zainod verify`, resync).
 - **Misuse panics where it happens**, naming the table: a handle from another schema, a fixed-width

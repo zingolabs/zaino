@@ -21,7 +21,6 @@ use super::{
     layout::Shape,
     meta::{merge_candidates, tier_of, tier_shape},
     reader::Snapshot,
-    report::{self, Landed},
     slots::Slots,
     writer::{Merged, SegmentWriter},
     Result, SegmentMeta,
@@ -55,6 +54,14 @@ struct Staged {
     segments: Vec<SegmentMeta>,
     retired: Vec<SegmentMeta>,
     landed: Vec<Landed>,
+}
+
+/// Merge the log swaps in: `tier` → `merged`, `took` = its thread's wall time
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Landed {
+    pub(super) tier: u32,
+    pub(super) merged: Merged,
+    pub(super) took: Duration,
 }
 
 /// Background merge; thread yields `(merged, wall time)`, `None` = cancelled
@@ -151,8 +158,7 @@ impl SegmentLog {
             stalled.extend(tiers);
         }
         if !stalled.is_empty() {
-            emit::stalled(&self.name, waited.elapsed());
-            report::stalled(&self.name, &stalled, waited.elapsed());
+            emit::stalled(&self.name, &stalled, waited.elapsed());
         }
 
         let segments = staged.segments.clone();
@@ -169,7 +175,7 @@ impl SegmentLog {
         assert_eq!(self.snapshot.segments(), self.segments, "{}: readers see the list", self.name);
         self.writer.dir().remove(&staged.retired)?;
         for landed in &staged.landed {
-            report::swapped(&self.name, landed);
+            emit::swapped(&self.name, landed);
         }
         self.launch_merges()
     }
@@ -202,7 +208,7 @@ impl SegmentLog {
         }
         let (id, writer) = (self.allocate(), self.writer.clone());
         let cancel = Arc::new(AtomicBool::new(false));
-        report::launched(&self.name, tier, &inputs);
+        emit::launched(&self.name, tier, &inputs);
         let thread =
             thread::Builder::new().name(format!("merge {} t{tier}", self.name)).spawn({
                 let (inputs, cancel, name) =
@@ -295,7 +301,7 @@ impl Staged {
 impl Drop for SegmentLog {
     fn drop(&mut self) {
         if !self.merges.is_empty() {
-            report::cancelled(&self.name, self.merges.len());
+            emit::cancelled(&self.name, self.merges.len());
         }
         for merge in &self.merges {
             merge.cancel.store(true, Ordering::Relaxed);

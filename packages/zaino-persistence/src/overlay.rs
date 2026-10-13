@@ -62,11 +62,6 @@ impl Overlay {
         self.deltas.last().map(|delta| delta.tip)
     }
 
-    /// Empty delta for block `at`, shaped by this layer's schema (for [`with`](Self::with))
-    pub fn changes(&self, at: BlockRef) -> BlockChanges {
-        BlockChanges::new(at, self.schema)
-    }
-
     /// This layer + `changes`, sharing structure with `self`
     ///
     /// - panics: changes this layer does not [accept](Uncommitted::assert_accepts)

@@ -38,7 +38,7 @@ use crate::{
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
     write_buffer::{StagedView, WriteBuffer},
-    StoreError,
+    CommitFailed, StoreError,
 };
 
 /// Files for sequences, LSM for maps, on one filesystem (clones share the merge slots)
@@ -264,6 +264,11 @@ fn verify_committed(
 }
 
 impl DiskStore {
+    /// Heap the buffer holds (≈ RAM, >= its item bytes; `write_buffer` of it = a commit)
+    pub fn buffered_bytes(&self) -> usize {
+        self.buffer.heap()
+    }
+
     /// WriteBuffer written + sealed, every table in parallel → (`Barrier`) one device flush →
     /// manifest at `tip` → new view
     fn write(&mut self, tip: BlockRef) -> Result<(), StoreError> {
@@ -339,29 +344,24 @@ impl Store for DiskStore {
         &self.schema
     }
 
-    fn path(&self) -> &Path {
-        self.dir.path()
-    }
-
     fn apply(&mut self, changes: BlockChanges) {
         self.buffer.assert_accepts(&changes, self.view.tip());
         self.buffer.push(&changes);
         if self.buffer.heap() >= self.write_buffer.get() {
-            if let Err(error) = self.commit() {
-                error.commit_failed(self.schema.kind.name(), self.dir.path());
+            if let Err(failed) = self.commit() {
+                failed.crash();
             }
         }
     }
 
-    fn buffered_bytes(&self) -> usize {
-        self.buffer.heap()
-    }
-
-    fn commit(&mut self) -> Result<(), StoreError> {
+    fn commit(&mut self) -> Result<(), CommitFailed> {
         assert!(!self.failed, "commit after a failed one (fsync errors are never retried)");
         let Some(tip) = self.buffer.tip() else { return Ok(()) };
         let (bytes, started) = (self.buffer.item_bytes(), Instant::now());
-        self.write(tip).inspect_err(|_| self.failed = true)?;
+        if let Err(cause) = self.write(tip) {
+            self.failed = true;
+            return Err(CommitFailed::new(self.schema.kind.name(), self.dir.path(), cause));
+        }
         crate::emit::committed(self.schema.kind.name(), bytes, started.elapsed());
         self.buffer = WriteBuffer::empty(&self.schema);
         Ok(())

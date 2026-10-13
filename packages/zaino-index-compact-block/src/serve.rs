@@ -253,7 +253,7 @@ mod tests {
         for block in &chain.blocks(chain.tip())[4..7] {
             let parent =
                 CompactBlockReader::new(OverlayView::new(store.committed(), layer.clone()));
-            let mut changes = layer.changes(block.at());
+            let mut changes = store.schema().changes(block.at());
             let fees = chain.fees(block.header().hash);
             fold(&parent, block, &fees, &mut changes).expect("small tree sizes");
             layer = layer.with(&changes);
