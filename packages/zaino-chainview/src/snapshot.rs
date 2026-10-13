@@ -337,8 +337,8 @@ impl ChainViewSnapshot {
         self.listings.polled()
     }
 
-    /// `Live` trusted validators whose last poll holds the verified best block (V1; empty = no
-    /// chain yet)
+    /// Answering validators (`Live` or catching up) whose last poll holds the verified best block
+    /// (empty = no chain yet)
     pub fn held_by(&self) -> EndpointSet {
         self.held_by
     }

@@ -1,6 +1,6 @@
 # `zaino-nfs` — usage
 
-The tip overlay (`docs/design/nfs.md`): every block above the indexes' durable tips folded in
+The tip overlay ([architecture §7](../../docs/architecture.md#tip-path-zaino-nfs)): every block above the indexes' durable tips folded in
 RAM, one `Indexed` publish across every index (the index half of `zaino-snapshot`'s global
 snapshot). Final blocks reach the writers on the final path (`zaino-sync`), never through here.
 
@@ -9,7 +9,7 @@ snapshot). Final blocks reach the writers on the final path (`zaino-sync`), neve
 ```rust,ignore
 use zaino_nfs::{ChainParams, Nfs, NfsError};
 
-let params = ChainParams { network, activations: PoolActivations::new(&schedule) };
+let params = ChainParams { network, schedule };                // activations() derived
 let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth, lookahead);
 let mut follower = FinalFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 
@@ -24,8 +24,9 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 ```
 
 - `Nfs::new`: the `VerifiedChain` watch, the traffic balancer (`zaino_sync::fetch` per wanted
-  block, `Urgency::Tip`), the chain params, `depth` (the NFS folds while the lowest durable tip
-  is within `2 · depth` of best), `lookahead` (bodies fetched or folding ahead of the next fold).
+  block, `Urgency::Tip`), the chain params, `depth` (the NFS folds only while the header just
+  above the lowest durable tip is held and best is within `2 · depth` of it), `lookahead` (bodies
+  fetched or folding ahead of the next fold).
 - `add(kind, handle)`: enables `kind` (panics on a kind twice). The handle's committed view is
   what snapshots and folds read.
 - `run(cancel)`: cancel → `Ok`. `Fold` = an index's fold refused a verified block; `ChainGone` /
@@ -48,8 +49,8 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - `At::answers_through(kind)` = the highest height `kind` answers: its durable tip when past a
   best-branch block (final data), else the block.
 - `served().tip()` = the deepest folded block on the verified best, else the root (the lowest
-  durable tip); a reorg moves it to the fork point at once. Nothing durable = no publish
-  (`None`).
+  durable tip); a reorg moves it to the fork point at once. `None` only with no folded best node
+  and no root on the best chain (an index holding nothing still folds from genesis).
 - `at(hash)`: any folded node (best or side) or the root; `None` = below the root, never folded,
   or unknown. `At::branch()` = `Best` or `Side { from }`.
 - `durable()` = each enabled index's durable tip, current as of the publish.
@@ -58,7 +59,7 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 - Feature `testing`: `Indexed::fixed(chain, tip, params, [(kind, view)])`;
   `Indexed::fixed_above(chain, root, &nonfinalized_blocks, params, [(kind, view)])` (served =
   the last);
-  `ChainParams::of(&mock_chain, tip)`.
+  `ChainParams::of(&mock_chain)`.
 
 ## Observability
 
@@ -68,6 +69,30 @@ let located = at.views().block_hash().map(|reader| reader.height_of(&hash));
 | INFO `Chain tip advanced` (`height`, `hash`, `age`, `finalized`) | each published tip that is the verified best |
 
 Fetch counters and `zaino_fetch_height` come from the final path (`zaino-sync`).
+
+## Core and invariants
+
+```text
+ VerifiedChain ──────┐                    ┌─▶ Fetch ───▶ zaino_sync::fetch(.., Tip) ─▶ Checked
+ checked bodies ─────┤                    │
+ fold results ───────┼─▶ NfsCore::step ───┼─▶ Fold ────▶ fold_block on rayon ─▶ Node in graph
+ IndexHandle commits ┘   (pure: no I/O)   │
+   (durable tips)                         └─▶ Publish ─▶ watch<Option<Indexed>> ─▶ zaino-snapshot
+```
+
+`NfsCore::step` is pure (no I/O): inputs = the chain, checked bodies, fold results, durable tips;
+outputs = `Fetch`, `Abandon`, `Fold`, `Publish`. The driver is one task `select!`ing over them;
+folds run on rayon. It reloads committed views only when it hands the core new durable tips, so
+folds and publishes pair layers with exactly the tips the core knows.
+
+| ID | Invariant |
+| --- | --- |
+| N1 | every node's block = its own header + merkle root, on the best chain or a held side |
+| N2 | nodes above the root, on a held parent |
+| N3 | durable tips never move back |
+| N4 | served tip = deepest folded best node, else the root |
+| N5 | nothing folded, held or fetched outside the window |
+| N6 | every index read through a snapshot = that index folded from genesis along best |
 
 ## Tests
 

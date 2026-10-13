@@ -1,4 +1,4 @@
-//! [`TrafficCore`] against simulated members and a naive oracle (`traffic-balancer.md`)
+//! [`TrafficCore`] against simulated members and a naive oracle (`usage.md`)
 //!
 //! - Trusted 1..=4 (priorities 0..=2, 5 connections) + maybe the peer set, one [`Kind`] each
 //! - Kinds: slow (past every hedge floor), lying (a wrong value), lagging (absent; polls catching

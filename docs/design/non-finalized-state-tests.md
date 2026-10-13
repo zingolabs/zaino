@@ -2,7 +2,7 @@
 
 `live-tests/non-finalized-state/` is the live suite for everything above `tip − finalised_depth`:
 the non-finalized state, reorg detection, the served snapshot tip, and every RPC whose answer
-depends on the tip. [nfs.md](./nfs.md) describes the machinery.
+depends on the tip. [Architecture §7](../architecture.md#tip-path-zaino-nfs) describes the machinery.
 This document covers what the suite asserts, and why it asserts it that way.
 
 ## Principles

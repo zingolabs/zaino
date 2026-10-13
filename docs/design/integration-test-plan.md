@@ -83,7 +83,7 @@ Every row is checked against lightwalletd on the same chain, plus the listed ass
 | `GetTreeState` at a height with no tree change | walks back, answers an earlier height              | the exact height (clients require it) |
 | `GetMempoolStream`, first call after start     | empty, closes at once                              | the mempool at the block              |
 | mempool `CompactTx.vin`                        | dropped for every mempool tx (treated as coinbase) | present when TRANSPARENT is requested |
-| `CompactTx.fee`                                | never set                                          | set when known (boundaries.md)        |
+| `CompactTx.fee`                                | never set                                          | set when known (architecture.md)      |
 | backend failure on balance/UTXO                | OK with zero (bug #606)                            | non-OK status                         |
 | `GetSubtreeRoots`, unsupported pool            | `INVALID_ARGUMENT`                                 | `UNIMPLEMENTED` (non-Sapling)         |
 
@@ -126,7 +126,7 @@ Every S row also asserts the darkside failures that sank zingolib's suite: after
 | M4  | expiry: a tx at tip ≥ expiry leaves the view                                                                                                    | ZIP 203, `mempool_tx_expiry.py`                |
 | M5  | mempool cleared at an NU activation                                                                                                             | ZIP 401, `mempool_nu_activation.py`            |
 | M6  | routine resubmits (Android `resubmitUnminedTransactions`) answer as duplicates in `SendResponse`, never a gRPC error                            | Z#1404, Z#1392                                 |
-| M7  | submission via a random peer entry, spread, trusted verdict (chainview)                                                                         | chainview.md                                   |
+| M7  | submission via a random peer entry, spread, trusted verdict (chainview)                                                                         | architecture.md §6                             |
 | M8  | concurrent `GetMempoolTx` during churn: no duplicates, no resurrection, no loss                                                                 | lwd #616, #617                                 |
 | M9  | tx dropped from the validator's mempool, wallet rebroadcasts: accepted again, re-mined, `GetTransaction` height follows                         | zingolib darkside gap (only a draft existed)   |
 | M10 | `GetTransaction` for a mempool tx: data + height 0, never `NOT_FOUND` (zingolib's mock answers nothing; lwd answers height 0; Zaino = lwd)      | zingolib mock vs lwd                           |

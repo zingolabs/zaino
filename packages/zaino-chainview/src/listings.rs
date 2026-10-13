@@ -1,12 +1,12 @@
-//! Peers' mempool listings → which transactions a peer quorum holds (`chainview.md`)
+//! Peers' mempool listings → which transactions a peer quorum holds (`docs/architecture.md` §5)
 //!
 //! - admit: > 2/3 of the fresh listings hold the id, its listers in > [`QUORUM_NETGROUPS`]
 //!   netgroups (each a full node that validated it: policy + consensus, ours never re-run)
 //! - retain: > 1/3 hold its txid (an `inv` taken as a `mempool` reply = one short listing, never
 //!   a flap)
 //! - fresh = listed within [`LISTING_FRESH`] of the last round (a busy peer keeps its last)
-//! - two conflicting transactions cannot both pass: each needs > 2/3 of the same listings, and
-//!   one node's mempool holds at most one of them
+//! - conflicting transactions never both held while every peer is honest (> 2/3 and > 1/3 overlap,
+//!   one mempool holds one); a peer listing both can get both held (`mempool_model.rs`)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;

@@ -116,7 +116,7 @@ non-zero) plus the target's work fitting 128 bits, and reports each rejection
 as its own `CompactDifficultyError` variant. The work
 (`floor(2^256 / (target + 1))`) is computed for that check only and never
 exposed: chain work and the most-work rule live in `zaino-header-chain`
-([chainview](../../docs/design/chainview.md#2-the-best-chain-proof-of-work)).
+([architecture §4](../../docs/architecture.md#4-the-best-chain)).
 
 ## Byte order
 

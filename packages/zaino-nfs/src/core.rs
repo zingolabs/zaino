@@ -1,5 +1,5 @@
 //! [`NfsCore`]: the [`VerifiedChain`] + bodies + folds + each index's durable tip → the served tip
-//! and the fetches and folds feeding it (`nfs.md`)
+//! and the fetches and folds feeding it (`usage.md`)
 //!
 //! - Pure: no I/O, no clock
 //! - Root = lowest durable tip of every index; nodes only above it

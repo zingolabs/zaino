@@ -43,7 +43,8 @@ The ZingoLabs [Matrix channel](https://matrix.to/#/!cVsptZxBgWgmxWlHYB:matrix.or
 - Signed (verified) commits are encouraged; see GitHub's
   [commit signature verification](https://docs.github.com/en/authentication/managing-commit-signature-verification/about-commit-signature-verification).
 - Keep docs accurate to your latest commit, including doc comments and the
-  affected crate's `usage.md`.
+  affected crate's `usage.md` and, for system-level behaviour,
+  `docs/architecture.md`.
 
 ## Testing
 

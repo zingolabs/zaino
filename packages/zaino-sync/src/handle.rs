@@ -1,5 +1,5 @@
 //! [`IndexHandle`]: one index's committed view + applied tip, as the rest of the daemon reads them
-//! (`data-sink.md`)
+//! (`usage.md`)
 
 use tokio::sync::watch;
 use zaino_persistence::View;

@@ -1,5 +1,5 @@
 //! Consensus rules a transaction's own bytes, the next block and Zaino's UTXO set decide
-//! (`chainview.md`): a submission's precheck, and a peer quorum's admission
+//! (`docs/architecture.md` §5): a submission's precheck, and a peer quorum's admission
 //!
 //! - consensus only: fee floors are node policy (zebrad 1,000 / zakura 400 zatoshis per action),
 //!   carried by the peer quorum, never second-guessed here

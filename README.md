@@ -7,7 +7,7 @@ lightwalletd-compatible `CompactTxStreamer` gRPC service.
 
 Validation stays in Zebra and indexing moves to Zaino: the two run as separate
 processes, on separate hosts if you like, and a new index needs no change to the
-validator. [Where data lives](./docs/design/boundaries.md) states the rule.
+validator. [The architecture](./docs/architecture.md#1-who-owns-what) states the rule.
 
 ## Release pipeline
 
@@ -123,14 +123,10 @@ Operating it:
 - [Cargo docs](https://zingolabs.github.io/zaino/).
 
 How it is built, and why:
-- [Where data lives](./docs/design/boundaries.md): the consensus / keys / everything-else rule that decides what Zaino indexes.
-- [The indexing pipeline](./docs/design/pipeline.md): the map. Two paths (final → writers on disk, tip → NFS in RAM), where data lives, every public interface. Start here.
-- [The final path](./docs/design/data-sink.md): `FinalFollower` → `IndexerDataSink<Block>` → index writers; commit cadence, fees, backpressure.
-- [The tip overlay](./docs/design/nfs.md): the NFS folds non-durable blocks in RAM and publishes snapshots; reorgs live here alone.
+- [Architecture](./docs/architecture.md): **start here.** Who owns what, the map, what each source is trusted for, the best chain and finality, the mempool, submission, indexing, serving from one snapshot, failure modes.
 - [Index data structures](./docs/design/index-data-structures.md): the two storage shapes every index is an instance of.
 - [Persistence architecture](./docs/design/persistence-architecture.md): the measurements behind append-only files and mmap, and the mmap hazards.
 - [Durability](./docs/design/durability.md): the manifest commit point, page checksums (the one disk check every index shares), crash testing, and why zainod dies rather than serve a state it cannot vouch for.
-- [Chainview](./docs/design/chainview.md): the best chain by verified proof of work, the mempool from trusted validators and peers, and how much each source is trusted for.
 - [What the clients actually call](./docs/client-requirements.md): an audit of the two wallet sync engines.
 - [Ironwood activation](./docs/notes/ironwood-activation.md): NU6.3 domain facts the indexes and live suite rely on.
 

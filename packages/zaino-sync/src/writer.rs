@@ -1,4 +1,4 @@
-//! What every index writer does to its store, around its own fold (`data-sink.md`)
+//! What every index writer does to its store, around its own fold (`usage.md`)
 //!
 //! - commits: the store's own on a full buffer, the writer's [`commit`] after a finalized run and at
 //!   `Shutdown`

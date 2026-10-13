@@ -335,7 +335,7 @@ pub fn describe_metrics() {
     describe_gauge!(names::BEST_TIP, "Height of the header chain's most-work verified block");
     describe_gauge!(
         names::FETCH_HEIGHT,
-        "Highest height handed to the indexes (folded, or sent final unfolded); rewinds on a reorg"
+        "Last final block height the follower sent to the index writers"
     );
     describe_gauge!(
         names::INDEX_SYNCED,

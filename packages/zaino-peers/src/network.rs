@@ -1,4 +1,4 @@
-//! zebra-network embedded as Zaino's p2p layer (`chainview.md`)
+//! zebra-network embedded as Zaino's p2p layer (`docs/architecture.md` §3)
 //!
 //! ```text
 //!   requests ──▶ peer set (zebra's p2c over ready peers) ──▶ FindHeaders · BlocksByHash

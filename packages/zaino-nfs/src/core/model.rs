@@ -1,4 +1,4 @@
-//! [`NfsCore`] against naive final-path writers and an oracle fold (`nfs.md`), `check()` after
+//! [`NfsCore`] against naive final-path writers and an oracle fold (`usage.md`), `check()` after
 //! every step
 //!
 //! - Chain moves (a real [`HeaderChain`], work varying per branch): extend, reorg at a random depth

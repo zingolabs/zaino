@@ -1,6 +1,6 @@
 //! Daemon's validator set → [`zaino_traffic`] + [`zaino_chainview`]
 //!
-//! - Trust = `[[trusted_validators]]`, configured order (`chainview.md`: never discovered)
+//! - Trust = `[[trusted_validators]]`, configured order, never discovered (architecture.md §3)
 //! - One balancer: every request to them (polls, headers, blocks, lookups, submissions)
 //! - Tip = their headers, trusted, in a header chain anchored at their tip − depth (in memory)
 

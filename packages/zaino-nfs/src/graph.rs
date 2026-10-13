@@ -1,4 +1,4 @@
-//! Folded blocks above the root: one [`Node`] per block, keyed by hash (`nfs.md`)
+//! Folded blocks above the root: one [`Node`] per block, keyed by hash (`usage.md`)
 //!
 //! - Best nodes = one contiguous run from the root (folded parent first)
 //! - Side nodes = earlier best runs, kept while the header chain holds them (`holds`: side

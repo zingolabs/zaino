@@ -3,7 +3,6 @@
 //! - One byte-bounded queue per subscriber (a slow one holds the publisher back, never grows
 //!   memory)
 //! - One `Arc<T>` per step, shared by every queue, freed at the last pop
-//! - Design: `docs/design/data-sink.md`
 //!
 //! ```
 //! use std::{num::NonZeroUsize, sync::Arc};

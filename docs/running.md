@@ -85,7 +85,7 @@ height on restart.
 index has already committed, since that answer is final and will not change. A range
 reaching past the committed height is refused whole, never cut short. We refuse
 rather than proxy to the validator because a derived answer comes from Zaino's own
-index or not at all (see [design/boundaries.md](./design/boundaries.md)).
+index or not at all (see [architecture §1](./architecture.md#1-who-owns-what)).
 A client MUST read `UNAVAILABLE` as "retry later", never as "the chain ends here".
 
 ## Disk
@@ -121,7 +121,7 @@ trusted validator going away never stops zainod: its poller retries until it ans
 ## Status
 
 Every request, probe and scrape reads one published snapshot of what zainod serves
-([design/global-snapshot.md](./design/global-snapshot.md)): the verified chain, the served
+([architecture §8](./architecture.md#8-serving-one-snapshot)): the verified chain, the served
 tip, the indexes, the mempool and the validators, as of one moment. `/statusz` (admin
 listener) shows it:
 

@@ -1,4 +1,4 @@
-//! [`TrafficCore`]: who is asked what, and when (`traffic-balancer.md`)
+//! [`TrafficCore`]: who is asked what, and when (`usage.md`)
 //!
 //! - Pure: no I/O, time as input (sends, replies, polls = the driver's)
 //! - One dispatch per step: due polls (own permit), then open asks by lane (control →

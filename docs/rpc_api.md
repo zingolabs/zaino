@@ -12,7 +12,7 @@ Zaino serves no JSON-RPC. Node queries go to the validator's own JSON-RPC.
 ## Where each method is answered
 
 Which side a method falls on is not a per-method judgement. It follows from
-[design/boundaries.md](./design/boundaries.md): derived answers come from a
+[architecture §1](./architecture.md#1-who-owns-what): derived answers come from a
 Zaino index (never the validator), and writes and point lookups of primary
 consensus objects are forwarded to the validator.
 
@@ -24,9 +24,9 @@ consensus objects are forwarded to the validator.
 | `GetTaddressBalance`, `GetTaddressBalanceStream` | transparent-address index |
 | `GetTaddressTransactions` | transparent-address index for the `{height, txid}` set, the validator for the bytes |
 | `GetTransaction` | validator |
-| `SendTransaction` | [chain view](./design/chainview.md) submission: one random entry per attempt |
-| `GetMempoolTx`, `GetMempoolStream` | chain view (listed by any trusted validator, or our own broadcast) |
-| `GetLightdInfo` | chain view (validators' last poll) + the served snapshot tip |
+| `SendTransaction` | chain view [submission](./architecture.md#6-submission): one random entry per attempt |
+| `GetMempoolTx`, `GetMempoolStream` | chain view [mempool](./architecture.md#5-the-mempool-view): listed by a trusted validator, admitted by a peer quorum, or our own accepted send |
+| `GetLightdInfo` | the served snapshot: its tip, the verified best, the upgrade schedule (no validator call) |
 | `GetBlockRangeNullifiers` *(deprecated, TODO: REMOVE)* | compact-block index, re-projected to nullifiers |
 | `GetTaddressTxids` *(deprecated, TODO: REMOVE)* | as `GetTaddressTransactions` |
 
@@ -34,8 +34,7 @@ consensus objects are forwarded to the validator.
 `[[trusted_validators]]` entry: lowest `priority` tier first, the least loaded
 within it, a slow answer hedged and an absent one asked of the next until one
 answers (a lagging validator may lack a just-mined transaction); `NOT_FOUND` only
-when every one asked said absent. The mempool methods read
-every trusted validator's listing. The two deprecated rows are served
+when every one asked said absent. The two deprecated rows are served
 only because pepper-sync calls them (see
 [client-requirements.md](./client-requirements.md)).
 
@@ -155,7 +154,7 @@ and pruned on read, so any requested subset is answerable.
   does the Android SDK ([client requirements](./client-requirements.md)).
 - `CompactTx.fee` is filled, unlike lightwalletd. In a mined block the
   value-balance index resolves the values of the outputs each transaction
-  spends. In `GetMempoolTx` it is the fee the validator listed. It is 0 for a
-  coinbase, for our own broadcast before any validator lists it, and for a fee
-  of 2^32 zatoshis or more, since the field is a `uint32` with no presence bit
-  ([design/boundaries.md](./design/boundaries.md)).
+  spends. In `GetMempoolTx` it is the fee a trusted validator listed, or the one
+  Zaino computed for a peer-quorum admission. It is 0 for a coinbase, for our
+  own send before anything lists it, and for a fee of 2^32 zatoshis or more,
+  since the field is a `uint32` with no presence bit.

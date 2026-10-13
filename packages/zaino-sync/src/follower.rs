@@ -1,4 +1,4 @@
-//! [`FinalFollower`]: every final block, in order, onto the final stream (`data-sink.md`)
+//! [`FinalFollower`]: every final block, in order, onto the final stream (`usage.md`)
 //!
 //! - Target = the chain's final tip height
 //! - A height the verified chain holds a header for: by hash, from any member (peers included),

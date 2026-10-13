@@ -1,4 +1,4 @@
-//! Submission: one random entry per attempt, watched until it spreads (`chainview.md`)
+//! Submission: one random entry per attempt, watched until it spreads (`docs/architecture.md` §6)
 //!
 //! ```text
 //!   step ─▶ Push(peer: untried, netgroup unused, random)   while budget left + not spread

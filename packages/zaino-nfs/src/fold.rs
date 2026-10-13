@@ -1,4 +1,4 @@
-//! [`fold_block`]: one block through each covered index, in dependency order (`nfs.md`)
+//! [`fold_block`]: one block through each covered index, in dependency order (`usage.md`)
 //!
 //! - The one place indexes meet: a new index = one line here
 

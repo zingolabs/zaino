@@ -1,9 +1,13 @@
 # `zaino-traffic` — usage
 
 One scheduler for every request Zaino sends to its trusted validators and to peers
-(`docs/design/traffic-balancer.md`): one member table, per member a permit for its poll and three
-lanes (control, interactive, bulk) each with a reserved permit, one hedge / failover / blame
-policy, and the poll loop of every trusted validator.
+([architecture §9](../../docs/architecture.md#9-talking-to-validators-and-peers)): one member
+table, per member a permit for its poll and three lanes (control, interactive, bulk) each with a
+reserved permit, one hedge / failover / blame policy, and the poll loop of every trusted validator.
+
+Built as a pure core (`TrafficCore::step(input, now) -> Vec<Output>`, time as input) plus one
+driver. No `tower::Service`: every answer must name its sender (blame) and every hedge needs
+"anyone but him".
 
 ## Wiring
 
@@ -15,7 +19,7 @@ let trusted = validators
     .map(|v| Trusted {
         source: Arc::new(ZcashLegacyRpcClient::at(&v.address, cookie, user, password, timeouts, link)?),
         priority: v.priority,                                  // 0 before 1 before …
-        limits: Limits::new(v.max_connections, None)?,         // None below 5
+        limits: Limits::new(v.max_connections)?,               // None below 5
     })
     .collect();
 let peers = Peers { transport: Arc::new(peer_transport), in_flight: peer_target };
@@ -30,8 +34,8 @@ tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is poll
   `block`) picks the peer itself and must check a block body against its header, blaming the
   peer that sent a mismatch. `in_flight` = requests it carries at once, at least
   `Peers::MIN_IN_FLIGHT` (3: one reserved per lane; it has no poll).
-- The peer set answers headers and blocks only, is never benched (`report` on its ticket is a
-  no-op: one peer's lie must not starve the honest ones) and never goes `Down`.
+- The peer set answers headers and blocks only and never goes `Down`. `report` on its ticket logs
+  and counts but never benches it (one peer's lie must not starve the honest ones).
 - `Limits::new(max_connections)`; `Limits::MIN_CONNECTIONS` = 5: one for the poll, one reserved
   per lane + one shared.
 - Load on a validator = `max_connections` here + `LinkLimits::max_bytes_per_sec` in the
@@ -45,6 +49,7 @@ Every answer is `Answered { value, from, ticket }`: `from` names the member that
 | Method | Class (lane) | Reaches | Ends |
 | --- | --- | --- | --- |
 | `block(hash, Urgency::Tip / Bulk)` | `TipBlock` (interactive) / `BulkBlock` (bulk) | trusted by tier, then the peer set | never unanswered: every member tried → next round after 1 s, a warning each minute it stays unserved |
+| `blocks_at(heights, urgency)` | same classes | trusted only (peers answer by hash): one `getblock <h> 0` batch, or one `GetBlockRange` per run over gRPC | never unanswered, as `block` |
 | `headers(HeaderAsk::Pinned { member, heights })` | `Headers` (control) | that trusted member only | unanswered if it fails or is out |
 | `headers(HeaderAsk::Peers { locator, stop })` | `Headers` (control) | the peer set | unanswered if it fails |
 | `bytes(listed, prefer)` | `Bytes` (interactive) | trusted, best tier, `prefer` first within it | one batch from one member |
@@ -86,7 +91,7 @@ let checked = loop {
 
 ## Polling and observations
 
-- Each trusted member is polled every 1 s (every 15 s while its push stream is up), never closer
+- Each trusted member is polled every 1 s (every 15 s while both its push streams are up), never closer
   than 200 ms apart, on the 0.5 → 30 s ladder while failing; a `Down` member (10 consecutive
   failures) is probed at 30 s and nothing else is sent to it. The poll has a permit of its own,
   outside every lane: no ask ever delays it. Metadata (`getpeerinfo`, `getinfo`,
@@ -114,3 +119,37 @@ asked lookups or bytes) → `Degraded` (consecutive failures, any request) → `
 (`pending`, `live`, `catching_up`, `degraded`, `down`).
 
 `Unanswered` displays its `last` (or "no member to ask"), for logs and wallet-facing statuses.
+
+## Invariants
+
+`TrafficCore::check()` runs after every step in tests and debug builds; the model holds the rest.
+
+| ID | Invariant |
+| --- | --- |
+| T1 | per member: Σ in flight ≤ `max_connections`; a lane's reserve never taken by another lane |
+| T2 | a class reaches only the member kinds it allows (trusted-only never reaches the peer set) |
+| T3 | no new send to a benched or `Down` member (except its poll probe) |
+| T4 | every ask ends once: answered, unanswered or abandoned; a hedge loser is never delivered |
+| T5 | a round never asks one member twice; a re-ask after `report` excludes the reported member |
+| T6 | a send (first or hedge) goes to the best tier with room, then the preferred, then the least loaded |
+| T7 | no ready ask waits while an eligible member has room for its lane; a shared permit never goes to a lower lane while a higher lane's ask waits for that member |
+| T8 | every misanswer is charged to the member that sent it, and only to it |
+| T9 | an ask an honest member may serve is answered; with a faster honest member, within hedge floor + one round |
+| T10 | a trusted member is polled ≤ once per 200 ms and ≥ once per interval (ladder while failing), never delayed by an ask |
+
+## Tests
+
+- `core/model.rs` (proptest): members `Honest`, `Slow`, `Lying`, `Lagging`, `Flapping`, `Down`,
+  `Silent`, the peer set present or not; random asks, abandons, reports, clock advances against an
+  oracle with its own lanes and permits. A bound matrix pins each class's end time to its hedge
+  floor + one round.
+- `core/fire_drills.rs`: one planted bug per `check()` assertion and precondition.
+- `tests.rs` (paused clock): a lookup storm never delays a poll, a merkle liar is benched, a hedge
+  beats a 20 s stall, a push stream wakes the poll within 200 ms.
+
+```bash
+# heavy run: at least 3 minutes after any change to this crate
+end=$((SECONDS + 180)); while [ $SECONDS -lt $end ]; do
+  PROPTEST_CASES=1000 cargo test -p zaino-traffic || break
+done
+```

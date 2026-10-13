@@ -11,7 +11,7 @@ matter:
 Line references point into the right function at the revision audited. They are
 not stable coordinates.
 
-[rpc_api.md](./rpc_api.md) and [design/boundaries.md](./design/boundaries.md)
+[rpc_api.md](./rpc_api.md) and [architecture §1](./architecture.md#1-who-owns-what)
 say where Zaino answers each method from. This document is the other half: what
 clients ask for, how often, and where answering slightly wrong is worse than not
 answering.

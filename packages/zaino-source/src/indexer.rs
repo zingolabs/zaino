@@ -1,5 +1,5 @@
 //! zebrad's indexer push streams (`ChainTipChange` + `MempoolChange`) as wake hints
-//! (`chainview.md`)
+//! (`docs/architecture.md` §9)
 //!
 //! ```text
 //!   connect ─▶ both streams open ─▶ on_link(true) ─▶ every event: on_change ─▶ either ends

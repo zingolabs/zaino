@@ -268,7 +268,7 @@ mid-scrub). The LSM's own tests cover its layout arithmetic, prefetch plans and 
 ### WriteBuffer and layers
 
 Data above a durable tip has one shape, whether it is a store's buffer or a non-final block in
-`zaino-nfs` ([nfs.md](./nfs.md)):
+`zaino-nfs` ([architecture §7](../architecture.md#tip-path-zaino-nfs)):
 
 ```rust
 impl Overlay {
@@ -308,7 +308,7 @@ Non-final data lives in `zaino-nfs`: one node per block above the durable root, 
 `Overlay` per index (its parent's `.with` its own `BlockChanges`); a snapshot reads every index as
 `OverlayView::new(committed view, node layer rebased onto it)`. A store only ever holds final
 data. Each index writer drives its own store, one run of final steps per blocking hop
-([data-sink.md](./data-sink.md)):
+([`zaino-sync`](../../packages/zaino-sync/usage.md)):
 
 | Final step                    | Writer                                                         |
 | ----------------------------- | -------------------------------------------------------------- |
@@ -322,6 +322,6 @@ data. Each index writer drives its own store, one run of final steps per blockin
   (what the NFS reads).
 
 - A fold reads its parent's state off `staged()` (compact-block's tree sizes, tree-state's
-  frontiers) instead of carrying it: a restart needs no step of its own ([data-sink.md](data-sink.md)).
+  frontiers) instead of carrying it: a restart needs no step of its own.
 - A failed commit panics naming the index and its directory (`StoreError::commit_failed`): the
   store is poisoned and a restart recovers.

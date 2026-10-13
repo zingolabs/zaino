@@ -144,7 +144,7 @@ Blocks above the durable root are `zaino-nfs`'s: one `Overlay` per block, keyed
 exactly as the files, read through the same `TreeStateReader` over a
 `OverlayView`. A reorg moves the snapshot to another node; a block folds onto
 its parent node's frontiers: no reverse fold. Nothing reorg-able is ever
-fsynced. See [`docs/design/nfs.md`](../../docs/design/nfs.md).
+fsynced. See [architecture §7](../../docs/architecture.md#tip-path-zaino-nfs).
 
 The writer's `fold_run`, apply and commit run in one `zaino_sync::blocking`
 hop per run, reading note commitments straight off the stream's shared

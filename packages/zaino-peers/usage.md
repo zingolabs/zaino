@@ -1,6 +1,6 @@
 # `zaino-peers` — usage
 
-Zaino's p2p layer (`docs/design/chainview.md`): zebra-network's peer set,
+Zaino's p2p layer ([architecture §3](../../docs/architecture.md#3-sources-and-what-each-is-trusted-for)): zebra-network's peer set,
 embedded. Peers are discovered and unauthenticated, so nothing here votes: every
 header, block and transaction handed out is identified by what zebra recomputes
 from its bytes, never by what a peer claimed.

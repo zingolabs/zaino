@@ -41,7 +41,7 @@ pub(crate) mod path {
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressBalanceStream";
 
     /// Both halves of the boundary: index names the txs, validator holds the bytes
-    /// (`docs/design/boundaries.md`)
+    /// (`docs/architecture.md` §1)
     pub(crate) const GET_TADDRESS_TRANSACTIONS: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTransactions";
     /// TODO: REMOVE THIS — deprecated alias of `GET_TADDRESS_TRANSACTIONS` (pepper-sync still
@@ -49,8 +49,8 @@ pub(crate) mod path {
     pub(crate) const GET_TADDRESS_TXIDS: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetTaddressTxids";
 
-    /// One random entry per attempt, watched until it spreads (`chainview.md`); marked ours on
-    /// acceptance (a wallet sees its own send before any listing)
+    /// One random entry per attempt, watched until it spreads (`docs/architecture.md` §6); marked
+    /// ours on acceptance (a wallet sees its own send before any listing)
     pub(crate) const SEND_TRANSACTION: &str =
         "/cash.z.wallet.sdk.rpc.CompactTxStreamer/SendTransaction";
     pub(crate) const GET_MEMPOOL_TX: &str = "/cash.z.wallet.sdk.rpc.CompactTxStreamer/GetMempoolTx";

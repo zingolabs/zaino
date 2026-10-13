@@ -2,9 +2,21 @@
 
 The final path: `FinalFollower` fetches every final block in order onto one byte-bounded
 broadcast (`IndexerDataSink<Block>`); each index writer runs its own loop over its store
-(`apply` / `commit`) and publishes it through an `IndexPublisher`. Design:
-[the final path](../../docs/design/data-sink.md); where it fits:
-[pipeline.md](../../docs/design/pipeline.md).
+(`apply` / `commit`) and publishes it through an `IndexPublisher`. Where it fits:
+[architecture §7](../../docs/architecture.md#final-path-zaino-sync).
+
+```text
+ VerifiedChain ─▶ FinalFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ value-balance ─▶ FeeSink ┐
+ (final_tip)      fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
+                                                           ├─▶ [queue] ─▶ tree-state
+                                                           ├─▶ [queue] ─▶ block-hash
+                                                           └─▶ [queue] ─▶ transparent-address
+                                                       each writer: fold → Store::apply → commit
+```
+
+Which index holds the pipeline back: the one whose `zaino_index_applied_height` stops while
+`zaino_fetch_height` waits. Why: its `zaino_index_run_seconds` against `zaino_index_write_seconds`
+(run ≈ write = the disk; run ≫ write = the fold, or compact-block waiting on value-balance's fees).
 
 ```rust,ignore
 use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
@@ -50,7 +62,8 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
   `progress()`; `run(cancel)`.
-- Streams `lowest durable + 1 ..= final tip`, `lookahead` blocks in flight, delivered in order;
+- Streams `lowest durable + 1 ..= final tip`, ⌈`lookahead` / 4⌉ requests in flight (4 blocks
+  each by height, 1 by hash), delivered in order;
   waits for the next chain past the final tip.
 - A height the verified chain holds a header for (the final window and above) is fetched by
   hash from any member, peers included (`fetch`), checked against that header. Below it (bulk

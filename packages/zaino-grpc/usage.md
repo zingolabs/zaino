@@ -77,7 +77,7 @@ routing.route(routes);
   rest. An unknown path is `UNIMPLEMENTED`.
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
-  [`docs/design/boundaries.md`](../../docs/design/boundaries.md).
+  [architecture §1](../../docs/architecture.md#1-who-owns-what).
 - `V` = the indexes' `zaino_persistence::CommittedView` (zainod: `DiskView`): every read = an
   index's reader over a committed snapshot + the NFS's layers, on a read lane (any thread).
   Any engine's committed view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.

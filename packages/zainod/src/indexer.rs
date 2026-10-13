@@ -1,4 +1,4 @@
-//! Daemon boot + pipeline composition (`docs/design/pipeline.md`)
+//! Daemon boot + pipeline composition (`docs/architecture.md` §2)
 //!
 //! - Only place daemon config crosses into the (config-agnostic) stack crates
 //! - Only place the pipeline's shape is written down:

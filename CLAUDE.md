@@ -119,10 +119,17 @@ Reach for `grep` only as a fallback — when the server is genuinely
 unavailable, still indexing, or the target isn't code it understands — and
 say so when you do.
 
-## Crate usage guides: keep them current
+## Docs: one home per fact
 
-Each crate is documented by a usage guide at `packages/<crate>/usage.md`, indexed
-from the root `README.md`'s "Crate usage guides" section.
+System design (how crates fit together, what each source is trusted for, why) lives
+in `docs/architecture.md` only. Each crate's `packages/<crate>/usage.md` (also its
+rustdoc) holds crate-specific detail only: wiring, API contract, constants,
+invariant tables (`T1`, `G5`, … that code cites), tests. A guide links to an
+architecture section instead of restating it; never copy a fact into a second
+file. No status tables, phase lists, migration history or "before/after" prose:
+the code is the current shape, history goes in commit messages.
+
+Each guide is indexed from the root `README.md`'s "Crate usage guides" section.
 
 When a change adds or alters a crate's **public capability** — a new port,
 service, config knob, public method, or a behavioural contract consumers rely on

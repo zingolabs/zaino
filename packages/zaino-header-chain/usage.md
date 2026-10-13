@@ -1,18 +1,18 @@
 # `zaino-header-chain` — usage
 
 The Validated Header tree: each header validated either by the trusted validator that served it
-or by Zaino's `validate`. Anchored at a trusted validator's tip − depth (no history from
+or by Zaino's `validate`. Anchored at a trusted validator's tip − `anchor_below()` (no history from
 genesis): the bounded tree of branches above the final boundary, the tip with the most cumulative
 work, and the immutable `VerifiedChain` everything downstream reads. A trusted header enters on
-its parent link and its nBits work alone (its validator already ran the consensus rules).
-`validate` runs those rules for an untrusted source; today every header comes from a trusted
-validator.
+its parent link and its nBits work alone (`insert`: its validator already ran the consensus
+rules); a peer's runs every rule first (`insert_untrusted`). Why and how it is driven:
+[architecture §4](../../docs/architecture.md#4-the-best-chain).
 
 ```rust,ignore
 use zaino_header_chain::{decode_header, HeaderChain, Inserted};
 
 let mut chain = HeaderChain::new(depth);              // in memory, nothing held
-chain.anchor(&decode_header(&raw)?, claim_height - depth); // a trusted header = the final tip
+chain.anchor(&decode_header(&raw)?, claim_height - chain.anchor_below()); // max(depth, CONTEXT)
 
 for header in &run {                                  // a trusted validator's headers, in order
     match chain.insert(header)? {                     // parent link + work, best, bounds
@@ -47,8 +47,9 @@ tip: a start, or a jump to a trusted validator far ahead.
 as int32, nBits valid, solution size, hash ≤ target, Equihash (200, 9); proof of work off on
 regtest) then against up to `CONTEXT` = 113 ancestors (median time past, + 90 min, nBits =
 zcashd's `CalculateNextWorkRequired` + ZIP 218's window by height, testnet's minimum-difficulty
-gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`). Nothing in Zaino
-feeds it untrusted headers yet; it is tested against captured mainnet and testnet ranges.
+gap) and the clock (`FromTheFuture`: deferred, never blamed, `is_deferred`).
+`insert_untrusted` runs it before `insert`; `zaino-chainview` feeds it peers' headers. On regtest
+nBits is fixed at the limit and the solution must be 36 bytes.
 
 A solution length must be a minimal compactSize (`decode_header` refuses `fd 24 00` for 36 bytes
 as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
@@ -72,7 +73,7 @@ as `NonMinimalLength`, as zcashd's `ReadCompactSize`).
   adds its own evidence (zainod: live peers in more than 5 netgroups carrying the chain) and calls
   `finalize_by_peers(block)`, which panics on any other block. Peer-finalized blocks never move
   the difficulty reference. `best_height_of(hash)` places a hash on the best branch.
-- Memory only: the newest `2 · depth` final headers stay, answering by height; older finals are
+- Memory only: the newest max(`2 · depth`, `CONTEXT`) final headers stay, answering by height; older finals are
   final by definition (`on_best` = true) and a header whose parent is one of them = `Orphan`.
 
 ## `VerifiedChain`
@@ -84,7 +85,7 @@ holder's answers never change (H5).
 | --- | --- |
 | `best()` | the most-work tip |
 | `final_tip()` | the last final block (always set: the anchor at least) |
-| `hash_at(h)` / `header_at(h)` | the best chain above the final tip and the newest `2 · depth` finals; `None` above best or below the finals kept |
+| `hash_at(h)` / `header_at(h)` | the best chain above the final tip and the finals kept; `None` above best or below the finals kept |
 | `on_best(at)` | `at` on the best chain: a held header's hash, or at/below the final tip past the finals kept |
 | `holds(at)` | `on_best(at)`, or a side block held above the final tip (the NFS prunes by it) |
 | `locator()` | zcashd's `GetLocator`, ending at the final tip |
@@ -93,7 +94,7 @@ holder's answers never change (H5).
 ## Invariants, checked
 
 `HeaderChain::check()` asserts H1, H2 (nothing before an anchor, finals contiguous and at most
-`2 · depth`, every node descends from the final tip), H4, H5, H6 and the tree's bookkeeping
+max(`2 · depth`, `CONTEXT`), every node descends from the final tip), H4, H5, H6 and the tree's bookkeeping
 (cumulative work, child counts, leaf set), naming the invariant in its panic.
 
 ## Tests

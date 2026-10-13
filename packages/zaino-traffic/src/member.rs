@@ -1,4 +1,4 @@
-//! One member: identity, health, bench, permits, poll cadence (`traffic-balancer.md`)
+//! One member: identity, health, bench, permits, poll cadence (`usage.md`)
 
 use std::time::{Duration, Instant};
 

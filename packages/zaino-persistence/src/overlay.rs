@@ -1,4 +1,4 @@
-//! Non-final data over a committed view (`docs/design/nfs.md`)
+//! Non-final data over a committed view (`docs/architecture.md` §7)
 //!
 //! - [`Overlay`] = `BlockChanges` above some durable tip, per table the items they add (`imbl`)
 //! - [`OverlayView`] = rows [`Uncommitted`] the committed view they sit on: above first, then durable

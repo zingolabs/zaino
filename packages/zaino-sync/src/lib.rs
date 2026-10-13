@@ -1,5 +1,5 @@
 //! The final path: [`FinalFollower`] → [`IndexerDataSink<Block>`] → each index's writer loop
-//! (`docs/design/data-sink.md`)
+//! (`docs/architecture.md` §7)
 //!
 //! - One sender, every step final: each height once, ascending, never retracted
 //! - Each writer: its own loop over its [`Subscription`]'s runs, its store published through an

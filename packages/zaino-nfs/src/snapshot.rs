@@ -1,5 +1,5 @@
 //! [`Indexed`]: one served tip across every enabled index, the global snapshot's index half
-//! (`nfs.md`)
+//! (`usage.md`)
 //!
 //! - Pinned for a request's life: nodes through `Arc`, disk through the committed view
 //! - Layers rebased onto the committed views they pair with, at build (decision 4)

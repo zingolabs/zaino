@@ -1,5 +1,5 @@
-//! Trusted validators' headers into the header chain, its [`VerifiedChain`] into the view and onto
-//! a watch (`docs/design/pipeline.md`)
+//! Trusted validators' and peers' headers into the header chain, its [`VerifiedChain`] into the
+//! view and onto a watch (`docs/architecture.md` §4)
 //!
 //! ```text
 //!   view changed ─▶ answering validators' claims + getblockhash answers held ─▶ vouch, finalize

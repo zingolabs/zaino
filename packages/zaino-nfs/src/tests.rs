@@ -1,5 +1,5 @@
 //! [`Nfs`] end to end over the real final path: `FinalFollower` + every index writer, `SimFs`
-//! stores, mock validators (`nfs.md`)
+//! stores, mock validators (`usage.md`)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
 //! - Every snapshot seen: tip on its best; `at` of every mined block (served, side, root): each

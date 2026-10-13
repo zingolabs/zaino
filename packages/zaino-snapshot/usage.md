@@ -1,6 +1,6 @@
 # `zaino-snapshot` — usage
 
-One value for everything Zaino serves (`docs/design/global-snapshot.md`): the chain view's
+One value for everything Zaino serves ([architecture §8](../../docs/architecture.md#8-serving-one-snapshot)): the chain view's
 latest, the NFS's latest and a mempool feed keyed to the served tip, published together as one
 `Arc<Snapshot>`. Every read of chain, index, mempool or validator state, by a route, a probe, a
 scrape or a log line, loads one and asks it everything.
@@ -28,7 +28,7 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
 let snap = snapshots.load();                           // one atomic load, never None: pin it
 let at = snap.served()?;                               // Err(Unavailable): UNAVAILABLE + its message
 let blocks = at.views().compact_block();
-let mempool = snap.mempool()?;                         // gate: a trusted validator holds best
+let mempool = snap.mempool()?;                         // gate: a Live holder of best, or a peer quorum
 let lightd = snap.lightd()?;                           // GetLightdInfo: one load, no validator
 snapshots.changed().await?;                            // next publish
 ```
@@ -41,7 +41,7 @@ snapshots.changed().await?;                            // next publish
 | `served()`              | the NFS's served `At` (`tip()`, `branch()`, `params()`, `views()`); `NothingServed` before its first publish |
 | `at(hash)`              | index state as of any folded block (best or side) or the NFS root; `None` otherwise |
 | `forks()`               | each side branch of `chain()` (`ForkView { fork, folded }`, `folded` = its deepest folded block) |
-| `mempool()`             | the servable mempool; `NoChain` / `NotHeld` while no trusted validator holds best |
+| `mempool()`             | the servable mempool while a `Live` validator holds best or `peers_quorate()`; else `NoChain` / `NotHeld` |
 | `mempool_stream()`      | a `MempoolTail` on the epoch at `tips.served` (same gate)                     |
 | `lightd()`              | `Lightd { served, best, schedule }`: the served height, the verified best's (the network tip estimate) and the served `At`'s upgrade schedule; `NothingServed` before the first publish, never a validator (served degraded too) |
 | `view()`                | the chain view's snapshot: validator facts, alarms, spreads                   |
@@ -78,7 +78,7 @@ while let Some(logged) = tail.next().await {            // each arrival once; No
   txids of `Indexed::served_nonfinalized()`, collected once per epoch (the chain view's listings
   trail a block by up to a poll, so its mempool still lists what the new tip mined).
 - Contract S1–S4 (bound to the tip hash, never mined, once per stream, `height: 0`):
-  `docs/design/global-snapshot.md` §4.
+  [architecture §8](../../docs/architecture.md#getmempoolstream).
 
 ## Reporting
 
@@ -111,11 +111,20 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 
 ## Invariants and tests
 
-`compose::check(prev, next, depth)` runs after every publish in debug builds: G2 (seq + 1), G3
-(tips = this publish's inputs), G4 (synced hysteresis), G5 (epoch key = served, rotates iff it
-moved, old sealed, stored open), G6 (`mempool()` gate = a `Live` holder in `held_by`, or a peer
-quorum reading: `ChainViewSnapshot::peers_quorate`), G10 (the epoch carries no txid of
-`served_nonfinalized()`).
+| ID | Invariant | Where |
+| --- | --- | --- |
+| G1 | a request or stream reads one `Snapshot` (routes get `&Snapshot` / `&At`, never the handle) | types; route tests |
+| G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
+| G3 | `best`, `final_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
+| G4 | `synced` opens only at served == best; stays only on best and ≤ depth behind | `compose::check`; model |
+| G5 | epoch key = `tips.served`; rotates iff served moved; open → store → seal | `compose::check`; model |
+| G6 | `mempool()` Ok ⇔ a `Live` validator in `held_by`, or `peers_quorate()`; each servable tx streamed once per epoch | `compose::check`; model |
+| G7 | `at(h)` Some ⇔ h folded or the root; = folding genesis..h along h's branch | NFS model |
+| G8 | every NFS node on best or a `forks()` branch; every fork's `from` ≥ final tip | `Graph::check` |
+| G9 | `/statusz`, `/readyz`, gauges = f(one snapshot, counters, owners' live tables) | types; golden `Report` |
+| G10 | an epoch carries no txid of a block in `served_nonfinalized()` | `compose::check`; model |
+
+`compose::check(prev, next, depth)` runs after every publish in debug builds.
 
 - `model.rs`: random header moves (extend, reorg, finalize), holders, relays / sightings /
   listings / drops, NFS served tips (lagging, on an old best), coalesced publishes and tails

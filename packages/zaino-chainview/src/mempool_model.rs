@@ -1,7 +1,7 @@
 //! Mempool model: trusted validators polled, failing and killed, peers' listings churning (some
 //! peers byzantine), blocks, our sends; through the real fold (`ChainViewCore`) and the real
-//! checks (`peer_mempool::judge`), against a naive oracle after every move (`chainview.md`, "The
-//! mempool view")
+//! checks (`peer_mempool::judge`), against a naive oracle after every move
+//! (`docs/architecture.md` §5)
 //!
 //! - held = exactly: listed by a trusted validator not `Down` | kept by the peer quorum | ours
 //!   (an unlisted `ours` gone at the next block); each at the first fee known

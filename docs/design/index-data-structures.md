@@ -3,8 +3,7 @@
 Every RPC Zaino answers from its own indexes is a fold over one stream of blocks. This document
 covers the shape of each fold: what it keeps on disk, and how a read finds it again. The substrate
 is measured in [persistence-architecture.md](./persistence-architecture.md), the still-reorgable
-tip in [nfs.md](./nfs.md), and which methods an index answers at
-all in [boundaries.md](./boundaries.md).
+tip and which methods an index answers at all in [architecture.md](../architecture.md).
 
 ## 1. There is one input
 
@@ -169,11 +168,12 @@ reads them when compact-block folds a block that value-balance already holds.
 
 The value-balance index serves nothing itself. Its writer publishes each block's per-transaction
 fees into a `FeeSink`, and the compact-block writer pops one fee step per block. At the tip the NFS
-folds value-balance first and hands compact-block's fold the fees ([data-sink.md](./data-sink.md#fees)).
+folds value-balance first and hands compact-block's fold the fees.
 
-Mempool fees are not a fold. An unconfirmed transaction may spend another unconfirmed one, and the
-validator already resolved both when it admitted them, so we take the fee from its
-`getrawmempool true` listing ([boundaries.md](./boundaries.md)).
+Mempool fees are not a fold. An unconfirmed transaction may spend another unconfirmed one: a
+trusted validator's `getrawmempool true` listing carries the fee, and the chain view computes a
+peer-quorum admission's from the served UTXO set and held transactions
+([architecture §5](../architecture.md#5-the-mempool-view)).
 
 ## 6. Completeness
 
@@ -190,12 +190,12 @@ validator already resolved both when it admitted them, so we take the fee from i
 
 Every row is a fold over the block stream, so never forwarding a derived read is a property of the
 design, not a policy we have to enforce. `GetTransaction` is not on the list: compact records are
-lossy, and the full transaction bytes already live in the validator ([boundaries.md](./boundaries.md)).
+lossy, and the full transaction bytes already live in the validator ([architecture §1](../architecture.md#1-who-owns-what)).
 
 Durable storage stops at `tip − finalised_depth`, but clients ask inside that window constantly:
 librustzcash calls `GetTreeState` during steady-state polling, and pepper-sync asks address queries
 over the last ~100 blocks. The window is the same fold, held in the NFS's per-block layers and not
-yet committed ([nfs.md](./nfs.md)). Reorgs are absorbed in memory and never reach disk, which is
+yet committed ([architecture §7](../architecture.md#tip-path-zaino-nfs)). Reorgs are absorbed in memory and never reach disk, which is
 what lets Shapes A and B exist.
 
 ## 7. Shape B instances
