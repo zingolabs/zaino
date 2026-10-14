@@ -12,8 +12,9 @@ use std::time::Duration;
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
     Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, Height, NodeRelease,
-    OutPoint, PeerInfo, Script, Transaction, TransactionId, TransactionLocation,
+    OutPoint, PeerInfo, Transaction, TransactionId, TransactionLocation,
 };
+use zcash_transparent::address::Script;
 
 use crate::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, FailureMode, GetAtHeightError,
@@ -523,19 +524,14 @@ pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) 
 ///
 /// - empty script sigs (nothing here verifies a signature); distinct per `spends`
 pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TransactionId, Vec<u8>) {
-    use zcash_transparent::address::Script as RawScript;
     use zcash_transparent::bundle::{Authorized, Bundle, OutPoint as RawOutPoint, TxIn, TxOut};
     let vin = spends.iter().map(|prevout| {
         let from = RawOutPoint::new(<[u8; 32]>::from(prevout.txid), prevout.vout);
-        TxIn::from_parts(from, RawScript::default(), u32::MAX)
+        TxIn::from_parts(from, Script::default(), u32::MAX)
     });
     let vout = pays.iter().map(|(script, zats)| {
-        let mut prefixed = Vec::new();
-        zcash_encoding::CompactSize::write(&mut prefixed, script.as_bytes().len()).expect("Vec");
-        prefixed.extend_from_slice(script.as_bytes());
-        let script = RawScript::read(&prefixed[..]).expect("a length-prefixed script");
         let value = zcash_protocol::value::Zatoshis::from_u64(*zats).expect("within the supply");
-        TxOut::new(value, script)
+        TxOut::new(value, (*script).clone())
     });
     let bundle = Bundle { vin: vin.collect(), vout: vout.collect(), authorization: Authorized };
     v4(0, 0, Some(bundle))

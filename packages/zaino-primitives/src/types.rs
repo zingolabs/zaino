@@ -22,7 +22,6 @@ mod nullifier;
 mod peer_info;
 mod per_pool;
 mod reorg_depth;
-mod script;
 mod shielded_pool;
 mod subtree_root;
 mod transaction;
@@ -57,7 +56,6 @@ pub use nullifier::Nullifier;
 pub use peer_info::PeerInfo;
 pub use per_pool::{PerPool, TreeSizes};
 pub use reorg_depth::ReorgDepth;
-pub use script::Script;
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{

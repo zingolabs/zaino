@@ -2,12 +2,14 @@
 //! rest (txids, detection material, header) and checks it
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_script::script::Code;
+use zcash_transparent::address::Script;
 
 use super::sha256d;
 use crate::types::{
     CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, ShieldedPool, SproutData,
-    Transaction, TransactionId, TransparentData, TransparentOutput,
+    OutPoint, SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction,
+    TransactionId, TransparentData, TransparentOutput,
 };
 
 /// One block: coinbase in slot 0, then each `tx` / `raw_tx` in call order
@@ -165,8 +167,9 @@ impl TxBuilder {
             [&<[u8; 32]>::from(*nullifier)[..], &leaf.to_le_bytes()].concat()
         };
         let pay = |(script, zats): &(Script, u64)| {
-            let len = u32::try_from(script.as_bytes().len()).expect("a test script under 4 GiB");
-            [&zats.to_le_bytes()[..], &len.to_le_bytes(), script.as_bytes()].concat()
+            let bytes = &script.0 .0;
+            let len = u32::try_from(bytes.len()).expect("a test script under 4 GiB");
+            [&zats.to_le_bytes()[..], &len.to_le_bytes(), bytes].concat()
         };
         let balances = [
             self.sprout_balance,
@@ -248,7 +251,7 @@ fn actions(
 
 /// `OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`
 pub fn p2pkh(hash: [u8; 20]) -> Script {
-    Script::new([&[0x76, 0xa9, 0x14][..], &hash, &[0x88, 0xac]].concat())
+    Script(Code([&[0x76, 0xa9, 0x14][..], &hash, &[0x88, 0xac]].concat()))
 }
 
 pub fn outpoint(txid: [u8; 32], vout: u32) -> OutPoint {

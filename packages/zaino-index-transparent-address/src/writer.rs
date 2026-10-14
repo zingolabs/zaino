@@ -85,7 +85,7 @@ pub fn fold<V: MapRead>(
         }
         let mut receives = out.map(RECEIVES);
         for (vout, output) in (0u32..).zip(&tx.transparent.outputs) {
-            let address = address_key(output.script.as_bytes());
+            let address = address_key(&output.script.0 .0);
             let key = ReceiveKey { address, height, txid: tx.txid, vout };
             let (key, value) = encode_receive(&ReceiveRow { key, value: output.value });
             receives.insert(&key, &value);
@@ -99,13 +99,14 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::{OutPoint, Script, TransactionId};
+    use zaino_primitives::types::{OutPoint, TransactionId};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
     };
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::Zatoshis;
-    use zcash_transparent::address::TransparentAddress;
+    use zcash_script::script::Code;
+    use zcash_transparent::address::{Script, TransparentAddress};
 
     use super::*;
     use crate::{key::AddressKey, AddressUtxo, TransactionRef, FORMAT, TABLES};
@@ -124,7 +125,7 @@ mod tests {
     #[test]
     fn a_spend_folded_on_its_parent_retires_the_receive_the_parent_holds() {
         let zat = |n: u64| Zatoshis::from_u64(n).expect("in supply");
-        let opaque = Script::new(vec![0x6a]);
+        let opaque = Script(Code(vec![0x6a]));
         let mut chain = MockChain::regtest().genesis_with(|b| {
             b.coinbase(|c| {
                 c.txid([0x10; 32])
@@ -247,7 +248,7 @@ mod tests {
                 c.txid([0x10; 32])
                     .pay(&pays_alice, 500)
                     .pay(&pays_bob, 70)
-                    .pay(&Script::new(vec![0x6a, 1]), 1)
+                    .pay(&Script(Code(vec![0x6a, 1])), 1)
             })
         });
         chain.mine(|b| b.coinbase(|c| c.txid([0x11; 32]).pay(&pays_alice, 300)));

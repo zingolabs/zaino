@@ -10,7 +10,7 @@ use zaino_primitives::types::{
     Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
     ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
     HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData,
-    SaplingOutput, SaplingSpend, Script, SproutData, Transaction, TransactionId, TransparentData,
+    SaplingOutput, SaplingSpend, SproutData, Transaction, TransactionId, TransparentData,
     TransparentOutput,
 };
 use zcash_encoding::CompactSize;
@@ -213,7 +213,7 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
         .iter()
         .map(|output| TransparentOutput {
             value: output.value(),
-            script: Script::new(output.script_pubkey().0 .0.clone()),
+            script: output.script_pubkey().clone(),
         })
         .collect();
     Ok(TransparentData { coinbase, inputs, outputs })

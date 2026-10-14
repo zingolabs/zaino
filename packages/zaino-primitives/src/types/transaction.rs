@@ -1,9 +1,10 @@
 //! Transaction and per-pool data
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_transparent::address::Script;
 
 use super::{
-    CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script, TransactionId,
+    CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, TransactionId,
 };
 
 /// - `txid`: pre-v5 = SHA-256d of the bytes, v5+ = ZIP-244 id
@@ -27,7 +28,7 @@ impl Transaction {
         }
         let transparent = &self.transparent;
         let scripts: usize =
-            transparent.outputs.iter().map(|output| output.script.heap_size()).sum();
+            transparent.outputs.iter().map(|output| output.script.0 .0.capacity()).sum();
         slots(&transparent.inputs)
             + slots(&transparent.outputs)
             + scripts

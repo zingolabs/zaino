@@ -83,10 +83,10 @@ impl BlockFees {
 mod tests {
     use super::*;
     use crate::types::{
-        OrchardData, SaplingData, Script, SproutData, TransactionId, TransparentData,
-        TransparentOutput,
+        OrchardData, SaplingData, SproutData, TransactionId, TransparentData, TransparentOutput,
     };
     use zcash_protocol::value::MAX_MONEY;
+    use zcash_transparent::address::Script;
 
     /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
     /// one zatoshi apiece, so a dropped or flipped term shows); a coinbase pays none; below 0 =
@@ -96,7 +96,7 @@ mod tests {
         let tx = |coinbase: bool, outputs: &[u64], pools: [i64; 4]| {
             let output = |value: u64| TransparentOutput {
                 value: Zatoshis::from_u64(value).expect("in supply"),
-                script: Script::new(Vec::new()),
+                script: Script::default(),
             };
             let signed = |n: i64| ZatBalance::from_i64(n).expect("in supply");
             Transaction {

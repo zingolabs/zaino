@@ -109,7 +109,7 @@ pub fn compact_tx(
             .iter()
             .map(|output| compact_formats::TxOut {
                 value: output.value.into_u64(),
-                script_pub_key: output.script.as_bytes().to_vec(),
+                script_pub_key: output.script.0 .0.clone(),
             })
             .collect(),
     }
@@ -203,7 +203,7 @@ mod tests {
                     }],
                     vout: vec![compact_formats::TxOut {
                         value: 12_345,
-                        script_pub_key: alice.as_bytes().to_vec(),
+                        script_pub_key: alice.0 .0.clone(),
                     }],
                 },
             ],

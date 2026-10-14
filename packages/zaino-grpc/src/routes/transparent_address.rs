@@ -280,15 +280,16 @@ mod tests {
         use prost::Message as _;
         use tower::Service as _;
         use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
-        use zaino_primitives::types::Script;
         use zaino_proto::proto::service;
         use zaino_source::testing::{decoded, raw_transparent, ValidatorViews};
+        use zcash_script::script::Code;
+        use zcash_transparent::address::Script;
 
         // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
         const BOB: &str = "t3Mg6o2UpMFVtrzqGs7f2VTS6DaiPnFT5rL";
         let alice = p2pkh([0x00; 20]);
-        let bob = Script::new([&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat());
+        let bob = Script(Code([&[0xa9, 0x14][..], &[0x22; 20], &[0x87]].concat()));
         let miner = p2pkh([0x33; 20]);
 
         // 1: a coinbase funds the miner 870; 2: alice 500 (vout 0), bob 70 (vout 1), change 300
@@ -340,7 +341,7 @@ mod tests {
                 address: ALICE.to_owned(),
                 txid: <[u8; 32]>::from(first).to_vec(),
                 index: 0,
-                script: alice.as_bytes().to_vec(),
+                script: alice.0 .0.clone(),
                 value_zat: 500,
                 height: 2,
             },
@@ -348,7 +349,7 @@ mod tests {
                 address: ALICE.to_owned(),
                 txid: <[u8; 32]>::from(second).to_vec(),
                 index: 0,
-                script: alice.as_bytes().to_vec(),
+                script: alice.0 .0.clone(),
                 value_zat: 300,
                 height: 3,
             },
