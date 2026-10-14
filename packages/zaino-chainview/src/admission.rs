@@ -6,9 +6,10 @@
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
 use zaino_primitives::types::{
-    ConsensusBranchId, Fee, FeeError, Height, OutPoint, TransactionId, UpgradeSchedule, Zatoshis,
+    ConsensusBranchId, Fee, FeeError, Height, OutPoint, TransactionId, UpgradeSchedule,
 };
 use zaino_source::{decode_transaction, prepare_transaction, Prepared};
+use zcash_protocol::value::Zatoshis;
 
 /// What a transaction must be valid in: the block above the verified best
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +79,7 @@ pub(crate) fn admissible(
     for input in &tx.transparent.inputs {
         let unknown = Refused::UnknownPrevout { txid: input.txid, vout: input.vout };
         let value = prevout(input).ok_or(unknown)?;
-        spent = spent.checked_add(value).ok_or(Refused::Fee(FeeError::Overflow))?;
+        spent = (spent + value).ok_or(Refused::Fee(FeeError::Overflow))?;
     }
     match tx.fee(spent)? {
         Fee::Paid(fee) => Ok((tx.txid, fee)),
@@ -107,8 +108,8 @@ mod tests {
         let known = OutPoint { txid: TransactionId::from([1; 32]), vout: 0 };
         let unknown = OutPoint { txid: TransactionId::from([2; 32]), vout: 3 };
         let coinbase_input = OutPoint { txid: TransactionId::from([0; 32]), vout: u32::MAX };
-        let utxos = |at: &OutPoint| (*at == known).then(|| Zatoshis::new(10_000).expect("zats"));
-        let zats = |n: u64| Zatoshis::new(n).expect("zats");
+        let zats = |n: u64| Zatoshis::from_u64(n).expect("zats");
+        let utxos = |at: &OutPoint| (*at == known).then(|| zats(10_000));
 
         let (paying, pays) = raw_transparent(&[known], &[(&alice, 9_000)]);
         let (_, overpays) = raw_transparent(&[known], &[(&alice, 11_000)]);

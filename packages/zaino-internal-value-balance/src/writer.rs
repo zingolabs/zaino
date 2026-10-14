@@ -12,12 +12,13 @@ use std::{
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
 use zaino_primitives::types::{
-    Block, BlockFees, FeeError, Height, OutPoint, OutputIndex, TransactionId, Zatoshis,
+    Block, BlockFees, FeeError, Height, OutPoint, OutputIndex, TransactionId,
 };
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
+use zcash_protocol::value::Zatoshis;
 
 use crate::{encode_fees, encode_value, ValueBalanceReader, FEES, OUTPUTS};
 
@@ -167,8 +168,7 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
                         vout: prevout.vout,
                     };
                     let value = unspent.remove(prevout).ok_or(missing)?;
-                    spent = spent
-                        .checked_add(value)
+                    spent = (spent + value)
                         .ok_or(FoldError::ValueOverflow { height, txid: tx.txid })?;
                     if !created_here.remove(prevout) {
                         out.map(OUTPUTS).remove(&prevout.encode());
@@ -208,9 +208,10 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, SignedZatoshis, Transaction};
+    use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, Transaction};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::value::ZatBalance;
 
     use super::*;
     use crate::{FORMAT, TABLES};
@@ -343,10 +344,10 @@ mod tests {
         let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
         let respends = lie(three, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
         let overpaid = lie(two, &|tx| {
-            tx.transparent.outputs[0].value = Zatoshis::new(100_001).expect("in supply");
+            tx.transparent.outputs[0].value = Zatoshis::from_u64(100_001).expect("in supply");
         });
         let overshielded = lie(three, &|tx| {
-            tx.sapling.value_balance = SignedZatoshis::new(-99_001).expect("in supply");
+            tx.sapling.value_balance = ZatBalance::from_i64(-99_001).expect("in supply");
         });
         let genesis = block(chain.genesis());
         let id = |byte| TransactionId::from([byte; 32]);

@@ -1,7 +1,8 @@
 //! Typed reads over any view (a snapshot's layered view, the committed store alike)
 
 use zaino_persistence::{MapRead, SequenceRead, View};
-use zaino_primitives::types::{Block, BlockFees, OutPoint, Zatoshis};
+use zaino_primitives::types::{Block, BlockFees, OutPoint};
+use zcash_protocol::value::Zatoshis;
 
 use crate::{decode_fees, decode_value, FoldError, FEES, OUTPUTS, VALUE};
 

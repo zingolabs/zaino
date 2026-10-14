@@ -102,7 +102,8 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockFees, Fee, Height, TreeSize, TreeSizes, Zatoshis};
+    use zaino_primitives::types::{BlockFees, Fee, Height, TreeSize, TreeSizes};
+    use zcash_protocol::value::Zatoshis;
 
     use super::*;
 
@@ -132,7 +133,7 @@ mod tests {
         let fees = BlockFees {
             height: h1,
             hash: one.hash,
-            fees: vec![Fee::Coinbase, Fee::Paid(Zatoshis::new(1_000).expect("in supply"))],
+            fees: vec![Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(1_000).expect("in supply"))],
         };
         let sizes = TreeSizes {
             sapling: TreeSize::from(1),

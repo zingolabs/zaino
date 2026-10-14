@@ -7,7 +7,8 @@ pub use reader::ValueBalanceReader;
 pub use writer::{fold, FoldError, ValueBalanceIndexWriter};
 
 use zaino_persistence::{MapTable, SequenceTable, Tables, Width};
-use zaino_primitives::types::{Fee, OutPoint, Zatoshis, ZatoshisOverflow};
+use zaino_primitives::types::{Fee, OutPoint};
+use zcash_protocol::value::{BalanceError, Zatoshis};
 
 /// On-disk layout version
 pub const FORMAT: u16 = 1;
@@ -27,11 +28,11 @@ const OUTPUTS: MapTable =
 const FEES: SequenceTable = SequenceTable::new(0, "fees", Width::Variable);
 
 fn encode_value(value: Zatoshis) -> [u8; VALUE] {
-    value.as_u64().to_be_bytes()
+    value.into_u64().to_be_bytes()
 }
 
-fn decode_value(bytes: &[u8; VALUE]) -> Result<Zatoshis, ZatoshisOverflow> {
-    Zatoshis::new(u64::from_be_bytes(*bytes))
+fn decode_value(bytes: &[u8; VALUE]) -> Result<Zatoshis, BalanceError> {
+    Zatoshis::from_u64(u64::from_be_bytes(*bytes))
 }
 
 /// `fees` record: per fee, a tag byte then a value
@@ -82,7 +83,7 @@ mod tests {
     #[test]
     fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
         let key = OutPoint { txid: TransactionId::from([0xab; 32]), vout: 0x0102_0304 };
-        let value = Zatoshis::new(0x0506_0708).expect("in supply");
+        let value = Zatoshis::from_u64(0x0506_0708).expect("in supply");
         let row = [&key.encode()[..], &encode_value(value)].concat();
 
         let golden = [
@@ -99,7 +100,7 @@ mod tests {
     /// `fees` record = tag ‖ value BE per fee; round-trips; anything else refused
     #[test]
     fn a_fees_record_is_its_golden_bytes_and_a_malformed_one_is_refused() {
-        let fees = [Fee::Coinbase, Fee::Paid(Zatoshis::new(0x0102).expect("in supply"))];
+        let fees = [Fee::Coinbase, Fee::Paid(Zatoshis::from_u64(0x0102).expect("in supply"))];
         let golden = [[0, 0, 0, 0, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0x01, 0x02]].concat();
         assert_eq!(encode_fees(&fees), golden);
         assert_eq!(decode_fees(&golden), Some(fees.to_vec()));

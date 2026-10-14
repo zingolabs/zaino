@@ -242,8 +242,8 @@ mod tests {
     use std::slice;
 
     use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
-    use zaino_primitives::types::Zatoshis;
     use zaino_proto::frame::framed_len;
+    use zcash_protocol::value::Zatoshis;
 
     use super::*;
     use crate::{compact_tx, encode_compact_block};
@@ -359,7 +359,7 @@ mod tests {
 
         // the same transactions one at a time from the mempool: the same rule, each re-slotted
         let mempool = |pools| {
-            let fee = Some(Zatoshis::new(1_000).expect("in range"));
+            let fee = Some(Zatoshis::from_u64(1_000).expect("in range"));
             let kept = block.transactions().iter().enumerate().filter_map(|(slot, tx)| {
                 let rendered = compact_tx(0, tx, fee);
                 let framed = project_tx_at(&rendered.encode_to_vec(), slot as u64, pools)?;

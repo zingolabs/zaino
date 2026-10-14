@@ -100,20 +100,11 @@ let (header, rest) = HeaderBytes::split(&raw)?;       // one consensus header + 
   fault) and reads every field from the bytes; its `hash()` is SHA-256d of
   those bytes, never a field taken on trust.
 
-## Zatoshi family
+## Zatoshi values
 
-| Type | Range (both ends inclusive) | Is |
-|---|---|---|
-| `Zatoshis` | `0` to `supply` | an amount: balance, UTXO value, one movement |
-| `SignedZatoshis` | `-supply` to `supply` | a signed movement or difference (a value balance) |
-
-```rust
-let total: Option<Zatoshis> = Zatoshis::sum_balances(balances.iter().copied()); // None past supply
-let parsed = SignedZatoshis::new(value_i64)?;                                  // boundary input
-```
-
-Coexisting balances cannot exceed the supply, so `sum_balances` lands back in
-`Zatoshis` and a total past the supply means double-counted input.
+Values are librustzcash's `zcash_protocol::value::Zatoshis` (an amount, `0` to `MAX_MONEY`) and
+value balances its `ZatBalance` (`-MAX_MONEY` to `MAX_MONEY`). Coexisting balances cannot exceed
+the supply, so their sum (`.sum::<Option<Zatoshis>>()`) is `None` only on double-counted input.
 
 ## Difficulty
 

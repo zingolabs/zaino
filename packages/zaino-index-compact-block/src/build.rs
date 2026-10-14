@@ -6,10 +6,11 @@
 use bytes::Bytes;
 use prost::Message;
 use zaino_primitives::types::{
-    Block, BlockFees, CompactCiphertext, Fee, OrchardAction, Transaction, TreeSizes, Zatoshis,
+    Block, BlockFees, CompactCiphertext, Fee, OrchardAction, Transaction, TreeSizes,
 };
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
+use zcash_protocol::value::Zatoshis;
 
 use crate::HASH;
 
@@ -72,7 +73,7 @@ pub fn compact_tx(
     compact_formats::CompactTx {
         index,
         txid: <[u8; HASH]>::from(tx.txid).to_vec(),
-        fee: fee.and_then(|fee| u32::try_from(fee.as_u64()).ok()).unwrap_or(0),
+        fee: fee.and_then(|fee| u32::try_from(fee.into_u64()).ok()).unwrap_or(0),
         spends: tx
             .sapling
             .spends
@@ -107,7 +108,7 @@ pub fn compact_tx(
             .outputs
             .iter()
             .map(|output| compact_formats::TxOut {
-                value: output.value.as_u64(),
+                value: output.value.into_u64(),
                 script_pub_key: output.script.as_bytes().to_vec(),
             })
             .collect(),
@@ -230,7 +231,7 @@ mod tests {
             (Some(max), u32::MAX),
             (Some(max + 1), 0),
         ] {
-            let fee = fee.map(|zats| Zatoshis::new(zats).expect("in supply"));
+            let fee = fee.map(|zats| Zatoshis::from_u64(zats).expect("in supply"));
             assert_eq!(compact_tx(0, tx, fee).fee, wire, "{fee:?}");
         }
     }

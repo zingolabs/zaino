@@ -99,11 +99,12 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::{OutPoint, Script, TransactionId, Zatoshis};
+    use zaino_primitives::types::{OutPoint, Script, TransactionId};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
     };
     use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::value::Zatoshis;
     use zcash_transparent::address::TransparentAddress;
 
     use super::*;
@@ -122,7 +123,7 @@ mod tests {
     /// spent by block 1, bob's two unspent, the opaque output kept
     #[test]
     fn a_spend_folded_on_its_parent_retires_the_receive_the_parent_holds() {
-        let zat = |n: u64| Zatoshis::new(n).expect("in supply");
+        let zat = |n: u64| Zatoshis::from_u64(n).expect("in supply");
         let opaque = Script::new(vec![0x6a]);
         let mut chain = MockChain::regtest().genesis_with(|b| {
             b.coinbase(|c| {
@@ -163,7 +164,7 @@ mod tests {
             read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX).expect("rows");
         let values: Vec<Vec<(u32, u64)>> = unspent
             .iter()
-            .map(|rows| rows.iter().map(|row| (row.key.height, row.value.as_u64())).collect())
+            .map(|rows| rows.iter().map(|row| (row.key.height, row.value.into_u64())).collect())
             .collect();
         assert_eq!(values, vec![vec![], vec![(0, 70), (1, 490)], vec![(0, 1)]], "unspent");
         let alice_receive = read.receives(alice, 0, usize::MAX).expect("rows")[0].key;
@@ -200,7 +201,7 @@ mod tests {
 
         // `count` blocks held: alice's one unspent = block `count - 1`'s coinbase
         let expected = |count: u8| {
-            let balance = Zatoshis::new(u64::from(count)).expect("in supply");
+            let balance = Zatoshis::from_u64(u64::from(count)).expect("in supply");
             let unspent = (count > 0).then(|| AddressUtxo {
                 outpoint: outpoint([count; 32], 0),
                 height: h(u32::from(count) - 1),
@@ -257,7 +258,7 @@ mod tests {
             b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
         });
         let blocks = chain.blocks(tip);
-        let zats = |zats: u64| Zatoshis::new(zats).expect("in supply");
+        let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
         let reader =
             |writer: &Writer<DiskView>| TransparentAddressReader::new(writer.handle().view());
 
@@ -405,14 +406,14 @@ mod tests {
                     None => utxos.push(AddressUtxo {
                         outpoint: OutPoint { txid, vout },
                         height: h(received),
-                        value: Zatoshis::new(zats).expect("in supply"),
+                        value: Zatoshis::from_u64(zats).expect("in supply"),
                     }),
                 }
             }
             touched.sort_unstable();
             touched.dedup();
-            let balance = utxos.iter().map(|utxo| utxo.value.as_u64()).sum();
-            (utxos, Zatoshis::new(balance).expect("in supply"), touched)
+            let balance = utxos.iter().map(|utxo| utxo.value.into_u64()).sum();
+            (utxos, Zatoshis::from_u64(balance).expect("in supply"), touched)
         };
 
         let fs = SimFs::new();

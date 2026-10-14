@@ -6,7 +6,8 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zaino_primitives::types::{Height, OutPoint, TransactionId, Zatoshis};
+use zaino_primitives::types::{Height, OutPoint, TransactionId};
+use zcash_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
 
 use crate::{key::AddressKey, TransparentAddressReader};
@@ -92,7 +93,9 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .ok_or_else(|| self.too_many())?
             .into_iter()
             .map(|rows| {
-                Zatoshis::sum_balances(rows.iter().map(|row| row.value))
+                rows.iter()
+                    .map(|row| row.value)
+                    .sum::<Option<Zatoshis>>()
                     .ok_or(ServeError::SupplyExceeded)
             })
             .collect()
@@ -180,14 +183,14 @@ mod tests {
         let received = AddressUtxo {
             outpoint: outpoint([0x77; 32], 0),
             height: h(1),
-            value: Zatoshis::new(42).expect("in supply"),
+            value: Zatoshis::from_u64(42).expect("in supply"),
         };
         let paying = TransactionRef { height: h(1), txid: TransactionId::from([0x77; 32]) };
         let spending = TransactionRef { height: h(2), txid: TransactionId::from([0x78; 32]) };
         let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
 
         let balances = at_two.balances(&[paid, receiver]);
-        assert_eq!(balances, Ok(vec![Zatoshis::ZERO, Zatoshis::new(41).expect("in supply")]));
+        assert_eq!(balances, Ok(vec![Zatoshis::ZERO, Zatoshis::from_u64(41).expect("in supply")]));
         assert_eq!(at_two.utxos_of(&[paid], h(0)), Ok(vec![Vec::new()]), "spent at 2");
         assert_eq!(at_two.transactions(&paid, h(0), h(2)), Ok(vec![paying, spending]));
         let balances = at_one.balances(&[paid, receiver]);
@@ -236,7 +239,7 @@ mod tests {
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });
         let both = [first, second];
 
-        let zats = |zats: u64| Zatoshis::new(zats).expect("in supply");
+        let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
         let rows = |utxos: Result<Vec<Vec<AddressUtxo>>, _>| utxos.map(|all| all[0].len());
 
         // `first` alone = 3 rows (2 committed + 1 buffered); both = 4

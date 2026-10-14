@@ -5,12 +5,12 @@ use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{CommittedView, OverlayView};
 use zaino_primitives::network::network_name;
-use zaino_primitives::types::Zatoshis;
 use zaino_proto::proto::service;
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
 use zcash_address::{ConversionError, ZcashAddress};
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_script::script::Evaluable;
 use zcash_transparent::address::TransparentAddress;
 
@@ -202,7 +202,7 @@ fn reply(
         index: i32::try_from(utxo.outpoint.vout)
             .map_err(|_| Status::internal("stored vout is above the protocol ceiling"))?,
         script: address.script().to_bytes(),
-        value_zat: utxo.value.as_i64(),
+        value_zat: i64::from(ZatBalance::from(utxo.value)),
         height: u64::from(utxo.height),
     })
 }
@@ -252,10 +252,10 @@ async fn total<V: CommittedView>(
         .collect();
     let balances = reads.read(Lane::Scan, move || index.reader.balances(&distinct)).await?;
 
-    let total = Zatoshis::sum_balances(balances.map_err(to_status)?.into_iter())
+    let total = (balances.map_err(to_status)?.into_iter().sum::<Option<Zatoshis>>())
         .expect("distinct addresses' balances exceed the money supply: index corrupt");
 
-    Ok(wire::frame(&service::Balance { value_zat: total.as_i64() }))
+    Ok(wire::frame(&service::Balance { value_zat: i64::from(ZatBalance::from(total)) }))
 }
 
 #[cfg(test)]

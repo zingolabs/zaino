@@ -376,7 +376,7 @@ mod tests {
     fn raw_batches_split_in_order_on_either_budget() {
         let entry = |encoded_len: u32| MempoolListed {
             txid: TransactionId::from([0; 32]),
-            fee: zaino_primitives::types::Zatoshis::ZERO,
+            fee: zcash_protocol::value::Zatoshis::ZERO,
             encoded_len,
         };
         let sizes = |listed: &[MempoolListed]| {

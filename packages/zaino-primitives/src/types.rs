@@ -32,7 +32,6 @@ mod tree_root;
 mod tree_size;
 mod treestate;
 mod upgrade_schedule;
-mod zatoshis;
 
 pub use aliases::{BlockTime, EquihashNonce, OutputIndex};
 pub use block::{Block, BodyMismatch, DecodedHeader};
@@ -73,4 +72,3 @@ pub use treestate::{CommitmentTreeBytes, Treestate};
 pub use upgrade_schedule::UpgradeSchedule;
 #[cfg(any(test, feature = "testing"))]
 pub(crate) use upgrade_schedule::{slot, ORDER};
-pub use zatoshis::{SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisOverflow};

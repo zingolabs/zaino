@@ -11,13 +11,14 @@ use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
-use zaino_primitives::types::{TransactionId, TransactionLocation, Zatoshis};
+use zaino_primitives::types::{TransactionId, TransactionLocation};
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_snapshot::{Lightd, Snapshot};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::value::Zatoshis;
 
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 

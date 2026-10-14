@@ -1093,7 +1093,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -1113,7 +1113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1141,7 +1141,7 @@ dependencies = [
 [[package]]
 name = "f4jumble"
 version = "0.1.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "blake2b_simd",
 ]
@@ -3391,7 +3391,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3978,7 +3978,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5417,7 +5417,7 @@ dependencies = [
 [[package]]
 name = "zcash_address"
 version = "0.14.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "bech32",
  "bs58",
@@ -5441,7 +5441,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.5.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "corez",
  "hex",
@@ -5475,7 +5475,7 @@ dependencies = [
 [[package]]
 name = "zcash_primitives"
 version = "0.31.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -5504,7 +5504,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "corez",
  "document-features",
@@ -5545,7 +5545,7 @@ dependencies = [
 [[package]]
 name = "zcash_transparent"
 version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=1818a449ece005aa6ebdaec414e341b21a4c7183#1818a449ece005aa6ebdaec414e341b21a4c7183"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
 dependencies = [
  "bip32",
  "bs58",

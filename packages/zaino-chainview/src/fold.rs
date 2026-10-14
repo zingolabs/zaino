@@ -12,9 +12,10 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId, Zatoshis,
+    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
 };
 use zaino_traffic::{Health, ValidatorId};
+use zcash_protocol::value::Zatoshis;
 
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
 use crate::ports::Heard;

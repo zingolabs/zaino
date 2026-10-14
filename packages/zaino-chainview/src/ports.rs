@@ -15,8 +15,9 @@ use std::net::SocketAddr;
 use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::BoxStream;
-use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId, Zatoshis};
+use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId};
 use zaino_source::NonDomainError;
+use zcash_protocol::value::Zatoshis;
 
 /// One peer's block `inv`, attributed by the p2p layer: its new tip (peer finality counts the
 /// netgroups carrying ours)

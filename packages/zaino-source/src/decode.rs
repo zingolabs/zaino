@@ -10,8 +10,8 @@ use zaino_primitives::types::{
     Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
     ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
     HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData,
-    SaplingOutput, SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow, SproutData,
-    Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis, ZatoshisOverflow,
+    SaplingOutput, SaplingSpend, Script, SproutData, Transaction, TransactionId, TransparentData,
+    TransparentOutput,
 };
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
@@ -38,10 +38,6 @@ pub enum DecodeError {
     Height(#[from] HeightOverflow),
     #[error("negative header version {0}")]
     NegativeVersion(i32),
-    #[error("output value: {0}")]
-    OutputValue(#[from] ZatoshisOverflow),
-    #[error("value balance: {0}")]
-    ValueBalance(#[from] SignedZatoshisOverflow),
     #[error("sprout JoinSplit values sum past the money supply")]
     SproutBalance,
     #[error("header: {0}")]
@@ -215,13 +211,11 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
     let outputs = bundle
         .vout
         .iter()
-        .map(|output| {
-            Ok(TransparentOutput {
-                value: Zatoshis::new(output.value().into_u64())?,
-                script: Script::new(output.script_pubkey().0 .0.clone()),
-            })
+        .map(|output| TransparentOutput {
+            value: output.value(),
+            script: Script::new(output.script_pubkey().0 .0.clone()),
         })
-        .collect::<Result<Vec<_>, DecodeError>>()?;
+        .collect();
     Ok(TransparentData { coinbase, inputs, outputs })
 }
 
@@ -231,7 +225,7 @@ fn sprout(tx: &CompressedTransaction) -> Result<SproutData, DecodeError> {
     };
     // Σ net_value, net_value = vpub_new − vpub_old (protocol.pdf#joinsplit §3.5)
     let balance = bundle.value_balance().ok_or(DecodeError::SproutBalance)?;
-    Ok(SproutData { value_balance: signed(balance)? })
+    Ok(SproutData { value_balance: balance })
 }
 
 fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
@@ -256,7 +250,7 @@ fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
             })
             .collect::<Result<Vec<_>, DecodeError>>()?,
         // v4 without spends or outputs → 0 (protocol.pdf#txnconsensus; zip-0225)
-        value_balance: signed(*bundle.value_balance())?,
+        value_balance: *bundle.value_balance(),
     })
 }
 
@@ -279,12 +273,8 @@ fn orchard_shaped(bundle: Option<&OrchardBytes>) -> Result<OrchardData, DecodeEr
                 })
             })
             .collect::<Result<Vec<_>, DecodeError>>()?,
-        value_balance: signed(*bundle.value_balance())?,
+        value_balance: *bundle.value_balance(),
     })
-}
-
-fn signed(balance: ZatBalance) -> Result<SignedZatoshis, DecodeError> {
-    Ok(SignedZatoshis::new(i64::from(balance))?)
 }
 
 /// Byte span of each tx inside a block (header + count skipped by the same readers)
@@ -364,12 +354,12 @@ mod tests {
             components::sprout::{Bundle, JsDescription, SproutProof, NOTE_CIPHERTEXT_SIZE},
             Authorized, TransactionData, TxVersion,
         };
-        use zcash_protocol::value::Zatoshis as Zats;
+        use zcash_protocol::value::Zatoshis;
 
         let joinsplit = |old: u64, new: u64| {
             JsDescription::from_parts(
-                Zats::from_u64(old).expect("in range"),
-                Zats::from_u64(new).expect("in range"),
+                Zatoshis::from_u64(old).expect("in range"),
+                Zatoshis::from_u64(new).expect("in range"),
                 [1; 32],
                 [[2; 32]; 2],
                 [[3; 32]; 2],
@@ -444,7 +434,7 @@ mod tests {
                 (actions, i64::from(pool.value_balance))
             };
             let sapling = tx.sapling_bundle();
-            let vout: Vec<_> = decoded.transparent.outputs.iter().map(|o| o.value.as_u64()).collect();
+            let vout: Vec<_> = decoded.transparent.outputs.iter().map(|o| o.value.into_u64()).collect();
             let source_vout: Vec<_> = tx
                 .transparent_bundle()
                 .map_or(vec![], |b| b.vout.iter().map(|o| o.value().into_u64()).collect());

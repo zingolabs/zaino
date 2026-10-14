@@ -11,8 +11,9 @@ use futures::stream::BoxStream;
 use futures::StreamExt;
 use tokio::sync::broadcast;
 use zaino_primitives::testing::Ledger;
-use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId, Zatoshis};
+use zaino_primitives::types::{BlockHash, OutPoint, PeerTxId};
 use zaino_source::{FailureMode, NonDomainError};
+use zcash_protocol::value::Zatoshis;
 
 use crate::{Heard, UnspentOutputs, ValidatorP2pSource};
 

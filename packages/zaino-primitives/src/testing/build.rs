@@ -1,11 +1,13 @@
 //! What a test states about a block or a transaction; [`MockChain`](super::MockChain) fills in the
 //! rest (txids, detection material, header) and checks it
 
+use zcash_protocol::value::{ZatBalance, Zatoshis};
+
 use super::sha256d;
 use crate::types::{
     CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, ShieldedPool, SignedZatoshis,
-    SproutData, Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis,
+    OutPoint, SaplingData, SaplingOutput, SaplingSpend, Script, ShieldedPool, SproutData,
+    Transaction, TransactionId, TransparentData, TransparentOutput,
 };
 
 /// One block: coinbase in slot 0, then each `tx` / `raw_tx` in call order
@@ -192,10 +194,11 @@ impl TxBuilder {
     /// Coinbase or not: the chain checks that against what it holds
     pub(super) fn into_transaction(self, txid: TransactionId, coinbase: bool) -> Transaction {
         let zats = |zats: u64| {
-            Zatoshis::new(zats).unwrap_or_else(|_| panic!("{txid}: {zats} zats past the supply"))
+            Zatoshis::from_u64(zats)
+                .unwrap_or_else(|_| panic!("{txid}: {zats} zats past the supply"))
         };
         let signed = |zats: i64| {
-            SignedZatoshis::new(zats)
+            ZatBalance::from_i64(zats)
                 .unwrap_or_else(|_| panic!("{txid}: balance {zats} past the supply"))
         };
         let outputs = self.pays.into_iter();

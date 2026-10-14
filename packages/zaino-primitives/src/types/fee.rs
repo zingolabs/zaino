@@ -1,6 +1,8 @@
 //! Each transaction's fee, and the block that carries one per transaction
 
-use super::{Block, BlockHash, Height, Transaction, Zatoshis};
+use zcash_protocol::value::{ZatBalance, Zatoshis};
+
+use super::{Block, BlockHash, Height, Transaction};
 
 /// Left in the transparent value pool for the miner (protocol.pdf §3.4)
 ///
@@ -31,16 +33,17 @@ impl Transaction {
         let remaining = self.value_left(spent).ok_or(FeeError::Overflow)?;
         // MUST be nonnegative (protocol.pdf §3.4 consensus rule)
         let remaining = u64::try_from(remaining).map_err(|_| FeeError::Negative)?;
-        Ok(Fee::Paid(Zatoshis::new(remaining).map_err(|_| FeeError::Overflow)?))
+        Ok(Fee::Paid(Zatoshis::from_u64(remaining).map_err(|_| FeeError::Overflow)?))
     }
 
     /// `spent` − Σ outputs + each pool's value balance, negative = overspent (`None`: outputs past
     /// the supply)
     pub(crate) fn value_left(&self, spent: Zatoshis) -> Option<i64> {
         let outputs = self.transparent.outputs.iter().map(|out| out.value);
-        let paid = Zatoshis::sum_balances(outputs)?;
+        let paid = outputs.sum::<Option<Zatoshis>>()?;
+        let signed = |zats: Zatoshis| i64::from(ZatBalance::from(zats));
         // every term within ±MAX_MONEY (ZIP 209) → Σ of six fits i64
-        Some(spent.as_i64() - paid.as_i64() + self.pool_balances().iter().sum::<i64>())
+        Some(signed(spent) - signed(paid) + self.pool_balances().iter().sum::<i64>())
     }
 
     /// Sprout, Sapling, Orchard, Ironwood (+ = out of that pool)
@@ -80,9 +83,10 @@ impl BlockFees {
 mod tests {
     use super::*;
     use crate::types::{
-        OrchardData, SaplingData, Script, SignedZatoshis, SproutData, TransactionId,
-        TransparentData, TransparentOutput,
+        OrchardData, SaplingData, Script, SproutData, TransactionId, TransparentData,
+        TransparentOutput,
     };
+    use zcash_protocol::value::MAX_MONEY;
 
     /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
     /// one zatoshi apiece, so a dropped or flipped term shows); a coinbase pays none; below 0 =
@@ -91,10 +95,10 @@ mod tests {
     fn a_fee_is_what_inputs_and_pools_leave_and_never_below_zero_or_past_the_supply() {
         let tx = |coinbase: bool, outputs: &[u64], pools: [i64; 4]| {
             let output = |value: u64| TransparentOutput {
-                value: Zatoshis::new(value).expect("in supply"),
+                value: Zatoshis::from_u64(value).expect("in supply"),
                 script: Script::new(Vec::new()),
             };
-            let signed = |n: i64| SignedZatoshis::new(n).expect("in supply");
+            let signed = |n: i64| ZatBalance::from_i64(n).expect("in supply");
             Transaction {
                 txid: TransactionId::from([1; 32]),
                 transparent: TransparentData {
@@ -108,8 +112,8 @@ mod tests {
                 ironwood: OrchardData { value_balance: signed(pools[3]), ..Default::default() },
             }
         };
-        let paid = |n: u64| Ok(Fee::Paid(Zatoshis::new(n).expect("in supply")));
-        let supply = Zatoshis::MAX.as_u64();
+        let paid = |n: u64| Ok(Fee::Paid(Zatoshis::from_u64(n).expect("in supply")));
+        let supply = MAX_MONEY;
         let rows: [(&str, Transaction, u64, Result<Fee, FeeError>); 7] = [
             ("transparent only", tx(false, &[6_000, 3_000], [0; 4]), 10_000, paid(1_000)),
             ("every pool adds", tx(false, &[9_000], [1, 10, 100, 1_000]), 10_000, paid(2_111)),
@@ -120,7 +124,7 @@ mod tests {
             ("past the supply", tx(false, &[], [1, 0, 0, 0]), supply, Err(FeeError::Overflow)),
         ];
         for (row, tx, spent, expected) in rows {
-            let spent = Zatoshis::new(spent).expect("in supply");
+            let spent = Zatoshis::from_u64(spent).expect("in supply");
             assert_eq!(tx.fee(spent), expected, "{row}");
         }
     }

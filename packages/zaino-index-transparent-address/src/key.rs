@@ -3,7 +3,8 @@
 //! - big-endian throughout (keys compare as bytes: byte order = key order)
 //! - derived `Ord` = that encoding (pinned by a test below)
 
-use zaino_primitives::types::{TransactionId, Zatoshis};
+use zaino_primitives::types::TransactionId;
+use zcash_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
 
 const HASH160: usize = 20;
@@ -110,7 +111,7 @@ pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
 }
 
 pub(crate) fn encode_receive(row: &ReceiveRow) -> ([u8; RECEIVE_KEY], [u8; RECEIVE_VALUE]) {
-    (encode_receive_key(&row.key), row.value.as_u64().to_be_bytes())
+    (encode_receive_key(&row.key), row.value.into_u64().to_be_bytes())
 }
 
 /// Panics on an unknown kind tag or a value above the money supply (rows = sealed, checksummed
@@ -130,7 +131,7 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
             txid: TransactionId::from(txid),
             vout: u32::from_be_bytes(field(at + 4 + TXID)),
         },
-        value: Zatoshis::new(u64::from_be_bytes(*value))
+        value: Zatoshis::from_u64(u64::from_be_bytes(*value))
             .expect("receives: value within the money supply (from encode_receive)"),
     }
 }
@@ -188,7 +189,7 @@ mod tests {
     fn encoded_order_is_key_order_and_every_field_round_trips() {
         let addr = AddressKey::p2pkh([0x11; HASH160]);
         let txid = TransactionId::from([0x22; TXID]);
-        let zat = |n| Zatoshis::new(n).expect("in supply");
+        let zat = |n| Zatoshis::from_u64(n).expect("in supply");
 
         // ascending in each key part, one part changed at a time (address = hash, then kind)
         let ascending = [

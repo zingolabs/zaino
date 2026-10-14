@@ -8,10 +8,11 @@
 use zaino_primitives::types::{
     BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
     HeightOverflow, NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, ParseHashError,
-    PeerInfo, TransactionId, TransactionLocation, Zatoshis,
+    PeerInfo, TransactionId, TransactionLocation,
 };
 
 use zcash_protocol::consensus::BranchId;
+use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 
 use crate::{MempoolListed, TransactionResponse};
 
@@ -217,10 +218,10 @@ pub(crate) fn parse_mempool_listing(
 fn as_zec(value: &serde_json::Value) -> Result<Zatoshis, ParseError> {
     let zec = value.as_f64().ok_or_else(|| ParseError::unexpected("number", value))?;
     let zats = (zec * 100_000_000.0).round();
-    if !(0.0..=Zatoshis::MAX.as_u64() as f64).contains(&zats) {
+    if !(0.0..=MAX_MONEY as f64).contains(&zats) {
         return Err(ParseError::Zec(zec));
     }
-    Zatoshis::new(zats as u64).map_err(|_| ParseError::Zec(zec))
+    Zatoshis::from_u64(zats as u64).map_err(|_| ParseError::Zec(zec))
 }
 
 /// `getrawtransaction <txid> 1`: `height` absent = mempool, `-1` = side chain, `>= 0` = best
@@ -307,7 +308,7 @@ mod tests {
             (json!(0), 0),
         ] {
             let txid = TransactionId::from(reversed_bytes);
-            let fee_zats = Zatoshis::new(zats).expect("in supply");
+            let fee_zats = Zatoshis::from_u64(zats).expect("in supply");
             let expected = MempoolListed { txid, fee: fee_zats, encoded_len: 250 };
             assert_eq!(listed(fee.clone()).expect("listing"), vec![expected], "fee {fee}");
         }

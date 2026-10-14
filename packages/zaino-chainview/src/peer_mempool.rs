@@ -18,8 +18,9 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
-use zaino_primitives::types::{OutPoint, PeerTxId, UpgradeSchedule, Zatoshis};
+use zaino_primitives::types::{OutPoint, PeerTxId, UpgradeSchedule};
 use zaino_source::decode_transaction;
+use zcash_protocol::value::Zatoshis;
 
 use crate::admission::{admissible, NextBlock, Refused};
 use crate::fold::{Candidate, ChainViewCore};

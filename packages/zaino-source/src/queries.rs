@@ -8,8 +8,9 @@ use std::future::Future;
 
 use zaino_primitives::types::{
     Block, BlockHash, BlockchainInfo, Height, NodeRelease, PeerInfo, TransactionId,
-    TransactionLocation, Zatoshis,
+    TransactionLocation,
 };
+use zcash_protocol::value::Zatoshis;
 
 use crate::{NonDomainError, QueryError};
 

@@ -3,10 +3,10 @@
 use std::collections::{HashMap, HashSet};
 
 use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::value::Zatoshis;
 
 use crate::types::{
     Fee, Height, Nullifier, OutPoint, ShieldedPool, Transaction, TransactionId, UpgradeSchedule,
-    Zatoshis,
 };
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
@@ -143,7 +143,7 @@ impl Ledger {
         for prevout in &tx.transparent.inputs {
             let value = self.unspent.get(prevout).filter(|_| inputs.insert(*prevout));
             let value = value.ok_or(Refused::Unspent(*prevout))?;
-            spent = spent.checked_add(*value).ok_or(Refused::PastSupply)?;
+            spent = (spent + *value).ok_or(Refused::PastSupply)?;
         }
         let mut pools = self.pools;
         for (pool, balance) in pools.iter_mut().zip(balances) {
@@ -161,7 +161,7 @@ impl Ledger {
                 if let Some(stated) = stated.filter(|stated| *stated != derived) {
                     return Err(Refused::StatedFee { stated, derived });
                 }
-                Fee::Paid(Zatoshis::new(derived).expect("a fee within the supply"))
+                Fee::Paid(Zatoshis::from_u64(derived).expect("a fee within the supply"))
             }
         };
 

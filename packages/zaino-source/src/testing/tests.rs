@@ -1,6 +1,7 @@
 use zaino_primitives::sha256d;
 use zaino_primitives::testing::{h, outpoint, p2pkh};
-use zaino_primitives::types::{MerkleRoot, Zatoshis};
+use zaino_primitives::types::MerkleRoot;
+use zcash_protocol::value::Zatoshis;
 
 use super::*;
 
@@ -144,7 +145,7 @@ async fn mempool_lists_heard_and_relayed_txs_until_mined_or_evicted() {
     let (sent, sent_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
     let entry = |txid, zats, raw: &[u8]| MempoolListed {
         txid,
-        fee: Zatoshis::new(zats).expect("in supply"),
+        fee: Zatoshis::from_u64(zats).expect("in supply"),
         encoded_len: u32::try_from(raw.len()).expect("a small transaction"),
     };
     let heard_entry = entry(heard, 2_000, &heard_raw);

@@ -29,6 +29,7 @@ zaino-header-chain.workspace = true
 zaino-primitives.workspace = true
 zaino-source.workspace = true
 zaino-traffic.workspace = true
+zcash_protocol.workspace = true
 
 [dev-dependencies]
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }
@@ -39,7 +40,6 @@ zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-traffic = { workspace = true, features = ["testing"] }
 zcash_primitives.workspace = true
-zcash_protocol.workspace = true
 
 [lints.rust]
 unreachable_pub = "warn"

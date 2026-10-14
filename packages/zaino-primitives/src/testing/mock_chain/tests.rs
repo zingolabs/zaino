@@ -1,11 +1,12 @@
 use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 
 use super::*;
 use crate::testing::TxBuilder;
 use crate::testing::{outpoint, p2pkh};
 use crate::types::{
     ConsensusBranchId, NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool,
-    TransparentOutput, Zatoshis,
+    TransparentOutput,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -66,7 +67,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     let funded = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 7_000)));
     let coinbase = &funded.block(funded.genesis().hash).transactions()[0];
     let output =
-        TransparentOutput { value: Zatoshis::new(7_000).expect("in supply"), script: alice };
+        TransparentOutput { value: Zatoshis::from_u64(7_000).expect("in supply"), script: alice };
     assert_eq!(coinbase.transparent.outputs, [output], "genesis_with: genesis as stated");
     assert_ne!(funded.genesis(), genesis);
 
@@ -135,7 +136,7 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
         .tx(|t| t.spend(outpoint([0x21; 32], 0)).sprout_balance(-18_000).fee(500))
         .tx(|t| t.sprout_balance(9_000).pay(&bob, 8_000))
     });
-    let paid = |zats: u64| Fee::Paid(Zatoshis::new(zats).expect("in supply"));
+    let paid = |zats: u64| Fee::Paid(Zatoshis::from_u64(zats).expect("in supply"));
     assert_eq!(chain.fees(funded.hash).fees, [Fee::Coinbase]);
     assert_eq!(chain.fees(spent.hash).fees, [Fee::Coinbase, paid(1_000), paid(500), paid(1_000)]);
     let fees = vec![Fee::Coinbase, paid(100), paid(500), paid(1_000)];
@@ -283,7 +284,7 @@ fn a_coinbase_paying_a_fee_panics() {
 #[test]
 #[should_panic(expected = "past the supply")]
 fn a_coinbase_past_the_supply_panics() {
-    let past_supply = Zatoshis::MAX.as_u64() + 1;
+    let past_supply = MAX_MONEY + 1;
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.pay(&p2pkh([0xaa; 20]), past_supply)));
 }
@@ -393,7 +394,7 @@ fn the_mempool_holds_what_the_best_admits_until_mined() {
     let child = TxBuilder::new().spend(outpoint([0x20; 32], 0)).pay(&alice, 48_500);
     let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
     let held = |chain: &MockChain| -> Vec<(TransactionId, u64)> {
-        chain.mempool().iter().map(|unmined| (unmined.tx.txid, unmined.fee.as_u64())).collect()
+        chain.mempool().iter().map(|unmined| (unmined.tx.txid, unmined.fee.into_u64())).collect()
     };
 
     chain.submit((parent.clone(), vec![0x20]));
@@ -407,7 +408,7 @@ fn the_mempool_holds_what_the_best_admits_until_mined() {
     let mined = chain.mine_mempool();
     let carried = chain.block(mined.hash).transactions().iter().skip(1).map(|tx| tx.txid);
     assert_eq!(carried.collect::<Vec<_>>(), [parent.txid, child.txid]);
-    let paid = |zats: u64| Fee::Paid(Zatoshis::new(zats).expect("in supply"));
+    let paid = |zats: u64| Fee::Paid(Zatoshis::from_u64(zats).expect("in supply"));
     assert_eq!(chain.fees(mined.hash).fees, [Fee::Coinbase, paid(1_000), paid(500)]);
     assert_eq!(chain.tx_bytes(child.txid), Some(&[0x21][..]));
     assert_eq!(held(&chain), [], "mined = out of the mempool");

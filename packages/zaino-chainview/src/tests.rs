@@ -11,7 +11,6 @@ use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
 use zaino_primitives::types::{
     BlockRef, EndOfService, NodeRelease, OutPoint, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
-    Zatoshis,
 };
 use zaino_source::testing::{
     decoded, raw_transaction, raw_transparent, within, MockValidator, Port, ValidatorViews,
@@ -21,6 +20,7 @@ use zaino_traffic::testing::PeerSetViews;
 use zaino_traffic::{
     Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, ValidatorId,
 };
+use zcash_protocol::value::Zatoshis;
 
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
@@ -73,7 +73,7 @@ fn outbound(addr: &str) -> PeerInfo {
 }
 
 fn zats(zats: u64) -> Zatoshis {
-    Zatoshis::new(zats).expect("in supply")
+    Zatoshis::from_u64(zats).expect("in supply")
 }
 
 const DEPTH: u32 = 10;

@@ -14,8 +14,9 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, TransactionId};
 use zaino_traffic::{Health, ValidatorId};
+use zcash_protocol::value::Zatoshis;
 
 use crate::config::FINALITY_STALL;
 use crate::endpoints::{EndpointSet, ValidatorMetadata};

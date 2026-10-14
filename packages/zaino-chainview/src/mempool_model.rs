@@ -22,9 +22,10 @@ use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{outpoint, p2pkh, Ledger, MockChain};
-use zaino_primitives::types::{BlockRef, OutPoint, PeerTxId, ReorgDepth, TransactionId, Zatoshis};
+use zaino_primitives::types::{BlockRef, OutPoint, PeerTxId, ReorgDepth, TransactionId};
 use zaino_source::testing::raw_transparent;
 use zaino_traffic::ValidatorId;
+use zcash_protocol::value::Zatoshis;
 
 use crate::admission::NextBlock;
 use crate::endpoints::ValidatorMetadata;
@@ -199,7 +200,7 @@ impl Run {
                 let sighted = |tx: &usize| Sighted {
                     txid: self.txs[*tx].0,
                     raw: Some(self.txs[*tx].1.clone()),
-                    fee: Zatoshis::new(FEES[*tx]).expect("in supply"),
+                    fee: Zatoshis::from_u64(FEES[*tx]).expect("in supply"),
                 };
                 let added = listed.difference(before).map(sighted).collect();
                 let removed = before.difference(&listed).map(|tx| self.txs[*tx].0).collect();
@@ -308,7 +309,7 @@ impl Run {
             .iter()
             .map(|(txid, sighting)| {
                 let tx = self.txs.iter().position(|(t, _)| t == txid).expect("one of ours");
-                let fee = sighting.entry(*txid).fee.map(|fee| fee.as_u64());
+                let fee = sighting.entry(*txid).fee.map(Zatoshis::into_u64);
                 (tx, Held { fee, quorum: sighting.quorum(), ours: sighting.ours() })
             })
             .collect();
