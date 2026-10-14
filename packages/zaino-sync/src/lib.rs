@@ -4,7 +4,7 @@
 //! - One sender, every step final: each height once, ascending, never retracted
 //! - Each writer: its own loop over its [`Subscription`]'s runs, its store published through an
 //!   [`IndexPublisher`]
-//! - An index's per-block output for another = a second sink (value-balance → [`FeeSink`])
+//! - An index's per-block output for another = a second sink (utxo-set → [`FeeSink`])
 
 #![forbid(unsafe_code)]
 
@@ -37,7 +37,7 @@ impl Weight for Block {
     }
 }
 
-/// Per-block transaction fees: value-balance → compact-block, one per final step
+/// Per-block transaction fees: utxo-set → compact-block, one per final step
 pub type FeeSink = IndexerDataSink<BlockFees>;
 
 impl Weight for BlockFees {

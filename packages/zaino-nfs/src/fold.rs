@@ -17,7 +17,7 @@ pub(crate) struct Folded {
 #[derive(Debug, thiserror::Error)]
 pub enum FoldError {
     #[error("value_balance: {0}")]
-    ValueBalance(#[from] zaino_internal_value_balance::FoldError),
+    UtxoSet(#[from] zaino_index_utxo_set::FoldError),
     #[error("tree_state: {0}")]
     TreeState(#[from] zaino_index_tree_state::FoldError),
 }
@@ -25,9 +25,9 @@ pub enum FoldError {
 /// `block` folded by each index in `covers`: each into a delta its parent layer opens, each layer =
 /// parent's `.with(delta)`
 ///
-/// - compact-block's fees: value-balance's fold, else (value-balance durable at `block`) its
+/// - compact-block's fees: utxo-set's fold, else (utxo-set durable at `block`) its
 ///   stored fees record
-/// - panics: a covered index absent from `parent` (compact-block: value-balance too)
+/// - panics: a covered index absent from `parent` (compact-block: utxo-set too)
 pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     parent: &Views<V>,
     block: &Block,
@@ -41,13 +41,13 @@ pub(crate) fn fold_block<V: SequenceRead + MapRead>(
     let covered = |kind: IndexKind| covers.contains(&kind);
 
     let mut fees = None;
-    if covered(IndexKind::ValueBalance) || covered(IndexKind::CompactBlock) {
-        let reader = present(IndexKind::ValueBalance, parent.value_balance());
-        fees = Some(match covered(IndexKind::ValueBalance) {
+    if covered(IndexKind::UtxoSet) || covered(IndexKind::CompactBlock) {
+        let reader = present(IndexKind::UtxoSet, parent.utxo_set());
+        fees = Some(match covered(IndexKind::UtxoSet) {
             true => {
-                let mut out = open(IndexKind::ValueBalance);
-                let fees = zaino_internal_value_balance::fold(&reader, block, &mut out)?;
-                push(IndexKind::ValueBalance, out);
+                let mut out = open(IndexKind::UtxoSet);
+                let fees = zaino_index_utxo_set::fold(&reader, block, &mut out)?;
+                push(IndexKind::UtxoSet, out);
                 fees
             }
             false => reader.block_fees(block)?,
@@ -102,11 +102,11 @@ mod tests {
     /// with one sapling output and one orchard action), folded twice by `fold_block`: once with
     /// every index, once with block-hash and transparent-address disabled
     ///
-    /// - compact-block's record carries value-balance's fees (value-balance folded first)
+    /// - compact-block's record carries utxo-set's fees (utxo-set folded first)
     /// - each layer = parent layer + the block (tip = block 1, genesis read through it)
     /// - disabled indexes: no layer, no reader
     #[test]
-    fn value_balance_folds_first_and_disabled_indexes_fold_nothing() {
+    fn utxo_set_folds_first_and_disabled_indexes_fold_nothing() {
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest()
             .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
@@ -135,7 +135,7 @@ mod tests {
 
         use IndexKind::*;
         let all = IndexKind::ALL;
-        for enabled in [&all[..], &[ValueBalance, CompactBlock, TreeState]] {
+        for enabled in [&all[..], &[UtxoSet, CompactBlock, TreeState]] {
             let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
             let (mut stores, mut durable, mut root) =
                 (Vec::new(), PerIndex::default(), PerIndex::default());

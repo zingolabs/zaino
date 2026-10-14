@@ -42,10 +42,10 @@ fold(&parent, &block, &fees, &mut out);
 `fold` appends the block's one record, built by
 `encode_compact_block(&Block, &BlockFees, &TreeSizes)`:
 
-- `CompactTx.fee` comes from `fees`, value-balance's `BlockFees` for this block
+- `CompactTx.fee` comes from `fees`, utxo-set's `BlockFees` for this block
   (asserted). A transparent input does not carry the value it spends, so the
   fee needs the UTXO set that
-  [`zaino-internal-value-balance`](../zaino-internal-value-balance/usage.md)
+  [`zaino-index-utxo-set`](../zaino-index-utxo-set/usage.md)
   keeps.
 - `chainMetadata` = the parent tip record's sizes plus what the block commits.
   A domain `Block` carries no tree sizes, and asking the validator per block
@@ -65,18 +65,18 @@ let writer = CompactBlockIndexWriter::new(store);
 let handle = writer.handle();
 let blocks = follower.subscribe(IndexKind::CompactBlock, handle.tip(), queue_bytes);
 nfs.add(IndexKind::CompactBlock, handle);
-tokio::spawn(writer.run(blocks, fees)); // fees: value-balance's FeeSink subscription
+tokio::spawn(writer.run(blocks, fees)); // fees: utxo-set's FeeSink subscription
 ```
 
 - Generic over the persistence port: `CompactBlockIndexWriter<S: Store>` with
   `S::View: SequenceRead`. zainod picks `DiskEngine` and enables it with
-  `index.compact_block` (value-balance comes with it).
+  `index.compact_block` (utxo-set comes with it).
 - `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
   It pops one fee step per block, held blocks included, so the two streams stay
   in step whichever index is ahead. Blocks it does not hold are folded and
   `zaino_sync::apply`d. It commits on a `FinalizedTip` block, a full buffer and
   `Shutdown`, and ends after both streams' `Shutdown`.
-- At the tip the NFS folds value-balance first and hands its fees straight to
+- At the tip the NFS folds utxo-set first and hands its fees straight to
   this `fold` (`zaino-nfs::fold_block`).
 - Fallible only at boot (`StoreError` from `open`). `run` panics on a failed
   commit, a commitment tree past 2^32 leaves, out-of-step fees, or a fee stream that ends early

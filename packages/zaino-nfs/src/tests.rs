@@ -18,8 +18,8 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_index_compact_block::{CompactBlockIndexWriter, CompactBlockReader};
 use zaino_index_transparent_address::{TransparentAddressIndexWriter, TransparentAddressReader};
 use zaino_index_tree_state::{TreeStateIndexWriter, TreeStateReader};
+use zaino_index_utxo_set::{UtxoSetIndexWriter, UtxoSetReader};
 use zaino_internal_block_hash_to_height::{BlockHashIndexWriter, BlockHashReader};
-use zaino_internal_value_balance::{ValueBalanceIndexWriter, ValueBalanceReader};
 use zaino_persistence::{
     fs::SimFs, BlockChanges, DiskEngine, DiskStore, DiskView, MapRead, PersistenceEngine, Schema,
     SequenceRead, Store, View, Width,
@@ -45,9 +45,7 @@ type Tables = Vec<Vec<Vec<u8>>>;
 /// `kind`'s store schema, as zainod opens it
 pub(crate) fn schema(kind: IndexKind) -> Schema {
     let (format, tables) = match kind {
-        IndexKind::ValueBalance => {
-            (zaino_internal_value_balance::FORMAT, zaino_internal_value_balance::TABLES)
-        }
+        IndexKind::UtxoSet => (zaino_index_utxo_set::FORMAT, zaino_index_utxo_set::TABLES),
         IndexKind::CompactBlock => {
             (zaino_index_compact_block::FORMAT, zaino_index_compact_block::TABLES)
         }
@@ -72,9 +70,9 @@ fn own_fold(
     out: &mut BlockChanges,
 ) {
     match kind {
-        IndexKind::ValueBalance => {
-            let parent = ValueBalanceReader::new(parent);
-            zaino_internal_value_balance::fold(&parent, block, out).expect("prevouts held");
+        IndexKind::UtxoSet => {
+            let parent = UtxoSetReader::new(parent);
+            zaino_index_utxo_set::fold(&parent, block, out).expect("prevouts held");
         }
         IndexKind::CompactBlock => {
             let parent = CompactBlockReader::new(parent);
@@ -119,18 +117,13 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
         |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
         IndexKind::ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
-    let ((first, value_balance), others) = stores.split_first_mut().expect("indexes");
-    assert_eq!(
-        *first,
-        IndexKind::ValueBalance,
-        "value-balance folds first: the rest read its fees"
-    );
+    let ((first, utxo_set), others) = stores.split_first_mut().expect("indexes");
+    assert_eq!(*first, IndexKind::UtxoSet, "utxo-set folds first: the rest read its fees");
     for block in path {
-        let mut out = value_balance.changes(block.at());
-        let parent = ValueBalanceReader::new(value_balance.applied());
-        let fees =
-            zaino_internal_value_balance::fold(&parent, block, &mut out).expect("prevouts held");
-        value_balance.apply(out);
+        let mut out = utxo_set.changes(block.at());
+        let parent = UtxoSetReader::new(utxo_set.applied());
+        let fees = zaino_index_utxo_set::fold(&parent, block, &mut out).expect("prevouts held");
+        utxo_set.apply(out);
         for (kind, store) in others.iter_mut() {
             let mut out = store.changes(block.at());
             own_fold(*kind, store.applied(), &fees, block, &mut out);
@@ -224,7 +217,7 @@ struct Pipeline {
 }
 
 impl Pipeline {
-    /// `kinds` in fold order (value-balance before compact-block), each writer as zainod wires it
+    /// `kinds` in fold order (utxo-set before compact-block), each writer as zainod wires it
     fn start(
         engine: &DiskEngine,
         kinds: &[IndexKind],
@@ -252,10 +245,10 @@ impl Pipeline {
                 blocks
             };
             match kind {
-                IndexKind::ValueBalance => {
-                    let writer = ValueBalanceIndexWriter::new(store);
+                IndexKind::UtxoSet => {
+                    let writer = UtxoSetIndexWriter::new(store);
                     let blocks = add(writer.handle());
-                    writers.spawn(writer.run(blocks, fee_sink.take().expect("one value-balance")));
+                    writers.spawn(writer.run(blocks, fee_sink.take().expect("one utxo-set")));
                 }
                 IndexKind::CompactBlock => {
                     let writer = CompactBlockIndexWriter::new(store);
@@ -489,7 +482,7 @@ async fn an_index_enabled_late_holds_the_served_tip_back_until_it_catches_up() {
         verify(snapshot, &blocks, &mined, &mut oracles, context)
     };
     let four = [
-        IndexKind::ValueBalance,
+        IndexKind::UtxoSet,
         IndexKind::CompactBlock,
         IndexKind::BlockHash,
         IndexKind::TransparentAddress,

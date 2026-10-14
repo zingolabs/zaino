@@ -12,8 +12,8 @@ use zaino_header_chain::VerifiedChain;
 use zaino_index_compact_block::CompactBlockReader;
 use zaino_index_transparent_address::TransparentAddressReader;
 use zaino_index_tree_state::{PoolActivations, TreeStateReader};
+use zaino_index_utxo_set::UtxoSetReader;
 use zaino_internal_block_hash_to_height::BlockHashReader;
-use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::PerIndex;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
 use zaino_primitives::types::{Block, BlockRef};
@@ -247,9 +247,9 @@ impl<V: MapRead> Views<V> {
 }
 
 impl<V: SequenceRead + MapRead> Views<V> {
-    /// Fold parents + a peer quorum's prevouts (no route reads value-balance)
-    pub fn value_balance(&self) -> Option<ValueBalanceReader<OverlayView<V>>> {
-        Some(ValueBalanceReader::new(self.view(IndexKind::ValueBalance)?))
+    /// Fold parents + a peer quorum's prevouts (no route reads utxo-set)
+    pub fn utxo_set(&self) -> Option<UtxoSetReader<OverlayView<V>>> {
+        Some(UtxoSetReader::new(self.view(IndexKind::UtxoSet)?))
     }
 }
 

@@ -1,5 +1,5 @@
 [package]
-name = "zaino-internal-value-balance"
+name = "zaino-index-utxo-set"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

@@ -111,8 +111,8 @@ mod tests {
     use zaino_index_compact_block::CompactBlockIndexWriter;
     use zaino_index_transparent_address::TransparentAddressIndexWriter;
     use zaino_index_tree_state::TreeStateIndexWriter;
+    use zaino_index_utxo_set::UtxoSetIndexWriter;
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
-    use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{all_at, h, p2pkh, MockChain};
 
@@ -138,7 +138,7 @@ mod tests {
 
         let (cb, vb, bh, ts, ta) = (
             root.path().join("cb"),
-            root.path().join(IndexKind::ValueBalance.name()),
+            root.path().join(IndexKind::UtxoSet.name()),
             root.path().join("bh"),
             root.path().join("ts"),
             root.path().join("ta"),
@@ -152,19 +152,19 @@ mod tests {
         let (mut block_sink, mut fee_sink) = (IndexerDataSink::new(), FeeSink::new());
         let mut subscribe = |index: IndexKind| block_sink.subscribe(index.name(), batch);
         let (compact_blocks, fee_blocks) =
-            (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::ValueBalance));
+            (subscribe(IndexKind::CompactBlock), subscribe(IndexKind::UtxoSet));
         let hash_blocks = subscribe(IndexKind::BlockHash);
         let tree_blocks = subscribe(IndexKind::TreeState);
         let transparent_blocks = subscribe(IndexKind::TransparentAddress);
         let compact_fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), batch);
         let open =
             |path: &Path, kind| engine.open(path, &schema(kind, net).0, batch).expect("open");
-        let value_balance_store = open(&vb, IndexKind::ValueBalance);
+        let value_balance_store = open(&vb, IndexKind::UtxoSet);
         let compact_block_store = open(&cb, IndexKind::CompactBlock);
         let block_hash_store = open(&bh, IndexKind::BlockHash);
         let tree_state_store = open(&ts, IndexKind::TreeState);
         let transparent_address_store = open(&ta, IndexKind::TransparentAddress);
-        let value_balance = ValueBalanceIndexWriter::new(value_balance_store);
+        let value_balance = UtxoSetIndexWriter::new(value_balance_store);
         let compact_block = CompactBlockIndexWriter::new(compact_block_store);
         let block_hash = BlockHashIndexWriter::new(block_hash_store);
         let tree_state = TreeStateIndexWriter::new(tree_state_store);
@@ -201,7 +201,7 @@ mod tests {
         use serde_json::{json, Value};
         let clean = serde_json::to_value(verify(&config).expect("verify")).expect("json");
         let indexes =
-            ["compact_block", "value_balance", "block_hash", "tree_state", "transparent_address"];
+            ["compact_block", "utxo_set", "block_hash", "tree_state", "transparent_address"];
         // on disk = the sealed bytes, then the zeroed reserve the appends grow into (uncommitted)
         let blocks_dat = &clean["compact_block"]["units"][0];
         let committed = blocks_dat["committed_bytes"].as_u64().expect("committed bytes");
@@ -260,7 +260,7 @@ mod tests {
             verify(&load_config(&partial_path).expect("load")).expect("verify"),
         )
         .expect("json");
-        let disabled = ["compact_block", "value_balance", "block_hash"].map(|i| &partial[i]);
+        let disabled = ["compact_block", "utxo_set", "block_hash"].map(|i| &partial[i]);
         assert_eq!((&partial["clean"], disabled), (&json!(true), [&Value::Null; 3]));
         assert!(!absent.exists(), "verify created {}", absent.display());
 

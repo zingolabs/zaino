@@ -178,7 +178,7 @@ pub(crate) struct IndexConfig {
 
 /// `[index.*]`: which indexes this daemon builds and serves, one directory each
 ///
-/// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and value_balance)
+/// - read through [`DaemonConfig::enabled`] (resolves `[sync]` in, and utxo_set)
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(from = "IndexesToml")]
 pub(crate) struct Indexes {
@@ -600,13 +600,13 @@ impl Default for DaemonConfig {
 impl DaemonConfig {
     /// `kind`'s directory + the `[sync]` budgets; `None` = disabled
     ///
-    /// - value_balance = compact_block's fee index: on with it, `value_balance` beside its `path`
+    /// - utxo_set = compact_block's fee index: on with it, `utxo_set` beside its `path`
     pub(crate) fn enabled(&self, kind: IndexKind) -> Option<IndexConfig> {
         let index = &self.index;
         let table = |table: &IndexTable| (table.enabled, table.path.clone());
         let (enabled, path) = match kind {
             IndexKind::CompactBlock => table(&index.compact_block),
-            IndexKind::ValueBalance => {
+            IndexKind::UtxoSet => {
                 let compact_block = &index.compact_block;
                 (compact_block.enabled, compact_block.path.with_file_name(kind.name()))
             }
@@ -617,18 +617,18 @@ impl DaemonConfig {
         enabled.then(|| IndexConfig { path, queue_bytes: mib(self.sync.queue_mib) })
     }
 
-    /// `(compact_block, value_balance)` when compact_block is enabled (its fees need the other)
+    /// `(compact_block, utxo_set)` when compact_block is enabled (its fees need the other)
     pub(crate) fn compact_block(&self) -> Result<Option<(IndexConfig, IndexConfig)>, IndexerError> {
         let Some(compact_block) = self.enabled(IndexKind::CompactBlock) else { return Ok(None) };
         if compact_block.path.file_name().is_none() {
             return Err(IndexerError::Config(format!(
-                "index.compact_block.path = {}: no final directory name (value_balance sits \
+                "index.compact_block.path = {}: no final directory name (utxo_set sits \
                  beside it)",
                 compact_block.path.display()
             )));
         }
-        let value_balance = self.enabled(IndexKind::ValueBalance).expect("on with compact_block");
-        Ok(Some((compact_block, value_balance)))
+        let utxo_set = self.enabled(IndexKind::UtxoSet).expect("on with compact_block");
+        Ok(Some((compact_block, utxo_set)))
     }
 
     /// `Err` = no pipeline composes from it
@@ -818,7 +818,7 @@ mod tests {
         path
     }
 
-    /// Per index: file over defaults, env over file, `[sync]` budgets in each, value_balance
+    /// Per index: file over defaults, env over file, `[sync]` budgets in each, utxo_set
     /// beside compact_block (and off with it)
     #[test]
     fn layers_resolve_every_index_through_defaults_file_and_env() {
@@ -859,27 +859,27 @@ enabled = false
         };
         let kinds = [
             IndexKind::CompactBlock,
-            IndexKind::ValueBalance,
+            IndexKind::UtxoSet,
             IndexKind::BlockHash,
             IndexKind::TreeState,
             IndexKind::TransparentAddress,
         ];
         let expected = [
             at("/srv/zaino/compact_block".into()),
-            at("/srv/zaino/value_balance".into()),
+            at("/srv/zaino/utxo_set".into()),
             at(crate::paths::default_index(IndexKind::BlockHash)),
             None,
             None,
         ];
         assert_eq!(kinds.map(|kind| config.enabled(kind)), expected);
-        let (compact_block, value_balance) =
+        let (compact_block, utxo_set) =
             config.compact_block().expect("a valid path").expect("enabled");
-        assert_eq!([Some(compact_block), Some(value_balance)], expected[..2]);
+        assert_eq!([Some(compact_block), Some(utxo_set)], expected[..2]);
 
         let mut off = config;
         off.index.compact_block.enabled = false;
         let pair = off.compact_block().expect("nothing to check").map(|_| ());
-        assert_eq!((pair, off.enabled(IndexKind::ValueBalance)), (None, None), "both off");
+        assert_eq!((pair, off.enabled(IndexKind::UtxoSet)), (None, None), "both off");
     }
 
     /// Each row = one rule over an otherwise valid default config (`None` = accepted)
@@ -895,7 +895,7 @@ enabled = false
             (
                 "fanout whose segment lists outgrow a manifest slot",
                 |c| c.sync.lsm_store.fanout = Fanout::new(128).expect(">= 2"),
-                Some("sync.lsm_store.fanout = 128: value_balance's segment lists"),
+                Some("sync.lsm_store.fanout = 128: utxo_set's segment lists"),
             ),
             (
                 "compact_block off, block_hash still served",
@@ -913,7 +913,7 @@ enabled = false
                 Some("every [index.*] disabled"),
             ),
             (
-                "no sibling for value_balance",
+                "no sibling for utxo_set",
                 |c| c.index.compact_block.path = "/".into(),
                 Some("index.compact_block.path = /"),
             ),
@@ -1072,8 +1072,8 @@ enabled = false
         for table in ["compact_block", "block_hash", "tree_state", "transparent_address"] {
             printed(&format!("index.{table}"), &["enabled", "path"]);
         }
-        assert!(!body.contains("value_balance"), "internal: no table of its own");
-        for kind in [IndexKind::CompactBlock, IndexKind::ValueBalance, IndexKind::TreeState] {
+        assert!(!body.contains("utxo_set"), "internal: no table of its own");
+        for kind in [IndexKind::CompactBlock, IndexKind::UtxoSet, IndexKind::TreeState] {
             let path = defaults.enabled(kind).map(|index| index.path);
             assert_eq!(path, Some(crate::paths::default_index(kind)), "{kind:?}");
         }

@@ -10,11 +10,11 @@ use crate::{
 };
 
 #[derive(Clone)]
-pub struct ValueBalanceReader<V> {
+pub struct UtxoSetReader<V> {
     view: V,
 }
 
-impl<V: SequenceRead + MapRead> ValueBalanceReader<V> {
+impl<V: SequenceRead + MapRead> UtxoSetReader<V> {
     pub fn new(view: V) -> Self {
         Self { view }
     }
@@ -57,8 +57,8 @@ impl<V: SequenceRead + MapRead> ValueBalanceReader<V> {
     }
 }
 
-impl<V: View> std::fmt::Debug for ValueBalanceReader<V> {
+impl<V: View> std::fmt::Debug for UtxoSetReader<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ValueBalanceReader").field("tip", &self.view.tip()).finish()
+        f.debug_struct("UtxoSetReader").field("tip", &self.view.tip()).finish()
     }
 }

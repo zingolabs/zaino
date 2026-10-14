@@ -7,7 +7,7 @@ members = [
     "packages/zaino-index-tree-state",
     "packages/zaino-index-transparent-address",
     "packages/zaino-internal-block-hash-to-height",
-    "packages/zaino-internal-value-balance",
+    "packages/zaino-index-utxo-set",
     "packages/zaino-chainview",
     "packages/zaino-nfs",
     "packages/zaino-header-chain",
@@ -130,7 +130,7 @@ zaino-index-compact-block = { path = "packages/zaino-index-compact-block", versi
 # Block hash <-> height: the locator every by-hash request resolves through.
 zaino-internal-block-hash-to-height = { path = "packages/zaino-internal-block-hash-to-height", version = "0.11.0-alpha.2" }
 # Outpoint -> value: every transaction's value balance (fees), published for compact blocks.
-zaino-internal-value-balance = { path = "packages/zaino-internal-value-balance", version = "0.11.0-alpha.2" }
+zaino-index-utxo-set = { path = "packages/zaino-index-utxo-set", version = "0.11.0-alpha.2" }
 # Height → commitment-tree state, subtree roots (any historical frontier, no hashing)
 zaino-index-tree-state = { path = "packages/zaino-index-tree-state", version = "0.11.0-alpha.2" }
 # Transparent address → receives + their spends (two maps, composed per query)

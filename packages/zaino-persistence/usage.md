@@ -52,7 +52,7 @@ functions beside a golden-bytes test). The engine sees bytes. The details that b
 - **`MapTable::point` vs `MapTable::scoped`.** A point map is read by whole key. A scoped map
   declares its `scope`: the number of leading key bytes every range read shares (an address, say).
   The filter covers that prefix, so a range scan only visits segments that may hold it.
-- **`cache_writes()`** marks a table a fold reads back (tree-state, value-balance's `outputs`).
+- **`cache_writes()`** marks a table a fold reads back (tree-state, utxo-set's `outputs`).
   Everything else is dropped from page cache once synced, so bulk writes never evict hot tables.
 - **`apply` vs `commit`.** `apply` buffers in RAM; a writer folding the next block reads its parent
   through `staged()` (committed + buffered). Once the buffer's heap (`DiskStore::buffered_bytes`)
@@ -89,7 +89,7 @@ at most one value row and one tombstone row anywhere, so no answer depends on se
 - In an `Overlay` a removal masks the durable value, and `rebase` never brings it back.
 - Rows of a `deletes()` map carry one flag byte; every other map's layout is unchanged.
 
-value-balance's `outputs` is the one user: it keeps only unspent outputs, so its fold's prevout
+utxo-set's `outputs` is the one user: it keeps only unspent outputs, so its fold's prevout
 lookups fit in page cache.
 
 ## Non-final data: `Overlay`

@@ -27,7 +27,7 @@ zaino-index-compact-block = { workspace = true }
 zaino-index-tree-state = { workspace = true }
 zaino-index-transparent-address = { workspace = true }
 zaino-internal-block-hash-to-height = { workspace = true }
-zaino-internal-value-balance = { workspace = true }
+zaino-index-utxo-set = { workspace = true }
 zaino-grpc = { workspace = true }
 zaino-source = { workspace = true }
 

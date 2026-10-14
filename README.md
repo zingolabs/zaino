@@ -34,7 +34,7 @@ packages/                          Cargo workspace members
   zaino-sync/                        Final stream (sink + queues) + the writers' apply / commit / publish
   zaino-index-compact-block/         Height → gRPC-framed compact block (one sequence)
   zaino-internal-block-hash-to-height/  Hash ↔ height, the by-hash locator
-  zaino-internal-value-balance/      Outpoint → value: each transaction's fee for compact blocks
+  zaino-index-utxo-set/      Outpoint → value: each transaction's fee for compact blocks
   zaino-index-tree-state/            Commitment-tree frontiers and subtree roots
   zaino-index-transparent-address/   Transparent address → receives and their spends (two maps)
   zaino-persistence/                 Persistence port + DiskEngine (files for sequences, LSM for maps)
@@ -115,7 +115,7 @@ prevents.
 - [`zaino-persistence`](./packages/zaino-persistence/usage.md): the persistence port every index stores through (schema, changes, views, verify) and `DiskEngine`, the files + LSM engine behind it.
 - [`zaino-index-compact-block`](./packages/zaino-index-compact-block/usage.md): the wire-shaped record store — one pin per request, zero-copy reads, and why there is no RAM cache.
 - [`zaino-internal-block-hash-to-height`](./packages/zaino-internal-block-hash-to-height/usage.md): the hash ↔ height locator every by-hash request resolves through, and why the serving index confirms it.
-- [`zaino-internal-value-balance`](./packages/zaino-internal-value-balance/usage.md): every transparent output's value, resolving each transaction's fee for compact blocks, and why all of it happens in one `fold`.
+- [`zaino-index-utxo-set`](./packages/zaino-index-utxo-set/usage.md): every transparent output's value, resolving each transaction's fee for compact blocks, and why all of it happens in one `fold`.
 - [`zaino-index-tree-state`](./packages/zaino-index-tree-state/usage.md): the retained-node commitment-tree index — why reconstruction needs no hashing, and why subtree roots share its fold.
 - [`zaino-index-transparent-address`](./packages/zaino-index-transparent-address/usage.md): the t-address RPCs as two pure projections, why the fold performs no lookups, and what an empty result means.
 - [`zaino-proto`](./packages/zaino-proto/README.md): the vendored lightwallet protocol, Zebra's indexer protocol, and the gRPC frame helpers.

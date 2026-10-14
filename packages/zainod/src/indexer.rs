@@ -4,7 +4,7 @@
 //! - Only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ final stream ─┬─▶ value_balance ─fees─┐
+//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ final stream ─┬─▶ utxo_set ─fees─┐
 //!   validators ──▶ getblock <hash> (checked) ───┤                                  ├─▶ compact_block ◀──────┘
 //!                                               │                                  ├─▶ block_hash
 //!                                               │                                  ├─▶ tree_state
@@ -38,8 +38,8 @@ use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
 use zaino_index_transparent_address::TransparentAddressIndexWriter;
 use zaino_index_tree_state::TreeStateIndexWriter;
+use zaino_index_utxo_set::UtxoSetIndexWriter;
 use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
-use zaino_internal_value_balance::ValueBalanceIndexWriter;
 use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine};
@@ -280,11 +280,11 @@ fn open_indexes<S: ChainDataSource>(
         writers: Vec::new(),
     };
     if let Some((cb, vb)) = config.compact_block()? {
-        // compact-block folds after value-balance (its fees)
+        // compact-block folds after utxo-set (its fees)
         let mut fee_sink = FeeSink::new();
         let fees = fee_sink.subscribe(IndexKind::CompactBlock.name(), cb.queue_bytes);
-        let (vb_new, vb_handle) = (ValueBalanceIndexWriter::new, ValueBalanceIndexWriter::handle);
-        indexes.open(IndexKind::ValueBalance, &vb, vb_new, vb_handle, |writer, blocks| {
+        let (vb_new, vb_handle) = (UtxoSetIndexWriter::new, UtxoSetIndexWriter::handle);
+        indexes.open(IndexKind::UtxoSet, &vb, vb_new, vb_handle, |writer, blocks| {
             writer.run(blocks, fee_sink)
         })?;
         let (cb_new, cb_handle) = (CompactBlockIndexWriter::new, CompactBlockIndexWriter::handle);

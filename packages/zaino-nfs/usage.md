@@ -14,10 +14,10 @@ let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth,
 let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 
 // one per enabled index: its handle to both, its final stream out
-let value_balance_writer = ValueBalanceIndexWriter::new(value_balance_store);
-let value_balance = value_balance_writer.handle();
-let blocks = follower.subscribe(IndexKind::ValueBalance, value_balance.tip(), queue_bytes);
-nfs.add(IndexKind::ValueBalance, value_balance);
+let utxo_set_writer = UtxoSetIndexWriter::new(utxo_set_store);
+let utxo_set = utxo_set_writer.handle();
+let blocks = follower.subscribe(IndexKind::UtxoSet, utxo_set.tip(), queue_bytes);
+nfs.add(IndexKind::UtxoSet, utxo_set);
 
 let publisher = zaino_snapshot::Publisher::new(nfs.indexed(), view.subscriber(), depth);
 tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone | IndexGone

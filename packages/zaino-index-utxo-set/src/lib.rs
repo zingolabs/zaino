@@ -3,8 +3,8 @@
 mod reader;
 mod writer;
 
-pub use reader::ValueBalanceReader;
-pub use writer::{fold, FoldError, ValueBalanceIndexWriter};
+pub use reader::UtxoSetReader;
+pub use writer::{fold, FoldError, UtxoSetIndexWriter};
 
 use zaino_persistence::{MapTable, SequenceTable, Tables, Width};
 use zaino_primitives::types::Fee;

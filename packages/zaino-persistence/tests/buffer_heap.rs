@@ -53,7 +53,7 @@ const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32));
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
 const MAP: MapTable = MapTable::point(0, "map", Width::fixed(36), Width::fixed(8));
 const SCHEMA: Schema = Schema::new(
-    IndexKind::ValueBalance,
+    IndexKind::UtxoSet,
     1,
     NetworkType::Regtest,
     Tables::new(&[FIXED, VARIABLE], &[MAP]),

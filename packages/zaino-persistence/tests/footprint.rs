@@ -19,7 +19,7 @@ const DROPPED: MapTable = MapTable::point(0, "dropped", Width::fixed(36), Width:
 const CACHED: MapTable =
     MapTable::point(1, "cached", Width::fixed(36), Width::fixed(8)).cache_writes();
 const SCHEMA: Schema = Schema::new(
-    IndexKind::ValueBalance,
+    IndexKind::UtxoSet,
     1,
     NetworkType::Regtest,
     Tables::new(&[FIXED, VARIABLE], &[DROPPED, CACHED]),

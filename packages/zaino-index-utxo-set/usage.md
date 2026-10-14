@@ -1,6 +1,6 @@
-# zaino-internal-value-balance
+# zaino-index-utxo-set
 
-The value-balance index. It serves no RPC itself. It resolves every mined
+The utxo-set index. It serves no RPC itself. It resolves every mined
 transaction's [`Fee`](../zaino-primitives/usage.md) so that compact-block can
 fill `CompactTx.fee`, and it is the UTXO set zainod's chain view reads.
 
@@ -37,21 +37,21 @@ in `fees` and read back for a held height.
 ## Wiring
 
 ```rust,ignore
-use zaino_internal_value_balance::{ValueBalanceIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
+use zaino_index_utxo_set::{UtxoSetIndexWriter, FORMAT, TABLES, WRITE_BUFFER};
 use zaino_persistence::{DiskEngine, IndexKind, PersistenceEngine, Schema};
 use zaino_sync::FeeSink;
 
 let mut fee_sink = FeeSink::new();
 let for_compact = fee_sink.subscribe("compact_block", queue); // before `run` takes the sink
-let schema = Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES);
-let writer = ValueBalanceIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
+let schema = Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES);
+let writer = UtxoSetIndexWriter::new(DiskEngine::new(fs, LsmConfig::default()).open(&path, &schema, WRITE_BUFFER)?);
 let handle = writer.handle();
-let blocks = follower.subscribe(IndexKind::ValueBalance, handle.tip(), queue);
-nfs.add(IndexKind::ValueBalance, handle);
+let blocks = follower.subscribe(IndexKind::UtxoSet, handle.tip(), queue);
+nfs.add(IndexKind::UtxoSet, handle);
 tokio::spawn(writer.run(blocks, fee_sink));
 ```
 
-- Generic over the persistence port: `ValueBalanceIndexWriter<S: Store>` with
+- Generic over the persistence port: `UtxoSetIndexWriter<S: Store>` with
   `S::View: SequenceRead + MapRead`. zainod enables it with
   `index.compact_block`, its directory beside compact-block's.
 - `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop))
@@ -61,7 +61,7 @@ tokio::spawn(writer.run(blocks, fee_sink));
   ([Failure](../zaino-sync/usage.md#failure-panic-never-err)). The fee sink then
   drops without `Shutdown`, so compact-block panics on its next pop.
 - `zainod verify` checks the directory against
-  `Schema::new(IndexKind::ValueBalance, FORMAT, network, TABLES)`.
+  `Schema::new(IndexKind::UtxoSet, FORMAT, network, TABLES)`.
 
 ## Readers
 
@@ -69,13 +69,13 @@ No route reads this index. Its readers are:
 
 - compact-block, through the fee sink in bulk, and at the tip through the NFS,
   which folds this index first and hands compact-block's fold the fees.
-- zainod's `ServedUtxos`, which calls `ValueBalanceReader::values(outpoints)` at
+- zainod's `ServedUtxos`, which calls `UtxoSetReader::values(outpoints)` at
   the served tip so the chain view can price a peer-quorum mempool admission.
 
 ## Folding
 
 ```rust,ignore
-let parent = ValueBalanceReader::new(view);   // any V: SequenceRead + MapRead
+let parent = UtxoSetReader::new(view);   // any V: SequenceRead + MapRead
 let mut out = store.changes(block.at());      // or the parent layer's `changes`
 let fees = fold(&parent, &block, &mut out)?;  // Result<BlockFees, FoldError>
 let stored = parent.block_fees(&block)?;      // a held block's fees, read back

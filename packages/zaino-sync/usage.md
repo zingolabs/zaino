@@ -6,7 +6,7 @@ broadcast (`IndexerDataSink<Block>`); each index writer runs its own loop over i
 [architecture §7](../../docs/architecture.md#final-path-zaino-sync).
 
 ```text
- VerifiedChain ─▶ FinalizedFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ value-balance ─▶ FeeSink ┐
+ VerifiedChain ─▶ FinalizedFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ utxo-set ─▶ FeeSink ┐
  (final_tip)      fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
                                                            ├─▶ [queue] ─▶ tree-state
                                                            ├─▶ [queue] ─▶ block-hash
@@ -16,7 +16,7 @@ broadcast (`IndexerDataSink<Block>`); each index writer runs its own loop over i
 
 Which index holds the pipeline back: the one whose `zaino_index_applied_height` stops while
 `zaino_fetch_height` waits. Why: its `zaino_index_run_seconds` against `zaino_index_write_seconds`
-(run ≈ write = the disk; run ≫ write = the fold, or compact-block waiting on value-balance's fees).
+(run ≈ write = the disk; run ≫ write = the fold, or compact-block waiting on utxo-set's fees).
 
 ```rust,ignore
 use zaino_sync::{apply, blocking, commit, held, IndexHandle, IndexPublisher, Subscription};
@@ -125,7 +125,7 @@ commit; `false` = writer gone).
 
 ## Fees: `FeeSink`
 
-`FeeSink` = `IndexerDataSink<BlockFees>`: value-balance publishes one per step (held heights read
+`FeeSink` = `IndexerDataSink<BlockFees>`: utxo-set publishes one per step (held heights read
 back from its stored fees), compact-block pops one per step, so the two stay in step with either
 one ahead.
 

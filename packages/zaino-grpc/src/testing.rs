@@ -28,7 +28,7 @@ pub(super) const MAINNET: zcash_protocol::consensus::NetworkType =
     zcash_protocol::consensus::NetworkType::Main;
 
 /// `kind` folded through genesis ..= `tip` by its own fold on the chain's network, committed
-/// (compact-block's fees = the builder's: value-balance's fold derives the same, in its tests)
+/// (compact-block's fees = the builder's: utxo-set's fold derives the same, in its tests)
 pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (IndexKind, DiskView) {
     let (format, tables) = match kind {
         IndexKind::CompactBlock => {
@@ -42,7 +42,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
             zaino_internal_block_hash_to_height::FORMAT,
             zaino_internal_block_hash_to_height::TABLES,
         ),
-        IndexKind::ValueBalance => panic!("not a served index"),
+        IndexKind::UtxoSet => panic!("not a served index"),
     };
     let schema = Schema::new(kind, format, chain.schedule().network, tables);
     let engine = DiskEngine::new(
@@ -73,7 +73,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
                 let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(parent);
                 zaino_internal_block_hash_to_height::fold(&parent, &block, &mut out);
             }
-            IndexKind::ValueBalance => unreachable!("refused above"),
+            IndexKind::UtxoSet => unreachable!("refused above"),
         }
         index.apply(out);
     }

@@ -21,17 +21,17 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::{encode_fees, encode_outpoint, encode_value, ValueBalanceReader, FEES, OUTPUTS};
+use crate::{encode_fees, encode_outpoint, encode_value, UtxoSetReader, FEES, OUTPUTS};
 
-const NAME: &str = IndexKind::ValueBalance.name();
+const NAME: &str = IndexKind::UtxoSet.name();
 
 /// Records every transparent output and derives one [`BlockFees`] per bulk block
-pub struct ValueBalanceIndexWriter<S: Store> {
+pub struct UtxoSetIndexWriter<S: Store> {
     store: S,
     publisher: IndexPublisher<S::View>,
 }
 
-impl<S: Store<View: SequenceRead + MapRead>> ValueBalanceIndexWriter<S> {
+impl<S: Store<View: SequenceRead + MapRead>> UtxoSetIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES))
     pub fn new(store: S) -> Self {
         let publisher = IndexPublisher::new(&store);
@@ -60,13 +60,13 @@ impl<S: Store<View: SequenceRead + MapRead>> ValueBalanceIndexWriter<S> {
                     run.blocks.iter().partition(|(height, _)| held(&store, *height));
                 let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
                 let fresh: Vec<&Block> = fresh.into_iter().map(|(_, block)| &**block).collect();
-                let held = ValueBalanceReader::new(store.applied());
+                let held = UtxoSetReader::new(store.applied());
                 let stored = resent.iter().map(|block| held.block_fees(block));
                 let stored = stored.collect::<Result<Vec<_>, _>>();
                 let mut paid = stored.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.at())).collect();
-                let folded = fold_run(&ValueBalanceReader::new(store.applied()), &fresh, &mut out);
+                let folded = fold_run(&UtxoSetReader::new(store.applied()), &fresh, &mut out);
                 paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
                 for changes in out {
                     write += apply(&mut store, changes);
@@ -119,7 +119,7 @@ pub enum FoldError {
 /// `block` onto `parent`: its rows (outputs it leaves unspent in, prevouts it spends out), its
 /// fees record, its fees
 pub fn fold<V: SequenceRead + MapRead>(
-    parent: &ValueBalanceReader<V>,
+    parent: &UtxoSetReader<V>,
     block: &Block,
     out: &mut BlockChanges,
 ) -> Result<BlockFees, FoldError> {
@@ -135,7 +135,7 @@ pub fn fold<V: SequenceRead + MapRead>(
 ///   or a spend of a later tx's output = `MissingPrevout`)
 /// - output created + spent in one block = neither row (one delta never inserts and removes a key)
 pub(crate) fn fold_run<V: SequenceRead + MapRead>(
-    parent: &ValueBalanceReader<V>,
+    parent: &UtxoSetReader<V>,
     blocks: &[&Block],
     out: &mut [BlockChanges],
 ) -> Result<Vec<BlockFees>, FoldError> {
@@ -219,8 +219,7 @@ mod tests {
     use super::*;
     use crate::{FORMAT, TABLES};
 
-    const SCHEMA: Schema =
-        Schema::new(IndexKind::ValueBalance, FORMAT, NetworkType::Regtest, TABLES);
+    const SCHEMA: Schema = Schema::new(IndexKind::UtxoSet, FORMAT, NetworkType::Regtest, TABLES);
 
     /// Block 0 folded onto nothing, then 1 and 2 as one run onto 0: each prevout resolves from
     /// the parent, its own block or an earlier run block; fees = the stated ones
@@ -263,15 +262,14 @@ mod tests {
         let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
-        let genesis_fees =
-            fold(&ValueBalanceReader::new(store.applied()), &blocks[0], &mut genesis);
+        let genesis_fees = fold(&UtxoSetReader::new(store.applied()), &blocks[0], &mut genesis);
         assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
         store.apply(genesis);
 
         let run = [&*blocks[1], &*blocks[2]];
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
-        let parent = ValueBalanceReader::new(store.applied());
+        let parent = UtxoSetReader::new(store.applied());
         let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
         assert_eq!(run_fees, expected);
         let rows: Vec<(&[u8], &[u8])> = out[0].inserts(OUTPUTS).collect();
@@ -296,7 +294,7 @@ mod tests {
 
         for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
             let mut changes = store.changes(block.at());
-            let block_fees = fold(&ValueBalanceReader::new(store.applied()), block, &mut changes);
+            let block_fees = fold(&UtxoSetReader::new(store.applied()), block, &mut changes);
             let height = block.header().height;
             assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
             let rows = |changes: &BlockChanges| {
@@ -309,7 +307,7 @@ mod tests {
             assert_eq!(in_run.2, [encode_fees(&run_fees.fees)], "{height:?}: one fees record");
             store.apply(changes);
         }
-        let held = ValueBalanceReader::new(store.applied());
+        let held = UtxoSetReader::new(store.applied());
         let stored: Vec<_> = run.iter().map(|block| held.block_fees(block)).collect();
         assert_eq!(stored, expected.map(Ok), "held: fees read back as folded");
     }
@@ -403,7 +401,7 @@ mod tests {
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
                 run.iter().map(|block| store.changes(block.at())).collect();
-            let folded = fold_run(&ValueBalanceReader::new(store.applied()), &run, &mut out);
+            let folded = fold_run(&UtxoSetReader::new(store.applied()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
     }
@@ -428,14 +426,14 @@ mod tests {
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
             let mut changes = store.changes(block.at());
-            fold(&ValueBalanceReader::new(store.applied()), block, &mut changes).expect("folds");
+            fold(&UtxoSetReader::new(store.applied()), block, &mut changes).expect("folds");
             store.apply(changes);
         }
         let mut txs = blocks[1].transactions().to_vec();
         txs.push(txs[1].clone());
         let longer = Block::new(blocks[1].header().clone(), txs);
 
-        let held = ValueBalanceReader::new(store.applied());
+        let held = UtxoSetReader::new(store.applied());
         assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "as folded");
         let missing = held.block_fees(chain.block(two.hash));
         assert_eq!(missing, Err(FoldError::StoredFeesMissing { height: h(2) }));
@@ -445,7 +443,7 @@ mod tests {
 
     /// Writer over `store` (`queue` bytes = one run's) + the fee stream it publishes
     fn start(store: DiskStore, queue: NonZeroUsize) -> (Writer<DiskView>, Subscription<BlockFees>) {
-        let writer = ValueBalanceIndexWriter::new(store);
+        let writer = UtxoSetIndexWriter::new(store);
         let mut fee_sink = FeeSink::new();
         let consumer = fee_sink.subscribe("consumer", QUEUE);
         (
@@ -618,7 +616,7 @@ mod tests {
 
     /// Fold error (each kind: the fold tests) → writer panic naming its index + block
     #[tokio::test]
-    #[should_panic(expected = "value_balance index: block 1 tx")]
+    #[should_panic(expected = "utxo_set index: block 1 tx")]
     async fn a_fold_error_panics_the_writer_naming_the_index() {
         let (writer, _consumer) = start(open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX), QUEUE);
         let alice = p2pkh([0xaa; 20]);

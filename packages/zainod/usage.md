@@ -180,7 +180,7 @@ or tailnet name:
   "tip": { "height": 3515406, "hash": "0000…" },
   "served": 3515400,
   "validators": { "configured": 2, "connected": 1 },
-  "indexes": { "enabled": ["value_balance", "compact_block"], "total": 5 },
+  "indexes": { "enabled": ["utxo_set", "compact_block"], "total": 5 },
   "egress": { "start": 1790000400, "mbps": 12.5 },
   "info": { "version": "…", "blockHeight": 3515400, "…": "every GetLightdInfo field" }
 }
@@ -282,13 +282,13 @@ resolves against the manifest URL; `installed_bytes` = its unpacked size):
  "indexes": {
    "compact_block": {"archive": "compact_block.tar.zst", "sha256": "…",
                      "archive_bytes": 31000000000, "installed_bytes": 74000000000},
-   "value_balance": {"archive": "value_balance.tar.zst", "sha256": "…", …},
+   "utxo_set": {"archive": "utxo_set.tar.zst", "sha256": "…", …},
    "block_hash": {…}, "tree_state": {…}, "transparent_address": {…}}}
 ```
 
 Each archive is a zstd tar of that index directory's contents (no top-level directory). Keys
-are the index names: `compact_block`, `value_balance`, `block_hash`, `tree_state`,
-`transparent_address` (`value_balance` installs beside the compact-block index, which it runs
+are the index names: `compact_block`, `utxo_set`, `block_hash`, `tree_state`,
+`transparent_address` (`utxo_set` installs beside the compact-block index, which it runs
 with; `index.compact_block` may be disabled, and then neither is installed).
 
 - Only an enabled index whose directory is missing or empty is filled, from its own archive
@@ -313,7 +313,7 @@ bootstrap itself as `snapshot`, beside the configured `indexes`:
 ```json
 {"ready": false, "state": "provisioning", "detail": null, "notes": [],
  "progress": {"done": 27000000000, "total": 44500000000, "unit": "byte", "rate": 103000000.0},
- "indexes": [{"name": "value_balance", "enabled": true, "durable": null}, …],
+ "indexes": [{"name": "utxo_set", "enabled": true, "durable": null}, …],
  "snapshot": {"phase": "downloading", "source": "snapshots.zingolabs.dev", "height": 3501802,
               "indexes": 5, "done": 27000000000, "total": 44500000000, "rate": 103000000}}
 ```
@@ -366,7 +366,7 @@ network or format included).
       { "name": "blocks.idx", … }
     ]
   },
-  "value_balance": { "heights": 4, "units": [ … ] },
+  "utxo_set": { "heights": 4, "units": [ … ] },
   "block_hash": { "heights": 4, "units": [ … ] },
   "tree_state": { "heights": 4, "units": [ … ] },
   "transparent_address": null

@@ -227,7 +227,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
   the root. Otherwise (first sync, an index enabled late) the final path does the work and the
   root is served.
 - Each best-chain block above the root is fetched by hash, checked against its header, and folded
-  over the indexes' committed views (value-balance first: its fees feed compact-block).
+  over the indexes' committed views (utxo-set first: its fees feed compact-block).
 - **Served tip** = the deepest folded best-chain node, else the root. A reorg moves it to the fork
   point at once, then forward as the new branch folds. Side branches stay until the header chain
   drops them, so switching back costs nothing.

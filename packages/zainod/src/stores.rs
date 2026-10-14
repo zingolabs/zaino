@@ -13,10 +13,10 @@ pub(crate) fn schema(kind: IndexKind, network: NetworkType) -> (Schema, NonZeroU
             zaino_index_compact_block::TABLES,
             zaino_index_compact_block::WRITE_BUFFER,
         ),
-        IndexKind::ValueBalance => (
-            zaino_internal_value_balance::FORMAT,
-            zaino_internal_value_balance::TABLES,
-            zaino_internal_value_balance::WRITE_BUFFER,
+        IndexKind::UtxoSet => (
+            zaino_index_utxo_set::FORMAT,
+            zaino_index_utxo_set::TABLES,
+            zaino_index_utxo_set::WRITE_BUFFER,
         ),
         IndexKind::BlockHash => (
             zaino_internal_block_hash_to_height::FORMAT,

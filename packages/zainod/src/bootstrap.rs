@@ -758,8 +758,8 @@ mod tests {
         );
     }
 
-    /// Fresh regtest node, compact_block (+ value_balance) and block_hash on, block_hash holding
-    /// data: a value_balance archive failing its sha256 stops startup and wipes its staging;
+    /// Fresh regtest node, compact_block (+ utxo_set) and block_hash on, block_hash holding
+    /// data: a utxo_set archive failing its sha256 stops startup and wipes its staging;
     /// republished, a restart installs both empty indexes byte for byte, block_hash's archive
     /// never fetched, nothing staged, the bootstrap status cleared (aria2c from the dev shell)
     #[tokio::test]
@@ -781,9 +781,9 @@ mod tests {
             zstd::encode_all(&tar.into_inner().expect("tar")[..], 0).expect("zstd")
         };
         let compact_block = archive(&[("MANIFEST", b"cb manifest"), ("blocks.dat", b"cb blocks")]);
-        let value_balance = archive(&[("MANIFEST", b"vb manifest")]);
+        let utxo_set = archive(&[("MANIFEST", b"vb manifest")]);
         let sha256 = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
-        let manifest = |value_balance_sha256: String| {
+        let manifest = |utxo_set_sha256: String| {
             let entry = |name: &str, bytes: &[u8], sha256: String| {
                 json!({ "archive": format!("{name}.tar.zst"), "sha256": sha256,
                         "archive_bytes": bytes.len(), "installed_bytes": 1 << 20 })
@@ -792,7 +792,7 @@ mod tests {
                 "network": "regtest", "height": 7,
                 "indexes": {
                     "compact_block": entry("compact_block", &compact_block, sha256(&compact_block)),
-                    "value_balance": entry("value_balance", &value_balance, value_balance_sha256),
+                    "utxo_set": entry("utxo_set", &utxo_set, utxo_set_sha256),
                     "block_hash": entry("block_hash", b"never", sha256(b"never")),
                 },
             })
@@ -804,7 +804,7 @@ mod tests {
         let served: Arc<Mutex<HashMap<String, Vec<u8>>>> = Arc::new(Mutex::new(HashMap::from([
             ("/v/manifest.json".to_owned(), manifest(sha256(b"not the archive"))),
             ("/v/compact_block.tar.zst".to_owned(), compact_block.clone()),
-            ("/v/value_balance.tar.zst".to_owned(), value_balance.clone()),
+            ("/v/utxo_set.tar.zst".to_owned(), utxo_set.clone()),
             ("/v/block_hash.tar.zst".to_owned(), b"never".to_vec()),
         ])));
         let requested: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -856,20 +856,20 @@ mod tests {
         };
 
         let refused = bootstrap(&snapshot, &config).await.expect_err("bad sha256");
-        assert!(refused.to_string().contains("value_balance.tar.zst"), "{refused}");
-        assert!(!indexes.join(".value_balance.snapshot").exists(), "bad archive wiped");
+        assert!(refused.to_string().contains("utxo_set.tar.zst"), "{refused}");
+        assert!(!indexes.join(".utxo_set.snapshot").exists(), "bad archive wiped");
 
         served
             .lock()
             .expect("files")
-            .insert("/v/manifest.json".to_owned(), manifest(sha256(&value_balance)));
+            .insert("/v/manifest.json".to_owned(), manifest(sha256(&utxo_set)));
         bootstrap(&snapshot, &config).await.expect("installs");
 
         let read = |path: &str| std::fs::read(indexes.join(path)).expect(path);
         let installed = [
             ("compact_block/MANIFEST", read("compact_block/MANIFEST")),
             ("compact_block/blocks.dat", read("compact_block/blocks.dat")),
-            ("value_balance/MANIFEST", read("value_balance/MANIFEST")),
+            ("utxo_set/MANIFEST", read("utxo_set/MANIFEST")),
             ("block_hash/MANIFEST", read("block_hash/MANIFEST")),
         ];
         assert_eq!(
@@ -877,7 +877,7 @@ mod tests {
             [
                 ("compact_block/MANIFEST", b"cb manifest".to_vec()),
                 ("compact_block/blocks.dat", b"cb blocks".to_vec()),
-                ("value_balance/MANIFEST", b"vb manifest".to_vec()),
+                ("utxo_set/MANIFEST", b"vb manifest".to_vec()),
                 ("block_hash/MANIFEST", b"held".to_vec()),
             ]
         );
@@ -886,7 +886,7 @@ mod tests {
             .map(|entry| entry.expect("entry").file_name().into_string().expect("utf-8"))
             .collect();
         left.sort();
-        assert_eq!(left, ["block_hash", "compact_block", "value_balance"], "no staging left");
+        assert_eq!(left, ["block_hash", "compact_block", "utxo_set"], "no staging left");
         let requested = requested.lock().expect("log").clone();
         assert!(!requested.iter().any(|path| path.contains("block_hash")), "{requested:?}");
         assert_eq!(status::bootstrap_report(), None, "progress cleared");

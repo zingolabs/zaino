@@ -44,7 +44,7 @@ a height through the block-hash index. A hash wins over a height when both are
 given, because a hash names one block across a reorg and a height does not.
 
 Every index can be disabled (at least one stays on); compact-block's fee index,
-value-balance (every `CompactTx.fee`), runs with it and has no switch of its
+utxo-set (every `CompactTx.fee`), runs with it and has no switch of its
 own. A disabled index's methods answer `UNIMPLEMENTED` (for the block-hash
 index, only the by-hash form of `GetBlock` and `GetTreeState`). Nothing falls
 back to the validator.
@@ -151,7 +151,7 @@ and pruned on read, so any requested subset is answerable.
   both, but nothing in zingolib (pepper-sync included) calls them, and neither
   does the Android SDK ([client requirements](./client-requirements.md)).
 - `CompactTx.fee` is filled, unlike lightwalletd. In a mined block the
-  value-balance index resolves the values of the outputs each transaction
+  utxo-set index resolves the values of the outputs each transaction
   spends. In `GetMempoolTx` it is the fee a trusted validator listed, or the one
   Zaino computed for a peer-quorum admission. It is 0 for a coinbase, for our
   own send before anything lists it, and for a fee of 2^32 zatoshis or more,

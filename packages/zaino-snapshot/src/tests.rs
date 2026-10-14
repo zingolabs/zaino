@@ -173,7 +173,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         },
         "handed": 5,
         "indexes": [
-            disabled("value_balance"),
+            disabled("utxo_set"),
             disabled("compact_block"),
             { "name": "block_hash", "enabled": true, "durable": 5 },
             { "name": "tree_state", "enabled": true, "durable": null },

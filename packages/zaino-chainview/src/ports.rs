@@ -54,7 +54,7 @@ pub trait PeerSource: Send + Sync + 'static {
     ) -> BoxFuture<'static, Result<Vec<Option<Bytes>>, NonDomainError>>;
 }
 
-/// Zaino's transparent UTXO set, as of the served tip (the value-balance index)
+/// Zaino's transparent UTXO set, as of the served tip (the utxo-set index)
 pub trait UnspentOutputs: Send + Sync + 'static {
     /// Each outpoint's value, in order (`None` = never created, or spent); `None` = no set yet
     fn values(&self, outpoints: &[OutPoint]) -> Option<Vec<Option<Zatoshis>>>;

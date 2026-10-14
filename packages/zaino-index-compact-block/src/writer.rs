@@ -1,7 +1,7 @@
 //! compact_block writer: the final stream → one [`fold`] per block → its store
 //!
-//! - fees: one [`BlockFees`] off value-balance's sink per step, held heights included
-//!   (value-balance re-folds them: both streams stay in step with either index ahead)
+//! - fees: one [`BlockFees`] off utxo-set's sink per step, held heights included
+//!   (utxo-set re-folds them: both streams stay in step with either index ahead)
 
 use std::{
     sync::Arc,
@@ -39,7 +39,7 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
         self.publisher.handle()
     }
 
-    /// Follows `blocks` and `fees` (value-balance's) through their `Shutdown` (a failure panics)
+    /// Follows `blocks` and `fees` (utxo-set's) through their `Shutdown` (a failure panics)
     ///
     /// - commits after the final tip + at `Shutdown` (a full buffer commits on its own)
     pub async fn run(self, mut blocks: Subscription<Block>, mut fees: Subscription<BlockFees>) {
@@ -129,7 +129,7 @@ mod tests {
     const SCHEMA: Schema =
         Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
 
-    /// Genesis ..= tip + each block's fees as value-balance derives them
+    /// Genesis ..= tip + each block's fees as utxo-set derives them
     fn blocks_and_fees(chain: &MockChain) -> (Vec<Arc<Block>>, Vec<BlockFees>) {
         let blocks = chain.blocks(chain.tip());
         let fees = blocks.iter().map(|block| chain.fees(block.header().hash)).collect();
@@ -189,7 +189,7 @@ mod tests {
         }
     }
 
-    /// Writer as zainod runs it: the final stream + value-balance's fee stream, one fee per step
+    /// Writer as zainod runs it: the final stream + utxo-set's fee stream, one fee per step
     struct Running {
         writer: Writer<DiskView>,
         fee_sink: FeeSink,
@@ -207,7 +207,7 @@ mod tests {
             Self { writer, fee_sink, fees: fees.to_vec() }
         }
 
-        /// `step` behind its block's fees (as value-balance sends them)
+        /// `step` behind its block's fees (as utxo-set sends them)
         async fn send(&self, step: Step<Block>) {
             let (Step::Apply { height, .. } | Step::FinalizedTip { height, .. }) = step else {
                 panic!("Shutdown = `stop`");

@@ -753,10 +753,10 @@ mod tests {
     /// pair on, the rest off), then the bootstrap verbatim when one runs
     #[test]
     fn pre_boot_stub_lists_configured_indexes_and_bootstrap_progress() {
-        let configured = [IndexKind::CompactBlock, IndexKind::ValueBalance];
+        let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
         let index = |name: &str, enabled: bool| serde_json::json!({ "name": name, "enabled": enabled, "durable": null });
         let indexes = serde_json::json!([
-            index("value_balance", true),
+            index("utxo_set", true),
             index("compact_block", true),
             index("block_hash", false),
             index("tree_state", false),
@@ -786,11 +786,10 @@ mod tests {
     /// validator address, peer, disk or mempool
     #[test]
     fn the_public_status_projects_readiness_and_counts_only() {
-        let configured = [IndexKind::CompactBlock, IndexKind::ValueBalance];
+        let configured = [IndexKind::CompactBlock, IndexKind::UtxoSet];
         let starting = Stage::Starting { bootstrap: None, awaiting_validator: false };
         let readiness = |stage| readiness(false, true, stage);
-        let indexes =
-            serde_json::json!({ "enabled": ["value_balance", "compact_block"], "total": 5 });
+        let indexes = serde_json::json!({ "enabled": ["utxo_set", "compact_block"], "total": 5 });
         let version = env!("CARGO_PKG_VERSION");
 
         let before = public_status(readiness(starting), Some(NetworkType::Main), None, &configured);

@@ -34,14 +34,14 @@ pub enum IndexKind {
     TreeState = 2,
     TransparentAddress = 3,
     BlockHash = 4,
-    ValueBalance = 5,
+    UtxoSet = 5,
 }
 
 impl IndexKind {
     /// One spelling everywhere (metric label, statusz, task, default directory, snapshot entry)
-    /// Fold order (value-balance before compact-block: its fees)
+    /// Fold order (utxo-set before compact-block: its fees)
     pub const ALL: [Self; 5] = [
-        Self::ValueBalance,
+        Self::UtxoSet,
         Self::CompactBlock,
         Self::BlockHash,
         Self::TreeState,
@@ -54,7 +54,7 @@ impl IndexKind {
             Self::TreeState => "tree_state",
             Self::TransparentAddress => "transparent_address",
             Self::BlockHash => "block_hash",
-            Self::ValueBalance => "value_balance",
+            Self::UtxoSet => "utxo_set",
         }
     }
 }
@@ -302,7 +302,7 @@ mod tests {
             (IndexKind::TreeState, 2, "tree_state"),
             (IndexKind::TransparentAddress, 3, "transparent_address"),
             (IndexKind::BlockHash, 4, "block_hash"),
-            (IndexKind::ValueBalance, 5, "value_balance"),
+            (IndexKind::UtxoSet, 5, "utxo_set"),
         ];
         for (kind, tag, name) in table {
             assert_eq!((kind as u8, kind.name()), (tag, name), "{kind:?}");
