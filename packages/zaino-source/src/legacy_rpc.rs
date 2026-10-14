@@ -9,8 +9,8 @@ use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::rpc::{
-    auth_from_parts, validator_url, Call, EndpointError, LinkLimits, RpcClient, RpcClientConfig,
-    RpcError, Timeouts,
+    auth_from_parts, validator_url, Call, EndpointError, LinkLimits, ResponseSizeCap, RpcClient,
+    RpcClientConfig, RpcError, Timeouts, REPLY_ENVELOPE_BYTES,
 };
 use crate::{
     decode, parse, BlockLink, BlockLinks, CheckAdmissionError, FailureMode, GetAtHeightError,
@@ -187,14 +187,17 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
             method: "getblock",
             params: vec![u32::from(*height).to_string().into(), 0.into()],
         };
-        let replies = self.rpc.call_batch::<parse::HexBytes>(heights.iter().map(call).collect());
-        let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
-        let decoded = heights.iter().zip(replies).map(|(height, reply)| {
-            let absent = || GetAtHeightError::HeightNotFound(*height);
-            let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
-            decode::served_block(&raw)
-        });
-        decoded.collect()
+        let mut blocks = Vec::with_capacity(heights.len());
+        for batch in heights.chunks(self.rpc.response_size_cap().blocks_per_batch().get()) {
+            let replies = self.rpc.call_batch::<parse::HexBytes>(batch.iter().map(call).collect());
+            let replies = replies.await.map_err(|error| QueryError::NonDomain(error.into()))?;
+            for (height, reply) in batch.iter().zip(replies) {
+                let absent = || GetAtHeightError::HeightNotFound(*height);
+                let parse::HexBytes(raw) = reply.map_err(|error| absent_or_fetch(error, absent))?;
+                blocks.push(decode::served_block(&raw)?);
+            }
+        }
+        Ok(blocks)
     }
 
     /// Raw form (verbose = two extra state reads per header on zebrad)
@@ -270,7 +273,8 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
         listed: &[MempoolListed],
     ) -> Result<RawMempoolTransactions, NonDomainError> {
         let mut fetched = Vec::with_capacity(listed.len());
-        for batch in raw_batches(listed) {
+        let budget = raw_batch_bytes(self.rpc.response_size_cap());
+        for batch in raw_batches(listed, budget) {
             let calls = batch
                 .iter()
                 .map(|entry| Call {
@@ -339,19 +343,21 @@ where
     }
 }
 
-/// Raw bytes per `getrawtransaction` batch (hex doubles it: 16 MiB reply, under
-/// `MAX_RESPONSE_BYTES` and zebra's 50 MiB `max_response_body_size` default)
-const RAW_BATCH_BYTES: u64 = 8 << 20;
 /// Calls per batch (one batch holds one connection for its whole reply)
 const RAW_BATCH_CALLS: usize = 100;
 
-/// `listed` cut in order into batches within both budgets (an entry over the byte budget alone)
-fn raw_batches(listed: &[MempoolListed]) -> Vec<&[MempoolListed]> {
+/// Raw bytes per `getrawtransaction` batch: its hex reply (2x) + envelopes within `cap`
+fn raw_batch_bytes(cap: ResponseSizeCap) -> u64 {
+    ((cap.bytes() - RAW_BATCH_CALLS * REPLY_ENVELOPE_BYTES) / 2) as u64
+}
+
+/// `listed` cut in order into batches within both budgets (an entry over `budget` alone)
+fn raw_batches(listed: &[MempoolListed], budget: u64) -> Vec<&[MempoolListed]> {
     let mut batches = Vec::new();
     let (mut start, mut bytes) = (0, 0u64);
     for (index, entry) in listed.iter().enumerate() {
         let len = u64::from(entry.encoded_len);
-        let full = index - start == RAW_BATCH_CALLS || bytes + len > RAW_BATCH_BYTES;
+        let full = index - start == RAW_BATCH_CALLS || bytes + len > budget;
         if full && index > start {
             batches.push(&listed[start..index]);
             (start, bytes) = (index, 0);
@@ -373,7 +379,8 @@ mod tests {
     }
 
     /// - Batches keep listing order, cover it exactly
-    /// - Batch closes at 100 calls or before passing 8 MiB; entry over the byte budget = alone
+    /// - Batch closes at 100 calls or before passing the budget (8 MiB); entry over it = alone
+    /// - Budget at the 32 MiB cap = 100 hex replies + envelopes
     #[test]
     fn raw_batches_split_in_order_on_either_budget() {
         let entry = |encoded_len: u32| MempoolListed {
@@ -382,8 +389,9 @@ mod tests {
             encoded_len,
         };
         let sizes = |listed: &[MempoolListed]| {
-            raw_batches(listed).iter().map(|batch| batch.len()).collect::<Vec<_>>()
+            raw_batches(listed, 8 << 20).iter().map(|batch| batch.len()).collect::<Vec<_>>()
         };
+        assert_eq!(raw_batch_bytes(ResponseSizeCap::MAX), 16_726_016);
 
         assert_eq!(sizes(&[]), Vec::<usize>::new());
         assert_eq!(sizes(&vec![entry(250); 250]), [100, 100, 50]);

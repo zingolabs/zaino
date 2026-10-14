@@ -20,7 +20,7 @@ use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::IndexKind;
 use zaino_primitives::types::{Block, BlockRef};
-use zaino_source::ChainDataSource;
+use zaino_source::{ChainDataSource, ResponseSizeCap};
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::{BlockHeight, H0};
 use zcash_protocol::BlockHash;
@@ -50,8 +50,7 @@ pub struct FinalFollower<S> {
 }
 
 impl<S: ChainDataSource> FinalFollower<S> {
-    /// `lookahead` = blocks in flight ahead of the next block sent (4 per batched request:
-    /// `BLOCKS_PER_REQUEST`)
+    /// `lookahead` = blocks in flight ahead of the next block sent, by hash and by height alike
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
         balancer: TrafficBalancer<S>,
@@ -109,11 +108,11 @@ async fn follow<S: ChainDataSource>(
     let mut wanted = durable.iter().map(|(_, tip)| next(tip)).min().unwrap_or(H0);
     let mut last_sent: Option<BlockHash> = None;
     let mut fetching = FuturesOrdered::new();
-    let requests = lookahead.get().div_ceil(BLOCKS_PER_REQUEST);
+    let mut in_flight = 0;
     loop {
         let verified = chain.borrow_and_update().clone();
         let final_height = verified.as_ref().map(|chain| chain.final_tip().height);
-        while fetching.len() < requests && Some(wanted) <= final_height {
+        while in_flight < lookahead.get() && Some(wanted) <= final_height {
             let held = verified.as_ref().and_then(|chain| chain.header_at(wanted));
             // own task: fetches progress while `send` waits on a full queue (else every in-flight
             // reply sits unread); abort on drop: no fetch outlives the follower
@@ -121,15 +120,18 @@ async fn follow<S: ChainDataSource>(
                 Some(record) => {
                     let at = BlockRef { hash: record.hash, height: wanted };
                     wanted = wanted + 1;
+                    in_flight += 1;
                     let one = fetch(balancer.clone(), at, record, Urgency::Bulk);
                     tokio::spawn(async move { vec![one.await] })
                 }
                 None => {
-                    let mut heights = Vec::with_capacity(BLOCKS_PER_REQUEST);
-                    while heights.len() < BLOCKS_PER_REQUEST && Some(wanted) <= final_height {
+                    let room = BLOCKS_PER_REQUEST.min(lookahead.get() - in_flight);
+                    let mut heights = Vec::with_capacity(room);
+                    while heights.len() < room && Some(wanted) <= final_height {
                         heights.push(wanted);
                         wanted = wanted + 1;
                     }
+                    in_flight += heights.len();
                     tokio::spawn(fetch_at(balancer.clone(), heights.into(), Urgency::Bulk))
                 }
             };
@@ -139,6 +141,7 @@ async fn follow<S: ChainDataSource>(
             changed = chain.changed() => changed.map_err(|_| FollowError::ChainGone)?,
             Some(joined) = fetching.next(), if !fetching.is_empty() => {
                 let bodies = joined.unwrap_or_else(|join| std::panic::resume_unwind(join.into_panic()));
+                in_flight -= bodies.len();
                 for body in bodies {
                     let block = Arc::clone(body.block());
                     link(&durable, last_sent, &block)?;
@@ -158,9 +161,9 @@ async fn follow<S: ChainDataSource>(
     }
 }
 
-/// Blocks per batched `getblock` request (4 full 2 MB blocks as hex = 16 MiB < the 32 MiB reply
-/// cap)
-const BLOCKS_PER_REQUEST: usize = 4;
+/// Blocks per by-height request: what one reply at the largest cap holds (a smaller cap = the
+/// source splits it)
+const BLOCKS_PER_REQUEST: usize = ResponseSizeCap::MAX.blocks_per_batch().get();
 
 /// `block`'s parent = each durable tip it extends (an index's own chain), then = the block sent
 /// before it (the validator's history unmoved)

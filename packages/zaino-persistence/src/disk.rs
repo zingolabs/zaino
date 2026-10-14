@@ -31,7 +31,7 @@ use crate::{
     lsm::{
         self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
     },
-    manifest::{BodyReader, Committed, Identity, ManifestError},
+    manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, PageError, Sealed},
     port::{
@@ -95,6 +95,16 @@ struct Body {
     committed: Committed,
     sequences: Vec<Seals>,
     maps: Vec<Vec<SegmentMeta>>,
+}
+
+/// `schema`'s store under `fanout` never outgrows its manifest slot: every map at the stall bound
+/// (+ the segment landing) in every tier a `u64` record count reaches
+pub fn manifest_fits(schema: &Schema, fanout: Fanout) -> bool {
+    let tiers = u64::MAX.ilog(fanout.get() as u64) as usize + 1;
+    let segment = SegmentMeta { id: 0, records: 1, sealed: Sealed::EMPTY };
+    let mut worst = Body::empty(schema);
+    worst.maps.fill(vec![segment; tiers * (lsm::stall_at(fanout) + 1)]);
+    manifest::fits(worst.encode().len())
 }
 
 impl Body {

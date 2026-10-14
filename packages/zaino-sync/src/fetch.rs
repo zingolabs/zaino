@@ -37,6 +37,8 @@ pub enum Misanswer {
     WrongHeight { got: BlockHeight },
     #[error("served {0}")]
     Body(#[from] BodyMismatch),
+    #[error("served {got} blocks for {asked} heights")]
+    Count { asked: usize, got: usize },
 }
 
 /// `block` = the one asked for at `height` (hash = `record`'s: its header = the verified one)
@@ -91,14 +93,19 @@ pub(crate) async fn fetch_at<S: ChainDataSource>(
 ) -> Vec<Checked> {
     loop {
         let answered = balancer.blocks_at(Arc::clone(&heights), urgency).await;
-        let blocks = answered.value.into_iter().zip(heights.iter());
-        let checked: Result<Vec<_>, _> =
-            blocks.map(|(block, height)| check_block_at(block, *height)).collect();
-        match checked {
+        match check_blocks_at(answered.value, &heights) {
             Ok(checked) => return checked,
             Err(why) => balancer.report(answered.ticket, &why),
         }
     }
+}
+
+/// One block per `heights` entry, in order, each passing [`check_block_at`]
+fn check_blocks_at(blocks: Vec<Block>, heights: &[BlockHeight]) -> Result<Vec<Checked>, Misanswer> {
+    if blocks.len() != heights.len() {
+        return Err(Misanswer::Count { asked: heights.len(), got: blocks.len() });
+    }
+    blocks.into_iter().zip(heights).map(|(block, height)| check_block_at(block, *height)).collect()
 }
 
 #[cfg(test)]
@@ -115,7 +122,7 @@ mod tests {
     /// whose header lies about its height, a body with a txid added (root moves) and a body
     /// repeating its last pair (root kept, CVE-2012-2459) are each refused by name; by height
     /// (a trusted member's body, trusted) only the height lie is refused (the sibling = the
-    /// follower's linkage to refuse)
+    /// follower's linkage to refuse); a batch short of its heights = `Count`, never truncated
     #[test]
     fn only_the_asked_block_with_the_body_its_header_commits_to_passes() {
         let mut chain = MockChain::regtest();
@@ -157,6 +164,9 @@ mod tests {
             );
             assert_eq!(got, (by_hash, by_height));
         }
+
+        let short = check_blocks_at(vec![block(two.hash)], &[h2, h(3)]).map(|_| ());
+        assert_eq!(short, Err(Misanswer::Count { asked: 2, got: 1 }), "a short batch = misanswer");
     }
 
     /// M9: a `MockValidator` answers its best block honestly, by hash and by height, and each

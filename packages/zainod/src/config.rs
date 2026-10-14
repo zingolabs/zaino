@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use zaino_index_transparent_address::DEFAULT_MAX_ADDRESS_ROWS;
-use zaino_persistence::{Fanout, IndexKind, LsmConfig};
+use zaino_persistence::{manifest_fits, Fanout, IndexKind, LsmConfig};
 use zaino_primitives::protocol::MAX_BLOCK_REORG_HEIGHT;
+use zaino_source::ResponseSizeCap;
 use zcash_protocol::consensus::NetworkType;
 
 use crate::error::IndexerError;
@@ -56,6 +57,8 @@ pub(crate) struct TrustedValidatorConfig {
     pub(crate) max_connections: NonZeroU32,
     /// Unset = unlimited (set for a remote/shared validator)
     pub(crate) max_mib_per_sec: Option<NonZeroU32>,
+    /// Largest JSON-RPC reply read: 4 (one full block) ..= 32 (batches split to fit)
+    pub(crate) max_response_mib: ResponseMib,
     /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
     pub(crate) indexer_address: Option<String>,
     /// Unset = plaintext (zakurad requires it off loopback)
@@ -79,10 +82,31 @@ impl Default for TrustedValidatorConfig {
                 .expect("the default read timeout is whole, non-zero seconds"),
             max_connections: limits.max_connections,
             max_mib_per_sec: None,
+            max_response_mib: ResponseMib(limits.response_size_cap),
             indexer_address: None,
             indexer_tls: None,
             priority: 0,
         }
+    }
+}
+
+/// `max_response_mib`: refused at parse outside one full block's reply ..= 32 MiB
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "u32", into = "u32")]
+pub(crate) struct ResponseMib(ResponseSizeCap);
+
+impl TryFrom<u32> for ResponseMib {
+    type Error = String;
+
+    fn try_from(mib: u32) -> Result<Self, String> {
+        let cap = ResponseSizeCap::new((mib as usize) << 20);
+        cap.map(Self).ok_or_else(|| format!("max_response_mib = {mib}: must be 4 ..= 32"))
+    }
+}
+
+impl From<ResponseMib> for u32 {
+    fn from(mib: ResponseMib) -> Self {
+        (mib.0.bytes() >> 20) as u32
     }
 }
 
@@ -111,7 +135,11 @@ impl TrustedValidatorConfig {
     pub(crate) fn link(&self) -> zaino_source::LinkLimits {
         let mib = NonZeroU32::new(1 << 20).expect("2^20 is non-zero");
         let max_bytes_per_sec = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
-        zaino_source::LinkLimits { max_connections: self.max_connections, max_bytes_per_sec }
+        zaino_source::LinkLimits {
+            max_connections: self.max_connections,
+            max_bytes_per_sec,
+            response_size_cap: self.max_response_mib.0,
+        }
     }
 
     pub(crate) fn indexer_tls(&self) -> Option<zaino_source::IndexerTls> {
@@ -604,6 +632,17 @@ impl DaemonConfig {
                 "every [index.*] disabled: nothing to build or serve".to_string(),
             ));
         }
+        let fanout = self.sync.lsm_store.fanout;
+        for kind in zaino_nfs::INDEXES.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
+            if !manifest_fits(&crate::stores::schema(kind, self.network).0, fanout) {
+                return Err(IndexerError::Config(format!(
+                    "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
+                     manifest (lower it)",
+                    fanout.get(),
+                    kind.name()
+                )));
+            }
+        }
         let depth = self.sync.finalised_depth.get();
         if self.network != NetworkType::Regtest && depth < MAX_BLOCK_REORG_HEIGHT {
             return Err(IndexerError::Config(format!(
@@ -837,8 +876,13 @@ enabled = false
             true => "snapshot.connections = 17: aria2c allows at most 16",
             false => "built without the `snapshot` feature",
         };
-        let cases: [(&str, Edit, Option<&str>); 17] = [
+        let cases: [(&str, Edit, Option<&str>); 18] = [
             ("defaults", |_| {}, None),
+            (
+                "fanout whose segment lists outgrow a manifest slot",
+                |c| c.sync.lsm_store.fanout = Fanout::new(128).expect(">= 2"),
+                Some("sync.lsm_store.fanout = 128: value_balance's segment lists"),
+            ),
             (
                 "compact_block off, block_hash still served",
                 |c| c.index.compact_block.enabled = false,
@@ -1167,6 +1211,7 @@ user = "zaino"
 password = "secret"
 max_connections = 8
 max_mib_per_sec = 4
+max_response_mib = 8
 indexer_address = "zebra-eu:8230"
 priority = 1
 
@@ -1188,6 +1233,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             password: Some("secret".to_owned()),
             max_connections: n(8),
             max_mib_per_sec: Some(n(4)),
+            max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
             indexer_tls: Some(IndexerTlsConfig {
                 ca_path: "/etc/zaino/indexer-ca.pem".into(),
@@ -1201,9 +1247,17 @@ key_path = "/etc/zaino/indexer-client-key.pem"
         assert_eq!(config.trusted_validators, [local.clone(), eu.clone()]);
 
         assert_eq!(eu.limits(), zaino_traffic::Limits::new(8), "the balancer's");
-        let link =
-            zaino_source::LinkLimits { max_connections: n(8), max_bytes_per_sec: Some(n(4 << 20)) };
+        let link = zaino_source::LinkLimits {
+            max_connections: n(8),
+            max_bytes_per_sec: Some(n(4 << 20)),
+            response_size_cap: ResponseSizeCap::new(8 << 20).expect("in bounds"),
+        };
         assert_eq!(eu.link(), link, "the transport's");
+        for mib in [3, 33] {
+            let toml = format!("[[trusted_validators]]\nmax_response_mib = {mib}\n");
+            let refused = toml::from_str::<DaemonConfig>(&toml).expect_err("out of bounds");
+            assert!(refused.to_string().contains("must be 4 ..= 32"), "{mib}: {refused}");
+        }
         let tls = zaino_source::IndexerTls {
             ca: "/etc/zaino/indexer-ca.pem".into(),
             cert: "/etc/zaino/indexer-client.pem".into(),

@@ -272,7 +272,7 @@ fn behind(merge: &Merge, segments: &[SegmentMeta], fanout: Fanout) -> bool {
 }
 
 /// Merging tier's segment count a commit waits at: `fanout` inputs + `STALL_WINDOWS` idle windows
-fn stall_at(fanout: Fanout) -> usize {
+pub(crate) fn stall_at(fanout: Fanout) -> usize {
     (1 + STALL_WINDOWS) * fanout.get()
 }
 

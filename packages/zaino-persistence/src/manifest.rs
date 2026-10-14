@@ -21,7 +21,7 @@ const MAGIC: [u8; 8] = *b"ZAINOMS\0";
 const HEADER: usize = 24;
 const CRC: usize = 4;
 
-/// Slot capacity (largest body = segment store's lists, a few KiB at most)
+/// Slot capacity (largest body = segment store's lists: [`crate::manifest_fits`] bounds them)
 pub(crate) const SLOT: usize = 64 << 10;
 
 /// Both slots
@@ -103,11 +103,15 @@ pub enum ManifestError {
     Unmanifested { path: String },
 }
 
+pub(crate) fn fits(body: usize) -> bool {
+    HEADER + body + CRC <= SLOT
+}
+
 /// Commit `seq`'s slot bytes (written at [`slot_offset`]`(seq)`; rest of the slot untouched,
 /// outside the CRC)
 pub(crate) fn encode(identity: Identity, seq: u64, body: &[u8]) -> Vec<u8> {
     assert!(
-        HEADER + body.len() + CRC <= SLOT,
+        fits(body.len()),
         "manifest body of {} bytes overflows its {SLOT}-byte slot",
         body.len()
     );

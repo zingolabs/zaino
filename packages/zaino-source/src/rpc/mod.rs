@@ -9,8 +9,8 @@ mod endpoint;
 mod envelope;
 mod error;
 
-pub(crate) use client::{Call, RpcClient, RpcClientConfig};
-pub use client::{LinkLimits, Timeouts};
+pub(crate) use client::{Call, RpcClient, RpcClientConfig, REPLY_ENVELOPE_BYTES};
+pub use client::{LinkLimits, ResponseSizeCap, Timeouts};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub use endpoint::EndpointError;
 pub(crate) use endpoint::{auth_from_parts, validator_url};

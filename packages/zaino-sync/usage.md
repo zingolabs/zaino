@@ -62,13 +62,13 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
   `progress()`; `run(cancel)`.
-- Streams `lowest durable + 1 ..= final tip`, ⌈`lookahead` / 4⌉ requests in flight (4 blocks
-  each by height, 1 by hash), delivered in order;
+- Streams `lowest durable + 1 ..= final tip`, `lookahead` blocks in flight, delivered in order;
   waits for the next chain past the final tip.
 - A height the verified chain holds a header for (the final window and above) is fetched by
   hash from any member, peers included (`fetch`), checked against that header. Below it (bulk
   sync) it goes by height to trusted members only (`fetch_at` → `TrafficBalancer::blocks_at`,
-  4 per batched `getblock` request): no header there to hold a peer to.
+  as many per request as one reply at `ResponseSizeCap::MAX` holds): no header there to hold a
+  peer to. A reply short of its heights is a misanswer (`Misanswer::Count`), asked again.
 - Each block's parent must be each durable tip it extends (`FollowError::Diverged`, naming the
   index: resync) and the block sent before it (`FollowError::Unlinked`: the validator's history
   moved). Either stops the follower; nothing is skipped.

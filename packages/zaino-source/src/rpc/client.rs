@@ -3,20 +3,54 @@
 //! - one attempt per call: which validator, how many in flight, retries = `zaino-traffic`'s
 //! - a batch item's refusal (work queue full included) = that item's outcome, never re-sent here
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroUsize};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{Duration, Instant};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use zaino_primitives::protocol::MAX_BLOCK_BYTES;
 
 use super::emit;
 use super::envelope;
 use super::error::RpcError;
 
-/// Largest body buffered (no OOM from one hostile reply; a full block = far below)
-const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+/// JSON-RPC framing around one result (id, version, keys)
+pub(crate) const REPLY_ENVELOPE_BYTES: usize = 1024;
+/// One `getblock` reply: a full block as hex + its envelope
+const BLOCK_REPLY_BYTES: usize = 2 * MAX_BLOCK_BYTES + REPLY_ENVELOPE_BYTES;
+
+/// Largest JSON-RPC reply buffered (no OOM from one hostile reply): one full block's reply ..= 32
+/// MiB
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResponseSizeCap {
+    bytes: usize,
+    blocks_per_batch: NonZeroUsize,
+}
+
+impl ResponseSizeCap {
+    pub const MAX: Self = Self {
+        bytes: 32 << 20,
+        blocks_per_batch: NonZeroUsize::new((32 << 20) / BLOCK_REPLY_BYTES)
+            .expect("32 MiB holds a full block's reply"),
+    };
+
+    /// `None` below one full block's reply or above [`MAX`](Self::MAX)
+    pub fn new(bytes: usize) -> Option<Self> {
+        let blocks_per_batch = NonZeroUsize::new(bytes / BLOCK_REPLY_BYTES)?;
+        (bytes <= Self::MAX.bytes).then_some(Self { bytes, blocks_per_batch })
+    }
+
+    pub fn bytes(self) -> usize {
+        self.bytes
+    }
+
+    /// Full blocks one `getblock` batch reply holds
+    pub const fn blocks_per_batch(self) -> NonZeroUsize {
+        self.blocks_per_batch
+    }
+}
 
 /// - `read` = silence, never total duration (a multi-MB block over a slow link must finish; a
 ///   total deadline below its transfer time = retry livelock)
@@ -44,12 +78,16 @@ pub(crate) struct Call {
 pub struct LinkLimits {
     pub max_connections: NonZeroU32,
     pub max_bytes_per_sec: Option<NonZeroU32>,
+    pub response_size_cap: ResponseSizeCap,
 }
 
 impl Default for LinkLimits {
     fn default() -> Self {
-        let max_connections = NonZeroU32::new(32).expect("32 is non-zero");
-        Self { max_connections, max_bytes_per_sec: None }
+        Self {
+            max_connections: const { NonZeroU32::new(32).expect("32 is non-zero") },
+            max_bytes_per_sec: None,
+            response_size_cap: ResponseSizeCap::MAX,
+        }
     }
 }
 
@@ -69,6 +107,7 @@ pub(crate) struct RpcClient {
     auth: Option<(String, String)>,
     id_counter: AtomicI64,
     bytes: Option<DefaultDirectRateLimiter>,
+    response_size_cap: ResponseSizeCap,
 }
 
 impl RpcClient {
@@ -91,7 +130,12 @@ impl RpcClient {
             auth: config.auth,
             id_counter: AtomicI64::new(0),
             bytes: limits.max_bytes_per_sec.map(per_second),
+            response_size_cap: limits.response_size_cap,
         })
+    }
+
+    pub(crate) fn response_size_cap(&self) -> ResponseSizeCap {
+        self.response_size_cap
     }
 
     /// Metric label (the configured address)
@@ -174,16 +218,17 @@ impl RpcClient {
     ///
     /// - each chunk [`received`](Self::received) as read (pacing, not after-the-fact accounting)
     async fn read_body_capped(&self, mut response: reqwest::Response) -> Result<Vec<u8>, RpcError> {
-        let too_large = RpcError::ResponseBodyTooLarge { max: MAX_RESPONSE_BYTES };
+        let max = self.response_size_cap.bytes();
+        let too_large = RpcError::ResponseBodyTooLarge { max };
         let announced = response.content_length();
-        if announced.is_some_and(|len| len > MAX_RESPONSE_BYTES as u64) {
+        if announced.is_some_and(|len| len > max as u64) {
             return Err(too_large);
         }
 
         // sized once from `Content-Length` (≤ max): no regrowth copies of a multi-MB body
         let mut body = Vec::with_capacity(announced.map_or(0, |len| len as usize));
         while let Some(chunk) = response.chunk().await? {
-            if body.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            if body.len() + chunk.len() > max {
                 return Err(too_large);
             }
             self.received(chunk.len()).await;
