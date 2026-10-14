@@ -1,5 +1,4 @@
-//! 32-byte hashes in RPC display order (byte-reversed hex): [`BlockHash`](super::BlockHash),
-//! [`TransactionId`](super::TransactionId)
+//! 32-byte hashes in RPC display order (byte-reversed hex): [`BlockHash`](super::BlockHash)
 
 use core::fmt;
 
@@ -44,7 +43,7 @@ pub(crate) fn debug(name: &str, bytes: &[u8; 32], f: &mut fmt::Formatter<'_>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{BlockHash, TransactionId};
+    use crate::types::BlockHash;
 
     #[test]
     fn display_order_round_trips_and_rejects_bad_input() {
@@ -52,22 +51,16 @@ mod tests {
         let hash: BlockHash = display.parse().expect("64 hex digits");
         assert_eq!(<[u8; 32]>::from(hash)[31], 0x2c, "first display byte = last internal");
         assert_eq!(hash.to_string(), display);
-        let txid: TransactionId = display.parse().expect("64 hex digits");
-        assert_eq!((txid.to_string(), <[u8; 32]>::from(txid)), (display.into(), hash.into()));
 
         assert_eq!(display[2..].parse::<BlockHash>(), Err(ParseHashError::Length(62)));
         assert_eq!(display.replace('c', "g").parse::<BlockHash>(), Err(ParseHashError::NotHex));
-        assert_eq!("é".repeat(32).parse::<TransactionId>(), Err(ParseHashError::NotHex));
+        assert_eq!("é".repeat(32).parse::<BlockHash>(), Err(ParseHashError::NotHex));
     }
 
     #[test]
     fn debug_names_the_type_and_its_first_four_display_bytes() {
         let display = "deadbeef00000000000000000000000000000000000000000000000000000001";
         let hash: BlockHash = display.parse().expect("64 hex digits");
-        let txid: TransactionId = display.parse().expect("64 hex digits");
-        assert_eq!(
-            [format!("{hash:?}"), format!("{txid:?}")],
-            ["BlockHash(deadbeef…)", "TransactionId(deadbeef…)"]
-        );
+        assert_eq!(format!("{hash:?}"), "BlockHash(deadbeef…)");
     }
 }

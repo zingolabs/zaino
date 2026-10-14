@@ -23,6 +23,7 @@ tokio-util.workspace = true
 tracing.workspace = true
 zaino-primitives.workspace = true
 zaino-source.workspace = true
+zcash_protocol.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

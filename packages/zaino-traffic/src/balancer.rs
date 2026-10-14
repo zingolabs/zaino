@@ -16,12 +16,13 @@ use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
+use zaino_primitives::types::{Block, BlockHash, Height};
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
     QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
+use zcash_protocol::TxId;
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
@@ -274,7 +275,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// Mined or in a mempool: absent → next trusted member
     pub async fn transaction(
         &self,
-        txid: TransactionId,
+        txid: TxId,
     ) -> Result<Answered<TransactionResponse>, Unanswered<GetTransactionError>> {
         let shared = Arc::clone(&self.shared);
         let send = move |member| {
@@ -289,7 +290,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         &self,
         member: ValidatorId,
         raw: Vec<u8>,
-    ) -> Result<Answered<TransactionId>, Unanswered<SendRawTransactionError>> {
+    ) -> Result<Answered<TxId>, Unanswered<SendRawTransactionError>> {
         self.on_alone(member, move |source| {
             let raw = raw.clone();
             async move { source.send_raw_transaction(raw).await }.boxed()
@@ -302,7 +303,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         &self,
         member: ValidatorId,
         raw: Vec<u8>,
-    ) -> Result<Answered<TransactionId>, Unanswered<CheckAdmissionError>> {
+    ) -> Result<Answered<TxId>, Unanswered<CheckAdmissionError>> {
         self.on_alone(member, move |source| {
             let raw = raw.clone();
             async move { source.check_admission(raw).await }.boxed()

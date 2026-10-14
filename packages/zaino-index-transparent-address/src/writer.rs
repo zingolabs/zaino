@@ -81,7 +81,7 @@ pub fn fold<V: MapRead>(
         // coinbase inputs elided upstream (`zaino-source` decode.rs)
         let mut spent = out.map(SPENT);
         for input in &tx.transparent.inputs {
-            let key = encode_spent_key(*input.hash(), input.n());
+            let key = encode_spent_key(input.txid(), input.n());
             spent.insert(&key, &encode_spend(&Spend { height, spender: tx.txid }));
         }
         let mut receives = out.map(RECEIVES);
@@ -100,12 +100,12 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::TransactionId;
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
     };
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::Zatoshis;
+    use zcash_protocol::TxId;
     use zcash_script::script::Code;
     use zcash_transparent::address::{Script, TransparentAddress};
     use zcash_transparent::bundle::OutPoint;
@@ -150,10 +150,10 @@ mod tests {
         let mut changes = store.changes(blocks[1].at());
         fold(&TransparentAddressReader::new(store.staged()), &blocks[1], &mut changes);
 
-        let spender = TransactionId::from([0x20; 32]);
+        let spender = TxId::from_bytes([0x20; 32]);
         let spend = encode_spend(&Spend { height: 1, spender });
         let spent: Vec<_> = changes.inserts(SPENT).map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
-        let spent_key = encode_spent_key(*paid.hash(), paid.n());
+        let spent_key = encode_spent_key(paid.txid(), paid.n());
         assert_eq!(spent, vec![(spent_key.to_vec(), spend.to_vec())], "spent row");
         let bob_receive = ReceiveRow {
             key: ReceiveKey { address: bob, height: 1, txid: spender, vout: 0 },
@@ -286,7 +286,7 @@ mod tests {
         let touching = at_two.transactions(&alice, h(0), h(2)).expect("transactions");
         let expected = [(0, 0x10), (1, 0x11), (2, 0x20)].map(|(height, tag)| TransactionRef {
             height: h(height),
-            txid: TransactionId::from([tag; 32]),
+            txid: TxId::from_bytes([tag; 32]),
         });
         assert_eq!(touching, expected);
         // opaque outputs stored, not dropped (same fold answers for them)
@@ -338,7 +338,7 @@ mod tests {
     }
 
     /// Outpoint → (address, zats, height received, height spent)
-    type Ledger = Vec<((TransactionId, u32), (u8, u64, u32, Option<(u32, TransactionId)>))>;
+    type Ledger = Vec<((TxId, u32), (u8, u64, u32, Option<(u32, TxId)>))>;
 
     /// One block's tx: spends, pays `(address, zats)`
     type Planned = (Vec<OutPoint>, Vec<(u8, u64)>);
@@ -347,7 +347,7 @@ mod tests {
         let txid = |height: u32| {
             let mut bytes = [0u8; 32];
             bytes[..4].copy_from_slice(&(height + 1).to_le_bytes());
-            TransactionId::from(bytes)
+            TxId::from_bytes(bytes)
         };
         let address = |tag: u8| TransparentAddress::PublicKeyHash([0xa0 + tag; 20]);
 
@@ -367,7 +367,7 @@ mod tests {
                 if let Some(&at) = unspent.get(pick % unspent.len().max(1)) {
                     ledger[at].1 .3 = Some((height, txid(height)));
                     let (txid, vout) = ledger[at].0;
-                    spends.push(OutPoint::new(<[u8; 32]>::from(txid), vout));
+                    spends.push(OutPoint::new(txid.into(), vout));
                     change += ledger[at].1 .1;
                 }
             }
@@ -376,7 +376,7 @@ mod tests {
                 change -= zats;
             }
             let vout = outputs.len() as u32;
-            faucet = (OutPoint::new(<[u8; 32]>::from(txid(height)), vout), change);
+            faucet = (OutPoint::new(txid(height).into(), vout), change);
             planned.push((spends, [&outputs[..], &[(FAUCET, change)]].concat()));
         }
         let block = |b: BlockBuilder, height: u32, (spends, pays): &Planned| {
@@ -410,7 +410,7 @@ mod tests {
                         touched.push(TransactionRef { height: h(height), txid: spender })
                     }
                     None => utxos.push(AddressUtxo {
-                        outpoint: OutPoint::new(<[u8; 32]>::from(txid), vout),
+                        outpoint: OutPoint::new(txid.into(), vout),
                         height: h(received),
                         value: Zatoshis::from_u64(zats).expect("in supply"),
                     }),

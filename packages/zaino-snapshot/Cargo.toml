@@ -35,6 +35,7 @@ zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 zaino-traffic.workspace = true
+zcash_protocol.workspace = true
 
 [dev-dependencies]
 futures.workspace = true
@@ -50,4 +51,3 @@ zaino-persistence = { workspace = true, features = ["testing"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
 zaino-sync = { workspace = true, features = ["testing"] }
-zcash_protocol.workspace = true

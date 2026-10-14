@@ -85,7 +85,7 @@ async fn a_mined_raw_tx_is_served_by_its_bytes_and_height() {
 async fn a_tx_builder_tx_has_no_body_to_serve() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine(|b| b.tx(|t| t.txid([0x33; 32])));
-    let _ = chain.validator(tip).get_transaction(TransactionId::from([0x33; 32])).await;
+    let _ = chain.validator(tip).get_transaction(TxId::from_bytes([0x33; 32])).await;
 }
 
 /// `(asked hash, header hashes itself, txids rebuild its merkle root, height)` per lie

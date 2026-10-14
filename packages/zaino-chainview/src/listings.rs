@@ -14,7 +14,8 @@ use std::time::Duration;
 
 use imbl::{OrdMap, OrdSet};
 use tokio::time::Instant;
-use zaino_primitives::types::{PeerTxId, TransactionId};
+use zaino_primitives::types::PeerTxId;
+use zcash_protocol::TxId;
 
 use crate::netgroup::Netgroup;
 
@@ -70,7 +71,7 @@ impl Listings {
     }
 
     /// Fresh peers listing `txid`, whatever its authorizing data
-    pub(crate) fn listers(&self, txid: &TransactionId) -> OrdSet<SocketAddr> {
+    pub(crate) fn listers(&self, txid: &TxId) -> OrdSet<SocketAddr> {
         let first = PeerTxId { txid: *txid, auth_digest: None };
         let last = PeerTxId { txid: *txid, auth_digest: Some([u8::MAX; 32]) };
         let lists = |ids: &OrdSet<PeerTxId>| ids.range(first..=last).next().is_some();
@@ -102,7 +103,7 @@ impl Listings {
     }
 
     /// > 1/3 of the fresh listings hold `txid`
-    pub(crate) fn retains(&self, txid: &TransactionId) -> bool {
+    pub(crate) fn retains(&self, txid: &TxId) -> bool {
         self.listers(txid).len() * 3 > self.fresh().count()
     }
 }
@@ -131,7 +132,7 @@ mod tests {
     }
 
     fn id(n: u8, witness: Option<u8>) -> PeerTxId {
-        PeerTxId { txid: TransactionId::from([n; 32]), auth_digest: witness.map(|w| [w; 32]) }
+        PeerTxId { txid: TxId::from_bytes([n; 32]), auth_digest: witness.map(|w| [w; 32]) }
     }
 
     /// One round: per peer, `None` = failed, else the ids it lists (bit `i` = id `i`)

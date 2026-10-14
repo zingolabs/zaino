@@ -17,13 +17,14 @@ use zaino_persistence::{
     fs::SimFs, DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store,
 };
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth, TransactionId};
+use zaino_primitives::types::{Block, BlockRef, Height, ReorgDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{
     Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
 };
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::TxId;
 
 use crate::compose::check;
 use crate::feed::Feed;
@@ -120,7 +121,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let durable = [(IndexKind::BlockHash, store.committed())];
     let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
 
-    let relayed = TransactionId::from([1; 32]);
+    let relayed = TxId::from_bytes([1; 32]);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let view = ChainViewSnapshot::fixed(
         Some(Arc::clone(&chain)),
@@ -330,7 +331,7 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
 struct Drill {
     a: Vec<Arc<Block>>,
     s5: BlockRef,
-    mined: TransactionId,
+    mined: TxId,
     chain: Arc<VerifiedChain>,
     params: ChainParams,
     prev: Arc<Snapshot<DiskView>>,
@@ -352,7 +353,7 @@ impl Drill {
         let prev = core.handle().load();
         core.publish(served(&chain, params, a[6].at()), view);
         let next = core.handle().load();
-        Self { a, s5, mined: TransactionId::from([0x66; 32]), chain, params, prev, next }
+        Self { a, s5, mined: TxId::from_bytes([0x66; 32]), chain, params, prev, next }
     }
 
     /// `next`, serving `block`
@@ -369,7 +370,7 @@ impl Drill {
 }
 
 /// Both validators holding `chain`'s best, `mempool` listed
-fn view(chain: &Arc<VerifiedChain>, mempool: &[(TransactionId, Bytes)]) -> ChainViewSnapshot {
+fn view(chain: &Arc<VerifiedChain>, mempool: &[(TxId, Bytes)]) -> ChainViewSnapshot {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     ChainViewSnapshot::fixed(Some(Arc::clone(chain)), EndpointSet::at([0, 1]), &addresses, mempool)
 }

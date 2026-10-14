@@ -8,11 +8,12 @@
 use zaino_primitives::types::{
     BlockHash, BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, EndOfService, Height,
     HeightOverflow, NetworkUpgradeInfo, NetworkUpgradeStatus, NodeRelease, ParseHashError,
-    PeerInfo, TransactionId, TransactionLocation,
+    PeerInfo, TransactionLocation,
 };
 
 use zcash_protocol::consensus::BranchId;
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
+use zcash_protocol::TxId;
 
 use crate::{MempoolListed, TransactionResponse};
 
@@ -22,6 +23,8 @@ pub(crate) enum ParseError {
     Hex(String),
     #[error("hash: {0}")]
     Hash(#[from] ParseHashError),
+    #[error("not a txid (64 hex digits): {0}")]
+    Txid(String),
     #[error("expected {expected}, got {got}")]
     UnexpectedType { expected: &'static str, got: String },
     #[error("value {0} overflows target type")]
@@ -91,8 +94,12 @@ fn hex(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
     const_hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
 }
 
-pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseError> {
-    Ok(as_str(value)?.parse()?)
+pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TxId, ParseError> {
+    txid(as_str(value)?)
+}
+
+fn txid(hex: &str) -> Result<TxId, ParseError> {
+    TxId::from_hex(hex).ok_or_else(|| ParseError::Txid(hex.chars().take(64).collect()))
 }
 
 pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
@@ -201,7 +208,7 @@ pub(crate) fn parse_mempool_listing(
         .map(|(txid, entry)| {
             let size = field(entry, "size")?;
             Ok(MempoolListed {
-                txid: txid.parse()?,
+                txid: self::txid(txid)?,
                 fee: as_zec(field(entry, "fee")?)?,
                 encoded_len: size
                     .as_u64()
@@ -307,7 +314,7 @@ mod tests {
             (json!(21_000_000.0), 2_100_000_000_000_000),
             (json!(0), 0),
         ] {
-            let txid = TransactionId::from(reversed_bytes);
+            let txid = TxId::from_bytes(reversed_bytes);
             let fee_zats = Zatoshis::from_u64(zats).expect("in supply");
             let expected = MempoolListed { txid, fee: fee_zats, encoded_len: 250 };
             assert_eq!(listed(fee.clone()).expect("listing"), vec![expected], "fee {fee}");

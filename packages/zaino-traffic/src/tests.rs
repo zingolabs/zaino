@@ -6,7 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{BlockHash, TransactionId};
+use zaino_primitives::types::BlockHash;
 use zaino_source::testing::{
     decoded, raw_transaction, within, MockValidator, Port, ValidatorViews,
 };
@@ -14,6 +14,7 @@ use zaino_source::{
     BlockLink, FailureMode, GetAtHeightError, GetRawMempoolTransactionError, GetTransactionError,
     MempoolListed, QueryError, SendRawTransactionError,
 };
+use zcash_protocol::TxId;
 
 use crate::testing::PeerSetViews;
 use crate::{
@@ -52,7 +53,7 @@ async fn each_class_reaches_the_member_its_route_names() {
 
     let found = within("a lookup", balancer.transaction(txid)).await.expect("partner holds it");
     assert_eq!((found.ticket.member, found.value.bytes), (MemberId::Trusted(v(1)), raw.clone()));
-    let unknown = TransactionId::from([7; 32]);
+    let unknown = TxId::from_bytes([7; 32]);
     let absent =
         within("a lookup", balancer.transaction(unknown)).await.expect_err("nobody holds it").last;
     let expected = GetTransactionError::NotFound(unknown);
@@ -146,7 +147,7 @@ async fn a_hedge_beats_a_stall_and_a_wallet_storm_never_delays_a_poll() {
     let storm: Vec<_> = (0..64u8)
         .map(|n| {
             let balancer = balancer.clone();
-            tokio::spawn(async move { balancer.transaction(TransactionId::from([n; 32])).await })
+            tokio::spawn(async move { balancer.transaction(TxId::from_bytes([n; 32])).await })
         })
         .collect();
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -323,7 +324,7 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
         |height: u32| Ok(BlockLink { header: chain.header_bytes(chain.at(h(height)).hash) });
     let held = vec![header(1), header(2)];
     assert_eq!((headers.ticket.member, headers.value), (MemberId::Peers, held));
-    let lookup = within("a lookup", balancer.transaction(TransactionId::from([1; 32])))
+    let lookup = within("a lookup", balancer.transaction(TxId::from_bytes([1; 32])))
         .await
         .expect_err("trusted down");
     let mode = match lookup.last {

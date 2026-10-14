@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{h, p2pkh, MockChain};
 use zaino_primitives::types::{
-    BlockRef, EndOfService, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
+    BlockRef, EndOfService, NodeRelease, PeerInfo, PeerTxId, ReorgDepth,
 };
 use zaino_source::testing::{
     decoded, raw_transaction, raw_transparent, within, MockValidator, Port, ValidatorViews,
@@ -21,6 +21,7 @@ use zaino_traffic::{
     Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, ValidatorId,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::listings::PEER_MEMPOOL_POLL;
@@ -125,7 +126,7 @@ async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_new_transac
     polled(&balancer).await;
     let pinned = reader.current();
     assert_eq!((pinned.best(), pinned.held_by()), (Some(tip_10), EndpointSet::at([0])));
-    let entry = |txid: TransactionId, raw: &[u8], fee: u64| MempoolEntry {
+    let entry = |txid: TxId, raw: &[u8], fee: u64| MempoolEntry {
         txid,
         raw: Bytes::from(raw.to_vec()),
         fee: Some(zats(fee)),
@@ -475,7 +476,7 @@ async fn peers_relay_first_and_a_trusted_validator_gives_the_verdict_when_unchec
     let polling = view.peer_mempool(utxos).expect("peers configured");
     tokio::spawn(polling.run(cancel.clone()));
     let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
-    let id = |txid: TransactionId| PeerTxId { txid, auth_digest: None };
+    let id = |txid: TxId| PeerTxId { txid, auth_digest: None };
     let validator_pushes = || validators.iter().map(|v| v.calls().sends).sum::<usize>();
     polled(&balancer).await;
 
@@ -570,35 +571,34 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let polling = view.peer_mempool(Arc::new(chain.ledger(tip))).expect("peers configured");
     tokio::spawn(polling.run(cancel.clone()));
     let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
-    let id = |txid: TransactionId| PeerTxId { txid, auth_digest: None };
+    let id = |txid: TxId| PeerTxId { txid, auth_digest: None };
     let reader = view.subscriber();
     let (a, a_raw) = raw_transparent(&[funding(1)], &[(&alice, 9_000)]);
     let (bad, bad_raw) = raw_transparent(&[funding(2)], &[(&alice, 6_000)]);
     let (parent, parent_raw) = raw_transparent(&[funding(3)], &[(&alice, 9_000)]);
     let (child, child_raw) =
-        raw_transparent(&[OutPoint::new(<[u8; 32]>::from(parent), 0)], &[(&alice, 8_500)]);
+        raw_transparent(&[OutPoint::new(parent.into(), 0)], &[(&alice, 8_500)]);
     let pending = [(a, &a_raw), (parent, &parent_raw), (child, &child_raw), (bad, &bad_raw)];
     for (txid, raw) in pending {
         peers.hold(id(txid), Bytes::from(raw.clone()));
     }
-    let listing = |ids: &[TransactionId], on: &[std::net::SocketAddr]| {
+    let listing = |ids: &[TxId], on: &[std::net::SocketAddr]| {
         for peer in &seven {
             let listed =
                 if on.contains(peer) { ids.iter().copied().map(id).collect() } else { vec![] };
             peers.list(*peer, listed);
         }
     };
-    let served = || -> Vec<(TransactionId, Option<Zatoshis>)> {
+    let served = || -> Vec<(TxId, Option<Zatoshis>)> {
         let view = reader.current();
         let mempool = view.mempool().expect("a quorum reads");
         mempool.entries().map(|entry| (entry.txid, entry.fee)).collect()
     };
-    let sorted = |mut entries: Vec<(TransactionId, Option<Zatoshis>)>| {
+    let sorted = |mut entries: Vec<(TxId, Option<Zatoshis>)>| {
         entries.sort();
         entries
     };
-    let first_seen =
-        |txid: &TransactionId| reader.current().spread(txid).map(|s| s.timeline.first_seen);
+    let first_seen = |txid: &TxId| reader.current().spread(txid).map(|s| s.timeline.first_seen);
 
     // listed by the validator and the quorum, then the validator gone: handed over, never dropped
     view.set_verified(Some(chain.verified(tip)));

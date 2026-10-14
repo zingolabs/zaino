@@ -50,7 +50,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     assert_eq!(hashes, [genesis.hash, one.hash, two.hash]);
     for (parent, block) in blocks.iter().zip(&blocks[1..]) {
         let header = block.header();
-        let txids: Vec<TransactionId> = block.transactions().iter().map(|tx| tx.txid).collect();
+        let txids: Vec<TxId> = block.transactions().iter().map(|tx| tx.txid).collect();
         let coinbases: Vec<bool> =
             block.transactions().iter().map(|tx| tx.transparent.coinbase).collect();
         assert_eq!(sha256d(&chain.header_bytes(header.hash)), <[u8; 32]>::from(header.hash));
@@ -64,7 +64,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
         assert_eq!(coinbases, slot_zero, "one coinbase, slot 0");
     }
     assert_eq!(blocks[2].transactions()[0].transparent.outputs[0].script, alice);
-    assert_eq!(blocks[2].transactions()[1].txid, TransactionId::from([0x22; 32]));
+    assert_eq!(blocks[2].transactions()[1].txid, TxId::from_bytes([0x22; 32]));
     let funded = MockChain::regtest().genesis_with(|b| b.coinbase(|c| c.pay(&alice, 7_000)));
     let coinbase = &funded.block(funded.genesis().hash).transactions()[0];
     let output =
@@ -392,10 +392,10 @@ fn the_mempool_holds_what_the_best_admits_until_mined() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
     let parent = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
-    let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
+    let parent = parent.into_transaction(TxId::from_bytes([0x20; 32]), false);
     let child = TxBuilder::new().spend(OutPoint::new([0x20; 32], 0)).pay(&alice, 48_500);
-    let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
-    let held = |chain: &MockChain| -> Vec<(TransactionId, u64)> {
+    let child = child.into_transaction(TxId::from_bytes([0x21; 32]), false);
+    let held = |chain: &MockChain| -> Vec<(TxId, u64)> {
         chain.mempool().iter().map(|unmined| (unmined.tx.txid, unmined.fee.into_u64())).collect()
     };
 
@@ -425,13 +425,13 @@ fn a_reorg_returns_what_the_best_no_longer_mines_and_drops_conflicts() {
     let mut chain = MockChain::regtest().varied_work();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
     let parent = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
-    let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
+    let parent = parent.into_transaction(TxId::from_bytes([0x20; 32]), false);
     let child = TxBuilder::new().spend(OutPoint::new([0x20; 32], 0)).pay(&alice, 48_500);
-    let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
+    let child = child.into_transaction(TxId::from_bytes([0x21; 32]), false);
     chain.submit((parent.clone(), vec![0x20]));
     chain.submit((child.clone(), vec![0x21]));
     let mined = chain.mine_mempool();
-    let held = |chain: &MockChain| -> Vec<TransactionId> {
+    let held = |chain: &MockChain| -> Vec<TxId> {
         chain.mempool().iter().map(|unmined| unmined.tx.txid).collect()
     };
 
@@ -454,7 +454,7 @@ fn submitting_a_rival_to_a_held_spend_panics() {
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
     let spend = |txid: u8| {
         let tx = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
-        (tx.into_transaction(TransactionId::from([txid; 32]), false), vec![txid])
+        (tx.into_transaction(TxId::from_bytes([txid; 32]), false), vec![txid])
     };
     chain.submit(spend(0x20));
     chain.submit(spend(0x30));

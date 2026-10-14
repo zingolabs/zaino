@@ -12,8 +12,9 @@ use std::time::Duration;
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
     Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, Height, NodeRelease,
-    PeerInfo, Transaction, TransactionId, TransactionLocation,
+    PeerInfo, Transaction, TransactionLocation,
 };
+use zcash_protocol::TxId;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
 
@@ -119,7 +120,7 @@ struct State {
 struct Followed {
     best: Vec<Arc<Block>>,
     info: BlockchainInfo,
-    bytes: HashMap<TransactionId, Vec<u8>>,
+    bytes: HashMap<TxId, Vec<u8>>,
     ledger: Ledger,
 }
 
@@ -177,7 +178,7 @@ impl MockValidator {
 
     /// `chain`'s mempool entry `txid` relayed here: listed from the next poll, at the fee it
     /// leaves on this node's tip (panic: not in `chain`'s mempool, or refused on this tip)
-    pub fn hear(&self, chain: &MockChain, txid: TransactionId) {
+    pub fn hear(&self, chain: &MockChain, txid: TxId) {
         let held = chain.mempool().iter().find(|unmined| unmined.tx.txid == txid);
         let held = held.unwrap_or_else(|| panic!("hear {txid}: not in the chain's mempool"));
         let mut state = self.state();
@@ -187,7 +188,7 @@ impl MockValidator {
     }
 
     /// Evicted (expiry, churn), with every entry spending its outputs: unlisted from the next poll
-    pub fn evict(&self, txid: TransactionId) {
+    pub fn evict(&self, txid: TxId) {
         let mut state = self.state();
         state.mempool.retain(|unmined| unmined.tx.txid != txid);
         state.readmit();
@@ -319,7 +320,7 @@ impl State {
         Err(NonDomainError::new(mode, format!("MockValidator injected {mode:?}")))
     }
 
-    fn held(&self, txid: TransactionId) -> Option<&Unmined> {
+    fn held(&self, txid: TxId) -> Option<&Unmined> {
         self.mempool.iter().find(|unmined| unmined.tx.txid == txid)
     }
 
@@ -367,7 +368,7 @@ impl Lie {
                 let mut extra = txs[0].clone();
                 let mut txid = <[u8; 32]>::from(extra.txid);
                 txid[31] ^= 0xff;
-                extra.txid = TransactionId::from(txid);
+                extra.txid = TxId::from_bytes(txid);
                 Block::new(header, [txs, &[extra]].concat())
             }
             Lie::Mutated => Block::new(header, [txs, &txs[txs.len() - 1..]].concat()),
@@ -467,7 +468,7 @@ impl ChainDataSource for MockValidator {
     /// Mined without bytes (`TxBuilder`) = panic: never an invented body
     async fn get_transaction(
         &self,
-        txid: TransactionId,
+        txid: TxId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         self.enter(Port::Transaction, |_| {}).await?;
         let state = self.state();
@@ -493,7 +494,7 @@ impl ChainDataSource for MockValidator {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
+    ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         self.enter(Port::Send, |calls| calls.sends += 1).await?;
         let mut state = self.state();
         let unmined = state.verdict(transaction).map_err(QueryError::Domain)?;
@@ -505,7 +506,7 @@ impl ChainDataSource for MockValidator {
     async fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<CheckAdmissionError>> {
+    ) -> Result<TxId, QueryError<CheckAdmissionError>> {
         self.enter(Port::Check, |calls| calls.checks += 1).await?;
         let state = self.state();
         if !state.checks {
@@ -517,14 +518,14 @@ impl ChainDataSource for MockValidator {
 }
 
 /// Real, empty v4 transaction (no inputs, outputs or bundles), distinct per `lock_time`
-pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) {
+pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TxId, Vec<u8>) {
     v4(lock_time, expiry, None)
 }
 
 /// Real v4 transaction spending `spends`, paying `pays` in vout order; no shielded bundles
 ///
 /// - empty script sigs (nothing here verifies a signature); distinct per `spends`
-pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TransactionId, Vec<u8>) {
+pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TxId, Vec<u8>) {
     use zcash_transparent::bundle::{Authorized, Bundle, TxIn, TxOut};
     let vin =
         spends.iter().map(|prevout| TxIn::from_parts(prevout.clone(), Script::default(), u32::MAX));
@@ -542,7 +543,7 @@ pub fn raw_v5(
     branch: zcash_protocol::consensus::BranchId,
     lock_time: u32,
     expiry: u32,
-) -> (TransactionId, Vec<u8>) {
+) -> (TxId, Vec<u8>) {
     use zcash_primitives::transaction::TxVersion;
     unshielded(TxVersion::V5, branch, lock_time, expiry, None)
 }
@@ -551,7 +552,7 @@ fn v4(
     lock_time: u32,
     expiry: u32,
     transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
-) -> (TransactionId, Vec<u8>) {
+) -> (TxId, Vec<u8>) {
     use zcash_primitives::transaction::TxVersion;
     let canopy = zcash_protocol::consensus::BranchId::Canopy;
     unshielded(TxVersion::V4, canopy, lock_time, expiry, transparent)
@@ -563,7 +564,7 @@ fn unshielded(
     lock_time: u32,
     expiry: u32,
     transparent: Option<zcash_transparent::bundle::Bundle<zcash_transparent::bundle::Authorized>>,
-) -> (TransactionId, Vec<u8>) {
+) -> (TxId, Vec<u8>) {
     use zcash_primitives::transaction::{Authorized, TransactionData};
     let tx = TransactionData::<Authorized>::from_parts(
         version,
@@ -579,7 +580,7 @@ fn unshielded(
     .expect("a transaction without shielded bundles freezes");
     let mut raw = Vec::new();
     tx.write(&mut raw).expect("writes to a Vec");
-    (TransactionId::from(*tx.txid().as_ref()), raw)
+    (tx.txid(), raw)
 }
 
 /// `raw` decoded beside its bytes (`BlockBuilder::raw_tx(decoded(raw))`)

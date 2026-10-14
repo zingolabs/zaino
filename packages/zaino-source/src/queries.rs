@@ -7,10 +7,10 @@
 use std::future::Future;
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, Height, NodeRelease, PeerInfo, TransactionId,
-    TransactionLocation,
+    Block, BlockHash, BlockchainInfo, Height, NodeRelease, PeerInfo, TransactionLocation,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 
 use crate::{NonDomainError, QueryError};
 
@@ -62,7 +62,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     /// `getrawtransaction <txid> 1`: bytes + where it was found (mined vs mempool)
     fn get_transaction(
         &self,
-        txid: TransactionId,
+        txid: TxId,
     ) -> impl Future<Output = Result<TransactionResponse, QueryError<GetTransactionError>>> + Send;
 
     /// `sendrawtransaction`: the one write
@@ -71,7 +71,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
+    ) -> impl Future<Output = Result<TxId, QueryError<SendRawTransactionError>>> + Send;
 
     /// `checkadmission`: `sendrawtransaction`'s verdict, nothing admitted or relayed
     ///
@@ -80,7 +80,7 @@ pub trait ChainDataSource: Send + Sync + 'static {
     fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TransactionId, QueryError<CheckAdmissionError>>> + Send;
+    ) -> impl Future<Output = Result<TxId, QueryError<CheckAdmissionError>>> + Send;
 }
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -137,7 +137,7 @@ pub enum GetMempoolListingError {
 /// `fee` = what the validator computed admitting it (its UTXO set, not ours)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MempoolListed {
-    pub txid: TransactionId,
+    pub txid: TxId,
     pub fee: Zatoshis,
     pub encoded_len: u32,
 }
@@ -146,7 +146,7 @@ pub struct MempoolListed {
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetRawMempoolTransactionError {
     #[error("transaction {0} not in mempool")]
-    NotFound(TransactionId),
+    NotFound(TxId),
 }
 
 pub type RawMempoolTransactions = Vec<Result<Vec<u8>, GetRawMempoolTransactionError>>;
@@ -160,7 +160,7 @@ pub struct TransactionResponse {
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetTransactionError {
     #[error("transaction not found: {0}")]
-    NotFound(TransactionId),
+    NotFound(TxId),
 }
 
 /// `checkadmission`'s answer other than the txid

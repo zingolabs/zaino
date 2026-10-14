@@ -6,8 +6,9 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::{BlockHash, PeerTxId, TransactionId};
+use zaino_primitives::types::{BlockHash, PeerTxId};
 use zcash_primitives::transaction::{CompressedTransaction, DecompressionError};
+use zcash_protocol::TxId;
 use zebra_chain::block::{self, Block, CountedHeader};
 use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::{self, AuthDigest, UnminedTx, UnminedTxId, WtxId};
@@ -25,7 +26,7 @@ pub enum WireError {
 
 pub(crate) fn peer_tx_id(id: UnminedTxId) -> PeerTxId {
     PeerTxId {
-        txid: TransactionId::from(id.mined_id().0),
+        txid: TxId::from_bytes(id.mined_id().0),
         auth_digest: id.auth_digest().map(|digest| digest.0),
     }
 }
@@ -123,7 +124,7 @@ mod tests {
             txid in any::<[u8; 32]>(),
             auth_digest in proptest::option::of(any::<[u8; 32]>()),
         ) {
-            let id = PeerTxId { txid: TransactionId::from(txid), auth_digest };
+            let id = PeerTxId { txid: TxId::from_bytes(txid), auth_digest };
             prop_assert_eq!(peer_tx_id(unmined_tx_id(id)), id);
             prop_assert_eq!(unmined_tx_id(id).mined_id().0, txid);
         }

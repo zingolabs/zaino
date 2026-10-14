@@ -14,9 +14,10 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, TransactionId};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
 use zaino_traffic::{Health, ValidatorId};
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 
 use crate::config::FINALITY_STALL;
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
@@ -29,7 +30,7 @@ use crate::telemetry::{self, Alarms};
 ///   our own broadcast, not yet listed or admitted
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MempoolEntry {
-    pub txid: TransactionId,
+    pub txid: TxId,
     pub raw: Bytes,
     pub fee: Option<Zatoshis>,
     pub projection: Projection,
@@ -164,7 +165,7 @@ impl Sighting {
         }
     }
 
-    pub(crate) fn entry(&self, txid: TransactionId) -> MempoolEntry {
+    pub(crate) fn entry(&self, txid: TxId) -> MempoolEntry {
         let projection = self.projection.clone();
         MempoolEntry { txid, raw: self.raw.clone(), fee: self.fee, projection }
     }
@@ -217,7 +218,7 @@ pub struct ChainViewSnapshot {
     pub(crate) depth: ReorgDepth,
     pub(crate) owed_since: Option<Instant>,
     pub(crate) held_by: EndpointSet,
-    pub(crate) mempool: OrdMap<TransactionId, Sighting>,
+    pub(crate) mempool: OrdMap<TxId, Sighting>,
     pub(crate) endpoints: Vector<ValidatorMetadata>,
     pub(crate) alarms: Alarms,
     pub(crate) peers_live: OrdSet<SocketAddr>,
@@ -273,7 +274,7 @@ impl ChainViewSnapshot {
         chain: Option<Arc<VerifiedChain>>,
         held_by: EndpointSet,
         addresses: &[&str],
-        ours: &[(TransactionId, Bytes)],
+        ours: &[(TxId, Bytes)],
     ) -> Self {
         use zaino_primitives::types::{
             BlockchainInfo, ConsensusBranchId, ConsensusBranchIds, Height,
@@ -397,7 +398,7 @@ impl ChainViewSnapshot {
 
     /// Where one held transaction has been seen, behind no gate (telemetry, submission's watch;
     /// the mempool RPCs go through [`mempool`](Self::mempool))
-    pub(crate) fn sighting(&self, txid: &TransactionId) -> Option<&Sighting> {
+    pub(crate) fn sighting(&self, txid: &TxId) -> Option<&Sighting> {
         self.mempool.get(txid)
     }
 
@@ -412,14 +413,14 @@ impl ChainViewSnapshot {
     }
 
     /// One held transaction's spread (telemetry; never gates serving)
-    pub fn spread(&self, txid: &TransactionId) -> Option<Spread> {
+    pub fn spread(&self, txid: &TxId) -> Option<Spread> {
         let polled = self.listings.polled().len();
         let listers = self.listings.listers(txid).len();
         Some(self.mempool.get(txid)?.spread(self.mempool_readers(), listers, polled))
     }
 
     /// Every held transaction's spread, in txid order
-    pub fn spreads(&self) -> impl Iterator<Item = (TransactionId, Spread)> + '_ {
+    pub fn spreads(&self) -> impl Iterator<Item = (TxId, Spread)> + '_ {
         let (readers, polled) = (self.mempool_readers(), self.listings.polled().len());
         self.mempool.iter().map(move |(txid, sighting)| {
             (*txid, sighting.spread(readers, self.listings.listers(txid).len(), polled))
@@ -457,7 +458,7 @@ impl MempoolView<'_> {
     /// - suffix vs protocol-order txid bytes; one excluded only on a unique match (ambiguous → kept)
     pub fn excluding<B: AsRef<[u8]>>(&self, suffixes: &[B]) -> Vec<MempoolEntry> {
         let servable: Vec<MempoolEntry> = self.entries().collect();
-        let mut excluded: Vec<TransactionId> = Vec::new();
+        let mut excluded: Vec<TxId> = Vec::new();
 
         for suffix in suffixes {
             let mut matched =
@@ -471,7 +472,7 @@ impl MempoolView<'_> {
     }
 }
 
-fn ends_with(txid: &TransactionId, suffix: &[u8]) -> bool {
+fn ends_with(txid: &TxId, suffix: &[u8]) -> bool {
     <[u8; 32]>::from(*txid).ends_with(suffix)
 }
 
@@ -481,7 +482,7 @@ mod tests {
 
     #[test]
     fn every_snapshot_of_a_sighting_shares_its_first_render() {
-        let txid = TransactionId::from([1; 32]);
+        let txid = TxId::from_bytes([1; 32]);
         let sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
         let published = sighting.clone();
         let first = sighting.entry(txid).projection.get_or_render(|| Ok::<_, ()>("first".into()));
@@ -491,7 +492,7 @@ mod tests {
 
     #[test]
     fn a_first_listed_fee_drops_the_unpriced_render() {
-        let txid = TransactionId::from([1; 32]);
+        let txid = TxId::from_bytes([1; 32]);
         let mut sighting = Sighting::new(Bytes::from_static(b"tx"), None, true);
         let unpriced = sighting.entry(txid).projection;
         let _ = unpriced.get_or_render(|| Ok::<_, ()>("unpriced".into()));

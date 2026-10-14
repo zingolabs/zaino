@@ -2,6 +2,7 @@
 //! rest (txids, detection material, header) and checks it
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_protocol::TxId;
 use zcash_script::script::Code;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
@@ -9,7 +10,7 @@ use zcash_transparent::bundle::OutPoint;
 use super::sha256d;
 use crate::types::{
     CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction, TransactionId,
+    SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction,
     TransparentData, TransparentOutput,
 };
 
@@ -71,7 +72,7 @@ impl BlockBuilder {
 /// One transaction; zats as `u64` / `i64` (checked against the supply when mined)
 #[derive(Debug, Clone)]
 pub struct TxBuilder {
-    pub(super) txid: Option<TransactionId>,
+    pub(super) txid: Option<TxId>,
     pub(super) spends: Vec<OutPoint>,
     pub(super) pays: Vec<(Script, u64)>,
     pub(super) sapling_spends: Vec<Nullifier>,
@@ -105,7 +106,7 @@ impl TxBuilder {
 
     /// Default: SHA-256d(mint counter ‖ content)
     pub fn txid(self, txid: [u8; 32]) -> Self {
-        Self { txid: Some(TransactionId::from(txid)), ..self }
+        Self { txid: Some(TxId::from_bytes(txid)), ..self }
     }
 
     pub fn spend(mut self, prevout: OutPoint) -> Self {
@@ -202,7 +203,7 @@ impl TxBuilder {
     }
 
     /// Coinbase or not: the chain checks that against what it holds
-    pub(super) fn into_transaction(self, txid: TransactionId, coinbase: bool) -> Transaction {
+    pub(super) fn into_transaction(self, txid: TxId, coinbase: bool) -> Transaction {
         let zats = |zats: u64| {
             Zatoshis::from_u64(zats)
                 .unwrap_or_else(|_| panic!("{txid}: {zats} zats past the supply"))
@@ -244,11 +245,7 @@ impl TxBuilder {
     }
 }
 
-fn actions(
-    txid: TransactionId,
-    pool: ShieldedPool,
-    of: Vec<(Nullifier, u32)>,
-) -> Vec<OrchardAction> {
+fn actions(txid: TxId, pool: ShieldedPool, of: Vec<(Nullifier, u32)>) -> Vec<OrchardAction> {
     let actions = (0..).zip(of).map(|(index, (nullifier, leaf))| {
         let (ephemeral_key, enc_ciphertext) = detection(txid, pool, index);
         OrchardAction { nullifier, cmx: commitment(leaf), ephemeral_key, enc_ciphertext }
@@ -268,11 +265,7 @@ fn commitment(leaf: u32) -> NoteCommitment {
 }
 
 /// Builder-owned: distinct per (txid, pool, index), never asserted on
-fn detection(
-    txid: TransactionId,
-    pool: ShieldedPool,
-    index: u32,
-) -> (EphemeralKey, CompactCiphertext) {
+fn detection(txid: TxId, pool: ShieldedPool, index: u32) -> (EphemeralKey, CompactCiphertext) {
     let pool = pool.to_string();
     let seed = [&<[u8; 32]>::from(txid)[..], pool.as_bytes(), &index.to_le_bytes()].concat();
     let key = sha256d(&seed);

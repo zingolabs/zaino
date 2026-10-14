@@ -6,8 +6,9 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zaino_primitives::types::{Height, TransactionId};
+use zaino_primitives::types::Height;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
 use zcash_transparent::bundle::OutPoint;
 
@@ -43,7 +44,7 @@ pub struct AddressUtxo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TransactionRef {
     pub(crate) height: Height,
-    pub txid: TransactionId,
+    pub txid: TxId,
 }
 
 /// Stored height → [`Height`] (rows = sealed, checksummed `fold` output, written from a `Height`)
@@ -72,7 +73,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .map(|rows| {
                 rows.into_iter()
                     .map(|row| AddressUtxo {
-                        outpoint: OutPoint::new(<[u8; 32]>::from(row.key.txid), row.key.vout),
+                        outpoint: OutPoint::new(row.key.txid.into(), row.key.vout),
                         height: stored(row.key.height),
                         value: row.value,
                     })
@@ -188,8 +189,8 @@ mod tests {
             height: h(1),
             value: Zatoshis::from_u64(42).expect("in supply"),
         };
-        let paying = TransactionRef { height: h(1), txid: TransactionId::from([0x77; 32]) };
-        let spending = TransactionRef { height: h(2), txid: TransactionId::from([0x78; 32]) };
+        let paying = TransactionRef { height: h(1), txid: TxId::from_bytes([0x77; 32]) };
+        let spending = TransactionRef { height: h(2), txid: TxId::from_bytes([0x78; 32]) };
         let receiver = TransparentAddress::PublicKeyHash([0x02; 20]);
 
         let balances = at_two.balances(&[paid, receiver]);

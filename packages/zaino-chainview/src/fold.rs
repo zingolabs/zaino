@@ -12,10 +12,11 @@ use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
+    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth,
 };
 use zaino_traffic::{Health, ValidatorId};
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
 use crate::ports::Heard;
@@ -41,7 +42,7 @@ pub(crate) type Candidate = (PeerTxId, Option<Bytes>);
 /// never per member)
 #[derive(Debug, Clone)]
 pub(crate) struct Sighted {
-    pub(crate) txid: TransactionId,
+    pub(crate) txid: TxId,
     pub(crate) raw: Option<Bytes>,
     pub(crate) fee: Zatoshis,
 }
@@ -63,7 +64,7 @@ pub(crate) struct Reading {
 #[derive(Debug, Clone)]
 pub(crate) struct Listing {
     pub(crate) added: Vec<Sighted>,
-    pub(crate) removed: Vec<TransactionId>,
+    pub(crate) removed: Vec<TxId>,
 }
 
 /// One member's poll, as the fold takes it: its reading first, then its listing (bytes fetched
@@ -110,20 +111,16 @@ impl ChainViewCore {
     }
 
     /// Fetch-once gate: a member listing a held txid = reported without a round trip
-    pub(crate) fn holds(&self, txid: &TransactionId) -> bool {
+    pub(crate) fn holds(&self, txid: &TxId) -> bool {
         self.published.load().sighting(txid).is_some()
     }
 
     /// One member's poll folded, published; → txids not admitted (listed, bytes
     /// nowhere: re-listed + re-fetched next poll, never lost)
-    pub(crate) fn apply(
-        &self,
-        endpoint: ValidatorId,
-        report: EndpointReport,
-    ) -> Vec<TransactionId> {
+    pub(crate) fn apply(&self, endpoint: ValidatorId, report: EndpointReport) -> Vec<TxId> {
         self.fold(|state| {
-            let mut touched: Vec<TransactionId> = Vec::new();
-            let mut unadmitted: Vec<TransactionId> = Vec::new();
+            let mut touched: Vec<TxId> = Vec::new();
+            let mut unadmitted: Vec<TxId> = Vec::new();
             let Some(meta) = state.endpoints.get_mut(endpoint.get()) else {
                 return (None, unadmitted);
             };
@@ -212,7 +209,7 @@ impl ChainViewCore {
     ) -> Vec<Candidate> {
         self.fold(|state| {
             state.listings.round(answers, now);
-            let lost: Vec<TransactionId> = state
+            let lost: Vec<TxId> = state
                 .mempool
                 .iter()
                 .filter(|(txid, sighting)| sighting.quorum() && !state.listings.retains(txid))
@@ -268,10 +265,7 @@ impl ChainViewCore {
     /// Under the fold lock: `change`, then [`settle`](Self::settle) on its `Some(touched)`
     ///
     /// - `None` = nothing changed (no publish)
-    fn fold<T>(
-        &self,
-        change: impl FnOnce(&mut ChainViewSnapshot) -> (Option<Vec<TransactionId>>, T),
-    ) -> T {
+    fn fold<T>(&self, change: impl FnOnce(&mut ChainViewSnapshot) -> (Option<Vec<TxId>>, T)) -> T {
         let mut guard = self.state.lock().expect("chainview fold mutex poisoned");
         let before = Before::of(&guard);
         let (touched, out) = change(&mut guard);
@@ -286,7 +280,7 @@ impl ChainViewCore {
         &self,
         mut guard: std::sync::MutexGuard<'_, ChainViewSnapshot>,
         before: Before,
-        touched: Vec<TransactionId>,
+        touched: Vec<TxId>,
     ) {
         let state = &mut *guard;
         let chain = state.chain.clone();
@@ -304,7 +298,7 @@ impl ChainViewCore {
 
         // reader joined / left → any spread may complete (else only `touched`)
         let readers = state.mempool_readers();
-        let spreading: Vec<TransactionId> = match readers == before.readers {
+        let spreading: Vec<TxId> = match readers == before.readers {
             true => touched.clone(),
             false => state.mempool.keys().copied().collect(),
         };
@@ -318,7 +312,7 @@ impl ChainViewCore {
 
         // unlisted dropped on a new best block (`ours` nobody lists after a block = mined or gone)
         let moved = state.best() != before.best;
-        let dropped: Vec<TransactionId> = state
+        let dropped: Vec<TxId> = state
             .mempool
             .iter()
             .filter(|(_, sighting)| !sighting.listed() && (moved || !sighting.ours()))
@@ -334,7 +328,7 @@ impl ChainViewCore {
     }
 
     /// Relayed by us → served before it propagates
-    pub(crate) fn mark_ours(&self, txid: TransactionId, raw: Bytes) {
+    pub(crate) fn mark_ours(&self, txid: TxId, raw: Bytes) {
         let mut state = self.state.lock().expect("chainview fold mutex poisoned");
 
         match state.mempool.get_mut(&txid) {
@@ -375,11 +369,8 @@ fn read(meta: &mut ValidatorMetadata, reading: Reading) {
 }
 
 /// `endpoint`'s bit cleared from every sighting → the txids it held
-fn retract(
-    mempool: &mut imbl::OrdMap<TransactionId, Sighting>,
-    endpoint: ValidatorId,
-) -> Vec<TransactionId> {
-    let held: Vec<TransactionId> = mempool
+fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, endpoint: ValidatorId) -> Vec<TxId> {
+    let held: Vec<TxId> = mempool
         .iter()
         .filter(|(_, sighting)| sighting.trusted().contains(endpoint))
         .map(|(txid, _)| *txid)

@@ -97,9 +97,10 @@ mod tests {
             OrchardAction, OrchardData, SaplingData, SaplingOutput, TransparentData,
             TransparentOutput,
         },
-        CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, TransactionId,
+        CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier,
     };
     use zcash_protocol::value::Zatoshis;
+    use zcash_protocol::TxId;
     use zcash_script::script::Code;
     use zcash_transparent::address::Script;
     use zcash_transparent::bundle::OutPoint;
@@ -167,7 +168,7 @@ mod tests {
         let mut script = Vec::with_capacity(40);
         script.extend_from_slice(&[0x76; 25]);
         let tx = Transaction {
-            txid: TransactionId::from([9; 32]),
+            txid: TxId::from_bytes([9; 32]),
             transparent: TransparentData {
                 coinbase: false,
                 inputs: vec![OutPoint::new([8; 32], 0); 2],

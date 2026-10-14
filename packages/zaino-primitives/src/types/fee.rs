@@ -82,10 +82,9 @@ impl BlockFees {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{
-        OrchardData, SaplingData, SproutData, TransactionId, TransparentData, TransparentOutput,
-    };
+    use crate::types::{OrchardData, SaplingData, SproutData, TransparentData, TransparentOutput};
     use zcash_protocol::value::MAX_MONEY;
+    use zcash_protocol::TxId;
     use zcash_transparent::address::Script;
 
     /// Σ prevouts − Σ outputs + each pool's value balance (sprout, sapling, orchard, ironwood:
@@ -100,7 +99,7 @@ mod tests {
             };
             let signed = |n: i64| ZatBalance::from_i64(n).expect("in supply");
             Transaction {
-                txid: TransactionId::from([1; 32]),
+                txid: TxId::from_bytes([1; 32]),
                 transparent: TransparentData {
                     coinbase,
                     inputs: Vec::new(),

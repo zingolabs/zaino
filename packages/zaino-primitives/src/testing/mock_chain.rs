@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
+use zcash_protocol::TxId;
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
 use super::ledger::{Ledger, Unmined};
@@ -21,8 +22,7 @@ use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
     Block, BlockFees, BlockHash, BlockRef, BlockchainInfo, CompactDifficulty, ConsensusBranchIds,
-    DecodedHeader, EquihashSolution, Fee, Height, MerkleRoot, Transaction, TransactionId,
-    UpgradeSchedule,
+    DecodedHeader, EquihashSolution, Fee, Height, MerkleRoot, Transaction, UpgradeSchedule,
 };
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
@@ -49,7 +49,7 @@ pub struct MockChain {
     blocks: HashMap<BlockHash, Mined>,
     genesis: BlockHash,
     best: BlockHash,
-    bytes: HashMap<TransactionId, Vec<u8>>,
+    bytes: HashMap<TxId, Vec<u8>>,
     mempool: Vec<Unmined>,
     nonces: u64,
     txids: u64,
@@ -179,7 +179,7 @@ impl MockChain {
     }
 
     /// Bytes of a `raw_tx` (`None` = built by `TxBuilder`: no bytes exist)
-    pub fn tx_bytes(&self, txid: TransactionId) -> Option<&[u8]> {
+    pub fn tx_bytes(&self, txid: TxId) -> Option<&[u8]> {
         self.bytes.get(&txid).map(Vec::as_slice)
     }
 
@@ -219,7 +219,7 @@ impl MockChain {
 
     /// Held for the next block on the best: admitted after every entry before it (M6, M7), else
     /// panic naming the refusal
-    pub fn submit(&mut self, (tx, bytes): (Transaction, Vec<u8>)) -> TransactionId {
+    pub fn submit(&mut self, (tx, bytes): (Transaction, Vec<u8>)) -> TxId {
         let mut pool = self.pool_ledger();
         let fee = pool.admit(&tx).unwrap_or_else(|refused| panic!("submit {}: {refused}", tx.txid));
         let txid = tx.txid;
@@ -233,7 +233,7 @@ impl MockChain {
     }
 
     /// Out of the mempool, with every entry spending its outputs
-    pub fn evict(&mut self, txid: TransactionId) {
+    pub fn evict(&mut self, txid: TxId) {
         self.mempool.retain(|unmined| unmined.tx.txid != txid);
         let best = self.best;
         self.repool(best);
@@ -296,7 +296,7 @@ impl MockChain {
         });
         let fees: Vec<Fee> = fees.collect();
         let transactions: Vec<Transaction> = planned.into_iter().map(|(tx, _)| tx).collect();
-        let txids: Vec<TransactionId> = transactions.iter().map(|tx| tx.txid).collect();
+        let txids: Vec<TxId> = transactions.iter().map(|tx| tx.txid).collect();
 
         let mut nonce = [0u8; 32];
         nonce[..8].copy_from_slice(&self.nonces.to_le_bytes());
@@ -390,13 +390,13 @@ impl MockChain {
     }
 
     /// Stated, else SHA-256d(mint counter ‖ content)
-    fn txid(&mut self, tx: &TxBuilder) -> TransactionId {
+    fn txid(&mut self, tx: &TxBuilder) -> TxId {
         if let Some(txid) = tx.txid {
             return txid;
         }
         let minted = [&self.txids.to_le_bytes()[..], &tx.content()].concat();
         self.txids += 1;
-        TransactionId::from(sha256d(&minted))
+        TxId::from_bytes(sha256d(&minted))
     }
 
     /// M2: stated or parent + target spacing, after the parent's median time past

@@ -116,10 +116,8 @@ impl<V: MapRead> TransparentAddressReader<V> {
     /// What spent each of `received` at or below the tip, in `received` order (one
     /// `map(SPENT).values(..)` batch)
     pub(crate) fn spends_of(&self, received: &[ReceiveKey]) -> Vec<Option<Spend>> {
-        let keys: Vec<[u8; SPENT_KEY]> = received
-            .iter()
-            .map(|key| encode_spent_key(<[u8; 32]>::from(key.txid), key.vout))
-            .collect();
+        let keys: Vec<[u8; SPENT_KEY]> =
+            received.iter().map(|key| encode_spent_key(&key.txid, key.vout)).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
         let values = self.view.map(SPENT).values(&keys).into_iter();
         let tip = self.tip.map(u32::from);

@@ -19,10 +19,11 @@ use bytes::Bytes;
 use tokio::sync::watch;
 use zaino_chainview::MempoolEntry;
 use zaino_nfs::Indexed;
-use zaino_primitives::types::{BlockRef, TransactionId};
+use zaino_primitives::types::BlockRef;
+use zcash_protocol::TxId;
 
 /// Txids of the nonfinalized blocks the served tip extends (finalized: no live listing holds them)
-pub(crate) fn nonfinalized_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TransactionId> {
+pub(crate) fn nonfinalized_txids<V>(indexed: Option<&Indexed<V>>) -> HashSet<TxId> {
     let blocks = indexed.into_iter().flat_map(Indexed::served_nonfinalized);
     blocks.flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
 }
@@ -45,7 +46,7 @@ impl Logged {
 struct Epoch {
     opening: Vec<MempoolEntry>,
     opening_rendered: OnceLock<Bytes>,
-    mined: HashSet<TransactionId>,
+    mined: HashSet<TxId>,
     log: RwLock<Log>,
 }
 
@@ -54,7 +55,7 @@ struct Epoch {
 struct Log {
     entries: Vec<Arc<Logged>>,
     sealed: bool,
-    sent: HashSet<TransactionId>,
+    sent: HashSet<TxId>,
 }
 
 /// One snapshot's epoch: `key` = the served tip it opened at
@@ -70,7 +71,7 @@ impl Feed {
     pub(crate) fn open(
         key: Option<BlockRef>,
         mempool: Vec<MempoolEntry>,
-        mined: HashSet<TransactionId>,
+        mined: HashSet<TxId>,
         wake: watch::Receiver<()>,
     ) -> Self {
         let opening: Vec<MempoolEntry> =
@@ -95,7 +96,7 @@ impl Feed {
     }
 
     /// Opening or appended
-    pub(crate) fn carries(&self, txid: &TransactionId) -> bool {
+    pub(crate) fn carries(&self, txid: &TxId) -> bool {
         self.epoch.log.read().expect("feed log lock poisoned").sent.contains(txid)
     }
 

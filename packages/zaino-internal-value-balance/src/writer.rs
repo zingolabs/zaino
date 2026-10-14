@@ -11,12 +11,13 @@ use std::{
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
-use zaino_primitives::types::{Block, BlockFees, FeeError, Height, OutputIndex, TransactionId};
+use zaino_primitives::types::{Block, BlockFees, FeeError, Height, OutputIndex};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::{encode_fees, encode_outpoint, encode_value, ValueBalanceReader, FEES, OUTPUTS};
@@ -99,13 +100,13 @@ pub enum FoldError {
     #[error(
         "block {height} tx {txid}: spends {spent}:{vout}, not an unspent output of this index"
     )]
-    MissingPrevout { height: Height, txid: TransactionId, spent: TransactionId, vout: OutputIndex },
+    MissingPrevout { height: Height, txid: TxId, spent: TxId, vout: OutputIndex },
 
     #[error("block {height} tx {txid}: value sums past the money supply")]
-    ValueOverflow { height: Height, txid: TransactionId },
+    ValueOverflow { height: Height, txid: TxId },
 
     #[error("block {height} tx {txid}: takes more from the transparent pool than it puts in")]
-    NegativeFee { height: Height, txid: TransactionId },
+    NegativeFee { height: Height, txid: TxId },
 
     #[error("block {height}: held, but no fees record")]
     StoredFeesMissing { height: Height },
@@ -164,7 +165,7 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
                     let missing = FoldError::MissingPrevout {
                         height,
                         txid: tx.txid,
-                        spent: TransactionId::from(*prevout.hash()),
+                        spent: *prevout.txid(),
                         vout: prevout.n(),
                     };
                     let value = unspent.remove(prevout).ok_or(missing)?;
@@ -176,7 +177,7 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
                 }
             }
             for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-                let outpoint = OutPoint::new(<[u8; 32]>::from(tx.txid), vout);
+                let outpoint = OutPoint::new(tx.txid.into(), vout);
                 created_here.insert(outpoint.clone());
                 unspent.insert(outpoint, output.value);
             }
@@ -198,8 +199,7 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
 fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
     block.transactions().iter().flat_map(|tx| {
         let outputs = (0..).zip(&tx.transparent.outputs);
-        let txid = <[u8; 32]>::from(tx.txid);
-        outputs.map(move |(vout, output)| (OutPoint::new(txid, vout), output.value))
+        outputs.map(|(vout, output)| (OutPoint::new(tx.txid.into(), vout), output.value))
     })
 }
 
@@ -354,7 +354,7 @@ mod tests {
             tx.sapling.value_balance = ZatBalance::from_i64(-99_001).expect("in supply");
         });
         let genesis = block(chain.genesis());
-        let id = |byte| TransactionId::from([byte; 32]);
+        let id = |byte| TxId::from_bytes([byte; 32]);
         let missing = |spent, vout| FoldError::MissingPrevout {
             height: h(2),
             txid: id(0x20),

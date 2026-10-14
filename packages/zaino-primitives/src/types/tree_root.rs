@@ -1,6 +1,6 @@
 //! Commitment tree root hash
 
-/// Distinct from [`super::BlockHash`] & [`super::TransactionId`] (same size, different domain)
+/// Distinct from [`super::BlockHash`] & a txid (same size, different domain)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TreeRoot([u8; 32]);
 

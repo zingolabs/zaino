@@ -13,9 +13,10 @@ use std::time::{Duration, Instant};
 
 use tonic::transport::Channel;
 use tonic::{Code, Status};
-use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
+use zaino_primitives::types::{Block, BlockHash, Height};
 use zaino_proto::proto::zebra_indexer::indexer_client::IndexerClient;
 use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
+use zcash_protocol::TxId;
 
 use crate::indexer::{indexer_endpoint, IndexerTls};
 use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
@@ -227,7 +228,7 @@ impl ChainDataSource for ZcashGrpcClient {
 
     async fn get_transaction(
         &self,
-        txid: TransactionId,
+        txid: TxId,
     ) -> Result<TransactionResponse, QueryError<crate::GetTransactionError>> {
         self.rpc.get_transaction(txid).await
     }
@@ -235,14 +236,14 @@ impl ChainDataSource for ZcashGrpcClient {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
+    ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         self.rpc.send_raw_transaction(transaction).await
     }
 
     async fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<crate::CheckAdmissionError>> {
+    ) -> Result<TxId, QueryError<crate::CheckAdmissionError>> {
         self.rpc.check_admission(transaction).await
     }
 }

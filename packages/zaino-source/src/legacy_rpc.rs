@@ -4,7 +4,8 @@
 
 use std::path::Path;
 
-use zaino_primitives::types::{Block, BlockHash, Height, TransactionId};
+use zaino_primitives::types::{Block, BlockHash, Height};
+use zcash_protocol::TxId;
 
 use crate::rpc::{
     auth_from_parts, validator_url, Call, EndpointError, LinkLimits, RpcClient, RpcClientConfig,
@@ -289,7 +290,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
+    ) -> Result<TxId, QueryError<SendRawTransactionError>> {
         let params = vec![const_hex::encode(transaction).into()];
         self.call_parsed("sendrawtransaction", params, parse::as_txid, |error| {
             let error: NonDomainError = error.into();
@@ -304,7 +305,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     async fn check_admission(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionId, QueryError<CheckAdmissionError>> {
+    ) -> Result<TxId, QueryError<CheckAdmissionError>> {
         let params = vec![const_hex::encode(transaction).into()];
         self.call_parsed("checkadmission", params, parse::as_txid, |error| {
             admission_check_answer(error.into())
@@ -315,7 +316,7 @@ impl crate::ChainDataSource for ZcashLegacyRpcClient {
     /// Verbosity 1: the height places it (mined vs mempool)
     async fn get_transaction(
         &self,
-        txid: TransactionId,
+        txid: TxId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         let params = vec![txid.to_string().into(), serde_json::Value::Number(1.into())];
         self.call_parsed("getrawtransaction", params, parse::parse_transaction, |error| {
@@ -375,7 +376,7 @@ mod tests {
     #[test]
     fn raw_batches_split_in_order_on_either_budget() {
         let entry = |encoded_len: u32| MempoolListed {
-            txid: TransactionId::from([0; 32]),
+            txid: TxId::from_bytes([0; 32]),
             fee: zcash_protocol::value::Zatoshis::ZERO,
             encoded_len,
         };

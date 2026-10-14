@@ -106,7 +106,7 @@ async fn found_transactions<V: CommittedView, B>(
     index: Addresses<V>,
     body: B,
     reads: &ReadLanes,
-) -> Result<Vec<zaino_primitives::types::TransactionId>, Status>
+) -> Result<Vec<zcash_protocol::TxId>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -300,7 +300,7 @@ mod tests {
         let pays = [(&alice, 500), (&bob, 70), (&miner, 300)];
         let (first, first_raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &pays);
         chain.mine(|b| b.raw_tx(decoded(first_raw.clone())));
-        let change = OutPoint::new(<[u8; 32]>::from(first), 2);
+        let change = OutPoint::new(first.into(), 2);
         let (second, second_raw) = raw_transparent(&[change], &[(&alice, 300)]);
         let tip = chain.mine(|b| b.raw_tx(decoded(second_raw.clone())));
         let index = indexed(IndexKind::TransparentAddress, &chain, tip);

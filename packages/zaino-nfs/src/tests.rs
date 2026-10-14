@@ -356,8 +356,7 @@ fn mine(
     for at in 0..count {
         *tag += 1;
         let tag = *tag;
-        let funding_txid = blocks.block(tip.hash).transactions()[0].txid;
-        let funding = OutPoint::new(<[u8; 32]>::from(funding_txid), 0);
+        let funding = OutPoint::new(blocks.block(tip.hash).transactions()[0].txid.into(), 0);
         let mut nullifier = [0x0f; 32];
         nullifier[..4].copy_from_slice(&tag.to_le_bytes());
         let branch = blocks.branch(tip);

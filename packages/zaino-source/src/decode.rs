@@ -10,12 +10,11 @@ use zaino_primitives::types::{
     Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
     ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
     HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData,
-    SaplingOutput, SaplingSpend, SproutData, Transaction, TransactionId, TransparentData,
-    TransparentOutput,
+    SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData, TransparentOutput,
 };
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
-use zcash_protocol::{consensus::BranchId, value::ZatBalance};
+use zcash_protocol::{consensus::BranchId, value::ZatBalance, TxId};
 
 use crate::{FailureMode, NonDomainError, QueryError};
 
@@ -77,7 +76,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
 /// - `branch` = v5+'s embedded consensus branch id; earlier versions carry none
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Prepared {
-    pub txid: TransactionId,
+    pub txid: TxId,
     pub expiry_height: Option<Height>,
     pub branch: Option<ConsensusBranchId>,
 }
@@ -91,7 +90,7 @@ pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
         return Err(DecodeError::ExpiryHeight(expiry));
     }
     Ok(Prepared {
-        txid: TransactionId::from(*tx.txid().as_ref()),
+        txid: tx.txid(),
         expiry_height: (expiry != 0).then(|| Height::try_from(expiry)).transpose()?,
         branch: embeds_branch.then(|| ConsensusBranchId::from(tx.consensus_branch_id())),
     })
@@ -182,7 +181,7 @@ fn bip34_height(script: &[u8]) -> Option<u32> {
 
 fn transaction(tx: &CompressedTransaction) -> Result<Transaction, DecodeError> {
     Ok(Transaction {
-        txid: TransactionId::from(*tx.txid().as_ref()),
+        txid: tx.txid(),
         transparent: transparent(tx)?,
         sprout: sprout(tx)?,
         sapling: sapling(tx)?,

@@ -25,8 +25,9 @@ use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
 use tracing::debug;
-use zaino_primitives::types::{BlockHash, PeerTxId, TransactionId};
+use zaino_primitives::types::{BlockHash, PeerTxId};
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::TxId;
 use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
 use zebra_network::types::PeerServices;
@@ -249,7 +250,7 @@ impl PeerNetwork {
     ///
     /// - unattributed: zebra names no recipient, and a peer answers a push with nothing
     /// - no ready peer within the timeout = `Peers(Timeout)`
-    pub async fn push(&self, raw: &[u8]) -> Result<TransactionId, PushError> {
+    pub async fn push(&self, raw: &[u8]) -> Result<TxId, PushError> {
         let tx = wire::unmined_tx(raw)?;
         let txid = wire::peer_tx_id(tx.id).txid;
         self.call(Request::PushTransaction(tx, None)).await?;

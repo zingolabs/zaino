@@ -23,8 +23,9 @@ use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskView, IndexKind};
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::testing::{decoded, raw_transaction};
+use zcash_protocol::TxId;
 
 use crate::publisher::Core;
 use crate::{Down, MempoolTail, Standing, Tips};
@@ -84,14 +85,14 @@ proptest! {
 /// One epoch as the model sees it: `txs` = held at its opening ∪ every later arrival
 struct Epoch {
     key: Option<BlockRef>,
-    txs: BTreeSet<TransactionId>,
+    txs: BTreeSet<TxId>,
     closed: bool,
 }
 
 struct Tailed {
     tail: MempoolTail,
     epoch: usize,
-    received: Vec<TransactionId>,
+    received: Vec<TxId>,
     ended: bool,
 }
 
@@ -104,7 +105,7 @@ struct Model {
     held: u8,
     ahead: u8,
     read: bool,
-    mempool: BTreeMap<TransactionId, Vec<u8>>,
+    mempool: BTreeMap<TxId, Vec<u8>>,
     served: Option<BlockRef>,
     synced: bool,
     epochs: Vec<Epoch>,
@@ -126,8 +127,8 @@ impl Model {
     }
 
     fn view(&self) -> Arc<ChainViewSnapshot> {
-        let raw = |(txid, raw): (&TransactionId, &Vec<u8>)| (*txid, Bytes::from(raw.clone()));
-        let ours: Vec<(TransactionId, Bytes)> = self.mempool.iter().map(raw).collect();
+        let raw = |(txid, raw): (&TxId, &Vec<u8>)| (*txid, Bytes::from(raw.clone()));
+        let ours: Vec<(TxId, Bytes)> = self.mempool.iter().map(raw).collect();
         let chain = Some(self.chain());
         let view = ChainViewSnapshot::fixed(chain, Self::set(self.held), &ADDRESSES, &ours);
         let ahead = Self::set(self.held & self.ahead).positions();
@@ -143,7 +144,7 @@ impl Model {
     }
 
     /// Txids of the served path above genesis (by the builder, not `served_nonfinalized`)
-    fn mined_under_served(&self) -> BTreeSet<TransactionId> {
+    fn mined_under_served(&self) -> BTreeSet<TxId> {
         let path = self.served.map(|served| self.builder.blocks(served)).unwrap_or_default();
         path.iter().skip(1).flat_map(|block| block.transactions()).map(|tx| tx.txid).collect()
     }
@@ -221,7 +222,7 @@ impl Model {
             }
         };
         let served_moved = self.epochs.last().is_none_or(|epoch| epoch.key != self.served);
-        let listed: BTreeSet<TransactionId> = self.mempool.keys().copied().collect();
+        let listed: BTreeSet<TxId> = self.mempool.keys().copied().collect();
         let held = &listed - &self.mined_under_served();
         if served_moved {
             if let Some(epoch) = self.epochs.last_mut() {
@@ -298,7 +299,7 @@ fn run(moves: Vec<(Input, bool)>) {
                 }
             }
             let epoch = &model.epochs[tailed.epoch];
-            let received: BTreeSet<TransactionId> = tailed.received.iter().copied().collect();
+            let received: BTreeSet<TxId> = tailed.received.iter().copied().collect();
             assert_eq!(received.len(), tailed.received.len(), "{context}: G5 a tx sent twice");
             assert_eq!(received, epoch.txs, "{context}: G5 tail = its epoch's transactions");
             assert_eq!(tailed.ended, epoch.closed, "{context}: G5 ends iff the served tip moved");

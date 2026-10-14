@@ -13,11 +13,12 @@ use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockRef, ReorgDepth, TransactionId, UpgradeSchedule};
+use zaino_primitives::types::{BlockRef, ReorgDepth, UpgradeSchedule};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_snapshot::{Publisher, Snapshots};
 use zaino_source::testing::{MockValidator, ValidatorViews};
 use zaino_traffic::{Limits, TrafficBalancer, TrafficDriver, Trusted};
+use zcash_protocol::TxId;
 
 use crate::service::{Dispatch, Method, Routes};
 
@@ -96,7 +97,7 @@ pub(super) fn snapshot_held(
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
     held_by: EndpointSet,
-    ours: &[(TransactionId, bytes::Bytes)],
+    ours: &[(TxId, bytes::Bytes)],
 ) -> Snapshots<DiskView> {
     let verified = Some(Arc::new(chain.verified(tip)));
     let view = ChainViewSnapshot::fixed(verified, held_by, &["node:8232"], ours);

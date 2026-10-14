@@ -18,7 +18,7 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
-use zaino_primitives::types::{PeerTxId, TransactionId, UpgradeSchedule};
+use zaino_primitives::types::{PeerTxId, UpgradeSchedule};
 use zaino_source::decode_transaction;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
@@ -141,7 +141,7 @@ pub(crate) fn judge(
 
 /// `at` among the held transactions' outputs (a parent still unmined)
 fn held(view: &ChainViewSnapshot, at: &OutPoint) -> Option<Zatoshis> {
-    let parent = view.mempool.get(&TransactionId::from(*at.hash()))?;
+    let parent = view.mempool.get(at.txid())?;
     let tx = decode_transaction(parent.raw()).ok()?;
     let index = usize::try_from(at.n()).ok()?;
     tx.transparent.outputs.get(index).map(|output| output.value)

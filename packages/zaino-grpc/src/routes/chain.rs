@@ -11,7 +11,7 @@ use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::network::chain_name;
-use zaino_primitives::types::{TransactionId, TransactionLocation};
+use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_snapshot::{Lightd, Snapshot};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
@@ -19,6 +19,7 @@ use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::NetworkUpgrade;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 
 use crate::wire::{self, decode_request, frame, streamed_response, trailers, unary_response};
 
@@ -75,9 +76,7 @@ where
 /// - accepted: `sendrawtransaction`'s raw JSON result = quoted display-order txid (lightwalletd
 ///   relays it untouched)
 /// - rejected: gRPC OK, the validator's code + message verbatim (zingolib substring-matches it)
-fn send_reply(
-    outcome: Result<TransactionId, SubmitError>,
-) -> Result<service::SendResponse, Status> {
+fn send_reply(outcome: Result<TxId, SubmitError>) -> Result<service::SendResponse, Status> {
     match outcome {
         Ok(txid) => {
             Ok(service::SendResponse { error_code: 0, error_message: format!("\"{txid}\"") })
@@ -141,7 +140,7 @@ where
         .as_slice()
         .try_into()
         .map_err(|_| Status::invalid_argument("txid must be 32 bytes, in protocol order"))?;
-    let found = raw_transaction(validators, txid.into()).await?;
+    let found = raw_transaction(validators, TxId::from_bytes(txid)).await?;
     Ok(unary_response(frame(&found)))
 }
 
@@ -152,7 +151,7 @@ where
 /// - `NOT_FOUND` only when every validator asked said absent (a failure = maybe held)
 pub(super) async fn raw_transaction<S: ChainDataSource>(
     validators: &TrafficBalancer<S>,
-    txid: TransactionId,
+    txid: TxId,
 ) -> Result<RawTransaction, Status> {
     let found =
         validators.transaction(txid).await.map_err(|unanswered| match &unanswered.last {
@@ -249,7 +248,7 @@ mod tests {
         let mut internal = [0u8; 32];
         internal[0] = 0x01;
         internal[31] = 0xff;
-        let accepted = send_reply(Ok(TransactionId::from(internal))).expect("a reply");
+        let accepted = send_reply(Ok(TxId::from_bytes(internal))).expect("a reply");
         let quoted_display = format!("\"ff{}01\"", "00".repeat(30));
         assert_eq!((accepted.error_code, accepted.error_message), (0, quoted_display));
 
@@ -386,7 +385,7 @@ mod tests {
         let mut chain = MockChain::regtest();
         let tip_10 = chain.mine_empty(10);
         let tip_11 = chain.mine_empty(1);
-        let seeded: Vec<TransactionId> =
+        let seeded: Vec<TxId> =
             (1..=5).map(|seed| chain.submit(decoded(raw_transaction(seed, 0).1))).collect();
         let node = Arc::new(chain.validator(chain.genesis()));
         let hear =

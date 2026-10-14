@@ -3,8 +3,8 @@
 //! - big-endian throughout (keys compare as bytes: byte order = key order)
 //! - derived `Ord` = that encoding (pinned by a test below)
 
-use zaino_primitives::types::TransactionId;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::address::TransparentAddress;
 
 const HASH160: usize = 20;
@@ -76,14 +76,14 @@ impl From<&TransparentAddress> for AddressKey {
 pub(crate) struct ReceiveKey {
     pub(crate) address: AddressKey,
     pub(crate) height: u32,
-    pub(crate) txid: TransactionId,
+    pub(crate) txid: TxId,
     pub(crate) vout: u32,
 }
 
 impl ReceiveKey {
     /// Lowest key `address` can hold at `height` (a scan bound, never a stored row)
     pub(crate) fn first(address: AddressKey, height: u32) -> Self {
-        Self { address, height, txid: TransactionId::from([0u8; TXID]), vout: 0 }
+        Self { address, height, txid: TxId::from_bytes([0u8; TXID]), vout: 0 }
     }
 }
 
@@ -97,7 +97,7 @@ pub(crate) struct ReceiveRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Spend {
     pub(crate) height: u32,
-    pub(crate) spender: TransactionId,
+    pub(crate) spender: TxId,
 }
 
 pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
@@ -129,7 +129,7 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
         key: ReceiveKey {
             address,
             height: u32::from_be_bytes(field(at)),
-            txid: TransactionId::from(txid),
+            txid: TxId::from_bytes(txid),
             vout: u32::from_be_bytes(field(at + 4 + TXID)),
         },
         value: Zatoshis::from_u64(u64::from_be_bytes(*value))
@@ -138,9 +138,9 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
 }
 
 /// `txid ‖ vout` big-endian (the spent output; a spend row's key)
-pub(crate) fn encode_spent_key(txid: [u8; TXID], vout: u32) -> [u8; SPENT_KEY] {
+pub(crate) fn encode_spent_key(txid: &TxId, vout: u32) -> [u8; SPENT_KEY] {
     let mut out = [0u8; SPENT_KEY];
-    out[..TXID].copy_from_slice(&txid);
+    out[..TXID].copy_from_slice(txid.as_ref());
     out[TXID..].copy_from_slice(&vout.to_be_bytes());
     out
 }
@@ -157,7 +157,7 @@ pub(crate) fn decode_spend(bytes: &[u8; SPEND]) -> Spend {
     let (height, spender) = bytes.split_at(4);
     Spend {
         height: u32::from_be_bytes(height.try_into().expect("4-byte height")),
-        spender: TransactionId::from(<[u8; TXID]>::try_from(spender).expect("32-byte txid")),
+        spender: TxId::from_bytes(<[u8; TXID]>::try_from(spender).expect("32-byte txid")),
     }
 }
 
@@ -172,7 +172,7 @@ mod tests {
         let receive = ReceiveKey {
             address: AddressKey::p2pkh([0x11; HASH160]),
             height: 7,
-            txid: TransactionId::from([0x22; TXID]),
+            txid: TxId::from_bytes([0x22; TXID]),
             vout: 0,
         };
         decode_receive(&encode_receive_key(&receive), &u64::MAX.to_be_bytes());
@@ -184,7 +184,7 @@ mod tests {
         let receive = ReceiveKey {
             address: AddressKey::p2pkh([0x11; HASH160]),
             height: 7,
-            txid: TransactionId::from([0x22; TXID]),
+            txid: TxId::from_bytes([0x22; TXID]),
             vout: 0,
         };
         let mut key = encode_receive_key(&receive);
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn encoded_order_is_key_order_and_every_field_round_trips() {
         let addr = AddressKey::p2pkh([0x11; HASH160]);
-        let txid = TransactionId::from([0x22; TXID]);
+        let txid = TxId::from_bytes([0x22; TXID]);
         let zat = |n| Zatoshis::from_u64(n).expect("in supply");
 
         // ascending in each key part, one part changed at a time (address = hash, then kind)
@@ -205,18 +205,8 @@ mod tests {
             ReceiveKey { address: AddressKey::opaque(), height: 9, txid, vout: 0 },
             ReceiveKey { address: AddressKey::p2pkh([0x11; HASH160]), height: 7, txid, vout: 0 },
             ReceiveKey { address: addr, height: 7, txid, vout: 1 },
-            ReceiveKey {
-                address: addr,
-                height: 7,
-                txid: TransactionId::from([0x23; TXID]),
-                vout: 0,
-            },
-            ReceiveKey {
-                address: addr,
-                height: 8,
-                txid: TransactionId::from([0x00; TXID]),
-                vout: 0,
-            },
+            ReceiveKey { address: addr, height: 7, txid: TxId::from_bytes([0x23; TXID]), vout: 0 },
+            ReceiveKey { address: addr, height: 8, txid: TxId::from_bytes([0x00; TXID]), vout: 0 },
             ReceiveKey { address: AddressKey::p2sh([0x11; HASH160]), height: 0, txid, vout: 0 },
             ReceiveKey { address: AddressKey::p2pkh([0x12; HASH160]), height: 0, txid, vout: 0 },
         ];
@@ -247,16 +237,11 @@ mod tests {
         assert_eq!(decode_receive(&key, &value), receive);
 
         let spent_key = [&[0x22; TXID][..], &[0x01, 0x02, 0x03, 0x04]].concat();
-        let ordered = encode_spent_key([0x22; TXID], 0x0102_0304)
-            < encode_spent_key([0x22; TXID], 0x0102_0305);
-        assert_eq!(
-            encode_spent_key([0x22; TXID], 0x0102_0304).as_slice(),
-            spent_key,
-            "txid ‖ vout"
-        );
+        let ordered = encode_spent_key(&txid, 0x0102_0304) < encode_spent_key(&txid, 0x0102_0305);
+        assert_eq!(encode_spent_key(&txid, 0x0102_0304).as_slice(), spent_key, "txid ‖ vout");
         assert!(ordered, "vout big-endian: byte order = output order");
 
-        let spend = Spend { height: 900, spender: TransactionId::from([0x44; TXID]) };
+        let spend = Spend { height: 900, spender: TxId::from_bytes([0x44; TXID]) };
         let golden = [&[0, 0, 0x03, 0x84][..], &[0x44; TXID]].concat();
         assert_eq!(encode_spend(&spend).as_slice(), golden, "height ‖ spender, big-endian");
         assert_eq!(decode_spend(&encode_spend(&spend)), spend);

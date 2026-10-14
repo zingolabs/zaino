@@ -152,7 +152,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 
 ## Submission
 
-`ChainView::submit(raw)` → `Result<TransactionId, SubmitError>`; the protocol is
+`ChainView::submit(raw)` → `Result<TxId, SubmitError>`; the protocol is
 [architecture §6](../../docs/architecture.md#6-submission).
 
 - Precheck (skipped before a verified best exists): undecodable → `Rejected` code −22; expired

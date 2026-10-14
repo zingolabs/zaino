@@ -4,11 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use zcash_protocol::consensus::NetworkUpgrade;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{
-    Fee, Height, Nullifier, ShieldedPool, Transaction, TransactionId, UpgradeSchedule,
-};
+use crate::types::{Fee, Height, Nullifier, ShieldedPool, Transaction, UpgradeSchedule};
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
 #[derive(Debug, Clone)]
@@ -16,7 +15,7 @@ pub struct Ledger {
     upgrades: UpgradeSchedule,
     next: Height,
     unspent: HashMap<OutPoint, Zatoshis>,
-    txids: HashSet<TransactionId>,
+    txids: HashSet<TxId>,
     nullifiers: HashSet<(ShieldedPool, Nullifier)>,
     /// ZIP 209 chain value pools: sprout, sapling, orchard, ironwood
     pools: [i64; 4],
@@ -173,7 +172,7 @@ impl Ledger {
         }
         self.pools = pools;
         for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-            self.unspent.insert(OutPoint::new(<[u8; 32]>::from(txid), vout), output.value);
+            self.unspent.insert(OutPoint::new(txid.into(), vout), output.value);
         }
         Ok(fee)
     }

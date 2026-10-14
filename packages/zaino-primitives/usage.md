@@ -31,7 +31,7 @@ values never belong here.
 use zaino_primitives::network::{chain_name, network_name};
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::sha256d;
-use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, TransactionId, Treestate};
+use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Treestate};
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
@@ -43,9 +43,7 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
   (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool:
   `Transaction::fee(spent)`, `spent` = Σ its prevouts' values; `FeeError::Negative`
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
-  `OutPoint` (`txid` + `vout`: a transparent input is the outpoint it spends, and
-  the key both transparent indexes store under), `BlockHash`, `TransactionId`,
-  `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Height`,
+  `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction), `Height`,
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `ShieldedPool`, `MerkleRoot`,
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
@@ -126,10 +124,11 @@ display-order hex (zcashd's `powLimit` literals).
 
 ## Byte order
 
-`BlockHash` and `TransactionId` hold internal (hash-output) byte order and
-convert via `From<[u8; 32]>` both ways. `Display` renders the reversed
-(RPC/explorer) hex and `FromStr` parses it back (`ParseHashError`: not 64 hex
-digits); that pair is the one display-order conversion.
+`BlockHash` holds internal (hash-output) byte order and converts via
+`From<[u8; 32]>` both ways. `Display` renders the reversed (RPC/explorer) hex
+and `FromStr` parses it back (`ParseHashError`: not 64 hex digits). Txids,
+outpoints, scripts and zatoshi values are librustzcash's (`zcash_protocol::TxId`,
+`zcash_transparent::bundle::OutPoint`, …), with the same byte-order convention.
 
 ## Testing: `MockChain`
 

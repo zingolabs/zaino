@@ -15,12 +15,13 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo, TransactionId};
+use zaino_primitives::types::{BlockHash, BlockRef, Height, NodeRelease, PeerInfo};
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NonDomainError, PollReading, QueryError,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, ValidatorId};
+use zcash_protocol::TxId;
 
 use crate::config::CATCHING_UP_WARN_INTERVAL;
 use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
@@ -58,7 +59,7 @@ struct Member<'a, S> {
     address: &'a str,
     core: &'a ChainViewCore,
     balancer: &'a TrafficBalancer<S>,
-    listed: BTreeSet<TransactionId>,
+    listed: BTreeSet<TxId>,
     health: Health,
     catching_up_warned: Option<Instant>,
 }
@@ -102,11 +103,11 @@ impl<S: ChainDataSource> Member<'_, S> {
     /// Mempool read (its reading already folded): the diff, bytes for what the view lacks, one
     /// report
     async fn listed(&mut self, listing: &[MempoolListed]) {
-        let listing: BTreeMap<TransactionId, MempoolListed> =
+        let listing: BTreeMap<TxId, MempoolListed> =
             listing.iter().map(|entry| (entry.txid, *entry)).collect();
-        let removed: Vec<TransactionId> =
+        let removed: Vec<TxId> =
             self.listed.iter().filter(|txid| !listing.contains_key(txid)).copied().collect();
-        let mut admitted: BTreeSet<TransactionId> =
+        let mut admitted: BTreeSet<TxId> =
             listing.keys().filter(|txid| self.listed.contains(txid)).copied().collect();
         let mut added = Vec::new();
         let mut unheld = Vec::new();

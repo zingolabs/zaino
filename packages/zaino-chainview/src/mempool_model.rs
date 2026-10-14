@@ -22,10 +22,11 @@ use proptest::prelude::*;
 use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
-use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth, TransactionId};
+use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
 use zaino_source::testing::raw_transparent;
 use zaino_traffic::ValidatorId;
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::NextBlock;
@@ -172,7 +173,7 @@ struct Run {
     tip: BlockRef,
     peers: Vec<SocketAddr>,
     byzantine: Vec<bool>,
-    txs: Vec<(TransactionId, Bytes)>,
+    txs: Vec<(TxId, Bytes)>,
     utxos: Ledger,
     start: Instant,
     clock: Duration,
@@ -350,7 +351,7 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
         (a, a_raw),
         raw_transparent(&[funding(2)], &[(&alice, 9_500)]),
         raw_transparent(&[funding(2)], &[(&alice, 9_000)]),
-        raw_transparent(&[OutPoint::new(<[u8; 32]>::from(a), 0)], &[(&alice, 8_000)]),
+        raw_transparent(&[OutPoint::new(a.into(), 0)], &[(&alice, 8_000)]),
         raw_transparent(&[funding(3)], &[(&alice, 6_000)]),
         raw_transparent(&[unknown], &[(&alice, 1)]),
     ];

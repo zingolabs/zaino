@@ -1,6 +1,7 @@
 //! Transaction-tree merkle root
 
-use super::TransactionId;
+use zcash_protocol::TxId;
+
 use crate::sha256d;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -11,7 +12,7 @@ impl MerkleRoot {
     ///
     /// - `None` = no txids, or a level pairing two equal nodes (CVE-2012-2459: same root as the
     ///   list without the repeat, so a body carrying it = a mutated body)
-    pub fn of_txids(txids: &[TransactionId]) -> Option<Self> {
+    pub fn of_txids(txids: &[TxId]) -> Option<Self> {
         let mut level: Vec<[u8; 32]> = txids.iter().map(|txid| <[u8; 32]>::from(*txid)).collect();
         while level.len() > 1 {
             if level.chunks_exact(2).any(|pair| pair[0] == pair[1]) {
@@ -48,8 +49,7 @@ mod tests {
     fn merkle_root_pairs_by_sha256d_duplicates_an_odd_last_and_refuses_a_mutated_list() {
         let [a, b, c] = [[1u8; 32], [2; 32], [3; 32]];
         let root = |txids: &[[u8; 32]]| {
-            let txids: Vec<TransactionId> =
-                txids.iter().copied().map(TransactionId::from).collect();
+            let txids: Vec<TxId> = txids.iter().copied().map(TxId::from_bytes).collect();
             MerkleRoot::of_txids(&txids).map(<[u8; 32]>::from)
         };
         let pair = |l: [u8; 32], r: [u8; 32]| sha256d(&[l, r].concat());

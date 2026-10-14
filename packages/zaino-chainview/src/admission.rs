@@ -5,11 +5,10 @@
 //!   carried by the peer quorum, never second-guessed here
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
-use zaino_primitives::types::{
-    ConsensusBranchId, Fee, FeeError, Height, TransactionId, UpgradeSchedule,
-};
+use zaino_primitives::types::{ConsensusBranchId, Fee, FeeError, Height, UpgradeSchedule};
 use zaino_source::{decode_transaction, prepare_transaction, Prepared};
 use zcash_protocol::value::Zatoshis;
+use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 /// What a transaction must be valid in: the block above the verified best
@@ -39,7 +38,7 @@ pub(crate) enum Refused {
     #[error(transparent)]
     Fee(#[from] FeeError),
     #[error("prevout {txid}:{vout} neither in the served UTXO set nor a held transaction's")]
-    UnknownPrevout { txid: TransactionId, vout: u32 },
+    UnknownPrevout { txid: TxId, vout: u32 },
 }
 
 impl Refused {
@@ -68,7 +67,7 @@ pub(crate) fn admissible(
     raw: &[u8],
     next: NextBlock,
     prevout: impl Fn(&OutPoint) -> Option<Zatoshis>,
-) -> Result<(TransactionId, Zatoshis), Refused> {
+) -> Result<(TxId, Zatoshis), Refused> {
     let malformed = |cause: zaino_source::DecodeError| Refused::Malformed(cause.to_string());
     let prepared = prepare_transaction(raw).map_err(malformed)?;
     valid_in(&prepared, next)?;
@@ -78,10 +77,7 @@ pub(crate) fn admissible(
     }
     let mut spent = Zatoshis::ZERO;
     for input in &tx.transparent.inputs {
-        let unknown = || Refused::UnknownPrevout {
-            txid: TransactionId::from(*input.hash()),
-            vout: input.n(),
-        };
+        let unknown = || Refused::UnknownPrevout { txid: *input.txid(), vout: input.n() };
         let value = prevout(input).ok_or_else(unknown)?;
         spent = (spent + value).ok_or(Refused::Fee(FeeError::Overflow))?;
     }
@@ -125,7 +121,7 @@ mod tests {
         let (_, expired) = raw_transaction(2, 3_428_142);
         let (current, nu6_3) = raw_v5(BranchId::Nu6_3, 3, 0);
         let (_, nu6_2) = raw_v5(BranchId::Nu6_2, 4, 0);
-        type Admitted = Result<(TransactionId, Zatoshis), Refused>;
+        type Admitted = Result<(TxId, Zatoshis), Refused>;
         let malformed =
             Refused::Malformed("malformed consensus bytes: failed to fill whole buffer".into());
         let rows: [(&str, &[u8], Admitted, bool); 9] = [
@@ -134,7 +130,7 @@ mod tests {
             (
                 "spends an unknown prevout",
                 &orphan,
-                Err(Refused::UnknownPrevout { txid: TransactionId::from([2; 32]), vout: 3 }),
+                Err(Refused::UnknownPrevout { txid: TxId::from_bytes([2; 32]), vout: 3 }),
                 true,
             ),
             ("a coinbase", &coinbase, Err(Refused::Coinbase), false),

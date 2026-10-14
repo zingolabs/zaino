@@ -7,12 +7,13 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::{ReorgDepth, TransactionId, UpgradeSchedule};
+use zaino_primitives::types::{ReorgDepth, UpgradeSchedule};
 use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
 };
 use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
+use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
 use crate::endpoints::ValidatorMetadata;
@@ -134,7 +135,7 @@ impl<S: ChainDataSource> ChainView<S> {
     /// - no check answered: `Ok` at the first acceptance; a rejection or a failure only once every
     ///   attempt is spent
     /// - the job outlives the answer: it keeps relaying until the transaction spreads
-    pub async fn submit(&self, raw: Vec<u8>) -> Result<TransactionId, SubmitError> {
+    pub async fn submit(&self, raw: Vec<u8>) -> Result<TxId, SubmitError> {
         let prepared = prepare_transaction(&raw).map_err(|malformed| {
             SubmitError::Rejected(SendRawTransactionError::Malformed(malformed.to_string()))
         })?;
@@ -204,7 +205,7 @@ fn precheck(
 }
 
 /// What the wallet hears back from one submission
-type SubmitAnswer = Result<TransactionId, SubmitError>;
+type SubmitAnswer = Result<TxId, SubmitError>;
 
 /// One running submission (spawned: it outlives the wallet's answer)
 struct Submission<S> {
@@ -212,7 +213,7 @@ struct Submission<S> {
     balancer: TrafficBalancer<S>,
     peers: Option<Arc<dyn ValidatorP2pSource>>,
     raw: Bytes,
-    txid: TransactionId,
+    txid: TxId,
 }
 
 impl<S: ChainDataSource> Submission<S> {

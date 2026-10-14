@@ -1,17 +1,18 @@
 //! Transaction and per-pool data
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
+use zcash_protocol::TxId;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
 
-use super::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, TransactionId};
+use super::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier};
 
 /// - `txid`: pre-v5 = SHA-256d of the bytes, v5+ = ZIP-244 id
 /// - No position (slot = [`Block::transactions`](super::Block::transactions) order; mempool: none)
 /// - `ironwood` = Orchard-shaped, own field (own tree, value balance, compact-block filter)
 #[derive(Debug, Clone)]
 pub struct Transaction {
-    pub txid: TransactionId,
+    pub txid: TxId,
     pub transparent: TransparentData,
     pub sprout: SproutData,
     pub sapling: SaplingData,

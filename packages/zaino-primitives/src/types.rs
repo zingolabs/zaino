@@ -20,12 +20,12 @@ mod node_release;
 mod note_commitment;
 mod nullifier;
 mod peer_info;
+mod peer_txid;
 mod per_pool;
 mod reorg_depth;
 mod shielded_pool;
 mod subtree_root;
 mod transaction;
-mod transaction_hash;
 mod transaction_location;
 mod tree_root;
 mod tree_size;
@@ -54,6 +54,7 @@ pub use node_release::{EndOfService, NodeRelease};
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use peer_info::PeerInfo;
+pub use peer_txid::PeerTxId;
 pub use per_pool::{PerPool, TreeSizes};
 pub use reorg_depth::ReorgDepth;
 pub use shielded_pool::ShieldedPool;
@@ -62,7 +63,6 @@ pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction,
     TransparentData, TransparentOutput,
 };
-pub use transaction_hash::{PeerTxId, TransactionId};
 pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};
