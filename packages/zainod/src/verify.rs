@@ -112,8 +112,7 @@ mod tests {
     use zaino_internal_block_hash_to_height::BlockHashIndexWriter;
     use zaino_internal_value_balance::ValueBalanceIndexWriter;
     use zaino_persistence::IndexKind;
-    use zaino_primitives::testing::{h, p2pkh, MockChain};
-    use zaino_primitives::types::UpgradeSchedule;
+    use zaino_primitives::testing::{all_at, h, p2pkh, MockChain};
 
     use zaino_sync::{FeeSink, IndexerDataSink, Step};
     use zcash_protocol::consensus::NetworkType;
@@ -128,7 +127,7 @@ mod tests {
         // one sapling output (leaf = height + 1)
         let miner = p2pkh([0x11; 20]);
         let mut chain = MockChain::regtest()
-            .upgrades(UpgradeSchedule::all_at(h(0)))
+            .upgrades(all_at(h(0)))
             .genesis_with(|b| b.coinbase(|c| c.pay(&miner, 500).sapling_output(1)));
         for leaf in 2..=4 {
             chain.mine(|b| b.coinbase(|c| c.pay(&miner, 500).sapling_output(leaf)));

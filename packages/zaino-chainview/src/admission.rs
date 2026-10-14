@@ -5,9 +5,10 @@
 //!   carried by the peer quorum, never second-guessed here
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
-use zaino_primitives::types::{ConsensusBranchId, Fee, FeeError, UpgradeSchedule};
+use zaino_primitives::types::{Fee, FeeError};
 use zaino_source::{decode_transaction, prepare_transaction, Prepared};
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{BlockHeight, BranchId};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
@@ -16,13 +17,13 @@ use zcash_transparent::bundle::OutPoint;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NextBlock {
     pub(crate) height: BlockHeight,
-    pub(crate) branch: ConsensusBranchId,
+    pub(crate) branch: BranchId,
 }
 
 impl NextBlock {
-    pub(crate) fn above(best: BlockHeight, schedule: &UpgradeSchedule) -> Self {
+    pub(crate) fn above(best: BlockHeight, schedule: &LocalNetwork) -> Self {
         let height = best + 1;
-        Self { height, branch: schedule.branch_at(height) }
+        Self { height, branch: BranchId::for_height(schedule, height) }
     }
 }
 
@@ -34,8 +35,8 @@ pub(crate) enum Refused {
     Coinbase,
     #[error("tx-expiring-soon: expiry height {expiry} is below the next block {next}")]
     Expired { expiry: u32, next: u32 },
-    #[error("built for consensus branch {built}, the next block's is {next}")]
-    Branch { built: ConsensusBranchId, next: ConsensusBranchId },
+    #[error("built for consensus branch {built:?}, the next block's is {next:?}")]
+    Branch { built: BranchId, next: BranchId },
     #[error(transparent)]
     Fee(#[from] FeeError),
     #[error("prevout {txid}:{vout} neither in the served UTXO set nor a held transaction's")]
@@ -92,9 +93,10 @@ pub(crate) fn admissible(
 mod tests {
     use std::slice;
 
+    use zaino_primitives::protocol::compiled_schedule;
     use zaino_primitives::testing::{h, p2pkh};
     use zaino_source::testing::{raw_transaction, raw_transparent, raw_v5};
-    use zcash_protocol::consensus::{BranchId, NetworkType};
+    use zcash_protocol::consensus::NetworkType;
 
     use super::*;
 
@@ -102,10 +104,9 @@ mod tests {
     /// prevout passes with its fee; each rule refuses by name, an unknown prevout alone retried
     #[test]
     fn each_consensus_rule_refuses_by_name_and_only_an_unknown_prevout_is_retried() {
-        let mainnet = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
+        let mainnet = compiled_schedule(NetworkType::Main).expect("compiled");
         let next = NextBlock::above(h(3_428_142), &mainnet);
-        let branch = ConsensusBranchId::from(BranchId::Nu6_3);
-        assert_eq!(next, NextBlock { height: h(3_428_143), branch });
+        assert_eq!(next, NextBlock { height: h(3_428_143), branch: BranchId::Nu6_3 });
 
         let alice = p2pkh([0xaa; 20]);
         let known = OutPoint::new([1; 32], 0);
@@ -146,7 +147,7 @@ mod tests {
             (
                 "signed for NU6.2",
                 &nu6_2,
-                Err(Refused::Branch { built: BranchId::Nu6_2.into(), next: next.branch }),
+                Err(Refused::Branch { built: BranchId::Nu6_2, next: next.branch }),
                 false,
             ),
             ("one byte short", &pays[..pays.len() - 1], Err(malformed), false),

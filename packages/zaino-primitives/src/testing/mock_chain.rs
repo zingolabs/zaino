@@ -13,16 +13,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zcash_protocol::consensus::{BlockHeight, NetworkType, NetworkUpgrade, H0};
+use zcash_protocol::consensus::{
+    target_spacing, BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters, H0,
+};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
 use super::ledger::{Ledger, Unmined};
+use super::upgrades::{all_at, info};
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
     Block, BlockFees, BlockHash, BlockRef, BlockchainInfo, CompactDifficulty, ConsensusBranchIds,
-    DecodedHeader, EquihashSolution, Fee, MerkleRoot, Transaction, UpgradeSchedule,
+    DecodedHeader, EquihashSolution, Fee, MerkleRoot, Transaction,
 };
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
@@ -36,7 +40,7 @@ pub enum Work {
 /// What the views derive their parameters from (`network` = a label: schemas, addresses, params)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Schedule {
-    pub upgrades: UpgradeSchedule,
+    pub upgrades: LocalNetwork,
     pub work: Work,
     pub network: NetworkType,
 }
@@ -65,13 +69,14 @@ struct Mined {
 impl MockChain {
     /// Every upgrade through NU6.3 at height 1, `Work::Limit`, a bare-coinbase genesis
     pub fn regtest() -> Self {
-        let upgrades = UpgradeSchedule::all_at(h(1));
+        let upgrades = all_at(h(1));
         let schedule = Schedule { upgrades, work: Work::Limit, network: NetworkType::Regtest };
         Self::over(schedule, BlockBuilder::new())
     }
 
-    /// Before the first mine
-    pub fn upgrades(self, upgrades: UpgradeSchedule) -> Self {
+    /// Before the first mine; heights in protocol order (zebrad refuses any other config)
+    pub fn upgrades(self, upgrades: LocalNetwork) -> Self {
+        let upgrades = LocalNetwork::from_activation_heights(|nu| upgrades.activation_height(nu));
         let schedule = Schedule { upgrades, ..self.schedule };
         self.reconfigured(schedule, None)
     }
@@ -187,16 +192,16 @@ impl MockChain {
     pub fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
         assert_eq!(self.reference(tip.hash), tip, "tip held at its height");
         let upgrades = &self.schedule.upgrades;
-        let sapling = upgrades.activation(NetworkUpgrade::Sapling);
+        let sapling = upgrades.activation_height(NetworkUpgrade::Sapling);
         BlockchainInfo {
             blocks: tip.height,
             estimated_height: tip.height,
             best_block_hash: tip.hash,
             sapling_activation: sapling.expect("a Sapling activation (zebrad always has one)"),
-            upgrades: upgrades.info(tip.height),
+            upgrades: info(upgrades, tip.height),
             consensus: ConsensusBranchIds {
-                chain_tip: upgrades.branch_at(tip.height),
-                next_block: upgrades.branch_at(tip.height + 1),
+                chain_tip: BranchId::for_height(upgrades, tip.height),
+                next_block: BranchId::for_height(upgrades, tip.height + 1),
             },
         }
     }
@@ -249,7 +254,6 @@ impl MockChain {
     }
 
     fn over(schedule: Schedule, genesis_spec: BlockBuilder) -> Self {
-        schedule.upgrades.assert_ordered();
         let mut chain = Self {
             schedule,
             genesis_spec: genesis_spec.clone(),
@@ -403,7 +407,7 @@ impl MockChain {
     fn time(&self, parent: Option<BlockRef>, height: BlockHeight, stated: Option<u32>) -> u32 {
         let Some(parent) = parent else { return stated.unwrap_or(GENESIS_TIME) };
         let parent_time = self.block(parent.hash).header().time;
-        let time = stated.unwrap_or(parent_time + self.schedule.upgrades.spacing(height));
+        let time = stated.unwrap_or(parent_time + target_spacing(&self.schedule.upgrades, height));
         let ancestors = std::iter::successors(Some(self.block(parent.hash)), |block| {
             self.blocks.get(&block.header().prev_hash).map(|mined| &mined.block)
         });

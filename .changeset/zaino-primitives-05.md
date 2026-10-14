@@ -1,7 +1,7 @@
 ---
-default: minor
+default: major
 ---
 
-# `zaino-primitives`: `types::UpgradeSchedule`: one table of network-upgrade activation heights
+# `zaino-primitives`: network-upgrade schedules and branch ids are `zcash_protocol`'s
 
-`types::UpgradeSchedule`: one table of network-upgrade activation heights. `compiled(network)` = mainnet's or testnet's (`zcash_protocol`'s tables, `None` for regtest); `reported(&info)` = a validator's `getblockchaininfo` (regtest). The `testing` feature's `Upgrades` builder is now `UpgradeSchedule`'s test-only methods (`all_at`, `with`, `onward`, `without`).
+Activation heights are a `zcash_protocol::local_consensus::LocalNetwork`: `protocol::compiled_schedule(network)` = mainnet's or testnet's (`None` for regtest), `BlockchainInfo::schedule()` = a validator's `getblockchaininfo` listing (regtest). `ConsensusBranchId` is removed: `NetworkUpgradeInfo::branch_id` and `ConsensusBranchIds` carry `zcash_protocol::consensus::BranchId`. The `testing` feature's `all_at(height)` builds a regtest schedule (edit it with struct-update syntax).

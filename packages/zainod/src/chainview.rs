@@ -11,9 +11,10 @@ use futures::FutureExt as _;
 use tracing::info;
 use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch, ValidatorP2pSource};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::{ReorgDepth, UpgradeSchedule};
+use zaino_primitives::types::ReorgDepth;
 use zaino_source::{ChainDataSource, IndexerWatch, ZcashGrpcClient, ZcashLegacyRpcClient};
 use zaino_traffic::{PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
+use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
 use crate::error::IndexerError;
@@ -78,7 +79,7 @@ pub(crate) fn view<S: ChainDataSource>(
     config: &DaemonConfig,
     balancer: &TrafficBalancer<S>,
     p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
-    schedule: UpgradeSchedule,
+    schedule: LocalNetwork,
 ) -> Result<Viewed<S>, IndexerError> {
     let validators = &config.trusted_validators;
     let depth = ReorgDepth::new(config.sync.finalised_depth);

@@ -29,7 +29,6 @@ mod transaction_location;
 mod tree_root;
 mod tree_size;
 mod treestate;
-mod upgrade_schedule;
 
 pub use aliases::{BlockTime, EquihashNonce, OutputIndex};
 pub use block::{Block, BodyMismatch, DecodedHeader};
@@ -45,9 +44,7 @@ pub use equihash_solution::EquihashSolution;
 pub use fee::{BlockFees, Fee, FeeError};
 pub use header_bytes::{HeaderBytes, HeaderError, REGTEST_SOLUTION, STANDARD_SOLUTION};
 pub use merkle_root::MerkleRoot;
-pub use network_upgrade::{
-    ConsensusBranchId, ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus,
-};
+pub use network_upgrade::{ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus};
 pub use node_release::{EndOfService, NodeRelease};
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
@@ -65,6 +62,3 @@ pub use transaction_location::TransactionLocation;
 pub use tree_root::TreeRoot;
 pub use tree_size::{TreeSize, TreeSizeOutOfRange};
 pub use treestate::{CommitmentTreeBytes, Treestate};
-pub use upgrade_schedule::UpgradeSchedule;
-#[cfg(any(test, feature = "testing"))]
-pub(crate) use upgrade_schedule::{slot, ORDER};

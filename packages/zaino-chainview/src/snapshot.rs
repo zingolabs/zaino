@@ -276,15 +276,15 @@ impl ChainViewSnapshot {
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
     ) -> Self {
-        use zaino_primitives::types::{BlockchainInfo, ConsensusBranchId, ConsensusBranchIds};
-        use zcash_protocol::consensus::H0;
+        use zaino_primitives::types::{BlockchainInfo, ConsensusBranchIds};
+        use zcash_protocol::consensus::{BranchId, H0};
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
         view.chain = chain;
         view.held_by = view.best().map_or_else(EndpointSet::default, |_| held_by);
         if let Some(best) = view.best() {
-            let branch = ConsensusBranchId::new(0);
+            let branch = BranchId::Sprout;
             let info = BlockchainInfo {
                 blocks: best.height,
                 estimated_height: best.height,

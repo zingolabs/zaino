@@ -3,9 +3,9 @@
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
-use zaino_primitives::types::{ShieldedPool, UpgradeSchedule};
-use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::consensus::NetworkUpgrade;
+use zaino_primitives::types::ShieldedPool;
+use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
+use zcash_protocol::local_consensus::LocalNetwork;
 
 /// Height each pool's tree begins (`None` = unscheduled)
 ///
@@ -19,13 +19,13 @@ pub struct PoolActivations {
 
 impl PoolActivations {
     /// Sapling, NU5 (orchard), NU6.3 (ironwood)
-    pub fn new(schedule: &UpgradeSchedule) -> Self {
+    pub fn new(schedule: &LocalNetwork) -> Self {
         Self {
             sapling: schedule
-                .activation(NetworkUpgrade::Sapling)
+                .activation_height(NetworkUpgrade::Sapling)
                 .expect("every schedule activates Sapling (compiled tables, getblockchaininfo)"),
-            orchard: schedule.activation(NetworkUpgrade::Nu5),
-            ironwood: schedule.activation(NetworkUpgrade::Nu6_3),
+            orchard: schedule.activation_height(NetworkUpgrade::Nu5),
+            ironwood: schedule.activation_height(NetworkUpgrade::Nu6_3),
         }
     }
 
@@ -59,10 +59,11 @@ mod tests {
     /// Sapling, NU5 (orchard), NU6.3 (ironwood) from the schedule; an unscheduled pool = `None`
     #[test]
     fn pool_activations_are_the_schedules_pool_upgrades() {
-        use zaino_primitives::testing::h;
+        use zaino_primitives::protocol::compiled_schedule;
+        use zaino_primitives::testing::{all_at, h};
+        use zcash_protocol::consensus::NetworkType;
 
-        let mainnet = UpgradeSchedule::compiled(zcash_protocol::consensus::NetworkType::Main)
-            .expect("mainnet compiled in");
+        let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");
         let expected = PoolActivations {
             sapling: h(419_200),
             orchard: Some(h(1_687_104)),
@@ -70,7 +71,7 @@ mod tests {
         };
         assert_eq!(PoolActivations::new(&mainnet), expected);
 
-        let no_nu5 = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu5);
+        let no_nu5 = LocalNetwork { nu5: None, ..all_at(h(1)) };
         let expected = PoolActivations { sapling: h(1), orchard: None, ironwood: Some(h(1)) };
         assert_eq!(PoolActivations::new(&no_nu5), expected, "no NU5 = never orchard");
     }

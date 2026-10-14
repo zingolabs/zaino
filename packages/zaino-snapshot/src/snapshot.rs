@@ -6,9 +6,10 @@ use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
 use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
-use zaino_primitives::types::{BlockHash, BlockRef, UpgradeSchedule};
+use zaino_primitives::types::{BlockHash, BlockRef};
 use zaino_traffic::Health;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::feed::{Feed, MempoolTail};
 
@@ -35,7 +36,7 @@ pub struct ForkView {
 pub struct Lightd {
     pub served: BlockHeight,
     pub best: BlockHeight,
-    pub schedule: UpgradeSchedule,
+    pub schedule: LocalNetwork,
 }
 
 /// No answer (fail closed: `UNAVAILABLE`)

@@ -4,10 +4,10 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
-use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, HeaderError, ReorgDepth, UpgradeSchedule};
+use zaino_primitives::testing::{all_at, MockChain};
+use zaino_primitives::types::{BlockHash, BlockRef, HeaderError, ReorgDepth};
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
@@ -249,7 +249,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     let invalid_bits = mutated(&set_u32(104, 0x0180_0000));
     assert_eq!(alone(&invalid_bits), Err(Rejected::Bits { bits: 0x0180_0000 }));
 
-    let regtest = Params::regtest(UpgradeSchedule::all_at(height(1)));
+    let regtest = Params::regtest(all_at(height(1)));
     let mut builder = MockChain::regtest();
     let raw = builder.header_bytes(builder.genesis().hash);
     let versioned = |version: u32| {
@@ -265,7 +265,7 @@ fn each_mutation_is_refused_by_its_own_rule() {
     assert_eq!(decode_header(&padded), Err(DecodeError::Header(non_minimal)));
 
     let testnet = Params::testnet();
-    let pre_nu7 = Params { schedule: testnet.schedule.without(NetworkUpgrade::Nu7), ..testnet };
+    let pre_nu7 = Params { schedule: LocalNetwork { nu7: None, ..testnet.schedule }, ..testnet };
     let nu7 = height(4_465_026 + 50);
     // 113 ancestors 25 s apart, 0x1d00ffff then a harder 0x1c7fffff for the newest 40
     let ancestors: Vec<Ancestor> = (0..crate::rules::CONTEXT as u32)

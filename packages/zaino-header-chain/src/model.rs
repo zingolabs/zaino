@@ -26,8 +26,8 @@ use std::num::NonZeroU32;
 
 use proptest::prelude::*;
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
-use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth, UpgradeSchedule};
+use zaino_primitives::testing::{all_at, MockChain};
+use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::params::AVERAGING_WINDOW;
@@ -495,7 +495,7 @@ fn run(moves: Vec<Move>) {
     let mut published: Option<(VerifiedChain, Vec<Record>, usize, Vec<Fork>)> = None;
 
     // the driver's: nothing above the ceiling offered (H9); untrusted = every rule run first
-    let params = Params::regtest(UpgradeSchedule::all_at(height(1)));
+    let params = Params::regtest(all_at(height(1)));
     let params = params.with_genesis(genesis.hash()).any_bits();
     let offer = |chain: &mut HeaderChain,
                  model: &mut Model,

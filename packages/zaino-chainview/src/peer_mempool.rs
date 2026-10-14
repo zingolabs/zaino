@@ -18,8 +18,9 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
-use zaino_primitives::types::{PeerTxId, UpgradeSchedule};
+use zaino_primitives::types::PeerTxId;
 use zaino_source::decode_transaction;
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
 
@@ -37,7 +38,7 @@ pub struct PeerMempool {
     core: Arc<ChainViewCore>,
     peers: Arc<dyn ValidatorP2pSource>,
     utxos: Arc<dyn UnspentOutputs>,
-    schedule: UpgradeSchedule,
+    schedule: LocalNetwork,
 }
 
 impl PeerMempool {
@@ -45,7 +46,7 @@ impl PeerMempool {
         core: Arc<ChainViewCore>,
         peers: Arc<dyn ValidatorP2pSource>,
         utxos: Arc<dyn UnspentOutputs>,
-        schedule: UpgradeSchedule,
+        schedule: LocalNetwork,
     ) -> Self {
         Self { core, peers, utxos, schedule }
     }

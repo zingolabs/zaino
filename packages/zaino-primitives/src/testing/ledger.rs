@@ -2,18 +2,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{Fee, Nullifier, ShieldedPool, Transaction, UpgradeSchedule};
-use zcash_protocol::consensus::BlockHeight;
+use crate::types::{Fee, Nullifier, ShieldedPool, Transaction};
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
 #[derive(Debug, Clone)]
 pub struct Ledger {
-    upgrades: UpgradeSchedule,
+    upgrades: LocalNetwork,
     next: BlockHeight,
     unspent: HashMap<OutPoint, Zatoshis>,
     txids: HashSet<TxId>,
@@ -59,7 +59,7 @@ pub enum Refused {
 
 impl Ledger {
     /// Nothing mined; the next block at `next`
-    pub(super) fn empty(upgrades: UpgradeSchedule, next: BlockHeight) -> Self {
+    pub(super) fn empty(upgrades: LocalNetwork, next: BlockHeight) -> Self {
         Self {
             upgrades,
             next,
@@ -118,7 +118,7 @@ impl Ledger {
         ];
         for ((upgrade, data), balance) in pools.into_iter().zip(&balances[1..]) {
             let used = data > 0 || *balance != 0;
-            if used && !self.upgrades.active(upgrade, self.next) {
+            if used && !self.upgrades.is_nu_active(upgrade, self.next) {
                 return Err(Refused::Inactive(upgrade));
             }
         }

@@ -85,7 +85,7 @@ fn depth() -> ReorgDepth {
 }
 
 /// `MockChain::regtest()`'s: every upgrade through NU6.3 at 1
-fn regtest() -> zaino_primitives::types::UpgradeSchedule {
+fn regtest() -> zcash_protocol::local_consensus::LocalNetwork {
     MockChain::regtest().schedule().upgrades
 }
 

@@ -169,8 +169,7 @@ mod tests {
     use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Overlay, Schema, Store};
-    use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::UpgradeSchedule;
+    use zaino_primitives::testing::{all_at, h, p2pkh, BlockBuilder, MockChain};
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats;
     use zaino_sync::testing::open;
@@ -206,9 +205,7 @@ mod tests {
                 })
             }
         };
-        let mut chain = MockChain::regtest()
-            .upgrades(UpgradeSchedule::all_at(h(0)))
-            .genesis_with(every_pool(0));
+        let mut chain = MockChain::regtest().upgrades(all_at(h(0))).genesis_with(every_pool(0));
         for at in 1..count {
             chain.mine(every_pool(at));
         }

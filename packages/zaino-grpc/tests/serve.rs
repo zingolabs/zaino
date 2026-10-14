@@ -24,7 +24,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
     let trusted = zaino_traffic::Trusted { source: validator, priority: 0, limits };
     let (validators, _never_driven) = zaino_traffic::TrafficBalancer::new(vec![trusted], None);
     let depth = zaino_primitives::types::ReorgDepth::new(NonZeroU32::new(3).expect("non-zero"));
-    let schedule = zaino_primitives::types::UpgradeSchedule::compiled(network);
+    let schedule = zaino_primitives::protocol::compiled_schedule(network);
     let chain = zaino_chainview::ChainView::new(
         vec!["unpolled:18232".to_owned()],
         validators.clone(),

@@ -49,18 +49,12 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
   `TransactionLocation` and the network-upgrade types, plus the zatoshi family
   and `CompactDifficulty` below.
-- `UpgradeSchedule` — the one table of activation heights (`activation(upgrade)`,
-  `None` = never). `compiled(network)` = mainnet's or testnet's, from
-  `zcash_protocol` (`None` for regtest, whose heights are set per chain);
-  `reported(&BlockchainInfo)` = a validator's (regtest), keyed by branch id. Pool
-  activations and the header rules' Blossom / NU7 heights both read it.
-  `active(upgrade, at)`, `branch_at(at)` (the consensus branch in force, Sprout =
-  0) and `next_after(at)` (the next scheduled upgrade) answer `GetLightdInfo`
-  with no validator. `spacing(at)` = `PoWTargetSpacing` (150 s, 75 s from
-  Blossom, 25 s from NU7): the header rules' adjustment and the chain builder's
-  default times both read it.
-- `ConsensusBranchId` — `of(NetworkUpgrade)` and `From<BranchId>`; never
-  rebuilt from a raw `u32` of `branch_id()`.
+- Upgrade schedule = `zcash_protocol`'s `LocalNetwork` (no Zaino schedule type):
+  `protocol::compiled_schedule(network)` = mainnet's or testnet's (`None` for
+  regtest, whose heights are set per chain); `BlockchainInfo::schedule()` = a
+  validator's listing (regtest), keyed by branch id. Pool activations, the header
+  rules (`target_spacing`, NU7's window) and `GetLightdInfo` all read it. Branch ids
+  are `zcash_protocol`'s `BranchId`.
 - `Block::check_body()` — its transactions are the ones its header commits to:
   `BodyMismatch::MerkleRoot` (txids rebuild another root) or `Mutated` (a repeated
   txid pair, CVE-2012-2459). With the hash matched, a body passing it is the one
@@ -135,9 +129,8 @@ live suite takes its blocks, headers, fees, mempool and validators from. Enable 
 `[dev-dependencies]` only.
 
 ```rust,ignore
-use zaino_primitives::testing::{h, p2pkh, Ledger, MockChain, Unmined};
-use zaino_primitives::types::UpgradeSchedule;
-use zcash_protocol::consensus::NetworkUpgrade;
+use zaino_primitives::testing::{all_at, h, p2pkh, Ledger, MockChain, Unmined};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_transparent::bundle::OutPoint;
 
 let alice = p2pkh([0xaa; 20]);
@@ -162,8 +155,8 @@ let mut varied = MockChain::regtest().varied_work(); // reorg-by-work tests opt 
 let twelve = varied.mine_empty(12);
 let retreat = varied.fork(h(10)).outweigh().mine_empty(1).tip(); // 12 → 11, now the best
 let revived = varied.branch(twelve).outweigh().mine_empty(1).tip();
-let later = MockChain::regtest()
-    .upgrades(UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3)));
+let no_nu7 = MockChain::regtest()                    // heights refused out of protocol order
+    .upgrades(LocalNetwork { nu7: None, ..all_at(h(1)) });
 
 let fork = varied.ancestor(revived, h(9));           // any tip's path at a height
 let met = varied.fork_point(twelve, retreat);        // highest block on both paths

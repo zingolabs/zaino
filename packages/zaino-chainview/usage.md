@@ -9,7 +9,8 @@ request goes through one `zaino_traffic::TrafficBalancer`.
 ```rust
 use zaino_chainview::{ChainView, SubmitPolicy};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::{ReorgDepth, UpgradeSchedule};
+use zaino_primitives::protocol::compiled_schedule;
+use zaino_primitives::types::ReorgDepth;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
@@ -18,7 +19,7 @@ use zcash_protocol::consensus::NetworkType;
 // finality depth (zainod passes `sync.finalised_depth`); schedule = the network's (the branch
 // a transaction must be signed for at the next block; regtest's = its validator's)
 let addresses = vec!["127.0.0.1:8232".to_owned()];
-let schedule = UpgradeSchedule::compiled(NetworkType::Main).ok_or("mainnet compiled in")?;
+let schedule = compiled_schedule(NetworkType::Main).ok_or("mainnet compiled in")?;
 let view = ChainView::new(addresses, balancer, ReorgDepth::CONSENSUS, schedule)?;
 let view = view.with_submit_policy(SubmitPolicy::default());
 // the tip comes only from header sync, the polls from the fold (the balancer's driver runs

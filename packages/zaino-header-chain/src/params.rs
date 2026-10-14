@@ -1,15 +1,18 @@
 //! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
 
-use zaino_primitives::types::{BlockHash, CompactDifficulty, Target, UpgradeSchedule};
-use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::consensus::{NetworkType, NetworkUpgrade};
+use zaino_primitives::protocol::compiled_schedule;
+use zaino_primitives::types::{BlockHash, CompactDifficulty, Target};
+use zcash_protocol::consensus::{
+    target_spacing, BlockHeight, NetworkType, NetworkUpgrade, Parameters,
+};
+use zcash_protocol::local_consensus::LocalNetwork;
 
 /// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
 /// or [`regtest`](Self::regtest); `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Params {
     pub(crate) genesis: BlockHash,
-    pub(crate) schedule: UpgradeSchedule,
+    pub(crate) schedule: LocalNetwork,
     pub(crate) pow_limit: Target,
     pub(crate) pow: bool,
     pub(crate) difficulty: Difficulty,
@@ -38,7 +41,7 @@ const POST_NU7_MIN_DIFFICULTY_GAP_MULTIPLIER: i64 = 18;
 
 impl Params {
     /// `network`'s rules; regtest's heights from `schedule`
-    pub fn for_network(network: NetworkType, schedule: &UpgradeSchedule) -> Self {
+    pub fn for_network(network: NetworkType, schedule: &LocalNetwork) -> Self {
         match network {
             NetworkType::Main => Self::mainnet(),
             NetworkType::Test => Self::testnet(),
@@ -78,7 +81,7 @@ impl Params {
     /// max-time height applies too)
     ///
     /// - `schedule` only moves the averaging window at NU7 (nBits = the limit at every height)
-    pub fn regtest(schedule: UpgradeSchedule) -> Self {
+    pub fn regtest(schedule: LocalNetwork) -> Self {
         Self {
             genesis: display("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327"),
             schedule,
@@ -103,12 +106,12 @@ impl Params {
     }
 
     fn nu7_active(&self, at: BlockHeight) -> bool {
-        self.schedule.active(NetworkUpgrade::Nu7, at)
+        self.schedule.is_nu_active(NetworkUpgrade::Nu7, at)
     }
 
     /// `PoWTargetSpacing(height)`, seconds
     pub(crate) fn spacing(&self, at: BlockHeight) -> i64 {
-        i64::from(self.schedule.spacing(at))
+        i64::from(target_spacing(&self.schedule, at))
     }
 
     /// `PoWAveragingWindow(height)` (ZIP 218: every use in §7.7.3 takes the checked height's)
@@ -147,8 +150,8 @@ fn limit(pow_limit: &str) -> Target {
 }
 
 /// `zcash_protocol`'s tables (= the pool activations')
-fn compiled(network: NetworkType) -> UpgradeSchedule {
-    UpgradeSchedule::compiled(network).expect("mainnet + testnet compiled in")
+fn compiled(network: NetworkType) -> LocalNetwork {
+    compiled_schedule(network).expect("mainnet + testnet compiled in")
 }
 
 fn height(height: u32) -> BlockHeight {
@@ -161,7 +164,7 @@ fn display(hex: &str) -> BlockHash {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::h;
+    use zaino_primitives::testing::{all_at, h};
 
     use super::*;
 
@@ -170,7 +173,7 @@ mod tests {
     /// spacing, window and testnet's minimum-difficulty gap switch at Blossom and NU7
     #[test]
     fn each_network_carries_zcashd_limits_genesis_and_upgrade_switches() {
-        let regtest = Params::regtest(UpgradeSchedule::all_at(h(1)));
+        let regtest = Params::regtest(all_at(h(1)));
         let bits = [Params::mainnet(), Params::testnet(), regtest].map(|p| p.limit_bits());
         assert_eq!(bits, [0x1f07_ffff, 0x2007_ffff, 0x200f_0f0f]);
         assert_eq!(
@@ -182,8 +185,7 @@ mod tests {
             let at = h(at);
             (params.spacing(at), params.averaging_window(at), params.min_difficulty_gap(at))
         };
-        let regtest_nu7 =
-            Params::regtest(UpgradeSchedule::all_at(h(1)).with(NetworkUpgrade::Nu7, h(10)));
+        let regtest_nu7 = Params::regtest(LocalNetwork { nu7: Some(h(10)), ..all_at(h(1)) });
         #[rustfmt::skip]
         let cases = [
             ("mainnet", Params::mainnet(), 653_599,   (150, 17, None)),

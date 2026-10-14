@@ -6,8 +6,7 @@ use super::*;
 use crate::testing::p2pkh;
 use crate::testing::TxBuilder;
 use crate::types::{
-    ConsensusBranchId, NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool,
-    TransparentOutput,
+    NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool, TransparentOutput,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -72,8 +71,9 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     assert_eq!(coinbase.transparent.outputs, [output], "genesis_with: genesis as stated");
     assert_ne!(funded.genesis(), genesis);
 
-    let upgrades = UpgradeSchedule::all_at(h(3)).with(NetworkUpgrade::Overwinter, h(1));
-    let upgrades = upgrades.with(NetworkUpgrade::Sapling, h(1)).with(NetworkUpgrade::Nu7, h(5));
+    let early = Some(h(1));
+    let upgrades =
+        LocalNetwork { overwinter: early, sapling: early, nu7: Some(h(5)), ..all_at(h(3)) };
     let mut scheduled = MockChain::regtest().upgrades(upgrades);
     let six = scheduled.mine_empty(6);
     let times: Vec<u32> = scheduled.blocks(six).iter().map(|block| block.header().time).collect();
@@ -95,9 +95,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     assert_eq!(statuses.last(), Some(&("Nu7".into(), h(5), pending)));
     assert_eq!(statuses.len(), 11, "every scheduled upgrade, NU7 included");
     let consensus = (info.consensus.chain_tip, info.consensus.next_block);
-    let (nu6_3, nu7) = (NetworkUpgrade::Nu6_3, NetworkUpgrade::Nu7);
-    let expected = (ConsensusBranchId::of(nu6_3), ConsensusBranchId::of(nu7));
-    assert_eq!(consensus, expected, "NU7 activates next");
+    assert_eq!(consensus, (BranchId::Nu6_3, BranchId::Nu7), "NU7 activates next");
 }
 
 /// M6 + M7 accepted: Alice's 50 000 coinbase funds a block whose txs spend in order, one of them
@@ -225,14 +223,19 @@ fn a_txid_repeated_on_its_branch_panics() {
 #[test]
 #[should_panic(expected = "pool data before Sapling")]
 fn sapling_data_before_sapling_panics() {
-    let mut chain = MockChain::regtest().upgrades(UpgradeSchedule::all_at(h(5)));
+    let mut chain = MockChain::regtest().upgrades(all_at(h(5)));
     chain.mine(|b| b.tx(|t| t.sapling_output(1)));
 }
 
 #[test]
 #[should_panic(expected = "pool data before Nu5")]
 fn orchard_data_before_nu5_panics() {
-    let upgrades = UpgradeSchedule::all_at(h(1)).onward(NetworkUpgrade::Nu5, h(3));
+    let upgrades = LocalNetwork::from_activation_heights(|upgrade| match upgrade {
+        NetworkUpgrade::Nu7 => None,
+        NetworkUpgrade::Nu5 | NetworkUpgrade::Nu6 | NetworkUpgrade::Nu6_1 => Some(h(3)),
+        NetworkUpgrade::Nu6_2 | NetworkUpgrade::Nu6_3 => Some(h(3)),
+        _ => Some(h(1)),
+    });
     let mut chain = MockChain::regtest().upgrades(upgrades);
     chain.mine(|b| b.coinbase(|c| c.orchard_action([1; 32], 1)));
 }
@@ -240,7 +243,7 @@ fn orchard_data_before_nu5_panics() {
 #[test]
 #[should_panic(expected = "pool data before Nu6.3")]
 fn ironwood_data_before_nu6_3_panics() {
-    let upgrades = UpgradeSchedule::all_at(h(1)).without(NetworkUpgrade::Nu6_3);
+    let upgrades = LocalNetwork { nu6_3: None, ..all_at(h(1)) };
     let mut chain = MockChain::regtest().upgrades(upgrades);
     chain.mine(|b| b.tx(|t| t.ironwood_action([1; 32], 1)));
 }
@@ -328,9 +331,9 @@ fn configuring_after_the_first_mine_panics() {
 }
 
 #[test]
-#[should_panic(expected = "Sapling at 5 activates before Overwinter")]
+#[should_panic(expected = "Sapling activates at 5, below Overwinter at 6")]
 fn upgrades_out_of_order_panic() {
-    let upgrades = UpgradeSchedule::all_at(h(6)).with(NetworkUpgrade::Sapling, h(5));
+    let upgrades = LocalNetwork { sapling: Some(h(5)), ..all_at(h(6)) };
     MockChain::regtest().upgrades(upgrades);
 }
 

@@ -16,8 +16,10 @@ use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_snapshot::{Lightd, Snapshot};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
-use zcash_protocol::consensus::NetworkType;
-use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_protocol::consensus::{
+    BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
+};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
@@ -190,15 +192,18 @@ pub(crate) fn lightd_info<V>(
 
 fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdInfo {
     let schedule = lightd.schedule;
-    let next = schedule.next_after(lightd.served);
-    let sapling = schedule.activation(NetworkUpgrade::Sapling);
+    let next = next_after(&schedule, lightd.served);
+    let sapling = schedule.activation_height(NetworkUpgrade::Sapling);
     LightdInfo {
         version: version.to_string(),
         vendor: "zaino".to_string(),
         taddr_support: true,
         chain_name: chain_name(network).to_string(),
         sapling_activation_height: sapling.map_or(0, u64::from),
-        consensus_branch_id: schedule.branch_at(lightd.served).to_string(),
+        consensus_branch_id: format!(
+            "{:08x}",
+            u32::from(BranchId::for_height(&schedule, lightd.served))
+        ),
         block_height: u64::from(lightd.served),
         estimated_height: u64::from(lightd.best),
         upgrade_name: next.map_or_else(String::new, |(upgrade, _)| upgrade.to_string()),
@@ -208,13 +213,20 @@ fn render_lightd(lightd: Lightd, network: NetworkType, version: &str) -> LightdI
     }
 }
 
+/// First upgrade scheduled above `at`
+fn next_after(schedule: &LocalNetwork, at: BlockHeight) -> Option<(NetworkUpgrade, BlockHeight)> {
+    let scheduled = UPGRADES_IN_ORDER
+        .iter()
+        .filter_map(|&upgrade| schedule.activation_height(upgrade).map(|from| (upgrade, from)));
+    scheduled.filter(|(_, from)| *from > at).min_by_key(|(_, from)| *from)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use zaino_primitives::types::UpgradeSchedule;
-    use zcash_protocol::consensus::BlockHeight;
+    use zaino_primitives::protocol::compiled_schedule;
 
     use http::HeaderValue;
     use zaino_header_chain::testing::HeaderViews;
@@ -280,7 +292,7 @@ mod tests {
     #[test]
     fn lightd_info_takes_branch_and_next_upgrade_from_the_schedule_at_the_served_height() {
         let at = BlockHeight::from;
-        let schedule = UpgradeSchedule::compiled(NetworkType::Main).expect("compiled");
+        let schedule = compiled_schedule(NetworkType::Main).expect("compiled");
         let lightd = |served: u32| Lightd { served: at(served), best: at(3_500_000), schedule };
         let rendered = |served: u32| {
             let info = render_lightd(lightd(served), NetworkType::Main, "0.11.0-alpha.2");

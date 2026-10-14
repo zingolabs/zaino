@@ -7,10 +7,10 @@
 use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
-    Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
-    ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, NoteCommitment,
-    Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData,
-    Transaction, TransparentData, TransparentOutput,
+    Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
+    EphemeralKey, HeaderBytes, HeaderError, NoteCommitment, Nullifier, OrchardAction, OrchardData,
+    SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData,
+    TransparentOutput,
 };
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
@@ -77,7 +77,7 @@ pub fn decode_block(raw: &[u8]) -> Result<Block, DecodeError> {
 pub struct Prepared {
     pub txid: TxId,
     pub expiry_height: Option<BlockHeight>,
-    pub branch: Option<ConsensusBranchId>,
+    pub branch: Option<BranchId>,
 }
 
 pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
@@ -91,7 +91,7 @@ pub fn prepare_transaction(raw: &[u8]) -> Result<Prepared, DecodeError> {
     Ok(Prepared {
         txid: tx.txid(),
         expiry_height: (expiry != 0).then(|| BlockHeight::from(expiry)),
-        branch: embeds_branch.then(|| ConsensusBranchId::from(tx.consensus_branch_id())),
+        branch: embeds_branch.then(|| tx.consensus_branch_id()),
     })
 }
 
@@ -486,7 +486,7 @@ mod tests {
 
             prop_assert_eq!(<[u8; 32]>::from(prepared.txid), *reference.txid().as_ref());
             prop_assert_eq!(prepared.expiry_height.map(u32::from), (expiry != 0).then_some(expiry));
-            let branch = embeds.then(|| ConsensusBranchId::from(tx.consensus_branch_id()));
+            let branch = embeds.then(|| tx.consensus_branch_id());
             prop_assert_eq!(prepared.branch, branch);
             let mut padded = raw.clone();
             padded.push(0);

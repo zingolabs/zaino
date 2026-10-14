@@ -41,12 +41,14 @@ use zaino_nfs::{ChainParams, Nfs};
 use zaino_persistence::fs::{Fs, RealFs};
 use zaino_persistence::{DiskEngine, DiskStore, DiskView, IndexKind, LsmConfig, PersistenceEngine};
 use zaino_primitives::network::network_name;
-use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth, UpgradeSchedule};
+use zaino_primitives::protocol::compiled_schedule;
+use zaino_primitives::types::{Block, BlockchainInfo, ReorgDepth};
 use zaino_snapshot::Publisher;
 use zaino_source::ChainDataSource;
 use zaino_sync::{FeeSink, FinalFollower, IndexHandle, Subscription};
 use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::config::{DaemonConfig, IndexConfig, TrustedValidatorConfig, ValidatorClient};
 use crate::error::IndexerError;
@@ -123,10 +125,10 @@ async fn upgrade_schedule<S: ChainDataSource>(
     network: NetworkType,
     balancer: &TrafficBalancer<S>,
     validators: usize,
-) -> UpgradeSchedule {
-    match UpgradeSchedule::compiled(network) {
+) -> LocalNetwork {
+    match compiled_schedule(network) {
         Some(schedule) => schedule,
-        None => UpgradeSchedule::reported(&regtest_schedule(balancer, validators).await),
+        None => regtest_schedule(balancer, validators).await.schedule(),
     }
 }
 
@@ -227,7 +229,7 @@ struct Inputs<S: ChainDataSource> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     view: Arc<ChainView<S>>,
     balancer: TrafficBalancer<S>,
-    schedule: UpgradeSchedule,
+    schedule: LocalNetwork,
 }
 
 /// The NFS, every enabled index's writer, the global snapshot's publisher, the gRPC routes:

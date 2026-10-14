@@ -11,6 +11,7 @@ use crate::sha256d;
 pub use build::{p2pkh, BlockBuilder, TxBuilder};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
+pub use upgrades::all_at;
 
 use crate::types::{BlockHash, DecodedHeader, EquihashSolution};
 use zcash_protocol::consensus::BlockHeight;

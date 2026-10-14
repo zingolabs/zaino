@@ -7,12 +7,13 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
-use zaino_primitives::types::{ReorgDepth, UpgradeSchedule};
+use zaino_primitives::types::ReorgDepth;
 use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
 };
 use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
@@ -35,7 +36,7 @@ pub struct ChainView<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
     addresses: Vec<String>,
-    schedule: UpgradeSchedule,
+    schedule: LocalNetwork,
     policy: SubmitPolicy,
     peers: Option<Arc<dyn ValidatorP2pSource>>,
 }
@@ -58,7 +59,7 @@ impl<S: ChainDataSource> ChainView<S> {
         addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
         depth: ReorgDepth,
-        schedule: UpgradeSchedule,
+        schedule: LocalNetwork,
     ) -> Result<Self, ConfigError> {
         if addresses.is_empty() {
             return Err(ConfigError::NoEndpoints);
@@ -195,7 +196,7 @@ impl<S: ChainDataSource> ChainView<S> {
 /// - code `-25` = zebrad's own for both rules (consensus-invalid)
 fn precheck(
     view: &ChainViewSnapshot,
-    schedule: &UpgradeSchedule,
+    schedule: &LocalNetwork,
     prepared: &Prepared,
 ) -> Result<(), SendRawTransactionError> {
     let Some(best) = view.best() else { return Ok(()) };

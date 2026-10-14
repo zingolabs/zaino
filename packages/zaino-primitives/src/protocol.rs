@@ -1,5 +1,22 @@
 //! Zcash protocol constants and rules (specification facts; restating them elsewhere = bug)
 
+use zcash_protocol::consensus::{NetworkType, Parameters, MAIN_NETWORK, TEST_NETWORK};
+use zcash_protocol::local_consensus::LocalNetwork;
+
+/// Mainnet's or testnet's activation heights, as librustzcash compiles them (`None` = regtest:
+/// heights set per chain, read from its validator)
+pub fn compiled_schedule(network: NetworkType) -> Option<LocalNetwork> {
+    match network {
+        NetworkType::Main => Some(LocalNetwork::from_activation_heights(|upgrade| {
+            MAIN_NETWORK.activation_height(upgrade)
+        })),
+        NetworkType::Test => Some(LocalNetwork::from_activation_heights(|upgrade| {
+            TEST_NETWORK.activation_height(upgrade)
+        })),
+        NetworkType::Regtest => None,
+    }
+}
+
 /// No valid reorg rewrites more than this many blocks
 pub const MAX_BLOCK_REORG_HEIGHT: u32 = 1000;
 
