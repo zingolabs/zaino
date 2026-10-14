@@ -35,7 +35,7 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Height, Transaction
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
-  on the final stream and in every NFS node; `at()` = its `BlockRef`), `BlockHeader`
+  on the final stream and in every NFS node; `at()` = its `BlockRef`), `DecodedHeader`
   (`extends(parent: Option<BlockRef>)` = one height above `parent` and linked to
   it by `prev_hash`, genesis on `None`: every fold's precondition), `Transaction` and its parts
   (`TransparentData`, `SaplingData`, `OrchardData`, `SproutData`, …; Sprout's

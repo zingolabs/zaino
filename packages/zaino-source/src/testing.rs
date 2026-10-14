@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockHeader, BlockRef, BlockchainInfo, EndOfService, Height, NodeRelease,
+    Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, Height, NodeRelease,
     OutPoint, PeerInfo, Script, Transaction, TransactionId, TransactionLocation,
 };
 
@@ -194,7 +194,7 @@ impl MockValidator {
     /// Followed header at `height` edited, hash recomputed (a header the builder refuses to mine)
     ///
     /// - blocks above keep their `prev_hash`: served as is, unlinked
-    pub fn tamper(&self, height: Height, edit: impl FnOnce(&mut BlockHeader)) {
+    pub fn tamper(&self, height: Height, edit: impl FnOnce(&mut DecodedHeader)) {
         let mut state = self.state();
         let at = state.followed.best.get_mut(u32::from(height) as usize);
         let block = at.unwrap_or_else(|| panic!("tamper at {height}: above the followed tip"));

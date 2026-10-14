@@ -7,11 +7,11 @@
 use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
-    Block, BlockHash, BlockHeader, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
-    ConsensusBranchId, EphemeralKey, HeaderBytes, HeaderError, Height, HeightOverflow,
-    NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput,
-    SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow, SproutData, Transaction,
-    TransactionId, TransparentData, TransparentOutput, Zatoshis, ZatoshisOverflow,
+    Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
+    ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
+    HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData,
+    SaplingOutput, SaplingSpend, Script, SignedZatoshis, SignedZatoshisOverflow, SproutData,
+    Transaction, TransactionId, TransparentData, TransparentOutput, Zatoshis, ZatoshisOverflow,
 };
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
@@ -138,9 +138,9 @@ fn reject_trailing(cursor: &Cursor<&[u8]>) -> Result<(), DecodeError> {
 fn block_header(
     raw: &HeaderBytes<'_>,
     coinbase: &CompressedTransaction,
-) -> Result<BlockHeader, DecodeError> {
+) -> Result<DecodedHeader, DecodeError> {
     let version = raw.version();
-    Ok(BlockHeader {
+    Ok(DecodedHeader {
         hash: raw.hash(),
         version: u32::try_from(version).map_err(|_| DecodeError::NegativeVersion(version))?,
         prev_hash: raw.prev_hash(),
@@ -306,13 +306,13 @@ pub(crate) fn tx_spans(raw: &[u8]) -> Vec<std::ops::Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::fixtures::{block as fixture, HEIGHTS};
-    use zcash_primitives::block::BlockHeader as RawHeader;
+    use crate::testing::fixtures::{self, HEIGHTS};
+    use zcash_primitives::block::BlockHeader;
 
     /// Mainnet 2,000,000 (every pool): each tx decoded alone = its decode inside the block
     #[test]
     fn each_tx_of_a_mainnet_block_decodes_alone_identically() {
-        let raw = fixture(2_000_000);
+        let raw = fixtures::block(2_000_000);
         let block = decode_block(&raw).expect("block decodes");
         let standalone: Vec<Transaction> = tx_spans(&raw)
             .into_iter()
@@ -323,7 +323,7 @@ mod tests {
 
     #[test]
     fn garbage_and_trailing_bytes_are_refused() {
-        let raw = fixture(2_000_000);
+        let raw = fixtures::block(2_000_000);
         let first = tx_spans(&raw)[0].clone();
         let padded_tx = [&raw[first], &[0]].concat();
         let padded_block = [&raw[..], &[0]].concat();
@@ -337,9 +337,9 @@ mod tests {
     #[test]
     fn each_fixture_header_hashes_links_reencodes_and_roots_its_txids() {
         for height in HEIGHTS {
-            let raw = fixture(height);
+            let raw = fixtures::block(height);
             let mut cursor = Cursor::new(raw.as_slice());
-            RawHeader::read(&mut cursor).expect("header");
+            BlockHeader::read(&mut cursor).expect("header");
             let header = &raw[..cursor.position() as usize];
             let prev: [u8; 32] = header[4..36].try_into().expect("32");
 

@@ -20,8 +20,8 @@ use super::ledger::{Ledger, Unmined};
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
-    Block, BlockFees, BlockHash, BlockHeader, BlockRef, BlockchainInfo, CompactDifficulty,
-    ConsensusBranchIds, EquihashSolution, Fee, Height, MerkleRoot, Transaction, TransactionId,
+    Block, BlockFees, BlockHash, BlockRef, BlockchainInfo, CompactDifficulty, ConsensusBranchIds,
+    DecodedHeader, EquihashSolution, Fee, Height, MerkleRoot, Transaction, TransactionId,
     UpgradeSchedule,
 };
 
@@ -301,7 +301,7 @@ impl MockChain {
         let mut nonce = [0u8; 32];
         nonce[..8].copy_from_slice(&self.nonces.to_le_bytes());
         self.nonces += 1;
-        let mut header = BlockHeader {
+        let mut header = DecodedHeader {
             hash: BlockHash::ZERO,
             version: 4,
             prev_hash: parent.map_or(BlockHash::ZERO, |parent| parent.hash),

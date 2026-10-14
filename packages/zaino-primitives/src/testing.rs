@@ -12,7 +12,7 @@ pub use build::{outpoint, p2pkh, BlockBuilder, TxBuilder};
 pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 
-use crate::types::{BlockHash, BlockHeader, EquihashSolution, Height};
+use crate::types::{BlockHash, DecodedHeader, EquihashSolution, Height};
 
 /// `Height` from a literal (`chain.fork(h(9))`)
 pub fn h(height: u32) -> Height {
@@ -24,7 +24,7 @@ const REGTEST_BITS: u32 = 0x200f_0f0f;
 const GENESIS_TIME: u32 = 1_700_000_000;
 
 /// Consensus bytes of `header` (`hash` + `height` derived from them, never encoded)
-pub fn encode_header(header: &BlockHeader) -> Vec<u8> {
+pub fn encode_header(header: &DecodedHeader) -> Vec<u8> {
     let solution = header.solution.as_bytes();
     let mut raw = Vec::with_capacity(143 + solution.len());
     raw.extend(header.version.to_le_bytes());
@@ -43,6 +43,6 @@ pub fn encode_header(header: &BlockHeader) -> Vec<u8> {
 }
 
 /// What `header.hash` must be: SHA-256d of [`encode_header`]
-pub fn header_hash(header: &BlockHeader) -> BlockHash {
+pub fn header_hash(header: &DecodedHeader) -> BlockHash {
     BlockHash::from(sha256d(&encode_header(header)))
 }

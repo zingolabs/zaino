@@ -9,7 +9,7 @@ use super::{
 /// Every consensus field + the hash (SHA-256d of the header bytes) and height naming the block
 /// (carried whole: the hash commits to all of them)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BlockHeader {
+pub struct DecodedHeader {
     pub hash: BlockHash,
     pub version: u32,
     pub prev_hash: BlockHash,
@@ -22,7 +22,7 @@ pub struct BlockHeader {
     pub solution: EquihashSolution,
 }
 
-impl BlockHeader {
+impl DecodedHeader {
     /// Next above `parent`: one height up, `prev_hash` = its hash (`None` = nothing below: genesis)
     pub fn extends(&self, parent: Option<BlockRef>) -> bool {
         match parent {
@@ -47,18 +47,18 @@ pub enum BodyMismatch {
 /// - Position = block order (coinbase = slot 0); no cumulative indexed state
 #[derive(Debug, Clone)]
 pub struct Block {
-    header: BlockHeader,
+    header: DecodedHeader,
     transactions: Vec<Transaction>,
 }
 
 impl Block {
     /// Every block mines a coinbase (slot 0): an empty list = a decode bug, never data
-    pub fn new(header: BlockHeader, transactions: Vec<Transaction>) -> Self {
+    pub fn new(header: DecodedHeader, transactions: Vec<Transaction>) -> Self {
         assert!(!transactions.is_empty(), "block {:?} with no coinbase", header.height);
         Self { header, transactions }
     }
 
-    pub fn header(&self) -> &BlockHeader {
+    pub fn header(&self) -> &DecodedHeader {
         &self.header
     }
 
