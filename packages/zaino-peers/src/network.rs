@@ -32,8 +32,8 @@ use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
 use zebra_network::types::PeerServices;
 use zebra_network::{
-    AddressBook, BoxError, CacheDir, Config, InventoryResponse, PeerSocketAddr, Request, Response,
-    SharedPeerError,
+    AddressBook, BoxError, CacheDir, Config, InventoryResponse, MisbehaviorReport, PeerSocketAddr,
+    Request, Response, SharedPeerError,
 };
 
 use crate::wire::{self, WireError};
@@ -115,7 +115,7 @@ type PeerSet = Buffer<BoxService<Request, Response, BoxError>, Request>;
 pub struct PeerNetwork {
     peers: PeerSet,
     address_book: Arc<std::sync::Mutex<AddressBook>>,
-    misbehaved: mpsc::Sender<(PeerSocketAddr, u32)>,
+    misbehaved: mpsc::Sender<MisbehaviorReport>,
     announced: broadcast::Sender<Announced>,
     timeout: Duration,
 }
@@ -310,7 +310,7 @@ impl PeerNetwork {
     fn lied(&self, peer: Option<PeerSocketAddr>, what: &str) {
         let Some(peer) = peer else { return };
         debug!(%peer, what, "Peer answered with something not asked for");
-        let _ = self.misbehaved.try_send((peer, LIED));
+        let _ = self.misbehaved.try_send(MisbehaviorReport::new(peer, LIED, what));
     }
 }
 

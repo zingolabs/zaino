@@ -1093,7 +1093,7 @@ checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 [[package]]
 name = "equihash"
 version = "0.3.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -1113,7 +1113,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1140,8 +1140,8 @@ dependencies = [
 
 [[package]]
 name = "f4jumble"
-version = "0.1.1"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+version = "0.1.2"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "blake2b_simd",
 ]
@@ -3391,7 +3391,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3978,7 +3978,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5424,8 +5424,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_address"
-version = "0.14.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+version = "0.14.0-pre.1"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "bech32",
  "bs58",
@@ -5449,7 +5449,7 @@ dependencies = [
 [[package]]
 name = "zcash_encoding"
 version = "0.5.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "corez",
  "hex",
@@ -5482,8 +5482,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_primitives"
-version = "0.31.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+version = "0.31.0-pre.1"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "blake2b_simd",
  "corez",
@@ -5512,7 +5512,7 @@ dependencies = [
 [[package]]
 name = "zcash_protocol"
 version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "corez",
  "document-features",
@@ -5552,8 +5552,8 @@ dependencies = [
 
 [[package]]
 name = "zcash_transparent"
-version = "0.11.0-pre.0"
-source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=4856fbb2172b4a5ca511afffa568c30a90ef54c3#4856fbb2172b4a5ca511afffa568c30a90ef54c3"
+version = "0.11.0-pre.1"
+source = "git+https://github.com/elicbarbieri/librustzcash.git?rev=f2f3ce2ee78e35353dfc3a6abc8617ace316a2db#f2f3ce2ee78e35353dfc3a6abc8617ace316a2db"
 dependencies = [
  "bip32",
  "bs58",
@@ -5578,7 +5578,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -5637,7 +5637,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "14.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -5675,7 +5675,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "4.0.0"
-source = "git+https://github.com/elicbarbieri/zebra.git?rev=381a34a787ab9ae0a72e5c2ce493c53859da6ec1#381a34a787ab9ae0a72e5c2ce493c53859da6ec1"
+source = "git+https://github.com/elicbarbieri/zebra.git?rev=a300f0ad140b6b44b88cecf2385067568b7a575b#a300f0ad140b6b44b88cecf2385067568b7a575b"
 dependencies = [
  "color-eyre",
  "futures",
