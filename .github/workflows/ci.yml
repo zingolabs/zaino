@@ -13,8 +13,8 @@ concurrency:
 permissions:
   contents: read
 
-# No protoc: zaino-proto build.rs falls back to checked-in generated code
-# (protoc present = regenerate over tracked sources)
+# No protoc in lint/test: zaino-proto build.rs uses the checked-in generated code; the `proto`
+# job regenerates with protoc and fails on drift (a .proto edit without its .rs)
 
 jobs:
   lint:
@@ -35,6 +35,20 @@ jobs:
 
       # Same task as the pre-push hook (shellcheck preinstalled on ubuntu-latest)
       - run: cargo make lint
+
+  proto:
+    name: Generated protos match their .proto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: sudo apt-get install -y protobuf-compiler
+
+      - run: cargo check --locked -p zaino-proto
+
+      - run: git diff --exit-code packages/zaino-proto/src/proto
 
   test:
     name: Test
