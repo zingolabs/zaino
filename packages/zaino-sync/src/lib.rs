@@ -14,9 +14,7 @@ mod fetch;
 mod follower;
 mod handle;
 mod offload;
-mod per_index;
 mod progress;
-mod report;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 mod writer;
@@ -28,9 +26,7 @@ pub use fetch::{check_block, fetch, Checked, Misanswer};
 pub use follower::{FinalFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};
-pub use per_index::PerIndex;
 pub use progress::SyncProgress;
-pub use report::{ByteSize, Human};
 pub use writer::{apply, assert_next, assert_run, commit, held, ran, IndexPublisher};
 
 use zaino_primitives::types::{Block, BlockFees};

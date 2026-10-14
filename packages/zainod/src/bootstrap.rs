@@ -26,7 +26,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tracing::{debug, info};
 use zaino_persistence::{disk_bytes, IndexKind};
-use zaino_sync::{ByteSize, Human};
+use zaino_primitives::display::{ByteSize, Human};
 
 use crate::config::{DaemonConfig, SnapshotConfig};
 use crate::error::IndexerError;
@@ -92,7 +92,7 @@ pub(crate) async fn bootstrap(
     snapshot: &SnapshotConfig,
     config: &DaemonConfig,
 ) -> Result<(), IndexerError> {
-    let empty: Vec<(IndexKind, PathBuf)> = zaino_nfs::INDEXES
+    let empty: Vec<(IndexKind, PathBuf)> = IndexKind::ALL
         .into_iter()
         .filter_map(|kind| Some((kind, config.enabled(kind)?.path)))
         .filter(|(_, path)| is_empty(path))
@@ -106,7 +106,7 @@ pub(crate) async fn bootstrap(
         Url::parse(&snapshot.manifest).map_err(|e| error(format!("manifest url: {e}")))?;
     let aria2 = Aria2::start(snapshot.connections).await?;
     let manifest = read_manifest(&aria2, &manifest_url, &staging(first_path, *first_kind)?).await?;
-    let network = zaino_grpc::network_name(config.network);
+    let network = crate::config::network_name(config.network);
     if manifest.network != network {
         return Err(error(format!(
             "manifest is for {}, this daemon serves {network}",

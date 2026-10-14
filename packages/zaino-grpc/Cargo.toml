@@ -52,7 +52,6 @@ tokio-rustls = { workspace = true }
 arc-swap = { workspace = true }
 zaino-persistence.workspace = true
 zaino-nfs.workspace = true
-zaino-sync.workspace = true
 zaino-traffic.workspace = true
 zaino-snapshot.workspace = true
 

@@ -20,6 +20,7 @@ mod lsm;
 mod manifest;
 mod overlay;
 mod pages;
+mod per_index;
 mod port;
 mod sequence;
 mod thread;
@@ -32,6 +33,7 @@ pub use lsm::{Fanout, LsmConfig, SegmentError};
 pub use manifest::{IndexKind, ManifestError};
 pub use overlay::{Entry, Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;
+pub use per_index::PerIndex;
 pub use port::{
     BlockChanges, Checked, CommittedView, MapChanges, MapId, MapRead, MapTable, MapView,
     PersistenceEngine, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable,

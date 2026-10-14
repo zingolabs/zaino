@@ -34,6 +34,15 @@ enum NetworkDef {
     Regtest,
 }
 
+/// The same spelling for logs, `/status` and messages (tested equal to the TOML key)
+pub(crate) fn network_name(network: NetworkType) -> &'static str {
+    match network {
+        NetworkType::Main => "mainnet",
+        NetworkType::Test => "testnet",
+        NetworkType::Regtest => "regtest",
+    }
+}
+
 pub(crate) const GENERATED_CONFIG_HEADER: &str = r#"# Zaino daemon configuration
 #
 # Generated with `zainod generate-config`.
@@ -629,13 +638,13 @@ impl DaemonConfig {
 
     fn validate_indexes(&self) -> Result<(), IndexerError> {
         self.compact_block()?;
-        if zaino_nfs::INDEXES.into_iter().all(|kind| self.enabled(kind).is_none()) {
+        if IndexKind::ALL.into_iter().all(|kind| self.enabled(kind).is_none()) {
             return Err(IndexerError::Config(
                 "every [index.*] disabled: nothing to build or serve".to_string(),
             ));
         }
         let fanout = self.sync.lsm_store.fanout;
-        for kind in zaino_nfs::INDEXES.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
+        for kind in IndexKind::ALL.into_iter().filter(|kind| self.enabled(*kind).is_some()) {
             if !manifest_fits(&crate::stores::schema(kind, self.network).0, fanout) {
                 return Err(IndexerError::Config(format!(
                     "sync.lsm_store.fanout = {}: {}'s segment lists at that fanout outgrow its \
@@ -1158,7 +1167,7 @@ path = "/tmp/zaino-compact-block"
         ] {
             let parsed: DaemonConfig =
                 toml::from_str(&format!("network = \"{spelling}\"")).expect(spelling);
-            assert_eq!(parsed.network, network);
+            assert_eq!((parsed.network, network_name(network)), (network, spelling));
 
             let written = toml::to_string_pretty(&parsed).expect("serialise");
             assert!(written.contains(&format!("network = \"{spelling}\"")), "{written}");

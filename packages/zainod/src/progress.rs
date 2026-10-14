@@ -19,9 +19,9 @@ use serde::Serialize;
 use tokio::{sync::watch, time::Instant};
 use tracing::{field::display, info, warn, Span};
 use zaino_persistence::{disk_bytes, DiskView, IndexKind};
+use zaino_primitives::display::{ByteSize, Human};
 use zaino_primitives::types::BlockRef;
 use zaino_snapshot::{Snapshots, Tips};
-use zaino_sync::{ByteSize, Human};
 use zaino_sync::{IndexHandle, SyncProgress};
 
 use crate::error::IndexerError;

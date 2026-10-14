@@ -51,7 +51,9 @@ async fn daemon(config_path: PathBuf) -> Result<(), IndexerError> {
     // Before the snapshot bootstrap (`/statusz` lists the configured indexes from the start)
     crate::status::configure(
         config.network,
-        zaino_nfs::INDEXES.into_iter().filter(|kind| config.enabled(*kind).is_some()),
+        zaino_persistence::IndexKind::ALL
+            .into_iter()
+            .filter(|kind| config.enabled(*kind).is_some()),
     );
     // Before the snapshot bootstrap (a held node reads held from its first answer)
     crate::hold::spawn(config.serve.state_dir.clone(), config.serve.hold_goaway_delay());

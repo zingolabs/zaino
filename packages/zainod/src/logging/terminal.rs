@@ -332,7 +332,7 @@ mod tests {
                 );
                 tracing::warn!(reason = "queue full", ratio = 0.5, %hash, "Commit waited");
                 use super::super::HeightCol;
-                use zaino_sync::ByteSize;
+                use zaino_primitives::display::ByteSize;
                 tracing::info!(
                     durable = %HeightCol(None),
                     size = %ByteSize(134_000_000),

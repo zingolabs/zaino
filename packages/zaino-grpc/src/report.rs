@@ -21,7 +21,7 @@ use tracing::{
     field::{display, DisplayValue},
     info, warn,
 };
-use zaino_sync::ByteSize;
+use zaino_primitives::display::ByteSize;
 
 use crate::emit::{label, slot, CODES, LABELS};
 use crate::service::Method;

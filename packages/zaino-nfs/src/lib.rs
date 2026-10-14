@@ -18,10 +18,11 @@ use tokio::task::{AbortHandle, Id, JoinError, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::VerifiedChain;
-use zaino_persistence::{CommittedView, IndexKind};
+use zaino_persistence::{CommittedView, IndexKind, PerIndex};
+use zaino_primitives::display::Human;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::ChainDataSource;
-use zaino_sync::{compute, fetch, Checked, Human, IndexHandle, PerIndex};
+use zaino_sync::{compute, fetch, Checked, IndexHandle};
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -30,7 +31,7 @@ use crate::core::{Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::fold::{fold_block, Folded};
 
 pub use crate::emit::describe_metrics;
-pub use crate::fold::{FoldError, INDEXES};
+pub use crate::fold::FoldError;
 pub use crate::snapshot::{At, Branch, ChainParams, Indexed, Published, Views};
 
 #[derive(Debug, thiserror::Error)]

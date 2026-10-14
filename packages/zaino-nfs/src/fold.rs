@@ -2,20 +2,11 @@
 //!
 //! - The one place indexes meet: a new index = one line here
 
+use zaino_persistence::PerIndex;
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, Overlay, SequenceRead, Uncommitted};
 use zaino_primitives::types::Block;
-use zaino_sync::PerIndex;
 
 use crate::snapshot::Views;
-
-/// Every index the NFS folds, in fold order
-pub const INDEXES: [IndexKind; 5] = [
-    IndexKind::ValueBalance,
-    IndexKind::CompactBlock,
-    IndexKind::BlockHash,
-    IndexKind::TreeState,
-    IndexKind::TransparentAddress,
-];
 
 /// One node's payload: each covered index's state as of the block
 #[derive(Debug)]
@@ -143,7 +134,7 @@ mod tests {
         let record = zaino_index_compact_block::encode_compact_block(block, &fees, &sizes);
 
         use IndexKind::*;
-        let all = INDEXES;
+        let all = IndexKind::ALL;
         for enabled in [&all[..], &[ValueBalance, CompactBlock, TreeState]] {
             let engine = DiskEngine::new(SimFs::new(), zaino_persistence::LsmConfig::default());
             let (mut stores, mut durable, mut root) =

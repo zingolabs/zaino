@@ -29,8 +29,8 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn, Instrument as _, Span};
 
+use crate::config::network_name;
 use zaino_chainview::ChainView;
-use zaino_grpc::network_name;
 use zaino_grpc::{GrpcLimits, GrpcService, Load, Routes, Routing, Tls, TlsFiles, TrustedProxies};
 use zaino_header_chain::{Params, VerifiedChain};
 use zaino_index_compact_block::CompactBlockIndexWriter;
@@ -766,7 +766,7 @@ mod tests {
         let scrape = crate::metrics::scrape(&rendered);
         let per_index = |family: &'static str| {
             let name = move |kind: IndexKind| format!("{family}{{index=\"{}\"}}", kind.name());
-            zaino_nfs::INDEXES.into_iter().map(name)
+            IndexKind::ALL.into_iter().map(name)
         };
         let families = [
             "zaino_build_info{",

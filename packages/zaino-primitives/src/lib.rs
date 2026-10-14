@@ -4,6 +4,7 @@
 
 use sha2::{Digest, Sha256};
 
+pub mod display;
 pub mod protocol;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;

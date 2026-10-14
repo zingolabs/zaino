@@ -10,7 +10,9 @@ use std::{
 };
 
 use serde::Serialize;
-use zaino_persistence::{fs::RealFs, DiskEngine, PersistenceEngine, StoreError, Verification};
+use zaino_persistence::{
+    fs::RealFs, DiskEngine, IndexKind, PersistenceEngine, StoreError, Verification,
+};
 
 use crate::config::{load_config, DaemonConfig, IndexConfig};
 use crate::stores::schema;
@@ -50,7 +52,7 @@ pub fn run(config_path: &Path) -> Result<ExitCode, VerifyError> {
 fn verify(config: &DaemonConfig) -> Result<Report, VerifyError> {
     let engine = DiskEngine::new(RealFs::shared(), zaino_persistence::LsmConfig::default());
     let mut reports = BTreeMap::new();
-    for kind in zaino_nfs::INDEXES {
+    for kind in IndexKind::ALL {
         let index = kind.name();
         let report = config.enabled(kind).map(|IndexConfig { path, .. }| {
             let (schema, _) = schema(kind, config.network);

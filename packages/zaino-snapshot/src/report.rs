@@ -7,7 +7,7 @@
 use serde::Serialize;
 use tracing::{info, warn};
 use zaino_chainview::{Agreement, ChainViewSnapshot, EndpointSet, Spread, ValidatorMetadata};
-use zaino_nfs::INDEXES;
+
 use zaino_persistence::{IndexKind, View};
 use zaino_primitives::types::BlockRef;
 use zaino_sync::SyncProgress;
@@ -76,7 +76,7 @@ struct TipsReport {
     synced: bool,
 }
 
-/// One `INDEXES` kind: `enabled` = config's, `durable` = its committed height
+/// One `IndexKind::ALL` kind: `enabled` = config's, `durable` = its committed height
 #[derive(Debug, Serialize, PartialEq)]
 pub struct IndexReport {
     name: &'static str,
@@ -84,7 +84,7 @@ pub struct IndexReport {
     durable: Option<u32>,
 }
 
-/// Every `INDEXES` kind, `durable` absent before the NFS's first publish (zainod's pre-boot stub
+/// Every `IndexKind::ALL` kind, `durable` absent before the NFS's first publish (zainod's pre-boot stub
 /// passes none)
 pub fn indexes(
     enabled: &[IndexKind],
@@ -96,7 +96,7 @@ pub fn indexes(
         enabled: enabled.contains(&kind),
         durable: height(kind).map(|tip| u32::from(tip.height)),
     };
-    INDEXES.into_iter().map(report).collect()
+    IndexKind::ALL.into_iter().map(report).collect()
 }
 
 /// Chain view facts ⨝ the balancer's `MemberTable` row (`state`, `latency_ms`, `failures`)

@@ -1,7 +1,7 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
 //! (index names the txids, a validator supplies the bytes), all as of the snapshot's tip
 
-use crate::network::network_name;
+use crate::network::chain_name;
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{CommittedView, OverlayView};
@@ -140,8 +140,8 @@ fn transparent_address(encoded: &str, network: NetworkType) -> Result<Transparen
         .map_err(|error| match error {
             ConversionError::IncorrectNetwork { expected, actual } => invalid(format!(
                 "a {} address, and this index is {}",
-                network_name(actual),
-                network_name(expected)
+                chain_name(actual),
+                chain_name(expected)
             )),
             _ => invalid("not a transparent address".to_owned()),
         })
@@ -542,7 +542,7 @@ mod tests {
             let response =
                 router.call(framed_request(method, request.into())).await.expect("router answers");
             let status = Status::from_header_map(response.headers()).expect("a status header");
-            let named = format!("address {testnet}: a testnet address, and this index is mainnet");
+            let named = format!("address {testnet}: a test address, and this index is main");
             let got = (status.code(), status.message());
             assert_eq!(got, (tonic::Code::InvalidArgument, named.as_str()), "{method:?}");
         }

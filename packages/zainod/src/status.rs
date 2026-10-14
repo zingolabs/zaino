@@ -475,7 +475,7 @@ fn public_status(
     chain: Option<Chain>,
     configured: &[IndexKind],
 ) -> PublicStatus {
-    let all = zaino_nfs::INDEXES;
+    let all = IndexKind::ALL;
     let enabled = all.into_iter().filter(|kind| configured.contains(kind)).map(IndexKind::name);
     let (tip, served, validators, egress, info) = match chain {
         Some(chain) => (chain.tip, chain.served, Some(chain.validators), chain.egress, chain.info),
@@ -484,7 +484,7 @@ fn public_status(
     PublicStatus {
         readiness,
         version: env!("CARGO_PKG_VERSION"),
-        network: network.map(zaino_grpc::network_name),
+        network: network.map(crate::config::network_name),
         tip,
         served,
         validators,

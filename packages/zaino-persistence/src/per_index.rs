@@ -1,6 +1,6 @@
 //! One value per enabled index
 
-use zaino_persistence::IndexKind;
+use crate::IndexKind;
 
 /// Order = insert order
 #[derive(Debug, Clone)]

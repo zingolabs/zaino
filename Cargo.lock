@@ -5083,7 +5083,6 @@ dependencies = [
  "zaino-proto",
  "zaino-snapshot",
  "zaino-source",
- "zaino-sync",
  "zaino-traffic",
  "zcash_address",
  "zcash_protocol",

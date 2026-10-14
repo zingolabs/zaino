@@ -118,7 +118,7 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     let open =
         |kind: IndexKind| engine.open(Path::new(kind.name()), &schema(kind), NonZeroUsize::MAX);
     let mut stores: Vec<(IndexKind, DiskStore)> =
-        INDEXES.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
+        IndexKind::ALL.iter().map(|&kind| (kind, open(kind).expect("fresh store"))).collect();
     let ((first, value_balance), others) = stores.split_first_mut().expect("indexes");
     assert_eq!(
         *first,
@@ -435,7 +435,8 @@ async fn every_snapshot_answers_like_folding_from_genesis_through_reorgs_finalit
     };
 
     for (run, moves) in runs.iter().enumerate() {
-        let mut pipeline = Pipeline::start(&engine, &INDEXES, &verified_rx, &balancer, params);
+        let mut pipeline =
+            Pipeline::start(&engine, &IndexKind::ALL, &verified_rx, &balancer, params);
         let booted_at = pipeline.durable().into_iter().min().flatten();
         for (at, &(added, finalize)) in moves.iter().enumerate() {
             let context = format!("run {run} move {at}");
