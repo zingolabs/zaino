@@ -227,15 +227,15 @@ fn sapling(tx: &CompressedTransaction) -> Result<SaplingData, DecodeError> {
         spends: bundle
             .shielded_spends()
             .iter()
-            .map(|spend| SaplingSpend { nullifier: Nullifier::from(spend.nullifier().0) })
+            .map(|spend| SaplingSpend { nullifier: Nullifier(spend.nullifier().0) })
             .collect(),
         outputs: bundle
             .shielded_outputs()
             .iter()
             .map(|output| {
                 Ok(SaplingOutput {
-                    cmu: NoteCommitment::from(output.cmu().to_bytes()),
-                    ephemeral_key: EphemeralKey::from(output.ephemeral_key().0),
+                    cmu: NoteCommitment(output.cmu().to_bytes()),
+                    ephemeral_key: EphemeralKey(output.ephemeral_key().0),
                     enc_ciphertext: CompactCiphertext::prefix_of(output.enc_ciphertext()),
                 })
             })
@@ -257,9 +257,9 @@ fn orchard_shaped(bundle: Option<&OrchardBytes>) -> Result<OrchardData, DecodeEr
             .map(|action| {
                 let note = action.encrypted_note();
                 Ok(OrchardAction {
-                    nullifier: Nullifier::from(action.nullifier().to_bytes()),
-                    cmx: NoteCommitment::from(action.cmx().to_bytes()),
-                    ephemeral_key: EphemeralKey::from(note.epk_bytes),
+                    nullifier: Nullifier(action.nullifier().to_bytes()),
+                    cmx: NoteCommitment(action.cmx().to_bytes()),
+                    ephemeral_key: EphemeralKey(note.epk_bytes),
                     enc_ciphertext: CompactCiphertext::prefix_of(&note.enc_ciphertext.0),
                 })
             })
@@ -420,7 +420,7 @@ mod tests {
                 let actions: Vec<_> = pool
                     .actions
                     .iter()
-                    .map(|a| (<[u8; 32]>::from(a.nullifier), <[u8; 32]>::from(a.cmx)))
+                    .map(|a| (a.nullifier.0, a.cmx.0))
                     .collect();
                 (actions, i64::from(pool.value_balance))
             };
@@ -430,10 +430,10 @@ mod tests {
                 .transparent_bundle()
                 .map_or(vec![], |b| b.vout.iter().map(|o| o.value().into_u64()).collect());
             let spends: Vec<_> =
-                decoded.sapling.spends.iter().map(|s| <[u8; 32]>::from(s.nullifier)).collect();
+                decoded.sapling.spends.iter().map(|s| s.nullifier.0).collect();
             let source_spends: Vec<_> =
                 sapling.map_or(vec![], |b| b.shielded_spends().iter().map(|s| s.nullifier().0).collect());
-            let cmus: Vec<_> = decoded.sapling.outputs.iter().map(|o| <[u8; 32]>::from(o.cmu)).collect();
+            let cmus: Vec<_> = decoded.sapling.outputs.iter().map(|o| o.cmu.0).collect();
             let source_cmus: Vec<_> = sapling
                 .map_or(vec![], |b| b.shielded_outputs().iter().map(|o| o.cmu().to_bytes()).collect());
             let sapling_balance = sapling.map_or(0, |b| i64::from(*b.value_balance()));
@@ -445,7 +445,7 @@ mod tests {
             )
             .expect("librustzcash reads its own bytes");
             use proptest::prop_assert_eq;
-            prop_assert_eq!(<[u8; 32]>::from(decoded.txid), *reference.txid().as_ref());
+            prop_assert_eq!(decoded.txid, reference.txid());
             prop_assert_eq!(vout, source_vout);
             prop_assert_eq!(spends, source_spends);
             prop_assert_eq!(cmus, source_cmus);
@@ -484,7 +484,7 @@ mod tests {
             )
             .expect("librustzcash reads its own bytes");
 
-            prop_assert_eq!(<[u8; 32]>::from(prepared.txid), *reference.txid().as_ref());
+            prop_assert_eq!(prepared.txid, reference.txid());
             prop_assert_eq!(prepared.expiry_height.map(u32::from), (expiry != 0).then_some(expiry));
             let branch = embeds.then(|| tx.consensus_branch_id());
             prop_assert_eq!(prepared.branch, branch);

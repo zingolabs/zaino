@@ -21,7 +21,7 @@ pub(crate) struct SubtreeEntry {
 /// root ‖ end_height (u32 little-endian)
 pub(crate) fn encode(entry: &SubtreeEntry) -> [u8; ENTRY] {
     let mut bytes = [0u8; ENTRY];
-    bytes[..32].copy_from_slice(&<[u8; 32]>::from(entry.root));
+    bytes[..32].copy_from_slice(&entry.root.0);
     bytes[32..].copy_from_slice(&u32::from(entry.end_height).to_le_bytes());
     bytes
 }
@@ -29,7 +29,7 @@ pub(crate) fn encode(entry: &SubtreeEntry) -> [u8; ENTRY] {
 pub(crate) fn decode(bytes: &[u8; ENTRY]) -> SubtreeEntry {
     let height = u32::from_le_bytes(*bytes[32..].first_chunk::<4>().expect("ENTRY = 32 + 4"));
     SubtreeEntry {
-        root: TreeRoot::from(*bytes.first_chunk::<32>().expect("ENTRY > 32")),
+        root: TreeRoot(*bytes.first_chunk::<32>().expect("ENTRY > 32")),
         end_height: BlockHeight::from(height),
     }
 }
@@ -51,10 +51,8 @@ mod tests {
     /// Slot = subtree index → a width change re-addresses every entry
     #[test]
     fn subtree_entry_golden_bytes_round_trip() {
-        let entry = SubtreeEntry {
-            root: TreeRoot::from([0x5a; 32]),
-            end_height: BlockHeight::from(0x0012_3456),
-        };
+        let entry =
+            SubtreeEntry { root: TreeRoot([0x5a; 32]), end_height: BlockHeight::from(0x0012_3456) };
 
         let mut expected = [0u8; ENTRY];
         expected[..32].copy_from_slice(&[0x5a; 32]);

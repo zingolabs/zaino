@@ -121,7 +121,7 @@ impl TxBuilder {
     }
 
     pub fn sapling_spend(mut self, nullifier: [u8; 32]) -> Self {
-        self.sapling_spends.push(Nullifier::from(nullifier));
+        self.sapling_spends.push(Nullifier(nullifier));
         self
     }
 
@@ -133,13 +133,13 @@ impl TxBuilder {
 
     /// cmx = `leaf` little-endian
     pub fn orchard_action(mut self, nullifier: [u8; 32], leaf: u32) -> Self {
-        self.orchard_actions.push((Nullifier::from(nullifier), leaf));
+        self.orchard_actions.push((Nullifier(nullifier), leaf));
         self
     }
 
     /// cmx = `leaf` little-endian
     pub fn ironwood_action(mut self, nullifier: [u8; 32], leaf: u32) -> Self {
-        self.ironwood_actions.push((Nullifier::from(nullifier), leaf));
+        self.ironwood_actions.push((Nullifier(nullifier), leaf));
         self
     }
 
@@ -166,9 +166,8 @@ impl TxBuilder {
     ///
     /// - two chains' blocks with different contents never share a hash
     pub(super) fn content(&self) -> Vec<u8> {
-        let action = |(nullifier, leaf): &(Nullifier, u32)| {
-            [&<[u8; 32]>::from(*nullifier)[..], &leaf.to_le_bytes()].concat()
-        };
+        let action =
+            |(nullifier, leaf): &(Nullifier, u32)| [&nullifier.0[..], &leaf.to_le_bytes()].concat();
         let pay = |(script, zats): &(Script, u64)| {
             let bytes = &script.0 .0;
             let len = u32::try_from(bytes.len()).expect("a test script under 4 GiB");
@@ -193,7 +192,7 @@ impl TxBuilder {
                     .collect(),
             ),
             (b'p', self.pays.iter().flat_map(pay).collect()),
-            (b'n', self.sapling_spends.iter().flat_map(|nf| <[u8; 32]>::from(*nf)).collect()),
+            (b'n', self.sapling_spends.iter().flat_map(|nf| nf.0).collect()),
             (b'o', self.sapling_outputs.iter().flat_map(|leaf| leaf.to_le_bytes()).collect()),
             (b'a', self.orchard_actions.iter().flat_map(action).collect()),
             (b'i', self.ironwood_actions.iter().flat_map(action).collect()),
@@ -262,7 +261,7 @@ pub fn p2pkh(hash: [u8; 20]) -> Script {
 fn commitment(leaf: u32) -> NoteCommitment {
     let mut bytes = [0u8; 32];
     bytes[..4].copy_from_slice(&leaf.to_le_bytes());
-    NoteCommitment::from(bytes)
+    NoteCommitment(bytes)
 }
 
 /// Builder-owned: distinct per (txid, pool, index), never asserted on
@@ -272,10 +271,10 @@ fn detection(txid: TxId, pool: ShieldedPool, index: u32) -> (EphemeralKey, Compa
         ShieldedPool::Orchard => 1,
         ShieldedPool::Ironwood => 2,
     };
-    let seed = [&<[u8; 32]>::from(txid)[..], &[pool], &index.to_le_bytes()].concat();
+    let seed = [&txid.as_ref()[..], &[pool], &index.to_le_bytes()].concat();
     let key = sha256d(&seed);
     let (head, tail) = (sha256d(&key), sha256d(&sha256d(&key)));
     let ciphertext: [u8; CompactCiphertext::LENGTH] =
         core::array::from_fn(|i| if i < 32 { head[i] } else { tail[i - 32] });
-    (EphemeralKey::from(key), CompactCiphertext::from(ciphertext))
+    (EphemeralKey(key), CompactCiphertext(ciphertext))
 }

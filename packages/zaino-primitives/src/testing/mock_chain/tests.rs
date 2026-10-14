@@ -125,11 +125,10 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
 
     let block = chain.block(spent.hash);
     let shielded = &block.transactions()[3];
-    let leaf =
-        |leaf: u8| NoteCommitment::from(core::array::from_fn(|i| if i == 0 { leaf } else { 0 }));
+    let leaf = |leaf: u8| NoteCommitment(core::array::from_fn(|i| if i == 0 { leaf } else { 0 }));
     assert_eq!(shielded.sapling.outputs[0].cmu, leaf(7));
     assert_eq!(shielded.orchard.actions[0].cmx, leaf(9));
-    assert_eq!(shielded.orchard.actions[0].nullifier, Nullifier::from([0x04; 32]));
+    assert_eq!(shielded.orchard.actions[0].nullifier, Nullifier([0x04; 32]));
     let keys =
         [shielded.sapling.outputs[0].ephemeral_key, shielded.orchard.actions[0].ephemeral_key];
     assert_ne!(keys[0], keys[1], "detection material distinct per pool");

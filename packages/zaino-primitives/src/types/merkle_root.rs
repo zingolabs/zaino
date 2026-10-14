@@ -5,7 +5,7 @@ use zcash_protocol::TxId;
 use crate::sha256d;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MerkleRoot([u8; 32]);
+pub struct MerkleRoot(pub [u8; 32]);
 
 impl MerkleRoot {
     /// zcashd `BlockMerkleRoot`: SHA-256d per pair, an odd level's last paired with itself
@@ -13,7 +13,7 @@ impl MerkleRoot {
     /// - `None` = no txids, or a level pairing two equal nodes (CVE-2012-2459: same root as the
     ///   list without the repeat, so a body carrying it = a mutated body)
     pub fn of_txids(txids: &[TxId]) -> Option<Self> {
-        let mut level: Vec<[u8; 32]> = txids.iter().map(|txid| <[u8; 32]>::from(*txid)).collect();
+        let mut level: Vec<[u8; 32]> = txids.iter().map(|txid| *txid.as_ref()).collect();
         while level.len() > 1 {
             if level.chunks_exact(2).any(|pair| pair[0] == pair[1]) {
                 return None;
@@ -24,18 +24,6 @@ impl MerkleRoot {
             level = level.chunks(2).map(|pair| sha256d(&pair.concat())).collect();
         }
         level.first().map(|root| Self(*root))
-    }
-}
-
-impl From<[u8; 32]> for MerkleRoot {
-    fn from(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl From<MerkleRoot> for [u8; 32] {
-    fn from(m: MerkleRoot) -> Self {
-        m.0
     }
 }
 
@@ -50,7 +38,7 @@ mod tests {
         let [a, b, c] = [[1u8; 32], [2; 32], [3; 32]];
         let root = |txids: &[[u8; 32]]| {
             let txids: Vec<TxId> = txids.iter().copied().map(TxId::from_bytes).collect();
-            MerkleRoot::of_txids(&txids).map(<[u8; 32]>::from)
+            MerkleRoot::of_txids(&txids).map(|root| root.0)
         };
         let pair = |l: [u8; 32], r: [u8; 32]| sha256d(&[l, r].concat());
         assert_eq!(root(&[a]), Some(a));

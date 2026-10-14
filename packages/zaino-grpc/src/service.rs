@@ -513,7 +513,7 @@ mod tests {
             .into_iter()
             .map(|tx| tx.txid)
             .collect();
-        let ours = <[u8; 32]>::from(txid).to_vec();
+        let ours = txid.as_ref().to_vec();
         assert_eq!(listed, [ours], "held: our relay, compacted");
         assert_eq!(trailers.get("grpc-status"), Some(&HeaderValue::from_static("0")));
         let (_, streamed, trailers) = call(GetMempoolStream, Vec::new()).await;

@@ -32,8 +32,8 @@ pub fn encode_header(header: &DecodedHeader) -> Vec<u8> {
     let mut raw = Vec::with_capacity(143 + solution.len());
     raw.extend(header.version.to_le_bytes());
     raw.extend(header.prev_hash.0);
-    raw.extend(<[u8; 32]>::from(header.merkle_root));
-    raw.extend(<[u8; 32]>::from(header.block_commitments));
+    raw.extend(header.merkle_root.0);
+    raw.extend(header.block_commitments.0);
     raw.extend(header.time.to_le_bytes());
     raw.extend(header.bits.bits().to_le_bytes());
     raw.extend(header.nonce);

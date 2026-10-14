@@ -261,7 +261,7 @@ fn root(root: &SubtreeRoot) -> Bytes {
     let mut hash = root.completing.hash.0;
     hash.reverse();
     wire::frame(&service::SubtreeRoot {
-        root_hash: <[u8; 32]>::from(root.root).to_vec(),
+        root_hash: root.root.0.to_vec(),
         completing_block_hash: hash.to_vec(),
         completing_block_height: u64::from(root.completing.height),
     })
@@ -274,7 +274,7 @@ mod tests {
     use tonic::{body::Body, Status};
     use zaino_persistence::IndexKind;
     use zaino_primitives::testing::{all_at, h, MockChain};
-    use zaino_primitives::types::{BlockRef, SubtreeRoot};
+    use zaino_primitives::types::{BlockRef, SubtreeRoot, TreeRoot};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::service;
     use zcash_protocol::consensus::NetworkUpgrade;
@@ -292,7 +292,7 @@ mod tests {
     fn a_root_request_is_one_slice_of_the_framed_list() {
         let roots: Vec<SubtreeRoot> = (0..5u8)
             .map(|seed| SubtreeRoot {
-                root: [seed; 32].into(),
+                root: TreeRoot([seed; 32]),
                 completing: BlockRef {
                     hash: BlockHash([seed; 32]),
                     height: (u32::from(seed) * 10).into(),

@@ -80,11 +80,11 @@ impl<'a> HeaderBytes<'a> {
     }
 
     pub fn merkle_root(&self) -> MerkleRoot {
-        MerkleRoot::from(self.array_at::<32>(36))
+        MerkleRoot(self.array_at::<32>(36))
     }
 
     pub fn block_commitments(&self) -> BlockCommitments {
-        BlockCommitments::from(self.array_at::<32>(68))
+        BlockCommitments(self.array_at::<32>(68))
     }
 
     pub fn time(&self) -> u32 {

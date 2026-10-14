@@ -538,8 +538,8 @@ mod tests {
             };
             chosen.push(block.iter().find(fresh).expect("block 2,000,000 has one").clone());
         }
-        chosen.sort_by_key(|(tx, _)| <[u8; 32]>::from(tx.txid)); // the view's (txid) order
-        let txid = |tx: &Transaction| <[u8; 32]>::from(tx.txid);
+        chosen.sort_by_key(|(tx, _)| *tx.txid.as_ref()); // the view's (txid) order
+        let txid = |tx: &Transaction| *tx.txid.as_ref();
 
         // their prevouts: one coinbase per spent txid (1,000 ZEC each vout), shielded pools funded
         let (alice, zec) = (p2pkh([0xaa; 20]), 100_000_000u64);

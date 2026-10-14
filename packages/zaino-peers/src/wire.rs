@@ -32,7 +32,7 @@ pub(crate) fn peer_tx_id(id: UnminedTxId) -> PeerTxId {
 }
 
 pub(crate) fn unmined_tx_id(id: PeerTxId) -> UnminedTxId {
-    let mined = transaction::Hash(<[u8; 32]>::from(id.txid));
+    let mined = transaction::Hash(*id.txid.as_ref());
     match id.auth_digest {
         Some(digest) => UnminedTxId::from(WtxId { id: mined, auth_digest: AuthDigest(digest) }),
         None => UnminedTxId::from_legacy_id(mined),

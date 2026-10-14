@@ -5,14 +5,10 @@
 
 use bytes::Bytes;
 use prost::Message;
-use zaino_primitives::types::{
-    Block, BlockFees, CompactCiphertext, Fee, OrchardAction, Transaction, TreeSizes,
-};
+use zaino_primitives::types::{Block, BlockFees, Fee, OrchardAction, Transaction, TreeSizes};
 use zaino_proto::frame::{frame_into, FRAME_HEADER};
 use zaino_proto::proto::compact_formats;
 use zcash_protocol::value::Zatoshis;
-
-use crate::HASH;
 
 /// `block` → gRPC-framed `CompactBlock` bytes, every pool included (`project` prunes on read)
 ///
@@ -64,32 +60,30 @@ pub fn compact_tx(
 ) -> compact_formats::CompactTx {
     // Orchard + Ironwood share one action shape
     let action = |action: &OrchardAction| compact_formats::CompactOrchardAction {
-        nullifier: <[u8; HASH]>::from(action.nullifier).to_vec(),
-        cmx: <[u8; HASH]>::from(action.cmx).to_vec(),
-        ephemeral_key: <[u8; HASH]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: <[u8; CompactCiphertext::LENGTH]>::from(action.enc_ciphertext).to_vec(),
+        nullifier: action.nullifier.0.to_vec(),
+        cmx: action.cmx.0.to_vec(),
+        ephemeral_key: action.ephemeral_key.0.to_vec(),
+        ciphertext: action.enc_ciphertext.0.to_vec(),
     };
 
     compact_formats::CompactTx {
         index,
-        txid: <[u8; HASH]>::from(tx.txid).to_vec(),
+        txid: tx.txid.as_ref().to_vec(),
         fee: fee.and_then(|fee| u32::try_from(fee.into_u64()).ok()).unwrap_or(0),
         spends: tx
             .sapling
             .spends
             .iter()
-            .map(|spend| compact_formats::CompactSaplingSpend {
-                nf: <[u8; HASH]>::from(spend.nullifier).to_vec(),
-            })
+            .map(|spend| compact_formats::CompactSaplingSpend { nf: spend.nullifier.0.to_vec() })
             .collect(),
         outputs: tx
             .sapling
             .outputs
             .iter()
             .map(|output| compact_formats::CompactSaplingOutput {
-                cmu: <[u8; HASH]>::from(output.cmu).to_vec(),
-                ephemeral_key: <[u8; HASH]>::from(output.ephemeral_key).to_vec(),
-                ciphertext: <[u8; CompactCiphertext::LENGTH]>::from(output.enc_ciphertext).to_vec(),
+                cmu: output.cmu.0.to_vec(),
+                ephemeral_key: output.ephemeral_key.0.to_vec(),
+                ciphertext: output.enc_ciphertext.0.to_vec(),
             })
             .collect(),
         actions: tx.orchard.actions.iter().map(action).collect(),
@@ -118,11 +112,12 @@ pub fn compact_tx(
 #[cfg(test)]
 mod tests {
     use zaino_primitives::testing::{p2pkh, MockChain};
-    use zaino_primitives::types::TreeSize;
+    use zaino_primitives::types::{CompactCiphertext, EphemeralKey, TreeSize};
     use zaino_proto::frame::framed_len;
     use zcash_transparent::bundle::OutPoint;
 
     use super::*;
+    use crate::HASH;
 
     /// Block 2's tx (spends block 1's output 7, every pool, fee 5 000) → one gRPC frame decoding
     /// to every field built from it (transparent kept: pruning = read-side)
@@ -159,8 +154,8 @@ mod tests {
 
         // detection bytes = the builder's own, opaque here
         let shielded = &block.transactions()[1];
-        let key = |key| <[u8; HASH]>::from(key).to_vec();
-        let ciphertext = |bytes| <[u8; CompactCiphertext::LENGTH]>::from(bytes).to_vec();
+        let key = |key: EphemeralKey| key.0.to_vec();
+        let ciphertext = |bytes: CompactCiphertext| bytes.0.to_vec();
         let leaf = |leaf: u8| [[leaf].as_slice(), &[0; HASH - 1]].concat();
         let action =
             |nullifier: u8, cmx: u8, built: &OrchardAction| compact_formats::CompactOrchardAction {

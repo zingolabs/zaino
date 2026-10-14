@@ -408,7 +408,7 @@ impl Lie {
             }
             Lie::Poisoned => {
                 let mut extra = txs[0].clone();
-                let mut txid = <[u8; 32]>::from(extra.txid);
+                let mut txid = *extra.txid.as_ref();
                 txid[31] ^= 0xff;
                 extra.txid = TxId::from_bytes(txid);
                 Block::new(header, [txs, &[extra]].concat())

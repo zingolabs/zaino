@@ -471,7 +471,7 @@ impl MempoolView<'_> {
 }
 
 fn ends_with(txid: &TxId, suffix: &[u8]) -> bool {
-    <[u8; 32]>::from(*txid).ends_with(suffix)
+    txid.as_ref().ends_with(suffix)
 }
 
 #[cfg(test)]

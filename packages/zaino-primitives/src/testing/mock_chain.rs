@@ -23,8 +23,8 @@ use super::upgrades::all_at;
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
-    Block, BlockFees, BlockRef, CompactDifficulty, DecodedHeader, EquihashSolution, Fee,
-    MerkleRoot, Transaction,
+    Block, BlockCommitments, BlockFees, BlockRef, CompactDifficulty, DecodedHeader,
+    EquihashSolution, Fee, MerkleRoot, Transaction,
 };
 use zcash_protocol::BlockHash;
 
@@ -293,7 +293,7 @@ impl MockChain {
             height,
             time,
             merkle_root: MerkleRoot::of_txids(&txids).expect("txids distinct (M3)"),
-            block_commitments: [0u8; 32].into(),
+            block_commitments: BlockCommitments([0; 32]),
             bits,
             nonce,
             solution: EquihashSolution::Regtest([0u8; 36]),

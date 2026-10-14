@@ -159,10 +159,10 @@ mod tests {
     #[test]
     fn footprint_counts_every_allocation_at_capacity() {
         let action = OrchardAction {
-            nullifier: Nullifier::from([1; 32]),
-            cmx: NoteCommitment::from([2; 32]),
-            ephemeral_key: EphemeralKey::from([3; 32]),
-            enc_ciphertext: CompactCiphertext::from([4; CompactCiphertext::LENGTH]),
+            nullifier: Nullifier([1; 32]),
+            cmx: NoteCommitment([2; 32]),
+            ephemeral_key: EphemeralKey([3; 32]),
+            enc_ciphertext: CompactCiphertext([4; CompactCiphertext::LENGTH]),
         };
         let mut script = Vec::with_capacity(40);
         script.extend_from_slice(&[0x76; 25]);

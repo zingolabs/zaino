@@ -106,7 +106,7 @@ pub(crate) fn encode_receive_key(key: &ReceiveKey) -> [u8; RECEIVE_KEY] {
     out[HASH160] = key.address.kind as u8;
     let at = AddressKey::LEN;
     out[at..at + 4].copy_from_slice(&key.height.to_be_bytes());
-    out[at + 4..at + 4 + TXID].copy_from_slice(&<[u8; TXID]>::from(key.txid));
+    out[at + 4..at + 4 + TXID].copy_from_slice(key.txid.as_ref());
     out[at + 4 + TXID..].copy_from_slice(&key.vout.to_be_bytes());
     out
 }
@@ -149,7 +149,7 @@ pub(crate) fn encode_spent_key(txid: &TxId, vout: u32) -> [u8; SPENT_KEY] {
 pub(crate) fn encode_spend(spend: &Spend) -> [u8; SPEND] {
     let mut out = [0u8; SPEND];
     out[..4].copy_from_slice(&spend.height.to_be_bytes());
-    out[4..].copy_from_slice(&<[u8; TXID]>::from(spend.spender));
+    out[4..].copy_from_slice(spend.spender.as_ref());
     out
 }
 

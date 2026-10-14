@@ -340,7 +340,7 @@ mod tests {
         let alice_utxos = vec![
             service::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
-                txid: <[u8; 32]>::from(first).to_vec(),
+                txid: first.as_ref().to_vec(),
                 index: 0,
                 script: alice.0 .0.clone(),
                 value_zat: 500,
@@ -348,7 +348,7 @@ mod tests {
             },
             service::GetAddressUtxosReply {
                 address: ALICE.to_owned(),
-                txid: <[u8; 32]>::from(second).to_vec(),
+                txid: second.as_ref().to_vec(),
                 index: 0,
                 script: alice.0 .0.clone(),
                 value_zat: 300,

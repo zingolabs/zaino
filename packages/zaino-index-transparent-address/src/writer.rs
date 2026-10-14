@@ -381,7 +381,7 @@ mod tests {
         }
         let block = |b: BlockBuilder, height: u32, (spends, pays): &Planned| {
             b.tx(|t| {
-                let t = t.txid(<[u8; 32]>::from(txid(height)));
+                let t = t.txid(*txid(height).as_ref());
                 let t = spends.iter().fold(t, |t, prevout| t.spend(prevout.clone()));
                 pays.iter().fold(t, |t, &(tag, zats)| t.pay(&scripts[usize::from(tag)], zats))
             })

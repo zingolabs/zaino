@@ -177,7 +177,7 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
             let height = block.header().height;
             let txs = block.transactions().iter();
             for commitment in txs.flat_map(|tx| commitments(tx, pool)) {
-                let leaf = nodes::decode(&commitment.into());
+                let leaf = nodes::decode(&commitment.0);
                 leaves.push(leaf.ok_or(FoldError::Commitment { height })?);
             }
             ends.push((height, leaves.len()));
@@ -206,7 +206,7 @@ impl<H: Hashable + HashSer + Clone> PoolRun<H> {
                     out[block].nodes.insert(slot, nodes::encode(node));
                 }
                 if addr.level() == subtree_level {
-                    let (root, end_height) = (TreeRoot::from(nodes::encode(node)), ends[block].0);
+                    let (root, end_height) = (TreeRoot(nodes::encode(node)), ends[block].0);
                     out[block].subtrees.insert(index, SubtreeEntry { root, end_height });
                 }
             }
@@ -421,7 +421,7 @@ mod tests {
                 .iter()
                 .map(|block| {
                     let entries = block.subtrees.iter();
-                    entries.map(|(i, e)| (*i, (<[u8; 32]>::from(e.root), e.end_height))).collect()
+                    entries.map(|(i, e)| (*i, (e.root.0, e.end_height))).collect()
                 })
                 .collect();
             prop_assert_eq!(subtrees, expected_subtrees, "subtree roots, per block");
@@ -510,7 +510,7 @@ mod tests {
         let two = chain.mine(|b| b.tx(|t| t.sapling_output(2)));
         // lie: 2's cmu edited to 0xff.. (above both moduli; the builder's leaves are canonical)
         let mut txs = chain.block(two.hash).transactions().to_vec();
-        txs[1].sapling.outputs[0].cmu = [0xff; 32].into();
+        txs[1].sapling.outputs[0].cmu = NoteCommitment([0xff; 32]);
         let uncommittable = Arc::new(Block::new(chain.block(two.hash).header().clone(), txs));
         let mut blocks = chain.blocks(two);
         blocks[2] = uncommittable;
@@ -544,7 +544,7 @@ mod tests {
     ) -> CommitmentTreeBytes {
         let mut frontier = Frontier::<H, 32>::empty();
         for commitment in commitments {
-            let node = H::read(&<[u8; 32]>::from(commitment)[..]).expect("canonical leaf");
+            let node = H::read(&commitment.0[..]).expect("canonical leaf");
             assert!(frontier.append(node), "frontier full");
         }
 
@@ -732,7 +732,7 @@ mod tests {
             let root = frontier.value().expect("non-empty").root(Some(Level::from(16)));
             let mut bytes = [0u8; 32];
             root.write(&mut bytes[..]).expect("32 bytes");
-            TreeRoot::from(bytes)
+            TreeRoot(bytes)
         };
 
         let mut writer = start(open(&fs, &SCHEMA, NonZeroUsize::MAX));
