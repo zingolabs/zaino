@@ -116,7 +116,7 @@ impl ResolvesServerCert for Certs {
 impl Certs {
     fn reload_if_changed(&self) {
         let Ok(now) = stamp(&self.files) else { return };
-        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut seen = self.seen.lock().expect("seen-certs mutex poisoned");
         if *seen == Some(now) {
             return;
         }

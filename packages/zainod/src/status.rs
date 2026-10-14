@@ -260,7 +260,7 @@ pub(crate) fn bootstrap(progress: Option<Bootstrap>) {
 /// Poison-tolerant: the lock only guards a value swap
 #[cfg(feature = "snapshot")]
 fn bootstrap_lock() -> std::sync::MutexGuard<'static, Option<Bootstrap>> {
-    BOOTSTRAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    BOOTSTRAP.lock().expect("bootstrap progress mutex poisoned")
 }
 
 #[cfg(feature = "snapshot")]

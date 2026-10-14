@@ -80,15 +80,13 @@ pub(crate) struct ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        if let Ok(mut per_client) = self.per_client.lock() {
-            // Entry removed at zero (else an unbounded IP table = the cap's own leak)
-            if let std::collections::hash_map::Entry::Occupied(mut held) =
-                per_client.entry(self.client)
-            {
-                *held.get_mut() -= 1;
-                if *held.get() == 0 {
-                    held.remove();
-                }
+        let mut per_client = self.per_client.lock().expect("per-client counts mutex poisoned");
+        // Entry removed at zero (else an unbounded IP table = the cap's own leak)
+        if let std::collections::hash_map::Entry::Occupied(mut held) = per_client.entry(self.client)
+        {
+            *held.get_mut() -= 1;
+            if *held.get() == 0 {
+                held.remove();
             }
         }
         emit::connection_closed();

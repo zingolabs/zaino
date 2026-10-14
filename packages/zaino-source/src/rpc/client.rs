@@ -60,9 +60,14 @@ pub struct Timeouts {
     pub read: Duration,
 }
 
+impl Timeouts {
+    pub const DEFAULT: Self =
+        Self { connect: Duration::from_secs(2), read: Duration::from_secs(30) };
+}
+
 impl Default for Timeouts {
     fn default() -> Self {
-        Self { connect: Duration::from_secs(2), read: Duration::from_secs(30) }
+        Self::DEFAULT
     }
 }
 

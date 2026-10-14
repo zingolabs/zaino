@@ -38,10 +38,11 @@ pub struct GrpcLimits {
     pub adaptive_streams: bool,
 }
 
-impl Default for GrpcLimits {
-    fn default() -> Self {
-        let non_zero = |value| NonZeroUsize::new(value).expect("a literal default is non-zero");
-
+impl GrpcLimits {
+    pub const DEFAULT: Self = {
+        const fn non_zero(value: usize) -> NonZeroUsize {
+            NonZeroUsize::new(value).expect("a literal default is non-zero")
+        }
         Self {
             max_connections: non_zero(4096),
             max_connections_per_ip: non_zero(32),
@@ -65,6 +66,12 @@ impl Default for GrpcLimits {
             max_connection_idle: Some(Duration::from_secs(30 * 60)),
             adaptive_streams: true,
         }
+    };
+}
+
+impl Default for GrpcLimits {
+    fn default() -> Self {
+        Self::DEFAULT
     }
 }
 

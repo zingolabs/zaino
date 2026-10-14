@@ -30,12 +30,16 @@ pub struct SubmitPolicy {
     pub max_attempts: NonZeroU8,
 }
 
+impl SubmitPolicy {
+    pub const DEFAULT: Self = Self {
+        propagation_threshold: Duration::from_secs(15),
+        max_attempts: NonZeroU8::new(4).expect("4 is non-zero"),
+    };
+}
+
 impl Default for SubmitPolicy {
     fn default() -> Self {
-        Self {
-            propagation_threshold: Duration::from_secs(15),
-            max_attempts: NonZeroU8::new(4).expect("4 is non-zero"),
-        }
+        Self::DEFAULT
     }
 }
 

@@ -111,7 +111,8 @@ pub(crate) struct Open {
 
 impl Drop for Open {
     fn drop(&mut self) {
-        if let Ok(mut open) = self.activity.open.lock() {
+        {
+            let mut open = self.activity.open.lock().expect("open-streams mutex poisoned");
             open.0 -= 1;
             if open.0 == 0 {
                 open.1 = Instant::now();

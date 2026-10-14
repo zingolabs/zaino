@@ -15,7 +15,7 @@ use std::{
     process::Stdio,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard,
     },
     time::{Duration, Instant},
 };
@@ -329,7 +329,7 @@ impl Board {
 
     /// Poison-tolerant: plain data, every update a field swap
     fn slots(&self) -> MutexGuard<'_, Vec<Slot>> {
-        self.slots.lock().unwrap_or_else(PoisonError::into_inner)
+        self.slots.lock().expect("download slots mutex poisoned")
     }
 
     fn set(&self, slot: usize, step: Step, done: u64, rate: u64) -> Option<Arc<AtomicU64>> {

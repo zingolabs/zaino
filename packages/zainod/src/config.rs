@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use zaino_grpc::GrpcLimits;
 
@@ -69,17 +70,14 @@ pub(crate) struct TrustedValidatorConfig {
 
 impl Default for TrustedValidatorConfig {
     fn default() -> Self {
-        let timeouts = zaino_source::Timeouts::default();
         let limits = zaino_source::LinkLimits::default();
         Self {
             jsonrpc_address: "127.0.0.1:8232".to_string(),
             cookie_path: None,
             user: None,
             password: None,
-            connect_timeout_secs: NonZeroU64::new(timeouts.connect.as_secs())
-                .expect("the default connect timeout is whole, non-zero seconds"),
-            read_timeout_secs: NonZeroU64::new(timeouts.read.as_secs())
-                .expect("the default read timeout is whole, non-zero seconds"),
+            connect_timeout_secs: const { whole_secs(zaino_source::Timeouts::DEFAULT.connect) },
+            read_timeout_secs: const { whole_secs(zaino_source::Timeouts::DEFAULT.read) },
             max_connections: limits.max_connections,
             max_mib_per_sec: None,
             max_response_mib: ResponseMib(limits.response_size_cap),
@@ -133,7 +131,7 @@ impl TrustedValidatorConfig {
 
     /// The transport's: connection pool + response bytes paced as read
     pub(crate) fn link(&self) -> zaino_source::LinkLimits {
-        let mib = NonZeroU32::new(1 << 20).expect("2^20 is non-zero");
+        let mib = const { NonZeroU32::new(1 << 20).expect("2^20 is non-zero") };
         let max_bytes_per_sec = self.max_mib_per_sec.map(|per_sec| per_sec.saturating_mul(mib));
         zaino_source::LinkLimits {
             max_connections: self.max_connections,
@@ -155,8 +153,8 @@ impl TrustedValidatorConfig {
 impl From<&TrustedValidatorConfig> for zaino_source::Timeouts {
     fn from(config: &TrustedValidatorConfig) -> Self {
         Self {
-            connect: std::time::Duration::from_secs(config.connect_timeout_secs.get()),
-            read: std::time::Duration::from_secs(config.read_timeout_secs.get()),
+            connect: Duration::from_secs(config.connect_timeout_secs.get()),
+            read: Duration::from_secs(config.read_timeout_secs.get()),
         }
     }
 }
@@ -238,8 +236,14 @@ impl From<IndexesToml> for Indexes {
 
 /// A MiB knob in bytes (saturating: past `usize` = no limit anyway)
 fn mib(value: NonZeroU32) -> NonZeroUsize {
-    let bytes = usize::try_from(u64::from(value.get()) << 20).unwrap_or(usize::MAX);
-    NonZeroUsize::new(bytes).expect("non-zero MiB → non-zero bytes")
+    let mib = const { NonZeroUsize::new(1 << 20).expect("2^20 is non-zero") };
+    NonZeroUsize::try_from(value).map_or(NonZeroUsize::MAX, |value| value.saturating_mul(mib))
+}
+
+/// A config default in whole, non-zero seconds (anything else = a compile error)
+const fn whole_secs(duration: Duration) -> NonZeroU64 {
+    assert!(duration.subsec_nanos() == 0, "a config default is whole seconds");
+    NonZeroU64::new(duration.as_secs()).expect("a config default is non-zero")
 }
 
 /// Wallet-facing gRPC server
@@ -273,7 +277,7 @@ pub(crate) struct TlsConfig {
 impl Default for ServeConfig {
     fn default() -> Self {
         Self {
-            grpc_listen_address: "127.0.0.1:8137".parse().expect("valid default addr"),
+            grpc_listen_address: SocketAddr::from(([127, 0, 0, 1], 8137)),
             max_address_rows: DEFAULT_MAX_ADDRESS_ROWS,
             tls: None,
             state_dir: crate::paths::default_state(),
@@ -284,7 +288,7 @@ impl Default for ServeConfig {
 
 impl ServeConfig {
     pub(crate) fn hold_goaway_delay(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.hold_goaway_delay_secs)
+        Duration::from_secs(self.hold_goaway_delay_secs)
     }
 }
 
@@ -339,8 +343,7 @@ impl Default for GrpcConfig {
             max_point_reads: limits.max_point_reads,
             max_range_reads: limits.max_range_reads,
             max_scan_reads: limits.max_scan_reads,
-            stall_timeout_secs: NonZeroU64::new(limits.stall_timeout.as_secs())
-                .expect("the default stall timeout is whole, non-zero seconds"),
+            stall_timeout_secs: const { whole_secs(GrpcLimits::DEFAULT.stall_timeout) },
             max_connection_age_secs: limits.max_connection_age.map_or(0, |age| age.as_secs()),
             max_connection_age_grace_secs: limits.max_connection_age_grace.as_secs(),
             max_connection_idle_secs: limits.max_connection_idle.map_or(0, |idle| idle.as_secs()),
@@ -362,12 +365,10 @@ impl From<&GrpcConfig> for GrpcLimits {
             max_point_reads: config.max_point_reads,
             max_range_reads: config.max_range_reads,
             max_scan_reads: config.max_scan_reads,
-            stall_timeout: std::time::Duration::from_secs(config.stall_timeout_secs.get()),
-            drain_timeout: std::time::Duration::from_secs(config.shutdown_grace_secs),
+            stall_timeout: Duration::from_secs(config.stall_timeout_secs.get()),
+            drain_timeout: Duration::from_secs(config.shutdown_grace_secs),
             max_connection_age: secs_or_never(config.max_connection_age_secs),
-            max_connection_age_grace: std::time::Duration::from_secs(
-                config.max_connection_age_grace_secs,
-            ),
+            max_connection_age_grace: Duration::from_secs(config.max_connection_age_grace_secs),
             max_connection_idle: secs_or_never(config.max_connection_idle_secs),
             adaptive_streams: config.adaptive_streams,
         }
@@ -376,7 +377,7 @@ impl From<&GrpcConfig> for GrpcLimits {
 
 /// 0 = `None` (never)
 fn secs_or_never(secs: u64) -> Option<std::time::Duration> {
-    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+    (secs > 0).then(|| Duration::from_secs(secs))
 }
 
 /// `[sync]`: the one block-fetch pipeline + the budgets every index shares
@@ -397,10 +398,12 @@ pub(crate) struct SyncConfig {
 impl Default for SyncConfig {
     fn default() -> Self {
         Self {
-            finalised_depth: NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT)
-                .expect("the consensus reorg bound is non-zero"),
-            concurrency: NonZeroUsize::new(32).expect("32 is non-zero"),
-            queue_mib: NonZeroU32::new(256).expect("256 is non-zero"),
+            finalised_depth: const {
+                NonZeroU32::new(MAX_BLOCK_REORG_HEIGHT)
+                    .expect("the consensus reorg bound is non-zero")
+            },
+            concurrency: const { NonZeroUsize::new(32).expect("32 is non-zero") },
+            queue_mib: const { NonZeroU32::new(256).expect("256 is non-zero") },
             lsm_store: LsmStoreConfig::default(),
         }
     }
@@ -489,8 +492,9 @@ impl Default for SubmissionConfig {
     fn default() -> Self {
         let policy = zaino_chainview::SubmitPolicy::default();
         Self {
-            propagation_threshold_secs: NonZeroU64::new(policy.propagation_threshold.as_secs())
-                .expect("the default threshold is whole, non-zero seconds"),
+            propagation_threshold_secs: const {
+                whole_secs(zaino_chainview::SubmitPolicy::DEFAULT.propagation_threshold)
+            },
             max_attempts: policy.max_attempts,
         }
     }
@@ -499,9 +503,7 @@ impl Default for SubmissionConfig {
 impl From<&SubmissionConfig> for zaino_chainview::SubmitPolicy {
     fn from(config: &SubmissionConfig) -> Self {
         Self {
-            propagation_threshold: std::time::Duration::from_secs(
-                config.propagation_threshold_secs.get(),
-            ),
+            propagation_threshold: Duration::from_secs(config.propagation_threshold_secs.get()),
             max_attempts: config.max_attempts,
         }
     }
@@ -530,7 +532,7 @@ pub(crate) struct SnapshotConfig {
 
 impl SnapshotConfig {
     fn connections_default() -> NonZeroU32 {
-        NonZeroU32::new(8).expect("8 is non-zero")
+        const { NonZeroU32::new(8).expect("8 is non-zero") }
     }
 }
 
@@ -1100,7 +1102,7 @@ path = "/tmp/zaino-compact-block"
         let limits = GrpcLimits::from(&partial.grpc);
         let expected = GrpcLimits {
             max_streams,
-            stall_timeout: std::time::Duration::from_secs(30),
+            stall_timeout: Duration::from_secs(30),
             ..GrpcLimits::default()
         };
         assert_eq!(limits, expected, "what the server is bounded by is what was parsed");
@@ -1290,7 +1292,7 @@ cache_dir = "/var/cache/zaino/peers"
         assert_eq!(
             zaino_chainview::SubmitPolicy::from(&config.submission),
             zaino_chainview::SubmitPolicy {
-                propagation_threshold: std::time::Duration::from_secs(30),
+                propagation_threshold: Duration::from_secs(30),
                 max_attempts: std::num::NonZeroU8::new(6).expect("non-zero"),
             }
         );

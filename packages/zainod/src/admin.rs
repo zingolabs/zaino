@@ -8,7 +8,7 @@
 use std::{
     convert::Infallible,
     net::SocketAddr,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -39,7 +39,7 @@ static HEARTBEAT: Mutex<Option<Instant>> = Mutex::new(None);
 
 fn heartbeat() {
     // Poison-tolerant: the lock only guards a `Copy` swap
-    *HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+    *HEARTBEAT.lock().expect("heartbeat mutex poisoned") = Some(Instant::now());
 }
 
 /// Heartbeat from the serving runtime until `cancel` (wedged runtime → `/livez` fails)
@@ -54,7 +54,7 @@ pub(crate) async fn beat(cancel: CancellationToken) -> Result<(), IndexerError> 
 }
 
 fn heartbeat_age() -> Option<Duration> {
-    HEARTBEAT.lock().unwrap_or_else(PoisonError::into_inner).map(|at| at.elapsed())
+    HEARTBEAT.lock().expect("heartbeat mutex poisoned").map(|at| at.elapsed())
 }
 
 /// `None` = never beaten = still starting (k8s covers that window with its own startup delay)
