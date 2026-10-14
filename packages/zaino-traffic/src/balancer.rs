@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use futures::future::BoxFuture;
 use futures::stream::FuturesUnordered;
@@ -137,7 +137,7 @@ struct Shared<S> {
     state: Mutex<State>,
     trusted: Vec<Arc<S>>,
     peers: Option<Arc<dyn PeerTransport>>,
-    best: Mutex<PollBest>,
+    best: OnceLock<PollBest>,
     changed: Notify,
     observations: Vec<watch::Sender<Option<Arc<Observation>>>>,
     table: watch::Sender<Arc<MemberTable>>,
@@ -174,7 +174,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
             observations: trusted.iter().map(|_| watch::Sender::new(None)).collect(),
             trusted: trusted.into_iter().map(|t| t.source).collect(),
             peers: peers.map(|peers| peers.transport),
-            best: Mutex::new(Box::new(|| None)),
+            best: OnceLock::new(),
             changed: Notify::new(),
             table,
         });
@@ -332,8 +332,10 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// Where each poll asks `getblockhash`: `best()` as the poll starts (`None` = not asked)
     ///
     /// - never wakes a poll (an answer at a moved best = one stale fact, re-asked next poll)
+    /// - set once (one chain view per balancer); unset = nothing asked
     pub fn poll_best(&self, best: impl Fn() -> Option<BlockHeight> + Send + Sync + 'static) {
-        *self.shared.best.lock().expect("poll best mutex poisoned") = Box::new(best);
+        let set = self.shared.best.set(Box::new(best)).is_ok();
+        assert!(set, "poll_best set twice: one chain view per balancer");
     }
 
     /// A push stream's event (`IndexerWatch` callbacks): wakes `member`'s poll
@@ -575,7 +577,7 @@ impl<S: ChainDataSource> TrafficDriver<S> {
 impl<S: ChainDataSource> Shared<S> {
     fn poll(&self, order: PollOrder) -> BoxFuture<'static, Polled> {
         let source = Arc::clone(&self.trusted[order.member.get()]);
-        let asked = (self.best.lock().expect("poll best mutex poisoned"))();
+        let asked = self.best.get().and_then(|best| best());
         async move {
             let polled = source.get_poll_reading(order.metadata, asked.as_slice()).await;
             (order, asked, polled)

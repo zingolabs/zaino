@@ -344,3 +344,15 @@ async fn peers_serve_checkable_asks_and_never_lookups() {
     assert_eq!(at_one, (MemberId::Trusted(v(0)), hash));
     cancel.cancel();
 }
+
+#[test]
+#[should_panic(expected = "poll_best set twice")]
+fn poll_best_set_twice_panics() {
+    let chain = MockChain::regtest();
+    let source = Arc::new(chain.validator(chain.genesis()));
+    let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
+    let (balancer, _driver) =
+        TrafficBalancer::new(vec![Trusted { source, priority: 0, limits }], None);
+    balancer.poll_best(|| None);
+    balancer.poll_best(|| None);
+}
