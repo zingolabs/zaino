@@ -187,8 +187,15 @@ async fn boot_over<S: ChainDataSource>(
     let validators = config.trusted_validators.len();
     let schedule = upgrade_schedule(config.network, &wiring.balancer, validators);
     let schedule = schedule.instrument(chainview_span.clone()).await?;
-    let viewed = chainview_span
-        .in_scope(|| crate::chainview::view(&config, &wiring.balancer, wiring.p2p, schedule))?;
+    let viewed = chainview_span.in_scope(|| {
+        crate::chainview::view(
+            &config,
+            &wiring.balancer,
+            wiring.p2p,
+            schedule,
+            cancel.child_token(),
+        )
+    })?;
     let inputs = Inputs {
         fs: RealFs::shared(),
         started,
@@ -647,7 +654,13 @@ mod tests {
         let trusted =
             zaino_traffic::Trusted { source: Arc::clone(&validator), priority: 0, limits };
         let (balancer, balancing) = TrafficBalancer::new(vec![trusted], None);
-        let view = ChainView::new(vec!["mock".to_owned()], balancer.clone(), depth, schedule);
+        let view = ChainView::new(
+            vec!["mock".to_owned()],
+            balancer.clone(),
+            depth,
+            schedule,
+            tokio_util::sync::CancellationToken::new(),
+        );
         let view = Arc::new(view.expect("one endpoint"));
         let fold = view.observation_fold();
         let fs = zaino_persistence::fs::SimFs::new();

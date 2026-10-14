@@ -30,6 +30,7 @@ fn routes() -> Routes<MockValidator, DiskView> {
         validators.clone(),
         depth,
         schedule.expect("testnet compiled in"),
+        tokio_util::sync::CancellationToken::new(),
     );
     let chain = chain.expect("one endpoint");
     Routes {

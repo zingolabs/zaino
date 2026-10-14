@@ -44,8 +44,14 @@ fn running(
     let peers = peer_set.map(|transport| Peers { transport, in_flight: 4 });
     let (balancer, driver) = TrafficBalancer::new(trusted.collect(), peers);
     let addresses = addresses.iter().map(|address| (*address).to_owned()).collect();
-    let view =
-        ChainView::new(addresses, balancer.clone(), depth(), regtest()).expect("a valid set");
+    let view = ChainView::new(
+        addresses,
+        balancer.clone(),
+        depth(),
+        regtest(),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .expect("a valid set");
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));

@@ -124,7 +124,13 @@ pub(super) fn routes_over(
     let (validators, driver) = TrafficBalancer::new(vec![trusted], None);
     let schedule = compiled_schedule(MAINNET).expect("mainnet compiled in");
     let address = vec!["node:8232".to_owned()];
-    let view = ChainView::new(address, validators.clone(), ReorgDepth::CONSENSUS, schedule);
+    let view = ChainView::new(
+        address,
+        validators.clone(),
+        ReorgDepth::CONSENSUS,
+        schedule,
+        tokio_util::sync::CancellationToken::new(),
+    );
     let view = view.expect("one endpoint");
     let fold = view.observation_fold();
     let routes = Routes {

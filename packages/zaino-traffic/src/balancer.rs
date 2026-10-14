@@ -106,8 +106,6 @@ impl Peers {
 /// - `asked` = where its `getblockhash` was asked ([`TrafficBalancer::poll_best`], read at start)
 #[derive(Debug)]
 pub struct Observation {
-    pub member: ValidatorId,
-    pub at: Instant,
     pub asked: Option<BlockHeight>,
     pub polled: Result<PollReading, NonDomainError>,
     pub streaming: bool,
@@ -597,8 +595,7 @@ impl<S: ChainDataSource> Shared<S> {
         drop(state);
         self.changed.notify_one();
         let PollOrder { member, streaming, .. } = order;
-        let at = Instant::now();
-        let observation = Observation { member, at, asked, polled, streaming, health };
+        let observation = Observation { asked, polled, streaming, health };
         self.observations[member.get()].send_replace(Some(Arc::new(observation)));
     }
 }

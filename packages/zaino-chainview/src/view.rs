@@ -5,6 +5,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use tokio::sync::oneshot;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
@@ -39,6 +40,7 @@ pub struct ChainView<S> {
     schedule: LocalNetwork,
     policy: SubmitPolicy,
     peers: Option<Arc<dyn ValidatorP2pSource>>,
+    shutdown: CancellationToken,
 }
 
 impl<S> std::fmt::Debug for ChainView<S> {
@@ -54,12 +56,14 @@ impl<S: ChainDataSource> ChainView<S> {
     ///
     /// - `depth` = the header chain's (sync's `finalised_depth`): the finality stall alarm's
     /// - `schedule` = the network's: the branch a transaction must be signed for at the next block
+    /// - `shutdown` cancels in-flight submissions (their callers read "submission ended")
     /// - each poll asks `getblockhash` at this view's best ([`TrafficBalancer::poll_best`])
     pub fn new(
         addresses: Vec<String>,
         balancer: TrafficBalancer<S>,
         depth: ReorgDepth,
         schedule: LocalNetwork,
+        shutdown: CancellationToken,
     ) -> Result<Self, ConfigError> {
         if addresses.is_empty() {
             return Err(ConfigError::NoEndpoints);
@@ -78,7 +82,7 @@ impl<S: ChainDataSource> ChainView<S> {
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
         let policy = SubmitPolicy::default();
-        Ok(Self { core, balancer, addresses, schedule, policy, peers: None })
+        Ok(Self { core, balancer, addresses, schedule, policy, peers: None, shutdown })
     }
 
     /// How hard each submission pushes (default: 15 s threshold, 4 attempts)
@@ -154,7 +158,12 @@ impl<S: ChainDataSource> ChainView<S> {
             raw: Bytes::from(raw),
             txid: prepared.txid,
         };
-        tokio::spawn(job.run(self.policy, checked, answer));
+        // cancelled = answer dropped: the caller reads "submission ended"
+        tokio::spawn(self.shutdown.clone().run_until_cancelled_owned(job.run(
+            self.policy,
+            checked,
+            answer,
+        )));
         answered.await.unwrap_or_else(|_| {
             let gone = NonDomainError::new(FailureMode::Connection, "submission ended");
             Err(SubmitError::Unreachable { attempted: 0, cause: gone })

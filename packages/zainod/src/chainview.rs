@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use futures::FutureExt as _;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch, ValidatorP2pSource};
 use zaino_header_chain::HeaderChain;
@@ -80,11 +81,12 @@ pub(crate) fn view<S: ChainDataSource>(
     balancer: &TrafficBalancer<S>,
     p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
     schedule: LocalNetwork,
+    shutdown: CancellationToken,
 ) -> Result<Viewed<S>, IndexerError> {
     let validators = &config.trusted_validators;
     let depth = ReorgDepth::new(config.sync.finalised_depth);
     let addresses = validators.iter().map(|validator| validator.jsonrpc_address.clone());
-    let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule)?;
+    let view = ChainView::new(addresses.collect(), balancer.clone(), depth, schedule, shutdown)?;
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;
     if let Some((port, start)) = p2p {
