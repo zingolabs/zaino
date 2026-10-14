@@ -18,11 +18,10 @@ what its test asks and `unimplemented!()`s the rest.
 | `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, `CheckAdmissionError::Refused` (the send's verdict), or `Unsupported` (`-32601`: zcashd, stock zebrad) |
 
 What a validator reports about itself is this crate's, beside its parser:
-`BlockchainInfo` (tip + upgrade listing; `schedule()` = the listing as a
-`LocalNetwork`), `NetworkUpgradeInfo`, `ConsensusBranchIds`, `NodeRelease` /
-`EndOfService`, `PeerInfo`. `getblockchaininfo` fails to parse on a branch id
-`zcash_protocol` does not know or activations out of protocol order (a short or
-reordered schedule = other consensus rules than the validator's).
+`BlockchainInfo` (tip, network-tip estimate, each known upgrade's activation;
+`schedule()` = those as a `LocalNetwork`, `None` out of protocol order: regtest's
+boot reads it), `NodeRelease` / `EndOfService`, `PeerInfo`. Only fields Zaino reads
+are parsed, so an upgrade this build does not know is skipped, never a failed poll.
 
 ## Building a client: one per validator
 

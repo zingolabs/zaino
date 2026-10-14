@@ -125,11 +125,17 @@ async fn upgrade_schedule<S: ChainDataSource>(
     network: NetworkType,
     balancer: &TrafficBalancer<S>,
     validators: usize,
-) -> LocalNetwork {
-    match compiled_schedule(network) {
-        Some(schedule) => schedule,
-        None => regtest_schedule(balancer, validators).await.schedule(),
+) -> Result<LocalNetwork, IndexerError> {
+    if let Some(schedule) = compiled_schedule(network) {
+        return Ok(schedule);
     }
+    let listed = regtest_schedule(balancer, validators).await;
+    listed.schedule().ok_or_else(|| {
+        let listed = format!("{:?}", listed.activations);
+        IndexerError::Config(format!(
+            "regtest validator lists upgrades out of protocol order: {listed}"
+        ))
+    })
 }
 
 /// First poll any trusted validator answers (catching up counts: its schedule is the chain's)
@@ -180,7 +186,7 @@ async fn boot_over<S: ChainDataSource>(
     spawn_infallible(&mut tasks, "traffic", component("Traffic"), balancing);
     let validators = config.trusted_validators.len();
     let schedule = upgrade_schedule(config.network, &wiring.balancer, validators);
-    let schedule = schedule.instrument(chainview_span.clone()).await;
+    let schedule = schedule.instrument(chainview_span.clone()).await?;
     let viewed = chainview_span
         .in_scope(|| crate::chainview::view(&config, &wiring.balancer, wiring.p2p, schedule))?;
     let inputs = Inputs {

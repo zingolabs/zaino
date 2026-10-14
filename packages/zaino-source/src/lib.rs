@@ -11,7 +11,6 @@ mod error;
 mod grpc_client;
 mod indexer;
 mod legacy_rpc;
-mod network_upgrade;
 mod node_release;
 mod parse;
 mod peer_info;
@@ -24,7 +23,6 @@ pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZcashGrpcClient;
 pub use indexer::{Change, IndexerTls, IndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
-pub use network_upgrade::{ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus};
 pub use node_release::{EndOfService, NodeRelease};
 pub use peer_info::PeerInfo;
 pub use queries::{

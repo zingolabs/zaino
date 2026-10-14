@@ -1,74 +1,57 @@
-//! Validator's chain state: its tip + its upgrade schedule
+//! Validator's chain state: its tip, its network-tip estimate, its upgrade schedule
 
-use zcash_protocol::consensus::BlockHeight;
+use zaino_primitives::types::BlockRef;
+use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, UPGRADES_IN_ORDER};
 use zcash_protocol::local_consensus::LocalNetwork;
 
-use zcash_protocol::BlockHash;
-
-use crate::{ConsensusBranchIds, NetworkUpgradeInfo};
-
-/// - `upgrades` = regtest's schedule ([`BlockchainInfo::schedule`])
-/// - `estimated_height` = network tip estimate (even when synced)
-/// - `sapling_activation` = Sapling's `upgrades` entry (every network has one; required at parse)
+/// `getblockchaininfo` as Zaino reads it
+///
+/// - `activations` = upgrades this build knows (an unknown branch id skipped, never an error)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockchainInfo {
-    pub blocks: BlockHeight,
+    pub tip: BlockRef,
     pub estimated_height: BlockHeight,
-    pub best_block_hash: BlockHash,
-    pub sapling_activation: BlockHeight,
-    pub upgrades: Vec<NetworkUpgradeInfo>,
-    pub consensus: ConsensusBranchIds,
+    pub activations: Vec<(BranchId, BlockHeight)>,
 }
 
 impl BlockchainInfo {
-    /// Activation heights as listed, keyed by branch id (unlisted = never)
-    ///
-    /// - panics on a listing out of protocol order (`getblockchaininfo` parse refuses one)
-    pub fn schedule(&self) -> LocalNetwork {
-        LocalNetwork::from_activation_heights(|upgrade| {
-            let listed = self.upgrades.iter().find(|nu| nu.branch_id == upgrade.branch_id());
-            listed.map(|nu| nu.activation_height)
-        })
+    /// Listed heights as a schedule (unlisted = never); `None` = listed out of protocol order
+    pub fn schedule(&self) -> Option<LocalNetwork> {
+        let listed = |upgrade: NetworkUpgrade| {
+            let entry = self.activations.iter().find(|(id, _)| *id == upgrade.branch_id());
+            entry.map(|(_, height)| *height)
+        };
+        let heights: Vec<BlockHeight> =
+            UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| listed(upgrade)).collect();
+        heights.is_sorted().then(|| LocalNetwork::from_activation_heights(listed))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use zcash_protocol::consensus::{
-        BranchId, NetworkType, NetworkUpgrade::Nu5, Parameters, UPGRADES_IN_ORDER,
-    };
+    use zaino_primitives::protocol::compiled_schedule;
+    use zcash_protocol::consensus::{NetworkType, NetworkUpgrade::Nu5, Parameters};
+    use zcash_protocol::BlockHash;
 
     use super::*;
-    use crate::NetworkUpgradeStatus;
-    use zaino_primitives::protocol::compiled_schedule;
 
-    /// A validator's listing (in no particular order) reads back as the schedule it lists; an
-    /// unlisted upgrade never activates
+    /// A listing in any order reads back as the schedule it lists; unlisted = never; out of
+    /// protocol order = no schedule
     #[test]
-    fn a_listed_schedule_reads_back_and_an_unlisted_upgrade_never_activates() {
+    fn a_listed_schedule_reads_back_unlisted_never_activates_and_disorder_is_refused() {
         let mainnet = compiled_schedule(NetworkType::Main).expect("mainnet compiled in");
         let listing = UPGRADES_IN_ORDER.iter().rev().filter_map(|&upgrade| {
-            Some(NetworkUpgradeInfo {
-                branch_id: upgrade.branch_id(),
-                name: "label only".to_owned(),
-                activation_height: mainnet.activation_height(upgrade)?,
-                status: NetworkUpgradeStatus::Active,
-            })
+            Some((upgrade.branch_id(), mainnet.activation_height(upgrade)?))
         });
-        let mut info = BlockchainInfo {
-            blocks: BlockHeight::from(3_500_000),
-            estimated_height: BlockHeight::from(3_500_000),
-            best_block_hash: BlockHash([0; 32]),
-            sapling_activation: BlockHeight::from(419_200),
-            upgrades: listing.collect(),
-            consensus: ConsensusBranchIds {
-                chain_tip: BranchId::Nu6_3,
-                next_block: BranchId::Nu6_3,
-            },
-        };
-        assert_eq!(info.schedule(), mainnet);
+        let tip = BlockRef { hash: BlockHash([0; 32]), height: BlockHeight::from(3_500_000) };
+        let mut info =
+            BlockchainInfo { tip, estimated_height: tip.height, activations: listing.collect() };
+        assert_eq!(info.schedule(), Some(mainnet));
 
-        info.upgrades.retain(|nu| nu.branch_id != Nu5.branch_id());
-        assert_eq!(info.schedule().activation_height(Nu5), None, "unlisted = never");
+        info.activations.retain(|(id, _)| *id != Nu5.branch_id());
+        assert_eq!(info.schedule().map(|s| s.activation_height(Nu5)), Some(None), "unlisted");
+
+        info.activations.push((BranchId::Nu5, BlockHeight::from(1)));
+        assert_eq!(info.schedule(), None, "NU5 below Sapling");
     }
 }

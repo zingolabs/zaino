@@ -11,10 +11,7 @@ use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{Block, BlockRef, DecodedHeader, Transaction, TransactionLocation};
-use zcash_protocol::consensus::{
-    BlockHeight, BranchId, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
-};
-use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::consensus::{BlockHeight, Parameters, UPGRADES_IN_ORDER};
 use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
@@ -25,10 +22,7 @@ use crate::{
     GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
     RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
-use crate::{
-    BlockchainInfo, ConsensusBranchIds, EndOfService, NetworkUpgradeInfo, NetworkUpgradeStatus,
-    NodeRelease, PeerInfo,
-};
+use crate::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 
 /// `waited` within 60 s of tokio time, else the test fails naming `what`
 ///
@@ -104,36 +98,11 @@ impl ValidatorViews for MockChain {
     fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
         assert_eq!(self.block(tip.hash).at(), tip, "tip held at its height");
         let upgrades = &self.schedule().upgrades;
-        let sapling = upgrades.activation_height(NetworkUpgrade::Sapling);
-        BlockchainInfo {
-            blocks: tip.height,
-            estimated_height: tip.height,
-            best_block_hash: tip.hash,
-            sapling_activation: sapling.expect("a Sapling activation (zebrad always has one)"),
-            upgrades: listed(upgrades, tip.height),
-            consensus: ConsensusBranchIds {
-                chain_tip: BranchId::for_height(upgrades, tip.height),
-                next_block: BranchId::for_height(upgrades, tip.height + 1),
-            },
-        }
+        let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {
+            Some((upgrade.branch_id(), upgrades.activation_height(upgrade)?))
+        });
+        BlockchainInfo { tip, estimated_height: tip.height, activations: scheduled.collect() }
     }
-}
-
-/// `getblockchaininfo` `upgrades` at `tip`: every scheduled upgrade, active or pending
-fn listed(upgrades: &LocalNetwork, tip: BlockHeight) -> Vec<NetworkUpgradeInfo> {
-    let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {
-        let activation_height = upgrades.activation_height(upgrade)?;
-        Some(NetworkUpgradeInfo {
-            branch_id: upgrade.branch_id(),
-            name: upgrade.to_string(),
-            activation_height,
-            status: match activation_height <= tip {
-                true => NetworkUpgradeStatus::Active,
-                false => NetworkUpgradeStatus::Pending,
-            },
-        })
-    });
-    scheduled.collect()
 }
 
 pub struct MockValidator {
@@ -468,7 +437,7 @@ impl ChainDataSource for MockValidator {
         self.enter(Port::Poll, |calls| calls.polls += 1).await?;
         let mut state = self.state();
         let mut info = state.followed.info.clone();
-        info.estimated_height = state.estimate.unwrap_or(info.blocks);
+        info.estimated_height = state.estimate.unwrap_or(info.tip.height);
         if let Some(reorged) = state.reorg_after_poll.take() {
             state.adopt(reorged);
         }

@@ -186,7 +186,7 @@ impl ValidatorMetadata {
     /// Its own last-observed tip, not the verified one (`agreement` says how they relate)
     pub fn tip(&self) -> Option<BlockRef> {
         let info = self.info.as_ref()?;
-        Some(BlockRef { hash: info.best_block_hash, height: info.blocks })
+        Some(info.tip)
     }
 
     /// Blocks its tip trails its own clock estimate by (an eclipsed or stalled node's tell)

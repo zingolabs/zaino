@@ -276,22 +276,17 @@ impl ChainViewSnapshot {
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
     ) -> Self {
-        use zaino_source::{BlockchainInfo, ConsensusBranchIds};
-        use zcash_protocol::consensus::{BranchId, H0};
+        use zaino_source::BlockchainInfo;
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
         view.chain = chain;
         view.held_by = view.best().map_or_else(EndpointSet::default, |_| held_by);
         if let Some(best) = view.best() {
-            let branch = BranchId::Sprout;
             let info = BlockchainInfo {
-                blocks: best.height,
+                tip: best,
                 estimated_height: best.height,
-                best_block_hash: best.hash,
-                sapling_activation: H0,
-                upgrades: Vec::new(),
-                consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+                activations: Vec::new(),
             };
             for at in view.held_by.positions() {
                 if let Some(meta) = view.endpoints.get_mut(at) {
@@ -314,7 +309,7 @@ impl ChainViewSnapshot {
         if let Some(meta) = self.endpoints.get_mut(at) {
             meta.health = health;
             if let Some(info) = meta.info.as_mut() {
-                info.estimated_height = info.blocks + behind;
+                info.estimated_height = info.tip.height + behind;
             }
         }
         self.alarms = crate::telemetry::alarms(&self.endpoints, self.alarms.finality_paused());
@@ -332,9 +327,8 @@ impl ChainViewSnapshot {
         assert!(self.held_by.contains(id), "{at}: not a holder");
         let meta = self.endpoints.get_mut(at).expect("a holder = a configured endpoint");
         let info = meta.info.as_mut().expect("a holder answered");
-        info.blocks = best.height + by;
-        info.estimated_height = info.blocks;
-        info.best_block_hash = BlockHash([0xA0; 32]);
+        info.tip = BlockRef { hash: BlockHash([0xA0; 32]), height: best.height + by };
+        info.estimated_height = info.tip.height;
         meta.held = read.then_some(best);
         meta.agreement = meta.agreement_with(self.chain.as_deref());
         if !read {

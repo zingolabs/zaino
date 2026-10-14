@@ -1,19 +1,17 @@
 //! JSON-RPC `result` → zaino-primitives types, one parser per method
 //!
-//! - Strict where Zaino acts on a value (an unknown upgrade status or branch id fails the parse: a
-//!   short schedule would put Zaino on other consensus rules than its validator)
+//! - Only fields Zaino reads are parsed: an unread field never fails a poll
 //! - Absent / `null` optional field = `None`; present but malformed = error ("inactive" and
 //!   "garbled" are different facts)
 
-use zaino_primitives::types::TransactionLocation;
+use zaino_primitives::types::{BlockRef, TransactionLocation};
 
-use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, UPGRADES_IN_ORDER};
+use zcash_protocol::consensus::{BlockHeight, BranchId};
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::{
-    BlockchainInfo, ConsensusBranchIds, EndOfService, MempoolListed, NetworkUpgradeInfo,
-    NetworkUpgradeStatus, NodeRelease, PeerInfo, TransactionResponse,
+    BlockchainInfo, EndOfService, MempoolListed, NodeRelease, PeerInfo, TransactionResponse,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -30,14 +28,6 @@ pub(crate) enum ParseError {
     Overflow(u64),
     #[error("missing field `{0}`")]
     MissingField(&'static str),
-    #[error("unknown network upgrade status `{0}`")]
-    UpgradeStatus(String),
-    #[error("unknown consensus branch id {0:08x}")]
-    BranchId(u32),
-    #[error("upgrade schedule has no Sapling entry")]
-    NoSapling,
-    #[error("upgrade schedule activates out of protocol order")]
-    UpgradeOrder,
     #[error("mempool listing too large: {len} entries > {max}")]
     ListingTooLarge { len: usize, max: usize },
     #[error("ZEC amount {0} outside the money supply")]
@@ -139,64 +129,27 @@ impl<'de> serde::Deserialize<'de> for HexBytes {
     }
 }
 
-/// `getblockchaininfo`: the tip + the upgrade schedule (a consensus input: strict); every other
-/// field ignored (never read, so never a reason to fail)
+/// `getblockchaininfo`: tip, estimate, each known upgrade's activation height (keyed by branch
+/// id; an id this build does not know = skipped); every other field ignored
 pub(crate) fn parse_blockchain_info(
     value: &serde_json::Value,
 ) -> Result<BlockchainInfo, ParseError> {
-    let consensus = field(value, "consensus")?;
-    let upgrades = parse_upgrades(field(value, "upgrades")?)?;
-    let sapling_activation = upgrades
-        .iter()
-        .find(|upgrade| upgrade.branch_id == BranchId::Sapling)
-        .ok_or(ParseError::NoSapling)?
-        .activation_height;
-    let listed = |upgrade: NetworkUpgrade| {
-        let entry = upgrades.iter().find(|nu| nu.branch_id == upgrade.branch_id());
-        entry.map(|nu| nu.activation_height)
-    };
-    let activations: Vec<BlockHeight> =
-        UPGRADES_IN_ORDER.iter().filter_map(|&nu| listed(nu)).collect();
-    if activations.windows(2).any(|pair| pair[0] > pair[1]) {
-        return Err(ParseError::UpgradeOrder);
+    let upgrades = field(value, "upgrades")?;
+    let upgrades =
+        upgrades.as_object().ok_or_else(|| ParseError::unexpected("object", upgrades))?;
+    let mut activations = Vec::new();
+    for (key, upgrade) in upgrades {
+        let known = u32::from_str_radix(key, 16).ok().and_then(|id| BranchId::try_from(id).ok());
+        if let Some(branch) = known {
+            activations.push((branch, as_height(field(upgrade, "activationheight")?)?));
+        }
     }
-    Ok(BlockchainInfo {
-        blocks: as_height(field(value, "blocks")?)?,
-        estimated_height: as_height(field(value, "estimatedheight")?)?,
-        best_block_hash: as_block_hash(field(value, "bestblockhash")?)?,
-        sapling_activation,
-        upgrades,
-        consensus: ConsensusBranchIds {
-            chain_tip: parse_branch_id(as_str(field(consensus, "chaintip")?)?)?,
-            next_block: parse_branch_id(as_str(field(consensus, "nextblock")?)?)?,
-        },
-    })
-}
-
-fn parse_branch_id(s: &str) -> Result<BranchId, ParseError> {
-    let id = u32::from_str_radix(s.strip_prefix("0x").unwrap_or(s), 16)
-        .map_err(|e| ParseError::Hex(format!("consensus branch id `{s}`: {e}")))?;
-    BranchId::try_from(id).map_err(|_| ParseError::BranchId(id))
-}
-
-/// Keyed by consensus branch id (the upgrade's identity; the name is a label)
-fn parse_upgrades(value: &serde_json::Value) -> Result<Vec<NetworkUpgradeInfo>, ParseError> {
-    let map = value.as_object().ok_or_else(|| ParseError::unexpected("object", value))?;
-
-    map.iter()
-        .map(|(branch_id, info)| {
-            Ok(NetworkUpgradeInfo {
-                branch_id: parse_branch_id(branch_id)?,
-                name: as_str(field(info, "name")?)?.to_owned(),
-                activation_height: as_height(field(info, "activationheight")?)?,
-                status: match as_str(field(info, "status")?)? {
-                    "active" => NetworkUpgradeStatus::Active,
-                    "pending" => NetworkUpgradeStatus::Pending,
-                    other => return Err(ParseError::UpgradeStatus(other.to_owned())),
-                },
-            })
-        })
-        .collect()
+    let tip = BlockRef {
+        hash: as_block_hash(field(value, "bestblockhash")?)?,
+        height: as_height(field(value, "blocks")?)?,
+    };
+    let estimated_height = as_height(field(value, "estimatedheight")?)?;
+    Ok(BlockchainInfo { tip, estimated_height, activations })
 }
 
 /// Entries accepted from one `getrawmempool` (a ZIP-401 node holds ~8k; this only trips on a
@@ -349,12 +302,12 @@ mod tests {
         assert!(matches!(oversized, Err(ParseError::ListingTooLarge { .. })));
     }
 
-    /// - Fields read → domain (hash reversed, schedule keyed by branch id, Sapling's activation)
-    /// - Fields never read (lossy pool floats: the old mainnet-boot crash) never fail the parse
-    /// - Unknown status, missing name, no Sapling entry, unknown branch id, out-of-order
-    ///   activations → parse fails
+    /// - Read: tip (hash reversed), estimate, each known upgrade's activation by branch id
+    /// - Never fail the poll: unread fields (lossy pool floats: the old mainnet-boot crash), an
+    ///   upgrade this build does not know (a validator ahead of the pin), names, statuses
+    /// - A known upgrade without its height, a missing tip → parse fails
     #[test]
-    fn blockchain_info_reads_the_tip_and_schedule_and_ignores_the_rest() {
+    fn blockchain_info_reads_tip_estimate_and_known_activations_and_ignores_the_rest() {
         let info = json!({
             "chain": "main",
             "blocks": 3_451_543,
@@ -364,57 +317,33 @@ mod tests {
             "valuePools": [{ "id": "sapling", "chainValue": 529_544.04149098 }],
             "upgrades": {
                 "76b809bb": { "name": "Sapling", "activationheight": 419_200, "status": "active" },
-                "c2d6d0b4": { "name": "NU5", "activationheight": 1_687_104, "status": "active" },
+                "c2d6d0b4": { "name": "NU5", "activationheight": 1_687_104, "status": "?" },
+                "deadbeef": { "name": "NU9", "activationheight": 9_999_999, "status": "pending" },
             },
-            "consensus": { "chaintip": "c2d6d0b4", "nextblock": "c2d6d0b4" },
+            "consensus": { "chaintip": "c2d6d0b4", "nextblock": "deadbeef" },
         });
         let mut reversed_bytes = [0u8; 32];
         const_hex::decode_to_slice(ASYMMETRIC_HEX, &mut reversed_bytes).expect("fixture");
         reversed_bytes.reverse();
         let height = BlockHeight::from;
-        let nu5 = BranchId::Nu5;
 
-        let expected = BlockchainInfo {
-            blocks: height(3_451_543),
-            estimated_height: height(3_451_544),
-            best_block_hash: BlockHash(reversed_bytes),
-            sapling_activation: height(419_200),
-            upgrades: vec![
-                NetworkUpgradeInfo {
-                    branch_id: BranchId::Sapling,
-                    name: "Sapling".to_owned(),
-                    activation_height: height(419_200),
-                    status: NetworkUpgradeStatus::Active,
-                },
-                NetworkUpgradeInfo {
-                    branch_id: nu5,
-                    name: "NU5".to_owned(),
-                    activation_height: height(1_687_104),
-                    status: NetworkUpgradeStatus::Active,
-                },
-            ],
-            consensus: ConsensusBranchIds { chain_tip: nu5, next_block: nu5 },
-        };
-        assert_eq!(parse_blockchain_info(&info).expect("well-formed"), expected);
+        let parsed = parse_blockchain_info(&info).expect("well-formed");
+        let tip = BlockRef { hash: BlockHash(reversed_bytes), height: height(3_451_543) };
+        assert_eq!((parsed.tip, parsed.estimated_height), (tip, height(3_451_544)));
+        let mut activations = parsed.activations;
+        activations.sort_by_key(|(_, at)| *at);
+        let known = [(BranchId::Sapling, height(419_200)), (BranchId::Nu5, height(1_687_104))];
+        assert_eq!(activations, known, "NU9 (unknown to this build) skipped");
 
-        let mut unknown = info.clone();
-        unknown["upgrades"]["c2d6d0b4"]["status"] = json!("disabled");
-        let unknown = parse_blockchain_info(&unknown);
-        assert!(matches!(unknown, Err(ParseError::UpgradeStatus(status)) if status == "disabled"));
-        let mut unnamed = info.clone();
-        unnamed["upgrades"]["c2d6d0b4"].as_object_mut().expect("object").remove("name");
-        assert!(matches!(parse_blockchain_info(&unnamed), Err(ParseError::MissingField("name"))));
-        let mut unknown_branch = info.clone();
-        unknown_branch["consensus"]["nextblock"] = json!("deadbeef");
-        let unknown_branch = parse_blockchain_info(&unknown_branch);
-        assert!(matches!(unknown_branch, Err(ParseError::BranchId(0xdead_beef))));
-        let mut out_of_order = info.clone();
-        out_of_order["upgrades"]["c2d6d0b4"]["activationheight"] = json!(419_199);
-        let out_of_order = parse_blockchain_info(&out_of_order);
-        assert!(matches!(out_of_order, Err(ParseError::UpgradeOrder)));
-        let mut no_sapling = info;
-        no_sapling["upgrades"].as_object_mut().expect("object").remove("76b809bb");
-        assert!(matches!(parse_blockchain_info(&no_sapling), Err(ParseError::NoSapling)));
+        let mut no_height = info.clone();
+        let nu5 = no_height["upgrades"]["c2d6d0b4"].as_object_mut().expect("object");
+        nu5.remove("activationheight");
+        let no_height = parse_blockchain_info(&no_height);
+        assert!(matches!(no_height, Err(ParseError::MissingField("activationheight"))));
+        let mut no_tip = info;
+        no_tip.as_object_mut().expect("object").remove("bestblockhash");
+        let no_tip = parse_blockchain_info(&no_tip);
+        assert!(matches!(no_tip, Err(ParseError::MissingField("bestblockhash"))));
     }
 
     /// - All three placements pinned (side-chain tx reported as unmined = reads as pending)

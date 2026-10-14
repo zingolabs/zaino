@@ -194,10 +194,10 @@ impl<S: ChainDataSource> Member<'_, S> {
         let due =
             self.catching_up_warned.is_none_or(|at| at.elapsed() >= CATCHING_UP_WARN_INTERVAL);
         if due {
-            let (tip, network) = (reading.info.blocks, reading.info.estimated_height);
+            let (tip, network) = (reading.info.tip.height, reading.info.estimated_height);
             let behind = u32::from(network).saturating_sub(tip.into());
             let height = u32::from(tip);
-            let hash = reading.info.best_block_hash;
+            let hash = reading.info.tip.hash;
             warn!(endpoint = self.address, height, behind, %hash, "Validator catching up");
             self.catching_up_warned = Some(Instant::now());
         }

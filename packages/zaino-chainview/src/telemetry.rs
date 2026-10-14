@@ -193,8 +193,8 @@ pub(crate) fn submitted(ended: &Ended, attempts: usize) {
 
 #[cfg(test)]
 mod tests {
-    use zaino_source::{BlockchainInfo, ConsensusBranchIds, PeerInfo};
-    use zcash_protocol::consensus::{BranchId, H0};
+    use zaino_primitives::types::BlockRef;
+    use zaino_source::{BlockchainInfo, PeerInfo};
     use zcash_protocol::BlockHash;
 
     use zaino_primitives::testing::h;
@@ -230,14 +230,10 @@ mod tests {
                     };
                     let mut meta = ValidatorMetadata::new(format!("v{index}:8232"));
                     meta.health = *state;
-                    let branch = BranchId::Sprout;
                     meta.info = Some(BlockchainInfo {
-                        blocks: h(*tip),
+                        tip: BlockRef { hash: BlockHash([0; 32]), height: h(*tip) },
                         estimated_height: h(*estimated),
-                        best_block_hash: BlockHash([0; 32]),
-                        sapling_activation: H0,
-                        upgrades: Vec::new(),
-                        consensus: ConsensusBranchIds { chain_tip: branch, next_block: branch },
+                        activations: Vec::new(),
                     });
                     meta.peers = outbound
                         .iter()
