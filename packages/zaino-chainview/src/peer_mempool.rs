@@ -129,12 +129,13 @@ pub(crate) fn judge(
     next: NextBlock,
     fetched: Vec<(PeerTxId, Bytes)>,
 ) -> Vec<(PeerTxId, Bytes, Result<Zatoshis, Refused>)> {
-    let prevout = |at: &OutPoint| {
-        let served = utxos.values(std::slice::from_ref(at));
-        served.and_then(|values| values.into_iter().next().flatten()).or_else(|| held(view, at))
+    let prevouts = |inputs: &[OutPoint]| {
+        let served = utxos.values(inputs).unwrap_or_else(|| vec![None; inputs.len()]);
+        let value = |(at, served): (&OutPoint, Option<Zatoshis>)| served.or_else(|| held(view, at));
+        inputs.iter().zip(served).map(value).collect()
     };
     let judged = |(id, raw): (PeerTxId, Bytes)| {
-        let fee = admissible(&raw, next, prevout).map(|(_, fee)| fee);
+        let fee = admissible(&raw, next, prevouts).map(|(_, fee)| fee);
         (id, raw, fee)
     };
     fetched.into_iter().map(judged).collect()

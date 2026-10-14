@@ -64,11 +64,12 @@ pub(crate) fn valid_in(prepared: &Prepared, next: NextBlock) -> Result<(), Refus
 
 /// Every check a peer quorum's transaction must pass here → its txid + fee
 ///
-/// - `prevout` = an outpoint's value, unspent (served UTXO set, else a held transaction's output)
+/// - `prevouts` = each input's value, in order, unspent (served UTXO set, else a held
+///   transaction's output): one batch per transaction (one served set prices it)
 pub(crate) fn admissible(
     raw: &[u8],
     next: NextBlock,
-    prevout: impl Fn(&OutPoint) -> Option<Zatoshis>,
+    prevouts: impl FnOnce(&[OutPoint]) -> Vec<Option<Zatoshis>>,
 ) -> Result<(TxId, Zatoshis), Refused> {
     let malformed = |cause: zaino_source::DecodeError| Refused::Malformed(cause.to_string());
     let prepared = prepare_transaction(raw).map_err(malformed)?;
@@ -77,10 +78,11 @@ pub(crate) fn admissible(
     if tx.transparent.coinbase {
         return Err(Refused::Coinbase);
     }
+    let values = prevouts(&tx.transparent.inputs);
     let mut spent = Zatoshis::ZERO;
-    for input in &tx.transparent.inputs {
+    for (at, input) in tx.transparent.inputs.iter().enumerate() {
         let unknown = || Refused::UnknownPrevout { txid: *input.txid(), vout: input.n() };
-        let value = prevout(input).ok_or_else(unknown)?;
+        let value = values.get(at).copied().flatten().ok_or_else(unknown)?;
         spent = (spent + value).ok_or(Refused::Fee(FeeError::Overflow))?;
     }
     match tx.fee(spent)? {
@@ -113,7 +115,9 @@ mod tests {
         let unknown = OutPoint::new([2; 32], 3);
         let coinbase_input = OutPoint::new([0; 32], u32::MAX);
         let zats = |n: u64| Zatoshis::from_u64(n).expect("zats");
-        let utxos = |at: &OutPoint| (*at == known).then(|| zats(10_000));
+        let utxos = |inputs: &[OutPoint]| {
+            inputs.iter().map(|at| (*at == known).then(|| zats(10_000))).collect()
+        };
 
         let (paying, pays) = raw_transparent(slice::from_ref(&known), &[(&alice, 9_000)]);
         let (_, overpays) = raw_transparent(slice::from_ref(&known), &[(&alice, 11_000)]);
