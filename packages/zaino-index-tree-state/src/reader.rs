@@ -6,11 +6,10 @@ use incrementalmerkletree::{
 };
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{OverlayView, SequenceRead, SequenceTable, View};
-use zaino_primitives::types::{
-    BlockRef, CommitmentTreeBytes, ShieldedPool, SubtreeRoot, TreeSizes, Treestate,
-};
+use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, SubtreeRoot, TreeSizes, Treestate};
 use zcash_primitives::merkle_tree::{write_commitment_tree, HashSer};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::ShieldedPool;
 
 use crate::{
     heights::{self, TreeStateHeight},

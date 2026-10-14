@@ -516,9 +516,10 @@ mod tests {
         use std::collections::BTreeMap;
         use tower::Service as _;
         use zaino_primitives::testing::{p2pkh, TxBuilder};
-        use zaino_primitives::types::{ShieldedPool, Transaction};
+        use zaino_primitives::types::Transaction;
         use zaino_proto::proto::compact_formats::CompactTx;
         use zaino_proto::proto::service;
+        use zcash_protocol::ShieldedPool;
 
         let block: Vec<(Transaction, Vec<u8>)> =
             zaino_source::testing::fixtures::transactions(2_000_000)

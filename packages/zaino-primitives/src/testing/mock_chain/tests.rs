@@ -5,9 +5,8 @@ use zcash_transparent::bundle::OutPoint;
 use super::*;
 use crate::testing::p2pkh;
 use crate::testing::TxBuilder;
-use crate::types::{
-    NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool, TransparentOutput,
-};
+use crate::types::{NetworkUpgradeStatus, NoteCommitment, Nullifier, TransparentOutput};
+use zcash_protocol::ShieldedPool;
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -257,7 +256,7 @@ fn a_sapling_nullifier_revealed_twice_panics() {
 }
 
 #[test]
-#[should_panic(expected = "orchard nullifier revealed twice")]
+#[should_panic(expected = "Orchard nullifier revealed twice")]
 fn an_orchard_nullifier_revealed_twice_panics() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.orchard_action([6; 32], 1)));

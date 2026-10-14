@@ -10,9 +10,10 @@ use zcash_transparent::bundle::OutPoint;
 use super::sha256d;
 use crate::types::{
     CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction,
-    TransparentData, TransparentOutput,
+    SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData,
+    TransparentOutput,
 };
+use zcash_protocol::ShieldedPool;
 
 /// One block: coinbase in slot 0, then each `tx` / `raw_tx` in call order
 #[derive(Debug, Clone)]
@@ -266,8 +267,12 @@ fn commitment(leaf: u32) -> NoteCommitment {
 
 /// Builder-owned: distinct per (txid, pool, index), never asserted on
 fn detection(txid: TxId, pool: ShieldedPool, index: u32) -> (EphemeralKey, CompactCiphertext) {
-    let pool = pool.to_string();
-    let seed = [&<[u8; 32]>::from(txid)[..], pool.as_bytes(), &index.to_le_bytes()].concat();
+    let pool = match pool {
+        ShieldedPool::Sapling => 0,
+        ShieldedPool::Orchard => 1,
+        ShieldedPool::Ironwood => 2,
+    };
+    let seed = [&<[u8; 32]>::from(txid)[..], &[pool], &index.to_le_bytes()].concat();
     let key = sha256d(&seed);
     let (head, tail) = (sha256d(&key), sha256d(&sha256d(&key)));
     let ciphertext: [u8; CompactCiphertext::LENGTH] =

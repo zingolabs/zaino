@@ -45,7 +45,7 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
   `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
-  `TreeRoot`, `Treestate`, `SubtreeRoot`, `ShieldedPool`, `MerkleRoot`,
+  `TreeRoot`, `Treestate`, `SubtreeRoot`, `MerkleRoot`,
   `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
   `TransactionLocation` and the network-upgrade types, plus the zatoshi family
   and `CompactDifficulty` below.

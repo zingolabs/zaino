@@ -1,7 +1,7 @@
 #![doc = include_str!("../usage.md")]
 
 use zaino_persistence::{SequenceTable, Tables, Width};
-use zaino_primitives::types::ShieldedPool;
+use zcash_protocol::ShieldedPool;
 
 mod heights;
 mod nodes;
@@ -36,7 +36,11 @@ const HEIGHTS: SequenceTable =
 /// Level sequences + subtrees, per pool
 const POOL_TABLES: usize = MERKLE_DEPTH as usize + 1;
 
-/// `heights`, then each pool's tables (`ShieldedPool::ALL` order)
+/// Activation order (= table order)
+pub(crate) const POOLS: [ShieldedPool; 3] =
+    [ShieldedPool::Sapling, ShieldedPool::Orchard, ShieldedPool::Ironwood];
+
+/// `heights`, then each pool's tables ([`POOLS`] order)
 const SEQUENCES: [SequenceTable; 1 + 3 * POOL_TABLES] = {
     let mut all = [HEIGHTS; 1 + 3 * POOL_TABLES];
     let mut at = 0;

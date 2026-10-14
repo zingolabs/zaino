@@ -15,14 +15,13 @@ use std::{
 use incrementalmerkletree::{frontier::Frontier, Address, Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
 use zaino_persistence::{BlockChanges, IndexKind, SequenceRead, SequenceTable, Store, View};
-use zaino_primitives::types::{
-    Block, NoteCommitment, PerPool, ShieldedPool, Transaction, TreeRoot, TreeSizes,
-};
+use zaino_primitives::types::{Block, NoteCommitment, PerPool, Transaction, TreeRoot, TreeSizes};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, IndexHandle, IndexPublisher, Subscription,
 };
 use zcash_primitives::merkle_tree::HashSer;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::ShieldedPool;
 
 use crate::{
     heights::{self, TreeStateHeight},
@@ -30,7 +29,7 @@ use crate::{
     nodes::{self, slot, Slot, MERKLE_DEPTH, NODE},
     subtree_table,
     subtrees::{self, SubtreeEntry},
-    TreeStateReader, HEIGHTS,
+    TreeStateReader, HEIGHTS, POOLS,
 };
 
 const NAME: &str = IndexKind::TreeState.name();
@@ -240,7 +239,7 @@ fn split<V: SequenceRead>(
         let levels = (0..MERKLE_DEPTH).map(|level| parent.len(level_table(pool, level)));
         (levels.collect::<Vec<u64>>(), parent.len(subtree_table(pool)))
     };
-    let mut ends = ShieldedPool::ALL.map(|pool| (pool, ends_of(pool)));
+    let mut ends = POOLS.map(|pool| (pool, ends_of(pool)));
     for (at, (block, out)) in blocks.iter().zip(out).enumerate() {
         let header = block.header();
         sizes = sizes.advance(block).expect("pool size within u32 (consensus caps it)");

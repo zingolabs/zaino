@@ -22,7 +22,6 @@ mod peer_info;
 mod peer_txid;
 mod per_pool;
 mod reorg_depth;
-mod shielded_pool;
 mod subtree_root;
 mod transaction;
 mod transaction_location;
@@ -52,7 +51,6 @@ pub use peer_info::PeerInfo;
 pub use peer_txid::PeerTxId;
 pub use per_pool::{PerPool, TreeSizes};
 pub use reorg_depth::ReorgDepth;
-pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction,

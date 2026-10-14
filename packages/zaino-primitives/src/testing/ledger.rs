@@ -8,7 +8,8 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::types::{Fee, Nullifier, ShieldedPool, Transaction};
+use crate::types::{Fee, Nullifier, Transaction};
+use zcash_protocol::ShieldedPool;
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
 #[derive(Debug, Clone)]
@@ -37,7 +38,7 @@ pub enum Refused {
     Repeated,
     #[error("pool data before {0}")]
     Inactive(NetworkUpgrade),
-    #[error("{0} nullifier revealed twice on this branch")]
+    #[error("{0:?} nullifier revealed twice on this branch")]
     Revealed(ShieldedPool),
     #[error("a coinbase spends nothing")]
     CoinbaseSpends,

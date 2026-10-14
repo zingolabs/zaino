@@ -3,8 +3,9 @@
 //! - slot = subtree index → a `start_index` resume = a seek, not a scan
 
 use zaino_persistence::SequenceRead;
-use zaino_primitives::types::{ShieldedPool, TreeRoot};
+use zaino_primitives::types::TreeRoot;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::ShieldedPool;
 
 use crate::subtree_table;
 

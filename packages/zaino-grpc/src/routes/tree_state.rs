@@ -10,11 +10,10 @@ use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::{CommittedView, IndexKind, OverlayView};
 use zaino_primitives::network::chain_name;
-use zaino_primitives::types::{
-    BlockHash, CommitmentTreeBytes, ShieldedPool, SubtreeRoot, Treestate,
-};
+use zaino_primitives::types::{BlockHash, CommitmentTreeBytes, SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::ShieldedPool;
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;

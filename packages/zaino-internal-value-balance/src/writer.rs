@@ -210,10 +210,11 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
     use zaino_primitives::testing::{h, p2pkh, MockChain};
-    use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, Transaction};
+    use zaino_primitives::types::{BlockRef, Fee, Transaction};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
     use zcash_protocol::value::ZatBalance;
+    use zcash_protocol::ShieldedPool;
 
     use super::*;
     use crate::{FORMAT, TABLES};

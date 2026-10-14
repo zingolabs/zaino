@@ -1,6 +1,7 @@
 //! One value per shielded pool
 
-use super::{Block, ShieldedPool, TreeSize, TreeSizeOutOfRange};
+use super::{Block, TreeSize, TreeSizeOutOfRange};
+use zcash_protocol::ShieldedPool;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PerPool<T> {

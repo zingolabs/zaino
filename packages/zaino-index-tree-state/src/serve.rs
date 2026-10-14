@@ -3,9 +3,9 @@
 //! - per request: one 48 B record read, ≤ 33 node reads (32 B) per pool, ~1 KB serialized, no
 //!   hashing
 
-use zaino_primitives::types::ShieldedPool;
 use zcash_protocol::consensus::{BlockHeight, NetworkUpgrade, Parameters};
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::ShieldedPool;
 
 /// Height each pool's tree begins (`None` = unscheduled)
 ///
