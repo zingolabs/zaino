@@ -5,20 +5,28 @@
 //! - [`ZcashGrpcClient`]: blocks over zebrad's indexer gRPC, the rest over JSON-RPC
 //! - Both decode blocks once, from consensus bytes; which validator answers = `zaino-traffic`'s
 
+mod blockchain_info;
 mod decode;
 mod error;
 mod grpc_client;
 mod indexer;
 mod legacy_rpc;
+mod network_upgrade;
+mod node_release;
 mod parse;
+mod peer_info;
 mod queries;
 mod rpc;
 
+pub use blockchain_info::BlockchainInfo;
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
 pub use grpc_client::ZcashGrpcClient;
 pub use indexer::{Change, IndexerTls, IndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
+pub use network_upgrade::{ConsensusBranchIds, NetworkUpgradeInfo, NetworkUpgradeStatus};
+pub use node_release::{EndOfService, NodeRelease};
+pub use peer_info::PeerInfo;
 pub use queries::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,

@@ -100,6 +100,10 @@ routing.route(routes);
   slots and prunes pools.
 - A t-address encoded for a network other than the transparent index's is
   `INVALID_ARGUMENT`.
+- Two network spellings: `chainName` and the tree state's `network` =
+  lightwalletd's `main` / `test` / `regtest`; `network_name` (exported) =
+  zainod's `mainnet` / `testnet` / `regtest` (config, logs, the t-address
+  mismatch message). No surface writes its own match.
 - `limits: GrpcLimits` (see [Serve stack](#serve-stack)); zainod fills it from
   its `[grpc]` config section.
 - `bind().await` takes the socket and returns a `BoundGrpcService`; await it at

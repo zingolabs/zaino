@@ -193,7 +193,8 @@ pub(crate) fn submitted(ended: &Ended, attempts: usize) {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::types::{BlockHash, BlockchainInfo, ConsensusBranchIds, PeerInfo};
+    use zaino_primitives::types::BlockHash;
+    use zaino_source::{BlockchainInfo, ConsensusBranchIds, PeerInfo};
     use zcash_protocol::consensus::{BranchId, H0};
 
     use zaino_primitives::testing::h;

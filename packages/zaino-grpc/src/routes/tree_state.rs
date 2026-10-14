@@ -3,13 +3,13 @@
 
 use std::sync::Arc;
 
+use crate::network::chain_name;
 use bytes::Bytes;
 use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::{CommittedView, IndexKind, OverlayView};
-use zaino_primitives::network::chain_name;
 use zaino_primitives::types::{BlockHash, CommitmentTreeBytes, SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;

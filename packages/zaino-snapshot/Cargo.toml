@@ -33,6 +33,7 @@ zaino-header-chain.workspace = true
 zaino-nfs.workspace = true
 zaino-persistence.workspace = true
 zaino-primitives.workspace = true
+zaino-source.workspace = true
 zaino-sync.workspace = true
 zaino-traffic.workspace = true
 zcash_protocol.workspace = true

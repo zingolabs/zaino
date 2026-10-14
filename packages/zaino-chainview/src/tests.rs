@@ -9,13 +9,13 @@ use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{h, p2pkh, MockChain};
-use zaino_primitives::types::{
-    BlockRef, EndOfService, NodeRelease, PeerInfo, PeerTxId, ReorgDepth,
-};
+use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
 use zaino_source::testing::{
     decoded, raw_transaction, raw_transparent, within, MockValidator, Port, ValidatorViews,
 };
-use zaino_source::{GetMempoolListingError, SendRawTransactionError};
+use zaino_source::{
+    EndOfService, GetMempoolListingError, NodeRelease, PeerInfo, SendRawTransactionError,
+};
 use zaino_traffic::testing::PeerSetViews;
 use zaino_traffic::{
     Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, ValidatorId,

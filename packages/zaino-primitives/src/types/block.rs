@@ -2,8 +2,7 @@
 
 use super::transaction::Transaction;
 use super::{
-    BlockCommitments, BlockHash, BlockRef, BlockTime, CompactDifficulty, EquihashNonce,
-    EquihashSolution, MerkleRoot,
+    BlockCommitments, BlockHash, BlockRef, CompactDifficulty, EquihashSolution, MerkleRoot,
 };
 use zcash_protocol::consensus::{BlockHeight, H0};
 
@@ -15,11 +14,11 @@ pub struct DecodedHeader {
     pub version: u32,
     pub prev_hash: BlockHash,
     pub height: BlockHeight,
-    pub time: BlockTime,
+    pub time: u32,
     pub merkle_root: MerkleRoot,
     pub block_commitments: BlockCommitments,
     pub bits: CompactDifficulty,
-    pub nonce: EquihashNonce,
+    pub nonce: [u8; 32],
     pub solution: EquihashSolution,
 }
 

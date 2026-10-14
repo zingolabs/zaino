@@ -1,6 +1,6 @@
 //! `heights`: 48 B per height (hash, time, the three cumulative tree sizes)
 
-use zaino_primitives::types::{BlockHash, BlockTime, TreeSize, TreeSizes};
+use zaino_primitives::types::{BlockHash, TreeSize, TreeSizes};
 
 /// Bytes per record (slot = height)
 pub(crate) const RECORD: usize = 48;
@@ -9,7 +9,7 @@ pub(crate) const RECORD: usize = 48;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TreeStateHeight {
     pub(crate) hash: BlockHash,
-    pub(crate) time: BlockTime,
+    pub(crate) time: u32,
     pub(crate) sizes: TreeSizes,
 }
 

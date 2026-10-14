@@ -6,14 +6,12 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{
-    Block, BlockHash, BlockchainInfo, NodeRelease, PeerInfo, TransactionLocation,
-};
+use zaino_primitives::types::{Block, BlockHash, TransactionLocation};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
-use crate::{NonDomainError, QueryError};
+use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError};
 
 /// Trusted validator's RPC, as every Zaino consumer asks it
 ///

@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use zaino_chainview::{Agreement, ChainViewSnapshot, EndpointSet, Spread, ValidatorMetadata};
 use zaino_nfs::INDEXES;
 use zaino_persistence::{IndexKind, View};
-use zaino_primitives::types::{self, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, MemberId, MemberTable, ValidatorId};
 
@@ -276,13 +276,13 @@ fn validator(position: usize, meta: &ValidatorMetadata, members: &MemberTable) -
     }
 }
 
-fn end_of_service(halts: types::EndOfService, blocks_left: Option<u32>) -> EndOfService {
+fn end_of_service(halts: zaino_source::EndOfService, blocks_left: Option<u32>) -> EndOfService {
     match halts {
-        types::EndOfService::At { height, estimated_unix } => {
+        zaino_source::EndOfService::At { height, estimated_unix } => {
             EndOfService::At { height: u32::from(height), estimated_unix, blocks_left }
         }
-        types::EndOfService::NotEnforced => EndOfService::NotEnforced,
-        types::EndOfService::Unknown => EndOfService::Unknown,
+        zaino_source::EndOfService::NotEnforced => EndOfService::NotEnforced,
+        zaino_source::EndOfService::Unknown => EndOfService::Unknown,
     }
 }
 
@@ -456,7 +456,7 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
                 ("user_agent", release.user_agent.clone()),
             ];
             metrics::gauge!(names::RELEASE, &labels).set(1.0);
-            if let types::EndOfService::At { height, .. } = release.end_of_service {
+            if let zaino_source::EndOfService::At { height, .. } = release.end_of_service {
                 metrics::gauge!(names::END_OF_SERVICE_HEIGHT, "endpoint" => endpoint)
                     .set(f64::from(u32::from(height)));
             }

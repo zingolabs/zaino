@@ -1,10 +1,10 @@
 //! Transparent-address methods: utxos and balances from the index, `GetTaddressTransactions`
 //! (index names the txids, a validator supplies the bytes), all as of the snapshot's tip
 
+use crate::network::network_name;
 use bytes::Bytes;
 use zaino_index_transparent_address::{AddressUtxo, ServeError, TransparentAddressReader};
 use zaino_persistence::{CommittedView, OverlayView};
-use zaino_primitives::network::network_name;
 use zaino_proto::proto::service;
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;

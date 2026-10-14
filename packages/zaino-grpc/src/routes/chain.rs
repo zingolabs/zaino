@@ -5,12 +5,12 @@
 //! - `block_height` = what Zaino serves, not the validator's tip (a wallet gates its sync on it)
 //! - `estimated_height` = verified best tip, no validator call ("how far behind")
 
+use crate::network::chain_name;
 use http::Response;
 use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
-use zaino_primitives::network::chain_name;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
 use zaino_snapshot::{Lightd, Snapshot};

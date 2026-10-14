@@ -13,20 +13,18 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use zcash_protocol::consensus::{
-    target_spacing, BlockHeight, BranchId, NetworkType, NetworkUpgrade, Parameters, H0,
-};
+use zcash_protocol::consensus::{target_spacing, BlockHeight, NetworkType, Parameters, H0};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use super::build::{BlockBuilder, Planned, TxBuilder};
 use super::ledger::{Ledger, Unmined};
-use super::upgrades::{all_at, info};
+use super::upgrades::all_at;
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
-    Block, BlockFees, BlockHash, BlockRef, BlockchainInfo, CompactDifficulty, ConsensusBranchIds,
-    DecodedHeader, EquihashSolution, Fee, MerkleRoot, Transaction,
+    Block, BlockFees, BlockHash, BlockRef, CompactDifficulty, DecodedHeader, EquihashSolution, Fee,
+    MerkleRoot, Transaction,
 };
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
@@ -186,24 +184,6 @@ impl MockChain {
     /// Bytes of a `raw_tx` (`None` = built by `TxBuilder`: no bytes exist)
     pub fn tx_bytes(&self, txid: TxId) -> Option<&[u8]> {
         self.bytes.get(&txid).map(Vec::as_slice)
-    }
-
-    /// `getblockchaininfo` with `tip` as the validator's best
-    pub fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
-        assert_eq!(self.reference(tip.hash), tip, "tip held at its height");
-        let upgrades = &self.schedule.upgrades;
-        let sapling = upgrades.activation_height(NetworkUpgrade::Sapling);
-        BlockchainInfo {
-            blocks: tip.height,
-            estimated_height: tip.height,
-            best_block_hash: tip.hash,
-            sapling_activation: sapling.expect("a Sapling activation (zebrad always has one)"),
-            upgrades: info(upgrades, tip.height),
-            consensus: ConsensusBranchIds {
-                chain_tip: BranchId::for_height(upgrades, tip.height),
-                next_block: BranchId::for_height(upgrades, tip.height + 1),
-            },
-        }
     }
 
     pub fn schedule(&self) -> Schedule {

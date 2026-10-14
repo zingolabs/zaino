@@ -5,16 +5,16 @@
 //! - Absent / `null` optional field = `None`; present but malformed = error ("inactive" and
 //!   "garbled" are different facts)
 
-use zaino_primitives::types::{
-    BlockHash, BlockchainInfo, ConsensusBranchIds, EndOfService, NetworkUpgradeInfo,
-    NetworkUpgradeStatus, NodeRelease, ParseHashError, PeerInfo, TransactionLocation,
-};
+use zaino_primitives::types::{BlockHash, ParseHashError, TransactionLocation};
 
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, UPGRADES_IN_ORDER};
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
 use zcash_protocol::TxId;
 
-use crate::{MempoolListed, TransactionResponse};
+use crate::{
+    BlockchainInfo, ConsensusBranchIds, EndOfService, MempoolListed, NetworkUpgradeInfo,
+    NetworkUpgradeStatus, NodeRelease, PeerInfo, TransactionResponse,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ParseError {

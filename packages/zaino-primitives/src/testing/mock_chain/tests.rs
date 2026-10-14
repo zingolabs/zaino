@@ -5,7 +5,7 @@ use zcash_transparent::bundle::OutPoint;
 use super::*;
 use crate::testing::p2pkh;
 use crate::testing::TxBuilder;
-use crate::types::{NetworkUpgradeStatus, NoteCommitment, Nullifier, TransparentOutput};
+use crate::types::{NoteCommitment, Nullifier, TransparentOutput};
 use zcash_protocol::ShieldedPool;
 
 fn hex(bytes: &[u8]) -> String {
@@ -78,23 +78,6 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
     let times: Vec<u32> = scheduled.blocks(six).iter().map(|block| block.header().time).collect();
     let spacing: Vec<u32> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
     assert_eq!(spacing, [150, 150, 75, 75, 25, 25], "pre-Blossom, Blossom at 3, NU7 at 5");
-    let info = scheduled.blockchain_info(scheduled.at(h(4)));
-    assert_eq!((info.blocks, info.best_block_hash), (h(4), scheduled.at(h(4)).hash));
-    assert_eq!((info.estimated_height, info.sapling_activation), (h(4), h(1)));
-    let statuses: Vec<(String, BlockHeight, NetworkUpgradeStatus)> = info
-        .upgrades
-        .iter()
-        .map(|upgrade| (upgrade.name.clone(), upgrade.activation_height, upgrade.status))
-        .collect();
-    let (active, pending) = (NetworkUpgradeStatus::Active, NetworkUpgradeStatus::Pending);
-    assert_eq!(
-        statuses[..2],
-        [("Overwinter".into(), h(1), active), ("Sapling".into(), h(1), active)]
-    );
-    assert_eq!(statuses.last(), Some(&("Nu7".into(), h(5), pending)));
-    assert_eq!(statuses.len(), 11, "every scheduled upgrade, NU7 included");
-    let consensus = (info.consensus.chain_tip, info.consensus.next_block);
-    assert_eq!(consensus, (BranchId::Nu6_3, BranchId::Nu7), "NU7 activates next");
 }
 
 /// M6 + M7 accepted: Alice's 50 000 coinbase funds a block whose txs spend in order, one of them

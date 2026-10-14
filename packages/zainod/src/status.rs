@@ -484,7 +484,7 @@ fn public_status(
     PublicStatus {
         readiness,
         version: env!("CARGO_PKG_VERSION"),
-        network: network.map(zaino_primitives::network::network_name),
+        network: network.map(zaino_grpc::network_name),
         tip,
         served,
         validators,

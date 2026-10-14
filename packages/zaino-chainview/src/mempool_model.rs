@@ -23,7 +23,7 @@ use tokio::time::Instant;
 use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
 use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
-use zaino_source::testing::raw_transparent;
+use zaino_source::testing::{raw_transparent, ValidatorViews};
 use zaino_traffic::ValidatorId;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;

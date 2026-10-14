@@ -276,7 +276,7 @@ impl ChainViewSnapshot {
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
     ) -> Self {
-        use zaino_primitives::types::{BlockchainInfo, ConsensusBranchIds};
+        use zaino_source::{BlockchainInfo, ConsensusBranchIds};
         use zcash_protocol::consensus::{BranchId, H0};
 
         let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));

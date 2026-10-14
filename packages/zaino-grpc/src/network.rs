@@ -3,7 +3,7 @@
 use zcash_protocol::consensus::NetworkType;
 
 /// lightwalletd `chainName` / `z_gettreestate` `network` (BIP70; `regtest` = de-facto third)
-pub fn chain_name(network: NetworkType) -> &'static str {
+pub(crate) fn chain_name(network: NetworkType) -> &'static str {
     match network {
         NetworkType::Main => "main",
         NetworkType::Test => "test",

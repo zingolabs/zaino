@@ -4,10 +4,11 @@ Zaino's domain vocabulary: Zcash chain types in Zaino's own terms, independent
 of how they are transported or stored. Every other Zaino crate that needs a
 height, hash, block or amount depends on this one.
 
-## Dependencies: `thiserror`, `zcash_protocol`, `sha2` and `uint` only
+## Dependencies: `thiserror`, `sha2`, `uint` and librustzcash's light crates only
 
-Anything added here lands in every crate above it. `zcash_protocol` is there
-for `NetworkType`, which every crate above already speaks; `sha2` for
+Anything added here lands in every crate above it. `zcash_protocol`,
+`zcash_transparent` and `zcash_script` carry the protocol types Zaino takes as-is
+(heights, txids, values, outpoints, scripts, upgrade schedules); `sha2` for
 `sha256d`: block hashes (`HeaderBytes::hash`) and `MerkleRoot::of_txids`, the
 consensus merkle root a block's transactions must rebuild (the NFS's body
 check, and the chain builder's headers); `uint` for the 256-bit `Target`
@@ -28,7 +29,6 @@ values never belong here.
 ## Modules
 
 ```rust
-use zaino_primitives::network::{chain_name, network_name};
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::sha256d;
 use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
@@ -46,23 +46,19 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
   `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `MerkleRoot`,
-  `HeaderBytes`, `BlockchainInfo`, `NodeRelease`, `PeerInfo`,
-  `TransactionLocation` and the network-upgrade types, plus the zatoshi family
-  and `CompactDifficulty` below.
+  `HeaderBytes` and `TransactionLocation`, plus `CompactDifficulty` below.
+  What a validator reports about itself (`BlockchainInfo`, `PeerInfo`, …) is
+  `zaino-source`'s, beside its parser.
 - Upgrade schedule = `zcash_protocol`'s `LocalNetwork` (no Zaino schedule type):
   `protocol::compiled_schedule(network)` = mainnet's or testnet's (`None` for
-  regtest, whose heights are set per chain); `BlockchainInfo::schedule()` = a
-  validator's listing (regtest), keyed by branch id. Pool activations, the header
+  regtest, whose heights are set per chain); `zaino_source::BlockchainInfo::schedule()`
+  = a validator's listing (regtest), keyed by branch id. Pool activations, the header
   rules (`target_spacing`, NU7's window) and `GetLightdInfo` all read it. Branch ids
   are `zcash_protocol`'s `BranchId`.
 - `Block::check_body()` — its transactions are the ones its header commits to:
   `BodyMismatch::MerkleRoot` (txids rebuild another root) or `Mutated` (a repeated
   txid pair, CVE-2012-2459). With the hash matched, a body passing it is the one
   asked for, whoever sent it.
-- `network` — `NetworkType`'s two spellings: `chain_name` (`main` / `test` /
-  `regtest`: lightwalletd's `chainName` and the tree state's `network`) and
-  `network_name` (`mainnet` / `testnet` / `regtest`: zainod's config, logs and
-  messages). Every surface uses one of these, never its own match.
 - `protocol` — `MAX_BLOCK_REORG_HEIGHT` (1000), `MAX_BLOCK_BYTES`
   (2,000,000, the spec's `MAX_BLOCK_SIZE`), `MEDIAN_TIME_SPAN` (11, the spec's
   `PoWMedianBlockSpan`) and `median_time_past(newest_first)` (upper median of
@@ -149,7 +145,6 @@ let tip = chain.mine_empty(3);                       // bare blocks on the best 
 let blocks = chain.blocks(tip);                      // genesis ..= tip, as `Arc<Block>`s
 let fees = chain.fees(spent.hash);                   // [Coinbase, Paid(1 000)]
 let side = chain.fork(h(2)).mine_empty(1).tip();     // a side branch: not best
-let info = chain.blockchain_info(tip);               // getblockchaininfo at tip
 
 let mut varied = MockChain::regtest().varied_work(); // reorg-by-work tests opt in
 let twelve = varied.mine_empty(12);
@@ -198,7 +193,7 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 | View | Crate | Gives |
 |---|---|---|
 | `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_final(tip, final_at)` |
-| `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
+| `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
 | `PeerSetViews` (trait on `MockChain`) | `zaino-traffic` | `peer_set(tip)`: a `MockPeerSet` (`PeerTransport`) over one path, `hold(height)` to move its tip |
 | `MockPeers` | `zaino-chainview` | a `ValidatorP2pSource`: live peers list mempools and take pushes, dead ones refuse |
 | `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |

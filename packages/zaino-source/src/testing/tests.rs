@@ -1,5 +1,5 @@
 use zaino_primitives::sha256d;
-use zaino_primitives::testing::{h, p2pkh};
+use zaino_primitives::testing::{all_at, h, p2pkh};
 use zaino_primitives::types::MerkleRoot;
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::bundle::OutPoint;
@@ -20,6 +20,35 @@ async fn links_and_polls_read_its_best_chain_up_to_its_tip() {
     let above = Err(GetAtHeightError::HeightNotFound(h(2)));
     assert_eq!(links, [link(chain.genesis()), link(tip), above]);
     assert_eq!(polled.info, chain.blockchain_info(tip));
+}
+
+/// Tip, Sapling, every scheduled upgrade (active or pending, NU7 included) and the branch now /
+/// next, all from the chain's schedule
+#[test]
+fn blockchain_info_reports_the_tip_and_the_chains_schedule() {
+    let early = Some(h(1));
+    let upgrades =
+        LocalNetwork { overwinter: early, sapling: early, nu7: Some(h(5)), ..all_at(h(3)) };
+    let mut chain = MockChain::regtest().upgrades(upgrades);
+    chain.mine_empty(6);
+
+    let info = chain.blockchain_info(chain.at(h(4)));
+    assert_eq!((info.blocks, info.best_block_hash), (h(4), chain.at(h(4)).hash));
+    assert_eq!((info.estimated_height, info.sapling_activation), (h(4), h(1)));
+    let statuses: Vec<(String, BlockHeight, NetworkUpgradeStatus)> = info
+        .upgrades
+        .iter()
+        .map(|upgrade| (upgrade.name.clone(), upgrade.activation_height, upgrade.status))
+        .collect();
+    let (active, pending) = (NetworkUpgradeStatus::Active, NetworkUpgradeStatus::Pending);
+    assert_eq!(
+        statuses[..2],
+        [("Overwinter".into(), h(1), active), ("Sapling".into(), h(1), active)]
+    );
+    assert_eq!(statuses.last(), Some(&("Nu7".into(), h(5), pending)));
+    assert_eq!(statuses.len(), 11, "every scheduled upgrade, NU7 included");
+    let consensus = (info.consensus.chain_tip, info.consensus.next_block);
+    assert_eq!(consensus, (BranchId::Nu6_3, BranchId::Nu7), "NU7 activates next");
 }
 
 #[tokio::test]

@@ -11,9 +11,8 @@ use imbl::{OrdSet, Vector};
 use tokio::sync::watch;
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{
-    BlockRef, BlockchainInfo, NodeRelease, PeerInfo, PeerTxId, ReorgDepth,
-};
+use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
+use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, ValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;

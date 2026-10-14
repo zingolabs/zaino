@@ -11,10 +11,12 @@ use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
-    Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, NodeRelease, PeerInfo,
-    Transaction, TransactionLocation,
+    Block, BlockHash, BlockRef, DecodedHeader, Transaction, TransactionLocation,
 };
-use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::consensus::{
+    BlockHeight, BranchId, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
+};
+use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
@@ -24,6 +26,10 @@ use crate::{
     GetBlockByHashError, GetMempoolListingError, GetRawMempoolTransactionError,
     GetTransactionError, MempoolListed, MetadataReading, NonDomainError, PollReading, QueryError,
     RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
+};
+use crate::{
+    BlockchainInfo, ConsensusBranchIds, EndOfService, NetworkUpgradeInfo, NetworkUpgradeStatus,
+    NodeRelease, PeerInfo,
 };
 
 /// `waited` within 60 s of tokio time, else the test fails naming `what`
@@ -87,12 +93,49 @@ pub struct Calls {
 pub trait ValidatorViews {
     /// Best chain = genesis ..= `tip`; reachable, accepting, mempool empty, no latency
     fn validator(&self, tip: BlockRef) -> MockValidator;
+
+    /// `getblockchaininfo` with `tip` as the validator's best
+    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo;
 }
 
 impl ValidatorViews for MockChain {
     fn validator(&self, tip: BlockRef) -> MockValidator {
         MockValidator::following(self, tip)
     }
+
+    fn blockchain_info(&self, tip: BlockRef) -> BlockchainInfo {
+        assert_eq!(self.block(tip.hash).at(), tip, "tip held at its height");
+        let upgrades = &self.schedule().upgrades;
+        let sapling = upgrades.activation_height(NetworkUpgrade::Sapling);
+        BlockchainInfo {
+            blocks: tip.height,
+            estimated_height: tip.height,
+            best_block_hash: tip.hash,
+            sapling_activation: sapling.expect("a Sapling activation (zebrad always has one)"),
+            upgrades: listed(upgrades, tip.height),
+            consensus: ConsensusBranchIds {
+                chain_tip: BranchId::for_height(upgrades, tip.height),
+                next_block: BranchId::for_height(upgrades, tip.height + 1),
+            },
+        }
+    }
+}
+
+/// `getblockchaininfo` `upgrades` at `tip`: every scheduled upgrade, active or pending
+fn listed(upgrades: &LocalNetwork, tip: BlockHeight) -> Vec<NetworkUpgradeInfo> {
+    let scheduled = UPGRADES_IN_ORDER.iter().filter_map(|&upgrade| {
+        let activation_height = upgrades.activation_height(upgrade)?;
+        Some(NetworkUpgradeInfo {
+            branch_id: upgrade.branch_id(),
+            name: upgrade.to_string(),
+            activation_height,
+            status: match activation_height <= tip {
+                true => NetworkUpgradeStatus::Active,
+                false => NetworkUpgradeStatus::Pending,
+            },
+        })
+    });
+    scheduled.collect()
 }
 
 pub struct MockValidator {

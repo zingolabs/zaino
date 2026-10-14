@@ -15,10 +15,10 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_primitives::types::{BlockHash, BlockRef, NodeRelease, PeerInfo};
+use zaino_primitives::types::{BlockHash, BlockRef};
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
-    MetadataReading, NonDomainError, PollReading, QueryError,
+    MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, ValidatorId};
 use zcash_protocol::consensus::BlockHeight;

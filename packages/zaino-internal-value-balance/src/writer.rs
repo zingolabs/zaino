@@ -11,7 +11,7 @@ use std::{
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
-use zaino_primitives::types::{Block, BlockFees, FeeError, OutputIndex};
+use zaino_primitives::types::{Block, BlockFees, FeeError};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
@@ -101,7 +101,7 @@ pub enum FoldError {
     #[error(
         "block {height} tx {txid}: spends {spent}:{vout}, not an unspent output of this index"
     )]
-    MissingPrevout { height: BlockHeight, txid: TxId, spent: TxId, vout: OutputIndex },
+    MissingPrevout { height: BlockHeight, txid: TxId, spent: TxId, vout: u32 },
 
     #[error("block {height} tx {txid}: value sums past the money supply")]
     ValueOverflow { height: BlockHeight, txid: TxId },

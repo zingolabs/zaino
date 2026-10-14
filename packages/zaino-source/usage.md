@@ -1,7 +1,7 @@
 # `zaino-source` — usage
 
 `ChainDataSource`: every question Zaino asks one trusted validator, one trait,
-declared in `zaino-primitives` vocabulary, each method with its own domain error,
+declared in domain vocabulary (`zaino-primitives` + its own reply types), each method with its own domain error,
 nothing about the transport. Blocks come back decoded once, from consensus bytes,
 into `zaino_primitives::types::Block`. Two implementations; a test fake answers
 what its test asks and `unimplemented!()`s the rest.
@@ -16,6 +16,13 @@ what its test asks and `unimplemented!()`s the rest.
 | `get_transaction(txid)` | `getrawtransaction <txid> 1` | JSON-RPC, as legacy | bytes + `TransactionLocation` |
 | `send_raw_transaction(bytes)` | `sendrawtransaction` | JSON-RPC, as legacy | the txid, or the rejection |
 | `check_admission(bytes)` | `checkadmission` (Zaino's zebra fork; nothing admitted or relayed) | JSON-RPC, as legacy | the txid, `CheckAdmissionError::Refused` (the send's verdict), or `Unsupported` (`-32601`: zcashd, stock zebrad) |
+
+What a validator reports about itself is this crate's, beside its parser:
+`BlockchainInfo` (tip + upgrade listing; `schedule()` = the listing as a
+`LocalNetwork`), `NetworkUpgradeInfo`, `ConsensusBranchIds`, `NodeRelease` /
+`EndOfService`, `PeerInfo`. `getblockchaininfo` fails to parse on a branch id
+`zcash_protocol` does not know or activations out of protocol order (a short or
+reordered schedule = other consensus rules than the validator's).
 
 ## Building a client: one per validator
 
@@ -161,6 +168,7 @@ let validator = chain.validator(chain.tip());        // a MockValidator
 validator.follow(&chain, other_tip);                 // extend, reorg, retreat: any held tip
 validator.reorg_after_next_poll(&chain, fork);       // tip read, then `getblockhash` on `fork`
 validator.estimate(h(500));                          // getblockchaininfo estimatedheight
+let info = chain.blockchain_info(tip);               // getblockchaininfo with `tip` as best
 let txid = chain.submit(decoded(raw));               // the network's mempool (MockChain)
 validator.hear(&chain, txid);                        // relayed here: listed from the next poll
 validator.evict(txid);                               // evicted: unlisted from the next poll

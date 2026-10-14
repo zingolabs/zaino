@@ -106,7 +106,7 @@ pub(crate) async fn bootstrap(
         Url::parse(&snapshot.manifest).map_err(|e| error(format!("manifest url: {e}")))?;
     let aria2 = Aria2::start(snapshot.connections).await?;
     let manifest = read_manifest(&aria2, &manifest_url, &staging(first_path, *first_kind)?).await?;
-    let network = zaino_primitives::network::network_name(config.network);
+    let network = zaino_grpc::network_name(config.network);
     if manifest.network != network {
         return Err(error(format!(
             "manifest is for {}, this daemon serves {network}",

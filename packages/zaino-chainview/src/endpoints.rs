@@ -3,7 +3,8 @@
 use std::time::Instant;
 
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockRef, BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
+use zaino_primitives::types::BlockRef;
+use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
 use zaino_traffic::{Health, ValidatorId};
 
 /// Which endpoints, by [`ValidatorId`]: a bitset, never a count

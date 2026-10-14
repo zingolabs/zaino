@@ -3,7 +3,9 @@
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 
-use super::{BlockHash, ConsensusBranchIds, NetworkUpgradeInfo};
+use zaino_primitives::types::BlockHash;
+
+use crate::{ConsensusBranchIds, NetworkUpgradeInfo};
 
 /// - `upgrades` = regtest's schedule ([`BlockchainInfo::schedule`])
 /// - `estimated_height` = network tip estimate (even when synced)
@@ -37,8 +39,8 @@ mod tests {
     };
 
     use super::*;
-    use crate::protocol::compiled_schedule;
-    use crate::types::NetworkUpgradeStatus;
+    use crate::NetworkUpgradeStatus;
+    use zaino_primitives::protocol::compiled_schedule;
 
     /// A validator's listing (in no particular order) reads back as the schedule it lists; an
     /// unlisted upgrade never activates
