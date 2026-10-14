@@ -70,15 +70,15 @@ pub(crate) struct Listing {
 /// between: holder facts never wait on them)
 #[derive(Debug, Clone)]
 pub(crate) enum EndpointReport {
-    /// Mempool read (`Live`): its listing follows
-    Read(Reading),
+    /// `listed` = mempool read (its listing follows), else sightings retracted
+    Read {
+        reading: Reading,
+        health: Health,
+        listed: bool,
+    },
     Listed(Listing),
-    /// Chain counted, mempool off: sightings retracted
-    CatchingUp(Reading),
-    /// Poll failed, member `Degraded` (sightings kept, holds no tip)
-    Failed,
-    /// Member `Down`: neither chain nor sightings
-    Down,
+    /// `Down` = neither chain nor sightings; else sightings kept, holds no tip
+    Failed(Health),
 }
 
 /// The published cell + its watch, and the lock that serialises folds
@@ -124,9 +124,12 @@ impl ChainViewCore {
                 return (None, unadmitted);
             };
             match report {
-                EndpointReport::Read(reading) => {
-                    meta.health = Health::Live;
+                EndpointReport::Read { reading, health, listed } => {
+                    meta.health = health;
                     read(meta, reading);
+                    if !listed {
+                        touched.extend(retract(&mut state.mempool, endpoint));
+                    }
                 }
                 EndpointReport::Listed(listing) => {
                     for txid in &listing.removed {
@@ -160,17 +163,13 @@ impl ChainViewCore {
                         touched.push(sighted.txid);
                     }
                 }
-                EndpointReport::CatchingUp(reading) => {
-                    meta.health = Health::CatchingUp;
-                    read(meta, reading);
-                    touched.extend(retract(&mut state.mempool, endpoint));
-                }
-                EndpointReport::Failed => meta.health = Health::Degraded,
-                EndpointReport::Down => {
-                    meta.health = Health::Down;
-                    (meta.info, meta.held) = (None, None);
-                    meta.peers = Vector::new();
-                    touched.extend(retract(&mut state.mempool, endpoint));
+                EndpointReport::Failed(health) => {
+                    meta.health = health;
+                    if health == Health::Down {
+                        (meta.info, meta.held) = (None, None);
+                        meta.peers = Vector::new();
+                        touched.extend(retract(&mut state.mempool, endpoint));
+                    }
                 }
             }
             (Some(touched), unadmitted)

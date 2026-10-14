@@ -197,7 +197,12 @@ impl Run {
                 let v = usize::from(validator) % validators;
                 let listed = honest(listed);
                 let id = ValidatorId::new(v).expect("small");
-                self.core.apply(id, EndpointReport::Read(self.reading()));
+                let report = EndpointReport::Read {
+                    reading: self.reading(),
+                    health: zaino_traffic::Health::Live,
+                    listed: true,
+                };
+                self.core.apply(id, report);
                 let before = &self.oracle.listed[v];
                 let sighted = |tx: &usize| Sighted {
                     txid: self.txs[*tx].0,
@@ -215,13 +220,19 @@ impl Run {
             }
             Move::Fail { validator } => {
                 let v = usize::from(validator) % validators;
-                self.core.apply(ValidatorId::new(v).expect("small"), EndpointReport::Failed);
+                self.core.apply(
+                    ValidatorId::new(v).expect("small"),
+                    EndpointReport::Failed(zaino_traffic::Health::Degraded),
+                );
                 self.oracle.health[v] = Health::Degraded;
                 self.oracle.settle(false);
             }
             Move::Kill { validator } => {
                 let v = usize::from(validator) % validators;
-                self.core.apply(ValidatorId::new(v).expect("small"), EndpointReport::Down);
+                self.core.apply(
+                    ValidatorId::new(v).expect("small"),
+                    EndpointReport::Failed(zaino_traffic::Health::Down),
+                );
                 self.oracle.health[v] = Health::Down;
                 self.oracle.listed[v].clear();
                 self.oracle.settle(false);

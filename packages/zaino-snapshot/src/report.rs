@@ -254,12 +254,12 @@ fn validator(position: usize, meta: &ValidatorMetadata, members: &MemberTable) -
         .and_then(|id| members.rows.iter().find(|row| row.id == MemberId::Trusted(id)));
     ValidatorReport {
         address: meta.address.clone(),
-        state: member.map_or(Health::Pending, |row| row.health).label(),
+        state: meta.health.label(),
         agreement: meta.agreement.label(),
         height: meta.tip().map(|tip| u32::from(tip.height)),
         stale_blocks: meta.stale_blocks(),
         latency_ms: member
-            .filter(|row| row.health != Health::Pending)
+            .filter(|_| meta.health != Health::Pending)
             .map(|row| row.latency.as_millis() as u64),
         failures: member.map_or(0, |row| row.failures),
         observed_s_ago: meta.observed_at.map(|at| at.elapsed().as_secs()),

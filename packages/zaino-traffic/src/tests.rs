@@ -6,9 +6,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_source::testing::{
-    decoded, raw_transaction, within, MockValidator, Port, ValidatorViews,
-};
+use zaino_source::testing::{decoded, raw_transaction, within, Port, ValidatorViews};
 use zaino_source::{
     BlockLink, FailureMode, GetAtHeightError, GetRawMempoolTransactionError, GetTransactionError,
     MempoolListed, QueryError, SendRawTransactionError,
@@ -266,12 +264,9 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     };
     assert_eq!((observation.asked, held), (Some(h(2)), vec![Some(chain.at(h(2)).hash)]));
 
-    let health =
-        |balancer: &TrafficBalancer<MockValidator>| balancer.members().borrow().rows[0].health;
-    assert_eq!(health(&balancer), Health::Live);
+    assert_eq!(observation.health, Health::Live);
     validator.reachable(&Port::ALL, false);
     tokio::time::sleep(Duration::from_secs(16)).await;
-    assert_eq!(health(&balancer), Health::Degraded);
     type Observed = tokio::sync::watch::Receiver<Option<Arc<crate::Observation>>>;
     let observed_health = |observed: &mut Observed| {
         let observation = observed.borrow_and_update().clone();
@@ -280,14 +275,13 @@ async fn pushes_wake_the_poll_its_best_rides_it_and_failures_walk_the_health_lad
     let failed = Some((Some(FailureMode::Connection), Health::Degraded));
     assert_eq!(observed_health(&mut observed), failed, "the health it left the member in");
     tokio::time::sleep(Duration::from_secs(180)).await;
-    assert_eq!(health(&balancer), Health::Down);
     assert_eq!(observed_health(&mut observed), Some((Some(FailureMode::Connection), Health::Down)));
     validator.reachable(&Port::ALL, true);
     within("a poll", observed.changed()).await.expect("driver running");
     let back = observed.borrow_and_update().clone().expect("polled");
     let metadata = back.polled.as_ref().ok().map(|reading| reading.metadata.is_some());
     assert_eq!(metadata, Some(true), "failed polls leave metadata due: the answer back reads it");
-    assert_eq!((back.health, health(&balancer)), (Health::Live, Health::Live), "the probe");
+    assert_eq!(back.health, Health::Live, "the probe");
     cancel.cancel();
 }
 

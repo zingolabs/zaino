@@ -352,7 +352,6 @@ impl TrafficCore {
     pub(crate) fn table(&self) -> crate::MemberTable {
         let rows = self.members.iter().map(|(id, member)| crate::MemberRow {
             id: *id,
-            health: member.health(),
             failures: member.failures,
             benched_until: member.bench.filter(|_| member.benched(self.now)).map(|b| b.until),
             latency: member.latency,

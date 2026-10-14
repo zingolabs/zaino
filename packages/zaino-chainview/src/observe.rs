@@ -88,14 +88,17 @@ impl<S: ChainDataSource> Member<'_, S> {
         let held = self.held(observation.asked, held);
         let streaming = observation.streaming;
         let reading = Reading { held, info: info.clone(), peers, release, streaming };
+        let health = observation.health;
         match listing {
             Ok(listing) => {
-                self.core.apply(self.member, EndpointReport::Read(reading));
+                let report = EndpointReport::Read { reading, health, listed: true };
+                self.core.apply(self.member, report);
                 self.listed(listing).await;
             }
             Err(_) => {
                 self.catching_up(&reading);
-                self.core.apply(self.member, EndpointReport::CatchingUp(reading));
+                let report = EndpointReport::Read { reading, health, listed: false };
+                self.core.apply(self.member, report);
                 self.listed.clear();
             }
         }
@@ -167,12 +170,12 @@ impl<S: ChainDataSource> Member<'_, S> {
                 if self.health != Health::Down {
                     warn!(endpoint = self.address, %cause, "Validator down, holds no tip");
                 }
-                self.core.apply(self.member, EndpointReport::Down);
+                self.core.apply(self.member, EndpointReport::Failed(health));
                 self.listed.clear();
             }
             _ => {
                 warn!(endpoint = self.address, %cause, "Validator poll failed");
-                self.core.apply(self.member, EndpointReport::Failed);
+                self.core.apply(self.member, EndpointReport::Failed(health));
             }
         }
         self.health = health;

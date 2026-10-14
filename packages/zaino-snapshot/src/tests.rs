@@ -130,19 +130,17 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         &addresses,
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
+    let view = view.endpoint(1, Health::Degraded, 0);
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
-    let member = |at: usize, health, failures, latency| MemberRow {
+    let member = |at: usize, failures, latency| MemberRow {
         id: MemberId::Trusted(ValidatorId::new(at).expect("small")),
-        health,
         failures,
         benched_until: None,
         latency: Duration::from_millis(latency),
         in_flight: 0,
     };
-    let members = MemberTable {
-        rows: vec![member(0, Health::Live, 0, 12), member(1, Health::Degraded, 3, 40)],
-    };
+    let members = MemberTable { rows: vec![member(0, 0, 12), member(1, 3, 40)] };
 
     let block = |block: &Block| {
         let at = block.at();

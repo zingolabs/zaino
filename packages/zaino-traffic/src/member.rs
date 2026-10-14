@@ -76,7 +76,6 @@ pub struct MemberTable {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MemberRow {
     pub id: MemberId,
-    pub health: Health,
     pub failures: u32,
     pub benched_until: Option<Instant>,
     pub latency: Duration,
