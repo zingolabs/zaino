@@ -1,6 +1,6 @@
 //! Peers' mempool listings → which transactions a peer quorum holds (`docs/architecture.md` §5)
 //!
-//! - admit: > 2/3 of the fresh listings hold the id, its listers in > [`QUORUM_NETGROUPS`]
+//! - admit: > 2/3 of the fresh listings hold the id, its listers in > [`ECLIPSE_NETGROUPS`]
 //!   netgroups (each a full node that validated it: policy + consensus, ours never re-run)
 //! - retain: > 1/3 hold its txid (an `inv` taken as a `mempool` reply = one short listing, never
 //!   a flap)
@@ -17,16 +17,13 @@ use tokio::time::Instant;
 use zaino_primitives::types::PeerTxId;
 use zcash_protocol::TxId;
 
-use crate::netgroup::Netgroup;
+use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 
 /// Every live outbound peer's mempool asked this often
 pub(crate) const PEER_MEMPOOL_POLL: Duration = Duration::from_secs(5);
 
 /// Listing counted this long after it was read (three rounds)
 pub(crate) const LISTING_FRESH: Duration = Duration::from_secs(15);
-
-/// Admission needs listers in more netgroups than this (one operator ≈ one netgroup)
-pub(crate) const QUORUM_NETGROUPS: usize = 5;
 
 /// Each live peer's latest listing; `imbl` (published with the snapshot)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -78,9 +75,9 @@ impl Listings {
         self.fresh().filter(|(_, ids)| lists(ids)).map(|(peer, _)| *peer).collect()
     }
 
-    /// Admission possible at all: the fresh listings span > [`QUORUM_NETGROUPS`] netgroups
+    /// Admission possible at all: the fresh listings span > [`ECLIPSE_NETGROUPS`] netgroups
     pub(crate) fn quorate(&self) -> bool {
-        netgroups(self.fresh().map(|(peer, _)| *peer)) > QUORUM_NETGROUPS
+        netgroup::count(self.fresh().map(|(peer, _)| *peer)) > ECLIPSE_NETGROUPS
     }
 
     /// Every id the quorum admits, in id order
@@ -108,18 +105,16 @@ impl Listings {
     }
 }
 
-/// `listers` > 2/3 of `polled`, in > [`QUORUM_NETGROUPS`] netgroups
+/// `listers` > 2/3 of `polled`, in > [`ECLIPSE_NETGROUPS`] netgroups
 fn quorum(listers: &[SocketAddr], polled: usize) -> bool {
-    listers.len() * 3 > polled * 2 && netgroups(listers.iter().copied()) > QUORUM_NETGROUPS
-}
-
-fn netgroups(peers: impl Iterator<Item = SocketAddr>) -> usize {
-    peers.map(Netgroup::of).collect::<BTreeSet<_>>().len()
+    listers.len() * 3 > polled * 2 && netgroup::count(listers.iter().copied()) > ECLIPSE_NETGROUPS
 }
 
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
+
+    use crate::netgroup::Netgroup;
 
     use super::*;
 
@@ -200,13 +195,13 @@ mod tests {
                     peers.iter().map(|p| Netgroup::of(*p)).collect::<BTreeSet<_>>().len()
                 };
                 let all: Vec<SocketAddr> = polled.iter().copied().collect();
-                prop_assert_eq!(real.quorate(), groups(&all) > QUORUM_NETGROUPS);
+                prop_assert_eq!(real.quorate(), groups(&all) > ECLIPSE_NETGROUPS);
                 let mut admitted = Vec::new();
                 for id in &ids {
                     let listers: Vec<SocketAddr> =
                         fresh.iter().filter(|(_, l)| l.contains(id)).map(|(p, _)| **p).collect();
                     let admits = listers.len() * 3 > fresh.len() * 2
-                        && groups(&listers) > QUORUM_NETGROUPS;
+                        && groups(&listers) > ECLIPSE_NETGROUPS;
                     prop_assert_eq!(real.admits(id), admits, "{:?}", id);
                     if admits {
                         admitted.push(*id);

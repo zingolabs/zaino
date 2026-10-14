@@ -21,10 +21,9 @@
 //!   (locator) every `PEER_POLL`, at once again after progress; every rule run per header
 //!   (untrusted), never vouched
 //! - peer finality: no vouch that deep → best − depth final anyway once live peers in more than
-//!   `PEER_FINALITY_NETGROUPS` netgroups announced a block at or above it and no difficulty
+//!   `ECLIPSE_NETGROUPS` netgroups announced a block at or above it and no difficulty
 //!   collapsed since the last vouch (`HeaderChain::peer_finalizable`)
 
-use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -41,7 +40,7 @@ use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, ValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::fold::ChainViewCore;
-use crate::netgroup::Netgroup;
+use crate::netgroup::{self, ECLIPSE_NETGROUPS};
 use crate::snapshot::ChainViewSnapshot;
 
 /// Heights per fetch step (tree ≤ `depth` + this above the final tip)
@@ -52,10 +51,6 @@ const RETRY: Duration = Duration::from_secs(5);
 
 /// Peer set asked past our best this often (nothing newer = an empty answer; a block ≈ 75 s)
 const PEER_POLL: Duration = Duration::from_secs(5);
-
-/// Peer finality: carried by live peers in more netgroups than this (an eclipse needs addresses
-/// in that many /16s; 6 of the default 8 outbound peers)
-const PEER_FINALITY_NETGROUPS: usize = 5;
 
 /// Feeds one header chain from every trusted validator (and the peer set, if any); owns it
 pub struct HeaderSync<S> {
@@ -399,7 +394,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         }
         let Some(boundary) = self.chain.peer_finalizable() else { return };
         let netgroups = self.netgroups_carrying(view, boundary.height);
-        if netgroups > PEER_FINALITY_NETGROUPS {
+        if netgroups > ECLIPSE_NETGROUPS {
             let height = u32::from(boundary.height);
             debug!(height, hash = %boundary.hash, netgroups, "Final on peers' word, unvouched");
             self.chain.finalize_by_peers(boundary);
@@ -412,8 +407,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
         let carrying = view.peers_carrying.iter().filter(|(_, announced)| {
             self.chain.best_height_of(**announced).is_some_and(|height| height >= from)
         });
-        let netgroups: BTreeSet<Netgroup> = carrying.map(|(peer, _)| Netgroup::of(*peer)).collect();
-        netgroups.len()
+        netgroup::count(carrying.map(|(peer, _)| *peer))
     }
 
     /// `VerifiedChain` → watch + view when its best or final tip moved

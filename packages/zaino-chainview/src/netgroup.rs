@@ -2,7 +2,17 @@
 //!
 //! - submission: one entry per netgroup; finality: peers carrying the chain counted per netgroup
 
+use std::collections::BTreeSet;
 use std::net::{IpAddr, SocketAddr};
+
+/// Peers in more netgroups than this = not one operator (an eclipse needs addresses in that many
+/// /16s; 6 of the default 8 outbound peers): peer finality and a mempool quorum both need it
+pub(crate) const ECLIPSE_NETGROUPS: usize = 5;
+
+/// Distinct netgroups among `peers`
+pub(crate) fn count(peers: impl IntoIterator<Item = SocketAddr>) -> usize {
+    peers.into_iter().map(Netgroup::of).collect::<BTreeSet<_>>().len()
+}
 
 /// Address prefix one operator plausibly controls: /16 IPv4, /32 IPv6 (Bitcoin Core's buckets)
 ///

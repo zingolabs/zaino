@@ -32,8 +32,9 @@ use zcash_transparent::bundle::OutPoint;
 use crate::admission::NextBlock;
 use crate::endpoints::ValidatorMetadata;
 use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
-use crate::listings::{LISTING_FRESH, QUORUM_NETGROUPS};
+use crate::listings::LISTING_FRESH;
 use crate::netgroup::Netgroup;
+use crate::netgroup::ECLIPSE_NETGROUPS;
 use crate::peer_mempool::judge;
 
 /// `a`, `b` and `rival` (spends `b`'s prevout) fund from coinbases at 1..=3, `child` spends `a`'s
@@ -299,7 +300,7 @@ impl Run {
         let before: BTreeSet<usize> = self.oracle.held.keys().copied().collect();
         for tx in 0..TXS {
             let listers = self.oracle.listers(tx);
-            let admits = listers.len() * 3 > polled * 2 && netgroups(&listers) > QUORUM_NETGROUPS;
+            let admits = listers.len() * 3 > polled * 2 && netgroups(&listers) > ECLIPSE_NETGROUPS;
             let passes = match tx {
                 CHILD => before.contains(&A),
                 BAD | ORPHAN => false,
@@ -334,7 +335,7 @@ impl Run {
         let fresh = self.oracle.fresh();
         let netgroups: BTreeSet<Netgroup> =
             fresh.iter().map(|(p, _)| Netgroup::of(self.peers[*p])).collect();
-        let quorate = netgroups.len() > QUORUM_NETGROUPS;
+        let quorate = netgroups.len() > ECLIPSE_NETGROUPS;
         assert_eq!(view.mempool().is_some(), holder || quorate, "{step:?}: the gate");
 
         // admission > 2/3 + retention > 1/3 → overlap; held on afterwards by an honest split
