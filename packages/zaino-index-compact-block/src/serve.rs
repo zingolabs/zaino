@@ -169,12 +169,13 @@ mod tests {
     use crate::{fold, reader::WINDOW_RECORDS, FORMAT, TABLES};
     use prost::Message;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Overlay, Schema, Store};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
+    use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
     use zaino_primitives::types::UpgradeSchedule;
     use zaino_proto::frame::{framed_len, split_frame};
     use zaino_proto::proto::compact_formats;
     use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
+    use zcash_transparent::bundle::OutPoint;
 
     const SCHEMA: Schema =
         Schema::new(IndexKind::CompactBlock, FORMAT, NetworkType::Regtest, TABLES);
@@ -194,7 +195,7 @@ mod tests {
             let alice = alice.clone();
             move |b: BlockBuilder| {
                 b.coinbase(|c| c.txid(id(0xc0)).pay(&alice, 17_345)).tx(|t| {
-                    t.spend(outpoint(id(0xc0), 0))
+                    t.spend(OutPoint::new(id(0xc0), 0))
                         .pay(&alice, 12_345)
                         .fee(5_000)
                         .sapling_spend(id(0x33))

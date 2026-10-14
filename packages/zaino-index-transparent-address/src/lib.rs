@@ -11,9 +11,8 @@ pub use serve::{AddressUtxo, ServeError, TransactionRef, DEFAULT_MAX_ADDRESS_ROW
 pub use writer::{fold, TransparentAddressIndexWriter};
 
 use zaino_persistence::{MapTable, Tables, Width};
-use zaino_primitives::types::OutPoint;
 
-use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND};
+use key::{AddressKey, RECEIVE_KEY, RECEIVE_VALUE, SPEND, SPENT_KEY};
 
 /// On-disk layout version
 pub const FORMAT: u16 = 1;
@@ -33,4 +32,4 @@ const RECEIVES: MapTable = MapTable::new(
     AddressKey::LEN as u32,
 );
 const SPENT: MapTable =
-    MapTable::new(1, "spent", Width::fixed(OutPoint::LEN as u32), Width::fixed(SPEND as u32), 0);
+    MapTable::new(1, "spent", Width::fixed(SPENT_KEY as u32), Width::fixed(SPEND as u32), 0);

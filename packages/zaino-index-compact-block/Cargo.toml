@@ -26,6 +26,7 @@ zaino-primitives = { workspace = true, features = ["testing"] }
 proptest.workspace = true
 tokio = { workspace = true, features = ["macros", "rt", "sync", "test-util", "time"] }
 zaino-sync = { workspace = true, features = ["testing"] }
+zcash_transparent.workspace = true
 
 [lints.rust]
 unreachable_pub = "warn"

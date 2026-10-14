@@ -138,16 +138,17 @@ live suite takes its blocks, headers, fees, mempool and validators from. Enable 
 `[dev-dependencies]` only.
 
 ```rust,ignore
-use zaino_primitives::testing::{h, outpoint, p2pkh, Ledger, MockChain, Unmined};
+use zaino_primitives::testing::{h, p2pkh, Ledger, MockChain, Unmined};
 use zaino_primitives::types::UpgradeSchedule;
 use zcash_protocol::consensus::NetworkUpgrade;
+use zcash_transparent::bundle::OutPoint;
 
 let alice = p2pkh([0xaa; 20]);
 let mut chain = MockChain::regtest();                // every upgrade through NU6.3 at 1, bare genesis
 chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
 let spent = chain.mine(|b| {
     b.tx(|t| {
-        t.spend(outpoint([0x10; 32], 0))
+        t.spend(OutPoint::new([0x10; 32], 0))
             .pay(&alice, 49_000)
             .fee(1_000)                              // asserted against conservation
             .sapling_output(7)                       // cmu = 7 little-endian (canonical)

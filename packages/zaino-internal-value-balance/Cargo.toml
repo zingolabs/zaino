@@ -18,6 +18,7 @@ zaino-persistence.workspace = true
 zaino-primitives.workspace = true
 zaino-sync.workspace = true
 zcash_protocol.workspace = true
+zcash_transparent.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "macros", "time", "test-util"] }

@@ -30,10 +30,10 @@ zaino-proto.workspace = true
 tonic = { workspace = true, features = ["tls-ring"] }
 tokio-util.workspace = true
 const-hex.workspace = true
-zcash_transparent = { workspace = true, optional = true }
+zcash_transparent.workspace = true
 
 [features]
-testing = ["zaino-primitives/testing", "dep:zcash_transparent"]
+testing = ["zaino-primitives/testing"]
 
 [dev-dependencies]
 proptest.workspace = true
@@ -42,7 +42,6 @@ tokio = { workspace = true, features = ["macros", "rt", "net", "io-util", "test-
 zcash_primitives = { workspace = true, features = ["test-dependencies"] }
 zaino-primitives = { workspace = true, features = ["testing"] }
 zaino-source = { workspace = true, features = ["testing"] }
-zcash_transparent.workspace = true
 rcgen.workspace = true
 
 [lints.rust]

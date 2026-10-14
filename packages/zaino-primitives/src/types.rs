@@ -59,8 +59,8 @@ pub use reorg_depth::ReorgDepth;
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
-    OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput, SaplingSpend, SproutData,
-    Transaction, TransparentData, TransparentOutput,
+    OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction,
+    TransparentData, TransparentOutput,
 };
 pub use transaction_hash::{PeerTxId, TransactionId};
 pub use transaction_location::TransactionLocation;

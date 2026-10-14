@@ -8,9 +8,9 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::HeaderViews;
-use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+use zaino_primitives::testing::{h, p2pkh, MockChain};
 use zaino_primitives::types::{
-    BlockRef, EndOfService, NodeRelease, OutPoint, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
+    BlockRef, EndOfService, NodeRelease, PeerInfo, PeerTxId, ReorgDepth, TransactionId,
 };
 use zaino_source::testing::{
     decoded, raw_transaction, raw_transparent, within, MockValidator, Port, ValidatorViews,
@@ -21,6 +21,7 @@ use zaino_traffic::{
     Health, Limits, PeerTransport, Peers, Push, TrafficBalancer, Trusted, ValidatorId,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 use crate::listings::PEER_MEMPOOL_POLL;
 use crate::testing::MockPeers;
@@ -104,7 +105,7 @@ async fn a_single_endpoint_serves_its_listings_and_arrivals_are_each_new_transac
     let tip_10 = chain.mine_empty(7);
     let [(one, one_raw), (two, two_raw), (three, three_raw)] = [1u8, 2, 3].map(|n| {
         let fee = u64::from(n) * 1_000;
-        raw_transparent(&[outpoint([n; 32], 0)], &[(&alice, 10_000 - fee)])
+        raw_transparent(&[OutPoint::new([n; 32], 0)], &[(&alice, 10_000 - fee)])
     });
     for raw in [&one_raw, &two_raw, &three_raw] {
         chain.submit(decoded(raw.clone()));
@@ -565,7 +566,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
         max_attempts: std::num::NonZeroU8::new(3).expect("nz"),
     };
     let view = Arc::new(view.with_submit_policy(policy).with_peers(peers.clone()));
-    let funding = |n: u8| outpoint([n; 32], 0);
+    let funding = |n: u8| OutPoint::new([n; 32], 0);
     let polling = view.peer_mempool(Arc::new(chain.ledger(tip))).expect("peers configured");
     tokio::spawn(polling.run(cancel.clone()));
     let round = || tokio::time::sleep(PEER_MEMPOOL_POLL);
@@ -575,7 +576,7 @@ async fn with_every_trusted_validator_down_a_peer_quorum_keeps_the_mempool_and_t
     let (bad, bad_raw) = raw_transparent(&[funding(2)], &[(&alice, 6_000)]);
     let (parent, parent_raw) = raw_transparent(&[funding(3)], &[(&alice, 9_000)]);
     let (child, child_raw) =
-        raw_transparent(&[OutPoint { txid: parent, vout: 0 }], &[(&alice, 8_500)]);
+        raw_transparent(&[OutPoint::new(<[u8; 32]>::from(parent), 0)], &[(&alice, 8_500)]);
     let pending = [(a, &a_raw), (parent, &parent_raw), (child, &child_raw), (bad, &bad_raw)];
     for (txid, raw) in pending {
         peers.hold(id(txid), Bytes::from(raw.clone()));

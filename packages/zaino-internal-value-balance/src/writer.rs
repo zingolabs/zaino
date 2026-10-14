@@ -11,16 +11,15 @@ use std::{
 };
 
 use zaino_persistence::{BlockChanges, IndexKind, MapRead, SequenceRead, Store};
-use zaino_primitives::types::{
-    Block, BlockFees, FeeError, Height, OutPoint, OutputIndex, TransactionId,
-};
+use zaino_primitives::types::{Block, BlockFees, FeeError, Height, OutputIndex, TransactionId};
 use zaino_sync::{
     apply, assert_run, blocking, commit, held, ran, FeeSink, IndexHandle, IndexPublisher, Step,
     Subscription,
 };
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
-use crate::{encode_fees, encode_value, ValueBalanceReader, FEES, OUTPUTS};
+use crate::{encode_fees, encode_outpoint, encode_value, ValueBalanceReader, FEES, OUTPUTS};
 
 const NAME: &str = IndexKind::ValueBalance.name();
 
@@ -145,12 +144,13 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
         .iter()
         .flat_map(|block| block.transactions())
         .filter(|tx| !tx.transparent.coinbase)
-        .flat_map(|tx| tx.transparent.inputs.iter().copied())
+        .flat_map(|tx| tx.transparent.inputs.iter().cloned())
         .filter(|prevout| !in_run.contains(prevout))
         .collect();
-    let found = asked.iter().zip(parent.values(&asked));
+    let values = parent.values(&asked);
+    let found = asked.into_iter().zip(values);
     let mut unspent: HashMap<OutPoint, Zatoshis> =
-        found.filter_map(|(at, value)| Some((*at, value?))).collect();
+        found.filter_map(|(at, value)| Some((at, value?))).collect();
 
     let mut folded = Vec::with_capacity(blocks.len());
     for (block, out) in blocks.iter().zip(out) {
@@ -164,21 +164,21 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
                     let missing = FoldError::MissingPrevout {
                         height,
                         txid: tx.txid,
-                        spent: prevout.txid,
-                        vout: prevout.vout,
+                        spent: TransactionId::from(*prevout.hash()),
+                        vout: prevout.n(),
                     };
                     let value = unspent.remove(prevout).ok_or(missing)?;
                     spent = (spent + value)
                         .ok_or(FoldError::ValueOverflow { height, txid: tx.txid })?;
                     if !created_here.remove(prevout) {
-                        out.map(OUTPUTS).remove(&prevout.encode());
+                        out.map(OUTPUTS).remove(&encode_outpoint(prevout));
                     }
                 }
             }
             for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-                let outpoint = OutPoint { txid: tx.txid, vout };
+                let outpoint = OutPoint::new(<[u8; 32]>::from(tx.txid), vout);
+                created_here.insert(outpoint.clone());
                 unspent.insert(outpoint, output.value);
-                created_here.insert(outpoint);
             }
             fees.push(tx.fee(spent).map_err(|refused| match refused {
                 FeeError::Negative => FoldError::NegativeFee { height, txid: tx.txid },
@@ -186,7 +186,7 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
             })?);
         }
         for (outpoint, value) in outputs(block).filter(|(at, _)| created_here.contains(at)) {
-            out.map(OUTPUTS).insert(&outpoint.encode(), &encode_value(value));
+            out.map(OUTPUTS).insert(&encode_outpoint(&outpoint), &encode_value(value));
         }
         out.sequence(FEES).append(&encode_fees(&fees));
         folded.push(BlockFees { height, hash: block.header().hash, fees });
@@ -198,7 +198,8 @@ pub(crate) fn fold_run<V: SequenceRead + MapRead>(
 fn outputs(block: &Block) -> impl Iterator<Item = (OutPoint, Zatoshis)> + '_ {
     block.transactions().iter().flat_map(|tx| {
         let outputs = (0..).zip(&tx.transparent.outputs);
-        outputs.map(|(vout, output)| (OutPoint { txid: tx.txid, vout }, output.value))
+        let txid = <[u8; 32]>::from(tx.txid);
+        outputs.map(move |(vout, output)| (OutPoint::new(txid, vout), output.value))
     })
 }
 
@@ -207,7 +208,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema, View};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{BlockRef, Fee, ShieldedPool, Transaction};
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::NetworkType;
@@ -235,14 +236,14 @@ mod tests {
             b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000))
                 .tx(|t| {
                     t.txid([0x21; 32])
-                        .spend(outpoint([0x10; 32], 0))
+                        .spend(OutPoint::new([0x10; 32], 0))
                         .pay(&alice, 60_000)
                         .pay(&alice, 39_000)
                         .fee(1_000)
                 })
                 .tx(|t| {
                     t.txid([0x22; 32])
-                        .spend(outpoint([0x21; 32], 1))
+                        .spend(OutPoint::new([0x21; 32], 1))
                         .pay(&alice, 30_000)
                         .value_balance(ShieldedPool::Sapling, -8_000)
                         .fee(1_000)
@@ -251,7 +252,7 @@ mod tests {
         let two = chain.mine(|b| {
             b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)).tx(|t| {
                 t.txid([0x23; 32])
-                    .spend(outpoint([0x21; 32], 0))
+                    .spend(OutPoint::new([0x21; 32], 0))
                     .value_balance(ShieldedPool::Orchard, -59_000)
                     .fee(1_000)
             })
@@ -323,13 +324,16 @@ mod tests {
         let one = chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
         let two = chain.mine(|b| {
             b.tx(|t| {
-                t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 99_000).fee(1_000)
+                t.txid([0x20; 32])
+                    .spend(OutPoint::new([0x10; 32], 0))
+                    .pay(&alice, 99_000)
+                    .fee(1_000)
             })
         });
         let three = chain.mine(|b| {
             b.coinbase(|c| c.txid([0x31; 32]).pay(&alice, 1_000)).tx(|t| {
                 t.txid([0x30; 32])
-                    .spend(outpoint([0x20; 32], 0))
+                    .spend(OutPoint::new([0x20; 32], 0))
                     .value_balance(ShieldedPool::Sapling, -99_000)
                     .fee(0)
             })
@@ -340,9 +344,9 @@ mod tests {
             edit(&mut txs[1]);
             Arc::new(Block::new(chain.block(at.hash).header().clone(), txs))
         };
-        let spends = |spent: OutPoint| lie(two, &move |tx| tx.transparent.inputs[0] = spent);
-        let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
-        let respends = lie(three, &|tx| tx.transparent.inputs.push(outpoint([0x10; 32], 0)));
+        let spends = |spent: OutPoint| lie(two, &|tx| tx.transparent.inputs[0] = spent.clone());
+        let spends_twice = lie(two, &|tx| tx.transparent.inputs.push(OutPoint::new([0x10; 32], 0)));
+        let respends = lie(three, &|tx| tx.transparent.inputs.push(OutPoint::new([0x10; 32], 0)));
         let overpaid = lie(two, &|tx| {
             tx.transparent.outputs[0].value = Zatoshis::from_u64(100_001).expect("in supply");
         });
@@ -358,10 +362,14 @@ mod tests {
             vout,
         };
         let cases = [
-            ("never mined", vec![block(one), spends(outpoint([0x99; 32], 3))], missing(0x99, 3)),
+            (
+                "never mined",
+                vec![block(one), spends(OutPoint::new([0x99; 32], 3))],
+                missing(0x99, 3),
+            ),
             (
                 "spends a later run block's output",
-                vec![block(one), spends(outpoint([0x31; 32], 0)), block(three)],
+                vec![block(one), spends(OutPoint::new([0x31; 32], 0)), block(three)],
                 missing(0x31, 0),
             ),
             ("one prevout twice in a tx", vec![block(one), spends_twice], missing(0x10, 0)),
@@ -406,7 +414,10 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
         let one = chain.mine(|b| {
             b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 50_000)).tx(|t| {
-                t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 99_000).fee(1_000)
+                t.txid([0x20; 32])
+                    .spend(OutPoint::new([0x10; 32], 0))
+                    .pay(&alice, 99_000)
+                    .fee(1_000)
             })
         });
         let two = chain.mine(|b| b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 50_000)));
@@ -471,7 +482,10 @@ mod tests {
         for (coinbase, txid, spent, paid) in spends {
             chain.mine(|b| {
                 b.coinbase(|c| c.txid([coinbase; 32]).pay(&alice, 50_000)).tx(|t| {
-                    t.txid([txid; 32]).spend(outpoint([spent; 32], 0)).pay(&alice, paid).fee(10_000)
+                    t.txid([txid; 32])
+                        .spend(OutPoint::new([spent; 32], 0))
+                        .pay(&alice, paid)
+                        .fee(10_000)
                 })
             });
         }
@@ -533,14 +547,14 @@ mod tests {
             b.coinbase(|c| c.txid([0x11; 32]).pay(&alice, 625_000_000))
                 .tx(|t| {
                     t.txid([0x21; 32])
-                        .spend(outpoint([0x10; 32], 0))
+                        .spend(OutPoint::new([0x10; 32], 0))
                         .pay(&alice, 60_000)
                         .pay(&alice, 39_000)
                         .fee(1_000)
                 })
                 .tx(|t| {
                     t.txid([0x22; 32])
-                        .spend(outpoint([0x21; 32], 1))
+                        .spend(OutPoint::new([0x21; 32], 1))
                         .pay(&alice, 30_000)
                         .value_balance(ShieldedPool::Sapling, -8_000)
                         .fee(1_000)
@@ -549,7 +563,7 @@ mod tests {
         chain.mine(|b| {
             b.coinbase(|c| c.txid([0x12; 32]).pay(&alice, 625_000_000)).tx(|t| {
                 t.txid([0x23; 32])
-                    .spend(outpoint([0x21; 32], 0))
+                    .spend(OutPoint::new([0x21; 32], 0))
                     .value_balance(ShieldedPool::Orchard, -58_500)
                     .sprout_balance(-500)
                     .fee(1_000)
@@ -558,8 +572,8 @@ mod tests {
         chain.mine(|b| {
             b.coinbase(|c| c.txid([0x13; 32]).pay(&alice, 625_000_000)).tx(|t| {
                 t.txid([0x24; 32])
-                    .spend(outpoint([0x22; 32], 0))
-                    .spend(outpoint([0x11; 32], 0))
+                    .spend(OutPoint::new([0x22; 32], 0))
+                    .spend(OutPoint::new([0x11; 32], 0))
                     .pay(&alice, 625_029_500)
                     .sprout_balance(500)
                     .fee(1_000)
@@ -568,7 +582,7 @@ mod tests {
         let tip = chain.mine(|b| {
             b.coinbase(|c| c.txid([0x14; 32]).pay(&alice, 625_000_000)).tx(|t| {
                 t.txid([0x25; 32])
-                    .spend(outpoint([0x24; 32], 0))
+                    .spend(OutPoint::new([0x24; 32], 0))
                     .pay(&alice, 625_000_000)
                     .value_balance(ShieldedPool::Ironwood, -29_000)
                     .fee(500)
@@ -607,11 +621,12 @@ mod tests {
         let alice = p2pkh([0xaa; 20]);
         let mut chain = MockChain::regtest()
             .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 100_000)));
-        let one = chain
-            .mine(|b| b.tx(|t| t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&alice, 1)));
+        let one = chain.mine(|b| {
+            b.tx(|t| t.txid([0x20; 32]).spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 1))
+        });
         // lie: 0x20 spends an output never mined
         let mut txs = chain.block(one.hash).transactions().to_vec();
-        txs[1].transparent.inputs[0] = outpoint([0x99; 32], 3);
+        txs[1].transparent.inputs[0] = OutPoint::new([0x99; 32], 3);
         let unrecorded = Arc::new(Block::new(chain.block(one.hash).header().clone(), txs));
         writer.send(step(chain.block(chain.genesis().hash))).await;
         writer.send(step(&unrecorded)).await;

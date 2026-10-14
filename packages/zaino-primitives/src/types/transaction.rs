@@ -2,10 +2,9 @@
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_transparent::address::Script;
+use zcash_transparent::bundle::OutPoint;
 
-use super::{
-    CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, TransactionId,
-};
+use super::{CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, TransactionId};
 
 /// - `txid`: pre-v5 = SHA-256d of the bytes, v5+ = ZIP-244 id
 /// - No position (slot = [`Block::transactions`](super::Block::transactions) order; mempool: none)
@@ -46,50 +45,6 @@ pub struct TransparentData {
     pub coinbase: bool,
     pub inputs: Vec<OutPoint>,
     pub outputs: Vec<TransparentOutput>,
-}
-
-/// One transparent output, named by its transaction and position
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OutPoint {
-    pub txid: TransactionId,
-    pub vout: OutputIndex,
-}
-
-impl OutPoint {
-    pub const LEN: usize = 32 + 4;
-
-    /// `txid ‖ vout` big-endian: byte order = `Ord` (a txid leads: uniform, shardable bytes)
-    pub fn encode(&self) -> [u8; Self::LEN] {
-        let mut out = [0u8; Self::LEN];
-        out[..32].copy_from_slice(&<[u8; 32]>::from(self.txid));
-        out[32..].copy_from_slice(&self.vout.to_be_bytes());
-        out
-    }
-
-    pub fn decode(bytes: &[u8; Self::LEN]) -> Self {
-        let (txid, vout) = bytes.split_at(32);
-        Self {
-            txid: TransactionId::from(<[u8; 32]>::try_from(txid).expect("32 bytes")),
-            vout: u32::from_be_bytes(vout.try_into().expect("4 bytes")),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Golden layout: txid bytes as held, then `vout` big-endian (so byte order = key order)
-    #[test]
-    fn an_outpoint_is_its_golden_bytes_and_orders_like_them() {
-        let outpoint = OutPoint { txid: TransactionId::from([0xab; 32]), vout: 0x0102_0304 };
-        let golden = [&[0xab; 32][..], &[0x01, 0x02, 0x03, 0x04]].concat();
-        assert_eq!(outpoint.encode().as_slice(), golden);
-        assert_eq!(OutPoint::decode(&outpoint.encode()), outpoint);
-
-        let later = OutPoint { vout: 0x0102_0305, ..outpoint };
-        assert!(outpoint < later && outpoint.encode() < later.encode(), "derived Ord = byte order");
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

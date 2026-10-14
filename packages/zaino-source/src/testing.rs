@@ -12,9 +12,10 @@ use std::time::Duration;
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
 use zaino_primitives::types::{
     Block, BlockHash, BlockRef, BlockchainInfo, DecodedHeader, EndOfService, Height, NodeRelease,
-    OutPoint, PeerInfo, Transaction, TransactionId, TransactionLocation,
+    PeerInfo, Transaction, TransactionId, TransactionLocation,
 };
 use zcash_transparent::address::Script;
+use zcash_transparent::bundle::OutPoint;
 
 use crate::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, FailureMode, GetAtHeightError,
@@ -524,11 +525,9 @@ pub fn raw_transaction(lock_time: u32, expiry: u32) -> (TransactionId, Vec<u8>) 
 ///
 /// - empty script sigs (nothing here verifies a signature); distinct per `spends`
 pub fn raw_transparent(spends: &[OutPoint], pays: &[(&Script, u64)]) -> (TransactionId, Vec<u8>) {
-    use zcash_transparent::bundle::{Authorized, Bundle, OutPoint as RawOutPoint, TxIn, TxOut};
-    let vin = spends.iter().map(|prevout| {
-        let from = RawOutPoint::new(<[u8; 32]>::from(prevout.txid), prevout.vout);
-        TxIn::from_parts(from, Script::default(), u32::MAX)
-    });
+    use zcash_transparent::bundle::{Authorized, Bundle, TxIn, TxOut};
+    let vin =
+        spends.iter().map(|prevout| TxIn::from_parts(prevout.clone(), Script::default(), u32::MAX));
     let vout = pays.iter().map(|(script, zats)| {
         let value = zcash_protocol::value::Zatoshis::from_u64(*zats).expect("within the supply");
         TxOut::new(value, (*script).clone())

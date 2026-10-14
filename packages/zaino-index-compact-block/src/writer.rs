@@ -114,7 +114,7 @@ mod tests {
 
     use prost::Message as _;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{Height, TreeSize, TreeSizes};
     use zaino_proto::frame::FRAME_HEADER;
     use zaino_proto::proto::compact_formats;
@@ -124,6 +124,7 @@ mod tests {
     };
     use zaino_sync::FeeSink;
     use zcash_protocol::consensus::NetworkType;
+    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
     use crate::{FORMAT, TABLES};
@@ -266,7 +267,7 @@ mod tests {
             let fee = 1_000 * u64::from(at);
             mock.mine(|b| {
                 b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
-                    let t = t.spend(outpoint([0xc0 + at; 32], 0)).fee(fee);
+                    let t = t.spend(OutPoint::new([0xc0 + at; 32], 0)).fee(fee);
                     let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
                     let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
                     (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))
@@ -338,7 +339,7 @@ mod tests {
                 [sapling, orchard, ironwood].map(|count| u8::try_from(count).expect("≤ 3"));
             mock.mine(|b| {
                 b.coinbase(|c| c.txid([0xc0 + at; 32]).pay(&miner, fee)).tx(|t| {
-                    let t = t.spend(outpoint([0xc0 + at; 32], 0)).fee(fee);
+                    let t = t.spend(OutPoint::new([0xc0 + at; 32], 0)).fee(fee);
                     let t = (0..sapling).fold(t, |t, i| t.sapling_output(u32::from(16 * at + i)));
                     let t = (0..orchard).fold(t, |t, i| t.orchard_action([16 * at + i; 32], 1));
                     (0..ironwood).fold(t, |t, i| t.ironwood_action([16 * at + i; 32], 1))

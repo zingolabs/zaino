@@ -177,7 +177,7 @@ let served = Lie::Mutated.told(&honest);             // the same shape, no valid
 validator.tamper(h(80), |header| header.time = early); // a header the builder refuses, rehashed
 assert_eq!(validator.calls(), Calls { polls: 3, links: 12, blocks: 0, sends: 1, checks: 0 });
 let (txid, raw) = raw_transaction(lock_time, expiry); // a real, empty v4 transaction
-let (txid, raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]); // a real spend
+let (txid, raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &[(&alice, 4_000)]); // a real spend
 chain.mine(|b| b.raw_tx(decoded(raw)));              // mined with its bytes: get_transaction serves them
 ```
 

@@ -25,11 +25,12 @@ use zaino_persistence::{
     SequenceRead, Store, View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
-use zaino_primitives::types::{Block, BlockFees, BlockHash, Height, OutPoint};
+use zaino_primitives::types::{Block, BlockFees, BlockHash, Height};
 use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
 use zaino_sync::{FeeSink, FinalFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
+use zcash_transparent::bundle::OutPoint;
 
 use super::*;
 
@@ -355,7 +356,8 @@ fn mine(
     for at in 0..count {
         *tag += 1;
         let tag = *tag;
-        let funding = OutPoint { txid: blocks.block(tip.hash).transactions()[0].txid, vout: 0 };
+        let funding_txid = blocks.block(tip.hash).transactions()[0].txid;
+        let funding = OutPoint::new(<[u8; 32]>::from(funding_txid), 0);
         let mut nullifier = [0x0f; 32];
         nullifier[..4].copy_from_slice(&tag.to_le_bytes());
         let branch = blocks.branch(tip);

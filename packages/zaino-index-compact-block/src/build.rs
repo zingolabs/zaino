@@ -99,8 +99,8 @@ pub fn compact_tx(
             .inputs
             .iter()
             .map(|input| compact_formats::CompactTxIn {
-                prevout_txid: <[u8; HASH]>::from(input.txid).to_vec(),
-                prevout_index: input.vout,
+                prevout_txid: input.hash().to_vec(),
+                prevout_index: input.n(),
             })
             .collect(),
         vout: tx
@@ -117,9 +117,10 @@ pub fn compact_tx(
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{p2pkh, MockChain};
     use zaino_primitives::types::TreeSize;
     use zaino_proto::frame::framed_len;
+    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
 
@@ -135,7 +136,7 @@ mod tests {
         let two = chain.mine(|b| {
             b.coinbase(|c| c.txid([0x0c; 32])).tx(|t| {
                 t.txid([0x11; 32])
-                    .spend(outpoint([0x22; 32], 7))
+                    .spend(OutPoint::new([0x22; 32], 7))
                     .pay(&alice, 12_345)
                     .fee(5_000)
                     .sapling_spend([0x33; 32])

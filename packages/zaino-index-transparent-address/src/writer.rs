@@ -10,7 +10,7 @@ use zaino_sync::{
 
 use crate::{
     address::address_key,
-    key::{encode_receive, encode_spend, ReceiveKey, ReceiveRow, Spend},
+    key::{encode_receive, encode_spend, encode_spent_key, ReceiveKey, ReceiveRow, Spend},
     TransparentAddressReader, RECEIVES, SPENT,
 };
 
@@ -81,7 +81,8 @@ pub fn fold<V: MapRead>(
         // coinbase inputs elided upstream (`zaino-source` decode.rs)
         let mut spent = out.map(SPENT);
         for input in &tx.transparent.inputs {
-            spent.insert(&input.encode(), &encode_spend(&Spend { height, spender: tx.txid }));
+            let key = encode_spent_key(*input.hash(), input.n());
+            spent.insert(&key, &encode_spend(&Spend { height, spender: tx.txid }));
         }
         let mut receives = out.map(RECEIVES);
         for (vout, output) in (0u32..).zip(&tx.transparent.outputs) {
@@ -98,8 +99,8 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, BlockBuilder, MockChain};
-    use zaino_primitives::types::{OutPoint, TransactionId};
+    use zaino_primitives::testing::{h, p2pkh, BlockBuilder, MockChain};
+    use zaino_primitives::types::TransactionId;
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, FinalStream, Move, Writer, QUEUE,
     };
@@ -107,6 +108,7 @@ mod tests {
     use zcash_protocol::value::Zatoshis;
     use zcash_script::script::Code;
     use zcash_transparent::address::{Script, TransparentAddress};
+    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
     use crate::{key::AddressKey, AddressUtxo, TransactionRef, FORMAT, TABLES};
@@ -134,9 +136,10 @@ mod tests {
                     .pay(&opaque, 1)
             })
         });
-        let paid = outpoint([0x10; 32], 0);
-        let one =
-            chain.mine(|b| b.tx(|t| t.txid([0x20; 32]).spend(paid).pay(&p2pkh([0xb0; 20]), 490)));
+        let paid = OutPoint::new([0x10; 32], 0);
+        let one = chain.mine(|b| {
+            b.tx(|t| t.txid([0x20; 32]).spend(paid.clone()).pay(&p2pkh([0xb0; 20]), 490))
+        });
         let blocks = chain.blocks(one);
         let (alice, bob) = (AddressKey::p2pkh([0xa1; 20]), AddressKey::p2pkh([0xb0; 20]));
 
@@ -150,7 +153,8 @@ mod tests {
         let spender = TransactionId::from([0x20; 32]);
         let spend = encode_spend(&Spend { height: 1, spender });
         let spent: Vec<_> = changes.inserts(SPENT).map(|(k, v)| (k.to_vec(), v.to_vec())).collect();
-        assert_eq!(spent, vec![(paid.encode().to_vec(), spend.to_vec())], "spent row");
+        let spent_key = encode_spent_key(*paid.hash(), paid.n());
+        assert_eq!(spent, vec![(spent_key.to_vec(), spend.to_vec())], "spent row");
         let bob_receive = ReceiveRow {
             key: ReceiveKey { address: bob, height: 1, txid: spender, vout: 0 },
             value: zat(490),
@@ -187,7 +191,7 @@ mod tests {
             let paid = u64::from(height) + 1;
             chain.mine(|b| {
                 b.coinbase(|c| c.txid([height + 1; 32]).pay(&pays_alice, paid))
-                    .tx(|t| t.spend(outpoint([height; 32], 0)))
+                    .tx(|t| t.spend(OutPoint::new([height; 32], 0)))
             });
         }
         let blocks = chain.blocks(chain.tip());
@@ -204,7 +208,7 @@ mod tests {
         let expected = |count: u8| {
             let balance = Zatoshis::from_u64(u64::from(count)).expect("in supply");
             let unspent = (count > 0).then(|| AddressUtxo {
-                outpoint: outpoint([count; 32], 0),
+                outpoint: OutPoint::new([count; 32], 0),
                 height: h(u32::from(count) - 1),
                 value: balance,
             });
@@ -253,10 +257,10 @@ mod tests {
         });
         chain.mine(|b| b.coinbase(|c| c.txid([0x11; 32]).pay(&pays_alice, 300)));
         chain.mine(|b| {
-            b.tx(|t| t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&pays_bob, 490))
+            b.tx(|t| t.txid([0x20; 32]).spend(OutPoint::new([0x10; 32], 0)).pay(&pays_bob, 490))
         });
         let tip = chain.mine(|b| {
-            b.tx(|t| t.txid([0x30; 32]).spend(outpoint([0x11; 32], 0)).pay(&pays_alice, 290))
+            b.tx(|t| t.txid([0x30; 32]).spend(OutPoint::new([0x11; 32], 0)).pay(&pays_alice, 290))
         });
         let blocks = chain.blocks(tip);
         let zats = |zats: u64| Zatoshis::from_u64(zats).expect("in supply");
@@ -275,7 +279,7 @@ mod tests {
         let balances = at_two.balances(&[alice, bob]);
         assert_eq!(balances, Ok(vec![zats(300), zats(560)]), "2's spend retires 0's receive");
         let unspent =
-            AddressUtxo { outpoint: outpoint([0x11; 32], 0), height: h(1), value: zats(300) };
+            AddressUtxo { outpoint: OutPoint::new([0x11; 32], 0), height: h(1), value: zats(300) };
         let utxos = at_two.utxos_of(&[alice], h(0));
         assert_eq!(utxos, Ok(vec![vec![unspent]]), "only the unspent receive");
         // paying and spending transactions both alice's, each once
@@ -301,7 +305,7 @@ mod tests {
         let balances = at_three.balances(&[alice, bob]);
         assert_eq!(balances, Ok(vec![zats(290), zats(560)]), "resent 2 not applied twice");
         let unspent =
-            AddressUtxo { outpoint: outpoint([0x30; 32], 0), height: h(3), value: zats(290) };
+            AddressUtxo { outpoint: OutPoint::new([0x30; 32], 0), height: h(3), value: zats(290) };
         let recent = at_three.utxos_of(&[alice], h(3));
         assert_eq!(recent, Ok(vec![vec![unspent]]), "start filters the reply, not spends");
         writer.stop().await.expect("stops at Shutdown");
@@ -353,9 +357,9 @@ mod tests {
         let scripts = [0u8, 1, 2, 0x5f].map(|tag| p2pkh([0xa0 + tag; 20]));
         let mut ledger: Ledger = Vec::new();
         let mut planned: Vec<Planned> = Vec::new();
-        let mut faucet = (outpoint([0xfa; 32], 0), 1_000_000_000u64);
+        let mut faucet = (OutPoint::new([0xfa; 32], 0), 1_000_000_000u64);
         for (height, (outputs, picks)) in (0u32..).zip(&plans) {
-            let mut spends = vec![faucet.0];
+            let mut spends = vec![faucet.0.clone()];
             let mut change = faucet.1;
             for pick in picks {
                 let unspent: Vec<usize> =
@@ -363,7 +367,7 @@ mod tests {
                 if let Some(&at) = unspent.get(pick % unspent.len().max(1)) {
                     ledger[at].1 .3 = Some((height, txid(height)));
                     let (txid, vout) = ledger[at].0;
-                    spends.push(OutPoint { txid, vout });
+                    spends.push(OutPoint::new(<[u8; 32]>::from(txid), vout));
                     change += ledger[at].1 .1;
                 }
             }
@@ -371,13 +375,14 @@ mod tests {
                 ledger.push(((txid(height), vout), (tag, zats, height, None)));
                 change -= zats;
             }
-            faucet = (OutPoint { txid: txid(height), vout: outputs.len() as u32 }, change);
+            let vout = outputs.len() as u32;
+            faucet = (OutPoint::new(<[u8; 32]>::from(txid(height)), vout), change);
             planned.push((spends, [&outputs[..], &[(FAUCET, change)]].concat()));
         }
         let block = |b: BlockBuilder, height: u32, (spends, pays): &Planned| {
             b.tx(|t| {
                 let t = t.txid(<[u8; 32]>::from(txid(height)));
-                let t = spends.iter().fold(t, |t, prevout| t.spend(*prevout));
+                let t = spends.iter().fold(t, |t, prevout| t.spend(prevout.clone()));
                 pays.iter().fold(t, |t, &(tag, zats)| t.pay(&scripts[usize::from(tag)], zats))
             })
         };
@@ -405,7 +410,7 @@ mod tests {
                         touched.push(TransactionRef { height: h(height), txid: spender })
                     }
                     None => utxos.push(AddressUtxo {
-                        outpoint: OutPoint { txid, vout },
+                        outpoint: OutPoint::new(<[u8; 32]>::from(txid), vout),
                         height: h(received),
                         value: Zatoshis::from_u64(zats).expect("in supply"),
                     }),

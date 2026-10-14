@@ -4,9 +4,10 @@ use std::collections::{HashMap, HashSet};
 
 use zcash_protocol::consensus::NetworkUpgrade;
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 use crate::types::{
-    Fee, Height, Nullifier, OutPoint, ShieldedPool, Transaction, TransactionId, UpgradeSchedule,
+    Fee, Height, Nullifier, ShieldedPool, Transaction, TransactionId, UpgradeSchedule,
 };
 
 /// What the next block on one tip may spend and reveal (`MockChain::ledger`)
@@ -44,7 +45,7 @@ pub enum Refused {
     CoinbaseFee,
     #[error("a coinbase is never unmined")]
     Coinbase,
-    #[error("spends {}:{}, not unspent on this branch", .0.txid, .0.vout)]
+    #[error("spends {}:{}, not unspent on this branch", .0.txid(), .0.n())]
     Unspent(OutPoint),
     #[error("takes {0} from a pool holding less (ZIP 209)")]
     Drained(i64),
@@ -141,8 +142,8 @@ impl Ledger {
         let mut spent = Zatoshis::ZERO;
         let mut inputs = HashSet::new();
         for prevout in &tx.transparent.inputs {
-            let value = self.unspent.get(prevout).filter(|_| inputs.insert(*prevout));
-            let value = value.ok_or(Refused::Unspent(*prevout))?;
+            let value = self.unspent.get(prevout).filter(|_| inputs.insert(prevout));
+            let value = value.ok_or_else(|| Refused::Unspent(prevout.clone()))?;
             spent = (spent + *value).ok_or(Refused::PastSupply)?;
         }
         let mut pools = self.pools;
@@ -172,7 +173,7 @@ impl Ledger {
         }
         self.pools = pools;
         for (vout, output) in (0..).zip(&tx.transparent.outputs) {
-            self.unspent.insert(OutPoint { txid, vout }, output.value);
+            self.unspent.insert(OutPoint::new(<[u8; 32]>::from(txid), vout), output.value);
         }
         Ok(fee)
     }

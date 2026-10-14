@@ -1,9 +1,10 @@
 use zcash_protocol::consensus::NetworkUpgrade;
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
+use zcash_transparent::bundle::OutPoint;
 
 use super::*;
+use crate::testing::p2pkh;
 use crate::testing::TxBuilder;
-use crate::testing::{outpoint, p2pkh};
 use crate::types::{
     ConsensusBranchId, NetworkUpgradeStatus, NoteCommitment, Nullifier, ShieldedPool,
     TransparentOutput,
@@ -112,15 +113,15 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
     let spent = chain.mine(|b| {
         b.tx(|t| {
             t.txid([0x20; 32])
-                .spend(outpoint([0x10; 32], 0))
+                .spend(OutPoint::new([0x10; 32], 0))
                 .pay(&bob, 30_000)
                 .pay(&alice, 19_000)
                 .fee(1_000)
         })
-        .tx(|t| t.txid([0x21; 32]).spend(outpoint([0x20; 32], 1)).pay(&bob, 18_500))
+        .tx(|t| t.txid([0x21; 32]).spend(OutPoint::new([0x20; 32], 1)).pay(&bob, 18_500))
         .tx(|t| {
             t.txid([0x22; 32])
-                .spend(outpoint([0x20; 32], 0))
+                .spend(OutPoint::new([0x20; 32], 0))
                 .sapling_output(7)
                 .orchard_action([0x04; 32], 9)
                 .value_balance(ShieldedPool::Sapling, -29_000)
@@ -133,7 +134,7 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
                 .pay(&alice, 19_900)
                 .fee(100)
         })
-        .tx(|t| t.spend(outpoint([0x21; 32], 0)).sprout_balance(-18_000).fee(500))
+        .tx(|t| t.spend(OutPoint::new([0x21; 32], 0)).sprout_balance(-18_000).fee(500))
         .tx(|t| t.sprout_balance(9_000).pay(&bob, 8_000))
     });
     let paid = |zats: u64| Fee::Paid(Zatoshis::from_u64(zats).expect("in supply"));
@@ -152,9 +153,10 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
     let keys =
         [shielded.sapling.outputs[0].ephemeral_key, shielded.orchard.actions[0].ephemeral_key];
     assert_ne!(keys[0], keys[1], "detection material distinct per pool");
-    assert_eq!(block.transactions()[1].transparent.inputs, [outpoint([0x10; 32], 0)]);
+    assert_eq!(block.transactions()[1].transparent.inputs, [OutPoint::new([0x10; 32], 0)]);
 
-    let resent = |t: TxBuilder| t.txid([0x20; 32]).spend(outpoint([0x10; 32], 0)).pay(&bob, 49_000);
+    let resent =
+        |t: TxBuilder| t.txid([0x20; 32]).spend(OutPoint::new([0x10; 32], 0)).pay(&bob, 49_000);
     let remined = chain.branch(funded).mine(|b| b.tx(resent)).tip();
     assert_eq!(chain.fees(remined.hash).fees, [Fee::Coinbase, paid(1_000)]);
     assert_eq!(chain.tip(), withdrawn, "a shorter sibling stays a side branch");
@@ -166,7 +168,7 @@ fn spends_move_value_along_their_own_branch_and_each_fee_is_what_conservation_le
 #[should_panic(expected = "not unspent on this branch")]
 fn spending_an_output_never_mined_panics() {
     let mut chain = MockChain::regtest();
-    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x99; 32], 0))));
+    chain.mine(|b| b.tx(|t| t.spend(OutPoint::new([0x99; 32], 0))));
 }
 
 #[test]
@@ -174,8 +176,8 @@ fn spending_an_output_never_mined_panics() {
 fn spending_an_output_a_block_before_spent_panics() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
-    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
-    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
+    chain.mine(|b| b.tx(|t| t.spend(OutPoint::new([0x10; 32], 0))));
+    chain.mine(|b| b.tx(|t| t.spend(OutPoint::new([0x10; 32], 0))));
 }
 
 #[test]
@@ -183,7 +185,7 @@ fn spending_an_output_a_block_before_spent_panics() {
 fn spending_an_output_twice_in_one_block_panics() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
-    let spend = |t: TxBuilder| t.spend(outpoint([0x10; 32], 0));
+    let spend = |t: TxBuilder| t.spend(OutPoint::new([0x10; 32], 0));
     chain.mine(|b| b.tx(spend).tx(spend));
 }
 
@@ -193,7 +195,7 @@ fn spending_an_output_off_its_branch_panics() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&p2pkh([0xaa; 20]), 50_000)));
     let genesis = chain.genesis();
-    chain.branch(genesis).mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0))));
+    chain.branch(genesis).mine(|b| b.tx(|t| t.spend(OutPoint::new([0x10; 32], 0))));
 }
 
 #[test]
@@ -201,7 +203,7 @@ fn spending_an_output_off_its_branch_panics() {
 fn paying_past_the_inputs_panics() {
     let (alice, mut chain) = (p2pkh([0xaa; 20]), MockChain::regtest());
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
-    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 50_001)));
+    chain.mine(|b| b.tx(|t| t.spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 50_001)));
 }
 
 #[test]
@@ -209,7 +211,7 @@ fn paying_past_the_inputs_panics() {
 fn a_stated_fee_off_the_derived_one_panics() {
     let (alice, mut chain) = (p2pkh([0xaa; 20]), MockChain::regtest());
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
-    chain.mine(|b| b.tx(|t| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000).fee(500)));
+    chain.mine(|b| b.tx(|t| t.spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000).fee(500)));
 }
 
 #[test]
@@ -271,7 +273,7 @@ fn a_pool_driven_below_zero_panics() {
 #[should_panic(expected = "a coinbase spends nothing")]
 fn a_coinbase_spending_panics() {
     let mut chain = MockChain::regtest();
-    chain.mine(|b| b.coinbase(|c| c.spend(outpoint([0x10; 32], 0))));
+    chain.mine(|b| b.coinbase(|c| c.spend(OutPoint::new([0x10; 32], 0))));
 }
 
 #[test]
@@ -389,9 +391,9 @@ fn the_mempool_holds_what_the_best_admits_until_mined() {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
-    let parent = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+    let parent = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
     let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
-    let child = TxBuilder::new().spend(outpoint([0x20; 32], 0)).pay(&alice, 48_500);
+    let child = TxBuilder::new().spend(OutPoint::new([0x20; 32], 0)).pay(&alice, 48_500);
     let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
     let held = |chain: &MockChain| -> Vec<(TransactionId, u64)> {
         chain.mempool().iter().map(|unmined| (unmined.tx.txid, unmined.fee.into_u64())).collect()
@@ -422,9 +424,9 @@ fn a_reorg_returns_what_the_best_no_longer_mines_and_drops_conflicts() {
     let alice = p2pkh([0xaa; 20]);
     let mut chain = MockChain::regtest().varied_work();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
-    let parent = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+    let parent = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
     let parent = parent.into_transaction(TransactionId::from([0x20; 32]), false);
-    let child = TxBuilder::new().spend(outpoint([0x20; 32], 0)).pay(&alice, 48_500);
+    let child = TxBuilder::new().spend(OutPoint::new([0x20; 32], 0)).pay(&alice, 48_500);
     let child = child.into_transaction(TransactionId::from([0x21; 32]), false);
     chain.submit((parent.clone(), vec![0x20]));
     chain.submit((child.clone(), vec![0x21]));
@@ -438,7 +440,7 @@ fn a_reorg_returns_what_the_best_no_longer_mines_and_drops_conflicts() {
     let revived = chain.branch(mined).outweigh().mine_empty(1).tip();
     assert_eq!((chain.tip(), held(&chain)), (revived, vec![]), "mined again: gone");
 
-    let rival = |t: TxBuilder| t.spend(outpoint([0x10; 32], 0)).pay(&alice, 40_000);
+    let rival = |t: TxBuilder| t.spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 40_000);
     chain.fork(h(1)).outweigh().mine(|b| b.tx(rival));
     assert_eq!(held(&chain), [], "its prevout spent by the winner: dropped, its child too");
 }
@@ -451,7 +453,7 @@ fn submitting_a_rival_to_a_held_spend_panics() {
     let mut chain = MockChain::regtest();
     chain.mine(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
     let spend = |txid: u8| {
-        let tx = TxBuilder::new().spend(outpoint([0x10; 32], 0)).pay(&alice, 49_000);
+        let tx = TxBuilder::new().spend(OutPoint::new([0x10; 32], 0)).pay(&alice, 49_000);
         (tx.into_transaction(TransactionId::from([txid; 32]), false), vec![txid])
     };
     chain.submit(spend(0x20));

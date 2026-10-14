@@ -1,10 +1,13 @@
 //! Typed reads over any view (a snapshot's layered view, the committed store alike)
 
 use zaino_persistence::{MapRead, SequenceRead, View};
-use zaino_primitives::types::{Block, BlockFees, OutPoint};
+use zaino_primitives::types::{Block, BlockFees};
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
-use crate::{decode_fees, decode_value, FoldError, FEES, OUTPUTS, VALUE};
+use crate::{
+    decode_fees, decode_value, encode_outpoint, FoldError, FEES, OUTPOINT, OUTPUTS, VALUE,
+};
 
 #[derive(Clone)]
 pub struct ValueBalanceReader<V> {
@@ -23,7 +26,7 @@ impl<V: SequenceRead + MapRead> ValueBalanceReader<V> {
     /// One answer per outpoint, in order (`None` = never created or spent): one `values` probe
     /// (cold page faults overlap instead of queueing)
     pub fn values(&self, outpoints: &[OutPoint]) -> Vec<Option<Zatoshis>> {
-        let keys: Vec<[u8; OutPoint::LEN]> = outpoints.iter().map(OutPoint::encode).collect();
+        let keys: Vec<[u8; OUTPOINT]> = outpoints.iter().map(encode_outpoint).collect();
         let keys: Vec<&[u8]> = keys.iter().map(|key| &key[..]).collect();
         let found = self.view.map(OUTPUTS).values(&keys).into_iter();
         found

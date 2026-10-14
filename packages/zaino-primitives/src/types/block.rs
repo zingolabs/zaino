@@ -94,7 +94,7 @@ mod tests {
     use super::*;
     use crate::types::{
         transaction::{
-            OrchardAction, OrchardData, OutPoint, SaplingData, SaplingOutput, TransparentData,
+            OrchardAction, OrchardData, SaplingData, SaplingOutput, TransparentData,
             TransparentOutput,
         },
         CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, TransactionId,
@@ -102,6 +102,7 @@ mod tests {
     use zcash_protocol::value::Zatoshis;
     use zcash_script::script::Code;
     use zcash_transparent::address::Script;
+    use zcash_transparent::bundle::OutPoint;
 
     /// Block 1 extends genesis and nothing else: not an empty parent, a sibling, itself, or a gap
     #[test]
@@ -169,7 +170,7 @@ mod tests {
             txid: TransactionId::from([9; 32]),
             transparent: TransparentData {
                 coinbase: false,
-                inputs: vec![OutPoint { txid: TransactionId::from([8; 32]), vout: 0 }; 2],
+                inputs: vec![OutPoint::new([8; 32], 0); 2],
                 outputs: vec![TransparentOutput {
                     value: Zatoshis::from_u64(5).expect("in supply"),
                     script: Script(Code(script)),

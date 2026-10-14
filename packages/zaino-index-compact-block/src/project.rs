@@ -241,9 +241,10 @@ fn put_varint(mut value: u64, out: &mut Vec<u8>) {
 mod tests {
     use std::slice;
 
-    use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{p2pkh, MockChain};
     use zaino_proto::frame::framed_len;
     use zcash_protocol::value::Zatoshis;
+    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
     use crate::{compact_tx, encode_compact_block};
@@ -277,7 +278,7 @@ mod tests {
         chain.mine(|b| b.coinbase(|c| c.txid([0x22; 32]).pay(&alice, 17_345)));
         let two = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 625)).tx(|t| {
-                t.spend(outpoint([0x22; 32], 0))
+                t.spend(OutPoint::new([0x22; 32], 0))
                     .pay(&alice, 12_345)
                     .sapling_spend([0x33; 32])
                     .sapling_output(0x44)
@@ -330,7 +331,9 @@ mod tests {
                 .tx(|t| t.txid([1; 32]))
                 .tx(|t| t.txid([2; 32]).sapling_output(0x44))
                 .tx(|t| t.txid([3; 32]).orchard_action([0x77; 32], 0x78))
-                .tx(|t| t.txid([4; 32]).spend(outpoint([0x22; 32], 1)).pay(&alice, 100).fee(1_000))
+                .tx(|t| {
+                    t.txid([4; 32]).spend(OutPoint::new([0x22; 32], 1)).pay(&alice, 100).fee(1_000)
+                })
         });
         let three = chain.mine(|b| b.coinbase(|c| c.pay(&alice, 625)));
         let (block, fees) = (chain.block(two.hash), chain.fees(two.hash));

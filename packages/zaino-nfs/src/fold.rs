@@ -101,9 +101,10 @@ mod tests {
     use std::{num::NonZeroUsize, path::Path};
 
     use zaino_persistence::{fs::SimFs, DiskEngine, PersistenceEngine, Store, View};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_primitives::types::{BlockFees, Fee, Height, TreeSize, TreeSizes};
     use zcash_protocol::value::Zatoshis;
+    use zcash_transparent::bundle::OutPoint;
 
     use super::*;
 
@@ -121,7 +122,7 @@ mod tests {
             .genesis_with(|b| b.coinbase(|c| c.txid([0x10; 32]).pay(&alice, 50_000)));
         let one = chain.mine(|b| {
             b.coinbase(|c| c.pay(&alice, 10_000)).tx(|t| {
-                t.spend(outpoint([0x10; 32], 0))
+                t.spend(OutPoint::new([0x10; 32], 0))
                     .pay(&alice, 49_000)
                     .fee(1_000)
                     .sapling_output(1)

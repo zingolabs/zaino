@@ -540,8 +540,8 @@ mod tests {
         });
         let mut spent: BTreeMap<[u8; 32], u32> = BTreeMap::new();
         for prevout in chosen.iter().flat_map(|(tx, _)| &tx.transparent.inputs) {
-            let last = spent.entry(prevout.txid.into()).or_default();
-            *last = (*last).max(prevout.vout);
+            let last = spent.entry(*prevout.hash()).or_default();
+            *last = (*last).max(prevout.n());
         }
         for (txid, last) in spent {
             let paid =

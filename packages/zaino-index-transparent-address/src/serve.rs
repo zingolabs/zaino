@@ -6,9 +6,10 @@
 use std::num::NonZeroUsize;
 
 use zaino_persistence::MapRead;
-use zaino_primitives::types::{Height, OutPoint, TransactionId};
+use zaino_primitives::types::{Height, TransactionId};
 use zcash_protocol::value::Zatoshis;
 use zcash_transparent::address::TransparentAddress;
+use zcash_transparent::bundle::OutPoint;
 
 use crate::{key::AddressKey, TransparentAddressReader};
 
@@ -31,7 +32,7 @@ pub enum ServeError {
 pub const DEFAULT_MAX_ADDRESS_ROWS: NonZeroUsize =
     NonZeroUsize::new(100_000).expect("100000 is non-zero");
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressUtxo {
     pub outpoint: OutPoint,
     pub height: Height,
@@ -71,7 +72,7 @@ impl<V: MapRead> TransparentAddressReader<V> {
             .map(|rows| {
                 rows.into_iter()
                     .map(|row| AddressUtxo {
-                        outpoint: OutPoint { txid: row.key.txid, vout: row.key.vout },
+                        outpoint: OutPoint::new(<[u8; 32]>::from(row.key.txid), row.key.vout),
                         height: stored(row.key.height),
                         value: row.value,
                     })
@@ -146,7 +147,7 @@ mod tests {
     use std::num::NonZeroUsize;
 
     use zaino_persistence::{fs::SimFs, IndexKind, Schema, Store};
-    use zaino_primitives::testing::{h, outpoint, p2pkh, MockChain};
+    use zaino_primitives::testing::{h, p2pkh, MockChain};
     use zaino_sync::testing::open;
     use zcash_protocol::consensus::NetworkType;
 
@@ -165,7 +166,9 @@ mod tests {
         let mut chain = MockChain::regtest();
         chain.mine(|b| b.coinbase(|c| c.txid([0x77; 32]).pay(&p2pkh(paid), 42)));
         let two = chain.mine(|b| {
-            b.tx(|t| t.txid([0x78; 32]).spend(outpoint([0x77; 32], 0)).pay(&p2pkh([0x02; 20]), 41))
+            b.tx(|t| {
+                t.txid([0x78; 32]).spend(OutPoint::new([0x77; 32], 0)).pay(&p2pkh([0x02; 20]), 41)
+            })
         });
         let paid = TransparentAddress::PublicKeyHash(paid);
         let stranger = TransparentAddress::ScriptHash(stranger);
@@ -181,7 +184,7 @@ mod tests {
         let at_two = TransparentAddressReader::new(store.staged());
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
-            outpoint: outpoint([0x77; 32], 0),
+            outpoint: OutPoint::new([0x77; 32], 0),
             height: h(1),
             value: Zatoshis::from_u64(42).expect("in supply"),
         };

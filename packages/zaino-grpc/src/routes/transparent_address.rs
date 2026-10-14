@@ -198,8 +198,8 @@ fn reply(
 ) -> Result<service::GetAddressUtxosReply, Status> {
     Ok(service::GetAddressUtxosReply {
         address: encoded.to_owned(),
-        txid: <[u8; 32]>::from(utxo.outpoint.txid).to_vec(),
-        index: i32::try_from(utxo.outpoint.vout)
+        txid: utxo.outpoint.hash().to_vec(),
+        index: i32::try_from(utxo.outpoint.n())
             .map_err(|_| Status::internal("stored vout is above the protocol ceiling"))?,
         script: address.script().to_bytes(),
         value_zat: i64::from(ZatBalance::from(utxo.value)),
@@ -279,11 +279,12 @@ mod tests {
     async fn a_populated_transparent_index_answers_utxos_and_balances_in_both_shapes() {
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_primitives::testing::{outpoint, p2pkh, MockChain};
+        use zaino_primitives::testing::{p2pkh, MockChain};
         use zaino_proto::proto::service;
         use zaino_source::testing::{decoded, raw_transparent, ValidatorViews};
         use zcash_script::script::Code;
         use zcash_transparent::address::Script;
+        use zcash_transparent::bundle::OutPoint;
 
         // `t1Hsc…` = hash160 `00…00`, `t3Mg6…` = p2sh `22…22` (base58check, mainnet prefixes)
         const ALICE: &str = "t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs";
@@ -297,9 +298,9 @@ mod tests {
         let mut chain = MockChain::regtest().network(crate::testing::MAINNET);
         chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&miner, 870)));
         let pays = [(&alice, 500), (&bob, 70), (&miner, 300)];
-        let (first, first_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &pays);
+        let (first, first_raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &pays);
         chain.mine(|b| b.raw_tx(decoded(first_raw.clone())));
-        let change = outpoint(<[u8; 32]>::from(first), 2);
+        let change = OutPoint::new(<[u8; 32]>::from(first), 2);
         let (second, second_raw) = raw_transparent(&[change], &[(&alice, 300)]);
         let tip = chain.mine(|b| b.raw_tx(decoded(second_raw.clone())));
         let index = indexed(IndexKind::TransparentAddress, &chain, tip);

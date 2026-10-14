@@ -6,10 +6,11 @@
 //! - never run: proofs, signatures, scripts, coinbase maturity (the quorum's validators ran them)
 
 use zaino_primitives::types::{
-    ConsensusBranchId, Fee, FeeError, Height, OutPoint, TransactionId, UpgradeSchedule,
+    ConsensusBranchId, Fee, FeeError, Height, TransactionId, UpgradeSchedule,
 };
 use zaino_source::{decode_transaction, prepare_transaction, Prepared};
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 /// What a transaction must be valid in: the block above the verified best
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,8 +78,11 @@ pub(crate) fn admissible(
     }
     let mut spent = Zatoshis::ZERO;
     for input in &tx.transparent.inputs {
-        let unknown = Refused::UnknownPrevout { txid: input.txid, vout: input.vout };
-        let value = prevout(input).ok_or(unknown)?;
+        let unknown = || Refused::UnknownPrevout {
+            txid: TransactionId::from(*input.hash()),
+            vout: input.n(),
+        };
+        let value = prevout(input).ok_or_else(unknown)?;
         spent = (spent + value).ok_or(Refused::Fee(FeeError::Overflow))?;
     }
     match tx.fee(spent)? {
@@ -89,6 +93,8 @@ pub(crate) fn admissible(
 
 #[cfg(test)]
 mod tests {
+    use std::slice;
+
     use zaino_primitives::testing::{h, p2pkh};
     use zaino_source::testing::{raw_transaction, raw_transparent, raw_v5};
     use zcash_protocol::consensus::{BranchId, NetworkType};
@@ -105,14 +111,14 @@ mod tests {
         assert_eq!(next, NextBlock { height: h(3_428_143), branch });
 
         let alice = p2pkh([0xaa; 20]);
-        let known = OutPoint { txid: TransactionId::from([1; 32]), vout: 0 };
-        let unknown = OutPoint { txid: TransactionId::from([2; 32]), vout: 3 };
-        let coinbase_input = OutPoint { txid: TransactionId::from([0; 32]), vout: u32::MAX };
+        let known = OutPoint::new([1; 32], 0);
+        let unknown = OutPoint::new([2; 32], 3);
+        let coinbase_input = OutPoint::new([0; 32], u32::MAX);
         let zats = |n: u64| Zatoshis::from_u64(n).expect("zats");
         let utxos = |at: &OutPoint| (*at == known).then(|| zats(10_000));
 
-        let (paying, pays) = raw_transparent(&[known], &[(&alice, 9_000)]);
-        let (_, overpays) = raw_transparent(&[known], &[(&alice, 11_000)]);
+        let (paying, pays) = raw_transparent(slice::from_ref(&known), &[(&alice, 9_000)]);
+        let (_, overpays) = raw_transparent(slice::from_ref(&known), &[(&alice, 11_000)]);
         let (_, orphan) = raw_transparent(&[unknown], &[(&alice, 1)]);
         let (_, coinbase) = raw_transparent(&[coinbase_input], &[(&alice, 1)]);
         let (lasts, lasting) = raw_transaction(1, 3_428_143);
@@ -128,7 +134,7 @@ mod tests {
             (
                 "spends an unknown prevout",
                 &orphan,
-                Err(Refused::UnknownPrevout { txid: unknown.txid, vout: 3 }),
+                Err(Refused::UnknownPrevout { txid: TransactionId::from([2; 32]), vout: 3 }),
                 true,
             ),
             ("a coinbase", &coinbase, Err(Refused::Coinbase), false),

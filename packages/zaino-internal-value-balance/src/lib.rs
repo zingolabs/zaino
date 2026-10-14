@@ -7,8 +7,9 @@ pub use reader::ValueBalanceReader;
 pub use writer::{fold, FoldError, ValueBalanceIndexWriter};
 
 use zaino_persistence::{MapTable, SequenceTable, Tables, Width};
-use zaino_primitives::types::{Fee, OutPoint};
+use zaino_primitives::types::Fee;
 use zcash_protocol::value::{BalanceError, Zatoshis};
+use zcash_transparent::bundle::OutPoint;
 
 /// On-disk layout version
 pub const FORMAT: u16 = 1;
@@ -20,12 +21,21 @@ pub const TABLES: Tables = Tables::new(&[FEES], &[OUTPUTS]);
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(256 << 20).expect("256 MiB is non-zero");
 
+const OUTPOINT: usize = 32 + 4;
 const VALUE: usize = 8;
 const OUTPUTS: MapTable =
-    MapTable::new(0, "outputs", Width::fixed(OutPoint::LEN as u32), Width::fixed(VALUE as u32), 0)
+    MapTable::new(0, "outputs", Width::fixed(OUTPOINT as u32), Width::fixed(VALUE as u32), 0)
         .cache_writes()
         .deletes();
 const FEES: SequenceTable = SequenceTable::new(0, "fees", Width::Variable);
+
+/// `txid ‖ vout` big-endian
+fn encode_outpoint(outpoint: &OutPoint) -> [u8; OUTPOINT] {
+    let mut out = [0u8; OUTPOINT];
+    out[..32].copy_from_slice(outpoint.hash());
+    out[32..].copy_from_slice(&outpoint.n().to_be_bytes());
+    out
+}
 
 fn encode_value(value: Zatoshis) -> [u8; VALUE] {
     value.into_u64().to_be_bytes()
@@ -75,16 +85,14 @@ fn decode_fees(record: &[u8]) -> Option<Vec<Fee>> {
 
 #[cfg(test)]
 mod tests {
-    use zaino_primitives::types::TransactionId;
-
     use super::*;
 
-    /// `outputs` row as inserted: key = `OutPoint::encode()`, value BE; out-of-supply refused
+    /// `outputs` row as inserted: key = `encode_outpoint`, value BE; out-of-supply refused
     #[test]
     fn an_output_row_is_its_golden_bytes_and_a_value_past_supply_is_refused() {
-        let key = OutPoint { txid: TransactionId::from([0xab; 32]), vout: 0x0102_0304 };
+        let key = OutPoint::new([0xab; 32], 0x0102_0304);
         let value = Zatoshis::from_u64(0x0506_0708).expect("in supply");
-        let row = [&key.encode()[..], &encode_value(value)].concat();
+        let row = [&encode_outpoint(&key)[..], &encode_value(value)].concat();
 
         let golden = [
             vec![0xab; 32],

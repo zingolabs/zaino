@@ -2,9 +2,9 @@
 
 use zaino_chainview::UnspentOutputs;
 use zaino_persistence::DiskView;
-use zaino_primitives::types::OutPoint;
 use zaino_snapshot::Snapshots;
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 /// One snapshot load per ask: the UTXO set at the served tip (`None` = nothing served yet, or
 /// value-balance off)

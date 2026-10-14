@@ -4,12 +4,13 @@
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 use zcash_script::script::Code;
 use zcash_transparent::address::Script;
+use zcash_transparent::bundle::OutPoint;
 
 use super::sha256d;
 use crate::types::{
     CompactCiphertext, EphemeralKey, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    OutPoint, SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction,
-    TransactionId, TransparentData, TransparentOutput,
+    SaplingData, SaplingOutput, SaplingSpend, ShieldedPool, SproutData, Transaction, TransactionId,
+    TransparentData, TransparentOutput,
 };
 
 /// One block: coinbase in slot 0, then each `tx` / `raw_tx` in call order
@@ -182,7 +183,13 @@ impl TxBuilder {
             false => balances.iter().flat_map(|balance| balance.to_le_bytes()).collect(),
         };
         let sections: [(u8, Vec<u8>); 7] = [
-            (b's', self.spends.iter().flat_map(OutPoint::encode).collect()),
+            (
+                b's',
+                self.spends
+                    .iter()
+                    .flat_map(|at| [&at.hash()[..], &at.n().to_be_bytes()].concat())
+                    .collect(),
+            ),
             (b'p', self.pays.iter().flat_map(pay).collect()),
             (b'n', self.sapling_spends.iter().flat_map(|nf| <[u8; 32]>::from(*nf)).collect()),
             (b'o', self.sapling_outputs.iter().flat_map(|leaf| leaf.to_le_bytes()).collect()),
@@ -252,10 +259,6 @@ fn actions(
 /// `OP_DUP OP_HASH160 <hash> OP_EQUALVERIFY OP_CHECKSIG`
 pub fn p2pkh(hash: [u8; 20]) -> Script {
     Script(Code([&[0x76, 0xa9, 0x14][..], &hash, &[0x88, 0xac]].concat()))
-}
-
-pub fn outpoint(txid: [u8; 32], vout: u32) -> OutPoint {
-    OutPoint { txid: TransactionId::from(txid), vout }
 }
 
 fn commitment(leaf: u32) -> NoteCommitment {

@@ -1,7 +1,8 @@
 use zaino_primitives::sha256d;
-use zaino_primitives::testing::{h, outpoint, p2pkh};
+use zaino_primitives::testing::{h, p2pkh};
 use zaino_primitives::types::MerkleRoot;
 use zcash_protocol::value::Zatoshis;
+use zcash_transparent::bundle::OutPoint;
 
 use super::*;
 
@@ -141,8 +142,8 @@ async fn mempool_lists_heard_and_relayed_txs_until_mined_or_evicted() {
     chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&alice, 5_000)));
     let tip = chain.mine(|b| b.coinbase(|c| c.txid([0x02; 32]).pay(&alice, 5_000)));
     let validator = chain.validator(tip);
-    let (heard, heard_raw) = raw_transparent(&[outpoint([0x02; 32], 0)], &[(&alice, 3_000)]);
-    let (sent, sent_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
+    let (heard, heard_raw) = raw_transparent(&[OutPoint::new([0x02; 32], 0)], &[(&alice, 3_000)]);
+    let (sent, sent_raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &[(&alice, 4_000)]);
     let entry = |txid, zats, raw: &[u8]| MempoolListed {
         txid,
         fee: Zatoshis::from_u64(zats).expect("in supply"),
@@ -177,8 +178,8 @@ async fn sends_and_checks_judge_a_tx_on_its_tip() {
     let mut chain = MockChain::regtest();
     let tip = chain.mine(|b| b.coinbase(|c| c.txid([0x01; 32]).pay(&alice, 5_000)));
     let validator = chain.validator(tip);
-    let (spend, spend_raw) = raw_transparent(&[outpoint([0x01; 32], 0)], &[(&alice, 4_000)]);
-    let (_, unknown_raw) = raw_transparent(&[outpoint([0x09; 32], 0)], &[(&alice, 4_000)]);
+    let (spend, spend_raw) = raw_transparent(&[OutPoint::new([0x01; 32], 0)], &[(&alice, 4_000)]);
+    let (_, unknown_raw) = raw_transparent(&[OutPoint::new([0x09; 32], 0)], &[(&alice, 4_000)]);
 
     assert_eq!(validator.check_admission(spend_raw).await.expect("admissible"), spend);
     let listed = validator.get_poll_reading(false, &[]).await.expect("reachable").listing;

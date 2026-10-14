@@ -30,6 +30,7 @@ zaino-primitives.workspace = true
 zaino-source.workspace = true
 zaino-traffic.workspace = true
 zcash_protocol.workspace = true
+zcash_transparent.workspace = true
 
 [dev-dependencies]
 metrics-util = { version = "0.20", default-features = false, features = ["debugging"] }

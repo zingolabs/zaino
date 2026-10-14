@@ -12,6 +12,7 @@ const TXID: usize = 32;
 
 pub(crate) const RECEIVE_KEY: usize = AddressKey::LEN + 4 + TXID + 4;
 pub(crate) const RECEIVE_VALUE: usize = 8;
+pub(crate) const SPENT_KEY: usize = TXID + 4;
 pub(crate) const SPEND: usize = 4 + TXID;
 
 /// Standard form an output's 20 bytes came from
@@ -136,7 +137,15 @@ pub(crate) fn decode_receive(key: &[u8; RECEIVE_KEY], value: &[u8; RECEIVE_VALUE
     }
 }
 
-/// `height ‖ spender` (key = `OutPoint::encode`)
+/// `txid ‖ vout` big-endian (the spent output; a spend row's key)
+pub(crate) fn encode_spent_key(txid: [u8; TXID], vout: u32) -> [u8; SPENT_KEY] {
+    let mut out = [0u8; SPENT_KEY];
+    out[..TXID].copy_from_slice(&txid);
+    out[TXID..].copy_from_slice(&vout.to_be_bytes());
+    out
+}
+
+/// `height ‖ spender` (key = `encode_spent_key`)
 pub(crate) fn encode_spend(spend: &Spend) -> [u8; SPEND] {
     let mut out = [0u8; SPEND];
     out[..4].copy_from_slice(&spend.height.to_be_bytes());
@@ -236,6 +245,16 @@ mod tests {
         assert_eq!(key.as_slice(), golden_key, "hash ‖ kind ‖ height ‖ txid ‖ vout, big-endian");
         assert_eq!(value, [0, 0, 0, 0, 0, 0x12, 0xd6, 0x87], "zats big-endian");
         assert_eq!(decode_receive(&key, &value), receive);
+
+        let spent_key = [&[0x22; TXID][..], &[0x01, 0x02, 0x03, 0x04]].concat();
+        let ordered = encode_spent_key([0x22; TXID], 0x0102_0304)
+            < encode_spent_key([0x22; TXID], 0x0102_0305);
+        assert_eq!(
+            encode_spent_key([0x22; TXID], 0x0102_0304).as_slice(),
+            spent_key,
+            "txid ‖ vout"
+        );
+        assert!(ordered, "vout big-endian: byte order = output order");
 
         let spend = Spend { height: 900, spender: TransactionId::from([0x44; TXID]) };
         let golden = [&[0, 0, 0x03, 0x84][..], &[0x44; TXID]].concat();

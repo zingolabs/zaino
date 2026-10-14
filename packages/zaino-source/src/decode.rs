@@ -9,7 +9,7 @@ use std::io::{self, Cursor};
 use zaino_primitives::types::{
     Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError,
     ConsensusBranchId, DecodedHeader, EphemeralKey, HeaderBytes, HeaderError, Height,
-    HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, OutPoint, SaplingData,
+    HeightOverflow, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData,
     SaplingOutput, SaplingSpend, SproutData, Transaction, TransactionId, TransparentData,
     TransparentOutput,
 };
@@ -199,14 +199,7 @@ fn transparent(tx: &CompressedTransaction) -> Result<TransparentData, DecodeErro
     // coinbase input: null prevout, no value (protocol.pdf#coinbasetransactions §3.11)
     let inputs = match coinbase {
         true => Vec::new(),
-        false => bundle
-            .vin
-            .iter()
-            .map(|input| OutPoint {
-                txid: TransactionId::from(*input.prevout().hash()),
-                vout: input.prevout().n(),
-            })
-            .collect(),
+        false => bundle.vin.iter().map(|input| input.prevout().clone()).collect(),
     };
     let outputs = bundle
         .vout
