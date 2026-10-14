@@ -13,11 +13,11 @@ use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
 use zaino_source::{BlockchainInfo, NodeRelease, PeerInfo};
-use zaino_traffic::{Health, ValidatorId};
+use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 
-use crate::endpoints::{EndpointSet, ValidatorMetadata};
+use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::ports::Heard;
 use crate::snapshot::{ChainViewSnapshot, Sighting};
 use crate::telemetry;
@@ -25,7 +25,7 @@ use crate::telemetry;
 /// State before a fold's change (settle's baseline)
 struct Before {
     best: Option<BlockRef>,
-    readers: EndpointSet,
+    readers: TrustedValidatorSet,
 }
 
 impl Before {
@@ -69,7 +69,7 @@ pub(crate) struct Listing {
 /// One member's poll, as the fold takes it: its reading first, then its listing (bytes fetched
 /// between: holder facts never wait on them)
 #[derive(Debug, Clone)]
-pub(crate) enum EndpointReport {
+pub(crate) enum TrustedValidatorReport {
     /// `listed` = mempool read (its listing follows), else sightings retracted
     Read {
         reading: Reading,
@@ -98,7 +98,7 @@ pub(crate) struct ChainViewCore {
 }
 
 impl ChainViewCore {
-    pub(crate) fn new(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
+    pub(crate) fn new(endpoints: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
         let empty = ChainViewSnapshot::empty(endpoints, depth);
         Self {
             state: Mutex::new(empty.clone()),
@@ -122,7 +122,11 @@ impl ChainViewCore {
 
     /// One member's poll folded, published; → txids not admitted (listed, bytes
     /// nowhere: re-listed + re-fetched next poll, never lost)
-    pub(crate) fn apply(&self, endpoint: ValidatorId, report: EndpointReport) -> Vec<TxId> {
+    pub(crate) fn apply(
+        &self,
+        endpoint: TrustedValidatorId,
+        report: TrustedValidatorReport,
+    ) -> Vec<TxId> {
         self.fold(|state| {
             let mut touched: Vec<TxId> = Vec::new();
             let mut unadmitted: Vec<TxId> = Vec::new();
@@ -130,14 +134,14 @@ impl ChainViewCore {
                 return (Change::Unchanged, unadmitted);
             };
             match report {
-                EndpointReport::Read { reading, health, listed } => {
+                TrustedValidatorReport::Read { reading, health, listed } => {
                     meta.health = health;
                     read(meta, reading);
                     if !listed {
                         touched.extend(retract(&mut state.mempool, endpoint));
                     }
                 }
-                EndpointReport::Listed(listing) => {
+                TrustedValidatorReport::Listed(listing) => {
                     for txid in &listing.removed {
                         if let Some(sighting) = state.mempool.get_mut(txid) {
                             sighting.unsight(endpoint);
@@ -169,7 +173,7 @@ impl ChainViewCore {
                         touched.push(sighted.txid);
                     }
                 }
-                EndpointReport::Failed(health) => {
+                TrustedValidatorReport::Failed(health) => {
                     meta.health = health;
                     if health == Health::Down {
                         (meta.info, meta.held) = (None, None);
@@ -299,7 +303,7 @@ impl ChainViewCore {
             .iter()
             .enumerate()
             .filter(|(_, meta)| chain.as_deref().is_some_and(|chain| meta.holds(chain)));
-        state.held_by = holding.filter_map(|(at, _)| ValidatorId::new(at)).collect();
+        state.held_by = holding.filter_map(|(at, _)| TrustedValidatorId::new(at)).collect();
         for meta in state.endpoints.iter_mut() {
             meta.agreement = meta.agreement_with(chain.as_deref());
         }
@@ -364,7 +368,7 @@ impl std::fmt::Debug for ChainViewCore {
 }
 
 /// An answering poll: claim + held, clock estimate, peers (a failed peer read keeps the last)
-fn read(meta: &mut ValidatorMetadata, reading: Reading) {
+fn read(meta: &mut TrustedValidatorMeta, reading: Reading) {
     meta.held = reading.held;
     meta.info = Some(reading.info);
     meta.observed_at = Some(std::time::Instant::now());
@@ -378,7 +382,7 @@ fn read(meta: &mut ValidatorMetadata, reading: Reading) {
 }
 
 /// `endpoint`'s bit cleared from every sighting → the txids it held
-fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, endpoint: ValidatorId) -> Vec<TxId> {
+fn retract(mempool: &mut imbl::OrdMap<TxId, Sighting>, endpoint: TrustedValidatorId) -> Vec<TxId> {
     let held: Vec<TxId> = mempool
         .iter()
         .filter(|(_, sighting)| sighting.trusted().contains(endpoint))

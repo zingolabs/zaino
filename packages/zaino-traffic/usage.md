@@ -27,8 +27,8 @@ let (balancer, driver) = TrafficBalancer::new(trusted, Some(peers));
 tasks.spawn(driver.run(cancel));     // without it, asks pend and nobody is polled
 ```
 
-- `trusted[i]` is `ValidatorId(i)`: configured order, at most `ValidatorId::MAX` (64).
-- `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZcashGrpcClient` in production (one type per balancer: zainod's `validator_client`), `zaino_source::testing::MockValidator` in tests.
+- `trusted[i]` is `TrustedValidatorId(i)`: configured order, at most `TrustedValidatorId::MAX` (64).
+- `S: ChainDataSource` (`zaino-source`): `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient` in production (one type per balancer: zainod's `validator_client`), `zaino_source::testing::MockValidator` in tests.
 - `peers`: `Option<Peers>`, the p2p network's whole peer set as one member (`MemberId::Peers`,
   below every trusted tier); `None` = trusted only. Its transport (`PeerTransport`: `headers`,
   `block`) picks the peer itself and must check a block body against its header, blaming the
@@ -105,7 +105,7 @@ let checked = loop {
   consumer folds `Degraded` vs `Down` without the table).
   A consumer subscribing after the driver started marks the watch changed to read the poll
   already there.
-- `pushed(member, Push::Changed | Push::Link(up))`: wire `IndexerWatch::run`'s callbacks here; an
+- `pushed(member, Push::Changed | Push::Link(up))`: wire `ZebraIndexerWatch::run`'s callbacks here; an
   event polls within 200 ms.
 - `members()`: `watch` of the `MemberTable` (health, consecutive failures, bench, last reply's
   latency, in flight; trusted first in configured order, then the peer set) for `/statusz` and

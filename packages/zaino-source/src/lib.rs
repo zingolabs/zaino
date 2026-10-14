@@ -2,7 +2,7 @@
 //!
 //! - [`ChainDataSource`]: one port, each question with its own domain error, transport-agnostic
 //! - [`ZcashLegacyRpcClient`]: every question over JSON-RPC (zebrad or zcashd)
-//! - [`ZcashGrpcClient`]: blocks over zebrad's indexer gRPC, the rest over JSON-RPC
+//! - [`ZebraIndexerGrpcClient`]: blocks over zebrad's indexer gRPC, the rest over JSON-RPC
 //! - Both decode blocks once, from consensus bytes; which validator answers = `zaino-traffic`'s
 
 mod blockchain_info;
@@ -20,8 +20,8 @@ mod rpc;
 pub use blockchain_info::BlockchainInfo;
 pub use decode::{decode_block, decode_transaction, prepare_transaction, DecodeError, Prepared};
 pub use error::{FailureMode, NonDomainError, QueryError};
-pub use grpc_client::ZcashGrpcClient;
-pub use indexer::{Change, IndexerTls, IndexerWatch};
+pub use grpc_client::ZebraIndexerGrpcClient;
+pub use indexer::{Change, ZebraIndexerTls, ZebraIndexerWatch};
 pub use legacy_rpc::ZcashLegacyRpcClient;
 pub use node_release::{EndOfService, NodeRelease};
 pub use peer_info::PeerInfo;

@@ -35,7 +35,7 @@ pub fn assert_run(parent: Option<BlockRef>, blocks: &[&Block], out: &[BlockChang
 
 /// `height` at or below `store`'s staged tip (a restart resends from the lowest durable tip)
 pub fn held<S: Store>(store: &S, height: BlockHeight) -> bool {
-    Some(height) <= store.staged().tip().map(|tip| tip.height)
+    Some(height) <= store.applied().tip().map(|tip| tip.height)
 }
 
 /// `changes` into `store`, counted (`zaino_index_applied_{blocks,rows}_total`); time it took (an
@@ -73,8 +73,8 @@ pub struct IndexPublisher<V> {
 impl<V: View> IndexPublisher<V> {
     pub fn new<S: Store<View = V>>(store: &S) -> Self {
         let publisher = Self {
-            committed: watch::Sender::new(store.committed()),
-            applied: watch::Sender::new(store.committed().tip()),
+            committed: watch::Sender::new(store.durable()),
+            applied: watch::Sender::new(store.durable().tip()),
         };
         publisher.publish(store);
         publisher
@@ -86,12 +86,12 @@ impl<V: View> IndexPublisher<V> {
 
     /// `store`'s applied tip out, its committed view too once its tip moved (+ both as metrics)
     pub fn publish<S: Store<View = V>>(&self, store: &S) {
-        let (applied, durable) = (store.staged().tip(), store.committed().tip());
+        let (applied, durable) = (store.applied().tip(), store.durable().tip());
         let height = |tip: Option<BlockRef>| tip.map(|tip| tip.height);
         emit::index_tips(store.schema().kind.name(), height(applied), height(durable));
         self.applied.send_replace(applied);
         if self.committed.borrow().tip() != durable {
-            self.committed.send_replace(store.committed());
+            self.committed.send_replace(store.durable());
         }
     }
 }

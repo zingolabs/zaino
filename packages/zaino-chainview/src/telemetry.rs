@@ -6,9 +6,9 @@
 use std::collections::HashSet;
 
 use crate::config::{ECLIPSE_OUTBOUND_MAX, END_OF_SERVICE_WARN_BLOCKS, STALE_TIP_BLOCKS};
-use zaino_traffic::{Health, ValidatorId};
+use zaino_traffic::{Health, TrustedValidatorId};
 
-use crate::endpoints::{EndpointSet, ValidatorMetadata};
+use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::snapshot::Sighting;
 use crate::submit::Ended;
 
@@ -65,8 +65,8 @@ pub fn describe_metrics() {
 /// Raised conditions as of one fold (`zaino-snapshot` logs each edge)
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Alarms {
-    stale: EndpointSet,
-    ending: EndpointSet,
+    stale: TrustedValidatorSet,
+    ending: TrustedValidatorSet,
     partitioned: bool,
     eclipsed: bool,
     finality_paused: bool,
@@ -74,12 +74,12 @@ pub struct Alarms {
 
 impl Alarms {
     /// Live endpoints whose tip trails their own clock estimate by >= `STALE_TIP_BLOCKS`
-    pub fn stale(&self) -> EndpointSet {
+    pub fn stale(&self) -> TrustedValidatorSet {
         self.stale
     }
 
     /// Endpoints whose release halts within `END_OF_SERVICE_WARN_BLOCKS` of their tip
-    pub fn ending(&self) -> EndpointSet {
+    pub fn ending(&self) -> TrustedValidatorSet {
         self.ending
     }
 
@@ -101,7 +101,7 @@ impl Alarms {
 }
 
 /// Outbound peers per live endpoint that reported any (inbound addrs = ephemeral ports)
-pub(crate) fn outbound(endpoints: &imbl::Vector<ValidatorMetadata>) -> Vec<HashSet<&str>> {
+pub(crate) fn outbound(endpoints: &imbl::Vector<TrustedValidatorMeta>) -> Vec<HashSet<&str>> {
     endpoints
         .iter()
         .filter(|meta| meta.health == Health::Live)
@@ -120,13 +120,16 @@ pub(crate) fn shared_outbound_min(outbound: &[HashSet<&str>]) -> Option<usize> {
     pairs.min()
 }
 
-pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_paused: bool) -> Alarms {
+pub(crate) fn alarms(
+    endpoints: &imbl::Vector<TrustedValidatorMeta>,
+    finality_paused: bool,
+) -> Alarms {
     let stale = endpoints
         .iter()
         .enumerate()
         .filter(|(_, meta)| meta.health == Health::Live)
         .filter(|(_, meta)| meta.stale_blocks().is_some_and(|behind| behind >= STALE_TIP_BLOCKS))
-        .filter_map(|(index, _)| ValidatorId::new(index))
+        .filter_map(|(index, _)| TrustedValidatorId::new(index))
         .collect();
     let ending = endpoints
         .iter()
@@ -134,7 +137,7 @@ pub(crate) fn alarms(endpoints: &imbl::Vector<ValidatorMetadata>, finality_pause
         .filter(|(_, meta)| {
             meta.blocks_to_end_of_service().is_some_and(|left| left <= END_OF_SERVICE_WARN_BLOCKS)
         })
-        .filter_map(|(index, _)| ValidatorId::new(index))
+        .filter_map(|(index, _)| TrustedValidatorId::new(index))
         .collect();
     let outbound = outbound(endpoints);
     let union: HashSet<&str> = outbound.iter().flatten().copied().collect();
@@ -221,14 +224,14 @@ mod tests {
             ("one outbound peer for all", &[(Live, 10, 10, &["p1"], &[]), (Live, 10, 10, &["p1"], &[])], (&[], false, true)),
         ];
         for (case, endpoints, (stale, partitioned, eclipsed)) in cases {
-            let endpoints: imbl::Vector<ValidatorMetadata> = endpoints
+            let endpoints: imbl::Vector<TrustedValidatorMeta> = endpoints
                 .iter()
                 .enumerate()
                 .map(|(index, (state, tip, estimated, outbound, inbound))| {
                     let peer = |inbound: bool| {
                         move |addr: &&str| PeerInfo { addr: (*addr).to_owned(), inbound }
                     };
-                    let mut meta = ValidatorMetadata::new(format!("v{index}:8232"));
+                    let mut meta = TrustedValidatorMeta::new(format!("v{index}:8232"));
                     meta.health = *state;
                     meta.info = Some(BlockchainInfo {
                         tip: BlockRef { hash: BlockHash([0; 32]), height: h(*tip) },
@@ -243,8 +246,8 @@ mod tests {
                     meta
                 })
                 .collect();
-            let stale = EndpointSet::at(stale.iter().copied());
-            let ending = EndpointSet::default();
+            let stale = TrustedValidatorSet::at(stale.iter().copied());
+            let ending = TrustedValidatorSet::default();
             let expected = Alarms { stale, ending, partitioned, eclipsed, finality_paused: false };
             assert_eq!(alarms(&endpoints, false), expected, "{case}");
         }

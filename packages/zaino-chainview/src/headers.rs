@@ -36,7 +36,7 @@ use zaino_header_chain::{
 };
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockLinks, ChainDataSource, GetAtHeightError};
-use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, ValidatorId};
+use zaino_traffic::{Answered, HeaderAsk, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::{BlockHeight, H0};
 
 use crate::fold::ChainViewCore;
@@ -90,8 +90,8 @@ impl Member {
 /// - `Extend` = `member`'s heights `from..=to`, toward its `claim`
 #[derive(Debug, Clone, Copy)]
 enum Run {
-    Anchor { member: ValidatorId, at: BlockHeight },
-    Extend { member: ValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
+    Anchor { member: TrustedValidatorId, at: BlockHeight },
+    Extend { member: TrustedValidatorId, from: BlockHeight, to: BlockHeight, claim: BlockRef },
 }
 
 impl<S: ChainDataSource> HeaderSync<S> {
@@ -192,7 +192,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
             if member.forked == Some(claim) {
                 continue;
             }
-            let id = ValidatorId::new(at).expect("configured below ValidatorId::MAX");
+            let id = TrustedValidatorId::new(at).expect("configured below TrustedValidatorId::MAX");
             let anchor = claim.height.saturating_sub(chain.anchor_below());
             if chain.final_tip().is_none() || anchor > ceiling {
                 return Ok(Run::Anchor { member: id, at: anchor });
@@ -223,7 +223,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     /// `member`'s headers at `heights`, decoded; `Err` = its fetch state (stalled, reported)
     async fn headers(
         &self,
-        member: ValidatorId,
+        member: TrustedValidatorId,
         heights: Vec<BlockHeight>,
     ) -> Result<Vec<Header>, Member> {
         let address = self.core.current().endpoints()[member.get()].address.clone();
@@ -253,7 +253,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     }
 
     /// `member`'s header at `at` = the final tip, everything held before dropped
-    async fn anchored(&mut self, member: ValidatorId, at: BlockHeight) -> Member {
+    async fn anchored(&mut self, member: TrustedValidatorId, at: BlockHeight) -> Member {
         let header = match self.headers(member, vec![at]).await {
             Ok(mut headers) => headers.remove(0),
             Err(after) => return after,
@@ -267,7 +267,7 @@ impl<S: ChainDataSource> HeaderSync<S> {
     /// `member`'s heights `from..=to` inserted in order, the last vouched, then finality
     async fn extended(
         &mut self,
-        member: ValidatorId,
+        member: TrustedValidatorId,
         from: BlockHeight,
         to: BlockHeight,
         claim: BlockRef,

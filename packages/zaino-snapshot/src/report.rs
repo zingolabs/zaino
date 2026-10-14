@@ -6,14 +6,16 @@
 
 use serde::Serialize;
 use tracing::{info, warn};
-use zaino_chainview::{Agreement, ChainViewSnapshot, EndpointSet, Spread, ValidatorMetadata};
+use zaino_chainview::{
+    Agreement, ChainViewSnapshot, Spread, TrustedValidatorMeta, TrustedValidatorSet,
+};
 
 use zaino_persistence::{IndexKind, View};
 use zaino_primitives::types::BlockRef;
 use zaino_sync::SyncProgress;
-use zaino_traffic::{Health, MemberId, MemberTable, ValidatorId};
+use zaino_traffic::{Health, MemberId, MemberTable, TrustedValidatorId};
 
-use crate::snapshot::Snapshot;
+use crate::snapshot::GrpcSnapshot;
 
 mod names {
     pub(super) const BEST_TIP: &str = "zaino.best_tip";
@@ -201,14 +203,14 @@ impl Report {
     /// - `members` = the traffic balancer's table (joined on `MemberId::Trusted(position)`)
     /// - `enabled` = config's indexes (listed before the NFS's first publish)
     pub fn of<V: View>(
-        snap: &Snapshot<V>,
+        snap: &GrpcSnapshot<V>,
         progress: &SyncProgress,
         members: &MemberTable,
         enabled: &[IndexKind],
     ) -> Self {
         let (tips, view) = (snap.tips(), snap.view());
         let endpoints = view.endpoints();
-        let named = |set: EndpointSet| -> Vec<String> {
+        let named = |set: TrustedValidatorSet| -> Vec<String> {
             let at = set.positions().filter_map(|position| endpoints.get(position));
             at.map(|meta| meta.address.clone()).collect()
         };
@@ -249,8 +251,12 @@ impl Report {
 }
 
 /// Chain view facts at `position` ⨝ its `members` row
-fn validator(position: usize, meta: &ValidatorMetadata, members: &MemberTable) -> ValidatorReport {
-    let member = ValidatorId::new(position)
+fn validator(
+    position: usize,
+    meta: &TrustedValidatorMeta,
+    members: &MemberTable,
+) -> ValidatorReport {
+    let member = TrustedValidatorId::new(position)
         .and_then(|id| members.rows.iter().find(|row| row.id == MemberId::Trusted(id)));
     ValidatorReport {
         address: meta.address.clone(),
@@ -314,7 +320,7 @@ const ECLIPSED: &str = "Live validators reach few distinct outbound peers (possi
 const FINALITY_PAUSED: &str = "Finality paused: no trusted validator holds the boundary";
 
 /// One sentence per raised alarm (`/statusz` `notes`), in `AlarmsReport` order
-pub fn notes<V>(snap: &Snapshot<V>) -> Vec<String> {
+pub fn notes<V>(snap: &GrpcSnapshot<V>) -> Vec<String> {
     let alarms = snap.view().alarms();
     let counted = |count: usize, one: &str, many: &str| match count {
         0 => None,
@@ -397,7 +403,7 @@ pub fn describe_metrics() {
 }
 
 /// Every gauge from `snap` + `progress`, set at scrape (decision 3: fresh, no mirror tasks)
-pub fn emit_gauges<V: View>(snap: &Snapshot<V>, progress: &SyncProgress) {
+pub fn emit_gauges<V: View>(snap: &GrpcSnapshot<V>, progress: &SyncProgress) {
     let tips = snap.tips();
     if let Some(best) = tips.best {
         metrics::gauge!(names::BEST_TIP).set(f64::from(u32::from(best.height)));
@@ -470,7 +476,7 @@ fn chain_view_gauges(view: &ChainViewSnapshot) {
 }
 
 /// Edge logs between two consecutive publishes: `synced`, then each alarm that rose or cleared
-pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>) {
+pub(crate) fn transitions<V>(prev: &GrpcSnapshot<V>, next: &GrpcSnapshot<V>) {
     let height = next.tips().served.map_or(0, |tip| u32::from(tip.height));
     match (prev.tips().synced, next.tips().synced) {
         (false, true) => info!(height, "Serving the verified tip"),
@@ -483,7 +489,7 @@ pub(crate) fn transitions<V>(prev: &Snapshot<V>, next: &Snapshot<V>) {
 fn alarm_edges(prev: &ChainViewSnapshot, next: &ChainViewSnapshot) {
     let (was, now) = (prev.alarms(), next.alarms());
     for (position, meta) in next.endpoints().iter().enumerate() {
-        let Some(index) = ValidatorId::new(position) else { continue };
+        let Some(index) = TrustedValidatorId::new(position) else { continue };
         let tip = meta.tip().map(|tip| u32::from(tip.height));
         let behind = meta.stale_blocks();
         match (was.stale().contains(index), now.stale().contains(index)) {

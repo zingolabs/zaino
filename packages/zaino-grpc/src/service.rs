@@ -2,7 +2,7 @@
 //!
 //! - By hand, not tonic's generated trait (decoded messages only: stored gRPC-framed records
 //!   would be decoded to be re-encoded; usage.md "Stored bytes on the wire")
-//! - one global [`Snapshot`](zaino_snapshot::Snapshot) per request or stream (G1), pinned for
+//! - one global [`GrpcSnapshot`](zaino_snapshot::GrpcSnapshot) per request or stream (G1), pinned for
 //!   its life: no height named = its served tip; a height named = `At::answers_through`
 //! - `Unavailable` (nothing served, no chain, no holder) = `UNAVAILABLE`, its message
 //! - a row whose index `Routes::indexes` lacks = `UNIMPLEMENTED`, naming the index
@@ -19,7 +19,7 @@ use futures::future::BoxFuture;
 use http::{Request, Response};
 use tonic::{body::Body, Status};
 use zaino_chainview::ChainView;
-use zaino_persistence::{CommittedView, IndexKind};
+use zaino_persistence::{DurableView, IndexKind};
 use zaino_snapshot::{Snapshots, Unavailable};
 use zaino_source::ChainDataSource;
 use zaino_traffic::TrafficBalancer;
@@ -198,7 +198,7 @@ impl<S: ChainDataSource, V> Clone for Dispatch<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: CommittedView> Dispatch<S, V> {
+impl<S: ChainDataSource, V: DurableView> Dispatch<S, V> {
     pub(crate) fn new(limits: &GrpcLimits) -> Self {
         let (reads, silent_timeout) = (ReadLanes::new(limits), limits.silent_timeout);
         let routed = OnceLock::new();
@@ -229,7 +229,7 @@ impl<S: ChainDataSource, V> Routing<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
+impl<S: ChainDataSource, V: DurableView> Wired<S, V> {
     /// One request's response: every refusal folded into its status here, nowhere else
     async fn answer<B>(&self, method: Option<Method>, path: &str, body: B) -> Response<Body>
     where
@@ -248,7 +248,7 @@ impl<S: ChainDataSource, V: CommittedView> Wired<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: CommittedView> Routed<S, V> {
+impl<S: ChainDataSource, V: DurableView> Routed<S, V> {
     /// The registry's handler column: one arm per [`Method`], off one snapshot
     async fn handle<B>(
         &self,
@@ -333,7 +333,7 @@ fn disabled(method: Method, index: IndexKind) -> Status {
 impl<S, V, ReqBody> tower::Service<Request<ReqBody>> for Dispatch<S, V>
 where
     S: ChainDataSource,
-    V: CommittedView,
+    V: DurableView,
     ReqBody: http_body::Body + Send + 'static,
     ReqBody::Data: Send,
     ReqBody::Error: std::fmt::Display,
@@ -441,7 +441,7 @@ mod tests {
         use http::HeaderMap;
         use prost::Message as _;
         use tower::Service as _;
-        use zaino_chainview::EndpointSet;
+        use zaino_chainview::TrustedValidatorSet;
         use zaino_proto::frame::FRAME_HEADER;
         use zaino_proto::proto::compact_formats;
         use zaino_proto::proto::service;
@@ -457,7 +457,7 @@ mod tests {
         let txid = zaino_source::decode_transaction(&raw).expect("a mainnet tx").txid;
         let ours = [(txid, bytes::Bytes::from(raw.clone()))];
         let two = chain.at(h(2));
-        let snapshots = snapshot_held(&chain, two, views, EndpointSet::at([0]), &ours);
+        let snapshots = snapshot_held(&chain, two, views, TrustedValidatorSet::at([0]), &ours);
         let mut router = dispatch(Routes { snapshots, ..routes() });
         let mut call = |method: Method, message: Vec<u8>| {
             let response = router.call(framed_request(method, message.into()));

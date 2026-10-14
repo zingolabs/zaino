@@ -23,7 +23,7 @@ use crate::{
 /// Committed view + its store's buffer, borrowed ([`Store::staged`](crate::Store::staged))
 ///
 /// - borrow = none held across `apply` (compile error, never a buffer copy)
-pub type StagedView<'a, V> = OverlayView<V, &'a WriteBuffer>;
+pub type AppliedView<'a, V> = OverlayView<V, &'a WriteBuffer>;
 
 #[derive(Debug, Clone)]
 pub struct WriteBuffer {

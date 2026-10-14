@@ -1,8 +1,8 @@
-//! [`Publisher`]: the latest NFS publish + the latest chain view → one stored [`Snapshot`]
+//! [`Publisher`]: the latest NFS publish + the latest chain view → one stored [`GrpcSnapshot`]
 //!
 //! ```text
 //!  indexed.changed() ─┐                        ┌─▶ served moved? new epoch : arrivals appended
-//!  view published ────┼─▶ compose(prev, both) ─┼─▶ ArcSwap::store(Snapshot { seq + 1, .. })
+//!  view published ────┼─▶ compose(prev, both) ─┼─▶ ArcSwap::store(GrpcSnapshot { seq + 1, .. })
 //!  cancel ────────────┘                        ├─▶ old epoch sealed (after the store: G5)
 //!                                              └─▶ transitions(prev, next)
 //! ```
@@ -22,7 +22,7 @@ use zaino_primitives::types::ReorgDepth;
 use crate::compose::compose;
 use crate::feed::{nonfinalized_txids, Feed};
 use crate::report::transitions;
-use crate::snapshot::Snapshot;
+use crate::snapshot::GrpcSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -32,7 +32,7 @@ pub enum SnapshotError {
 
 /// Reader's end: one load per request or stream, never `None` (seq 0 stored at `new`)
 pub struct Snapshots<V> {
-    current: Arc<ArcSwap<Snapshot<V>>>,
+    current: Arc<ArcSwap<GrpcSnapshot<V>>>,
     changed: watch::Receiver<()>,
 }
 
@@ -43,7 +43,7 @@ impl<V> Clone for Snapshots<V> {
 }
 
 impl<V> Snapshots<V> {
-    pub fn load(&self) -> Arc<Snapshot<V>> {
+    pub fn load(&self) -> Arc<GrpcSnapshot<V>> {
         self.current.load_full()
     }
 
@@ -66,7 +66,7 @@ impl<V> Snapshots<V> {
 /// One writer: the stored snapshot + the tails' wake
 pub(crate) struct Core<V> {
     depth: ReorgDepth,
-    current: Arc<ArcSwap<Snapshot<V>>>,
+    current: Arc<ArcSwap<GrpcSnapshot<V>>>,
     changed: watch::Sender<()>,
     wake: watch::Sender<()>,
 }
@@ -82,7 +82,7 @@ impl<V> Core<V> {
         let tips = compose(false, indexed.as_deref(), &view, depth);
         let mined = nonfinalized_txids(indexed.as_deref());
         let feed = Feed::open(view.arrivals(None), mined, wake.subscribe());
-        let first = Snapshot { seq: 0, tips, indexed, view, feed };
+        let first = GrpcSnapshot { seq: 0, tips, indexed, view, feed };
         let current = Arc::new(ArcSwap::from_pointee(first));
         Self { depth, current, changed: watch::Sender::new(()), wake }
     }
@@ -108,7 +108,7 @@ impl<V> Core<V> {
                 prev.feed.clone()
             }
         };
-        let next = Arc::new(Snapshot { seq: prev.seq + 1, tips, indexed, view, feed });
+        let next = Arc::new(GrpcSnapshot { seq: prev.seq + 1, tips, indexed, view, feed });
         self.current.store(Arc::clone(&next));
         if moved {
             prev.feed.seal();

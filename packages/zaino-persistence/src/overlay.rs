@@ -16,7 +16,7 @@ use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::port::{
-    table_slot, BlockChanges, CommittedView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
+    table_slot, BlockChanges, DurableView, MapId, MapRead, Schema, SequenceId, SequenceRead, View,
 };
 
 /// Index's data above a durable tip, as of one block (clone = O(tables) pointer copies)
@@ -304,7 +304,7 @@ impl<V: View, A: Uncommitted> fmt::Debug for OverlayView<V, A> {
     }
 }
 
-impl<V: CommittedView> CommittedView for OverlayView<V, Overlay> {}
+impl<V: DurableView> DurableView for OverlayView<V, Overlay> {}
 
 impl<V: SequenceRead, A: Uncommitted + Send + Sync> SequenceRead for OverlayView<V, A> {
     fn len(&self, table: SequenceId) -> u64 {

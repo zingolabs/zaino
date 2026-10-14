@@ -15,12 +15,12 @@ use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
-use zaino_traffic::{Health, ValidatorId};
+use zaino_traffic::{Health, TrustedValidatorId};
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::FINALITY_STALL;
-use crate::endpoints::{EndpointSet, ValidatorMetadata};
+use crate::endpoints::{TrustedValidatorMeta, TrustedValidatorSet};
 use crate::listings::Listings;
 use crate::telemetry::{self, Alarms};
 
@@ -101,7 +101,7 @@ pub struct Spread {
 /// - always listed (trusted or quorum) or ours: a fold drops one that is neither before publishing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Sighting {
-    trusted: EndpointSet,
+    trusted: TrustedValidatorSet,
     quorum: bool,
     ours: bool,
     raw: Bytes,
@@ -116,7 +116,7 @@ impl Sighting {
         let timeline =
             Timeline { first_seen: Instant::now(), first_trusted: None, all_trusted: None };
         Self {
-            trusted: EndpointSet::default(),
+            trusted: TrustedValidatorSet::default(),
             quorum: false,
             ours,
             raw,
@@ -135,7 +135,7 @@ impl Sighting {
     }
 
     /// Records `all_trusted` the first time `readers` (non-empty) all list it; `true` = now
-    pub(crate) fn reached_all(&mut self, readers: EndpointSet) -> bool {
+    pub(crate) fn reached_all(&mut self, readers: TrustedValidatorSet) -> bool {
         let everywhere = !readers.is_empty() && self.trusted.covers(readers);
         let first = everywhere && self.timeline.all_trusted.is_none();
         if first {
@@ -145,7 +145,7 @@ impl Sighting {
     }
 
     /// `listers` = fresh peers listing it, of `polled`
-    fn spread(&self, readers: EndpointSet, listers: usize, polled: usize) -> Spread {
+    fn spread(&self, readers: TrustedValidatorSet, listers: usize, polled: usize) -> Spread {
         Spread {
             peers: Count { seen: listers, of: polled },
             trusted: Count { seen: self.trusted.count(), of: readers.count() },
@@ -171,7 +171,7 @@ impl Sighting {
     }
 
     /// Trusted validators listing it now
-    pub(crate) fn trusted(&self) -> EndpointSet {
+    pub(crate) fn trusted(&self) -> TrustedValidatorSet {
         self.trusted
     }
 
@@ -195,12 +195,12 @@ impl Sighting {
         std::mem::replace(&mut self.quorum, quorum) != quorum
     }
 
-    pub(crate) fn sight(&mut self, endpoint: ValidatorId) {
+    pub(crate) fn sight(&mut self, endpoint: TrustedValidatorId) {
         self.trusted.insert(endpoint);
         self.timeline.first_trusted.get_or_insert_with(Instant::now);
     }
 
-    pub(crate) fn unsight(&mut self, endpoint: ValidatorId) {
+    pub(crate) fn unsight(&mut self, endpoint: TrustedValidatorId) {
         self.trusted.remove(endpoint);
     }
 
@@ -217,9 +217,9 @@ pub struct ChainViewSnapshot {
     pub(crate) chain: Option<Arc<VerifiedChain>>,
     pub(crate) depth: ReorgDepth,
     pub(crate) owed_since: Option<Instant>,
-    pub(crate) held_by: EndpointSet,
+    pub(crate) held_by: TrustedValidatorSet,
     pub(crate) mempool: OrdMap<TxId, Sighting>,
-    pub(crate) endpoints: Vector<ValidatorMetadata>,
+    pub(crate) endpoints: Vector<TrustedValidatorMeta>,
     pub(crate) alarms: Alarms,
     pub(crate) peers_live: OrdSet<SocketAddr>,
     pub(crate) peers_carrying: OrdMap<SocketAddr, BlockHash>,
@@ -227,12 +227,12 @@ pub struct ChainViewSnapshot {
 }
 
 impl ChainViewSnapshot {
-    pub(crate) fn empty(endpoints: Vector<ValidatorMetadata>, depth: ReorgDepth) -> Self {
+    pub(crate) fn empty(endpoints: Vector<TrustedValidatorMeta>, depth: ReorgDepth) -> Self {
         Self {
             chain: None,
             depth,
             owed_since: None,
-            held_by: EndpointSet::default(),
+            held_by: TrustedValidatorSet::default(),
             mempool: OrdMap::new(),
             endpoints,
             alarms: Alarms::default(),
@@ -272,16 +272,16 @@ impl ChainViewSnapshot {
     #[cfg(any(test, feature = "testing"))]
     pub fn fixed(
         chain: Option<Arc<VerifiedChain>>,
-        held_by: EndpointSet,
+        held_by: TrustedValidatorSet,
         addresses: &[&str],
         ours: &[(TxId, Bytes)],
     ) -> Self {
         use zaino_source::BlockchainInfo;
 
-        let endpoints = addresses.iter().map(|at| ValidatorMetadata::new((*at).to_owned()));
+        let endpoints = addresses.iter().map(|at| TrustedValidatorMeta::new((*at).to_owned()));
         let mut view = Self::empty(endpoints.collect(), ReorgDepth::CONSENSUS);
         view.chain = chain;
-        view.held_by = view.best().map_or_else(EndpointSet::default, |_| held_by);
+        view.held_by = view.best().map_or_else(TrustedValidatorSet::default, |_| held_by);
         if let Some(best) = view.best() {
             let info = BlockchainInfo {
                 tip: best,
@@ -323,7 +323,7 @@ impl ChainViewSnapshot {
     #[cfg(any(test, feature = "testing"))]
     pub fn ahead(mut self, at: usize, by: u32, read: bool) -> Self {
         let best = self.best().expect("ahead of a verified best");
-        let id = ValidatorId::new(at).expect("a small position");
+        let id = TrustedValidatorId::new(at).expect("a small position");
         assert!(self.held_by.contains(id), "{at}: not a holder");
         let meta = self.endpoints.get_mut(at).expect("a holder = a configured endpoint");
         let info = meta.info.as_mut().expect("a holder answered");
@@ -346,7 +346,7 @@ impl ChainViewSnapshot {
 
     /// Answering validators (`Live` or catching up) whose last poll holds the verified best block
     /// (empty = no chain yet)
-    pub fn held_by(&self) -> EndpointSet {
+    pub fn held_by(&self) -> TrustedValidatorSet {
         self.held_by
     }
 
@@ -379,7 +379,7 @@ impl ChainViewSnapshot {
     }
 
     /// Per-endpoint metadata, in configured order
-    pub fn endpoints(&self) -> &Vector<ValidatorMetadata> {
+    pub fn endpoints(&self) -> &Vector<TrustedValidatorMeta> {
         &self.endpoints
     }
 
@@ -395,12 +395,12 @@ impl ChainViewSnapshot {
     }
 
     /// Trusted validators whose mempool is read now (`Live`: catching-up and down ones list none)
-    pub fn mempool_readers(&self) -> EndpointSet {
+    pub fn mempool_readers(&self) -> TrustedValidatorSet {
         self.endpoints
             .iter()
             .enumerate()
             .filter(|(_, meta)| meta.health == Health::Live)
-            .filter_map(|(position, _)| ValidatorId::new(position))
+            .filter_map(|(position, _)| TrustedValidatorId::new(position))
             .collect()
     }
 

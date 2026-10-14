@@ -20,12 +20,12 @@ use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
 };
-use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, ValidatorId};
+use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::CATCHING_UP_WARN_INTERVAL;
-use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
+use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 
 /// Folds every trusted member's observations into the view; spawn [`run`](Self::run)
 pub struct ObservationFold<S> {
@@ -38,7 +38,8 @@ impl<S: ChainDataSource> ObservationFold<S> {
     /// Until `cancel`: each member's latest poll, as it lands (members independent)
     pub async fn run(self, cancel: CancellationToken) {
         let members = self.addresses.iter().enumerate().map(|(index, address)| {
-            let member = ValidatorId::new(index).expect("configured below ValidatorId::MAX");
+            let member =
+                TrustedValidatorId::new(index).expect("configured below TrustedValidatorId::MAX");
             let folding = Member {
                 member,
                 address,
@@ -56,7 +57,7 @@ impl<S: ChainDataSource> ObservationFold<S> {
 
 /// `listed` = its last listing as admitted (the diff's left side); `health` = as last folded
 struct Member<'a, S> {
-    member: ValidatorId,
+    member: TrustedValidatorId,
     address: &'a str,
     core: &'a ChainViewCore,
     balancer: &'a TrafficBalancer<S>,
@@ -91,13 +92,13 @@ impl<S: ChainDataSource> Member<'_, S> {
         let health = observation.health;
         match listing {
             Ok(listing) => {
-                let report = EndpointReport::Read { reading, health, listed: true };
+                let report = TrustedValidatorReport::Read { reading, health, listed: true };
                 self.core.apply(self.member, report);
                 self.listed(listing).await;
             }
             Err(_) => {
                 self.catching_up(&reading);
-                let report = EndpointReport::Read { reading, health, listed: false };
+                let report = TrustedValidatorReport::Read { reading, health, listed: false };
                 self.core.apply(self.member, report);
                 self.listed.clear();
             }
@@ -138,7 +139,7 @@ impl<S: ChainDataSource> Member<'_, S> {
             }
         }
         let listing = Listing { added, removed };
-        for txid in self.core.apply(self.member, EndpointReport::Listed(listing)) {
+        for txid in self.core.apply(self.member, TrustedValidatorReport::Listed(listing)) {
             admitted.remove(&txid);
         }
         self.live(admitted.len());
@@ -170,12 +171,12 @@ impl<S: ChainDataSource> Member<'_, S> {
                 if self.health != Health::Down {
                     warn!(endpoint = self.address, %cause, "Validator down, holds no tip");
                 }
-                self.core.apply(self.member, EndpointReport::Failed(health));
+                self.core.apply(self.member, TrustedValidatorReport::Failed(health));
                 self.listed.clear();
             }
             _ => {
                 warn!(endpoint = self.address, %cause, "Validator poll failed");
-                self.core.apply(self.member, EndpointReport::Failed(health));
+                self.core.apply(self.member, TrustedValidatorReport::Failed(health));
             }
         }
         self.health = health;

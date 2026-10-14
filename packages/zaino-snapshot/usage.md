@@ -2,7 +2,7 @@
 
 One value for everything Zaino serves ([architecture §8](../../docs/architecture.md#8-serving-one-snapshot)): the chain view's
 latest, the NFS's latest and a mempool feed keyed to the served tip, published together as one
-`Arc<Snapshot>`. Every read of chain, index, mempool or validator state, by a route, a probe, a
+`Arc<GrpcSnapshot>`. Every read of chain, index, mempool or validator state, by a route, a probe, a
 scrape or a log line, loads one and asks it everything.
 
 ## Wiring: `Publisher`
@@ -22,7 +22,7 @@ tasks.spawn(publisher.run(cancel));                    // Err(IndexedGone): the 
 - The chain is the chain view's (`ChainViewSnapshot::chain()`): `best`, `final_tip`, `held_by`
   and `synced` are judged under it; the NFS's own chain stays inside its `at()`.
 
-## Readers: `Snapshots` → `Snapshot`
+## Readers: `Snapshots` → `GrpcSnapshot`
 
 ```rust,ignore
 let snap = snapshots.load();                           // one atomic load, never None: pin it
@@ -115,7 +115,7 @@ emit_gauges(&snapshots.load(), &nfs_progress);          // per scrape, then rend
 
 | ID | Invariant | Where |
 | --- | --- | --- |
-| G1 | a request or stream reads one `Snapshot` (routes get `&Snapshot` / `&At`, never the handle) | types; route tests |
+| G1 | a request or stream reads one `GrpcSnapshot` (routes get `&GrpcSnapshot` / `&At`, never the handle) | types; route tests |
 | G2 | `seq` + 1 per publish; `tips` = f(that publish's inputs only) | `compose::check`; model |
 | G3 | `best`, `final_tip`, `held_by` = `chain()`'s; `served` = the NFS's | `compose::check`; model |
 | G4 | `synced` opens only at served == best with no validator claiming past it; stays only on best and ≤ depth behind | `compose::check`; model |

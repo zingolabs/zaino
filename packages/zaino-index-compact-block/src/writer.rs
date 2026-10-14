@@ -27,7 +27,7 @@ pub struct CompactBlockIndexWriter<S: Store> {
 impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES))
     pub fn new(store: S) -> Self {
-        let view = store.committed();
+        let view = store.durable();
         let held = view.tip().map_or(0, |tip| position(tip.height) + 1);
         assert_eq!(view.sequence(BLOCKS).len(), held, "{NAME}: one record per committed height");
         let publisher = IndexPublisher::new(&store);
@@ -56,12 +56,12 @@ impl<S: Store<View: SequenceRead>> CompactBlockIndexWriter<S> {
                 for ((height, block), fees) in run.blocks.iter().zip(&paid) {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
-                        let parent = CompactBlockReader::new(store.staged());
+                        let parent = CompactBlockReader::new(store.applied());
                         fold(&parent, block, fees, &mut changes);
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -168,7 +168,7 @@ mod tests {
         let fees = |block: &Block| chain.fees(block.header().hash);
         let folded = |store: &DiskStore, block: &Block| {
             let mut changes = store.changes(block.at());
-            let parent = CompactBlockReader::new(store.staged());
+            let parent = CompactBlockReader::new(store.applied());
             fold(&parent, block, &fees(block), &mut changes);
             changes
         };
@@ -185,7 +185,7 @@ mod tests {
             let expected = encode_compact_block(block, &fees(block), &after);
             assert_eq!(records, [&expected[..]], "{at:?}: one record, running sizes");
             through_three.apply(changes);
-            assert_eq!(CompactBlockReader::new(through_three.staged()).tip_sizes(), after);
+            assert_eq!(CompactBlockReader::new(through_three.applied()).tip_sizes(), after);
         }
     }
 
@@ -209,7 +209,7 @@ mod tests {
 
         /// `step` behind its block's fees (as value-balance sends them)
         async fn send(&self, step: Step<Block>) {
-            let (Step::Apply { height, .. } | Step::Finalized { height, .. }) = step else {
+            let (Step::Apply { height, .. } | Step::FinalizedTip { height, .. }) = step else {
                 panic!("Shutdown = `stop`");
             };
             let fees = Arc::new(self.fees[position(height) as usize].clone());
@@ -420,10 +420,10 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
-            let reader = CompactBlockReader::new(store.committed());
+            let reader = CompactBlockReader::new(store.durable());
             let served: Vec<_> = (0..count as u32).map(|n| reader.block(h(n))).collect();
             assert_eq!(served, records[..count], "{label}: byte-identical records");
 

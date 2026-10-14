@@ -44,11 +44,11 @@ impl<S: Store<View: MapRead>> TransparentAddressIndexWriter<S> {
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
-                        fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
+                        fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -145,10 +145,10 @@ mod tests {
 
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
-        fold(&TransparentAddressReader::new(store.staged()), &blocks[0], &mut genesis);
+        fold(&TransparentAddressReader::new(store.applied()), &blocks[0], &mut genesis);
         store.apply(genesis);
         let mut changes = store.changes(blocks[1].at());
-        fold(&TransparentAddressReader::new(store.staged()), &blocks[1], &mut changes);
+        fold(&TransparentAddressReader::new(store.applied()), &blocks[1], &mut changes);
 
         let spender = TxId::from_bytes([0x20; 32]);
         let spend = encode_spend(&Spend { height: 1, spender });
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(receives, vec![(&key[..], &value[..])], "receives row");
 
         store.apply(changes);
-        let read = TransparentAddressReader::new(store.staged());
+        let read = TransparentAddressReader::new(store.applied());
         let unspent =
             read.unspent(&[alice, bob, AddressKey::opaque()], 0, usize::MAX).expect("rows");
         let values: Vec<Vec<(u32, u64)>> = unspent
@@ -224,23 +224,23 @@ mod tests {
             let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
             // one block per commit: blocks held = commits recovered
-            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as u8 + 1);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as u8 + 1);
             let acked = [state.tag, (state.tag + 1).min(10)];
             assert!(acked.contains(&u64::from(count)), "{label}: recovered {count}");
-            assert_eq!(observed(store.committed()), expected(count), "{label}");
+            assert_eq!(observed(store.durable()), expected(count), "{label}");
 
             let writer = start(store);
             writer.send(step(&blocks[usize::from(count)])).await;
             writer.stop().await.unwrap_or_else(|error| panic!("{label}: {error}"));
-            let after = observed(open(&state.fs, &SCHEMA, NonZeroUsize::MAX).committed());
+            let after = observed(open(&state.fs, &SCHEMA, NonZeroUsize::MAX).durable());
             assert_eq!(after, expected(count + 1), "{label}: next after recovery");
         }
     }
 
     /// Receive in one segment, its spend in the next, queried across both, after restarts
     ///
-    /// - 0, 1 (`Finalized`: committed there), then 2 (`Finalized`)
-    /// - restart: 1 and 2 resent (held: skipped), then 3 (`Finalized`)
+    /// - 0, 1 (`FinalizedTip`: committed there), then 2 (`FinalizedTip`)
+    /// - restart: 1 and 2 resent (held: skipped), then 3 (`FinalizedTip`)
     #[tokio::test]
     async fn a_spend_in_a_later_segment_retires_a_utxo_and_a_restart_skips_what_it_holds() {
         let fs = SimFs::new();

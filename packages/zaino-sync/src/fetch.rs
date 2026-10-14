@@ -1,7 +1,7 @@
 //! One body per wanted block, from whichever member the balancer picks
 //!
 //! - By hash (NFS; peers or trusted): hash + merkle root vs the verified header + coinbase height
-//! - By height (FinalFollower, trusted members only, batched): coinbase height alone; body trusted
+//! - By height (FinalizedFollower, trusted members only, batched): coinbase height alone; body trusted
 //!   (linkage = the follower's, in delivery order)
 //! - Misanswer → [`TrafficBalancer::report`] (sender benched) + asked again; who, hedges, retries =
 //!   `zaino-traffic`'s

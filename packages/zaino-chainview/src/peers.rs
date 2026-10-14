@@ -1,7 +1,7 @@
 //! Peers' block `inv`s into the view (which chain each live peer carries: peer finality)
 //!
 //! ```text
-//!   ValidatorP2pSource::heard ─▶ batch ─(each PEER_FOLD)─▶ fold: live peer → its latest block
+//!   PeerSource::heard ─▶ batch ─(each PEER_FOLD)─▶ fold: live peer → its latest block
 //! ```
 //!
 //! - transaction `inv`s never reach the view: mempool membership = each peer's listing
@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use crate::fold::ChainViewCore;
-use crate::ports::{Heard, ValidatorP2pSource};
+use crate::ports::{Heard, PeerSource};
 
 /// Announcements folded at most this often (one publish per batch, not per `inv`)
 pub(crate) const PEER_FOLD: Duration = Duration::from_millis(250);
@@ -23,11 +23,11 @@ pub(crate) const PEER_FOLD: Duration = Duration::from_millis(250);
 /// Feeds the view from the peers' block announcements until cancelled
 pub struct PeerWatch {
     core: Arc<ChainViewCore>,
-    peers: Arc<dyn ValidatorP2pSource>,
+    peers: Arc<dyn PeerSource>,
 }
 
 impl PeerWatch {
-    pub(crate) fn new(core: Arc<ChainViewCore>, peers: Arc<dyn ValidatorP2pSource>) -> Self {
+    pub(crate) fn new(core: Arc<ChainViewCore>, peers: Arc<dyn PeerSource>) -> Self {
         Self { core, peers }
     }
 

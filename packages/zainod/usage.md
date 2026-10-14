@@ -320,12 +320,12 @@ bootstrap itself as `snapshot`, beside the configured `indexes`:
 
 `indexes` = archives fetched, `total` = their cumulative bytes. `phase` = the slowest archive's
 (each moves downloading → verifying → unpacking); `done` = bytes through it, archives already
-past it counted whole. `rate` bytes/s (downloading only). The `Snapshot` component logs progress
+past it counted whole. `rate` bytes/s (downloading only). The `IndexSnapshot` component logs progress
 every 30 s:
 
 ```text
-INFO  Snapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
-INFO  Snapshot:  Index snapshot installed    indexes=5 height=3,501,802 elapsed=7m12s
+INFO  IndexSnapshot:  Downloading index snapshot  from=snapshots.zingolabs.dev to=3,501,802 indexes=5 done=27.0GB total=44.5GB rate=103MB/s eta=2m49s
+INFO  IndexSnapshot:  Index snapshot installed    indexes=5 height=3,501,802 elapsed=7m12s
 ```
 
 ## `zainod verify`

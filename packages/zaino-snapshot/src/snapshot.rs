@@ -1,8 +1,8 @@
-//! [`Snapshot`]: every answer Zaino serves, from one value (`usage.md`)
+//! [`GrpcSnapshot`]: every answer Zaino serves, from one value (`usage.md`)
 
 use std::sync::Arc;
 
-use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
+use zaino_chainview::{ChainViewSnapshot, MempoolView, TrustedValidatorSet};
 use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
@@ -21,7 +21,7 @@ pub struct Tips {
     pub best: Option<BlockRef>,
     pub final_tip: Option<BlockRef>,
     pub served: Option<BlockRef>,
-    pub held_by: EndpointSet,
+    pub held_by: TrustedValidatorSet,
     pub synced: bool,
 }
 
@@ -32,7 +32,7 @@ pub struct ForkView {
     pub folded: Option<BlockRef>,
 }
 
-/// What `GetLightdInfo` renders (`Snapshot::lightd`)
+/// What `GetLightdInfo` renders (`GrpcSnapshot::lightd`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Lightd {
     pub served: BlockHeight,
@@ -85,7 +85,7 @@ impl Down {
 }
 
 /// One publish: tips, the NFS's latest, the chain view's latest, the mempool epoch at `served`
-pub struct Snapshot<V> {
+pub struct GrpcSnapshot<V> {
     pub(crate) seq: u64,
     pub(crate) tips: Tips,
     pub(crate) indexed: Option<Arc<Indexed<V>>>,
@@ -93,7 +93,7 @@ pub struct Snapshot<V> {
     pub(crate) feed: Feed,
 }
 
-impl<V> Snapshot<V> {
+impl<V> GrpcSnapshot<V> {
     pub fn seq(&self) -> u64 {
         self.seq
     }
@@ -210,7 +210,7 @@ impl<V> Snapshot<V> {
     }
 }
 
-impl<V: View> Snapshot<V> {
+impl<V: View> GrpcSnapshot<V> {
     /// Index state as of any folded block or the NFS root ([`Indexed::at`])
     pub fn at(&self, hash: &BlockHash) -> Option<At<V>> {
         self.indexed.as_ref()?.at(hash)

@@ -9,7 +9,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet};
+use zaino_chainview::{ChainView, ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_nfs::{ChainParams, Indexed};
@@ -21,7 +21,7 @@ use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_source::testing::{within, ValidatorViews};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{
-    Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, ValidatorId,
+    Health, Limits, MemberId, MemberRow, MemberTable, TrafficBalancer, Trusted, TrustedValidatorId,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
@@ -31,7 +31,7 @@ use crate::compose::check;
 use crate::feed::Feed;
 use crate::publisher::Core;
 use crate::{
-    describe_metrics, emit_gauges, notes, Down, Publisher, Report, Snapshot, SnapshotError,
+    describe_metrics, emit_gauges, notes, Down, GrpcSnapshot, Publisher, Report, SnapshotError,
     Snapshots, Standing, Tips,
 };
 
@@ -121,19 +121,19 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
         engine.open(Path::new("block_hash"), &schema, NonZeroUsize::MAX).expect("fresh store");
     for block in &a {
         let mut out = store.changes(block.at());
-        let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(store.staged());
+        let parent = zaino_internal_block_hash_to_height::BlockHashReader::new(store.applied());
         zaino_internal_block_hash_to_height::fold(&parent, block, &mut out);
         store.apply(out);
     }
     store.commit().expect("SimFs commit");
-    let durable = [(IndexKind::BlockHash, store.committed())];
+    let durable = [(IndexKind::BlockHash, store.durable())];
     let indexed = Indexed::fixed(Arc::clone(&chain), a5, ChainParams::of(&builder), durable);
 
     let relayed = TxId::from_bytes([1; 32]);
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
     let view = ChainViewSnapshot::fixed(
         Some(Arc::clone(&chain)),
-        EndpointSet::at([0]),
+        TrustedValidatorSet::at([0]),
         &addresses,
         &[(relayed, Bytes::from_static(b"relayed"))],
     );
@@ -141,7 +141,7 @@ fn one_snapshot_renders_the_status_report_and_every_gauge() {
     let snap = Snapshots::fixed(Some(Arc::new(indexed)), Arc::new(view)).load();
     let progress = SyncProgress::fixed(Some(BlockHeight::from(5)));
     let member = |at: usize, failures, latency| MemberRow {
-        id: MemberId::Trusted(ValidatorId::new(at).expect("small")),
+        id: MemberId::Trusted(TrustedValidatorId::new(at).expect("small")),
         failures,
         benched_until: None,
         latency: Duration::from_millis(latency),
@@ -241,7 +241,8 @@ fn a_tip_held_only_by_a_catching_up_validator_is_syncing_never_serving() {
         let chain = Arc::new(builder.verified(tip.at()));
         let params = ChainParams::of(&builder);
         let indexed = Indexed::fixed(Arc::clone(&chain), tip.at(), params, none.clone());
-        let view = ChainViewSnapshot::fixed(Some(chain), EndpointSet::at([0]), &addresses, &[]);
+        let view =
+            ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::at([0]), &addresses, &[]);
         (Arc::new(indexed), view)
     };
 
@@ -298,7 +299,7 @@ fn each_holder_health_gives_its_standing_and_notes() {
     for (case, holder, behind, other, standing, expected_notes) in cases {
         let view = ChainViewSnapshot::fixed(
             Some(Arc::clone(&chain)),
-            EndpointSet::at([0]),
+            TrustedValidatorSet::at([0]),
             &addresses,
             &[],
         );
@@ -321,10 +322,15 @@ fn an_unvouched_best_is_degraded_while_fresh_and_down_once_stale() {
     let chain = Arc::new(builder.verified(a12));
     let indexed =
         Arc::new(Indexed::fixed(Arc::clone(&chain), a12, ChainParams::of(&builder), none));
-    let held =
-        ChainViewSnapshot::fixed(Some(Arc::clone(&chain)), EndpointSet::at([0]), &addresses, &[]);
+    let held = ChainViewSnapshot::fixed(
+        Some(Arc::clone(&chain)),
+        TrustedValidatorSet::at([0]),
+        &addresses,
+        &[],
+    );
     let all_down = held.endpoint(0, Health::Down, 0).endpoint(1, Health::Down, 0);
-    let unheld = ChainViewSnapshot::fixed(Some(chain), EndpointSet::default(), &addresses, &[]);
+    let unheld =
+        ChainViewSnapshot::fixed(Some(chain), TrustedValidatorSet::default(), &addresses, &[]);
     for (why, view) in [(Down::NoValidatorReachable, all_down), (Down::TipNotHeld, unheld)] {
         let snap = Snapshots::fixed(Some(Arc::clone(&indexed)), Arc::new(view)).load();
         let standing = (snap.standing(now), snap.standing(stale - 1), snap.standing(stale));
@@ -340,8 +346,8 @@ struct Drill {
     mined: TxId,
     chain: Arc<VerifiedChain>,
     params: ChainParams,
-    prev: Arc<Snapshot<DiskView>>,
-    next: Arc<Snapshot<DiskView>>,
+    prev: Arc<GrpcSnapshot<DiskView>>,
+    next: Arc<GrpcSnapshot<DiskView>>,
 }
 
 impl Drill {
@@ -363,22 +369,27 @@ impl Drill {
     }
 
     /// `next`, serving `block`
-    fn serving(&self, block: BlockRef, synced: bool) -> Snapshot<DiskView> {
+    fn serving(&self, block: BlockRef, synced: bool) -> GrpcSnapshot<DiskView> {
         let mut planted = copy(&self.next);
         planted.indexed = served(&self.chain, self.params, block);
         planted.tips = Tips { served: Some(block), synced, ..self.next.tips };
         planted
     }
 
-    fn synced_prev(&self) -> Snapshot<DiskView> {
-        Snapshot { tips: Tips { synced: true, ..self.prev.tips }, ..copy(&self.prev) }
+    fn synced_prev(&self) -> GrpcSnapshot<DiskView> {
+        GrpcSnapshot { tips: Tips { synced: true, ..self.prev.tips }, ..copy(&self.prev) }
     }
 }
 
 /// Both validators holding `chain`'s best, `mempool` listed
 fn view(chain: &Arc<VerifiedChain>, mempool: &[(TxId, Bytes)]) -> ChainViewSnapshot {
     let addresses = ["10.0.0.1:8232", "10.0.0.2:8232"];
-    ChainViewSnapshot::fixed(Some(Arc::clone(chain)), EndpointSet::at([0, 1]), &addresses, mempool)
+    ChainViewSnapshot::fixed(
+        Some(Arc::clone(chain)),
+        TrustedValidatorSet::at([0, 1]),
+        &addresses,
+        mempool,
+    )
 }
 
 /// Index views serving `block` (no tables)
@@ -391,8 +402,8 @@ fn served(
     Some(Arc::new(Indexed::fixed(Arc::clone(chain), block, params, none)))
 }
 
-fn copy(s: &Snapshot<DiskView>) -> Snapshot<DiskView> {
-    Snapshot {
+fn copy(s: &GrpcSnapshot<DiskView>) -> GrpcSnapshot<DiskView> {
+    GrpcSnapshot {
         seq: s.seq,
         tips: s.tips,
         indexed: s.indexed.clone(),
@@ -409,7 +420,7 @@ fn fresh() -> Feed {
 #[should_panic(expected = "G2: seq + 1")]
 fn check_catches_a_skipped_seq() {
     let d = Drill::new();
-    check(&d.prev, &Snapshot { seq: 5, ..copy(&d.next) }, DEPTH);
+    check(&d.prev, &GrpcSnapshot { seq: 5, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
@@ -417,7 +428,7 @@ fn check_catches_a_skipped_seq() {
 fn check_catches_a_best_off_the_chain() {
     let d = Drill::new();
     let tips = Tips { best: None, ..d.next.tips };
-    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+    check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
@@ -425,15 +436,15 @@ fn check_catches_a_best_off_the_chain() {
 fn check_catches_a_final_tip_off_the_chain() {
     let d = Drill::new();
     let tips = Tips { final_tip: Some(d.a[1].at()), ..d.next.tips };
-    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+    check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
 #[should_panic(expected = "G3: held_by")]
 fn check_catches_holders_off_the_view() {
     let d = Drill::new();
-    let tips = Tips { held_by: EndpointSet::default(), ..d.next.tips };
-    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+    let tips = Tips { held_by: TrustedValidatorSet::default(), ..d.next.tips };
+    check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
@@ -441,7 +452,7 @@ fn check_catches_holders_off_the_view() {
 fn check_catches_a_served_tip_off_the_indexes() {
     let d = Drill::new();
     let tips = Tips { served: Some(d.a[5].at()), ..d.next.tips };
-    check(&d.prev, &Snapshot { tips, ..copy(&d.next) }, DEPTH);
+    check(&d.prev, &GrpcSnapshot { tips, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
@@ -481,7 +492,7 @@ fn check_catches_synced_falling_behind_its_window() {
 #[should_panic(expected = "G5: epoch rotates iff")]
 fn check_catches_an_epoch_rotating_without_a_move() {
     let d = Drill::new();
-    let again = Snapshot { seq: 2, feed: fresh(), ..copy(&d.next) };
+    let again = GrpcSnapshot { seq: 2, feed: fresh(), ..copy(&d.next) };
     check(&d.next, &again, DEPTH);
 }
 
@@ -489,7 +500,7 @@ fn check_catches_an_epoch_rotating_without_a_move() {
 #[should_panic(expected = "G5: the old epoch sealed iff rotated")]
 fn check_catches_an_old_epoch_left_open() {
     let d = Drill::new();
-    check(&Snapshot { feed: fresh(), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
+    check(&GrpcSnapshot { feed: fresh(), ..copy(&d.prev) }, &copy(&d.next), DEPTH);
 }
 
 #[test]
@@ -498,7 +509,7 @@ fn check_catches_a_sealed_stored_epoch() {
     let d = Drill::new();
     let feed = fresh();
     feed.seal();
-    check(&d.prev, &Snapshot { feed, ..copy(&d.next) }, DEPTH);
+    check(&d.prev, &GrpcSnapshot { feed, ..copy(&d.next) }, DEPTH);
 }
 
 #[test]
@@ -511,6 +522,6 @@ fn check_catches_an_epoch_carrying_a_tx_its_served_tip_mined() {
     let stale = view(&d.chain, &[(d.mined, Bytes::from_static(&[0x66]))]);
     let wake = watch::Sender::new(()).subscribe();
     let feed = Feed::open(stale.arrivals(None), HashSet::new(), wake);
-    let planted = Snapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&d.next) };
+    let planted = GrpcSnapshot { indexed: Some(Arc::new(indexed)), feed, ..copy(&d.next) };
     check(&d.prev, &planted, DEPTH);
 }

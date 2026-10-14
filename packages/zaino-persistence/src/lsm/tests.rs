@@ -14,7 +14,7 @@ use super::{
     file_name,
     layout::Shape,
     writer::SegmentWriter,
-    Fanout, SegmentError, SegmentLog, Slots, Snapshot,
+    Fanout, SegmentError, SegmentLog, SegmentsView, Slots,
 };
 use crate::{
     fs::{Access, Fs, SimFs},
@@ -209,17 +209,18 @@ fn retain_removes_strays_and_open_checks_lengths_leaving_pages_to_the_first_touc
 
     let original = fs.contents(&path).expect("segment bytes");
     fs.corrupt(&path, |bytes| bytes.truncate(10));
-    let short = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
+    let short = SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
     assert!(matches!(short, Err(SegmentError::Page(PageError::Lost { have: 10, .. }))));
 
     fs.corrupt(&path, |bytes| {
         *bytes = original.clone();
         bytes[shape.stride + 9] ^= 1;
     });
-    Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).expect("lengths intact");
+    SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).expect("lengths intact");
 
     fs.remove(&sums_path(&path)).expect("remove checksums");
-    let unsummed = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
+    let unsummed =
+        SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).map(|_| ());
     assert!(matches!(unsummed, Err(SegmentError::Page(PageError::Lost { .. }))));
 }
 
@@ -237,8 +238,8 @@ fn a_read_of_a_corrupt_page_panics_naming_the_page_and_the_fix() {
         .expect("rows");
     // page 0 = records only (600 rows: summary past it)
     fs.corrupt(&dir.join(file_name(kept.id)), |bytes| bytes[shape.stride + 9] ^= 1);
-    let snapshot =
-        Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept]).expect("lengths intact");
+    let snapshot = SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &[kept])
+        .expect("lengths intact");
 
     snapshot.get(&scanned_row(1, 1).0);
 }
@@ -281,7 +282,7 @@ fn a_corrupt_filter_panics_at_open() {
         .expect("rows");
     fs.corrupt(&ids.join(file_name(written.id)), |bytes| *bytes.last_mut().expect("bytes") ^= 1);
 
-    let _ = Snapshot::open(&SegmentDir::new(fs.clone(), ids), shape, &[written]);
+    let _ = SegmentsView::open(&SegmentDir::new(fs.clone(), ids), shape, &[written]);
 }
 
 /// Several summary groups:
@@ -349,7 +350,8 @@ fn a_prefetch_plan_covers_every_asked_key_where_it_lives() {
         })
         .collect();
     writer.dir().sync().expect("sync");
-    let snapshot = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &metas).expect("open");
+    let snapshot =
+        SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &metas).expect("open");
     let files: Vec<SegmentFile> = metas
         .iter()
         .map(|meta| {
@@ -407,7 +409,7 @@ fn a_scope_filter_skips_segments_without_the_scope_and_misses_nothing() {
     writer.dir().sync().expect("sync");
 
     let snapshot =
-        Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &segments).expect("open");
+        SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &segments).expect("open");
     let range = |a: u64| {
         let (start, end) = (account(a).to_vec(), [&account(a)[..], &[0xff; 4]].concat());
         snapshot.range(&start, &end, usize::MAX).expect("unbounded")
@@ -557,7 +559,8 @@ fn a_removed_key_stays_absent_under_every_segment_order_and_merge() {
     ];
     // every segment kept on disk (`open` removes what its list leaves out), each list mapped next
     let every = [held, unrelated, tombstone, held_unrelated, unrelated_tombstone, held_tombstone];
-    let mapped = Snapshot::open(&SegmentDir::new(fs.clone(), dir), shape, &every).expect("open");
+    let mapped =
+        SegmentsView::open(&SegmentDir::new(fs.clone(), dir), shape, &every).expect("open");
     for listed in lists {
         let ids: Vec<u32> = listed.iter().map(|meta| meta.id).collect();
         let snapshot = mapped.next(&SegmentDir::new(fs.clone(), dir), listed).expect("map");

@@ -17,7 +17,7 @@ use serde::Serialize;
 use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::NetworkType;
 
-use crate::{manifest::IndexKind, write_buffer::StagedView, CommitFailed, StoreError};
+use crate::{manifest::IndexKind, write_buffer::AppliedView, CommitFailed, StoreError};
 
 /// Storage backend: one store per index, verified offline
 pub trait PersistenceEngine: Send + Sync + 'static {
@@ -44,7 +44,7 @@ pub trait PersistenceEngine: Send + Sync + 'static {
 /// - final data: [`apply`](Self::apply) buffers (commits itself on a full buffer),
 ///   [`commit`](Self::commit) makes the rest durable now
 pub trait Store: Send + 'static {
-    type View: CommittedView;
+    type View: DurableView;
 
     /// As opened
     fn schema(&self) -> &Schema;
@@ -71,13 +71,13 @@ pub trait Store: Send + 'static {
     fn commit(&mut self) -> Result<(), CommitFailed>;
 
     /// Committed only (what serving pins: no crash takes back what a reader saw)
-    fn committed(&self) -> Self::View;
+    fn durable(&self) -> Self::View;
 
     /// Committed + buffered (what a bulk fold reads its parent through)
-    fn staged(&self) -> StagedView<'_, Self::View>;
+    fn applied(&self) -> AppliedView<'_, Self::View>;
 }
 
-/// State at a tip: [`CommittedView`] (served) or [`StagedView`] (a writer's fold, borrowed)
+/// State at a tip: [`DurableView`] (served) or [`AppliedView`] (a writer's fold, borrowed)
 pub trait View: Clone + Send + Sync {
     /// Last committed block (`None` = nothing committed yet)
     fn tip(&self) -> Option<BlockRef>;
@@ -137,7 +137,7 @@ pub trait MapRead: View {
 /// gRPC's read: a committed snapshot, fixed while held, owned (read on any thread)
 ///
 /// - NFS layers over one (`OverlayView<V, Overlay>`) = one too
-pub trait CommittedView: SequenceRead + MapRead + 'static {}
+pub trait DurableView: SequenceRead + MapRead + 'static {}
 
 /// One sequence table of one view
 #[derive(Debug, Clone, Copy)]

@@ -18,7 +18,7 @@ use proptest::prelude::*;
 use super::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
 use crate::class::Class;
 use crate::member::{
-    Limits, MemberId, Synced, ValidatorId, DOWN_AFTER, LADDER_CEILING, MIN_POLL_SPACING,
+    Limits, MemberId, Synced, TrustedValidatorId, DOWN_AFTER, LADDER_CEILING, MIN_POLL_SPACING,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +113,7 @@ proptest! {
 #[test]
 fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
     let ms = Duration::from_millis;
-    let [v0, v1] = [0, 1].map(|i| MemberId::Trusted(ValidatorId::new(i).expect("small")));
+    let [v0, v1] = [0, 1].map(|i| MemberId::Trusted(TrustedValidatorId::new(i).expect("small")));
     let cases = [
         (Kind::Silent, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
         (Kind::Slow, Class::TipBlock, Route::Any, ms(2_050), Some(v1)),
@@ -138,7 +138,7 @@ fn an_ask_ends_within_its_hedge_floor_plus_one_round() {
 /// sent at once (the failed poll's answer at 25 s, the next started in that same instant)
 #[test]
 fn a_due_poll_never_waits_behind_other_asks() {
-    let v0 = MemberId::Trusted(ValidatorId::new(0).expect("small"));
+    let v0 = MemberId::Trusted(TrustedValidatorId::new(0).expect("small"));
     let mut world = World::new(&[(Kind::Silent, 0)], None);
     let t0 = world.now;
     for (class, route) in [
@@ -151,7 +151,7 @@ fn a_due_poll_never_waits_behind_other_asks() {
     }
     assert_eq!(world.flying[&v0], [2, 1, 1], "every lane permit of 5 − the poll's held");
     world.advance(t0 + TIMEOUT);
-    let polls = &world.polls[&ValidatorId::new(0).expect("small")];
+    let polls = &world.polls[&TrustedValidatorId::new(0).expect("small")];
     assert_eq!(polls[..2], [t0, t0 + TIMEOUT], "T10: the due poll sent beside full lanes");
 }
 
@@ -170,7 +170,7 @@ struct World {
     benched: BTreeMap<MemberId, (Instant, u32)>,
     failures: BTreeMap<MemberId, u32>,
     synced: BTreeMap<MemberId, Synced>,
-    polls: BTreeMap<ValidatorId, Vec<Instant>>,
+    polls: BTreeMap<TrustedValidatorId, Vec<Instant>>,
     answered_lies: BTreeSet<MemberId>,
     lies: Vec<(Ticket, Asked)>,
     value_from: Option<Ticket>,
@@ -191,7 +191,8 @@ impl World {
         let limits = Limits::new(CONNECTIONS).expect("MIN_CONNECTIONS");
         let config: Vec<(u8, Limits)> = trusted.iter().map(|(_, p)| (*p, limits)).collect();
         let t0 = Instant::now();
-        let ids = (0..trusted.len()).map(|i| MemberId::Trusted(ValidatorId::new(i).expect("≤ 4")));
+        let ids =
+            (0..trusted.len()).map(|i| MemberId::Trusted(TrustedValidatorId::new(i).expect("≤ 4")));
         let mut kinds: BTreeMap<MemberId, Kind> =
             ids.clone().zip(trusted.iter().map(|(kind, _)| *kind)).collect();
         let mut tiers: BTreeMap<MemberId, u16> =

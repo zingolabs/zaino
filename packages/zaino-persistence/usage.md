@@ -38,7 +38,7 @@ changes.map(SPENT).insert(&outpoint.encode(), &spend);
 store.apply(changes);                                  // buffered: visible in staged() only
 store.commit()?;                                       // durable, then visible in committed()
 
-let view = store.committed();                          // what serving pins
+let view = store.durable();                          // what serving pins
 view.sequence(BLOCKS).records(a..b);                   // zero-copy slices of the mapping
 view.map(SPENT).range(&start, &end, limit);            // [start, end); None = more than `limit`
 ```
@@ -100,8 +100,8 @@ its parent's layer.
 
 ```rust
 let child = parent_layer.with(&changes);                       // parent + one block
-let view = OverlayView::new(store.committed(), child.clone()); // layer first, then durable
-let child = child.rebase(&store.committed());                   // after a commit: drop what is durable
+let view = OverlayView::new(store.durable(), child.clone()); // layer first, then durable
+let child = child.rebase(&store.durable());                   // after a commit: drop what is durable
 ```
 
 `with`, `rebase` and `OverlayView::new` panic on anything that would read a block twice or on the

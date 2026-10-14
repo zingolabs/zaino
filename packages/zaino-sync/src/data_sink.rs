@@ -45,12 +45,12 @@ pub trait Weight {
 
 /// One step, the same for every subscriber
 ///
-/// - `Finalized` = the block at the chain's final tip (apply, then commit: caught up)
+/// - `FinalizedTip` = the block at the chain's final tip (apply, then commit: caught up)
 /// - `Shutdown` last: commit what is held, stop
 #[derive(Debug)]
 pub enum Step<T> {
     Apply { height: BlockHeight, data: Arc<T> },
-    Finalized { height: BlockHeight, data: Arc<T> },
+    FinalizedTip { height: BlockHeight, data: Arc<T> },
     Shutdown,
 }
 
@@ -58,7 +58,7 @@ impl<T: Weight> Weight for Step<T> {
     fn weight(&self) -> usize {
         size_of::<Self>()
             + match self {
-                Self::Apply { data, .. } | Self::Finalized { data, .. } => data.weight(),
+                Self::Apply { data, .. } | Self::FinalizedTip { data, .. } => data.weight(),
                 Self::Shutdown => 0,
             }
     }
@@ -68,8 +68,8 @@ impl<T> Clone for Step<T> {
     fn clone(&self) -> Self {
         match self {
             Self::Apply { height, data } => Self::Apply { height: *height, data: Arc::clone(data) },
-            Self::Finalized { height, data } => {
-                Self::Finalized { height: *height, data: Arc::clone(data) }
+            Self::FinalizedTip { height, data } => {
+                Self::FinalizedTip { height: *height, data: Arc::clone(data) }
             }
             Self::Shutdown => Self::Shutdown,
         }
@@ -85,10 +85,10 @@ pub(crate) struct Queued<T> {
 
 /// One batch of work off a [`Subscription`], in height order
 ///
-/// - `finalized` = its last block = `Step::Finalized` (the chain's final tip)
+/// - `finalized` = its last block = `Step::FinalizedTip` (the chain's final tip)
 pub struct Run<T> {
     pub blocks: Vec<(BlockHeight, Arc<T>)>,
-    pub finalized: bool,
+    pub finalized_tip: bool,
 }
 
 /// One consumer's end: its queue, in stream order
@@ -129,7 +129,7 @@ impl<T: Weight> Subscription<T> {
     /// Next step + every `Apply` already queued behind it, to the queue's budget (one batch of
     /// work, no wait past the first step); `None` = `Shutdown`
     ///
-    /// - `Finalized` block ends the run, included
+    /// - `FinalizedTip` block ends the run, included
     pub async fn next_run(&mut self) -> Option<Run<T>> {
         let first = self.next().await;
         let run = self.run(first, self.budget);
@@ -138,7 +138,7 @@ impl<T: Weight> Subscription<T> {
 
     /// `first` + queued `Apply`s to `budget` bytes; `Shutdown` ends it (the next `next` = it again)
     fn run(&mut self, first: Step<T>, budget: NonZeroUsize) -> Run<T> {
-        let mut run = Run { blocks: Vec::new(), finalized: false };
+        let mut run = Run { blocks: Vec::new(), finalized_tip: false };
         let mut bytes = 0usize;
         let mut step = Some(first);
         while let Some(next) = step.take() {
@@ -147,9 +147,9 @@ impl<T: Weight> Subscription<T> {
                     bytes = bytes.saturating_add(data.weight());
                     run.blocks.push((height, data));
                 }
-                Step::Finalized { height, data } => {
+                Step::FinalizedTip { height, data } => {
                     run.blocks.push((height, data));
-                    run.finalized = true;
+                    run.finalized_tip = true;
                     break;
                 }
                 Step::Shutdown => break,
@@ -262,7 +262,7 @@ mod tests {
     fn popped(step: Step<Blob>) -> BlockHeight {
         match step {
             Step::Apply { height, .. } => height,
-            Step::Finalized { .. } | Step::Shutdown => panic!("expected an apply"),
+            Step::FinalizedTip { .. } | Step::Shutdown => panic!("expected an apply"),
         }
     }
 
@@ -293,7 +293,7 @@ mod tests {
         }
     }
 
-    /// Run = first block + `Apply`s already queued, cut at its budget, by a `Finalized` block
+    /// Run = first block + `Apply`s already queued, cut at its budget, by a `FinalizedTip` block
     /// (included, `true`) or by `Shutdown` (the next one out)
     #[tokio::test]
     async fn a_run_gathers_queued_applies_to_its_budget_ends_at_a_finalized_block_or_shutdown() {
@@ -302,21 +302,28 @@ mod tests {
         for height in 0..5 {
             sink.send(apply(height, 10)).await;
         }
-        sink.send(Step::Finalized { height: h(5), data: Arc::new(Blob(10)) }).await;
-        sink.send(Step::Finalized { height: h(6), data: Arc::new(Blob(10)) }).await;
+        sink.send(Step::FinalizedTip { height: h(5), data: Arc::new(Blob(10)) }).await;
+        sink.send(Step::FinalizedTip { height: h(6), data: Arc::new(Blob(10)) }).await;
         sink.send(apply(7, 10)).await;
         sink.shutdown();
         let heights = |run: Run<Blob>| -> (Vec<u32>, bool) {
-            (run.blocks.into_iter().map(|(height, _)| u32::from(height)).collect(), run.finalized)
+            (
+                run.blocks.into_iter().map(|(height, _)| u32::from(height)).collect(),
+                run.finalized_tip,
+            )
         };
         let (twenty, all) = (NonZeroUsize::new(20).expect("nz"), NonZeroUsize::MAX);
 
         let start = sub.next().await;
         assert_eq!(heights(sub.run(start, twenty)), (vec![0, 1], false), "cut at 20 bytes");
         let start = sub.next().await;
-        assert_eq!(heights(sub.run(start, all)), (vec![2, 3, 4, 5], true), "ends at Finalized 5");
+        assert_eq!(
+            heights(sub.run(start, all)),
+            (vec![2, 3, 4, 5], true),
+            "ends at FinalizedTip 5"
+        );
         let start = sub.next().await;
-        assert_eq!(heights(sub.run(start, all)), (vec![6], true), "a Finalized first = alone");
+        assert_eq!(heights(sub.run(start, all)), (vec![6], true), "a FinalizedTip first = alone");
         let start = sub.next().await;
         assert_eq!(heights(sub.run(start, all)), (vec![7], false), "cut by Shutdown");
         assert!(matches!(sub.next().await, Step::Shutdown), "Shutdown ended the last run");

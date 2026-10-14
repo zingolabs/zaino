@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use super::{Ask, AskId, Input, Reply, Route, Ticket, TrafficCore};
 use crate::class::{Class, Lane, Permits};
-use crate::member::{Limits, Member, MemberId, Synced, ValidatorId};
+use crate::member::{Limits, Member, MemberId, Synced, TrustedValidatorId};
 
 fn trusted(index: usize) -> MemberId {
-    MemberId::Trusted(ValidatorId::new(index).expect("small"))
+    MemberId::Trusted(TrustedValidatorId::new(index).expect("small"))
 }
 
 /// - trusted 0 (priority 0), 1 (priority 1), both polled `Live`; the peer set (3 in flight)
@@ -19,7 +19,7 @@ fn valid(t0: Instant) -> TrafficCore {
     let mut core = TrafficCore::new(&[(0, limits), (1, limits)], Some(3), t0);
     core.step(Input::Tick, t0);
     let t = t0 + Duration::from_millis(50);
-    for member in [0, 1].map(|index| ValidatorId::new(index).expect("small")) {
+    for member in [0, 1].map(|index| TrustedValidatorId::new(index).expect("small")) {
         core.step(Input::Polled { member, read: Some(Synced::Live) }, t);
     }
     let asks = [
@@ -118,7 +118,7 @@ fn a_core_without_trusted_validators_panics() {
 }
 
 #[test]
-#[should_panic(expected = "at most ValidatorId::MAX trusted validators")]
+#[should_panic(expected = "at most TrustedValidatorId::MAX trusted validators")]
 fn a_core_past_the_validator_limit_panics() {
     let limits = Limits::new(Limits::MIN_CONNECTIONS).expect("MIN_CONNECTIONS");
     TrafficCore::new(&[(0, limits); 65], None, Instant::now());
@@ -164,7 +164,7 @@ fn abandoning_an_unknown_ask_panics() {
 #[should_panic(expected = "a poll result for a poll in flight")]
 fn a_poll_result_without_a_poll_panics() {
     let t0 = Instant::now();
-    let member = ValidatorId::new(0).expect("small");
+    let member = TrustedValidatorId::new(0).expect("small");
     valid(t0).step(Input::Polled { member, read: None }, t0 + Duration::from_millis(50));
 }
 
@@ -172,7 +172,7 @@ fn a_poll_result_without_a_poll_panics() {
 #[should_panic(expected = "a configured validator")]
 fn a_push_from_an_unknown_validator_panics() {
     let t0 = Instant::now();
-    let member = ValidatorId::new(5).expect("small");
+    let member = TrustedValidatorId::new(5).expect("small");
     let push = Input::Push { member, push: super::Push::Changed };
     valid(t0).step(push, t0 + Duration::from_millis(50));
 }

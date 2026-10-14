@@ -144,7 +144,7 @@ mod tests {
                 let store = engine
                     .open(Path::new(kind.name()), &schema, NonZeroUsize::MAX)
                     .expect("fresh store");
-                durable.insert(kind, store.committed());
+                durable.insert(kind, store.durable());
                 root.insert(kind, Overlay::empty(&schema));
                 stores.push(store);
             }

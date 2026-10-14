@@ -14,13 +14,13 @@ use zaino_primitives::types::ReorgDepth;
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::NetworkType;
 
-# fn wire<S: zaino_source::ChainDataSource>(balancer: TrafficBalancer<S>, chain: HeaderChain) -> Result<(), Box<dyn std::error::Error>> {
+# fn wire<S: zaino_source::ChainDataSource>(balancer: TrafficBalancer<S>, chain: HeaderChain, shutdown: tokio_util::sync::CancellationToken) -> Result<(), Box<dyn std::error::Error>> {
 // addresses[i] = the balancer's trusted member i (logs, status); depth = the header chain's
 // finality depth (zainod passes `sync.finalised_depth`); schedule = the network's (the branch
 // a transaction must be signed for at the next block; regtest's = its validator's)
 let addresses = vec!["127.0.0.1:8232".to_owned()];
 let schedule = compiled_schedule(NetworkType::Main).ok_or("mainnet compiled in")?;
-let view = ChainView::new(addresses, balancer, ReorgDepth::CONSENSUS, schedule)?;
+let view = ChainView::new(addresses, balancer, ReorgDepth::CONSENSUS, schedule, shutdown.child_token())?;
 let view = view.with_submit_policy(SubmitPolicy::default());
 // the tip comes only from header sync, the polls from the fold (the balancer's driver runs
 // beside them)
@@ -44,7 +44,7 @@ stream (`indexer_address` set: callbacks → `TrafficBalancer::pushed`), and wit
 ## Membership
 
 - `ChainView::new` rejects an empty list (`ConfigError::NoEndpoints`) and more than
-  `ValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted member of the
+  `TrustedValidatorId::MAX` = 64 (`ConfigError::TooManyEndpoints`). One address per trusted member of the
   balancer (`ConfigError::AddressCountMismatch` otherwise).
 - No validator outvotes another. Each contributes headers, `getblockhash` answers saying which
   verified blocks it holds, a mempool listing and a submission entry.
@@ -96,19 +96,19 @@ Cheap to clone; cannot drive polling or submit.
 |---|---|
 | `chain()` | the `VerifiedChain` every standing was judged under |
 | `best()` | the verified best, held or not |
-| `held_by()` | `EndpointSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain |
+| `held_by()` | `TrustedValidatorSet` of answering validators (`Live` or catching up) whose claim = best, or above it with their `getblockhash` answer on our chain |
 | `claimed_past_best()` | an answering validator claims above best, not shown off our chain (its hash at best not polled yet counts): best ≠ the network's tip yet |
 | `mempool()` | `Some` iff a `Live` validator is in `held_by()` or `peers_quorate()` |
 | `peers_quorate()` | the fresh peer listings span > 5 netgroups (needs no verified chain) |
 | `arrivals(since)` | transactions held here but not in `since` (`None` = all): an `imbl` diff |
 | `spread(txid)` / `spreads()` | `Spread { peers: Count, trusted: Count, quorum, ours }` |
-| `endpoints()` | per-endpoint `ValidatorMetadata`, configured order |
+| `endpoints()` | per-endpoint `TrustedValidatorMeta`, configured order |
 | `alarms()`, `shared_outbound_min()` | below |
 
-`EndpointSet` is a bitset over `ValidatorId`s: `positions()` yields configured positions,
-`EndpointSet::at(positions)` builds one (`testing` feature).
+`TrustedValidatorSet` is a bitset over `TrustedValidatorId`s: `positions()` yields configured positions,
+`TrustedValidatorSet::at(positions)` builds one (`testing` feature).
 
-`ValidatorMetadata`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
+`TrustedValidatorMeta`: address, `tip()`, `zaino_traffic::Health` as of its last poll, `Agreement`,
 last-observed time, peers (every 60 s), release (build, user agent, protocol, end-of-service
 height), push-stream state, `blocks_to_end_of_service()`. Latency and failures are the balancer's
 (`TrafficBalancer::members()`).
@@ -164,7 +164,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
 - `SubmitError::Rejected` = the check's refusal, else the first trusted rejection;
   `SubmitError::Unreachable { attempted, cause }` = never accepted, no rejection (cause = the last
   push failure).
-- Job inputs, taken once at its start: peers = `ValidatorP2pSource::live()` non-empty, trusted =
+- Job inputs, taken once at its start: peers = `PeerSource::live()` non-empty, trusted =
   `TrafficBalancer::entries()` (`Live`, not benched), checked = the check admitted it.
 - A trusted entry's own listing counts for acceptance, not for spread.
 - Job end: `spread`, `unconfirmed`, `rejected`, `unreachable`. Nothing ties it to mining or expiry.
@@ -177,7 +177,7 @@ let entries = pinned.mempool().ok_or("no holder: UNAVAILABLE")?.excluding(&exclu
   their polls (`observe`), asks `bytes(..)`, `check_admission(..)` and `submit(..)`; header sync
   asks `headers(..)`.
   `ChainView::new` wires `poll_best` (each poll's `getblockhash` at our best).
-- `ValidatorP2pSource` (`dyn`, given by `with_peers`):
+- `PeerSource` (`dyn`, given by `with_peers`):
 
 | Method | Answer |
 |---|---|
@@ -215,7 +215,7 @@ zainod registers descriptions via `describe_metrics()`. The `zaino.chainview.*` 
 - `ChainViewSnapshot::fixed(chain, held_by, addresses, ours)`: one view, no `ChainView` (each
   holder `Live` + `Agreed`); `.ahead(at, by, read)`: holder `at` claims `by` blocks past best
   (`read` = its hash at best polled: `Ahead`; else `Diverged`, no longer a holder).
-- `testing::MockPeers` (`ValidatorP2pSource` as a script), beside
+- `testing::MockPeers` (`PeerSource` as a script), beside
   `zaino_source::testing::MockValidator`; a `MockChain` tip's `Ledger` is the `UnspentOutputs`
   (fund prevouts by mining them, e.g. a coinbase with a stated txid):
 

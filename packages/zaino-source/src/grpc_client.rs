@@ -1,4 +1,4 @@
-//! [`ZcashGrpcClient`]: blocks over zebrad's indexer gRPC, every other question over its JSON-RPC
+//! [`ZebraIndexerGrpcClient`]: blocks over zebrad's indexer gRPC, every other question over its JSON-RPC
 //!
 //! - `GetBlockRange` / `GetBlock` = stored consensus bytes as protobuf `bytes` (no hex, no JSON;
 //!   `Bytes` = a slice of the received frame), decoded by the same [`decode::decode_block`] as JSON-RPC
@@ -19,7 +19,7 @@ use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::{BlockHash, TxId};
 
-use crate::indexer::{indexer_endpoint, IndexerTls};
+use crate::indexer::{indexer_endpoint, ZebraIndexerTls};
 use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
 use crate::{
     decode, BlockLinks, ChainDataSource, FailureMode, GetAtHeightError, GetBlockByHashError,
@@ -49,14 +49,14 @@ const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(20);
 ///
 /// - `read` = silence before a call fails (per message, never a total: a range takes as long as
 ///   it takes)
-pub struct ZcashGrpcClient {
+pub struct ZebraIndexerGrpcClient {
     rpc: ZcashLegacyRpcClient,
     connections: Vec<IndexerClient<Channel>>,
     next: AtomicUsize,
     read: Duration,
 }
 
-impl ZcashGrpcClient {
+impl ZebraIndexerGrpcClient {
     /// Blocks from the indexer at `indexer_address` (`host:port`; `tls` = mutual TLS), the rest
     /// through `rpc`; unprobed
     ///
@@ -65,7 +65,7 @@ impl ZcashGrpcClient {
     pub fn at(
         rpc: ZcashLegacyRpcClient,
         indexer_address: &str,
-        tls: Option<&IndexerTls>,
+        tls: Option<&ZebraIndexerTls>,
         timeouts: Timeouts,
         limits: LinkLimits,
     ) -> Result<Self, EndpointError> {
@@ -172,7 +172,7 @@ fn consecutive_runs(heights: &[BlockHeight]) -> impl Iterator<Item = &[BlockHeig
     heights.chunk_by(|a, b| u32::from(*a).checked_add(1) == Some(u32::from(*b)))
 }
 
-impl ChainDataSource for ZcashGrpcClient {
+impl ChainDataSource for ZebraIndexerGrpcClient {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,

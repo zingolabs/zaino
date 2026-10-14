@@ -13,19 +13,19 @@ use zaino_source::{
     prepare_transaction, ChainDataSource, CheckAdmissionError, FailureMode, NonDomainError,
     Prepared, QueryError, SendRawTransactionError,
 };
-use zaino_traffic::{MemberId, TrafficBalancer, ValidatorId};
+use zaino_traffic::{MemberId, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::local_consensus::LocalNetwork;
 use zcash_protocol::TxId;
 
 use crate::admission::{valid_in, NextBlock};
-use crate::endpoints::ValidatorMetadata;
+use crate::endpoints::TrustedValidatorMeta;
 use crate::error::{ConfigError, SubmitError};
 use crate::fold::ChainViewCore;
 use crate::headers::HeaderSync;
 use crate::observe::ObservationFold;
 use crate::peer_mempool::PeerMempool;
 use crate::peers::PeerWatch;
-use crate::ports::{UnspentOutputs, ValidatorP2pSource};
+use crate::ports::{PeerSource, UnspentOutputs};
 use crate::snapshot::ChainViewSnapshot;
 use crate::submit::{Ended, Entry, Job, Pushed, Seen, Step, SubmitPolicy};
 use crate::telemetry;
@@ -39,7 +39,7 @@ pub struct ChainView<S> {
     addresses: Vec<String>,
     schedule: LocalNetwork,
     policy: SubmitPolicy,
-    peers: Option<Arc<dyn ValidatorP2pSource>>,
+    peers: Option<Arc<dyn PeerSource>>,
     shutdown: CancellationToken,
 }
 
@@ -50,7 +50,7 @@ impl<S> std::fmt::Debug for ChainView<S> {
 }
 
 impl<S: ChainDataSource> ChainView<S> {
-    /// The view over `balancer`'s trusted members (`addresses[i]` = `ValidatorId(i)`'s, for logs
+    /// The view over `balancer`'s trusted members (`addresses[i]` = `TrustedValidatorId(i)`'s, for logs
     /// and status); its tip comes from [`header_sync`](Self::header_sync), its polls from
     /// [`observation_fold`](Self::observation_fold)
     ///
@@ -68,7 +68,7 @@ impl<S: ChainDataSource> ChainView<S> {
         if addresses.is_empty() {
             return Err(ConfigError::NoEndpoints);
         }
-        if addresses.len() > ValidatorId::MAX {
+        if addresses.len() > TrustedValidatorId::MAX {
             return Err(ConfigError::TooManyEndpoints { count: addresses.len() });
         }
         let trusted = (balancer.members().borrow().rows.iter())
@@ -77,7 +77,7 @@ impl<S: ChainDataSource> ChainView<S> {
         if trusted != addresses.len() {
             return Err(ConfigError::AddressCountMismatch { addresses: addresses.len(), trusted });
         }
-        let endpoints = addresses.iter().map(|address| ValidatorMetadata::new(address.clone()));
+        let endpoints = addresses.iter().map(|address| TrustedValidatorMeta::new(address.clone()));
         let core = Arc::new(ChainViewCore::new(endpoints.collect(), depth));
         let asked = Arc::clone(&core);
         balancer.poll_best(move || asked.current().best().map(|best| best.height));
@@ -92,7 +92,7 @@ impl<S: ChainDataSource> ChainView<S> {
 
     /// Peers as submission entries, mempool listers and chain carriers; spawn
     /// [`peer_watch`](Self::peer_watch) and [`peer_mempool`](Self::peer_mempool)
-    pub fn with_peers(self, peers: Arc<dyn ValidatorP2pSource>) -> Self {
+    pub fn with_peers(self, peers: Arc<dyn PeerSource>) -> Self {
         Self { peers: Some(peers), ..self }
     }
 
@@ -221,7 +221,7 @@ type SubmitAnswer = Result<TxId, SubmitError>;
 struct Submission<S> {
     core: Arc<ChainViewCore>,
     balancer: TrafficBalancer<S>,
-    peers: Option<Arc<dyn ValidatorP2pSource>>,
+    peers: Option<Arc<dyn PeerSource>>,
     raw: Bytes,
     txid: TxId,
 }
@@ -307,7 +307,7 @@ impl<S: ChainDataSource> Submission<S> {
                 Err(cause) => Pushed::Unreachable(cause),
             },
             (Entry::Peers, None) => {
-                unreachable!("peer relays come only from a ValidatorP2pSource")
+                unreachable!("peer relays come only from a PeerSource")
             }
         }
     }

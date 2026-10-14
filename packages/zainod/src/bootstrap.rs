@@ -28,7 +28,7 @@ use tracing::{debug, info};
 use zaino_persistence::IndexKind;
 use zaino_primitives::display::{ByteSize, Human};
 
-use crate::config::{DaemonConfig, SnapshotConfig};
+use crate::config::{DaemonConfig, IndexSnapshotConfig};
 use crate::error::IndexerError;
 use crate::progress::disk_bytes;
 use crate::status::{self, Bootstrap, Phase};
@@ -90,7 +90,7 @@ fn at<E: std::fmt::Display>(path: &Path) -> impl FnOnce(E) -> IndexerError + '_ 
 
 /// Fills every enabled index whose directory is missing or empty; a no-op once none is
 pub(crate) async fn bootstrap(
-    snapshot: &SnapshotConfig,
+    snapshot: &IndexSnapshotConfig,
     config: &DaemonConfig,
 ) -> Result<(), IndexerError> {
     let empty: Vec<(IndexKind, PathBuf)> = IndexKind::ALL
@@ -850,7 +850,7 @@ mod tests {
             bh = indexes.join("block_hash").display(),
         ))
         .expect("config");
-        let snapshot = SnapshotConfig {
+        let snapshot = IndexSnapshotConfig {
             manifest: format!("http://127.0.0.1:{port}/v/manifest.json"),
             connections: NonZeroU32::new(4).expect("4"),
         };

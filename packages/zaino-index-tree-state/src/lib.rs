@@ -22,7 +22,7 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&SEQUENCES, &[]);
 
-/// Buffered heap that commits a bulk run (a `Finalized` block commits at once)
+/// Buffered heap that commits a bulk run (a `FinalizedTip` block commits at once)
 ///
 /// - every commit syncs each level's file (~50) → 8 MiB = commit-bound in sandblast
 /// - 64 MiB = durable tip too far behind between commits

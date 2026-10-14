@@ -20,7 +20,7 @@ pub const FORMAT: u16 = 1;
 /// What the store holds (`zainod` opens and verifies it by these)
 pub const TABLES: Tables = Tables::new(&[], &[BY_HASH]);
 
-/// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks; a `Finalized` block
+/// Buffered heap that commits a bulk run (≈100 B per block → ≈20k blocks; a `FinalizedTip` block
 /// commits at once)
 pub const WRITE_BUFFER: std::num::NonZeroUsize =
     std::num::NonZeroUsize::new(2 << 20).expect("2 MiB is non-zero");

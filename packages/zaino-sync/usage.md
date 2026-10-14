@@ -1,12 +1,12 @@
 # `zaino-sync` — usage
 
-The final path: `FinalFollower` fetches every final block in order onto one byte-bounded
+The final path: `FinalizedFollower` fetches every final block in order onto one byte-bounded
 broadcast (`IndexerDataSink<Block>`); each index writer runs its own loop over its store
 (`apply` / `commit`) and publishes it through an `IndexPublisher`. Where it fits:
 [architecture §7](../../docs/architecture.md#final-path-zaino-sync).
 
 ```text
- VerifiedChain ─▶ FinalFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ value-balance ─▶ FeeSink ┐
+ VerifiedChain ─▶ FinalizedFollower ─▶ IndexerDataSink<Block> ─┬─▶ [queue] ─▶ value-balance ─▶ FeeSink ┐
  (final_tip)      fetch, in order  one Arc per step        ├─▶ [queue] ─▶ compact-block ◀────────┘
                                                            ├─▶ [queue] ─▶ tree-state
                                                            ├─▶ [queue] ─▶ block-hash
@@ -29,7 +29,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
         Self { store, publisher }
     }
 
-    pub fn handle(&self) -> IndexHandle<S::View> {      // → FinalFollower::subscribe + Nfs::add
+    pub fn handle(&self) -> IndexHandle<S::View> {      // → FinalizedFollower::subscribe + Nfs::add
         self.publisher.handle()
     }
 
@@ -40,11 +40,11 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
-                        fold(&MyReader::new(store.staged()), block, &mut changes);
+                        fold(&MyReader::new(store.applied()), block, &mut changes);
                         apply(&mut store, changes);     // full buffer = the store commits
                     }
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     commit(&mut store);                 // caught up: durable now
                 }
                 store
@@ -58,7 +58,7 @@ impl<S: Store<View: MapRead>> MyIndexWriter<S> {
 }
 ```
 
-## `FinalFollower`
+## `FinalizedFollower`
 
 - `new(chain, balancer, lookahead)`; `subscribe(kind, handle.tip(), queue)` per index;
   `progress()`; `run(cancel)`.
@@ -99,7 +99,7 @@ commit; `false` = writer gone).
 - `Subscription::next()`; `next_run()` → `Some(Run)` = next step + every `Apply` already
   queued, to the queue's budget (one batch of work, no wait past the first step) | `None` at
   `Shutdown`.
-- `Run { blocks, finalized }`: `finalized` = its last block = `Step::Finalized` (the chain's final
+- `Run { blocks, finalized }`: `finalized` = its last block = `Step::FinalizedTip` (the chain's final
   tip; ends the run).
 
 ## Writer loop
@@ -164,7 +164,7 @@ let handle = writer.stop().await.expect("stops at Shutdown"); // Err = the write
   `std::panic::resume_unwind(error.into_panic())`.
 - Random histories: `moves()` (1..16 of `Move::Send(1..=3)` / `Move::Reopen`, 4 : 1) and
   `write_buffers()` (MIN | MAX) as proptest strategies; `FinalStream::new(&blocks).steps(next)`
-  = the steps a move sends (a `Send`'s last `Finalized`, a `Reopen`'s = the last sent block again,
+  = the steps a move sends (a `Send`'s last `FinalizedTip`, a `Reopen`'s = the last sent block again,
   into the restarted writer), `tip()` = the durable tip to wait for; `block_on_paused(history)`
   runs the async body on a current-thread runtime, clock paused.
 - Fold preconditions (`assert_next` / `assert_run`) and the commit-failure panic are tested here,

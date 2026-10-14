@@ -65,7 +65,7 @@ tokio::spawn(writer.run(blocks));
   `S::View: SequenceRead`. zainod picks `DiskEngine`.
 - `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
   It folds each run's not-yet-held blocks together, one delta per block, then
-  `zaino_sync::apply`s each. It commits on a `Finalized` block, a full buffer
+  `zaino_sync::apply`s each. It commits on a `FinalizedTip` block, a full buffer
   (`WRITE_BUFFER` = 16 MiB) and `Shutdown`.
 - Fallible only at boot (`StoreError` from `open`). `new` asserts one `heights`
   record per committed height. `run` panics on a failed commit or an unfoldable

@@ -20,7 +20,7 @@ use super::{
     emit::{self, Series},
     layout::Shape,
     meta::{merge_candidates, tier_of, tier_shape},
-    reader::Snapshot,
+    reader::SegmentsView,
     slots::Slots,
     writer::{Merged, SegmentWriter},
     Fanout, Result, SegmentMeta,
@@ -38,7 +38,7 @@ const STALL_WINDOWS: usize = 2;
 /// - `batch` stages → owner's manifest commit → `committed` maps the new list, unlinks, launches
 pub(crate) struct SegmentLog {
     series: Series,
-    snapshot: Arc<Snapshot>,
+    snapshot: Arc<SegmentsView>,
     writer: SegmentWriter,
     fanout: Fanout,
     slots: Arc<Slots>,
@@ -91,7 +91,7 @@ impl SegmentLog {
         let shape = Shape::of(table);
         let dir = SegmentDir::new(fs, dir);
         dir.retain(listed)?;
-        let snapshot = Arc::new(Snapshot::open(&dir, shape, listed)?);
+        let snapshot = Arc::new(SegmentsView::open(&dir, shape, listed)?);
         let next = listed
             .iter()
             .map(|segment| segment.id.checked_add(1).expect("segment ids below u32::MAX"))
@@ -115,7 +115,7 @@ impl SegmentLog {
     }
 
     /// Committed segments, mapped
-    pub(crate) fn snapshot(&self) -> &Arc<Snapshot> {
+    pub(crate) fn snapshot(&self) -> &Arc<SegmentsView> {
         &self.snapshot
     }
 
@@ -168,7 +168,7 @@ impl SegmentLog {
 
     /// Owner's manifest with [`batch`](Self::batch)'s list durable → mapped, retired inputs
     /// unlinked, merges launched on every idle tier holding `fanout` segments
-    pub(crate) fn committed(&mut self) -> Result<()> {
+    pub(crate) fn on_manifest_durable(&mut self) -> Result<()> {
         let staged = self.staged.take().expect("committed follows batch");
         self.segments = staged.segments;
         self.snapshot = Arc::new(self.snapshot.next(self.writer.dir(), &self.segments)?);

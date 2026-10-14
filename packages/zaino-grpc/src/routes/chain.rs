@@ -13,7 +13,7 @@ use zaino_chainview::{ChainView, MempoolEntry, SubmitError};
 use zaino_index_compact_block::project_tx_at;
 use zaino_primitives::types::TransactionLocation;
 use zaino_proto::proto::service::{self, LightdInfo, RawTransaction};
-use zaino_snapshot::{Lightd, Snapshot};
+use zaino_snapshot::{GrpcSnapshot, Lightd};
 use zaino_source::{ChainDataSource, GetTransactionError, QueryError};
 use zaino_traffic::TrafficBalancer;
 use zcash_protocol::consensus::{
@@ -32,7 +32,10 @@ use crate::wire::{self, decode_request, frame, streamed_response, trailers, unar
 ///   pool); per request only the slot and the pool selection, over the cached bytes
 /// - a transaction the selection leaves with no component is dropped, as from a block
 ///   ([`project_tx_at`]); slots stay the listing's
-pub(crate) async fn mempool_tx<V, B>(snap: &Snapshot<V>, body: B) -> Result<Response<Body>, Status>
+pub(crate) async fn mempool_tx<V, B>(
+    snap: &GrpcSnapshot<V>,
+    body: B,
+) -> Result<Response<Body>, Status>
 where
     B: http_body::Body,
     B::Error: std::fmt::Display,
@@ -104,7 +107,7 @@ fn unmined(entry: &MempoolEntry) -> service::RawTransaction {
 /// - end ⇒ the next load serves the new tip (`GetLatestBlock` ≥ it: G5)
 /// - each record encoded once (first subscriber to reach it); the rest share it by refcount
 ///   (a burst ready at once = joined per stream, `Coalesced`)
-pub(crate) fn mempool_stream<V>(snap: &Snapshot<V>) -> Result<Response<Body>, Status> {
+pub(crate) fn mempool_stream<V>(snap: &GrpcSnapshot<V>) -> Result<Response<Body>, Status> {
     let tail = snap.mempool_stream().map_err(wire::unavailable)?;
     let opening = tail.opening_rendered(|entries| {
         wire::frame_all(&entries.iter().map(unmined).collect::<Vec<_>>())
@@ -183,7 +186,7 @@ pub(super) async fn raw_transaction<S: ChainDataSource>(
 /// - nothing served = `UNAVAILABLE`
 /// - `lightwalletProtocolVersion` = vendored protos' release (pepper-sync refuses < v0.5.0)
 pub(crate) fn lightd_info<V>(
-    snap: &Snapshot<V>,
+    snap: &GrpcSnapshot<V>,
     network: NetworkType,
     version: &str,
 ) -> Result<LightdInfo, Status> {

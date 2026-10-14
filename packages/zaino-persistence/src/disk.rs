@@ -29,17 +29,18 @@ use crate::{
     dir::{self, Depth, IndexDir},
     fs::{Durability, Fs},
     lsm::{
-        self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, Slots, Snapshot,
+        self, decode_list, encode_list, Fanout, LsmConfig, SegmentLog, SegmentMeta, SegmentsView,
+        Slots,
     },
     manifest::{self, BodyReader, Committed, Identity, ManifestError},
     overlay::{OverlayView, Uncommitted},
     pages::{footprint, scrub, PageError, Sealed},
     port::{
-        table_slot, BlockChanges, CommittedView, MapId, MapRead, PersistenceEngine, Schema,
+        table_slot, BlockChanges, DurableView, MapId, MapRead, PersistenceEngine, Schema,
         SequenceId, SequenceRead, Store, Verification, View,
     },
     sequence::{self, Seals, SequenceFile, SequencePages},
-    write_buffer::{StagedView, WriteBuffer},
+    write_buffer::{AppliedView, WriteBuffer},
     CommitFailed, StoreError,
 };
 
@@ -86,7 +87,7 @@ struct State {
     schema: Schema,
     tip: Option<BlockRef>,
     sequences: Vec<SequencePages>,
-    maps: Vec<Arc<Snapshot>>,
+    maps: Vec<Arc<SegmentsView>>,
 }
 
 /// Manifest body: what one commit made durable
@@ -311,7 +312,7 @@ impl DiskStore {
         let body = Body { committed: Committed { tip: Some(tip) }, sequences, maps };
         self.dir.commit(&body.encode())?;
         for log in &mut self.maps {
-            log.committed()?;
+            log.on_manifest_durable()?;
         }
 
         let previous = &self.view.state;
@@ -390,11 +391,11 @@ impl Store for DiskStore {
         Ok(())
     }
 
-    fn committed(&self) -> DiskView {
+    fn durable(&self) -> DiskView {
         self.view.clone()
     }
 
-    fn staged(&self) -> StagedView<'_, DiskView> {
+    fn applied(&self) -> AppliedView<'_, DiskView> {
         OverlayView::new(self.view.clone(), &self.buffer)
     }
 }
@@ -427,7 +428,7 @@ impl DiskView {
         table_slot(&self.state.sequences, table)
     }
 
-    fn map_snapshot(&self, table: MapId) -> &Snapshot {
+    fn map_snapshot(&self, table: MapId) -> &SegmentsView {
         table_slot(&self.state.maps, table).as_ref()
     }
 }
@@ -442,7 +443,7 @@ impl View for DiskView {
     }
 }
 
-impl CommittedView for DiskView {}
+impl DurableView for DiskView {}
 
 impl SequenceRead for DiskView {
     fn len(&self, table: SequenceId) -> u64 {

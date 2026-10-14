@@ -1,4 +1,4 @@
-//! [`FinalFollower`]: every final block, in order, onto the final stream (`usage.md`)
+//! [`FinalizedFollower`]: every final block, in order, onto the final stream (`usage.md`)
 //!
 //! - Target = the chain's final tip height
 //! - A height the verified chain holds a header for: by hash, from any member (peers included),
@@ -8,7 +8,7 @@
 //! - Each block's parent = the block sent before it, and = the durable tip of each index it
 //!   extends (else `Unlinked` / `Diverged`: stop, never skip)
 //! - Bulk and tip alike: each block once, after it turns final (the NFS never sends)
-//! - The block at the chain's final tip = `Finalized` (writers commit after it, else on a full
+//! - The block at the chain's final tip = `FinalizedTip` (writers commit after it, else on a full
 //!   buffer)
 
 use std::num::NonZeroUsize;
@@ -40,7 +40,7 @@ pub enum FollowError {
     ChainGone,
 }
 
-pub struct FinalFollower<S> {
+pub struct FinalizedFollower<S> {
     chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
     balancer: TrafficBalancer<S>,
     lookahead: NonZeroUsize,
@@ -49,7 +49,7 @@ pub struct FinalFollower<S> {
     progress: SyncProgress,
 }
 
-impl<S: ChainDataSource> FinalFollower<S> {
+impl<S: ChainDataSource> FinalizedFollower<S> {
     /// `lookahead` = blocks in flight ahead of the next block sent, by hash and by height alike
     pub fn new(
         chain: watch::Receiver<Option<Arc<VerifiedChain>>>,
@@ -151,7 +151,7 @@ async fn follow<S: ChainDataSource>(
                     progress.hand(height);
                     let final_tip = chain.borrow().as_ref().map(|chain| chain.final_tip().height);
                     let step = match Some(height) == final_tip {
-                        true => Step::Finalized { height, data: block },
+                        true => Step::FinalizedTip { height, data: block },
                         false => Step::Apply { height, data: block },
                     };
                     sink.send(step).await;
@@ -198,7 +198,7 @@ mod tests {
     /// Chain A 0..=11, final 5 then 8; an honest member + a `Lie::Poisoned` liar (by height
     /// too); two subscribers, one durable at A2, one fresh:
     /// - both queues = A0..=A8, once each, in order, the honest bodies (a lie never sent)
-    /// - the final tip's block (A5, then A8) `Finalized`, every other `Apply`
+    /// - the final tip's block (A5, then A8) `FinalizedTip`, every other `Apply`
     /// - nothing above the final tip; progress = the last height sent, blocks counted
     /// - cancel → `Ok`, `Shutdown` last in every queue
     #[tokio::test(start_paused = true)]
@@ -225,7 +225,7 @@ mod tests {
         let (verified, verified_rx) = watch::channel(Some(final_at_five));
 
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
-        let mut follower = FinalFollower::new(verified_rx, balancer, lookahead);
+        let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
         let durable_tip_a2 = Some(trunk[2].at());
         let mut durable_at_a2 =
             follower.subscribe(IndexKind::BlockHash, durable_tip_a2, NonZeroUsize::MAX);
@@ -238,7 +238,7 @@ mod tests {
             for _ in 0..count {
                 let (height, data, finalized) = match within("a step", queue.next()).await {
                     Step::Apply { height, data } => (height, data, false),
-                    Step::Finalized { height, data } => (height, data, true),
+                    Step::FinalizedTip { height, data } => (height, data, true),
                     Step::Shutdown => panic!("Shutdown early"),
                 };
                 assert_eq!(data.header().height, height, "step height = its block's");
@@ -292,7 +292,7 @@ mod tests {
 
         let final_at_five = Some(Arc::new(chain.verified_final(a7, h(5))));
         let (_verified, verified_rx) = watch::channel(final_at_five);
-        let mut follower = FinalFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
+        let mut follower = FinalizedFollower::new(verified_rx, balancer.clone(), NonZeroUsize::MIN);
         let durable_tip_a4 = Some(chain.blocks(a7)[4].at());
         let mut above = follower.subscribe(IndexKind::TreeState, durable_tip_a4, NonZeroUsize::MAX);
         let mut foreign = follower.subscribe(IndexKind::BlockHash, Some(x1), NonZeroUsize::MAX);
@@ -311,13 +311,13 @@ mod tests {
 
         let (verified, verified_rx) =
             watch::channel(Some(Arc::new(chain.verified_final(a7, h(5)))));
-        let mut follower = FinalFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
+        let mut follower = FinalizedFollower::new(verified_rx, balancer, NonZeroUsize::MIN);
         let mut fresh = follower.subscribe(IndexKind::TreeState, None, NonZeroUsize::MAX);
         let running = tokio::spawn(follower.run(CancellationToken::new()));
         let mut sent = Vec::new();
         for _ in 0..=5 {
             let data = match within("a step", fresh.next()).await {
-                Step::Apply { data, .. } | Step::Finalized { data, .. } => data,
+                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => data,
                 Step::Shutdown => panic!("Shutdown early"),
             };
             sent.push(data.at());
@@ -366,7 +366,7 @@ mod peers {
         let final_at_eight = Some(Arc::new(chain.verified_final(a11, h(8))));
         let (_verified, verified_rx) = watch::channel(final_at_eight);
         let lookahead = NonZeroUsize::new(3).expect("nonzero");
-        let mut follower = FinalFollower::new(verified_rx, balancer, lookahead);
+        let mut follower = FinalizedFollower::new(verified_rx, balancer, lookahead);
         let mut queue = follower.subscribe(IndexKind::BlockHash, None, NonZeroUsize::MAX);
         tokio::spawn(follower.run(cancel.clone()));
 
@@ -374,7 +374,7 @@ mod peers {
         for _ in 0..=8 {
             let step = tokio::time::timeout(Duration::from_secs(60), queue.next()).await;
             match step.expect("a final block within a minute") {
-                Step::Apply { data, .. } | Step::Finalized { data, .. } => sent.push(data.at()),
+                Step::Apply { data, .. } | Step::FinalizedTip { data, .. } => sent.push(data.at()),
                 Step::Shutdown => panic!("Shutdown early"),
             }
         }

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use futures::FutureExt;
 use proptest::prelude::*;
-use zaino_chainview::{ChainViewSnapshot, EndpointSet};
+use zaino_chainview::{ChainViewSnapshot, TrustedValidatorSet};
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{HeaderChain, VerifiedChain};
 use zaino_nfs::{ChainParams, Indexed};
@@ -116,12 +116,12 @@ impl Model {
         Arc::new(self.headers.verified().expect("genesis verified"))
     }
 
-    fn set(mask: u8) -> EndpointSet {
-        EndpointSet::at((0..ADDRESSES.len()).filter(|at| mask & (1 << at) != 0))
+    fn set(mask: u8) -> TrustedValidatorSet {
+        TrustedValidatorSet::at((0..ADDRESSES.len()).filter(|at| mask & (1 << at) != 0))
     }
 
     /// Holders past an unread claim drop out (as a fold's `holds` would)
-    fn held_by(&self) -> EndpointSet {
+    fn held_by(&self) -> TrustedValidatorSet {
         let unread = if self.read { 0 } else { self.ahead };
         Self::set(self.held & !unread)
     }

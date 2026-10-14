@@ -44,7 +44,7 @@ possible, take everything else from as many peers as possible.**
        │ watch<VerifiedChain>       │
        ├──────────────────┐         │
        ▼                  ▼         │
-  FinalFollower        Nfs (RAM)    │
+  FinalizedFollower        Nfs (RAM)    │
   (zaino-sync)         tip overlay  │
        │ IndexerDataSink     │ Indexed
        ▼                     ▼      ▼
@@ -207,7 +207,7 @@ unchecked: Ok at the first acceptance (trusted Ok | any trusted listing | peer q
 
 ### Final path (`zaino-sync`)
 
-`FinalFollower` streams `lowest durable tip + 1 ..= final tip` into one `IndexerDataSink<Block>`:
+`FinalizedFollower` streams `lowest durable tip + 1 ..= final tip` into one `IndexerDataSink<Block>`:
 
 - Heights the verified chain has a header for: fetched by hash from any member (peers included),
   checked against the header (hash, merkle root, coinbase height).
@@ -327,8 +327,8 @@ A trait exists only where there must be more than one implementation:
 
 | Trait                               | Implementations                                | Why                                      |
 | ----------------------------------- | ---------------------------------------------- | ---------------------------------------- |
-| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZcashGrpcClient`, `MockValidator` | RPC versions; tests control the data |
-| `zaino_chainview::ValidatorP2pSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets; Tor later       |
+| `zaino_source::ChainDataSource`     | `ZcashLegacyRpcClient`, `ZebraIndexerGrpcClient`, `MockValidator` | RPC versions; tests control the data |
+| `zaino_chainview::PeerSource` | zainod `ZebraPeers`, `MockPeers`             | real peers need sockets; Tor later       |
 | `zaino_traffic::PeerTransport`      | zainod `ZebraPeers`, `MockPeerSet`             | keeps zebra-network out of the balancer  |
 | `zaino_chainview::UnspentOutputs`   | zainod `ServedUtxos`, a `MockChain` `Ledger`   | the chain view sits below the indexes    |
 | `zaino_persistence::PersistenceEngine`, `fs::Fs` | `DiskEngine`; `RealFs`, `SimFs`   | one storage contract; crash testing      |

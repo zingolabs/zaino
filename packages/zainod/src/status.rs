@@ -17,7 +17,7 @@ use std::{
 use serde::Serialize;
 use tokio::sync::watch;
 use zaino_persistence::{DiskView, IndexKind};
-use zaino_snapshot::{Down, Report, Snapshot, Snapshots, Standing};
+use zaino_snapshot::{Down, GrpcSnapshot, Report, Snapshots, Standing};
 use zaino_sync::SyncProgress;
 use zaino_traffic::{Health, MemberTable};
 use zcash_protocol::consensus::NetworkType;
@@ -137,7 +137,7 @@ enum Stage {
     Booted(Booted),
 }
 
-/// One snapshot's facts: `done` = served height (else handed), `target` = [`Snapshot::sync_target`]
+/// One snapshot's facts: `done` = served height (else handed), `target` = [`GrpcSnapshot::sync_target`]
 struct Booted {
     standing: Standing,
     overloaded: bool,
@@ -148,7 +148,7 @@ struct Booted {
 }
 
 impl Booted {
-    fn of(sources: &Sources, snap: &Snapshot<DiskView>) -> Self {
+    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>) -> Self {
         let served = snap.tips().served.map(|tip| tip.height);
         let (progress, rate) = (&sources.progress, *sources.block_rate.borrow());
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -401,10 +401,10 @@ struct Chain {
 }
 
 impl Chain {
-    fn of(sources: &Sources, snap: &Snapshot<DiskView>) -> Self {
+    fn of(sources: &Sources, snap: &GrpcSnapshot<DiskView>) -> Self {
         let tips = snap.tips();
         let endpoints = snap.view().endpoints();
-        let answering = |meta: &&zaino_chainview::ValidatorMetadata| {
+        let answering = |meta: &&zaino_chainview::TrustedValidatorMeta| {
             matches!(meta.health, Health::Live | Health::CatchingUp)
         };
         let info = configured_network()

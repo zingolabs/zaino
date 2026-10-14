@@ -35,7 +35,7 @@ pub fn step(block: &Arc<Block>) -> Step<Block> {
 
 /// `block` as the chain's final tip (the writer commits after it)
 pub fn finalized(block: &Arc<Block>) -> Step<Block> {
-    Step::Finalized { height: block.header().height, data: Arc::clone(block) }
+    Step::FinalizedTip { height: block.header().height, data: Arc::clone(block) }
 }
 
 /// Writer task on its own final stream, read through its handle
@@ -86,7 +86,7 @@ impl<V: View> Writer<V> {
 
 /// One move of a random final stream over a fixed chain
 ///
-/// - `Send(n)`: next `n` blocks, the last `Finalized`
+/// - `Send(n)`: next `n` blocks, the last `FinalizedTip`
 /// - `Reopen`: writer restarted, the last block sent resent (held: skipped)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Move {
@@ -100,7 +100,7 @@ pub fn moves() -> impl Strategy<Value = Vec<Move>> {
     collection::vec(one, 1..16)
 }
 
-/// `MIN` (every block its own commit) or `MAX` (commits at `Finalized` and `Shutdown` only)
+/// `MIN` (every block its own commit) or `MAX` (commits at `FinalizedTip` and `Shutdown` only)
 pub fn write_buffers() -> impl Strategy<Value = NonZeroUsize> {
     prop_oneof![Just(NonZeroUsize::MIN), Just(NonZeroUsize::MAX)]
 }

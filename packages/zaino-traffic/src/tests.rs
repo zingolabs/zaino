@@ -15,12 +15,12 @@ use zcash_protocol::{BlockHash, TxId};
 
 use crate::testing::PeerSetViews;
 use crate::{
-    HeaderAsk, Health, Limits, MemberId, Peers, Push, TrafficBalancer, Trusted, Urgency,
-    ValidatorId,
+    HeaderAsk, Health, Limits, MemberId, Peers, Push, TrafficBalancer, Trusted, TrustedValidatorId,
+    Urgency,
 };
 
-fn v(index: usize) -> ValidatorId {
-    ValidatorId::new(index).expect("small")
+fn v(index: usize) -> TrustedValidatorId {
+    TrustedValidatorId::new(index).expect("small")
 }
 
 /// Ours (priority 0, lacks the transaction) + partner (priority 1, holds it):

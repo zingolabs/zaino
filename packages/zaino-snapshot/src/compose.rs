@@ -49,7 +49,11 @@ fn synced(
 ///
 /// - after `next`'s store and `prev`'s seal (the publisher's order)
 #[cfg(test)]
-pub(crate) fn check<V>(prev: &crate::Snapshot<V>, next: &crate::Snapshot<V>, depth: ReorgDepth) {
+pub(crate) fn check<V>(
+    prev: &crate::GrpcSnapshot<V>,
+    next: &crate::GrpcSnapshot<V>,
+    depth: ReorgDepth,
+) {
     use crate::feed::nonfinalized_txids;
 
     assert_eq!(next.seq, prev.seq + 1, "G2: seq + 1 per publish");
@@ -91,7 +95,7 @@ pub(crate) fn check<V>(prev: &crate::Snapshot<V>, next: &crate::Snapshot<V>, dep
 /// A mempool is read: a `Live` validator (its mempool listed) among the tip's holders, or the
 /// peers' listings spanning a quorum's netgroups
 #[cfg(test)]
-pub(crate) fn mempool_read<V>(snap: &crate::Snapshot<V>) -> bool {
+pub(crate) fn mempool_read<V>(snap: &crate::GrpcSnapshot<V>) -> bool {
     use zaino_traffic::Health;
 
     let endpoints = snap.view().endpoints();

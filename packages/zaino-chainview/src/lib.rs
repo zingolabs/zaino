@@ -27,13 +27,13 @@ mod network_model;
 #[cfg(test)]
 mod tests;
 
-pub use endpoints::{Agreement, EndpointSet, ValidatorMetadata};
+pub use endpoints::{Agreement, TrustedValidatorMeta, TrustedValidatorSet};
 pub use error::{ConfigError, SubmitError};
 pub use headers::HeaderSync;
 pub use observe::ObservationFold;
 pub use peer_mempool::PeerMempool;
 pub use peers::PeerWatch;
-pub use ports::{Heard, UnspentOutputs, ValidatorP2pSource};
+pub use ports::{Heard, PeerSource, UnspentOutputs};
 pub use snapshot::{ChainViewSnapshot, Count, MempoolEntry, MempoolView, Projection, Spread};
 pub use submit::SubmitPolicy;
 pub use telemetry::{describe_metrics, Alarms, METRIC_BUCKETS};

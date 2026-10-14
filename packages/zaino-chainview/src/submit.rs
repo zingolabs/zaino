@@ -19,9 +19,9 @@ use std::time::Duration;
 use tokio::time::Instant;
 use zaino_source::{NonDomainError, SendRawTransactionError};
 
-use zaino_traffic::ValidatorId;
+use zaino_traffic::TrustedValidatorId;
 
-use crate::endpoints::EndpointSet;
+use crate::endpoints::TrustedValidatorSet;
 
 /// How hard Zaino pushes one transaction into the network
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ impl Default for SubmitPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Entry {
     Peers,
-    Trusted(ValidatorId),
+    Trusted(TrustedValidatorId),
 }
 
 /// One push's answer: `Accepted` = trusted validator admitted it; `Delivered` = the peers took the
@@ -78,13 +78,13 @@ impl Seen {
     /// `listing` ⊆ `readers`; `quorum` = a peer quorum admitted it; `quorate` = the peers'
     /// listings can make one
     pub(crate) fn of(
-        listing: EndpointSet,
+        listing: TrustedValidatorSet,
         quorum: bool,
-        readers: EndpointSet,
+        readers: TrustedValidatorSet,
         quorate: bool,
         tried: &[Entry],
     ) -> Self {
-        let mut tried_trusted = EndpointSet::default();
+        let mut tried_trusted = TrustedValidatorSet::default();
         for entry in tried {
             if let Entry::Trusted(index) = *entry {
                 tried_trusted.insert(index);
@@ -121,7 +121,7 @@ pub(crate) struct Job {
     policy: SubmitPolicy,
     rng: fastrand::Rng,
     peers: bool,
-    trusted: Vec<ValidatorId>,
+    trusted: Vec<TrustedValidatorId>,
     tried: Vec<Entry>,
     deadline: Option<Instant>,
     accepted: bool,
@@ -135,7 +135,7 @@ impl Job {
     /// `checkadmission` accepted it
     pub(crate) fn new(
         peers: bool,
-        trusted: Vec<ValidatorId>,
+        trusted: Vec<TrustedValidatorId>,
         checked: bool,
         policy: SubmitPolicy,
         rng: fastrand::Rng,
@@ -319,12 +319,12 @@ mod tests {
         }
 
         fn seen(&self, tried: &[Entry], at: Instant) -> Seen {
-            let index = |i: usize| ValidatorId::new(i).expect("< MAX");
-            let readers: EndpointSet = (0..self.trusted.len())
+            let index = |i: usize| TrustedValidatorId::new(i).expect("< MAX");
+            let readers: TrustedValidatorSet = (0..self.trusted.len())
                 .filter(|&i| !matches!(self.trusted[i], Node::Unread))
                 .map(index)
                 .collect();
-            let listing: EndpointSet = readers
+            let listing: TrustedValidatorSet = readers
                 .positions()
                 .filter(|&i| self.holds(Holder::Trusted(i), at))
                 .map(index)
@@ -364,7 +364,7 @@ mod tests {
                 propagation_threshold: Duration::from_millis(threshold_ms),
                 max_attempts: NonZeroU8::new(max_attempts).expect("≥ 1"),
             };
-            let index = |i: usize| ValidatorId::new(i).expect("< MAX");
+            let index = |i: usize| TrustedValidatorId::new(i).expect("< MAX");
             let start = Instant::now();
             let mut now = start;
             let mut world =
@@ -477,11 +477,12 @@ mod tests {
     /// - a peer quorum = listed + spread, no trusted validator needed; quorate peers = observable
     #[test]
     fn spread_counts_only_sources_that_were_never_an_entry() {
-        let t = |i: usize| ValidatorId::new(i).expect("< MAX");
-        let set = |of: &[usize]| of.iter().map(|&i| t(i)).collect::<EndpointSet>();
+        let t = |i: usize| TrustedValidatorId::new(i).expect("< MAX");
+        let set = |of: &[usize]| of.iter().map(|&i| t(i)).collect::<TrustedValidatorSet>();
         let readers = set(&[0, 1]);
         let seen = |listed, spread, observable| Seen { listed, spread, observable };
-        type Case = (&'static str, EndpointSet, bool, EndpointSet, bool, Vec<Entry>, Seen);
+        type Case =
+            (&'static str, TrustedValidatorSet, bool, TrustedValidatorSet, bool, Vec<Entry>, Seen);
         let cases: [Case; 7] = [
             (
                 "nothing yet",
@@ -557,7 +558,7 @@ mod tests {
     /// - Checked + nothing observable yet → still a first push (never done unrelayed)
     #[test]
     fn the_first_attempt_is_the_peers_else_a_uniform_trusted_validator() {
-        let index = |i: usize| ValidatorId::new(i).expect("< MAX");
+        let index = |i: usize| TrustedValidatorId::new(i).expect("< MAX");
         let blind = Seen { listed: false, spread: false, observable: false };
         for (peers, checked) in [(true, false), (true, true)] {
             let trusted = (0..4).map(index).collect();

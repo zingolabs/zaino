@@ -10,11 +10,15 @@ use futures::future::BoxFuture;
 use futures::FutureExt as _;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerWatch, ValidatorP2pSource};
+use zaino_chainview::{ChainView, HeaderSync, ObservationFold, PeerSource, PeerWatch};
 use zaino_header_chain::HeaderChain;
 use zaino_primitives::types::ReorgDepth;
-use zaino_source::{ChainDataSource, IndexerWatch, ZcashGrpcClient, ZcashLegacyRpcClient};
-use zaino_traffic::{PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, ValidatorId};
+use zaino_source::{
+    ChainDataSource, ZcashLegacyRpcClient, ZebraIndexerGrpcClient, ZebraIndexerWatch,
+};
+use zaino_traffic::{
+    PeerTransport, Peers, TrafficBalancer, TrafficDriver, Trusted, TrustedValidatorId,
+};
 use zcash_protocol::local_consensus::LocalNetwork;
 
 use crate::config::{DaemonConfig, TrustedValidatorConfig};
@@ -30,7 +34,7 @@ use crate::peers::ZebraPeers;
 pub(crate) struct Wiring<S: ChainDataSource> {
     pub(crate) balancer: TrafficBalancer<S>,
     pub(crate) balancing: TrafficDriver<S>,
-    pub(crate) watches: Vec<(ValidatorId, IndexerWatch)>,
+    pub(crate) watches: Vec<(TrustedValidatorId, ZebraIndexerWatch)>,
     pub(crate) p2p: Option<(Arc<ZebraPeers>, BoxFuture<'static, ()>)>,
 }
 
@@ -65,9 +69,9 @@ pub(crate) fn connect<S: ChainDataSource>(
     let (balancer, balancing) = TrafficBalancer::new(trusted, peers);
     let watches = validators.iter().enumerate().filter_map(|(index, validator)| {
         let address = validator.indexer_address.as_ref()?;
-        let member = ValidatorId::new(index)?;
+        let member = TrustedValidatorId::new(index)?;
         let tls = validator.indexer_tls();
-        let watch = IndexerWatch::at(address, tls.as_ref(), validator.into());
+        let watch = ZebraIndexerWatch::at(address, tls.as_ref(), validator.into());
         Some(watch.map(|watch| (member, watch)))
     });
     let watches = watches.collect::<Result<Vec<_>, _>>().map_err(IndexerError::from)?;
@@ -90,7 +94,7 @@ pub(crate) fn view<S: ChainDataSource>(
     let mut view = view.with_submit_policy((&config.submission).into());
     let mut starting = None;
     if let Some((port, start)) = p2p {
-        view = view.with_peers(port as Arc<dyn ValidatorP2pSource>);
+        view = view.with_peers(port as Arc<dyn PeerSource>);
         starting = Some(start);
     }
     let peers = starting.zip(view.peer_watch());
@@ -128,12 +132,12 @@ pub(crate) fn legacy_client(
 /// - [`DaemonConfig::validate`] refuses a validator without `indexer_address` first
 pub(crate) fn grpc_client(
     validator: &TrustedValidatorConfig,
-) -> Result<ZcashGrpcClient, IndexerError> {
+) -> Result<ZebraIndexerGrpcClient, IndexerError> {
     let indexer = validator.indexer_address.as_deref().ok_or_else(|| {
         IndexerError::Config(format!("{}: no indexer_address", validator.jsonrpc_address))
     })?;
     let legacy = legacy_client(validator)?;
     let tls = validator.indexer_tls();
-    ZcashGrpcClient::at(legacy, indexer, tls.as_ref(), validator.into(), validator.link())
+    ZebraIndexerGrpcClient::at(legacy, indexer, tls.as_ref(), validator.into(), validator.link())
         .map_err(IndexerError::from)
 }

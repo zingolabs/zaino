@@ -70,7 +70,7 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
     let (dropped, cached) = (segments("dropped"), segments("cached"));
     assert!(dropped > 0 && dropped == cached, "same rows, same segment bytes");
     let variable: u64 = (0..20_000u64).map(|n| 100 + n % 200).sum::<u64>() + 20_000 * 8;
-    let footprint = store.committed().footprint();
+    let footprint = store.durable().footprint();
     let opened = footprint.iter().find(|table| table.table == "dropped").and_then(|t| t.cached);
     assert!(opened.is_some_and(|bytes| bytes < dropped / 10), "dropped: {footprint:?}");
     let tables = [
@@ -89,7 +89,7 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
         .collect();
     assert_eq!(footprint, expected);
 
-    let simulated = sim.committed().footprint();
+    let simulated = sim.durable().footprint();
     let unknowable: Vec<TableFootprint> =
         expected.iter().map(|table| TableFootprint { cached: None, ..*table }).collect();
     assert_eq!(simulated, unknowable);

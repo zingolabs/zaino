@@ -7,7 +7,7 @@ use http_body::Frame;
 use tonic::{body::Body, Status};
 use zaino_index_compact_block::{CompactBlockReader, Pools, RangeCursor, ServeError};
 use zaino_nfs::At;
-use zaino_persistence::{CommittedView, IndexKind, OverlayView};
+use zaino_persistence::{DurableView, IndexKind, OverlayView};
 use zcash_protocol::consensus::BlockHeight;
 
 use crate::limits::Lane;
@@ -46,7 +46,7 @@ struct Walk<V> {
 ///
 /// - `grpc-status` in trailers only (headers precede the walk; a status there = response done)
 /// - `reproject` = per-chunk rewrite (`Ok` for `GetBlockRange`, so its records stay slices)
-fn range_response<V: CommittedView>(
+fn range_response<V: DurableView>(
     walk: Walk<V>,
     reads: ReadLanes,
     reproject: fn(Bytes) -> Result<Bytes, Status>,
@@ -102,7 +102,7 @@ pub(crate) async fn block<V, B>(
     reads: &ReadLanes,
 ) -> Result<Response<Body>, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -116,7 +116,7 @@ async fn stored_block<V, B>(
     reads: &ReadLanes,
 ) -> Result<Bytes, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -149,7 +149,7 @@ pub(crate) async fn range<V, B>(
     reads: ReadLanes,
 ) -> Result<Response<Body>, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -162,7 +162,7 @@ where
 
 /// - walk order up to the first height past `through`: a first height past it = refused before
 ///   any block (lightwalletd: the first `getblock` fails)
-fn open_range<V: CommittedView>(
+fn open_range<V: DurableView>(
     blocks: Blocks<V>,
     through: BlockHeight,
     request: &service::BlockRange,
@@ -221,7 +221,7 @@ mod deprecated_nullifiers {
         reads: ReadLanes,
     ) -> Result<Response<Body>, Status>
     where
-        V: zaino_persistence::CommittedView,
+        V: zaino_persistence::DurableView,
         B: http_body::Body,
         B::Error: std::fmt::Display,
     {
@@ -346,7 +346,7 @@ mod tests {
         assert_eq!(codes, expected, "unknown hash, other block at 2, short hash, no locator");
     }
 
-    /// Snapshot served at 5: a range reaching past the tip streams every block to the tip
+    /// GrpcSnapshot served at 5: a range reaching past the tip streams every block to the tip
     /// in walk order, then `OUT_OF_RANGE` in the trailers, never an early `OK` end (iOS hangs on
     /// one); a first height past the tip = `OUT_OF_RANGE` before any block (trailers-only)
     #[tokio::test]

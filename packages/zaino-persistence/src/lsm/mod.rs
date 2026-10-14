@@ -36,7 +36,7 @@ pub(crate) use dir::files;
 pub(crate) use emit::{describe_metrics, metric_names};
 pub(crate) use log::{stall_at, SegmentLog};
 pub(crate) use meta::{decode_list, encode_list, SegmentMeta};
-pub(crate) use reader::Snapshot;
+pub(crate) use reader::SegmentsView;
 pub(crate) use slots::Slots;
 
 use std::num::{NonZeroU32, NonZeroUsize};

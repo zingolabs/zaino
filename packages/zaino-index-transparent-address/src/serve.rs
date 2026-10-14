@@ -173,13 +173,13 @@ mod tests {
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(two).iter().enumerate() {
             let mut changes = store.changes(block.at());
-            fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
+            fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
             store.apply(changes);
             if height == 1 {
                 store.commit().expect("SimFs commit");
             }
         }
-        let at_two = TransparentAddressReader::new(store.staged());
+        let at_two = TransparentAddressReader::new(store.applied());
         let at_one = at_two.clone().as_of(h(1));
         let received = AddressUtxo {
             outpoint: OutPoint::new([0x77; 32], 0),
@@ -227,14 +227,14 @@ mod tests {
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for (height, block) in chain.blocks(three).iter().enumerate() {
             let mut changes = store.changes(block.at());
-            fold(&TransparentAddressReader::new(store.staged()), block, &mut changes);
+            fold(&TransparentAddressReader::new(store.applied()), block, &mut changes);
             store.apply(changes);
             if height == 2 {
                 store.commit().expect("SimFs commit");
             }
         }
         let budget = |rows: usize| {
-            TransparentAddressReader::new(store.staged())
+            TransparentAddressReader::new(store.applied())
                 .with_max_rows(NonZeroUsize::new(rows).expect("non-zero"))
         };
         let over = |rows: usize| Some(ServeError::TooManyRows { limit: rows });

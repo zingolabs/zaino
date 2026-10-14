@@ -197,7 +197,7 @@ Each lives in the crate that owns its type, behind that crate's `testing` featur
 | `HeaderViews` (trait on `MockChain`) | `zaino-header-chain` | `header_params()`, `header_chain(depth)`, `verified(tip)`, `verified_final(tip, final_at)` |
 | `ValidatorViews` (trait on `MockChain`) | `zaino-source` | `blockchain_info(tip)`; `validator(tip)`: a `MockValidator` (`ChainDataSource`); `follow` another tip to extend, reorg or retreat; `hear` entries of the chain's mempool; scripted latency, failures and `Lie`s |
 | `PeerSetViews` (trait on `MockChain`) | `zaino-traffic` | `peer_set(tip)`: a `MockPeerSet` (`PeerTransport`) over one path, `hold(height)` to move its tip |
-| `MockPeers` | `zaino-chainview` | a `ValidatorP2pSource`: live peers list mempools and take pushes, dead ones refuse |
+| `MockPeers` | `zaino-chainview` | a `PeerSource`: live peers list mempools and take pushes, dead ones refuse |
 | `UnspentOutputs for Ledger` | `zaino-chainview` | `chain.ledger(tip)` as the UTXO set a peer quorum's prevouts are priced from |
 | `ChainParams::of(&chain)` | `zaino-nfs` | the chain's network label and upgrade schedule |
 

@@ -45,7 +45,7 @@ pub struct TreeStateIndexWriter<S: Store> {
 impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
     /// Over `store` (opened with [`TABLES`](crate::TABLES)) at its committed tip
     pub fn new(store: S) -> Self {
-        let view = store.committed();
+        let view = store.durable();
         let held = view.tip().map_or(0, |tip| u64::from(tip.height) + 1);
         assert_eq!(view.sequence(HEIGHTS).len(), held, "{NAME}: one record per committed height");
         let publisher = IndexPublisher::new(&store);
@@ -72,12 +72,12 @@ impl<S: Store<View: SequenceRead>> TreeStateIndexWriter<S> {
                 let fresh: Vec<&Block> = fresh.map(|(_, block)| &**block).collect();
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.at())).collect();
-                let folded = fold_run(&TreeStateReader::new(store.staged()), &fresh, &mut out);
+                let folded = fold_run(&TreeStateReader::new(store.applied()), &fresh, &mut out);
                 folded.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 for changes in out {
                     write += apply(&mut store, changes);
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -364,7 +364,7 @@ mod tests {
                     break;
                 }
                 let these = &blocks[next_block..(next_block + length).min(blocks.len())];
-                let parent = TreeStateReader::new(store.staged());
+                let parent = TreeStateReader::new(store.applied());
                 let frontier = parent.frontier::<Mix>(ShieldedPool::Sapling, next_leaf);
                 prop_assert_eq!(&frontier, &library(next_leaf), "frontier read before run {}", run);
                 let mut leaves = Vec::new();
@@ -388,7 +388,7 @@ mod tests {
                 out.extend(retained);
                 next_block += these.len();
             }
-            let parent = TreeStateReader::new(store.staged());
+            let parent = TreeStateReader::new(store.applied());
             let last = parent.frontier::<Mix>(ShieldedPool::Sapling, total as u64);
             prop_assert_eq!(last, library(total as u64), "frontier after every run");
 
@@ -468,7 +468,7 @@ mod tests {
             .iter()
             .map(|block| {
                 let mut changes = store.changes(block.at());
-                fold(&TreeStateReader::new(store.staged()), block, &mut changes).expect("folds");
+                fold(&TreeStateReader::new(store.applied()), block, &mut changes).expect("folds");
                 let folded = tables(&changes);
                 store.apply(changes);
                 folded
@@ -487,7 +487,7 @@ mod tests {
                 }
                 let mut out: Vec<BlockChanges> =
                     run.iter().map(|b| store.changes(b.at())).collect();
-                let parent = TreeStateReader::new(store.staged());
+                let parent = TreeStateReader::new(store.applied());
                 fold_run(&parent, &std::mem::take(&mut run), &mut out).expect("folds");
                 for changes in out {
                     folded.push(tables(&changes));
@@ -518,7 +518,7 @@ mod tests {
         let run: Vec<&Block> = blocks.iter().map(|block| &**block).collect();
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
-        let refused = fold_run(&TreeStateReader::new(store.staged()), &run, &mut out);
+        let refused = fold_run(&TreeStateReader::new(store.applied()), &run, &mut out);
         assert_eq!(refused.err(), Some(FoldError::Commitment { height: h(2) }));
     }
 
@@ -599,11 +599,11 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) + 1);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as u32);
             assert!(acked.contains(&count), "{label}: recovered {count}");
             if let Some(tip) = count.checked_sub(1) {
-                assert_eq!(trees(store.committed(), tip), seen(tip), "{label}: at {tip}");
+                assert_eq!(trees(store.durable(), tip), seen(tip), "{label}: at {tip}");
             }
 
             let writer = start(store);
@@ -742,7 +742,7 @@ mod tests {
         writer.send(finalized(&blocks[4])).await;
         writer.durable_at(h(4)).await;
         writer.stop().await.expect("stops at Shutdown");
-        let view = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).committed());
+        let view = TreeStateReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
         let roots = view.subtree_roots(ShieldedPool::Orchard, 0, 0).expect("roots");
         let expected = [(2, &blocks[2]), (4, &blocks[4])].map(|(at, block)| SubtreeRoot {
             root: tree_root(&view, at),

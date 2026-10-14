@@ -1,7 +1,7 @@
 //! Canned zebrad blocks through both clients → decoded block = block-explorer data
 //!
 //! - `tests/fixtures/block_<height>.hex` = zebrad's `getblock <height> 0` hex
-//! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC; `ZcashGrpcClient` = the same
+//! - `ZcashLegacyRpcClient` = `getblock … 0` hex over JSON-RPC; `ZebraIndexerGrpcClient` = the same
 //!   bytes over the indexer's `GetBlock` / `GetBlockRange`
 
 use std::collections::HashMap;
@@ -21,7 +21,7 @@ use zaino_proto::proto::zebra_indexer::{
 use zaino_source::testing::fixtures::block;
 use zaino_source::{
     ChainDataSource, FailureMode, GetAtHeightError, LinkLimits, QueryError, Timeouts,
-    ZcashGrpcClient, ZcashLegacyRpcClient,
+    ZcashLegacyRpcClient, ZebraIndexerGrpcClient,
 };
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
@@ -347,9 +347,14 @@ async fn both_clients_decode_every_block_to_the_explorers_facts() {
     let (timeouts, limits) = (Timeouts::default(), LinkLimits::default());
     let legacy = || ZcashLegacyRpcClient::at(&rpc_address, None, None, None, timeouts, limits);
     let legacy_client = legacy().expect("host:port");
-    let grpc =
-        ZcashGrpcClient::at(legacy().expect("host:port"), &indexer_address, None, timeouts, limits)
-            .expect("host:port");
+    let grpc = ZebraIndexerGrpcClient::at(
+        legacy().expect("host:port"),
+        &indexer_address,
+        None,
+        timeouts,
+        limits,
+    )
+    .expect("host:port");
     assert_explorer_parity(&legacy_client, "legacy").await;
     assert_explorer_parity(&grpc, "grpc").await;
 

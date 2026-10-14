@@ -72,7 +72,7 @@ pub(crate) struct TrustedValidatorConfig {
     /// zebrad's `indexer_listen_addr` (set = push streams wake the poller, unset = poll each second)
     pub(crate) indexer_address: Option<String>,
     /// Unset = plaintext (zakurad requires it off loopback)
-    pub(crate) indexer_tls: Option<IndexerTlsConfig>,
+    pub(crate) indexer_tls: Option<ZebraIndexerTlsConfig>,
     /// Every 0 asked before any 1 (higher tier = overflow + hedges only)
     pub(crate) priority: u8,
 }
@@ -121,7 +121,7 @@ impl From<ResponseMib> for u32 {
 /// `client_ca_file` signs `cert_path`), read at boot
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct IndexerTlsConfig {
+pub(crate) struct ZebraIndexerTlsConfig {
     pub(crate) ca_path: PathBuf,
     /// Leaf first
     pub(crate) cert_path: PathBuf,
@@ -149,8 +149,8 @@ impl TrustedValidatorConfig {
         }
     }
 
-    pub(crate) fn indexer_tls(&self) -> Option<zaino_source::IndexerTls> {
-        self.indexer_tls.as_ref().map(|tls| zaino_source::IndexerTls {
+    pub(crate) fn indexer_tls(&self) -> Option<zaino_source::ZebraIndexerTls> {
+        self.indexer_tls.as_ref().map(|tls| zaino_source::ZebraIndexerTls {
             ca: tls.ca_path.clone(),
             cert: tls.cert_path.clone(),
             key: tls.key_path.clone(),
@@ -534,21 +534,21 @@ pub(crate) struct MetricsConfig {
 /// - Only a missing or empty directory filled; one holding data never touched
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct SnapshotConfig {
+pub(crate) struct IndexSnapshotConfig {
     /// Manifest URL (each archive's URL relative to it)
     pub(crate) manifest: String,
     /// <= 16 (aria2c `--split`)
-    #[serde(default = "SnapshotConfig::connections_default")]
+    #[serde(default = "IndexSnapshotConfig::connections_default")]
     pub(crate) connections: NonZeroU32,
 }
 
-impl SnapshotConfig {
+impl IndexSnapshotConfig {
     fn connections_default() -> NonZeroU32 {
         const { NonZeroU32::new(8).expect("8 is non-zero") }
     }
 }
 
-/// `ZcashLegacyRpcClient` or `ZcashGrpcClient`, one for every validator
+/// `ZcashLegacyRpcClient` or `ZebraIndexerGrpcClient`, one for every validator
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ValidatorClient {
@@ -574,7 +574,7 @@ pub(crate) struct DaemonConfig {
     pub(crate) sync: SyncConfig,
     pub(crate) index: Indexes,
     /// Absent = synced from the validator
-    pub(crate) snapshot: Option<SnapshotConfig>,
+    pub(crate) snapshot: Option<IndexSnapshotConfig>,
 }
 
 impl Default for DaemonConfig {
@@ -952,7 +952,7 @@ enabled = false
             (
                 "indexer TLS with no indexer",
                 |c| {
-                    c.trusted_validators[0].indexer_tls = Some(IndexerTlsConfig {
+                    c.trusted_validators[0].indexer_tls = Some(ZebraIndexerTlsConfig {
                         ca_path: "/ca.pem".into(),
                         cert_path: "/cert.pem".into(),
                         key_path: "/key.pem".into(),
@@ -993,7 +993,7 @@ enabled = false
             (
                 "snapshot past aria2c's connection cap",
                 |c| {
-                    c.snapshot = Some(SnapshotConfig {
+                    c.snapshot = Some(IndexSnapshotConfig {
                         manifest: "https://snapshots.example/manifest.json".to_owned(),
                         connections: NonZeroU32::new(17).expect("17"),
                     })
@@ -1256,7 +1256,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             max_mib_per_sec: Some(n(4)),
             max_response_mib: ResponseMib::try_from(8).expect("in bounds"),
             indexer_address: Some("zebra-eu:8230".to_owned()),
-            indexer_tls: Some(IndexerTlsConfig {
+            indexer_tls: Some(ZebraIndexerTlsConfig {
                 ca_path: "/etc/zaino/indexer-ca.pem".into(),
                 cert_path: "/etc/zaino/indexer-client.pem".into(),
                 key_path: "/etc/zaino/indexer-client-key.pem".into(),
@@ -1279,7 +1279,7 @@ key_path = "/etc/zaino/indexer-client-key.pem"
             let refused = toml::from_str::<DaemonConfig>(&toml).expect_err("out of bounds");
             assert!(refused.to_string().contains("must be 4 ..= 32"), "{mib}: {refused}");
         }
-        let tls = zaino_source::IndexerTls {
+        let tls = zaino_source::ZebraIndexerTls {
             ca: "/etc/zaino/indexer-ca.pem".into(),
             cert: "/etc/zaino/indexer-client.pem".into(),
             key: "/etc/zaino/indexer-client-key.pem".into(),

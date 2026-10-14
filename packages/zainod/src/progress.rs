@@ -302,7 +302,7 @@ mod tests {
             best: Some(at(best)),
             final_tip: Some(at(final_tip)),
             served: Some(at(served)),
-            held_by: zaino_chainview::EndpointSet::default(),
+            held_by: zaino_chainview::TrustedValidatorSet::default(),
             synced,
         };
         let restart = tips(3_515_519, 3_515_519, 3_516_522, false);

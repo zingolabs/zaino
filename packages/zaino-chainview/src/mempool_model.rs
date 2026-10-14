@@ -24,14 +24,14 @@ use zaino_header_chain::testing::HeaderViews;
 use zaino_primitives::testing::{p2pkh, Ledger, MockChain};
 use zaino_primitives::types::{BlockRef, PeerTxId, ReorgDepth};
 use zaino_source::testing::{raw_transparent, ValidatorViews};
-use zaino_traffic::ValidatorId;
+use zaino_traffic::TrustedValidatorId;
 use zcash_protocol::value::Zatoshis;
 use zcash_protocol::TxId;
 use zcash_transparent::bundle::OutPoint;
 
 use crate::admission::NextBlock;
-use crate::endpoints::ValidatorMetadata;
-use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};
+use crate::endpoints::TrustedValidatorMeta;
+use crate::fold::{ChainViewCore, Listing, Reading, Sighted, TrustedValidatorReport};
 use crate::listings::LISTING_FRESH;
 use crate::netgroup::Netgroup;
 use crate::netgroup::ECLIPSE_NETGROUPS;
@@ -197,8 +197,8 @@ impl Run {
             Move::Poll { validator, listed } => {
                 let v = usize::from(validator) % validators;
                 let listed = honest(listed);
-                let id = ValidatorId::new(v).expect("small");
-                let report = EndpointReport::Read {
+                let id = TrustedValidatorId::new(v).expect("small");
+                let report = TrustedValidatorReport::Read {
                     reading: self.reading(),
                     health: zaino_traffic::Health::Live,
                     listed: true,
@@ -212,7 +212,7 @@ impl Run {
                 };
                 let added = listed.difference(before).map(sighted).collect();
                 let removed = before.difference(&listed).map(|tx| self.txs[*tx].0).collect();
-                self.core.apply(id, EndpointReport::Listed(Listing { added, removed }));
+                self.core.apply(id, TrustedValidatorReport::Listed(Listing { added, removed }));
                 self.oracle.health[v] = Health::Live;
                 self.oracle.polled_since_block[v] = true;
                 self.oracle.listed[v] = listed.clone();
@@ -222,8 +222,8 @@ impl Run {
             Move::Fail { validator } => {
                 let v = usize::from(validator) % validators;
                 self.core.apply(
-                    ValidatorId::new(v).expect("small"),
-                    EndpointReport::Failed(zaino_traffic::Health::Degraded),
+                    TrustedValidatorId::new(v).expect("small"),
+                    TrustedValidatorReport::Failed(zaino_traffic::Health::Degraded),
                 );
                 self.oracle.health[v] = Health::Degraded;
                 self.oracle.settle(false);
@@ -231,8 +231,8 @@ impl Run {
             Move::Kill { validator } => {
                 let v = usize::from(validator) % validators;
                 self.core.apply(
-                    ValidatorId::new(v).expect("small"),
-                    EndpointReport::Failed(zaino_traffic::Health::Down),
+                    TrustedValidatorId::new(v).expect("small"),
+                    TrustedValidatorReport::Failed(zaino_traffic::Health::Down),
                 );
                 self.oracle.health[v] = Health::Down;
                 self.oracle.listed[v].clear();
@@ -375,8 +375,8 @@ fn run(validators: usize, groups: Vec<u8>, byzantine: Vec<bool>, steps: Vec<Move
 
     let tip = chain.tip();
     let utxos = chain.ledger(tip);
-    let endpoints: Vector<ValidatorMetadata> =
-        (0..validators).map(|v| ValidatorMetadata::new(format!("v{v}:8232"))).collect();
+    let endpoints: Vector<TrustedValidatorMeta> =
+        (0..validators).map(|v| TrustedValidatorMeta::new(format!("v{v}:8232"))).collect();
     let core = ChainViewCore::new(endpoints, ReorgDepth::CONSENSUS);
     core.apply_headers(Some(Arc::new(chain.verified(tip))));
     let oracle = Oracle {

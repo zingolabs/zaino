@@ -2,7 +2,7 @@
 
 The wallet-facing `CompactTxStreamer` endpoint: one [`GrpcService`], every method
 dispatched by path over [`Routes`]. Every method that reads chain, index, mempool or
-validator state loads one `zaino_snapshot::Snapshot` and reads it for the life of its
+validator state loads one `zaino_snapshot::GrpcSnapshot` and reads it for the life of its
 request or stream. The per-method table and the status codes a client must distinguish
 live in [`docs/rpc_api.md`](../../docs/rpc_api.md).
 
@@ -81,7 +81,7 @@ routing.route(routes);
 - `S` = the validators' `ChainDataSource`. Derived answers have no validator
   method to fall back to: they come from an index or not at all — see
   [architecture §1](../../docs/architecture.md#1-who-owns-what).
-- `V` = the indexes' `zaino_persistence::CommittedView` (zainod: `DiskView`): every read = an
+- `V` = the indexes' `zaino_persistence::DurableView` (zainod: `DiskView`): every read = an
   index's reader over a committed snapshot + the NFS's layers, on a read lane (any thread).
   Any engine's committed view serves end to end: `Routes<S, V>`, `GrpcService<S, V>`.
 - `GetBlock` and `GetTreeState` by `BlockID.hash` resolve through the

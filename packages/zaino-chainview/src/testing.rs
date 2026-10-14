@@ -17,7 +17,7 @@ use zcash_protocol::value::Zatoshis;
 use zcash_protocol::BlockHash;
 use zcash_transparent::bundle::OutPoint;
 
-use crate::{Heard, UnspentOutputs, ValidatorP2pSource};
+use crate::{Heard, PeerSource, UnspentOutputs};
 
 /// `live` list their mempools, announce and take relays (answering nothing, as a peer does);
 /// `dead` refuse a connection
@@ -77,7 +77,7 @@ impl MockPeers {
     }
 }
 
-impl ValidatorP2pSource for MockPeers {
+impl PeerSource for MockPeers {
     fn heard(&self) -> BoxStream<'static, Heard> {
         let rx = self.announce.subscribe();
         futures::stream::unfold(rx, |mut rx| async move { Some((rx.recv().await.ok()?, rx)) })

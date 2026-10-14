@@ -43,11 +43,11 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
                 for (height, block) in &run.blocks {
                     if !held(&store, *height) {
                         let mut changes = store.changes(block.at());
-                        fold(&BlockHashReader::new(store.staged()), block, &mut changes);
+                        fold(&BlockHashReader::new(store.applied()), block, &mut changes);
                         write += apply(&mut store, changes);
                     }
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, write)
@@ -105,13 +105,13 @@ mod tests {
         for (height, block) in (0u8..).zip(&blocks) {
             let hash = block.header().hash.0;
             let mut changes = store.changes(block.at());
-            fold(&BlockHashReader::new(store.staged()), block, &mut changes);
+            fold(&BlockHashReader::new(store.applied()), block, &mut changes);
             let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
             assert_eq!(rows, [(&hash[..], &[0, 0, 0, height][..])], "block {height}: hash → BE");
             store.apply(changes);
         }
 
-        let reader = BlockHashReader::new(store.staged());
+        let reader = BlockHashReader::new(store.applied());
         let located: Vec<_> =
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
         let expected: Vec<_> = (0..3u32).map(|n| Some(BlockHeight::from(n))).collect();
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
-    /// 0..=3 (3 `Finalized`: committed there), then a restart resending 2 and 3 (held: skipped)
+    /// 0..=3 (3 `FinalizedTip`: committed there), then a restart resending 2 and 3 (held: skipped)
     /// before 4; every hash located at its height after a reopen, a never-sent one nowhere
     #[tokio::test]
     async fn every_block_locates_its_hash_and_a_restart_skips_what_it_holds() {
@@ -145,7 +145,7 @@ mod tests {
         }
         writer.stop().await.expect("stops at Shutdown");
 
-        let reader = BlockHashReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).committed());
+        let reader = BlockHashReader::new(open(&fs, &SCHEMA, NonZeroUsize::MAX).durable());
         let located = blocks.iter().map(|block| reader.height_of(&block.header().hash));
         let located: Vec<_> = located.chain([reader.height_of(&sibling.hash)]).collect();
         let heights = (0..=4u32).map(|n| Some(BlockHeight::from(n)));
@@ -178,16 +178,12 @@ mod tests {
         for state in states {
             let label = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MIN);
-            let count = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+            let count = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
             let acked = [state.tag, state.tag + 1].map(|tag| tag.min(5) as usize);
             assert!(acked.contains(&count), "{label}: recovered {count} blocks");
             let expected: Vec<_> = (0..count as u32).map(|n| Some(BlockHeight::from(n))).collect();
             let expected = [expected, vec![None]].concat();
-            assert_eq!(
-                located(store.committed(), &blocks[..=count]),
-                expected,
-                "{label}: held only"
-            );
+            assert_eq!(located(store.durable(), &blocks[..=count]), expected, "{label}: held only");
 
             let writer = start(store);
             writer.send(step(&blocks[count])).await;

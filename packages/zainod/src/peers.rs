@@ -1,4 +1,4 @@
-//! Binds `[p2p]`: zaino-peers' [`PeerNetwork`] as chainview's [`ValidatorP2pSource`] (mempool
+//! Binds `[p2p]`: zaino-peers' [`PeerNetwork`] as chainview's [`PeerSource`] (mempool
 //! listings, block `inv`s, pushes) and the balancer's [`PeerTransport`] (the peer set = one
 //! member: headers + block bodies)
 //!
@@ -17,7 +17,7 @@ use futures::StreamExt as _;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use tracing::{info, warn};
-use zaino_chainview::{Heard, ValidatorP2pSource};
+use zaino_chainview::{Heard, PeerSource};
 use zaino_peers::{Announced, PeerConfig, PeerError, PeerNetwork, PushError};
 use zaino_primitives::types::{Block, PeerTxId};
 use zaino_source::{decode_block, FailureMode, NonDomainError};
@@ -92,7 +92,7 @@ fn failed(cause: PeerError) -> NonDomainError {
     NonDomainError::from_cause(mode, cause)
 }
 
-impl ValidatorP2pSource for ZebraPeers {
+impl PeerSource for ZebraPeers {
     fn heard(&self) -> BoxStream<'static, Heard> {
         let mut network = self.network.clone();
         let subscribed = async move {

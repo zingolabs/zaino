@@ -6,10 +6,10 @@ use crate::class::{Lane, PerLane, Permits, LANES, MIN_CONNECTIONS};
 
 /// Configured order, `< MAX`
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValidatorId(u8);
+pub struct TrustedValidatorId(u8);
 
-impl ValidatorId {
-    /// chainview's `EndpointSet::MAX`
+impl TrustedValidatorId {
+    /// chainview's `TrustedValidatorSet::MAX`
     pub const MAX: usize = 64;
 
     pub fn new(index: usize) -> Option<Self> {
@@ -24,7 +24,7 @@ impl ValidatorId {
 /// `Peers` = the p2p network's peer set, one member (zebra picks the peer per request)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemberId {
-    Trusted(ValidatorId),
+    Trusted(TrustedValidatorId),
     Peers,
 }
 

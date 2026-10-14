@@ -1,6 +1,6 @@
 //! Reading across one map's committed segments
 //!
-//! - [`Snapshot`] = one committed list, mapped; immutable (a commit builds the next one)
+//! - [`SegmentsView`] = one committed list, mapped; immutable (a commit builds the next one)
 //! - merge landing mid-request changes nothing held (pre-merge segments hold the same rows)
 //! - `deletes()` table: a key's tombstone in any segment = absent, whatever the order
 //!   (insert-once / remove-once: at most one value + one tombstone exist)
@@ -21,19 +21,19 @@ use crate::{
     pages::{Pages, PAGE},
 };
 
-/// Batch size from which [`Snapshot::get_many`] fans out on rayon (measured, 9 segments, 2.3M
+/// Batch size from which [`SegmentsView::get_many`] fans out on rayon (measured, 9 segments, 2.3M
 /// rows: 2-16 keys 5-10× slower on rayon (wake-up), crossover ≈ 64, 256 keys 3× faster)
 const PARALLEL_FROM: usize = 64;
 
 /// Map's committed segments, mapped for reads
-pub(crate) struct Snapshot {
+pub(crate) struct SegmentsView {
     shape: Shape,
     segments: Vec<Arc<SegmentFile>>,
 }
 
-impl std::fmt::Debug for Snapshot {
+impl std::fmt::Debug for SegmentsView {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Snapshot").field("segments", &self.segments.len()).finish()
+        f.debug_struct("SegmentsView").field("segments", &self.segments.len()).finish()
     }
 }
 
@@ -62,7 +62,7 @@ fn coalesced(ranges: impl Iterator<Item = Range<usize>>) -> Vec<Range<usize>> {
     merged
 }
 
-impl Snapshot {
+impl SegmentsView {
     /// Every listed segment mapped (lengths only; pages checked on touch)
     pub(crate) fn open(dir: &SegmentDir, shape: Shape, listed: &[SegmentMeta]) -> Result<Self> {
         let segments = listed.iter().map(|meta| mapped(dir, shape, meta)).collect::<Result<_>>()?;

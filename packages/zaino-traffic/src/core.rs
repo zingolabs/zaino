@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use crate::class::{Class, Lane};
-use crate::member::{Health, Limits, Member, MemberId, Synced, ValidatorId};
+use crate::member::{Health, Limits, Member, MemberId, Synced, TrustedValidatorId};
 
 /// Block ask's round over → next round after this
 const RETRY: Duration = Duration::from_secs(1);
@@ -81,11 +81,11 @@ pub(crate) enum Input {
     Report(Ticket),
     /// `read` = `None`: no answer
     Polled {
-        member: ValidatorId,
+        member: TrustedValidatorId,
         read: Option<Synced>,
     },
     Push {
-        member: ValidatorId,
+        member: TrustedValidatorId,
         push: Push,
     },
     Tick,
@@ -103,7 +103,7 @@ pub(crate) enum Output {
 /// One poll batch: tip + listing + `getblockhash` (+ metadata)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PollOrder {
-    pub(crate) member: ValidatorId,
+    pub(crate) member: TrustedValidatorId,
     pub(crate) metadata: bool,
     pub(crate) streaming: bool,
 }
@@ -138,12 +138,15 @@ enum Next {
 }
 
 impl TrafficCore {
-    /// `trusted[i]` = `ValidatorId(i)`: (priority, limits); `peers` = the peer set's in flight
+    /// `trusted[i]` = `TrustedValidatorId(i)`: (priority, limits); `peers` = the peer set's in flight
     pub(crate) fn new(trusted: &[(u8, Limits)], peers: Option<u32>, now: Instant) -> Self {
         assert!(!trusted.is_empty(), "a trusted validator to ask");
-        assert!(trusted.len() <= ValidatorId::MAX, "at most ValidatorId::MAX trusted validators");
+        assert!(
+            trusted.len() <= TrustedValidatorId::MAX,
+            "at most TrustedValidatorId::MAX trusted validators"
+        );
         let trusted = trusted.iter().enumerate().filter_map(|(index, (priority, limits))| {
-            let id = MemberId::Trusted(ValidatorId::new(index)?);
+            let id = MemberId::Trusted(TrustedValidatorId::new(index)?);
             Some((id, Member::trusted(*priority, *limits)))
         });
         let peers = peers.map(|in_flight| (MemberId::Peers, Member::peers(in_flight)));
@@ -220,7 +223,7 @@ impl TrafficCore {
         }
     }
 
-    fn polled(&mut self, id: ValidatorId, read: Option<Synced>) {
+    fn polled(&mut self, id: TrustedValidatorId, read: Option<Synced>) {
         let member = self.members.get_mut(&MemberId::Trusted(id));
         let member = member.filter(|m| m.poller.as_ref().is_some_and(|p| p.in_flight));
         let member = member.expect("a poll result for a poll in flight");
@@ -332,7 +335,7 @@ impl TrafficCore {
     }
 
     /// Submit's sample space: trusted, live, not benched
-    pub(crate) fn entries(&self) -> Vec<ValidatorId> {
+    pub(crate) fn entries(&self) -> Vec<TrustedValidatorId> {
         let live = self
             .members
             .iter()
@@ -344,7 +347,7 @@ impl TrafficCore {
         .collect()
     }
 
-    pub(crate) fn health(&self, member: ValidatorId) -> Health {
+    pub(crate) fn health(&self, member: TrustedValidatorId) -> Health {
         let member = self.members.get(&MemberId::Trusted(member));
         member.expect("a configured validator").health()
     }

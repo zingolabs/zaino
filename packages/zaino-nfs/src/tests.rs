@@ -1,4 +1,4 @@
-//! [`Nfs`] end to end over the real final path: `FinalFollower` + every index writer, `SimFs`
+//! [`Nfs`] end to end over the real final path: `FinalizedFollower` + every index writer, `SimFs`
 //! stores, mock validators (`usage.md`)
 //!
 //! - Oracle = each index's own fold from genesis along best, into fresh stores
@@ -27,7 +27,7 @@ use zaino_persistence::{
 use zaino_primitives::testing::{p2pkh, MockChain};
 use zaino_primitives::types::{Block, BlockFees};
 use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
-use zaino_sync::{FeeSink, FinalFollower, FollowError, SyncProgress};
+use zaino_sync::{FeeSink, FinalizedFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::{BlockHeight, H0};
@@ -127,20 +127,20 @@ fn oracle(path: &[Arc<Block>]) -> Vec<(IndexKind, Tables)> {
     );
     for block in path {
         let mut out = value_balance.changes(block.at());
-        let parent = ValueBalanceReader::new(value_balance.staged());
+        let parent = ValueBalanceReader::new(value_balance.applied());
         let fees =
             zaino_internal_value_balance::fold(&parent, block, &mut out).expect("prevouts held");
         value_balance.apply(out);
         for (kind, store) in others.iter_mut() {
             let mut out = store.changes(block.at());
-            own_fold(*kind, store.staged(), &fees, block, &mut out);
+            own_fold(*kind, store.applied(), &fees, block, &mut out);
             store.apply(out);
         }
     }
     let mut folded = Vec::new();
     for (kind, mut store) in stores {
         store.commit().expect("SimFs commit");
-        folded.push((kind, tables(&store.committed())));
+        folded.push((kind, tables(&store.durable())));
     }
     folded
 }
@@ -234,7 +234,7 @@ impl Pipeline {
     ) -> Self {
         let lookahead = NonZeroUsize::new(4).expect("nonzero");
         let queue = NonZeroUsize::new(1 << 24).expect("nz");
-        let mut follower = FinalFollower::new(chain.clone(), balancer.clone(), lookahead);
+        let mut follower = FinalizedFollower::new(chain.clone(), balancer.clone(), lookahead);
         let mut nfs = Nfs::new(chain.clone(), balancer.clone(), params, DEPTH, lookahead);
         let mut fee_sink = FeeSink::new();
         let mut fees = kinds

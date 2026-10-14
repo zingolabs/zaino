@@ -18,7 +18,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn, Instrument as _, Span};
-use zaino_persistence::CommittedView;
+use zaino_persistence::DurableView;
 use zaino_source::ChainDataSource;
 
 use crate::admission::{Admission, AdmissionState, Class};
@@ -80,7 +80,7 @@ pub enum GrpcServeError {
     Bind(#[source] std::io::Error),
 }
 
-impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
+impl<S: ChainDataSource, V: DurableView> GrpcService<S, V> {
     /// Unrouted: health answered, every method `UNAVAILABLE` until [`Routing::route`]
     pub fn new(bind: SocketAddr, limits: GrpcLimits) -> Self {
         let dispatch = Dispatch::new(&limits);
@@ -160,7 +160,7 @@ pub struct BoundGrpcService<S: ChainDataSource, V> {
     listener: TcpListener,
 }
 
-impl<S: ChainDataSource, V: CommittedView> GrpcService<S, V> {
+impl<S: ChainDataSource, V: DurableView> GrpcService<S, V> {
     /// Awaited at boot, before spawning `run` (EADDRINUSE = boot failure, not a serve-loop
     /// failure (#1081))
     pub async fn bind(self) -> Result<BoundGrpcService<S, V>, GrpcServeError> {
@@ -186,7 +186,7 @@ struct Shared<S: ChainDataSource, V> {
     cancel: CancellationToken,
 }
 
-impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
+impl<S: ChainDataSource, V: DurableView> Shared<S, V> {
     fn caps_in_use(&self) -> CapsInUse {
         CapsInUse {
             work_streams: self.admission.held(Class::Work),
@@ -196,7 +196,7 @@ impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
     }
 }
 
-impl<S: ChainDataSource, V: CommittedView> BoundGrpcService<S, V> {
+impl<S: ChainDataSource, V: DurableView> BoundGrpcService<S, V> {
     /// The bound address (port `0` at bind = the one the kernel picked)
     pub fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.listener.local_addr()
@@ -310,7 +310,7 @@ fn tune(socket: &TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-impl<S: ChainDataSource, V: CommittedView> Shared<S, V> {
+impl<S: ChainDataSource, V: DurableView> Shared<S, V> {
     /// Names the client, applies its cap, then serves HTTP/2 until close or `cancel`
     async fn connection(
         self: Arc<Self>,

@@ -11,7 +11,7 @@ use zaino_nfs::{ChainParams, Nfs, NfsError};
 
 let params = ChainParams { network, schedule };                // activations() derived
 let mut nfs = Nfs::new(header_sync.subscribe(), balancer.clone(), params, depth, lookahead);
-let mut follower = FinalFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
+let mut follower = FinalizedFollower::new(header_sync.subscribe(), balancer.clone(), lookahead);
 
 // one per enabled index: its handle to both, its final stream out
 let value_balance_writer = ValueBalanceIndexWriter::new(value_balance_store);
@@ -34,7 +34,7 @@ tasks.spawn(nfs.run(cancel));                          // Err: Fold | ChainGone 
 
 ## Readers: `Indexed` → `At`
 
-Routes never hold an `Indexed`: they load one `zaino_snapshot::Snapshot` per request and ask it
+Routes never hold an `Indexed`: they load one `zaino_snapshot::GrpcSnapshot` per request and ask it
 `served()?` (this crate's `At`).
 
 ```rust,ignore
@@ -99,6 +99,6 @@ folds and publishes pair layers with exactly the tips the core knows.
 - `core/model.rs`: random chain evolutions, late and stale bodies and folds, writers committing
   after random delays, restarts with a wiped index, against a fold-from-genesis oracle.
 - `core/fire_drills.rs`: one planted bug per `check()` assertion and precondition.
-- `tests.rs`: `FinalFollower` + the five real writers + the NFS, end to end.
+- `tests.rs`: `FinalizedFollower` + the five real writers + the NFS, end to end.
 
 Heavy run required after changes: see [docs/testing.md](../../docs/testing.md#heavy-run).

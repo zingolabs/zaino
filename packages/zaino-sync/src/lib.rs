@@ -1,4 +1,4 @@
-//! The final path: [`FinalFollower`] → [`IndexerDataSink<Block>`] → each index's writer loop
+//! The final path: [`FinalizedFollower`] → [`IndexerDataSink<Block>`] → each index's writer loop
 //! (`docs/architecture.md` §7)
 //!
 //! - One sender, every step final: each height once, ascending, never retracted
@@ -23,7 +23,7 @@ pub use data_sink::{IndexerDataSink, Run, Step, Subscription, Weight};
 pub use emit::{describe_metrics, METRIC_BUCKETS};
 pub(crate) use fetch::fetch_at;
 pub use fetch::{check_block, fetch, Checked, Misanswer};
-pub use follower::{FinalFollower, FollowError};
+pub use follower::{FinalizedFollower, FollowError};
 pub use handle::IndexHandle;
 pub use offload::{blocking, compute};
 pub use progress::SyncProgress;

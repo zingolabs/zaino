@@ -60,18 +60,18 @@ impl<S: Store<View: SequenceRead + MapRead>> ValueBalanceIndexWriter<S> {
                     run.blocks.iter().partition(|(height, _)| held(&store, *height));
                 let resent: Vec<&Block> = resent.into_iter().map(|(_, block)| &**block).collect();
                 let fresh: Vec<&Block> = fresh.into_iter().map(|(_, block)| &**block).collect();
-                let held = ValueBalanceReader::new(store.staged());
+                let held = ValueBalanceReader::new(store.applied());
                 let stored = resent.iter().map(|block| held.block_fees(block));
                 let stored = stored.collect::<Result<Vec<_>, _>>();
                 let mut paid = stored.unwrap_or_else(|error| panic!("{NAME} index: {error}"));
                 let mut out: Vec<BlockChanges> =
                     fresh.iter().map(|block| store.changes(block.at())).collect();
-                let folded = fold_run(&ValueBalanceReader::new(store.staged()), &fresh, &mut out);
+                let folded = fold_run(&ValueBalanceReader::new(store.applied()), &fresh, &mut out);
                 paid.extend(folded.unwrap_or_else(|error| panic!("{NAME} index: {error}")));
                 for changes in out {
                     write += apply(&mut store, changes);
                 }
-                if run.finalized {
+                if run.finalized_tip {
                     write += commit(&mut store);
                 }
                 (store, paid, write)
@@ -263,14 +263,15 @@ mod tests {
         let expected = [chain.fees(blocks[1].header().hash), chain.fees(blocks[2].header().hash)];
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut genesis = store.changes(blocks[0].at());
-        let genesis_fees = fold(&ValueBalanceReader::new(store.staged()), &blocks[0], &mut genesis);
+        let genesis_fees =
+            fold(&ValueBalanceReader::new(store.applied()), &blocks[0], &mut genesis);
         assert_eq!(genesis_fees.expect("coinbase only").fees, [Fee::Coinbase]);
         store.apply(genesis);
 
         let run = [&*blocks[1], &*blocks[2]];
         let mut out: Vec<BlockChanges> =
             run.iter().map(|block| store.changes(block.at())).collect();
-        let parent = ValueBalanceReader::new(store.staged());
+        let parent = ValueBalanceReader::new(store.applied());
         let run_fees = fold_run(&parent, &run, &mut out).expect("every prevout held");
         assert_eq!(run_fees, expected);
         let rows: Vec<(&[u8], &[u8])> = out[0].inserts(OUTPUTS).collect();
@@ -295,7 +296,7 @@ mod tests {
 
         for ((block, run_changes), run_fees) in run.iter().zip(&out).zip(&run_fees) {
             let mut changes = store.changes(block.at());
-            let block_fees = fold(&ValueBalanceReader::new(store.staged()), block, &mut changes);
+            let block_fees = fold(&ValueBalanceReader::new(store.applied()), block, &mut changes);
             let height = block.header().height;
             assert_eq!(&block_fees.expect("held"), run_fees, "{height:?}");
             let rows = |changes: &BlockChanges| {
@@ -308,7 +309,7 @@ mod tests {
             assert_eq!(in_run.2, [encode_fees(&run_fees.fees)], "{height:?}: one fees record");
             store.apply(changes);
         }
-        let held = ValueBalanceReader::new(store.staged());
+        let held = ValueBalanceReader::new(store.applied());
         let stored: Vec<_> = run.iter().map(|block| held.block_fees(block)).collect();
         assert_eq!(stored, expected.map(Ok), "held: fees read back as folded");
     }
@@ -402,7 +403,7 @@ mod tests {
             let run: Vec<&Block> = [&genesis].into_iter().chain(&blocks).map(|b| &**b).collect();
             let mut out: Vec<BlockChanges> =
                 run.iter().map(|block| store.changes(block.at())).collect();
-            let folded = fold_run(&ValueBalanceReader::new(store.staged()), &run, &mut out);
+            let folded = fold_run(&ValueBalanceReader::new(store.applied()), &run, &mut out);
             assert_eq!(folded.err(), Some(expected), "{case}");
         }
     }
@@ -427,14 +428,14 @@ mod tests {
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         for block in &blocks {
             let mut changes = store.changes(block.at());
-            fold(&ValueBalanceReader::new(store.staged()), block, &mut changes).expect("folds");
+            fold(&ValueBalanceReader::new(store.applied()), block, &mut changes).expect("folds");
             store.apply(changes);
         }
         let mut txs = blocks[1].transactions().to_vec();
         txs.push(txs[1].clone());
         let longer = Block::new(blocks[1].header().clone(), txs);
 
-        let held = ValueBalanceReader::new(store.staged());
+        let held = ValueBalanceReader::new(store.applied());
         assert_eq!(held.block_fees(&blocks[1]), Ok(chain.fees(one.hash)), "as folded");
         let missing = held.block_fees(chain.block(two.hash));
         assert_eq!(missing, Err(FoldError::StoredFeesMissing { height: h(2) }));
@@ -514,7 +515,7 @@ mod tests {
         for state in states {
             let crashed = &state.label;
             let store = open(&state.fs, &SCHEMA, NonZeroUsize::MAX);
-            let tip = tip_of(&store.committed());
+            let tip = tip_of(&store.durable());
             let acked = [tip_after(state.tag), tip_after(state.tag + 1)];
             assert!(acked.contains(&tip), "{crashed}: recovered through {tip:?}");
 
@@ -536,7 +537,7 @@ mod tests {
     /// - 2: enters orchard and sprout; 3: spends 1's outputs with value leaving sprout; 4: spends
     ///   3's and enters ironwood
     ///
-    /// - Boot 1: 0..=4 (4 `Finalized`), one fee step each
+    /// - Boot 1: 0..=4 (4 `FinalizedTip`), one fee step each
     /// - Boot 2, compact-block durable at 0: 1..=4 resent, all held → re-folded, fees out again,
     ///   identical
     /// - Both queue sizes: 1 byte = one block per run, 1 MiB = one run

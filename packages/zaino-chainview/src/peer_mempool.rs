@@ -27,7 +27,7 @@ use zcash_transparent::bundle::OutPoint;
 use crate::admission::{admissible, NextBlock, Refused};
 use crate::fold::{Candidate, ChainViewCore};
 use crate::listings::PEER_MEMPOOL_POLL;
-use crate::ports::{UnspentOutputs, ValidatorP2pSource};
+use crate::ports::{PeerSource, UnspentOutputs};
 use crate::snapshot::ChainViewSnapshot;
 
 /// A transaction one of our checks refused stays refused this long
@@ -36,7 +36,7 @@ pub(crate) const REFUSED_TTL: Duration = Duration::from_secs(600);
 /// Polls the peers' mempools into the view until cancelled; spawn [`run`](Self::run)
 pub struct PeerMempool {
     core: Arc<ChainViewCore>,
-    peers: Arc<dyn ValidatorP2pSource>,
+    peers: Arc<dyn PeerSource>,
     utxos: Arc<dyn UnspentOutputs>,
     schedule: LocalNetwork,
 }
@@ -44,7 +44,7 @@ pub struct PeerMempool {
 impl PeerMempool {
     pub(crate) fn new(
         core: Arc<ChainViewCore>,
-        peers: Arc<dyn ValidatorP2pSource>,
+        peers: Arc<dyn PeerSource>,
         utxos: Arc<dyn UnspentOutputs>,
         schedule: LocalNetwork,
     ) -> Self {

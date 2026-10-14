@@ -7,7 +7,7 @@ pub enum ConfigError {
     #[error("no validator endpoints configured")]
     NoEndpoints,
 
-    #[error("{count} endpoints configured, {max} is the ceiling", max = zaino_traffic::ValidatorId::MAX)]
+    #[error("{count} endpoints configured, {max} is the ceiling", max = zaino_traffic::TrustedValidatorId::MAX)]
     TooManyEndpoints { count: usize },
 
     #[error("{addresses} endpoint addresses for {trusted} trusted balancer members")]

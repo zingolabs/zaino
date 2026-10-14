@@ -34,11 +34,11 @@ pub use overlay::{Entry, Overlay, OverlayView, Uncommitted};
 pub use pages::PageError;
 pub use per_index::PerIndex;
 pub use port::{
-    BlockChanges, Checked, CommittedView, MapChanges, MapId, MapRead, MapTable, MapView,
+    BlockChanges, Checked, DurableView, MapChanges, MapId, MapRead, MapTable, MapView,
     PersistenceEngine, Schema, SequenceAppends, SequenceId, SequenceRead, SequenceTable,
     SequenceView, Store, Tables, Verification, View, Width,
 };
-pub use write_buffer::{StagedView, WriteBuffer};
+pub use write_buffer::{AppliedView, WriteBuffer};
 
 /// Why an index directory could not be opened, read, proven or committed
 #[derive(Debug, thiserror::Error)]

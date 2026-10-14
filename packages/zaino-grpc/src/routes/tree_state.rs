@@ -9,7 +9,7 @@ use http::Response;
 use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
-use zaino_persistence::{CommittedView, IndexKind, OverlayView};
+use zaino_persistence::{DurableView, IndexKind, OverlayView};
 use zaino_primitives::types::{CommitmentTreeBytes, SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
@@ -46,7 +46,7 @@ pub(crate) struct Answering<V> {
     pub(crate) memos: Arc<Memos<V>>,
 }
 
-impl<V: CommittedView> Answering<V> {
+impl<V: DurableView> Answering<V> {
     fn served(&self) -> &At<V> {
         self.indexed.served()
     }
@@ -137,7 +137,7 @@ fn to_status(error: ServeError) -> Status {
     }
 }
 
-pub(crate) async fn latest<V: CommittedView>(
+pub(crate) async fn latest<V: DurableView>(
     answering: &Answering<V>,
 ) -> Result<Response<Body>, Status> {
     let tip = answering.served().tip().height;
@@ -153,7 +153,7 @@ pub(crate) async fn treestate<V, B>(
     body: B,
 ) -> Result<Response<Body>, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -162,7 +162,7 @@ where
 
 async fn framed_treestate<V, B>(answering: &Answering<V>, body: B) -> Result<Bytes, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {
@@ -226,7 +226,7 @@ pub(crate) async fn subtree_roots<V, B>(
     body: B,
 ) -> Result<Response<Body>, Status>
 where
-    V: CommittedView,
+    V: DurableView,
     B: http_body::Body,
     B::Error: std::fmt::Display,
 {

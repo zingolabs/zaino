@@ -37,7 +37,7 @@ pub enum Change {
 /// - `ca` verifies the server; `cert` + `key` = this client, signed by the server's client CA
 /// - `server_name` = the name on the server's certificate (`None` = the address's host)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexerTls {
+pub struct ZebraIndexerTls {
     pub ca: PathBuf,
     pub cert: PathBuf,
     pub key: PathBuf,
@@ -48,7 +48,7 @@ pub struct IndexerTls {
 /// = refused at boot, a rotated file = read on restart)
 pub(crate) fn indexer_endpoint(
     address: &str,
-    tls: Option<&IndexerTls>,
+    tls: Option<&ZebraIndexerTls>,
     timeouts: Timeouts,
 ) -> Result<Endpoint, EndpointError> {
     let invalid = |reason: String| EndpointError::Address { address: address.to_owned(), reason };
@@ -83,16 +83,16 @@ pub(crate) fn indexer_endpoint(
 }
 
 /// One validator's indexer endpoint (`indexer_listen_addr`)
-pub struct IndexerWatch {
+pub struct ZebraIndexerWatch {
     address: String,
     endpoint: Endpoint,
 }
 
-impl IndexerWatch {
+impl ZebraIndexerWatch {
     /// Unprobed (a validator without its indexer up is the run loop's retry)
     pub fn at(
         address: &str,
-        tls: Option<&IndexerTls>,
+        tls: Option<&ZebraIndexerTls>,
         timeouts: Timeouts,
     ) -> Result<Self, EndpointError> {
         let endpoint = indexer_endpoint(address, tls, timeouts)?;
@@ -256,7 +256,7 @@ mod tests {
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let (changes, links) = (Arc::clone(&seen), Arc::clone(&seen));
         let cancel = CancellationToken::new();
-        let watch = IndexerWatch::at(&address, None, Timeouts::default()).expect("address");
+        let watch = ZebraIndexerWatch::at(&address, None, Timeouts::default()).expect("address");
         let watching = tokio::spawn(watch.run(
             cancel.clone(),
             move |change| changes.lock().expect("seen").push(format!("{change:?}")),
@@ -371,17 +371,18 @@ mod tests {
             .serve_with_incoming(TcpIncoming::from(socket));
         tokio::spawn(server);
 
-        let client = |cert: &PathBuf, key: &PathBuf| IndexerTls {
+        let client = |cert: &PathBuf, key: &PathBuf| ZebraIndexerTls {
             ca: ca_path.clone(),
             cert: cert.clone(),
             key: key.clone(),
             server_name: Some("localhost".to_owned()),
         };
-        let watch = |tls: IndexerTls| {
+        let watch = |tls: ZebraIndexerTls| {
             let (seen_tx, seen_rx) = mpsc::unbounded_channel::<String>();
             let links = seen_tx.clone();
             let cancel = CancellationToken::new();
-            let watch = IndexerWatch::at(&address, Some(&tls), Timeouts::default()).expect("pems");
+            let watch =
+                ZebraIndexerWatch::at(&address, Some(&tls), Timeouts::default()).expect("pems");
             let watching = tokio::spawn(watch.run(
                 cancel.clone(),
                 move |change| seen_tx.send(format!("{change:?}")).expect("test listening"),
@@ -407,9 +408,11 @@ mod tests {
         cancel.cancel();
         watching.await.expect("only cancel ends the watch");
 
-        let missing =
-            IndexerTls { ca: dir.path().join("missing.pem"), ..client(&client_cert, &client_key) };
-        let refused = IndexerWatch::at(&address, Some(&missing), Timeouts::default());
+        let missing = ZebraIndexerTls {
+            ca: dir.path().join("missing.pem"),
+            ..client(&client_cert, &client_key)
+        };
+        let refused = ZebraIndexerWatch::at(&address, Some(&missing), Timeouts::default());
         let named = matches!(
             refused,
             Err(EndpointError::TlsFile { role: "CA", ref path, .. }) if path.ends_with("missing.pem")

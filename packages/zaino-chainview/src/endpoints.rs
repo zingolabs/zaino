@@ -5,27 +5,28 @@ use std::time::Instant;
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::types::BlockRef;
 use zaino_source::{BlockchainInfo, EndOfService, NodeRelease, PeerInfo};
-use zaino_traffic::{Health, ValidatorId};
+use zaino_traffic::{Health, TrustedValidatorId};
 
-/// Which endpoints, by [`ValidatorId`]: a bitset, never a count
+/// Which endpoints, by [`TrustedValidatorId`]: a bitset, never a count
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct EndpointSet(u64);
+pub struct TrustedValidatorSet(u64);
 
-const _: () = assert!(ValidatorId::MAX <= EndpointSet::MAX, "every validator has a bit");
+const _: () =
+    assert!(TrustedValidatorId::MAX <= TrustedValidatorSet::MAX, "every validator has a bit");
 
-impl EndpointSet {
+impl TrustedValidatorSet {
     /// Ceiling on the configured set (the bitset's width)
     pub const MAX: usize = u64::BITS as usize;
 
-    pub(crate) fn insert(&mut self, endpoint: ValidatorId) {
+    pub(crate) fn insert(&mut self, endpoint: TrustedValidatorId) {
         self.0 |= 1u64 << endpoint.get();
     }
 
-    pub(crate) fn remove(&mut self, endpoint: ValidatorId) {
+    pub(crate) fn remove(&mut self, endpoint: TrustedValidatorId) {
         self.0 &= !(1u64 << endpoint.get());
     }
 
-    pub fn contains(&self, endpoint: ValidatorId) -> bool {
+    pub fn contains(&self, endpoint: TrustedValidatorId) -> bool {
         self.0 & (1u64 << endpoint.get()) != 0
     }
 
@@ -38,13 +39,13 @@ impl EndpointSet {
     }
 
     /// Every endpoint in `other` is in `self`
-    pub fn covers(&self, other: EndpointSet) -> bool {
+    pub fn covers(&self, other: TrustedValidatorSet) -> bool {
         self.0 & other.0 == other.0
     }
 
     /// `self` minus every endpoint in `other`
-    pub fn without(self, other: EndpointSet) -> EndpointSet {
-        EndpointSet(self.0 & !other.0)
+    pub fn without(self, other: TrustedValidatorSet) -> TrustedValidatorSet {
+        TrustedValidatorSet(self.0 & !other.0)
     }
 
     /// Positions in the configured endpoint list, ascending
@@ -52,21 +53,22 @@ impl EndpointSet {
         (0..Self::MAX).filter(move |position| self.0 & (1u64 << position) != 0)
     }
 
-    /// Endpoints at `positions` in the configured list (each `< ValidatorId::MAX`, asserted)
+    /// Endpoints at `positions` in the configured list (each `< TrustedValidatorId::MAX`, asserted)
     #[cfg(any(test, feature = "testing"))]
     pub fn at(positions: impl IntoIterator<Item = usize>) -> Self {
         positions
             .into_iter()
             .map(|position| {
-                ValidatorId::new(position)
-                    .unwrap_or_else(|| panic!("endpoint {position} past {}", ValidatorId::MAX))
+                TrustedValidatorId::new(position).unwrap_or_else(|| {
+                    panic!("endpoint {position} past {}", TrustedValidatorId::MAX)
+                })
             })
             .collect()
     }
 }
 
-impl FromIterator<ValidatorId> for EndpointSet {
-    fn from_iter<I: IntoIterator<Item = ValidatorId>>(endpoints: I) -> Self {
+impl FromIterator<TrustedValidatorId> for TrustedValidatorSet {
+    fn from_iter<I: IntoIterator<Item = TrustedValidatorId>>(endpoints: I) -> Self {
         let mut set = Self::default();
         for endpoint in endpoints {
             set.insert(endpoint);
@@ -108,7 +110,7 @@ impl Agreement {
 ///
 /// - `held` = last `getblockhash` answer, at the best its poll started under
 #[derive(Debug, Clone, PartialEq)]
-pub struct ValidatorMetadata {
+pub struct TrustedValidatorMeta {
     pub address: String,
     pub health: Health,
     pub agreement: Agreement,
@@ -120,7 +122,7 @@ pub struct ValidatorMetadata {
     pub(crate) held: Option<BlockRef>,
 }
 
-impl ValidatorMetadata {
+impl TrustedValidatorMeta {
     pub(crate) fn new(address: String) -> Self {
         Self {
             address,

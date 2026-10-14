@@ -339,8 +339,8 @@ impl Oracle {
     /// their contents (oldest + newest read in full); buffered bytes >= applied item bytes, 0 iff
     /// nothing applied
     fn assert(&self, store: &DiskStore, label: &str) {
-        self.committed.assert_view(&store.committed(), &format!("{label}: view"));
-        self.buffered().assert_view(&store.staged(), &format!("{label}: staged"));
+        self.committed.assert_view(&store.durable(), &format!("{label}: view"));
+        self.buffered().assert_view(&store.applied(), &format!("{label}: staged"));
         let (buffered, items) = (store.buffered_bytes(), self.buffered().bytes);
         let items = items - self.committed.bytes;
         assert!(buffered >= items, "{label}: buffered bytes {buffered} < items {items}");
@@ -349,7 +349,7 @@ impl Oracle {
             node.layer.check(label);
         }
         for node in [self.nodes.first(), self.nodes.last()].into_iter().flatten() {
-            let view = OverlayView::new(store.committed(), node.layer.clone());
+            let view = OverlayView::new(store.durable(), node.layer.clone());
             node.model.assert_view(&view, &format!("{label}: node {:?}", node.model.tip));
         }
     }
@@ -476,7 +476,7 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
                 oracle.committed = oracle.buffered().clone();
                 oracle.nodes.drain(..oracle.applied);
                 oracle.applied = 0;
-                oracle.rebase(&store.committed());
+                oracle.rebase(&store.durable());
             }
             Step::Reorg { keep } => {
                 let unapplied = oracle.nodes.len() - oracle.applied;
@@ -492,7 +492,7 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
                 drop(store);
                 store = open(&DiskEngine::with_fanout(fs.clone(), fanout));
                 oracle.applied = 0;
-                oracle.rebase(&store.committed());
+                oracle.rebase(&store.durable());
                 reopened = true;
             }
             Step::Pin => {
@@ -500,8 +500,8 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
                     at,
                     committed: oracle.committed.clone(),
                     newest: oracle.newest().clone(),
-                    view: store.committed(),
-                    node: oracle.newest_view(store.committed()),
+                    view: store.durable(),
+                    node: oracle.newest_view(store.durable()),
                 })
             }
             Step::Scan { from, to, limit } => {
@@ -509,8 +509,8 @@ fn history(fanout: usize, flush_device: bool, steps: &[Step]) {
                 let (from, to) = (newest.bound(*from), newest.bound(*to));
                 let bounds = (from.as_slice(), to.as_slice());
                 let staged = format!("{label}: staged");
-                oracle.buffered().assert_scans(&store.staged(), bounds, *limit, &staged);
-                let node = oracle.newest_view(store.committed());
+                oracle.buffered().assert_scans(&store.applied(), bounds, *limit, &staged);
+                let node = oracle.newest_view(store.durable());
                 newest.assert_scans(&node, bounds, *limit, &format!("{label}: newest node"));
             }
         }
@@ -576,7 +576,7 @@ fn a_store_at_the_smallest_write_buffer_commits_inside_apply() {
 
     store.apply(changes);
 
-    assert_eq!(store.committed().tip(), Some(block_ref(1)));
+    assert_eq!(store.durable().tip(), Some(block_ref(1)));
     assert_eq!(store.buffered_bytes(), 0);
 }
 
@@ -619,17 +619,17 @@ fn crash_states_reopen_to_a_commit(flush_device: bool) {
         let mut store = DiskEngine::with_fanout(state.fs.clone(), 2)
             .open(Path::new(ROOT), &SCHEMA, NonZeroUsize::MAX)
             .unwrap_or_else(|error| panic!("{label}: {error}"));
-        let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         let acked = usize::try_from(state.tag).expect("small");
         assert!(recovered == acked || recovered == acked + 1, "{label}: recovered {recovered}");
-        models[recovered].assert_view(&store.committed(), label);
+        models[recovered].assert_view(&store.durable(), label);
         assert_tiers(&store, &state.fs, 2, true, label);
 
         let mut model = models[recovered].clone();
         store.apply(model.advance(1, &[9], 1, &[]));
         store.commit().expect("commit after recovery");
         model.assert_view(
-            &store.committed(),
+            &store.durable(),
             &format!("{label}: commits continue at the recovered end"),
         );
     }
@@ -706,13 +706,13 @@ fn failed_io_poisons_and_recovers(flush_device: bool) {
             .unwrap_or_else(|error| {
                 panic!("flush_device {flush_device} op {fail_at}: reopen: {error}")
             });
-        let recovered = store.committed().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
+        let recovered = store.durable().tip().map_or(0, |tip| u32::from(tip.height) as usize + 1);
         assert!(
             recovered == acked || recovered == acked + 1,
             "flush_device {flush_device} op {fail_at}: recovered {recovered}"
         );
         models[recovered]
-            .assert_view(&store.committed(), &format!("flush_device {flush_device} op {fail_at}"));
+            .assert_view(&store.durable(), &format!("flush_device {flush_device} op {fail_at}"));
         store.apply(models[recovered].clone().advance(1, &[9], 1, &[]));
         store.commit().expect("commit after restart");
     }
@@ -745,7 +745,7 @@ fn every_failed_read_at_open_surfaces_and_a_clean_open_finds_every_commit() {
             NonZeroUsize::MAX,
         ) {
             Ok(store) => {
-                model.assert_view(&store.committed(), &format!("read {fail_at}"));
+                model.assert_view(&store.durable(), &format!("read {fail_at}"));
                 break;
             }
             Err(error) => {
@@ -789,7 +789,7 @@ fn a_write_to_a_map_outside_the_schema_panics() {
 #[should_panic(expected = "compact_block: map probed not in its schema")]
 fn a_read_of_a_map_outside_the_schema_panics() {
     let stray = MapTable::point(1, "probed", Width::fixed(16), Width::fixed(8));
-    open(&DiskEngine::with_fanout(SimFs::new(), 2)).committed().map(stray).value(&[0; 16]);
+    open(&DiskEngine::with_fanout(SimFs::new(), 2)).durable().map(stray).value(&[0; 16]);
 }
 
 #[test]
@@ -887,7 +887,7 @@ fn an_insert_only_key_in_two_committed_segments_panics_on_read() {
         store.apply(changes);
         store.commit().expect("commit");
     }
-    store.committed().map(PROBED).range(&[0; 16], &[0xff; 16], usize::MAX);
+    store.durable().map(PROBED).range(&[0; 16], &[0xff; 16], usize::MAX);
 }
 
 #[test]
@@ -900,7 +900,7 @@ fn a_deletes_key_held_in_two_committed_segments_panics_on_read() {
         store.apply(changes);
         store.commit().expect("commit");
     }
-    store.committed().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
+    store.durable().map(SCANNED).range(&[0; 12], &[0xff; 12], usize::MAX);
 }
 
 /// Two 1-row segments at fanout 2 = a merge; its duplicate = the merge's `Contract` error, surfaced
@@ -971,7 +971,7 @@ fn open_trims_to_the_manifest_and_refuses_lost_torn_or_unmanifested_data() {
     fs.corrupt(&path("blocks.dat"), |bytes| bytes.extend_from_slice(&[0xa5; 64]));
     let store = open(&DiskEngine::new(fs.clone(), LsmConfig::default()));
     assert_eq!(blocks_len(&fs), committed, "uncommitted tail truncated");
-    let records = store.committed().sequence(BLOCKS).records(0..4);
+    let records = store.durable().sequence(BLOCKS).records(0..4);
     assert_eq!(records, (0..4).map(block).collect::<Vec<_>>());
     drop(store);
 

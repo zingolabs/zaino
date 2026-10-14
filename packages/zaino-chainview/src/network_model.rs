@@ -19,11 +19,11 @@ use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
 use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
-use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
+use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, TrustedValidatorId};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::BlockHash;
 
-use crate::{ChainView, EndpointSet};
+use crate::{ChainView, TrustedValidatorSet};
 
 const DEPTH: u32 = 3;
 const MAX_NODES: usize = 5;
@@ -118,11 +118,11 @@ impl Sim {
 }
 
 /// (must hold, may hold) `best`: claim = it or asked under it ⊆ holders ⊆ polled chain holds it
-fn holders(seen: &[Option<Seen>], best: BlockRef) -> (EndpointSet, EndpointSet) {
-    let (mut must, mut may) = (EndpointSet::default(), EndpointSet::default());
+fn holders(seen: &[Option<Seen>], best: BlockRef) -> (TrustedValidatorSet, TrustedValidatorSet) {
+    let (mut must, mut may) = (TrustedValidatorSet::default(), TrustedValidatorSet::default());
     for (index, seen) in seen.iter().enumerate() {
         let Some(seen) = seen.as_ref().filter(|seen| seen.reporting) else { continue };
-        let index = ValidatorId::new(index).expect("< MAX_NODES");
+        let index = TrustedValidatorId::new(index).expect("< MAX_NODES");
         if seen.chain.get(u32::from(best.height) as usize) == Some(&best.hash) {
             may.insert(index);
             if seen.chain.last() == Some(&best.hash) || seen.under == Some(best) {
@@ -163,7 +163,7 @@ async fn run(n: usize, moves: Vec<Move>) {
     let cancel = CancellationToken::new();
     tokio::spawn(driver.run(cancel.clone()));
     tokio::spawn(view.observation_fold().run(cancel.clone()));
-    let member = |node: usize| ValidatorId::new(node).expect("< MAX_NODES");
+    let member = |node: usize| TrustedValidatorId::new(node).expect("< MAX_NODES");
     let mut observed: Vec<_> = (0..n).map(|node| balancer.observe(member(node))).collect();
     let reader = view.subscriber();
     let mut seen: Vec<Option<Seen>> = vec![None; n];

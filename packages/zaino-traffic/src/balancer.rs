@@ -27,7 +27,7 @@ use zcash_protocol::{BlockHash, TxId};
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};
-use crate::member::{Health, Limits, MemberId, MemberTable, Synced, ValidatorId};
+use crate::member::{Health, Limits, MemberId, MemberTable, Synced, TrustedValidatorId};
 
 /// Block ask open this long without an answer → warn, and again each period after
 const STALL_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
@@ -70,7 +70,7 @@ pub enum Urgency {
 /// Trusted: `getblockheader` per height, one member; peers: `FindHeaders`, the peer set
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeaderAsk {
-    Pinned { member: ValidatorId, heights: Vec<BlockHeight> },
+    Pinned { member: TrustedValidatorId, heights: Vec<BlockHeight> },
     Peers { locator: Vec<BlockHash>, stop: Option<BlockHash> },
 }
 
@@ -158,7 +158,7 @@ enum Event {
 }
 
 impl<S: ChainDataSource> TrafficBalancer<S> {
-    /// `trusted[i]` = `ValidatorId(i)` (non-empty, ≤ `ValidatorId::MAX`)
+    /// `trusted[i]` = `TrustedValidatorId(i)` (non-empty, ≤ `TrustedValidatorId::MAX`)
     pub fn new(trusted: Vec<Trusted<S>>, peers: Option<Peers>) -> (Self, TrafficDriver<S>) {
         let config: Vec<(u8, Limits)> = trusted.iter().map(|t| (t.priority, t.limits)).collect();
         let in_flight = peers.as_ref().map(|peers| peers.in_flight);
@@ -287,7 +287,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// `sendrawtransaction` on `member` alone (the caller's privacy choice); one attempt
     pub async fn submit(
         &self,
-        member: ValidatorId,
+        member: TrustedValidatorId,
         raw: Vec<u8>,
     ) -> Result<Answered<TxId>, Unanswered<SendRawTransactionError>> {
         self.on_alone(member, move |source| {
@@ -300,7 +300,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// `checkadmission` on `member` alone: the send's verdict, nothing relayed; one attempt
     pub async fn check_admission(
         &self,
-        member: ValidatorId,
+        member: TrustedValidatorId,
         raw: Vec<u8>,
     ) -> Result<Answered<TxId>, Unanswered<CheckAdmissionError>> {
         self.on_alone(member, move |source| {
@@ -313,7 +313,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     /// A `Submit`-class ask of trusted `member` alone
     async fn on_alone<T, E>(
         &self,
-        member: ValidatorId,
+        member: TrustedValidatorId,
         ask: impl Fn(Arc<S>) -> BoxFuture<'static, Result<T, QueryError<E>>>,
     ) -> Result<Answered<T>, Unanswered<E>>
     where
@@ -325,7 +325,7 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
     }
 
     /// Trusted members a submission may enter by: live, not benched
-    pub fn entries(&self) -> Vec<ValidatorId> {
+    pub fn entries(&self) -> Vec<TrustedValidatorId> {
         self.shared.lock().core.entries()
     }
 
@@ -338,12 +338,12 @@ impl<S: ChainDataSource> TrafficBalancer<S> {
         assert!(set, "poll_best set twice: one chain view per balancer");
     }
 
-    /// A push stream's event (`IndexerWatch` callbacks): wakes `member`'s poll
-    pub fn pushed(&self, member: ValidatorId, push: Push) {
+    /// A push stream's event (`ZebraIndexerWatch` callbacks): wakes `member`'s poll
+    pub fn pushed(&self, member: TrustedValidatorId, push: Push) {
         self.shared.step(Input::Push { member, push });
     }
 
-    pub fn observe(&self, member: ValidatorId) -> watch::Receiver<Option<Arc<Observation>>> {
+    pub fn observe(&self, member: TrustedValidatorId) -> watch::Receiver<Option<Arc<Observation>>> {
         let observation = self.shared.observations.get(member.get());
         observation.expect("a configured validator").subscribe()
     }

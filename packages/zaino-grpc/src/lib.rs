@@ -45,7 +45,7 @@ pub use zaino_proto::proto::service::LightdInfo;
 
 /// `GetLightdInfo`'s answer from `snap` (`None` = the RPC answers `UNAVAILABLE`)
 pub fn lightd_info<V>(
-    snap: &zaino_snapshot::Snapshot<V>,
+    snap: &zaino_snapshot::GrpcSnapshot<V>,
     network: zcash_protocol::consensus::NetworkType,
     version: &str,
 ) -> Option<LightdInfo> {

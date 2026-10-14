@@ -8,7 +8,7 @@ use http::{HeaderMap, Request, Response};
 use http_body_util::Full;
 use tokio::sync::watch;
 use tonic::body::Body;
-use zaino_chainview::{ChainView, ChainViewSnapshot, EndpointSet, ObservationFold};
+use zaino_chainview::{ChainView, ChainViewSnapshot, ObservationFold, TrustedValidatorSet};
 use zaino_header_chain::testing::HeaderViews;
 use zaino_nfs::{ChainParams, Indexed};
 use zaino_persistence::{DiskEngine, DiskView, IndexKind, PersistenceEngine, Schema, Store};
@@ -52,7 +52,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
     let mut index =
         engine.open(std::path::Path::new(kind.name()), &schema, NonZeroUsize::MAX).expect("open");
     for block in chain.blocks(tip) {
-        let parent = index.staged();
+        let parent = index.applied();
         let mut out = index.changes(block.at());
         match kind {
             IndexKind::CompactBlock => {
@@ -78,7 +78,7 @@ pub(super) fn indexed(kind: IndexKind, chain: &MockChain, tip: BlockRef) -> (Ind
         index.apply(out);
     }
     index.commit().expect("SimFs commit");
-    (kind, index.committed())
+    (kind, index.durable())
 }
 
 /// `views` served at `tip` (the NFS root): genesis ..= `tip` verified, the chain's own params
@@ -96,7 +96,7 @@ pub(super) fn snapshot_held(
     chain: &MockChain,
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
-    held_by: EndpointSet,
+    held_by: TrustedValidatorSet,
     ours: &[(TxId, bytes::Bytes)],
 ) -> Snapshots<DiskView> {
     let verified = Some(Arc::new(chain.verified(tip)));
@@ -110,7 +110,7 @@ pub(super) fn snapshot(
     tip: BlockRef,
     views: Vec<(IndexKind, DiskView)>,
 ) -> Snapshots<DiskView> {
-    snapshot_held(chain, tip, views, EndpointSet::default(), &[])
+    snapshot_held(chain, tip, views, TrustedValidatorSet::default(), &[])
 }
 
 /// Routes over `node`, every index configured (the balancer's driver + the view's poll fold back,

@@ -1,4 +1,4 @@
-//! [`ValidatorP2pSource`], [`UnspentOutputs`], and what this crate asks a validator through the
+//! [`PeerSource`], [`UnspentOutputs`], and what this crate asks a validator through the
 //! balancer (`zaino-traffic`: cadence, retries, blame)
 //!
 //! - poll (the balancer's, folded here): `getblockchaininfo` (its claim, the estimate and schedule
@@ -33,7 +33,7 @@ pub struct Heard {
 /// chain each peer carries; validators' RPC = [`ChainDataSource`](zaino_source::ChainDataSource)
 ///
 /// - object-safe (`dyn`): the view's type stays the same with or without peers
-pub trait ValidatorP2pSource: Send + Sync + 'static {
+pub trait PeerSource: Send + Sync + 'static {
     /// Fresh subscription per call: every block `inv` from now on (lag drops some: peer finality
     /// waits for the next block)
     fn heard(&self) -> BoxStream<'static, Heard>;

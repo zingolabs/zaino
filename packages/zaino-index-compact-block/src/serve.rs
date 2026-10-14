@@ -48,13 +48,13 @@ impl<V: SequenceRead> CompactBlockReader<V> {
 /// Snapshot's seam: its layer above the committed records
 impl<V: SequenceRead> CompactBlockReader<OverlayView<V>> {
     /// Last committed height, inclusive (`None` = nothing committed)
-    fn committed(&self) -> Option<BlockHeight> {
+    fn durable(&self) -> Option<BlockHeight> {
         self.view().durable().tip().map(|tip| tip.height)
     }
 
     /// In the layer above the committed records: RAM, no page touched (`None` = ask `block`)
     pub fn resident_block(&self, height: BlockHeight) -> Option<Bytes> {
-        (Some(height) > self.committed()).then(|| self.block(height)).flatten()
+        (Some(height) > self.durable()).then(|| self.block(height)).flatten()
     }
 }
 
@@ -124,7 +124,7 @@ impl<V: SequenceRead> RangeCursor<V> {
 
     /// Next chunk reads the files (a cold window faults: the blocking pool's step)
     pub fn next_touches_disk(&self) -> bool {
-        self.next.is_some_and(|next| Some(next) <= self.reader.committed())
+        self.next.is_some_and(|next| Some(next) <= self.reader.durable())
     }
 
     /// Next wire chunk (framed records back to back, in walk order, projected to the cursor's
@@ -143,7 +143,7 @@ impl<V: SequenceRead> RangeCursor<V> {
 
         // descending: every height left sits in the files (the layer's went first)
         let files_last = match self.descending {
-            false => self.reader.committed().map_or(self.last, |tip| tip.min(self.last)),
+            false => self.reader.durable().map_or(self.last, |tip| tip.min(self.last)),
             true => self.last,
         };
         let (records, reached) = self.reader.range(height, files_last, self.budget);
@@ -216,7 +216,7 @@ mod tests {
     fn folded(mut store: DiskStore, chain: &MockChain, heights: std::ops::Range<u32>) -> DiskStore {
         for block in &chain.blocks(chain.tip())[heights.start as usize..heights.end as usize] {
             let mut changes = store.changes(block.at());
-            let parent = CompactBlockReader::new(store.staged());
+            let parent = CompactBlockReader::new(store.applied());
             let fees = chain.fees(block.header().hash);
             fold(&parent, block, &fees, &mut changes);
             store.apply(changes);
@@ -230,7 +230,7 @@ mod tests {
         let store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
         let mut store = folded(store, chain, 0..count);
         store.commit().expect("SimFs commit");
-        CompactBlockReader::new(OverlayView::new(store.committed(), Overlay::empty(store.schema())))
+        CompactBlockReader::new(OverlayView::new(store.durable(), Overlay::empty(store.schema())))
     }
 
     /// `chain(7)`: 0..=3 committed, 4..=6 in the layer above them (as the NFS folds them)
@@ -240,14 +240,13 @@ mod tests {
         store.commit().expect("SimFs commit");
         let mut layer = Overlay::empty(store.schema());
         for block in &chain.blocks(chain.tip())[4..7] {
-            let parent =
-                CompactBlockReader::new(OverlayView::new(store.committed(), layer.clone()));
+            let parent = CompactBlockReader::new(OverlayView::new(store.durable(), layer.clone()));
             let mut changes = store.schema().changes(block.at());
             let fees = chain.fees(block.header().hash);
             fold(&parent, block, &fees, &mut changes);
             layer = layer.with(&changes);
         }
-        CompactBlockReader::new(OverlayView::new(store.committed(), layer))
+        CompactBlockReader::new(OverlayView::new(store.durable(), layer))
     }
 
     /// Every framed record a chunk carries, decoded

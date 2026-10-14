@@ -74,7 +74,7 @@ tokio::spawn(writer.run(blocks, fees)); // fees: value-balance's FeeSink subscri
 - `run` follows the final stream ([the writer shape](../zaino-sync/usage.md#writer-loop)).
   It pops one fee step per block, held blocks included, so the two streams stay
   in step whichever index is ahead. Blocks it does not hold are folded and
-  `zaino_sync::apply`d. It commits on a `Finalized` block, a full buffer and
+  `zaino_sync::apply`d. It commits on a `FinalizedTip` block, a full buffer and
   `Shutdown`, and ends after both streams' `Shutdown`.
 - At the tip the NFS folds value-balance first and hands its fees straight to
   this `fold` (`zaino-nfs::fold_block`).

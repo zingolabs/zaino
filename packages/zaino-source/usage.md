@@ -6,7 +6,7 @@ nothing about the transport. Blocks come back decoded once, from consensus bytes
 into `zaino_primitives::types::Block`. Two implementations; a test fake answers
 what its test asks and `unimplemented!()`s the rest.
 
-| Method | `ZcashLegacyRpcClient` | `ZcashGrpcClient` | Answer |
+| Method | `ZcashLegacyRpcClient` | `ZebraIndexerGrpcClient` | Answer |
 |---|---|---|---|
 | `get_block_by_hash(hash)` | `getblock <hash> 0` | indexer `GetBlock` | `Block`, or `GetBlockByHashError::NotFound` |
 | `get_blocks_by_height(heights)` | `getblock "<h>" 0`, batched | indexer `GetBlockRange`, one per consecutive run | `Block` per height, or `GetAtHeightError::HeightNotFound` |
@@ -26,12 +26,12 @@ are parsed, so an upgrade this build does not know is skipped, never a failed po
 ## Building a client: one per validator
 
 ```rust,ignore
-use zaino_source::{LinkLimits, Timeouts, ZcashGrpcClient, ZcashLegacyRpcClient};
+use zaino_source::{LinkLimits, Timeouts, ZebraIndexerGrpcClient, ZcashLegacyRpcClient};
 
 let link = LinkLimits { max_connections, max_bytes_per_sec };
 let legacy = ZcashLegacyRpcClient::at(address, cookie, user, password, Timeouts::default(), link)?;
 // or blocks over zebrad's indexer gRPC, the rest through `legacy`:
-let grpc = ZcashGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
+let grpc = ZebraIndexerGrpcClient::at(legacy, indexer_address, tls.as_ref(), Timeouts::default(), link)?;
 // one per validator, handed to `zaino_traffic::TrafficBalancer` as a `Trusted` member
 ```
 
@@ -46,8 +46,8 @@ Credentials: a cookie path wins (basic auth as `__cookie__`); otherwise `user` +
 
 ## The indexer gRPC: plaintext or mutual TLS
 
-`ZcashGrpcClient::at` and `IndexerWatch::at` (the push streams) take
-`Option<&IndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
+`ZebraIndexerGrpcClient::at` and `ZebraIndexerWatch::at` (the push streams) take
+`Option<&ZebraIndexerTls>`. `None` = plaintext, as zebrad serves it. `Some` = mutual TLS, which
 zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
 
 - `ca` verifies the server's certificate; `cert` + `key` are this client's, signed by the
@@ -60,7 +60,7 @@ zakurad requires on any non-loopback indexer address (its `[rpc.indexer_tls]`):
   arrives as hex inside JSON: the body buffer is sized once from `Content-Length`,
   and the hex string is handed over as raw bytes (no UTF-8 pass) and decoded by
   `const-hex` (SIMD) into an exact-size buffer.
-- `ZcashGrpcClient`: blocks over zebrad's indexer gRPC (HTTP/2), the rest through
+- `ZebraIndexerGrpcClient`: blocks over zebrad's indexer gRPC (HTTP/2), the rest through
   the `ZcashLegacyRpcClient` it holds.
   - A block arrives as its stored consensus bytes in a protobuf `bytes` field, a
     `Bytes` slice of the received frame: no hex, no JSON.
@@ -103,9 +103,9 @@ as an outage. If the validator replied at all, it is almost certainly `Domain`.
 `source()`; `mode` classifies it (`Connection`, `Timeout`, `HttpStatus`,
 `RpcError(code)`, `GrpcStatus(code)`, `Parse`, `Auth`).
 
-## `IndexerWatch`: push streams as wake hints
+## `ZebraIndexerWatch`: push streams as wake hints
 
-`IndexerWatch::at(address, timeouts)` names zebrad's indexer gRPC
+`ZebraIndexerWatch::at(address, timeouts)` names zebrad's indexer gRPC
 (`indexer_listen_addr`, no auth). `run(cancel, on_change, on_link)` subscribes to
 `ChainTipChange` and `MempoolChange` until cancelled: every event calls
 `on_change(Change::Tip | Change::Mempool)`; `on_link(true)` fires once both

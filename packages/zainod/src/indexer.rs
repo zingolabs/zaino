@@ -4,7 +4,7 @@
 //! - Only place the pipeline's shape is written down:
 //!
 //! ```text
-//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalFollower ─▶ final stream ─┬─▶ value_balance ─fees─┐
+//!   validators ──▶ HeaderSync ── VerifiedChain ─┬─▶ FinalizedFollower ─▶ final stream ─┬─▶ value_balance ─fees─┐
 //!   validators ──▶ getblock <hash> (checked) ───┤                                  ├─▶ compact_block ◀──────┘
 //!                                               │                                  ├─▶ block_hash
 //!                                               │                                  ├─▶ tree_state
@@ -47,8 +47,8 @@ use zaino_primitives::protocol::compiled_schedule;
 use zaino_primitives::types::{Block, ReorgDepth};
 use zaino_snapshot::Publisher;
 use zaino_source::{BlockchainInfo, ChainDataSource};
-use zaino_sync::{FeeSink, FinalFollower, IndexHandle, Subscription};
-use zaino_traffic::{Push, TrafficBalancer, ValidatorId};
+use zaino_sync::{FeeSink, FinalizedFollower, IndexHandle, Subscription};
+use zaino_traffic::{Push, TrafficBalancer, TrustedValidatorId};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::local_consensus::LocalNetwork;
 
@@ -86,7 +86,9 @@ async fn start_over<S: ChainDataSource>(
     let serving = listen(&config, &cancel, &mut tasks).await?;
     #[cfg(feature = "snapshot")]
     if let Some(snapshot) = &config.snapshot {
-        crate::bootstrap::bootstrap(snapshot, &config).instrument(component("Snapshot")).await?;
+        crate::bootstrap::bootstrap(snapshot, &config)
+            .instrument(component("IndexSnapshot"))
+            .await?;
     }
     boot_over(config, client, serving, cancel, tasks).await
 }
@@ -145,7 +147,7 @@ async fn regtest_schedule<S: ChainDataSource>(
     balancer: &TrafficBalancer<S>,
     validators: usize,
 ) -> BlockchainInfo {
-    let members = (0..validators).filter_map(ValidatorId::new);
+    let members = (0..validators).filter_map(TrustedValidatorId::new);
     let mut observed: Vec<_> = members.map(|member| balancer.observe(member)).collect();
     let mut warned = false;
     loop {
@@ -270,7 +272,7 @@ fn open_indexes<S: ChainDataSource>(
     let params = ChainParams { network, schedule: inputs.schedule };
     let (chain, balancer) = (&inputs.chain, &inputs.balancer);
     let mut indexes = Indexes {
-        follower: FinalFollower::new(chain.clone(), balancer.clone(), lookahead),
+        follower: FinalizedFollower::new(chain.clone(), balancer.clone(), lookahead),
         nfs: Nfs::new(chain.clone(), balancer.clone(), params, depth, lookahead),
         engine: DiskEngine::new(Arc::clone(&inputs.fs), LsmConfig::from(&config.sync.lsm_store)),
         network,
@@ -344,7 +346,7 @@ fn run_pipeline<S: ChainDataSource>(
     let progress = follower.progress();
     spawn(&mut tasks, "follower", component("ZainoSync"), follower.run(cancel.child_token()));
     spawn(&mut tasks, "nfs", component("ZainoNFS"), nfs.run(cancel.child_token()));
-    spawn(&mut tasks, "snapshot", component("Snapshot"), publisher.run(cancel.child_token()));
+    spawn(&mut tasks, "snapshot", component("GrpcSnapshot"), publisher.run(cancel.child_token()));
     serving.routing.route(Routes {
         snapshots: snapshots.clone(),
         submit: Arc::clone(&inputs.view),
@@ -395,7 +397,7 @@ fn run_pipeline<S: ChainDataSource>(
 /// Final path + tip overlay + every index opened so far (its writer queued, spawned by
 /// [`run_pipeline`])
 struct Indexes<S> {
-    follower: FinalFollower<S>,
+    follower: FinalizedFollower<S>,
     nfs: Nfs<S, DiskView>,
     engine: DiskEngine,
     network: NetworkType,

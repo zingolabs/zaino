@@ -16,7 +16,7 @@ pub use balancer::{
     Trusted, Unanswered, Urgency,
 };
 pub use core::{Push, Ticket};
-pub use member::{Health, Limits, MemberId, MemberRow, MemberTable, ValidatorId};
+pub use member::{Health, Limits, MemberId, MemberRow, MemberTable, TrustedValidatorId};
 
 #[cfg(test)]
 mod tests;
