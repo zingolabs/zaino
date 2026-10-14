@@ -27,8 +27,9 @@ use std::num::NonZeroU32;
 use proptest::prelude::*;
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::{all_at, MockChain};
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{header_work, Rejected, CONTEXT};
@@ -387,7 +388,7 @@ impl Model {
         for leaf in self.leaves().into_iter().filter(|leaf| Some(*leaf) != best) {
             let mut ascending = vec![leaf];
             while let Some(header) = self.by_hash.get(ascending.last().expect("leaf")) {
-                if header.prev_hash() == BlockHash::ZERO {
+                if header.prev_hash() == BlockHash([0; 32]) {
                     break;
                 }
                 ascending.push(header.prev_hash());
@@ -435,7 +436,7 @@ impl Builder {
         let mined = mined.tip();
         let header = self.received(mined, |raw| {
             if !exact {
-                raw[4..36].copy_from_slice(&<[u8; 32]>::from(prev));
+                raw[4..36].copy_from_slice(&prev.0);
                 raw[100..104].copy_from_slice(&time.to_le_bytes());
             }
         });
@@ -576,7 +577,7 @@ fn run(moves: Vec<Move>) {
             Move::Spray { from, branches } => {
                 let mut live: Vec<(u64, BlockHash)> =
                     model.alive.iter().map(|(hash, alive)| (alive.received, *hash)).collect();
-                live.sort_unstable();
+                live.sort_unstable_by_key(|(received, _)| *received);
                 for branch in 0..branches.min(live.len() * 4) {
                     let parent = live[(from + branch) % live.len()].1;
                     let time = model.by_hash[&parent].time() + 1 + branch as u32;

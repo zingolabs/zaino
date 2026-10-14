@@ -13,9 +13,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use zaino_header_chain::{Record, VerifiedChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef};
+use zaino_primitives::types::{Block, BlockRef};
 use zaino_sync::Checked;
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::graph::{Graph, Node};
 

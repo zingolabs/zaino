@@ -1,17 +1,18 @@
 //! Fire drills: each `check()` assertion and precondition seen
 //! firing on a planted bug (never seen firing = not known to work)
 
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::VerifiedChain;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_source::testing::Lie;
 use zaino_sync::check_block;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 use super::{Indexes, Input, NfsCore, Output};
 use crate::graph::Node;
@@ -119,8 +120,8 @@ fn the_unplanted_core_passes_every_check_in_its_planted_state() {
     let (a, s) = (&world.a, &world.s);
     let valid = world.valid();
     valid.check();
-    let nodes: BTreeSet<BlockHash> = valid.graph.nodes().map(|node| node.at.hash).collect();
-    let expected = BTreeSet::from([a[3], a[4], a[5], a[6], s[0], s[1]]);
+    let nodes: HashSet<BlockHash> = valid.graph.nodes().map(|node| node.at.hash).collect();
+    let expected = HashSet::from([a[3], a[4], a[5], a[6], s[0], s[1]]);
     let ready: Vec<BlockHeight> = valid.ready.keys().copied().collect();
     let folding: Vec<BlockHash> = valid.folding.keys().copied().collect();
     let shown = valid.shown.as_ref().map(|shown| shown.tip);
@@ -262,7 +263,7 @@ fn check_catches_a_want_at_or_below_the_root() {
 fn check_catches_a_want_off_the_best_chain() {
     let world = World::new();
     let mut core = world.valid();
-    core.wanted.insert(h(9), BlockHash::ZERO);
+    core.wanted.insert(h(9), BlockHash([0; 32]));
     core.check();
 }
 

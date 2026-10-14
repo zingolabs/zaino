@@ -7,8 +7,9 @@
 use std::sync::Arc;
 
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{Block, BlockHash, BlockRef};
+use zaino_primitives::types::{Block, BlockRef};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::snapshot::Branch;
 

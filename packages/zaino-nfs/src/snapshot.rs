@@ -15,10 +15,11 @@ use zaino_index_tree_state::{PoolActivations, TreeStateReader};
 use zaino_internal_block_hash_to_height::BlockHashReader;
 use zaino_internal_value_balance::ValueBalanceReader;
 use zaino_persistence::{IndexKind, MapRead, Overlay, OverlayView, SequenceRead, View};
-use zaino_primitives::types::{Block, BlockHash, BlockRef};
+use zaino_primitives::types::{Block, BlockRef};
 use zaino_sync::PerIndex;
 use zcash_protocol::consensus::{BlockHeight, NetworkType};
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::BlockHash;
 
 use crate::fold::Folded;
 #[cfg(any(test, feature = "testing"))]

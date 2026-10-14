@@ -16,14 +16,14 @@ use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
-use zaino_primitives::types::{Block, BlockHash};
+use zaino_primitives::types::Block;
 use zaino_source::{
     BlockLink, BlockLinks, ChainDataSource, CheckAdmissionError, GetAtHeightError,
     GetRawMempoolTransactionError, GetTransactionError, MempoolListed, NonDomainError, PollReading,
     QueryError, RawMempoolTransactions, SendRawTransactionError, TransactionResponse,
 };
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::class::Class;
 use crate::core::{AskId, Input, Output, PollOrder, Push, Reply, Route, Ticket, TrafficCore};

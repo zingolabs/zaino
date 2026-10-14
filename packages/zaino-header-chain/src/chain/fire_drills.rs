@@ -5,7 +5,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
+use zcash_protocol::BlockHash;
 
 use super::{HeaderChain, Node};
 use crate::testing::{insert, HeaderViews};
@@ -37,9 +38,9 @@ fn valid() -> Valid {
 /// kept consistent, so only the bound breaks)
 fn clone_side(chain: &mut HeaderChain, of: BlockHash, salt: u8) {
     let mut node: Node = chain.nodes[&of];
-    let mut hash = <[u8; 32]>::from(of);
+    let mut hash = of.0;
     hash[0] ^= salt;
-    node.record.hash = BlockHash::from(hash);
+    node.record.hash = BlockHash(hash);
     node.received = u64::MAX - u64::from(salt);
     chain.nodes.insert(node.record.hash, node);
     chain.leaves.insert(node.record.hash);
@@ -70,7 +71,7 @@ fn check_catches_a_best_that_is_not_the_max_work_leaf() {
 #[should_panic(expected = "does not descend from the final tip")]
 fn check_catches_a_node_off_the_final_tip() {
     let Valid { mut chain, trunk, .. } = valid();
-    chain.nodes.get_mut(&trunk[4]).expect("held").parent = BlockHash::from([9u8; 32]);
+    chain.nodes.get_mut(&trunk[4]).expect("held").parent = BlockHash([9u8; 32]);
     chain.check();
 }
 

@@ -611,12 +611,13 @@ mod tests {
 
         use zaino_header_chain::testing::{insert, HeaderViews};
         use zaino_primitives::testing::{h, MockChain};
-        use zaino_primitives::types::{Block, BlockHash};
+        use zaino_primitives::types::Block;
         use zaino_proto::proto::service::{
             compact_tx_streamer_client::CompactTxStreamerClient, BlockId, BlockRange, ChainSpec,
             Empty,
         };
         use zaino_source::testing::ValidatorViews;
+        use zcash_protocol::BlockHash;
 
         // current-thread runtime: every task's samples land here (blocking-pool work's do not)
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
@@ -677,7 +678,7 @@ mod tests {
         };
         // (latest, range's last, tree state at it): each the block's (height, hash)
         let mut agree_at = async |tip: &Block| {
-            let expected = (u64::from(tip.header().height), <[u8; 32]>::from(tip.header().hash));
+            let expected = (u64::from(tip.header().height), tip.header().hash.0);
             let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
             loop {
                 let latest = match wallet.get_latest_block(ChainSpec {}).await {
@@ -707,7 +708,7 @@ mod tests {
             assert_eq!(ended, tonic::Code::OutOfRange, "then OUT_OF_RANGE (99 is past it)");
             let state = wallet.get_tree_state(BlockId { height: expected.0, hash: Vec::new() });
             let state = state.await.expect("tree state").into_inner();
-            assert_eq!(state.hash, BlockHash::from(expected.1).to_string(), "tree state's block");
+            assert_eq!(state.hash, BlockHash(expected.1).to_string(), "tree state's block");
         };
 
         publish(&a);
@@ -732,13 +733,13 @@ mod tests {
         let ended = ended.expect("the reorg ends the stream").expect("OK trailers");
         assert!(ended.is_none(), "an empty mempool: no record, only the end");
         let after = streamer.get_latest_block(ChainSpec {}).await.expect("served").into_inner();
-        let on_b = b.get(after.height as usize).map(|at| <[u8; 32]>::from(hash(at)).to_vec());
+        let on_b = b.get(after.height as usize).map(|at| hash(at).0.to_vec());
         assert_eq!(Some(after.hash.clone()), on_b, "{after:?}: on B's chain, never A8");
 
         agree_at(&b[8]).await;
         let reorged = wallet.get_block(BlockId { height: 7, hash: Vec::new() }).await;
         let reorged = reorged.expect("block 7").into_inner().hash;
-        assert_eq!(reorged, <[u8; 32]>::from(hash(&b[7])).to_vec(), "7 = B7 now");
+        assert_eq!(reorged, hash(&b[7]).0.to_vec(), "7 = B7 now");
         let lightd = wallet.get_lightd_info(Empty {}).await.expect("served").into_inner();
         let identity = (lightd.version.as_str(), lightd.vendor.as_str(), lightd.block_height);
         assert_eq!(identity, (env!("CARGO_PKG_VERSION"), "zaino", 8), "zainod's version at B8");

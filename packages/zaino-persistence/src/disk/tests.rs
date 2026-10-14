@@ -10,9 +10,9 @@ use std::{
 };
 
 use proptest::{prelude::*, strategy::Union};
-use zaino_primitives::types::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::BlockHash;
 
 use super::*;
 use crate::{
@@ -102,7 +102,7 @@ fn salted_ref(n: usize, salt: u8) -> BlockRef {
     let height = BlockHeight::from(n as u32 - 1);
     let mut hash = [n as u8; 32];
     hash[0] ^= salt;
-    BlockRef { hash: BlockHash::from(hash), height }
+    BlockRef { hash: BlockHash(hash), height }
 }
 
 /// `bytes` on branch `salt` (a dropped record ≠ its replacement)

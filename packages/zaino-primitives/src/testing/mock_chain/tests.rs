@@ -51,7 +51,7 @@ fn every_block_is_a_real_linked_header_over_its_own_transactions() {
         let txids: Vec<TxId> = block.transactions().iter().map(|tx| tx.txid).collect();
         let coinbases: Vec<bool> =
             block.transactions().iter().map(|tx| tx.transparent.coinbase).collect();
-        assert_eq!(sha256d(&chain.header_bytes(header.hash)), <[u8; 32]>::from(header.hash));
+        assert_eq!(sha256d(&chain.header_bytes(header.hash)), header.hash.0);
         assert_eq!(
             (header.prev_hash, header.height),
             (parent.header().hash, parent.header().height + 1)

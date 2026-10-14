@@ -10,7 +10,7 @@ use zaino_sync::{
 
 use crate::{
     by_hash::{encode_height, BY_HASH},
-    BlockHashReader, HASH,
+    BlockHashReader,
 };
 
 pub struct BlockHashIndexWriter<S: Store> {
@@ -69,7 +69,7 @@ impl<S: Store<View: MapRead>> BlockHashIndexWriter<S> {
 pub fn fold<V: MapRead>(parent: &BlockHashReader<V>, block: &Block, out: &mut BlockChanges) {
     assert_next(out, parent.view().tip(), block);
     let header = block.header();
-    out.map(BY_HASH).insert(&<[u8; HASH]>::from(header.hash), &encode_height(header.height));
+    out.map(BY_HASH).insert(&header.hash.0, &encode_height(header.height));
 }
 
 #[cfg(test)]
@@ -78,10 +78,10 @@ mod tests {
 
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, IndexKind, Schema, View};
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_primitives::types::BlockHash;
     use zaino_sync::testing::{finalized, open, step, Writer, QUEUE};
     use zcash_protocol::consensus::BlockHeight;
     use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::BlockHash;
 
     use super::*;
     use crate::{FORMAT, TABLES};
@@ -103,7 +103,7 @@ mod tests {
         let mut store = open(&SimFs::new(), &SCHEMA, NonZeroUsize::MAX);
 
         for (height, block) in (0u8..).zip(&blocks) {
-            let hash = <[u8; HASH]>::from(block.header().hash);
+            let hash = block.header().hash.0;
             let mut changes = store.changes(block.at());
             fold(&BlockHashReader::new(store.staged()), block, &mut changes);
             let rows: Vec<(&[u8], &[u8])> = changes.inserts(BY_HASH).collect();
@@ -116,7 +116,7 @@ mod tests {
             blocks.iter().map(|block| reader.height_of(&block.header().hash)).collect();
         let expected: Vec<_> = (0..3u32).map(|n| Some(BlockHeight::from(n))).collect();
         assert_eq!(located, expected);
-        assert_eq!(reader.height_of(&BlockHash::from([0xee; HASH])), None, "never folded");
+        assert_eq!(reader.height_of(&BlockHash([0xee; 32])), None, "never folded");
     }
 
     /// 0..=3 (3 `Finalized`: committed there), then a restart resending 2 and 3 (held: skipped)

@@ -28,8 +28,8 @@ pub fn encode_compact_block(block: &Block, fees: &BlockFees, sizes: &TreeSizes) 
     };
     let compact = compact_formats::CompactBlock {
         height: height.into(),
-        hash: <[u8; HASH]>::from(header.hash).to_vec(),
-        prev_hash: <[u8; HASH]>::from(header.prev_hash).to_vec(),
+        hash: header.hash.0.to_vec(),
+        prev_hash: header.prev_hash.0.to_vec(),
         time: header.time,
         // always unset (compact_formats.proto `CompactBlock`: header data only via future methods)
         header: Vec::new(),
@@ -173,8 +173,8 @@ mod tests {
         let ironwood = &shielded.ironwood.actions;
         let expected = compact_formats::CompactBlock {
             height: 2,
-            hash: <[u8; HASH]>::from(block.header().hash).to_vec(),
-            prev_hash: <[u8; HASH]>::from(block.header().prev_hash).to_vec(),
+            hash: block.header().hash.0.to_vec(),
+            prev_hash: block.header().prev_hash.0.to_vec(),
             time: block.header().time,
             header: Vec::new(),
             vtx: vec![

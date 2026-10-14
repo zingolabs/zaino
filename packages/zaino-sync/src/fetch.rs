@@ -9,10 +9,11 @@
 use std::sync::Arc;
 
 use zaino_header_chain::Record;
-use zaino_primitives::types::{Block, BlockHash, BlockRef, BodyMismatch};
+use zaino_primitives::types::{Block, BlockRef, BodyMismatch};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// Block that passed [`check_block`] or [`check_block_at`] (no other constructor)
 #[derive(Debug, Clone)]

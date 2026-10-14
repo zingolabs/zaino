@@ -13,8 +13,9 @@ pub use ledger::{Ledger, Refused, Unmined};
 pub use mock_chain::{Branch, MockChain, Schedule, Work};
 pub use upgrades::all_at;
 
-use crate::types::{BlockHash, DecodedHeader, EquihashSolution};
+use crate::types::{DecodedHeader, EquihashSolution};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// `BlockHeight` from a literal (`chain.fork(h(9))`)
 pub fn h(height: u32) -> BlockHeight {
@@ -30,7 +31,7 @@ pub fn encode_header(header: &DecodedHeader) -> Vec<u8> {
     let solution = header.solution.as_bytes();
     let mut raw = Vec::with_capacity(143 + solution.len());
     raw.extend(header.version.to_le_bytes());
-    raw.extend(<[u8; 32]>::from(header.prev_hash));
+    raw.extend(header.prev_hash.0);
     raw.extend(<[u8; 32]>::from(header.merkle_root));
     raw.extend(<[u8; 32]>::from(header.block_commitments));
     raw.extend(header.time.to_le_bytes());
@@ -46,5 +47,5 @@ pub fn encode_header(header: &DecodedHeader) -> Vec<u8> {
 
 /// What `header.hash` must be: SHA-256d of [`encode_header`]
 pub fn header_hash(header: &DecodedHeader) -> BlockHash {
-    BlockHash::from(sha256d(&encode_header(header)))
+    BlockHash(sha256d(&encode_header(header)))
 }

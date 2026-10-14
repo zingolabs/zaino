@@ -25,12 +25,13 @@ use zaino_persistence::{
     SequenceRead, Store, View, Width,
 };
 use zaino_primitives::testing::{p2pkh, MockChain};
-use zaino_primitives::types::{Block, BlockFees, BlockHash};
+use zaino_primitives::types::{Block, BlockFees};
 use zaino_source::testing::{Lie, MockValidator, ValidatorViews};
 use zaino_sync::{FeeSink, FinalFollower, FollowError, SyncProgress};
 use zaino_traffic::{Limits, Trusted};
 use zcash_protocol::consensus::NetworkType;
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 use zcash_transparent::bundle::OutPoint;
 
 use super::*;

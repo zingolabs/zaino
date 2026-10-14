@@ -1,7 +1,7 @@
 //! Block named by both hash and height
 
-use crate::types::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// Which block a value was computed against (a range answered, the tip a mempool set was read at)
 ///

@@ -1,11 +1,12 @@
 //! Per-network consensus constants the header rules read (zebra-chain v7 `src/parameters/`)
 
 use zaino_primitives::protocol::compiled_schedule;
-use zaino_primitives::types::{BlockHash, CompactDifficulty, Target};
+use zaino_primitives::types::{CompactDifficulty, Target};
 use zcash_protocol::consensus::{
     target_spacing, BlockHeight, NetworkType, NetworkUpgrade, Parameters,
 };
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::BlockHash;
 
 /// One network's header rules; build with [`mainnet`](Self::mainnet), [`testnet`](Self::testnet)
 /// or [`regtest`](Self::regtest); `pow_limit` = `PoWLimit` compact-rounded (zcashd compares that)
@@ -144,7 +145,7 @@ impl Params {
 
 /// zcashd `chainparams.cpp` `powLimit` (display-order hex), compact-rounded
 fn limit(pow_limit: &str) -> Target {
-    let exact: Target = pow_limit.parse().expect("powLimit: constant display-order hex");
+    let exact = Target::from_hex(pow_limit).expect("powLimit: constant display-order hex");
     let rounded = CompactDifficulty::try_from_bits(exact.to_compact());
     rounded.expect("a network's limit is a valid target").target()
 }
@@ -159,7 +160,7 @@ fn height(height: u32) -> BlockHeight {
 }
 
 fn display(hex: &str) -> BlockHash {
-    hex.parse().expect("genesis: constant display-order hex")
+    BlockHash::from_hex(hex).expect("genesis: constant display-order hex")
 }
 
 #[cfg(test)]

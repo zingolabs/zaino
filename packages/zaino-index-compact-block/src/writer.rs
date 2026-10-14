@@ -376,7 +376,7 @@ mod tests {
                 let stored = reader.block(h(height)).expect("record");
                 let decoded = compact_formats::CompactBlock::decode(&stored[FRAME_HEADER..])
                     .expect("decodes");
-                let hash = <[u8; 32]>::from(blocks[height as usize].header().hash);
+                let hash = blocks[height as usize].header().hash.0;
                 assert_eq!(decoded.hash, hash.to_vec(), "{case}: record {height}");
                 assert_eq!(sizes, sizes_at(height as usize), "{case}: record {height}");
                 let own = match height {

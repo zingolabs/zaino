@@ -15,14 +15,14 @@ use futures::future::join_all;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
-use zaino_primitives::types::{BlockHash, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zaino_source::{
     ChainDataSource, GetAtHeightError, GetRawMempoolTransactionError, MempoolListed,
     MetadataReading, NodeRelease, NonDomainError, PeerInfo, PollReading, QueryError,
 };
 use zaino_traffic::{Health, MemberId, Observation, TrafficBalancer, ValidatorId};
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::CATCHING_UP_WARN_INTERVAL;
 use crate::fold::{ChainViewCore, EndpointReport, Listing, Reading, Sighted};

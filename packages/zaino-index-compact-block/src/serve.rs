@@ -280,7 +280,7 @@ mod tests {
     fn single_block_reads_carry_every_pool_and_confirm_the_located_hash() {
         let chain = chain(4);
         let reader = reader(&chain);
-        let hash = |height| <[u8; HASH]>::from(chain.at(h(height)).hash);
+        let hash = |height| chain.at(h(height)).hash.0;
 
         let body = reader.block(h(2)).expect("block 2");
         let [decoded] = decode(&body).try_into().expect("one record");
@@ -327,7 +327,7 @@ mod tests {
 
         assert_eq!(reader.resident_block(h(5)), reader.block(h(5)), "layer: RAM");
         assert_eq!(reader.resident_block(h(2)), None, "files: not resident");
-        let layer_hash = <[u8; HASH]>::from(chain.at(h(5)).hash);
+        let layer_hash = chain.at(h(5)).hash.0;
         assert!(reader.block_at(h(5), &layer_hash).is_ok(), "layer hash");
     }
 

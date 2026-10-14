@@ -22,8 +22,9 @@
 use std::cmp::Reverse;
 use std::collections::HashMap;
 
-use zaino_primitives::types::{BlockHash, BlockRef, MerkleRoot, ReorgDepth};
+use zaino_primitives::types::{BlockRef, MerkleRoot, ReorgDepth};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::header::Header;
 use crate::params::Params;
@@ -394,7 +395,7 @@ impl HeaderChain {
         }
         assert!(self.leaves.iter().all(|leaf| self.nodes.contains_key(leaf)), "tree: leaf held");
 
-        let mut parent = final_tip.map_or(BlockHash::ZERO, |tip| tip.hash);
+        let mut parent = final_tip.map_or(BlockHash([0; 32]), |tip| tip.hash);
         for (at, record) in self.best_path.iter().enumerate() {
             let node = self.nodes.get(&record.hash);
             let height = base + at as u32;

@@ -13,11 +13,11 @@ use std::time::{Duration, Instant};
 
 use tonic::transport::Channel;
 use tonic::{Code, Status};
-use zaino_primitives::types::{Block, BlockHash};
+use zaino_primitives::types::Block;
 use zaino_proto::proto::zebra_indexer::indexer_client::IndexerClient;
 use zaino_proto::proto::zebra_indexer::{BlockRangeRequest, BlockRequest};
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::indexer::{indexer_endpoint, IndexerTls};
 use crate::rpc::{emit, EndpointError, LinkLimits, Timeouts};
@@ -178,7 +178,7 @@ impl ChainDataSource for ZcashGrpcClient {
         hash: BlockHash,
     ) -> Result<Block, QueryError<GetBlockByHashError>> {
         self.measured("GetBlock", async {
-            let mut display = <[u8; 32]>::from(hash);
+            let mut display = hash.0;
             display.reverse();
             let request = BlockRequest { hash_or_height: display.to_vec() };
             let mut indexer = self.indexer();

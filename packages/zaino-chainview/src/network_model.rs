@@ -17,10 +17,11 @@ use proptest::prelude::*;
 use tokio_util::sync::CancellationToken;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_primitives::testing::MockChain;
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::testing::{within, MockValidator, Port, ValidatorViews};
 use zaino_traffic::{Health, Limits, Push, TrafficBalancer, Trusted, ValidatorId};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 use crate::{ChainView, EndpointSet};
 

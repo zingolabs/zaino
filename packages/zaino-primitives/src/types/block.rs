@@ -1,10 +1,9 @@
 //! Block and block header
 
 use super::transaction::Transaction;
-use super::{
-    BlockCommitments, BlockHash, BlockRef, CompactDifficulty, EquihashSolution, MerkleRoot,
-};
+use super::{BlockCommitments, BlockRef, CompactDifficulty, EquihashSolution, MerkleRoot};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 /// Every consensus field + the hash (SHA-256d of the header bytes) and height naming the block
 /// (carried whole: the hash commits to all of them)

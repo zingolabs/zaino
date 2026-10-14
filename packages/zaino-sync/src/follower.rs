@@ -19,10 +19,11 @@ use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::AbortOnDropHandle};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::IndexKind;
-use zaino_primitives::types::{Block, BlockHash, BlockRef};
+use zaino_primitives::types::{Block, BlockRef};
 use zaino_source::ChainDataSource;
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use crate::{emit, fetch, fetch_at, IndexerDataSink, Step, Subscription, SyncProgress};
 

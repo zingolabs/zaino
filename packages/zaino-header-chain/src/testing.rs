@@ -72,7 +72,7 @@ mod tests {
     use proptest::prelude::*;
     use proptest::sample::Index;
     use zaino_primitives::testing::h;
-    use zaino_primitives::types::BlockHash;
+    use zcash_protocol::BlockHash;
 
     use super::*;
     use crate::Inserted;

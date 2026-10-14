@@ -6,10 +6,11 @@ use zaino_chainview::{ChainViewSnapshot, EndpointSet, MempoolView};
 use zaino_header_chain::{Fork, VerifiedChain};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::View;
-use zaino_primitives::types::{BlockHash, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zaino_traffic::Health;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::BlockHash;
 
 use crate::feed::{Feed, MempoolTail};
 

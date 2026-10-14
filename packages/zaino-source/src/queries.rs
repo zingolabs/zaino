@@ -6,10 +6,10 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{Block, BlockHash, TransactionLocation};
+use zaino_primitives::types::{Block, TransactionLocation};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::value::Zatoshis;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::{BlockchainInfo, NodeRelease, NonDomainError, PeerInfo, QueryError};
 

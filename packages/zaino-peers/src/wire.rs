@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::{BlockHash, PeerTxId};
+use zaino_primitives::types::PeerTxId;
 use zcash_primitives::transaction::{CompressedTransaction, DecompressionError};
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 use zebra_chain::block::{self, Block, CountedHeader};
 use zebra_chain::serialization::{SerializationError, ZcashDeserialize, ZcashSerialize};
 use zebra_chain::transaction::{self, AuthDigest, UnminedTx, UnminedTxId, WtxId};
@@ -40,11 +40,11 @@ pub(crate) fn unmined_tx_id(id: PeerTxId) -> UnminedTxId {
 }
 
 pub(crate) fn block_hash(hash: block::Hash) -> BlockHash {
-    BlockHash::from(hash.0)
+    BlockHash(hash.0)
 }
 
 pub(crate) fn zebra_block_hash(hash: BlockHash) -> block::Hash {
-    block::Hash(<[u8; 32]>::from(hash))
+    block::Hash(hash.0)
 }
 
 /// Consensus bytes of a header a peer sent

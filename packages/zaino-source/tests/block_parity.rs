@@ -13,7 +13,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tonic::{Request, Response, Status};
 
-use zaino_primitives::types::BlockHash;
 use zaino_proto::proto::zebra_indexer::indexer_server::{Indexer, IndexerServer};
 use zaino_proto::proto::zebra_indexer::{
     BlockAndHash, BlockHashAndHeight, BlockRangeRequest, BlockRequest, Empty, MempoolChangeMessage,
@@ -25,6 +24,7 @@ use zaino_source::{
     ZcashGrpcClient, ZcashLegacyRpcClient,
 };
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 struct Expected {
     height: u32,
@@ -264,7 +264,7 @@ impl Indexer for FakeIndexer {
 async fn assert_explorer_parity<S: ChainDataSource>(client: &S, label: &str) {
     for expected in FIXTURES {
         let height = BlockHeight::from(expected.height);
-        let hash: BlockHash = expected.hash.parse().expect("display hex");
+        let hash = BlockHash::from_hex(expected.hash).expect("display hex");
         let block = client
             .get_block_by_hash(hash)
             .await

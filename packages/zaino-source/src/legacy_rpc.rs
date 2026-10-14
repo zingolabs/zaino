@@ -4,9 +4,9 @@
 
 use std::path::Path;
 
-use zaino_primitives::types::{Block, BlockHash};
+use zaino_primitives::types::Block;
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::rpc::{
     auth_from_parts, validator_url, Call, EndpointError, LinkLimits, RpcClient, RpcClientConfig,

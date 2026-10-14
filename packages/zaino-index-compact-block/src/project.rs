@@ -262,7 +262,7 @@ mod tests {
         };
         let framed = encode_compact_block(chain.block(one.hash), &chain.fees(one.hash), &sizes);
 
-        assert_eq!(record_hash(&framed), Some(<[u8; HASH]>::from(one.hash)));
+        assert_eq!(record_hash(&framed), Some(one.hash.0));
         assert_eq!(record_hash(&framed[..FRAME_HEADER + 4]), None, "cut before the hash");
         assert_eq!(record_sizes(&framed), Some(sizes));
         assert_eq!(record_sizes(&framed[..framed.len() - 1]), None, "cut inside chainMetadata");

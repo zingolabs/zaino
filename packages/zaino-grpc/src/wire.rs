@@ -8,6 +8,7 @@ use tonic::{body::Body, Status};
 use zaino_index_compact_block::Pools;
 use zaino_proto::frame::{frame_into, split_frame, FRAME_HEADER};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// No answer from this snapshot: retry (`UNAVAILABLE`, the reason as its message)
 pub(crate) fn unavailable(why: zaino_snapshot::Unavailable) -> Status {
@@ -39,7 +40,7 @@ pub(super) fn locate<V: zaino_persistence::CommittedView>(
             "{method} by hash resolves through the block-hash index, which is off"
         ))
     })?;
-    let height = locator.height_of(&hash.into()).filter(|&height| height <= through);
+    let height = locator.height_of(&BlockHash(hash)).filter(|&height| height <= through);
     let missing = || Status::not_found("block hash is not in the index");
     Ok((height.ok_or_else(missing)?, hash))
 }

@@ -458,7 +458,7 @@ mod tests {
 
         let (_, latest, _) = call(GetLatestBlock, Vec::new()).await;
         let latest = service::BlockId::decode(&latest[FRAME_HEADER..]).expect("a BlockID");
-        let tip_hash = <[u8; 32]>::from(two.hash).to_vec();
+        let tip_hash = two.hash.0.to_vec();
         assert_eq!((latest.height, latest.hash), (2, tip_hash.clone()), "the snapshot's tip");
 
         let range =
@@ -470,9 +470,8 @@ mod tests {
             .into_iter()
             .map(|block| (block.height, block.hash))
             .collect();
-        let expected: Vec<_> = (0..=3u32)
-            .map(|at| (u64::from(at), <[u8; 32]>::from(chain.at(h(at)).hash).to_vec()))
-            .collect();
+        let expected: Vec<_> =
+            (0..=3u32).map(|at| (u64::from(at), chain.at(h(at)).hash.0.to_vec())).collect();
         assert_eq!(served, expected, "through the compact-block index's durable, not the snapshot");
 
         let (_, state, _) = call(GetLatestTreeState, Vec::new()).await;
@@ -485,7 +484,7 @@ mod tests {
             "same tip, same block"
         );
         let three = chain.at(h(3)).hash;
-        let mut three_display = <[u8; 32]>::from(three).to_vec();
+        let mut three_display = three.0.to_vec();
         three_display.reverse();
         let (code, state, _) = call(GetTreeState, at(3).encode_to_vec()).await;
         let state = service::TreeState::decode(&state[FRAME_HEADER..]).expect("3 answered");
@@ -495,7 +494,7 @@ mod tests {
         let (code, block, _) = call(GetBlock, at(3).encode_to_vec()).await;
         let block =
             compact_formats::CompactBlock::decode(&block[FRAME_HEADER..]).expect("3 answered");
-        let three = <[u8; 32]>::from(three).to_vec();
+        let three = three.0.to_vec();
         assert_eq!((code, block.height, block.hash), (ok, 3, three), "GetBlock agrees");
         for method in [GetTreeState, GetBlock] {
             let (code, _, _) = call(method, at(4).encode_to_vec()).await;

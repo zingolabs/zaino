@@ -19,11 +19,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 use zaino_header_chain::VerifiedChain;
 use zaino_persistence::{CommittedView, IndexKind};
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_source::ChainDataSource;
 use zaino_sync::{compute, fetch, Checked, Human, IndexHandle, PerIndex};
 use zaino_traffic::{TrafficBalancer, Urgency};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 use crate::core::{Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::fold::{fold_block, Folded};

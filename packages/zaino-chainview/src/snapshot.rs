@@ -14,10 +14,10 @@ use imbl::ordmap::DiffItem;
 use imbl::{OrdMap, OrdSet, Vector};
 use tokio::time::Instant;
 use zaino_header_chain::VerifiedChain;
-use zaino_primitives::types::{BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{BlockRef, ReorgDepth};
 use zaino_traffic::{Health, ValidatorId};
 use zcash_protocol::value::Zatoshis;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::config::FINALITY_STALL;
 use crate::endpoints::{EndpointSet, ValidatorMetadata};
@@ -334,7 +334,7 @@ impl ChainViewSnapshot {
         let info = meta.info.as_mut().expect("a holder answered");
         info.blocks = best.height + by;
         info.estimated_height = info.blocks;
-        info.best_block_hash = BlockHash::from([0xA0; 32]);
+        info.best_block_hash = BlockHash([0xA0; 32]);
         meta.held = read.then_some(best);
         meta.agreement = meta.agreement_with(self.chain.as_deref());
         if !read {

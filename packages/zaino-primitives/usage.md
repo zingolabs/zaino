@@ -8,7 +8,8 @@ height, hash, block or amount depends on this one.
 
 Anything added here lands in every crate above it. `zcash_protocol`,
 `zcash_transparent` and `zcash_script` carry the protocol types Zaino takes as-is
-(heights, txids, values, outpoints, scripts, upgrade schedules); `sha2` for
+(heights, block hashes, txids, values, outpoints, scripts, upgrade schedules);
+`zcash_encoding` for display-order hex (`Target::from_hex`); `sha2` for
 `sha256d`: block hashes (`HeaderBytes::hash`) and `MerkleRoot::of_txids`, the
 consensus merkle root a block's transactions must rebuild (the NFS's body
 check, and the chain builder's headers); `uint` for the 256-bit `Target`
@@ -31,7 +32,7 @@ values never belong here.
 ```rust
 use zaino_primitives::protocol::{MAX_BLOCK_BYTES, MAX_BLOCK_REORG_HEIGHT};
 use zaino_primitives::sha256d;
-use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
+use zaino_primitives::types::{Block, HeaderBytes, Treestate};
 ```
 
 - `types` — the chain: `Block` (the one decoded block every index consumes,
@@ -43,7 +44,7 @@ use zaino_primitives::types::{Block, BlockHash, HeaderBytes, Treestate};
   (`Coinbase`, or `Paid` = what the transaction leaves in the transparent pool:
   `Transaction::fee(spent)`, `spent` = Σ its prevouts' values; `FeeError::Negative`
   or `Overflow`) and `BlockFees` (one `Fee` per transaction, named by block hash),
-  `BlockHash`, `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
+  `PeerTxId` (txid + v5 auth digest: how peers name an unmined transaction),
   `BlockRef`, `ReorgDepth`, `TreeSize` / `TreeSizes` (`PerPool<TreeSize>`),
   `TreeRoot`, `Treestate`, `SubtreeRoot`, `MerkleRoot`,
   `HeaderBytes` and `TransactionLocation`, plus `CompactDifficulty` below.
@@ -107,16 +108,16 @@ the most-work rule built on it live in `zaino-header-chain`
 numerically: `is_met_by(hash)` (the hash read little-endian, ≤ target),
 `to_compact()` (raw nBits, unvalidated: a target below `2^128` has no
 `CompactDifficulty`), `mean(&[Target])` (overflow-free), `rescale(actual,
-expected)` (`/ expected × actual`, divide first, saturating) and `FromStr` over
+expected)` (`/ expected × actual`, divide first, saturating) and `from_hex` over
 display-order hex (zcashd's `powLimit` literals).
 
 ## Byte order
 
-`BlockHash` holds internal (hash-output) byte order and converts via
-`From<[u8; 32]>` both ways. `Display` renders the reversed (RPC/explorer) hex
-and `FromStr` parses it back (`ParseHashError`: not 64 hex digits). Txids,
-outpoints, scripts and zatoshi values are librustzcash's (`zcash_protocol::TxId`,
-`zcash_transparent::bundle::OutPoint`, …), with the same byte-order convention.
+Block hashes, txids, outpoints, scripts and zatoshi values are librustzcash's
+(`zcash_protocol::BlockHash`, `zcash_protocol::TxId`,
+`zcash_transparent::bundle::OutPoint`, …). Hashes hold internal (hash-output) byte
+order (`.0` for a `BlockHash`'s bytes); `Display` / `as_hex` render the reversed
+(RPC/explorer) hex and `from_hex` parses it back.
 
 ## Testing: `MockChain`
 

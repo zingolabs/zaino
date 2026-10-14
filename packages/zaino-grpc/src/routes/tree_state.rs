@@ -10,10 +10,10 @@ use tonic::{body::Body, Status};
 use zaino_index_tree_state::{ServeError, TreeStateReader};
 use zaino_nfs::{At, Indexed};
 use zaino_persistence::{CommittedView, IndexKind, OverlayView};
-use zaino_primitives::types::{BlockHash, CommitmentTreeBytes, SubtreeRoot, Treestate};
+use zaino_primitives::types::{CommitmentTreeBytes, SubtreeRoot, Treestate};
 use zaino_proto::proto::service;
 use zcash_protocol::consensus::BlockHeight;
-use zcash_protocol::ShieldedPool;
+use zcash_protocol::{BlockHash, ShieldedPool};
 
 use crate::limits::Lane;
 use crate::limits::ReadLanes;
@@ -186,10 +186,10 @@ where
         (held, state(&trees))
     });
     let (held, framed) = framed.await?;
-    if held.map_err(to_status)? != BlockHash::from(hash) {
+    if held.map_err(to_status)? != BlockHash(hash) {
         return Err(Status::not_found(format!(
             "block {} is not the one this index holds at {height} (reorg)",
-            BlockHash::from(hash)
+            BlockHash(hash)
         )));
     }
     framed
@@ -258,7 +258,7 @@ where
 
 /// `completingBlockHash` in display order (lightwalletd reverses the internal-order hash)
 fn root(root: &SubtreeRoot) -> Bytes {
-    let mut hash = <[u8; 32]>::from(root.completing.hash);
+    let mut hash = root.completing.hash.0;
     hash.reverse();
     wire::frame(&service::SubtreeRoot {
         root_hash: <[u8; 32]>::from(root.root).to_vec(),
@@ -279,6 +279,7 @@ mod tests {
     use zaino_proto::proto::service;
     use zcash_protocol::consensus::NetworkUpgrade;
     use zcash_protocol::local_consensus::LocalNetwork;
+    use zcash_protocol::BlockHash;
 
     use crate::service::{Method, Routes};
     use crate::testing::{
@@ -293,7 +294,7 @@ mod tests {
             .map(|seed| SubtreeRoot {
                 root: [seed; 32].into(),
                 completing: BlockRef {
-                    hash: [seed; 32].into(),
+                    hash: BlockHash([seed; 32]),
                     height: (u32::from(seed) * 10).into(),
                 },
             })
@@ -446,7 +447,7 @@ mod tests {
         let chain = at_genesis(7);
         let genesis = chain.genesis();
         let block = chain.block(genesis.hash);
-        let hash = <[u8; 32]>::from(genesis.hash);
+        let hash = genesis.hash.0;
         let trees = indexed(IndexKind::TreeState, &chain, genesis);
         let mut router = dispatch(Routes {
             snapshots: snapshot(&chain, genesis, vec![trees.clone()]),
@@ -526,7 +527,7 @@ mod tests {
 
         // another genesis (another leaf → another txid → another merkle root → another hash)
         let other = at_genesis(8);
-        let other_hash = <[u8; 32]>::from(other.genesis().hash);
+        let other_hash = other.genesis().hash.0;
         let mut forked = located_by(&other);
         let response = forked.call(by_hash(other_hash)).await.expect("answers");
         let located = status(&response);

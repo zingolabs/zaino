@@ -7,7 +7,7 @@
 use std::io::{self, Cursor};
 
 use zaino_primitives::types::{
-    Block, BlockHash, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
+    Block, CompactCiphertext, CompactDifficulty, CompactDifficultyError, DecodedHeader,
     EphemeralKey, HeaderBytes, HeaderError, NoteCommitment, Nullifier, OrchardAction, OrchardData,
     SaplingData, SaplingOutput, SaplingSpend, SproutData, Transaction, TransparentData,
     TransparentOutput,
@@ -15,7 +15,7 @@ use zaino_primitives::types::{
 use zcash_encoding::CompactSize;
 use zcash_primitives::transaction::{CompressedTransaction, TxVersion};
 use zcash_protocol::consensus::{BlockHeight, BranchId};
-use zcash_protocol::{value::ZatBalance, TxId};
+use zcash_protocol::{value::ZatBalance, BlockHash, TxId};
 
 use crate::{FailureMode, NonDomainError, QueryError};
 
@@ -153,7 +153,7 @@ fn block_height(
     raw: &HeaderBytes<'_>,
     coinbase: &CompressedTransaction,
 ) -> Result<BlockHeight, DecodeError> {
-    let height = if raw.prev_hash() == BlockHash::ZERO {
+    let height = if raw.prev_hash() == BlockHash([0; 32]) {
         0
     } else {
         coinbase
@@ -331,8 +331,8 @@ mod tests {
                 zaino_primitives::testing::encode_header(decoded.header()),
                 decoded.check_body(),
             );
-            let hash = BlockHash::from(zaino_primitives::sha256d(header));
-            let want = (hash, BlockHash::from(prev), header.to_vec(), Ok(()));
+            let hash = BlockHash(zaino_primitives::sha256d(header));
+            let want = (hash, BlockHash(prev), header.to_vec(), Ok(()));
             assert_eq!(got, want, "height {height}");
         }
     }

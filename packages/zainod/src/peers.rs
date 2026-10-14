@@ -19,9 +19,10 @@ use tokio::sync::watch;
 use tracing::{info, warn};
 use zaino_chainview::{Heard, ValidatorP2pSource};
 use zaino_peers::{Announced, PeerConfig, PeerError, PeerNetwork, PushError};
-use zaino_primitives::types::{Block, BlockHash, PeerTxId};
+use zaino_primitives::types::{Block, PeerTxId};
 use zaino_source::{decode_block, FailureMode, NonDomainError};
 use zaino_traffic::PeerTransport;
+use zcash_protocol::BlockHash;
 
 /// The port, empty until [`start`]'s future has brought the network up
 pub(crate) struct ZebraPeers {

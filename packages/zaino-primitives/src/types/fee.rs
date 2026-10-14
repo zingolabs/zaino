@@ -2,8 +2,9 @@
 
 use zcash_protocol::value::{ZatBalance, Zatoshis};
 
-use super::{Block, BlockHash, Transaction};
+use super::{Block, Transaction};
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// Left in the transparent value pool for the miner (protocol.pdf §3.4)
 ///

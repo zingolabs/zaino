@@ -283,15 +283,14 @@ mod tests {
     use proptest::prelude::*;
     use zaino_persistence::{fs::SimFs, DiskStore, DiskView, Schema};
     use zaino_primitives::testing::{h, MockChain};
-    use zaino_primitives::types::{
-        BlockHash, BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot,
-    };
+    use zaino_primitives::types::{BlockRef, CommitmentTreeBytes, NoteCommitment, SubtreeRoot};
     use zaino_sync::testing::{
         block_on_paused, finalized, moves, open, step, write_buffers, FinalStream, Move, Writer,
         QUEUE,
     };
     use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
     use zcash_protocol::consensus::NetworkType;
+    use zcash_protocol::BlockHash;
 
     use crate::{nodes::retained_nodes, ServeError, FORMAT, TABLES};
 
@@ -379,7 +378,7 @@ mod tests {
                 let retained = PoolRun { frontier, leaves, ends }.hash(Level::from(subtree_level));
 
                 // the run's nodes as one "block" per run (heights = run number)
-                let tip = BlockRef { hash: BlockHash::from([0; 32]), height: height(run) };
+                let tip = BlockRef { hash: BlockHash([0; 32]), height: height(run) };
                 let mut changes = store.changes(tip);
                 let nodes: BTreeMap<_, _> = retained.iter().flat_map(|block| &block.nodes).collect();
                 for (&(level, _), node) in nodes {

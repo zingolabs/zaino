@@ -6,8 +6,9 @@
 
 use std::cmp::Reverse;
 
-use zaino_primitives::types::{BlockHash, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 use crate::chain::{BestTip, Node, Record};
 

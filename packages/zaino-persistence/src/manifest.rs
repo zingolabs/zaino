@@ -12,9 +12,10 @@
 //! - in place, not a renamed file (overwrite below EOF = no metadata change: `fdatasync` never
 //!   waits on the filesystem journal or every other file's writeback)
 
-use zaino_primitives::types::{BlockHash, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::BlockHash;
 
 const MAGIC: [u8; 8] = *b"ZAINOMS\0";
 const HEADER: usize = 24;
@@ -224,7 +225,7 @@ impl Committed {
 
     pub(crate) fn encode(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.count().to_le_bytes());
-        out.extend_from_slice(&self.tip.map_or([0; 32], |tip| <[u8; 32]>::from(tip.hash)));
+        out.extend_from_slice(&self.tip.map_or([0; 32], |tip| tip.hash.0));
     }
 
     pub(crate) fn decode(body: &mut BodyReader<'_>) -> Result<Self, ManifestError> {
@@ -240,7 +241,7 @@ impl Committed {
         let height = u32::try_from(last)
             .map(BlockHeight::from)
             .map_err(|_| ManifestError::Body("committed count past the height ceiling"))?;
-        Ok(Self { tip: Some(BlockRef { hash: BlockHash::from(hash), height }) })
+        Ok(Self { tip: Some(BlockRef { hash: BlockHash(hash), height }) })
     }
 }
 
@@ -376,7 +377,7 @@ mod tests {
     #[test]
     fn committed_round_trips_and_refuses_a_tip_with_nothing_committed() {
         let tip = |height: u32, hash: u8| Committed {
-            tip: Some(BlockRef { hash: [hash; 32].into(), height: BlockHeight::from(height) }),
+            tip: Some(BlockRef { hash: BlockHash([hash; 32]), height: BlockHeight::from(height) }),
         };
         let golden = [3u64.to_le_bytes().as_slice(), &[7; 32]].concat();
         let mut bytes = Vec::new();

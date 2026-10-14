@@ -1,7 +1,7 @@
 //! Commitment trees as of a block
 
-use super::BlockHash;
 use zcash_protocol::consensus::BlockHeight;
+use zcash_protocol::BlockHash;
 
 /// Every pool always present
 #[derive(Debug, Clone, PartialEq, Eq)]

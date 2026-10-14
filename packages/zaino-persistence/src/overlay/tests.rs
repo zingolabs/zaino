@@ -1,5 +1,5 @@
-use zaino_primitives::types::BlockHash;
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::BlockHash;
 
 use super::*;
 use crate::{
@@ -17,7 +17,7 @@ const OTHER: Schema =
 /// Height `n`, hash `[n; 32]`
 fn block_ref(n: u8) -> BlockRef {
     let height = BlockHeight::from(u32::from(n));
-    BlockRef { hash: BlockHash::from([n; 32]), height }
+    BlockRef { hash: BlockHash([n; 32]), height }
 }
 
 /// Block `n`: one record + one id, both `n`
@@ -117,7 +117,7 @@ fn rebase_drops_every_block_durable_holds() {
 #[should_panic(expected = "not one of the layer's blocks")]
 fn rebase_onto_another_branch_panics() {
     let layer = Overlay::empty(&SCHEMA).with(&block(0)).with(&block(1));
-    let other_branch = BlockRef { hash: BlockHash::from([7; 32]), ..block_ref(0) };
+    let other_branch = BlockRef { hash: BlockHash([7; 32]), ..block_ref(0) };
     layer.rebase(&Durable { tip: Some(other_branch), schema: SCHEMA });
 }
 

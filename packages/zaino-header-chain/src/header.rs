@@ -1,7 +1,8 @@
 //! One exact consensus header (`HeaderBytes` with nothing after the solution), its bytes kept for
 //! the Equihash check
 
-use zaino_primitives::types::{BlockHash, HeaderBytes, HeaderError, MerkleRoot};
+use zaino_primitives::types::{HeaderBytes, HeaderError, MerkleRoot};
+use zcash_protocol::BlockHash;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Header {

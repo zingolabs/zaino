@@ -2,11 +2,9 @@
 
 mod block;
 mod block_commitments;
-mod block_hash;
 mod block_ref;
 mod compact_ciphertext;
 mod compact_difficulty;
-mod display_order;
 mod ephemeral_key;
 mod equihash_solution;
 mod fee;
@@ -26,11 +24,9 @@ mod treestate;
 
 pub use block::{Block, BodyMismatch, DecodedHeader};
 pub use block_commitments::BlockCommitments;
-pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
 pub use compact_ciphertext::CompactCiphertext;
 pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, Target};
-pub use display_order::ParseHashError;
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;
 pub use fee::{BlockFees, Fee, FeeError};

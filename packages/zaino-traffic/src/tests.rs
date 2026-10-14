@@ -6,7 +6,6 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::testing::{h, MockChain};
-use zaino_primitives::types::BlockHash;
 use zaino_source::testing::{
     decoded, raw_transaction, within, MockValidator, Port, ValidatorViews,
 };
@@ -14,7 +13,7 @@ use zaino_source::{
     BlockLink, FailureMode, GetAtHeightError, GetRawMempoolTransactionError, GetTransactionError,
     MempoolListed, QueryError, SendRawTransactionError,
 };
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::testing::PeerSetViews;
 use crate::{

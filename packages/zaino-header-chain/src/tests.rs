@@ -5,9 +5,10 @@ use std::sync::Arc;
 
 use zaino_primitives::protocol::{median_time_past, MEDIAN_TIME_SPAN};
 use zaino_primitives::testing::{all_at, MockChain};
-use zaino_primitives::types::{BlockHash, BlockRef, HeaderError, ReorgDepth};
+use zaino_primitives::types::{BlockRef, HeaderError, ReorgDepth};
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
+use zcash_protocol::BlockHash;
 
 use crate::params::AVERAGING_WINDOW;
 use crate::rules::{equihash_valid, expected_bits, header_work, in_context};
@@ -120,7 +121,7 @@ fn a_chain_anchored_mid_mainnet_follows_trusted_headers_with_no_history_below() 
     }
     assert_eq!(verified.header_at(at(77).height), None, "past the 113 finals kept");
     assert!(verified.on_best(at(5)) && verified.on_best(at(77)), "final by definition");
-    let stranger = BlockRef { hash: BlockHash::from([7; 32]), height: at(195).height };
+    let stranger = BlockRef { hash: BlockHash([7; 32]), height: at(195).height };
     assert!(!verified.on_best(stranger) && !verified.holds(stranger), "not ours above final");
     assert_eq!(verified.hash_at(at(201).height), None, "above the best");
     let locator: Vec<BlockHash> = (190..=200).rev().map(|index| headers[index].hash()).collect();
@@ -319,7 +320,7 @@ fn decode_takes_exactly_one_header() {
     let raw = &GENESIS_RANGE[..HEADER_LEN];
     let header = decode_header(raw).expect("genesis");
     assert_eq!(header.hash(), Params::mainnet().genesis, "hash recomputed from the bytes");
-    assert_eq!(header.prev_hash(), BlockHash::ZERO);
+    assert_eq!(header.prev_hash(), BlockHash([0; 32]));
     let truncated = |len| Err(DecodeError::Header(HeaderError::Truncated { len }));
     assert_eq!(decode_header(&raw[..140]), truncated(140));
     assert_eq!(decode_header(&raw[..HEADER_LEN - 1]), truncated(HEADER_LEN - 1));

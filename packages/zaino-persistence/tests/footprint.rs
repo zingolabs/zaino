@@ -9,8 +9,9 @@ use zaino_persistence::{
     DiskEngine, IndexKind, LsmConfig, MapTable, PersistenceEngine, Schema, SequenceTable, Store,
     TableFootprint, Tables, Width,
 };
-use zaino_primitives::types::{BlockHash, BlockRef};
+use zaino_primitives::types::BlockRef;
 use zcash_protocol::consensus::{NetworkType, H0};
+use zcash_protocol::BlockHash;
 
 const FIXED: SequenceTable = SequenceTable::new(0, "fixed", Width::fixed(32)).cache_writes();
 const VARIABLE: SequenceTable = SequenceTable::new(1, "variable", Width::Variable);
@@ -50,7 +51,7 @@ fn footprint_reports_each_tables_committed_bytes_and_their_page_cache_share() {
     }
     let mut height = H0;
     for n in 0..20_000u64 {
-        let at = BlockRef { height, hash: BlockHash::from([0; 32]) };
+        let at = BlockRef { height, hash: BlockHash([0; 32]) };
         fill(&mut store, at, n);
         fill(&mut sim, at, n);
         height = height + 1;

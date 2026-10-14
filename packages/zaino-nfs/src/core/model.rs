@@ -22,9 +22,10 @@ use proptest::prelude::*;
 use zaino_header_chain::testing::{insert, HeaderViews};
 use zaino_header_chain::{decode_header, HeaderChain, Record, Rejected, VerifiedChain};
 use zaino_primitives::testing::{encode_header, h, MockChain};
-use zaino_primitives::types::{Block, BlockHash, BlockRef, ReorgDepth};
+use zaino_primitives::types::{Block, BlockRef, ReorgDepth};
 use zaino_sync::{check_block, Checked};
 use zcash_protocol::consensus::{BlockHeight, H0};
+use zcash_protocol::BlockHash;
 
 use super::{Indexes, Input, NfsCore, Output, SnapshotTip};
 use crate::snapshot::Branch;
@@ -112,7 +113,7 @@ fn fold(parent: Option<Toy>, block: &Block) -> Toy {
         assert_eq!(parent.height + 1, header.height, "toy fold on its parent");
     }
     let seed = parent.map_or(0xcbf2_9ce4_8422_2325, |parent| parent.digest);
-    let bytes = <[u8; 32]>::from(header.hash);
+    let bytes = header.hash.0;
     let digest = bytes
         .iter()
         .fold(seed, |digest, byte| (digest ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3));

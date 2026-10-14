@@ -4,8 +4,9 @@
 //!   compactsize solution (1344 = 200-9, 36 = regtest's 48-5)
 //! - hash = SHA-256d of the bytes as received, never a field taken on trust
 
-use super::{BlockCommitments, BlockHash, EquihashSolution, MerkleRoot};
+use super::{BlockCommitments, EquihashSolution, MerkleRoot};
 use crate::sha256d;
+use zcash_protocol::BlockHash;
 
 /// Equihash's input: every byte before the nonce (zebra-chain `work/equihash.rs` `INPUT_LENGTH`)
 const EQUIHASH_INPUT: usize = 108;
@@ -66,7 +67,7 @@ impl<'a> HeaderBytes<'a> {
     }
 
     pub fn hash(&self) -> BlockHash {
-        BlockHash::from(sha256d(self.bytes))
+        BlockHash(sha256d(self.bytes))
     }
 
     /// `int32` (zcashd `nVersion`): high bit set = negative
@@ -75,7 +76,7 @@ impl<'a> HeaderBytes<'a> {
     }
 
     pub fn prev_hash(&self) -> BlockHash {
-        BlockHash::from(self.array_at(4))
+        BlockHash(self.array_at(4))
     }
 
     pub fn merkle_root(&self) -> MerkleRoot {

@@ -5,11 +5,11 @@
 //! - Absent / `null` optional field = `None`; present but malformed = error ("inactive" and
 //!   "garbled" are different facts)
 
-use zaino_primitives::types::{BlockHash, ParseHashError, TransactionLocation};
+use zaino_primitives::types::TransactionLocation;
 
 use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, UPGRADES_IN_ORDER};
 use zcash_protocol::value::{Zatoshis, MAX_MONEY};
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 
 use crate::{
     BlockchainInfo, ConsensusBranchIds, EndOfService, MempoolListed, NetworkUpgradeInfo,
@@ -20,8 +20,8 @@ use crate::{
 pub(crate) enum ParseError {
     #[error("hex decode: {0}")]
     Hex(String),
-    #[error("hash: {0}")]
-    Hash(#[from] ParseHashError),
+    #[error("not a block hash (64 hex digits): {0}")]
+    Hash(String),
     #[error("not a txid (64 hex digits): {0}")]
     Txid(String),
     #[error("expected {expected}, got {got}")]
@@ -105,7 +105,8 @@ fn txid(hex: &str) -> Result<TxId, ParseError> {
 }
 
 pub(crate) fn as_block_hash(value: &serde_json::Value) -> Result<BlockHash, ParseError> {
-    Ok(as_str(value)?.parse()?)
+    let hex = as_str(value)?;
+    BlockHash::from_hex(hex).ok_or_else(|| ParseError::Hash(hex.chars().take(64).collect()))
 }
 
 /// Hex-string `result` decoded straight off the body: one SIMD pass into an exact-size buffer
@@ -376,7 +377,7 @@ mod tests {
         let expected = BlockchainInfo {
             blocks: height(3_451_543),
             estimated_height: height(3_451_544),
-            best_block_hash: BlockHash::from(reversed_bytes),
+            best_block_hash: BlockHash(reversed_bytes),
             sapling_activation: height(419_200),
             upgrades: vec![
                 NetworkUpgradeInfo {

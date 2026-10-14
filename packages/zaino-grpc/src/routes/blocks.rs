@@ -86,7 +86,7 @@ fn range_response<V: CommittedView>(
 /// `GetLatestBlock` answers a `BlockID`, not a block: the snapshot's tip (no read at all)
 pub(crate) fn latest<V>(at: &At<V>) -> Response<Body> {
     let tip = at.tip();
-    let hash = <[u8; 32]>::from(tip.hash).to_vec();
+    let hash = tip.hash.0.to_vec();
     unary_response(wire::frame(&service::BlockId { height: tip.height.into(), hash }))
 }
 
@@ -298,9 +298,9 @@ mod tests {
         let mut chain = MockChain::regtest().network(MAINNET);
         let two = chain.mine_empty(2);
         let other_2 = chain.fork(h(1)).mine_empty(1).tip();
-        let held = |at: u32| <[u8; 32]>::from(chain.at(h(at)).hash);
+        let held = |at: u32| chain.at(h(at)).hash.0;
         let locator = indexed(IndexKind::BlockHash, &chain, other_2);
-        let other_2 = <[u8; 32]>::from(other_2.hash);
+        let other_2 = other_2.hash.0;
 
         let compact = indexed(IndexKind::CompactBlock, &chain, two);
         let unlocated = dispatch(Routes {

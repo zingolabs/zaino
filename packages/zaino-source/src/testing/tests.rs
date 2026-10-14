@@ -159,7 +159,7 @@ async fn a_tampered_header_is_served_and_hashed_as_edited() {
     let block = validator.get_block_by_hash(tampered).await.expect("served by its new hash");
 
     assert_ne!(tampered, tip.hash, "edited header, rehashed");
-    let linked = BlockHash::from(sha256d(&link.expect("held").header));
+    let linked = BlockHash(sha256d(&link.expect("held").header));
     assert_eq!((linked, block.header().time), (tampered, early));
 }
 

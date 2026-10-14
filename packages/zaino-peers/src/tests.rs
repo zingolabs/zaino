@@ -9,8 +9,9 @@ use std::time::Duration;
 use tower::buffer::Buffer;
 use tower::util::BoxService;
 use tower::{Service, ServiceExt};
-use zaino_primitives::types::{BlockHash, PeerTxId};
+use zaino_primitives::types::PeerTxId;
 use zcash_protocol::consensus::NetworkType;
+use zcash_protocol::BlockHash;
 use zebra_chain::block::{Block, CountedHeader};
 use zebra_chain::chain_tip::NoChainTip;
 use zebra_chain::parameters::Network;
@@ -149,7 +150,7 @@ async fn a_peer_serves_headers_blocks_and_mempool_its_lies_are_dropped_and_its_i
         blocks.iter().map(|block| block.header.zcash_serialize_to_vec().expect("vec")).collect();
     assert_eq!(headers, expected, "every header byte-identical, in order");
 
-    let unknown = BlockHash::from([7; 32]);
+    let unknown = BlockHash([7; 32]);
     let fetched = peers.blocks_by_hash(&[hash(&blocks[1]), unknown]).await.expect("blocks");
     let vector = zebra_test::vectors::BLOCK_MAINNET_2_BYTES.to_vec();
     let supplied = Supplied { bytes: vector, peer: Some(fake) };

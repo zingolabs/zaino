@@ -10,10 +10,9 @@
 
 use core::fmt;
 use core::num::NonZeroU64;
-use core::str::FromStr;
 
-use super::display_order::{self, ParseHashError};
-use super::BlockHash;
+use zcash_encoding::ReverseHex;
+use zcash_protocol::BlockHash;
 
 // lints fire inside `uint`'s expansion (third-party code)
 #[allow(clippy::manual_div_ceil, clippy::assign_op_pattern)]
@@ -103,7 +102,7 @@ impl Target {
 
     /// `hash` read as a little-endian integer, at most the target
     pub fn is_met_by(self, hash: BlockHash) -> bool {
-        U256::from_little_endian(&<[u8; 32]>::from(hash)) <= self.0
+        U256::from_little_endian(&hash.0) <= self.0
     }
 
     /// `ExpandedDifficulty::to_compact` (bitcoin `GetCompact`): raw nBits, never negative
@@ -127,12 +126,10 @@ impl Target {
     }
 }
 
-/// Display-order (big-endian) hex, as zcashd `uint256S` (`chainparams.cpp` `powLimit`)
-impl FromStr for Target {
-    type Err = ParseHashError;
-
-    fn from_str(hex: &str) -> Result<Self, Self::Err> {
-        display_order::parse(hex).map(|bytes| Self(U256::from_little_endian(&bytes)))
+impl Target {
+    /// Display-order (big-endian) hex, as zcashd `uint256S` (`chainparams.cpp` `powLimit`)
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        ReverseHex::decode(hex).map(|bytes| Self(U256::from_little_endian(&bytes)))
     }
 }
 
@@ -249,7 +246,7 @@ mod tests {
         at_target[29..].copy_from_slice(&[0xff, 0xff, 0x07]);
         let mut above = at_target;
         above[0] = 1;
-        assert_eq!([at_target, above].map(|hash| target.is_met_by(hash.into())), [true, false]);
+        assert_eq!([at_target, above].map(|hash| target.is_met_by(BlockHash(hash))), [true, false]);
     }
 
     #[test]

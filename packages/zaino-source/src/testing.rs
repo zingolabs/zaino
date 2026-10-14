@@ -10,14 +10,12 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use zaino_primitives::testing::{encode_header, header_hash, Ledger, MockChain, Refused, Unmined};
-use zaino_primitives::types::{
-    Block, BlockHash, BlockRef, DecodedHeader, Transaction, TransactionLocation,
-};
+use zaino_primitives::types::{Block, BlockRef, DecodedHeader, Transaction, TransactionLocation};
 use zcash_protocol::consensus::{
     BlockHeight, BranchId, NetworkUpgrade, Parameters, UPGRADES_IN_ORDER,
 };
 use zcash_protocol::local_consensus::LocalNetwork;
-use zcash_protocol::TxId;
+use zcash_protocol::{BlockHash, TxId};
 use zcash_transparent::address::Script;
 use zcash_transparent::bundle::OutPoint;
 

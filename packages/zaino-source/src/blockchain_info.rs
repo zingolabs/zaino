@@ -3,7 +3,7 @@
 use zcash_protocol::consensus::BlockHeight;
 use zcash_protocol::local_consensus::LocalNetwork;
 
-use zaino_primitives::types::BlockHash;
+use zcash_protocol::BlockHash;
 
 use crate::{ConsensusBranchIds, NetworkUpgradeInfo};
 
@@ -58,7 +58,7 @@ mod tests {
         let mut info = BlockchainInfo {
             blocks: BlockHeight::from(3_500_000),
             estimated_height: BlockHeight::from(3_500_000),
-            best_block_hash: BlockHash::from([0; 32]),
+            best_block_hash: BlockHash([0; 32]),
             sapling_activation: BlockHeight::from(419_200),
             upgrades: listing.collect(),
             consensus: ConsensusBranchIds {

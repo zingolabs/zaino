@@ -23,9 +23,10 @@ use super::upgrades::all_at;
 use super::{encode_header, h, header_hash, sha256d, GENESIS_TIME, REGTEST_BITS};
 use crate::protocol::median_time_past;
 use crate::types::{
-    Block, BlockFees, BlockHash, BlockRef, CompactDifficulty, DecodedHeader, EquihashSolution, Fee,
+    Block, BlockFees, BlockRef, CompactDifficulty, DecodedHeader, EquihashSolution, Fee,
     MerkleRoot, Transaction,
 };
+use zcash_protocol::BlockHash;
 
 /// nBits source: `Limit` = the regtest limit everywhere (strict header rules, heavier = longer);
 /// `Varied` = `Branch::outweigh` / `BlockBuilder::bits` allowed (header views accept any nBits)
@@ -238,8 +239,8 @@ impl MockChain {
             schedule,
             genesis_spec: genesis_spec.clone(),
             blocks: HashMap::new(),
-            genesis: BlockHash::ZERO,
-            best: BlockHash::ZERO,
+            genesis: BlockHash([0; 32]),
+            best: BlockHash([0; 32]),
             bytes: HashMap::new(),
             mempool: Vec::new(),
             nonces: 0,
@@ -286,9 +287,9 @@ impl MockChain {
         nonce[..8].copy_from_slice(&self.nonces.to_le_bytes());
         self.nonces += 1;
         let mut header = DecodedHeader {
-            hash: BlockHash::ZERO,
+            hash: BlockHash([0; 32]),
             version: 4,
-            prev_hash: parent.map_or(BlockHash::ZERO, |parent| parent.hash),
+            prev_hash: parent.map_or(BlockHash([0; 32]), |parent| parent.hash),
             height,
             time,
             merkle_root: MerkleRoot::of_txids(&txids).expect("txids distinct (M3)"),
